@@ -21,12 +21,12 @@ local function documentation()
     "",
     "Neoagent is composed from ordinary Lua values. Models, tools, executors, "
       .. "Sessions, Controllers, and Views can be used or replaced independently. "
-      .. "There is no extension registry or auto-discovery: personal integrations "
-      .. "are Lua modules loaded by Neovim configuration.",
+      .. "Personal integrations are ordinary Lua modules loaded explicitly by "
+      .. "Neovim configuration.",
     "",
     "## Choose the smallest useful layer",
     "",
-    "- A Model exposes `model:stream(opts)` and needs no Session, tools, Controller, or UI.",
+    "- A Model exposes `model:stream(opts)` and can be used directly.",
     "- `neoagent.agent.run(opts)` receives its Model, messages, exact tools, executor, "
       .. "and context explicitly.",
     "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
@@ -34,11 +34,11 @@ local function documentation()
       .. "model selection, Session, Workspace, Run, and View.",
     "- `neoagent.setup(opts)` creates and installs the default Controller. Commands and "
       .. "top-level convenience functions forward to it.",
-    "- `neoagent.set_default(controller)` replaces that command-facing default without "
-      .. "destroying the previous Controller.",
+    "- `neoagent.set_default(controller)` installs that command-facing default and returns "
+      .. "the previous Controller, which remains usable.",
     "",
-    "A Controller created by `neoagent.new()` receives a complete configuration; it does "
-      .. "not inherit options from the default Controller.",
+    "A Controller created by `neoagent.new()` receives a complete configuration. Copy "
+      .. "`neoagent.default():config()` first when it should derive from the default Controller.",
     "",
     "## Independent Controller example",
     "",
@@ -80,8 +80,8 @@ local function documentation()
     "local controller = neoagent.new(custom_opts)",
     "```",
     "",
-    "Passing `tools` means exactly those tools; Neoagent never silently adds bundled tools. "
-      .. "The bundled coding preset contains read, write, edit, shell, and this documentation "
+    "Passing `tools` selects exactly those tools. The bundled coding preset contains read, "
+      .. "write, edit, shell, and this documentation "
       .. "tool. The read-only preset remains read, grep, and find.",
     "",
     "## Custom View",
@@ -89,7 +89,8 @@ local function documentation()
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
       .. "`controller`, `on_submit`, `on_stop`, and `on_cycle_thinking`. A passive View "
       .. "implements `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`, "
-      .. "`set_context`, `apply`, and `finish`; it renders events but does not own the agent loop.",
+      .. "`set_context`, `apply`, and `finish`; it renders events while the Controller owns "
+      .. "the agent loop.",
     "",
     "## Installed paths",
     "",

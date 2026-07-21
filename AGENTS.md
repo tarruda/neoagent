@@ -84,6 +84,12 @@ changes.
 
 - Treat this repository as the canonical source. Do not edit or deploy a copied
   plugin installation unless the user explicitly asks for deployment.
+- Write documentation and comments as a direct description of the current
+  design. Do not preserve implementation history or discarded alternatives
+  with phrases such as "not a ...", "rather than ...", "instead of ...",
+  "still ...", or "no longer ...". Use positive statements about ownership,
+  behavior, and composition. Negative wording is appropriate only when it
+  defines a current API guarantee, safety boundary, prohibition, or error.
 - Preserve unrelated user changes and generated local configuration.
 - Keep public behavior documented in `README.md` and `doc/neoagent.txt`.
 - Track multi-step implementation work in `TODO.md` when requested.

@@ -104,9 +104,8 @@ The transcript renders assistant Markdown with headings, inline emphasis,
 links, lists, quotes, fenced code, rules, and tables. Thinking is muted and
 italic. User messages and tool calls use separate padded backgrounds; pending
 tools change to green on success or red on failure. Built-in tools show concise
-arguments and useful output instead of JSON. Read output is limited to ten
-lines until tool output is expanded. A spinner remains visible while the agent
-is working.
+semantic arguments and useful output. Read output is limited to ten lines until
+tool output is expanded. A spinner remains visible while the agent is working.
 
 Default UI mappings:
 
@@ -208,8 +207,8 @@ vim.keymap.set("n", "<leader>ar", function() reviewer:toggle() end)
 Each Controller owns its Model selection, Session, Workspace, active Run, and
 View. Closing, stopping, or destroying one does not affect another. Call
 `controller:destroy()` when a short-lived instance is no longer needed.
-Bundled persistence still deliberately shares its cwd-hashed files between
-Controllers using the same persistence directory.
+Bundled persistence shares its cwd-hashed files between Controllers using the
+same persistence directory.
 
 `neoagent.set_default(reviewer)` makes commands and top-level functions use an
 existing Controller and returns the previous default without destroying it.
@@ -220,9 +219,9 @@ agent Run is active.
 The `view` option is a function receiving `config`, `controller`, `on_submit`,
 `on_stop`, and `on_cycle_thinking`. It returns a passive View implementing
 `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`,
-`set_context`, `apply`, and `finish`. The View only displays state and invokes
-the supplied callbacks; it does not own the agent loop. This makes a fully
-custom window an ordinary Controller option rather than a global UI patch.
+`set_context`, `apply`, and `finish`. The View displays state and invokes the
+supplied callbacks while the Controller owns the agent loop. A fully custom
+window is an ordinary Controller option.
 
 ### Model registry
 
@@ -293,10 +292,10 @@ to `false` to keep `init.lua` authoritative while retaining session
 persistence.
 
 Reading settings or opening an empty Session creates nothing. Selecting a model
-or thinking level creates `settings.json` atomically; the session JSONL still
-does not exist until its first accepted message. The built-in controller only
-owns `default_model` and `default_thinking_level`, but the workspace settings
-layer is reusable by other Lua workflows:
+or thinking level creates `settings.json` atomically. Session JSONL creation
+begins with its first accepted message. The built-in controller owns
+`default_model` and `default_thinking_level`; the workspace settings layer is
+reusable by other Lua workflows:
 
 ```lua
 local settings = require("neoagent.workspace_settings").new({
@@ -328,21 +327,18 @@ require("neoagent").setup({
 
 The callback context contains `session`, `model`, `workspace`, the submitted
 `prompt`, the active `tools`, and the discovered `agents` and `skills`. A
-custom string or callback replaces the base prompt; contextual resources are
-still appended. Set their configuration to `false` when the final prompt must
-exclude them.
+custom string or callback replaces the base prompt. Contextual resources are
+then appended according to their configuration.
 
-The default coding preset includes `read_agent_documentation`. Only its short
-tool description is always sent; it tells the model to call the tool only for
-questions about Neoagent itself,
-its configuration, APIs, or extensibility. The on-demand result summarizes the
-composition layers, includes Controller, tool/executor, and View examples, and
-provides absolute paths to the installed documentation, source, active init
-file, and Neovim configuration directory.
+The default coding preset includes `read_agent_documentation`. Its short tool
+description tells the model to call the tool only for questions about Neoagent
+itself, its configuration, APIs, or extensibility. The on-demand result
+summarizes the composition layers, includes Controller, tool/executor, and View
+examples, and provides absolute paths to the installed documentation, source,
+active init file, and Neovim configuration directory.
 
-Passing `tools` remains exact and takes precedence: Neoagent never injects a
-tool into an explicit list. To keep the four coding tools without the
-documentation tool:
+The `tools` option selects exactly those tools and overrides the default coding
+preset. To keep the four coding tools without the documentation tool:
 
 ```lua
 require("neoagent").setup({
@@ -360,9 +356,8 @@ Use `tools = {}` for a tool-free chat composition.
 Custom compositions can opt in directly with
 `require("neoagent.tools.read_agent_documentation").new()`.
 
-Neoagent deliberately has no extension framework or auto-discovery. Personal
-integrations are ordinary Lua modules loaded by the user's Neovim
-configuration; they can construct a Controller with `neoagent.new()` or
+Personal integrations are ordinary Lua modules loaded explicitly by the user's
+Neovim configuration. They can construct a Controller with `neoagent.new()` or
 replace the command-facing instance with `neoagent.set_default()`.
 
 ### AGENTS.md and skills

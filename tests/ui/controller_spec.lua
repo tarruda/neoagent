@@ -102,7 +102,7 @@ describe("neoagent default controller", function()
     assert.is_true(neoagent.stop())
   end)
 
-  it("uses an explicit tool list without adding the documentation tool", function()
+  it("honors an explicit tool list exactly", function()
     local captured
     local model = fake_model.new({})
     local tools = {

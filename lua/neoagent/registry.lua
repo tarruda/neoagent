@@ -2,8 +2,7 @@ local util = require("neoagent.util")
 
 local M = {}
 
--- Pi keeps these catalogs explicit rather than discovering aliases at runtime.
--- Neoagent mirrors the model ids relevant to its OpenAI Responses backends.
+-- Explicit model ids exposed by the built-in OpenAI Responses providers.
 local function model_map(ids, options)
   local result = {}
   for _, id in ipairs(ids) do result[id] = util.copy(options or {}) end
