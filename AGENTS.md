@@ -77,6 +77,30 @@ changes.
 - Keep generated artifacts out of source changes: `.deps/`, `.coverage/`,
   `.test-data/`, and `.nvimlog` are disposable.
 
+## Commit messages
+
+- Use Conventional Commit subjects: `<type>(<scope>): <summary>`. Omit the
+  scope when the change does not have one clear subsystem.
+- Use the types that describe the change directly, such as `feat`, `fix`,
+  `test`, `docs`, `refactor`, or `chore`.
+- Write the summary in the imperative mood, start it with lowercase unless it
+  begins with a proper name, and do not end it with a period.
+- For a non-trivial commit, add a blank line followed by `-` bullets. Start
+  each bullet with an imperative verb, end it with a period, and wrap body
+  lines at 72 columns.
+- Keep each commit focused. The subject and body must describe only the staged
+  changes.
+
+For example:
+
+```text
+feat(auth): add Codex subscription login
+
+- Add provider-extensible login methods and secure credential storage.
+- Port Codex browser/device OAuth, refresh, and authenticated headers.
+- Cover callback, model, command, cancellation, and failure paths.
+```
+
 ## Dependencies
 
 The supported minimum is Neovim 0.10. Required test/runtime commands are:
