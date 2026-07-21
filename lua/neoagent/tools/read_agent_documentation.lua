@@ -30,11 +30,13 @@ local function documentation()
     "- `neoagent.agent.run(opts)` receives its Model, messages, exact tools, executor, "
       .. "and context explicitly.",
     "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
-    "- Bundled Workspace settings persist model, thinking, and UI dock preferences per cwd.",
+    "- Bundled Workspace settings persist a shared UI dock plus name-scoped model and "
+      .. "thinking preferences per cwd. Sessions remain shared across Controllers.",
     "- `neoagent.new(opts)` creates an independent Controller with its own configuration, "
       .. "model selection, Session, Workspace, and Run.",
-    "- `neoagent.new_window(opts)` attaches Controllers to one passive View. Selection "
-      .. "restores per-Controller messages and input drafts while Runs remain concurrent.",
+    "- `neoagent.new_window(opts)` attaches uniquely named Controllers to one passive View. "
+      .. "Selection restores per-Controller messages and input drafts while Runs remain "
+      .. "concurrent.",
     "- `neoagent.setup(opts)` creates the built-in Neo and Chat Controllers in one Window. "
       .. "Neo uses the configured coding composition; Chat has an empty system prompt and "
       .. "tool list with resource discovery disabled. Commands target the active Controller "

@@ -37,6 +37,7 @@ changes.
   store is optional and injected.
 - The passive View consumes messages and events. A Window owns one View,
   selects an active Controller, and retains one input draft per Controller.
+  Attached Controllers have unique, non-empty names.
 - Controllers are independent compositions of configuration, model selection,
   Session, Workspace, and Run. They publish snapshots and updates so Windows
   and other consumers can attach without owning the agent loop.
@@ -79,9 +80,9 @@ changes.
   creating an empty Session must not create a session file; persistence starts
   with the first accepted message.
 - Bundled persistence shares one cwd-hashed workspace namespace between
-  `settings.json` and `sessions/`. Workspace settings recursively override the
-  setup model, thinking, and UI position defaults, and reads must not create
-  files.
+  `settings.json` and `sessions/`. Model and thinking preferences are scoped by
+  Controller name; UI position and the session pool are shared. Every
+  Controller can resume every workspace Session. Reads must not create files.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer controller state.

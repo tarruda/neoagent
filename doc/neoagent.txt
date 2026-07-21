@@ -79,7 +79,7 @@ before a request when expired.
 The important options are: >lua
 
   {
-    name = nil,                -- optional Controller label in the View title
+    name = nil,                -- Neo label and workspace-settings scope
     default_registry = true,
     providers = {},
     apis = {},
@@ -105,7 +105,7 @@ The important options are: >lua
     },
     persistence = {
       enabled = true,
-      workspace_settings = true, -- model/thinking/UI position overrides
+      workspace_settings = true, -- name-scoped model/thinking, shared UI
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
@@ -150,6 +150,10 @@ thinking methods, login methods, `subscribe`, `snapshot`, `get_session`,
 `get_model`, `config`, `is_running`, and `destroy`. Multiple Controllers can run
 concurrently. Controllers with a shared persistence directory use the same
 cwd-hashed Workspace while retaining independent Sessions.
+
+Window Controllers require unique, non-empty names. A Controller name is its
+View label and workspace-settings scope. Renaming it selects a fresh scope;
+matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
@@ -296,15 +300,33 @@ agent loop do not interpret thinking levels.
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
 The setup values are the base configuration. With persistence and
-`workspace_settings` enabled, the default controller recursively merges
-`default_model`, `default_thinking_level`, and `ui_position` from: >text
+`workspace_settings` enabled, Controllers recursively merge name-scoped model
+and thinking overrides plus the shared UI position from: >text
 
   workspaces/<sha256-of-canonical-root>/settings.json
 <
-Model selection, thinking level, and UI dock changes update that file
-atomically. A resumed session's latest Pi model and thinking entries take
-precedence for that session. Reading settings and opening an empty Session
-create no files.
+The file uses this shape: >json
+
+  {
+    "ui_position": "right",
+    "controllers": {
+      "Neo": {
+        "default_model": { "provider": "openai-codex", "model": "gpt-5.5" },
+        "default_thinking_level": "high"
+      },
+      "Chat": {
+        "default_model": { "provider": "openai", "model": "gpt-5.4" },
+        "default_thinking_level": "medium"
+      }
+    }
+  }
+<
+Names are case-sensitive. An unnamed standalone Controller uses the `default`
+scope. Top-level model and thinking values act as shared fallbacks. Model,
+thinking, and UI dock changes update the file atomically. A resumed session's
+latest Pi model and thinking entries take precedence for that session. Every
+Controller can list and resume every Session in the shared workspace session
+directory. Reading settings and opening an empty Session create no files.
 
 The workspace settings layer is also usable independently: >lua
 
@@ -507,7 +529,8 @@ The default JSONL Store is created with: >lua
 `<directory>/<sha256-of-canonical-cwd>/sessions/`. It uses a Pi-compatible v3
 linear JSONL subset and creates no file until the first accepted message. Model
 and thinking state uses Pi's `model_change` and `thinking_level_change` entries
-without adding messages to the Session. Use `storage.open(path)` to resume.
+without adding messages to the Session. All Controllers share this session
+directory and may resume any stored path. Use `storage.open(path)` to resume.
 
 Session adapters: >lua
 

@@ -151,7 +151,7 @@ The complete shape is intentionally small:
 
 ```lua
 require("neoagent").setup({
-  name = nil,                   -- optional Controller label in the View title
+  name = nil,                   -- Neo label and workspace-settings scope
   default_registry = true,      -- compose the built-in OpenAI catalogs
   providers = {},
   apis = {},
@@ -180,7 +180,7 @@ require("neoagent").setup({
   },
   persistence = {
     enabled = true,             -- false disables bundled sessions and settings
-    workspace_settings = true,  -- merge cwd-scoped model/thinking/UI overrides
+    workspace_settings = true,  -- name-scoped model/thinking, shared UI
     directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
   ui = {
@@ -224,6 +224,9 @@ neoagent.set_default_window(window)
 ```
 
 The Window owns one passive View and selects one attached Controller at a time.
+Attached Controllers require unique, non-empty names. A name is both the View
+label and the Controller's workspace-settings scope. Renaming a Controller
+selects a fresh settings scope; matching names in separate Windows share one.
 `window:select(controller_or_index)` selects directly and `window:cycle()`
 selects the next Controller. The bundled `<C-n>` mapping calls `cycle()`.
 Selection restores that Controller's transcript and input draft. Runs belong to
@@ -318,19 +321,40 @@ The core agent remains unaware of thinking. Resolved Models expose their
 
 ### Workspace settings
 
-With persistence enabled, model selection, thinking level, and UI dock changes
-are saved for the active Workspace. The setup values remain the base; overrides
-from `workspaces/<sha256-of-canonical-root>/settings.json` merge recursively on
-top. A resumed session's last Pi `model_change` and `thinking_level_change`
-entries take precedence for that session. Set `persistence.workspace_settings`
-to `false` to keep `init.lua` authoritative while retaining session
-persistence.
+With persistence enabled, UI dock changes are saved for the active Workspace.
+Model selection and thinking level are saved under the Controller's name. The
+setup values remain the base; overrides from
+`workspaces/<sha256-of-canonical-root>/settings.json` merge recursively on top:
+
+```json
+{
+  "ui_position": "right",
+  "controllers": {
+    "Neo": {
+      "default_model": { "provider": "openai-codex", "model": "gpt-5.5" },
+      "default_thinking_level": "high"
+    },
+    "Chat": {
+      "default_model": { "provider": "openai", "model": "gpt-5.4" },
+      "default_thinking_level": "medium"
+    }
+  }
+}
+```
+
+Controller names are case-sensitive. Window Controllers require unique names;
+an unnamed standalone Controller uses the `default` scope. Top-level
+`default_model` and `default_thinking_level` values act as shared fallbacks.
+A resumed session's last Pi `model_change` and `thinking_level_change` entries
+take precedence for that session. Every Controller lists and resumes sessions
+from the same workspace `sessions/` directory. Set
+`persistence.workspace_settings` to `false` to keep `init.lua` authoritative
+while retaining session persistence.
 
 Reading settings or opening an empty Session creates nothing. Selecting a
 model, thinking level, or dock position creates `settings.json` atomically.
-Session JSONL creation begins with its first accepted message. The default
-composition persists `default_model`, `default_thinking_level`, and
-`ui_position`; the workspace settings layer is reusable by other Lua workflows:
+Session JSONL creation begins with its first accepted message. The workspace
+settings layer is reusable by other Lua workflows:
 
 ```lua
 local settings = require("neoagent.workspace_settings").new({
@@ -620,7 +644,8 @@ has no model, tools, Workspace, or harness. Pass an injected store if desired.
 Storage uses `workspaces/<sha256-of-canonical-root>/sessions/*.jsonl`, and no file
 is created until the first message is accepted. Model and thinking changes use
 Pi's `model_change` and `thinking_level_change` entries, but remain outside the
-Session's message sequence.
+Session's message sequence. The session directory is shared by every Controller
+in the Workspace, so any Controller can resume any stored session.
 
 `neoagent.chat.send(session, prompt, opts)` adds one model response.
 `neoagent.chat.run(session, prompt, opts)` runs the tool loop and appends every

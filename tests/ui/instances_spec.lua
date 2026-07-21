@@ -73,6 +73,18 @@ describe("neoagent controller windows", function()
     assert.is_nil(controllers[2]:get_session())
   end)
 
+  it("requires unique Controller names in a Window", function()
+    local unnamed_options = options("unnamed", fake_model.new({}))
+    unnamed_options.name = nil
+    local unnamed = neoagent.new(unnamed_options)
+    local first = neoagent.new(options("same", fake_model.new({})))
+    local second = neoagent.new(options("same", fake_model.new({})))
+    controllers = { unnamed, first, second }
+
+    assert.has_error(function() neoagent.new_window({ controllers = { unnamed } }) end)
+    assert.has_error(function() neoagent.new_window({ controllers = { first, second } }) end)
+  end)
+
   it("reports Controller preparation failures before opening its View", function()
     local controller = neoagent.new(options("missing", fake_model.new({}), {
       default_model = { provider = "absent", model = "missing" },
@@ -220,6 +232,9 @@ describe("neoagent controller windows", function()
     local beta_run = assert(beta:send("beta"))
     assert(vim.wait(1000, function() return alpha_run:is_done() and beta_run:is_done() end))
     assert.are.equal(2, #require("neoagent.storage").list(directory, vim.fn.getcwd()))
+    local alpha_path = alpha:get_session():metadata().path
+    assert(beta:resume(alpha_path))
+    assert.are.equal("alpha", beta:get_session():messages()[1].content)
   end)
 
   it("routes the command-facing default through a replaceable Window", function()

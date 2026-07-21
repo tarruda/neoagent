@@ -305,6 +305,24 @@ describe("neoagent default controller", function()
     end))
     assert(neoagent.set_model("fake", "alpha"))
     assert.are.equal("high", neoagent.set_thinking_level("high"))
+    local saved = assert(settings:load())
+    assert.are.same({ provider = "fake", model = "alpha" },
+      saved.controllers.Neo.default_model)
+    assert.are.equal("high", saved.controllers.Neo.default_thinking_level)
+    assert.are.equal("left", saved.ui_position)
+
+    local chat = neoagent.cycle_agent()
+    assert.are.equal("Chat", chat:config().name)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert.are.equal("low", neoagent.get_thinking_level())
+    assert.are.equal("off", neoagent.set_thinking_level("off"))
+    saved = assert(settings:load())
+    assert.are.equal("high", saved.controllers.Neo.default_thinking_level)
+    assert.are.equal("off", saved.controllers.Chat.default_thinking_level)
+    assert.are.equal("Neo", neoagent.cycle_agent():config().name)
+    assert.are.equal("alpha", neoagent.get_model().id)
+    assert.are.equal("high", neoagent.get_thinking_level())
     assert.are.same({}, require("neoagent.storage").list(directory, vim.fn.getcwd()))
     local run = assert(neoagent.send("remember this"))
     local session_path = neoagent.get_session():metadata().path
@@ -339,8 +357,10 @@ describe("neoagent default controller", function()
     assert.are.equal("off", neoagent.get_thinking_level())
 
     assert(settings:write({
-      default_model = { provider = "fake", model = "alpha" },
-      default_thinking_level = "high",
+      controllers = { Neo = {
+        default_model = { provider = "fake", model = "alpha" },
+        default_thinking_level = "high",
+      } },
     }))
     options.persistence.workspace_settings = false
     neoagent.setup(options)
@@ -348,7 +368,7 @@ describe("neoagent default controller", function()
     assert.are.equal("test", neoagent.get_model().id)
     assert.are.equal("low", neoagent.get_thinking_level())
     assert(neoagent.set_model("fake", "test"))
-    assert.are.equal("alpha", assert(settings:load()).default_model.model)
+    assert.are.equal("alpha", assert(settings:load()).controllers.Neo.default_model.model)
   end)
 
   it("falls back from invalid workspace and session preferences", function()
@@ -359,8 +379,10 @@ describe("neoagent default controller", function()
       root = vim.fn.getcwd(),
     })
     assert(settings:write({
-      default_model = "invalid",
-      default_thinking_level = "extreme",
+      controllers = { Neo = {
+        default_model = "invalid",
+        default_thinking_level = "extreme",
+      } },
       ui_position = "corner",
     }))
     local model = fake_model.new({})
@@ -378,6 +400,15 @@ describe("neoagent default controller", function()
     assert.are.equal("low", neoagent.get_thinking_level())
     assert(neoagent.open())
     assert.are.equal("center", current_view().position)
+
+    assert(settings:write({ controllers = "invalid" }))
+    setup_model(model, extra)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert(settings:write({ controllers = { Neo = "invalid" } }))
+    setup_model(model, extra)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
 
     vim.fn.writefile({ "{" }, settings.settings_path)
     setup_model(model, extra)

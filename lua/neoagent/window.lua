@@ -12,7 +12,15 @@ function M.new(opts)
   assert(type(opts.controllers) == "table" and #opts.controllers > 0,
     "Window requires at least one Controller")
   assert(type(opts.config) == "table", "Window UI config is required")
-  for _, controller in ipairs(opts.controllers) do assert_controller(controller) end
+  local names = {}
+  for _, controller in ipairs(opts.controllers) do
+    assert_controller(controller)
+    local name = controller:config().name
+    assert(type(name) == "string" and name ~= "",
+      "Window Controllers require non-empty names")
+    assert(not names[name], "Window Controller names must be unique: " .. name)
+    names[name] = true
+  end
 
   local window = { _neoagent_window = true }
   local state = {

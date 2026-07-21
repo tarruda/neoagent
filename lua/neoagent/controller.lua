@@ -8,6 +8,7 @@ local ui_positions = { auto = true, left = true, right = true, top = true, botto
 function M.from_config(options)
   assert(type(options) == "table", "controller configuration is required")
   options = util.copy(options)
+  local settings_name = options.name or "default"
   next_id = next_id + 1
   local controller = { _neoagent_controller = true }
   local state = {
@@ -114,8 +115,27 @@ function M.from_config(options)
     return require("neoagent.thinking").clamp(model, preferred or preferences().default_thinking_level)
   end
 
-  local function usable_workspace_settings(overrides, warn)
-    local accepted = util.copy(overrides)
+  local function scoped_workspace_settings(settings, warn)
+    local accepted = { ui_position = settings.ui_position }
+    local controllers = settings.controllers
+    if controllers ~= nil and (type(controllers) ~= "table" or util.is_list(controllers)) then
+      if warn then notify("ignoring invalid workspace controllers", vim.log.levels.WARN) end
+      controllers = nil
+    end
+    local scoped = controllers and controllers[settings_name]
+    if scoped ~= nil and (type(scoped) ~= "table" or util.is_list(scoped)) then
+      if warn then
+        notify("ignoring invalid workspace settings for " .. settings_name, vim.log.levels.WARN)
+      end
+      scoped = nil
+    end
+    scoped = scoped or {}
+    accepted.default_model = scoped.default_model
+    accepted.default_thinking_level = scoped.default_thinking_level
+    if accepted.default_model == nil then accepted.default_model = settings.default_model end
+    if accepted.default_thinking_level == nil then
+      accepted.default_thinking_level = settings.default_thinking_level
+    end
     local merged = util.deep_merge(preference_defaults(), accepted)
     if merged.default_model ~= nil and (type(merged.default_model) ~= "table"
         or type(merged.default_model.provider) ~= "string" or type(merged.default_model.model) ~= "string") then
@@ -133,12 +153,24 @@ function M.from_config(options)
     return accepted
   end
 
+  local function workspace_patch(patch)
+    local result = {}
+    if patch.ui_position ~= nil then result.ui_position = patch.ui_position end
+    local scoped = {}
+    if patch.default_model ~= nil then scoped.default_model = patch.default_model end
+    if patch.default_thinking_level ~= nil then
+      scoped.default_thinking_level = patch.default_thinking_level
+    end
+    if next(scoped) ~= nil then result.controllers = { [settings_name] = scoped } end
+    return result
+  end
+
   local function save_workspace_settings(patch)
     local persistence = configured().persistence
     if not state.workspace_settings or not persistence.workspace_settings then return true end
-    local saved, err = state.workspace_settings:update(patch)
+    local saved, err = state.workspace_settings:update(workspace_patch(patch))
     if not saved then return nil, err end
-    state.workspace_overrides = usable_workspace_settings(saved, false)
+    state.workspace_overrides = scoped_workspace_settings(saved, false)
     return true
   end
 
@@ -156,13 +188,13 @@ function M.from_config(options)
       root = root,
     })
     if not options.workspace_settings then return end
-    local merged, overrides_or_err = state.workspace_settings:merge(preference_defaults())
-    if not merged then
-      notify(overrides_or_err.message .. (overrides_or_err.detail and ": " .. overrides_or_err.detail or ""),
+    local settings, settings_err = state.workspace_settings:load()
+    if not settings then
+      notify(settings_err.message .. (settings_err.detail and ": " .. settings_err.detail or ""),
         vim.log.levels.WARN)
       return
     end
-    state.workspace_overrides = usable_workspace_settings(overrides_or_err, true)
+    state.workspace_overrides = scoped_workspace_settings(settings, true)
   end
 
   local function seed_store()
