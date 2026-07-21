@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -n "$NEOAGENT_NVIM" ]; then
+  exec "$NEOAGENT_NVIM" "$@"
+fi
+exec nvim "$@"

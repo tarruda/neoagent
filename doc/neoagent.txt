@@ -1,0 +1,203 @@
+*neoagent.txt*  Minimal, composable LLM and agent primitives for Neovim
+
+===============================================================================
+CONTENTS                                                        *neoagent-contents*
+
+1. Introduction                                      |neoagent-introduction|
+2. Setup                                                    |neoagent-setup|
+3. Commands                                              |neoagent-commands|
+4. UI                                                          |neoagent-ui|
+5. Core APIs                                              |neoagent-core-api|
+6. Tools and sessions                               |neoagent-composition|
+
+===============================================================================
+1. INTRODUCTION                                           *neoagent-introduction*
+
+Neoagent supplies a streamed Model API, cancellable Runs, and a plain tool
+loop. Sessions, persistence, bundled tools, and the floating UI are optional
+layers. V1 supports OpenAI-compatible chat completions through curl.
+
+Requirements: Neovim 0.10+, curl 7.76+, rg, and fd. ImageMagick's `magick` is
+optional. Run >
+
+  :checkhealth neoagent
+
+===============================================================================
+2. SETUP                                                         *neoagent-setup*
+
+Example for llama.cpp: >lua
+
+  require("neoagent").setup({
+    providers = {
+      local_llama = {
+        api = "openai-completions",
+        base_url = "http://127.0.0.1:8080/v1",
+        models = { coder = { max_output_tokens = 8192 } },
+      },
+    },
+    default_model = { provider = "local_llama", model = "coder" },
+  })
+<
+The important options are: >lua
+
+  {
+    providers = {},
+    apis = {},
+    default_model = nil,
+    system_prompt = nil,       -- string or function(context)
+    tools = nil,               -- nil uses the coding preset
+    execute_tool = nil,
+    interaction = nil,
+    max_tool_rounds = 12,
+    persistence = { enabled = true, directory = ... },
+    ui = {
+      position = "auto",      -- auto/left/right/top/bottom/center
+      width = nil,
+      height = nil,
+      margin = 1,
+      input_height = 5,
+      border = "rounded",
+      mappings = {},
+    },
+  }
+<
+Provider, model, and Model:stream() options may each define `request_opts` as
+a table or callback. Layers merge in that order. Only `url`, `headers`, and
+`body` are accepted. Headers and body merge recursively, lists replace lists,
+and header keys are case-insensitive.
+
+===============================================================================
+3. COMMANDS                                                   *neoagent-commands*
+
+  :Neoagent                       Toggle the floating UI.
+  :NeoagentNew                    Use a new empty UI Session.
+  :NeoagentResume [path]          Resume a stored Session or select one.
+  :NeoagentStop                   Cancel the active UI Run.
+  :NeoagentModel provider/model   Select a configured Model.
+
+No global mappings are installed.
+
+===============================================================================
+4. UI                                                               *neoagent-ui*
+
+The input and transcript are real, focusable Neovim buffers. Input opens in
+Insert mode. The transcript supports normal search, motions, Visual selection,
+and yank. Streaming output includes partial thinking, text, tool names, tool
+arguments, execution updates, results, cancellation, and errors.
+
+Default mappings:
+
+  <C-s>       Send from input in Normal or Insert mode.
+  <C-c>       Clear the input draft and return to Insert mode.
+  <C-w>w      Toggle directly between input and transcript.
+  <C-w>H/J/K/L
+              Dock left, bottom, top, or right.
+  <C-w>=      Center the UI.
+  q           Hide the UI from the transcript.
+
+Set a value in `ui.mappings` to another lhs, or to `false` to disable it.
+
+===============================================================================
+5. CORE APIS                                                   *neoagent-core-api*
+
+The direct Model constructor requires no setup: >lua
+
+  local model = require("neoagent.api.openai_completions").new({
+    provider = "local",
+    model = "coder",
+    base_url = "http://127.0.0.1:8080/v1",
+    api_key = nil,                 -- string or callback
+    max_output_tokens = nil,
+    request_opts = nil,
+    request_opts_layers = nil,
+  })
+
+  local run = model:stream({
+    messages = messages,
+    system_prompt = nil,
+    tools = {},
+    request_opts = nil,
+    on_event = function(event) end,
+    on_done = function(result) end,
+  })
+<
+Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
+`usage`. A successful result has `{ ok = true, message, text }`; a failure has
+`{ ok = false, error, message? }`. Non-empty partial output is retained in the
+optional failure message.
+
+A Run supports: >lua
+
+  run:cancel()
+  run:is_done()
+  run:is_cancelled()
+  run:result()
+  run:await()       -- only inside neoagent.async.run()
+<
+Callbacks run on Neovim's main loop and completion occurs exactly once.
+
+The tool loop is: >lua
+
+  require("neoagent.agent").run({
+    model = model,
+    messages = messages,
+    system_prompt = nil,
+    tools = {},
+    execute_tool = nil,
+    context = nil,
+    max_rounds = 12,
+    model_options = nil,
+    on_event = nil,
+    on_done = nil,
+  })
+<
+It copies input messages, performs no global model lookup, and uses exactly the
+tools passed by the caller.
+
+To bridge a callback API inside a tool or executor: >lua
+
+  local value = require("neoagent.async").await(function(done)
+    start_operation(function(err, result)
+      if err then done.reject(err) else done.resolve(result) end
+    end)
+    return function() cancel_operation() end
+  end)
+<
+===============================================================================
+6. TOOLS AND SESSIONS                                    *neoagent-composition*
+
+A tool is `{ name, description, input_schema, execute }`. `execute(arguments,
+ctx)` returns `{ content = { ... }, isError?, details? }`; content blocks are
+text or base64 images. Replace or decorate `execute_tool(tool, arguments, ctx)`
+to add approval, logging, a native sandbox, or subagent behavior.
+
+Bundled presets: >lua
+
+  require("neoagent.tools").coding()    -- read/write/edit/shell
+  require("neoagent.tools").read_only() -- read/grep/find
+  require("neoagent.tools").all()
+<
+File tools operate on disk, never loaded buffers.
+
+`require("neoagent.session").new()` is an in-memory, tool-free message owner.
+It may receive `{ store = store }` or `{ messages = messages }`, but not both.
+The default JSONL Store is created with: >lua
+
+  local store = require("neoagent.storage").new({
+    directory = directory,
+    cwd = cwd,
+  })
+<
+The store uses a Pi-compatible v3 linear JSONL subset and creates no file until
+the first accepted message. Use `storage.open(path)` to resume.
+
+Session adapters: >lua
+
+  require("neoagent.chat").send(session, prompt, opts)
+  require("neoagent.chat").run(session, prompt, opts)
+<
+The top-level `require("neoagent")` module is only the bundled UI controller:
+`setup`, `open`, `close`, `toggle`, `send`, `stop`, `new_session`, `resume`,
+`set_model`, `get_session`, and `get_model`.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

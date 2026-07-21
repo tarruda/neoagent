@@ -1,0 +1,15 @@
+{
+  "steps": [
+    {
+      "expect": { "path": "/v1/chat/completions" },
+      "respond": {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          { "data": "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n" },
+          { "delay_ms": 1500, "data": "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n" }
+        ]
+      }
+    }
+  ]
+}

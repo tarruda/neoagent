@@ -1,0 +1,24 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "path": "/v1/chat/completions",
+        "headers": { "authorization": "Bearer test-key" },
+        "body": {
+          "model": "test-model",
+          "messages": [{ "role": "user", "content": "Hello" }],
+          "stream": true
+        }
+      },
+      "respond": {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          { "data": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"}}]}\n\n" },
+          { "data": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n" },
+          { "data": "data: [DONE]\n\n" }
+        ]
+      }
+    }
+  ]
+}

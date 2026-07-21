@@ -1,0 +1,6 @@
+.coverage/
+.deps/
+.test-data/
+.nvimlog
+*.un~
+local.mk

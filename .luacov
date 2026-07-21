@@ -1,0 +1,11 @@
+return {
+  statsfile = ".coverage/luacov.stats.out",
+  reportfile = ".coverage/luacov.report.out",
+  include = {
+    "lua/neoagent/",
+    "plugin/neoagent$",
+  },
+  exclude = {},
+  modules = {},
+  includeuntestedfiles = false,
+}

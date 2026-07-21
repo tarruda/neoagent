@@ -1,0 +1,12 @@
+local Workspace = require("neoagent.workspace")
+
+describe("neoagent.workspace", function()
+  it("resolves relative paths from cwd without imposing a sandbox", function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root .. "/sub", "p")
+    local workspace = Workspace.new({ root = root, cwd = root .. "/sub" })
+    assert.are.equal(vim.fs.normalize(root .. "/file"), workspace:resolve("../file"))
+    assert.are.equal("/tmp/outside", workspace:resolve("/tmp/outside"))
+    vim.fn.delete(root, "rf")
+  end)
+end)

@@ -1,0 +1,6 @@
+# Copy to local.mk and adjust for your machine.
+NVIM := nvim
+PLENARY_DIR := $(CURDIR)/.deps/plenary.nvim
+
+# Uncomment if tools such as fd are installed outside PATH.
+# export PATH := /path/to/extra/bin:$(PATH)

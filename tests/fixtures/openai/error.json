@@ -1,0 +1,12 @@
+{
+  "steps": [
+    {
+      "expect": { "path": "/v1/chat/completions" },
+      "respond": {
+        "status": 400,
+        "headers": { "content-type": "application/json" },
+        "json": { "error": { "message": "bad request" } }
+      }
+    }
+  ]
+}

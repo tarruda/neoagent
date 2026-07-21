@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.10.2, stable, nightly]
+    env:
+      NVIM: nvim
+      PLENARY_DIR: ${{ github.workspace }}/.deps/plenary.nvim
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ripgrep fd-find python3
+          mkdir -p "$HOME/.local/bin"
+          ln -s "$(command -v fdfind)" "$HOME/.local/bin/fd"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install ImageMagick on stable
+        if: matrix.neovim == 'stable'
+        run: sudo apt-get install -y imagemagick
+      - name: Install pinned test dependencies
+        run: make deps
+      - name: Run complete suite with coverage
+        if: matrix.neovim == 'stable'
+        run: make coverage
+      - name: Run compatibility suite
+        if: matrix.neovim != 'stable'
+        run: make test

@@ -1,0 +1,169 @@
+local fake_model = require("tests.helpers.fake_model")
+
+describe("neoagent default controller", function()
+  local neoagent
+  local paths = {}
+
+  before_each(function()
+    package.loaded["neoagent"] = nil
+    neoagent = require("neoagent")
+  end)
+
+  after_each(function()
+    local state = neoagent._state()
+    if state.run then state.run:cancel() end
+    if state.view then state.view:destroy() end
+    for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
+    paths = {}
+  end)
+
+  local function setup_model(model, extra)
+    local options = {
+      persistence = { enabled = false },
+      default_model = { provider = "fake", model = "test" },
+      providers = { fake = { api = "fake-api", models = { test = {} } } },
+      apis = { ["fake-api"] = function() return model end },
+      tools = {},
+      ui = { position = "center" },
+    }
+    for key, value in pairs(extra or {}) do options[key] = value end
+    neoagent.setup(options)
+  end
+
+  it("composes a model, session, interaction, and passive UI", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hello" } }) } })
+    setup_model(model)
+    assert(neoagent.open())
+    local run = assert(neoagent.send("hi"))
+    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert.are.equal(2, #neoagent.get_session():messages())
+    local lines = table.concat(vim.api.nvim_buf_get_lines(neoagent._state().view.transcript_buf, 0, -1, false), "\n")
+    assert.matches("You\nhi", lines)
+    assert.matches("Assistant\nhello", lines)
+  end)
+
+  it("keeps the draft when an interaction rejects setup", function()
+    setup_model(fake_model.new({}), { interaction = function() error("cannot start") end })
+    assert(neoagent.open())
+    local view = neoagent._state().view
+    view:set_input("draft")
+    local run = neoagent.send("draft")
+    assert.is_nil(run)
+    assert.are.equal("draft", view:get_input())
+    assert.are.equal(0, #neoagent.get_session():messages())
+  end)
+
+  it("creates no persistent file merely by opening or starting a new session", function()
+    local directory = vim.fn.tempname()
+    local model = fake_model.new({})
+    setup_model(model, { persistence = { enabled = true, directory = directory } })
+    assert(neoagent.open())
+    assert.is_nil(vim.uv.fs_stat(directory))
+    assert(neoagent.new_session())
+    assert.is_nil(vim.uv.fs_stat(directory))
+  end)
+
+  it("reloads unmodified buffers after successful disk mutations", function()
+    local root = vim.fn.tempname()
+    paths[#paths + 1] = root
+    vim.fn.mkdir(root, "p")
+    local path = root .. "/file.txt"
+    vim.fn.writefile({ "old" }, path)
+    vim.cmd("edit " .. vim.fn.fnameescape(path))
+    local buffer = vim.api.nvim_get_current_buf()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "write", name = "write_file",
+        arguments = { path = path, content = "new" },
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    setup_model(model, { tools = require("neoagent.tools").coding() })
+    assert(neoagent.open())
+    local run = assert(neoagent.send("change it"))
+    assert(vim.wait(1500, function() return run:is_done() end))
+    assert(vim.wait(1000, function() return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "new" end))
+  end)
+
+  it("never discards a modified buffer after an agent disk edit", function()
+    local root = vim.fn.tempname()
+    paths[#paths + 1] = root
+    vim.fn.mkdir(root, "p")
+    local path = root .. "/file.txt"
+    vim.fn.writefile({ "disk" }, path)
+    vim.cmd("edit " .. vim.fn.fnameescape(path))
+    local buffer = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "local unsaved" })
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "write", name = "write_file",
+        arguments = { path = path, content = "agent disk" },
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    setup_model(model, { tools = require("neoagent.tools").coding() })
+    assert(neoagent.open())
+    local run = assert(neoagent.send("change it"))
+    assert(vim.wait(1500, function() return run:is_done() end))
+    assert.are.equal("local unsaved", vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1])
+    assert.is_true(vim.bo[buffer].modified)
+  end)
+
+  it("resumes sessions, closes interrupted tool calls, and controls an active interaction", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    vim.fn.mkdir(directory, "p")
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append({ role = "user", content = "before", timestamp = 1 }))
+    assert(store:append({
+      role = "assistant",
+      content = { { type = "toolCall", id = "pending", name = "shell", arguments = { command = "true" } } },
+      timestamp = 2,
+    }))
+    local path = store:metadata().path
+    local cancelled = false
+    local interaction_options
+    setup_model(fake_model.new({}), {
+      persistence = { enabled = true, directory = directory },
+      system_prompt = function(context) return "prompt: " .. context.prompt end,
+      interaction = function(options)
+        interaction_options = options
+        return {
+          cancel = function()
+            cancelled = true
+            options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
+          end,
+        }
+      end,
+    })
+    assert(neoagent.open())
+    assert(neoagent.resume(path))
+    assert.are.equal("before", neoagent.get_session():messages()[1].content)
+    assert(neoagent.send("continue"))
+    local messages = neoagent.get_session():messages()
+    assert.are.equal(3, #messages)
+    assert.are.equal("toolResult", messages[3].role)
+    assert.is_true(messages[3].isError)
+    assert.are.equal("prompt: continue", interaction_options.system_prompt)
+    assert.is_nil(neoagent.new_session())
+    assert.is_nil(neoagent.resume(path))
+    assert.is_nil(neoagent.set_model("fake", "test"))
+    assert.is_true(neoagent.stop())
+    assert.is_true(cancelled)
+    assert.are.equal("idle", neoagent._state().status)
+    assert.is_false(neoagent.stop())
+  end)
+
+  it("toggles the view and changes configured models", function()
+    setup_model(fake_model.new({}))
+    assert(neoagent.open())
+    assert.is_true(neoagent._state().view:is_open())
+    neoagent.toggle()
+    assert.is_false(neoagent._state().view:is_open())
+    neoagent.toggle()
+    assert.is_true(neoagent._state().view:is_open())
+    local model = assert(neoagent.set_model("fake", "test"))
+    assert.are.equal("fake", model.id)
+    assert.is_nil(neoagent.set_model("missing", "missing"))
+  end)
+end)
