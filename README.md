@@ -155,8 +155,9 @@ require("neoagent").setup({
   interaction = nil,            -- replace the default chat.run composition
   max_tool_rounds = 12,
   persistence = {
-    enabled = true,
-    directory = vim.fn.stdpath("state") .. "/neoagent/sessions",
+    enabled = true,             -- false disables bundled sessions and settings
+    workspace_settings = true,  -- merge cwd-scoped model/thinking overrides
+    directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
   ui = {
     position = "auto",          -- auto, left, right, top, bottom, center
@@ -227,6 +228,33 @@ rejected while an interaction is active so every agent run uses one level.
 The core agent remains unaware of thinking. Resolved Models expose their
 `thinking` table, and the default controller passes the selected layer through
 `model_options.request_opts`. Direct callers may do the same explicitly.
+
+### Workspace settings
+
+With persistence enabled, `:NeoagentModel` and `:NeoagentThinking` save their
+selection for the active Workspace. The setup values remain the base; overrides
+from `workspaces/<sha256-of-canonical-root>/settings.json` merge recursively on
+top. A resumed session's last Pi `model_change` and `thinking_level_change`
+entries take precedence for that session. Set `persistence.workspace_settings`
+to `false` to keep `init.lua` authoritative while retaining session
+persistence.
+
+Reading settings or opening an empty Session creates nothing. Selecting a model
+or thinking level creates `settings.json` atomically; the session JSONL still
+does not exist until its first accepted message. The built-in controller only
+owns `default_model` and `default_thinking_level`, but the workspace settings
+layer is reusable by other Lua workflows:
+
+```lua
+local settings = require("neoagent.workspace_settings").new({
+  directory = vim.fn.stdpath("state") .. "/my-plugin/workspaces",
+  root = vim.fn.getcwd(),
+})
+
+local effective, overrides = assert(settings:merge(my_defaults))
+assert(settings:update({ my_option = { enabled = true } }))
+-- settings:write(overrides) replaces the complete local override object.
+```
 
 The built-in prompt follows the active tool set and includes the current
 working directory. A string replaces it completely. To append instructions,
@@ -422,8 +450,10 @@ the cleanup function returned by `start`.
 `require("neoagent.session").new()` creates only an in-memory message owner. It
 has no model, tools, Workspace, or harness. Pass an injected store if desired.
 `neoagent.storage` implements the default Pi-compatible v3 JSONL subset.
-Storage is namespaced by the SHA-256 of the Session's creation cwd, and no file
-is created until the first message is accepted.
+Storage uses `workspaces/<sha256-of-canonical-root>/sessions/*.jsonl`, and no file
+is created until the first message is accepted. Model and thinking changes use
+Pi's `model_change` and `thinking_level_change` entries, but remain outside the
+Session's message sequence.
 
 `neoagent.chat.send(session, prompt, opts)` adds one model response.
 `neoagent.chat.run(session, prompt, opts)` runs the tool loop and appends every

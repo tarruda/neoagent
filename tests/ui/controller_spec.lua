@@ -116,6 +116,116 @@ describe("neoagent default controller", function()
     assert.is_nil(vim.uv.fs_stat(directory))
   end)
 
+  it("persists workspace preferences and restores session-local model state", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local models = {}
+    for _, id in ipairs({ "test", "alpha" }) do
+      models[id] = fake_model.new(id == "alpha" and {
+        { result = fake_model.assistant({ { type = "text", text = "saved" } }) },
+      } or {})
+      models[id].provider, models[id].id = "fake", id
+    end
+    local options = {
+      default_registry = false,
+      persistence = { enabled = true, workspace_settings = true, directory = directory },
+      default_model = { provider = "fake", model = "test" },
+      default_thinking_level = "low",
+      providers = { fake = { api = "fake-api", models = {
+        test = { thinking = { off = {}, low = {}, high = {} } },
+        alpha = { thinking = { off = {}, low = {}, high = {} } },
+      } } },
+      apis = { ["fake-api"] = function(resolved) return models[resolved.model_id] end },
+      tools = {},
+      ui = { position = "center" },
+    }
+    neoagent.setup(options)
+    assert(neoagent.open())
+    assert(neoagent.set_model("fake", "alpha"))
+    assert.are.equal("high", neoagent.set_thinking_level("high"))
+    local session_path = neoagent.get_session():metadata().path
+    assert.is_nil(vim.uv.fs_stat(session_path))
+    local run = assert(neoagent.send("remember this"))
+    assert(vim.wait(1000, function() return run:is_done() end))
+    local stored = assert(require("neoagent.storage").open(session_path)):state()
+    assert.are.same({ provider = "fake", model = "alpha" }, stored.model)
+    assert.are.equal("high", stored.thinking_level)
+
+    neoagent.setup(options)
+    assert.are.same({ "off", "low", "high" }, assert(neoagent.available_thinking_levels()))
+    assert.are.equal("alpha", neoagent.get_model().id)
+    assert.are.equal("high", neoagent.get_thinking_level())
+
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({
+      default_model = { provider = "fake", model = "test" },
+      default_thinking_level = "off",
+    }))
+    neoagent.setup(options)
+    assert(neoagent.resume(session_path))
+    assert.are.equal("alpha", neoagent.get_model().id)
+    assert.are.equal("high", neoagent.get_thinking_level())
+    assert(neoagent.new_session())
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert.are.equal("off", neoagent.get_thinking_level())
+    neoagent.setup(options)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert.are.equal("off", neoagent.get_thinking_level())
+
+    assert(settings:write({
+      default_model = { provider = "fake", model = "alpha" },
+      default_thinking_level = "high",
+    }))
+    options.persistence.workspace_settings = false
+    neoagent.setup(options)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert.are.equal("low", neoagent.get_thinking_level())
+    assert(neoagent.set_model("fake", "test"))
+    assert.are.equal("alpha", assert(settings:load()).default_model.model)
+  end)
+
+  it("falls back from invalid workspace and session preferences", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({ default_model = "invalid", default_thinking_level = "extreme" }))
+    local model = fake_model.new({})
+    model.provider, model.id = "fake", "test"
+    local extra = {
+      persistence = { enabled = true, directory = directory },
+      default_thinking_level = "low",
+      providers = { fake = { api = "fake-api", models = { test = { thinking = {
+        off = {}, low = {}, high = {},
+      } } } } },
+    }
+    setup_model(model, extra)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+    assert.are.equal("low", neoagent.get_thinking_level())
+
+    vim.fn.writefile({ "{" }, settings.settings_path)
+    setup_model(model, extra)
+    assert(neoagent.available_thinking_levels())
+    assert.are.equal("test", neoagent.get_model().id)
+
+    assert(settings:write({}))
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append_model_change("missing", "gone"))
+    assert(store:append({ role = "user", content = "fallback", timestamp = 1 }))
+    setup_model(model, extra)
+    assert(neoagent.resume(store:metadata().path))
+    assert.are.equal("test", neoagent.get_model().id)
+  end)
+
   it("reloads unmodified buffers after successful disk mutations", function()
     local root = vim.fn.tempname()
     paths[#paths + 1] = root

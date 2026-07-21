@@ -15,7 +15,8 @@ local defaults = {
   },
   persistence = {
     enabled = true,
-    directory = vim.fn.stdpath("state") .. "/neoagent/sessions",
+    workspace_settings = true,
+    directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
   max_tool_rounds = 12,
   ui = {
@@ -128,6 +129,7 @@ local function validate(opts)
   assert(type(opts.max_tool_rounds) == "number" and opts.max_tool_rounds >= 1 and opts.max_tool_rounds % 1 == 0, "max_tool_rounds must be a positive integer")
   assert(type(opts.persistence) == "table", "persistence must be a table")
   assert(type(opts.persistence.enabled) == "boolean", "persistence.enabled must be boolean")
+  assert(type(opts.persistence.workspace_settings) == "boolean", "persistence.workspace_settings must be boolean")
   assert(type(opts.persistence.directory) == "string" and opts.persistence.directory ~= "", "persistence.directory is required")
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
   assert(positions[opts.ui.position], "invalid ui.position")

@@ -88,7 +88,11 @@ The important options are: >lua
     execute_tool = nil,
     interaction = nil,
     max_tool_rounds = 12,
-    persistence = { enabled = true, directory = ... },
+    persistence = {
+      enabled = true,
+      workspace_settings = true,
+      directory = stdpath("state") .. "/neoagent/workspaces",
+    },
     ui = {
       position = "auto",      -- auto/left/right/top/bottom/center
       width = nil,
@@ -156,6 +160,31 @@ and `max`; values are request_opts tables or callbacks. Missing keys are
 unsupported and `false` removes an inherited level. The default controller
 passes the selected layer through `model_options.request_opts`; the Model and
 agent loop do not interpret thinking levels.
+
+WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
+
+The setup values are the base configuration. With persistence and
+`workspace_settings` enabled, the default controller recursively merges
+`default_model` and `default_thinking_level` from: >text
+
+  workspaces/<sha256-of-canonical-root>/settings.json
+<
+`:NeoagentModel` and `:NeoagentThinking` update that file atomically. A resumed
+session's latest Pi model and thinking entries take precedence for that
+session. Reading settings and opening an empty Session create no files.
+
+The workspace settings layer is also usable independently: >lua
+
+  local settings = require("neoagent.workspace_settings").new({
+    directory = vim.fn.stdpath("state") .. "/my-plugin/workspaces",
+    root = vim.fn.getcwd(),
+  })
+  local effective, overrides = assert(settings:merge(defaults))
+  assert(settings:update({ my_option = { enabled = true } }))
+  assert(settings:write(overrides)) -- replace all local overrides
+<
+Set `persistence.workspace_settings = false` to retain JSONL sessions while
+keeping the `init.lua` model and thinking defaults authoritative.
 
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
@@ -322,8 +351,11 @@ The default JSONL Store is created with: >lua
     cwd = cwd,
   })
 <
-The store uses a Pi-compatible v3 linear JSONL subset and creates no file until
-the first accepted message. Use `storage.open(path)` to resume.
+`directory` is the workspaces root. The store writes below
+`<directory>/<sha256-of-canonical-cwd>/sessions/`. It uses a Pi-compatible v3
+linear JSONL subset and creates no file until the first accepted message. Model
+and thinking state uses Pi's `model_change` and `thinking_level_change` entries
+without adding messages to the Session. Use `storage.open(path)` to resume.
 
 Session adapters: >lua
 
@@ -332,7 +364,8 @@ Session adapters: >lua
 <
 The top-level `require("neoagent")` module is only the bundled UI controller:
 `setup`, `open`, `close`, `toggle`, `send`, `stop`, `new_session`, `resume`,
-`select_model`, `set_model`, `login`, `cancel_login`, `get_session`, and
-`get_model`.
+`select_model`, `set_model`, `available_thinking_levels`,
+`get_thinking_level`, `set_thinking_level`, `cycle_thinking_level`, `login`,
+`cancel_login`, `get_session`, and `get_model`.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

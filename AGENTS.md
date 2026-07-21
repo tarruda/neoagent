@@ -61,6 +61,9 @@ changes.
 - Persistence uses the supported Pi v3 linear JSONL subset. Opening Neovim or
   creating an empty Session must not create a session file; persistence starts
   with the first accepted message.
+- Bundled persistence shares one cwd-hashed workspace namespace between
+  `settings.json` and `sessions/`. Workspace settings recursively override the
+  setup model/thinking defaults, and reads must not create files.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer controller state.

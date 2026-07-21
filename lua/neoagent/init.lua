@@ -6,8 +6,13 @@ local M = {}
 local state = {
   session = nil,
   model = nil,
+  model_selection = nil,
   thinking_level = nil,
   workspace = nil,
+  workspace_settings = nil,
+  workspace_overrides = {},
+  store = nil,
+  store_seeded = false,
   view = nil,
   run = nil,
   login_run = nil,
@@ -24,19 +29,90 @@ local function configured()
 end
 
 local function model_label()
-  return state.model and (state.model.provider .. "/" .. state.model.id) or "no model"
+  local selected = state.model_selection
+  return selected and (selected.provider .. "/" .. selected.model) or "no model"
+end
+
+local function preference_defaults()
+  local options = configured()
+  return {
+    default_model = options.default_model,
+    default_thinking_level = options.default_thinking_level,
+  }
+end
+
+local function preferences()
+  return util.deep_merge(preference_defaults(), state.workspace_overrides)
 end
 
 local function thinking_level(model, preferred)
-  return require("neoagent.thinking").clamp(model, preferred or configured().default_thinking_level)
+  return require("neoagent.thinking").clamp(model, preferred or preferences().default_thinking_level)
+end
+
+local function usable_workspace_settings(overrides, warn)
+  local accepted = util.copy(overrides)
+  local merged = util.deep_merge(preference_defaults(), accepted)
+  if merged.default_model ~= nil and (type(merged.default_model) ~= "table"
+      or type(merged.default_model.provider) ~= "string" or type(merged.default_model.model) ~= "string") then
+    if warn then notify("ignoring invalid workspace default_model", vim.log.levels.WARN) end
+    accepted.default_model = nil
+  end
+  if not require("neoagent.thinking").is_level(merged.default_thinking_level) then
+    if warn then notify("ignoring invalid workspace default_thinking_level", vim.log.levels.WARN) end
+    accepted.default_thinking_level = nil
+  end
+  return accepted
+end
+
+local function activate_workspace(cwd)
+  local root = require("neoagent.fs").canonical(cwd)
+  if state.workspace and state.workspace.root == root then return end
+  state.workspace = require("neoagent.workspace").new({ root = root, cwd = root })
+  state.workspace_settings, state.workspace_overrides = nil, {}
+  state.model, state.model_selection, state.thinking_level = nil, nil, nil
+  local options = configured().persistence
+  if not options.enabled then return end
+  state.workspace_settings = require("neoagent.workspace_settings").new({
+    directory = options.directory,
+    root = root,
+  })
+  if not options.workspace_settings then return end
+  local merged, overrides_or_err = state.workspace_settings:merge(preference_defaults())
+  if not merged then
+    notify(overrides_or_err.message .. (overrides_or_err.detail and ": " .. overrides_or_err.detail or ""),
+      vim.log.levels.WARN)
+    return
+  end
+  state.workspace_overrides = usable_workspace_settings(overrides_or_err, true)
+end
+
+local function seed_store()
+  if not state.store or state.store_seeded or not state.model then return true end
+  local selected = state.model_selection or { provider = state.model.provider, model = state.model.id }
+  local ok, err = state.store:append_model_change(selected.provider, selected.model)
+  if not ok then return nil, err end
+  if state.thinking_level then
+    ok, err = state.store:append_thinking_level_change(state.thinking_level)
+    if not ok then return nil, err end
+  end
+  state.store_seeded = true
+  return true
 end
 
 local function make_session(cwd)
   local Session = require("neoagent.session")
+  activate_workspace(cwd)
   local options = configured().persistence
   if options.enabled then
-    return Session.new({ store = require("neoagent.storage").new({ directory = options.directory, cwd = cwd }) })
+    state.store = require("neoagent.storage").new({ directory = options.directory, cwd = state.workspace.root })
+    state.store_seeded = false
+    local session, err = Session.new({ store = state.store })
+    if not session then return nil, err end
+    local seeded, seed_err = seed_store()
+    if not seeded then return nil, seed_err end
+    return session
   end
+  state.store, state.store_seeded = nil, false
   return Session.new()
 end
 
@@ -46,14 +122,27 @@ local function ensure_session()
   local session, err = make_session(cwd)
   if not session then error(err, 0) end
   state.session = session
-  state.workspace = require("neoagent.workspace").new({ root = cwd, cwd = cwd })
   return session
 end
 
 local function ensure_model()
-  if state.model then return state.model end
-  state.model = require("neoagent.models").resolve()
+  if state.model then
+    local seeded, seed_err = seed_store()
+    if not seeded then error(seed_err, 0) end
+    return state.model
+  end
+  if not state.workspace then activate_workspace(vim.fn.getcwd()) end
+  local selected = preferences().default_model
+  if selected then
+    state.model = require("neoagent.models").resolve(selected.provider, selected.model)
+    state.model_selection = util.copy(selected)
+  else
+    state.model = require("neoagent.models").resolve()
+    state.model_selection = { provider = state.model.provider, model = state.model.id }
+  end
   state.thinking_level = thinking_level(state.model, state.thinking_level)
+  local seeded, seed_err = seed_store()
+  if not seeded then error(seed_err, 0) end
   return state.model
 end
 
@@ -232,7 +321,10 @@ end
 function M.setup(opts)
   if state.run then error("Cannot reconfigure neoagent while a run is active") end
   if state.view then state.view:destroy() end
-  state.session, state.model, state.thinking_level, state.workspace, state.view = nil, nil, nil, nil, nil
+  state.session, state.model, state.model_selection, state.thinking_level = nil, nil, nil, nil
+  state.workspace, state.view = nil, nil
+  state.workspace_settings, state.workspace_overrides = nil, {}
+  state.store, state.store_seeded = nil, false
   state.status = "idle"
   return config.setup(opts)
 end
@@ -270,10 +362,13 @@ end
 function M.new_session()
   if state.run then notify("cannot create a session while the agent is running", vim.log.levels.WARN) return nil end
   local cwd = vim.fn.getcwd()
+  local root = require("neoagent.fs").canonical(cwd)
+  if state.workspace and state.workspace.root == root then
+    state.model, state.model_selection, state.thinking_level = nil, nil, nil
+  end
   local session, err = make_session(cwd)
   if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
   state.session = session
-  state.workspace = require("neoagent.workspace").new({ root = cwd, cwd = cwd })
   if state.view then
     state.view:set_messages({})
     update_context()
@@ -284,12 +379,36 @@ end
 local function resume_path(path)
   local store, err = require("neoagent.storage").open(path)
   if not store then notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR) return nil, err end
+  local cwd = store:metadata().cwd
+  activate_workspace(cwd)
   local session
   session, err = require("neoagent.session").new({ store = store })
   if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
   state.session = session
-  local cwd = store:metadata().cwd
-  state.workspace = require("neoagent.workspace").new({ root = cwd, cwd = cwd })
+  state.store, state.store_seeded = store, true
+  state.model, state.model_selection, state.thinking_level = nil, nil, nil
+  local stored = store:state()
+  local workspace_default = preferences().default_model
+  local candidates = {}
+  if stored.model then candidates[#candidates + 1] = stored.model end
+  if workspace_default and (not stored.model or workspace_default.provider ~= stored.model.provider
+      or workspace_default.model ~= stored.model.model) then
+    candidates[#candidates + 1] = workspace_default
+  end
+  for _, selected in ipairs(candidates) do
+    local ok, model = pcall(require("neoagent.models").resolve, selected.provider, selected.model)
+    if ok then
+      state.model = model
+      state.model_selection = util.copy(selected)
+      break
+    else
+      notify("could not restore model " .. tostring(selected.provider) .. "/" .. tostring(selected.model)
+        .. ": " .. tostring(model), vim.log.levels.WARN)
+    end
+  end
+  if state.model then
+    state.thinking_level = thinking_level(state.model, stored.thinking_level)
+  end
   if state.view then
     state.view:set_messages(session:messages())
     update_context()
@@ -360,12 +479,43 @@ function M.select_model()
   return true
 end
 
+local function save_workspace_settings(patch)
+  local options = configured().persistence
+  if not state.workspace_settings or not options.workspace_settings then return true end
+  local saved, err = state.workspace_settings:update(patch)
+  if not saved then return nil, err end
+  state.workspace_overrides = usable_workspace_settings(saved, false)
+  return true
+end
+
 function M.set_model(provider_id, model_id)
   if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
+  if not state.workspace then activate_workspace(vim.fn.getcwd()) end
   local ok, model = pcall(require("neoagent.models").resolve, provider_id, model_id)
   if not ok then notify(tostring(model), vim.log.levels.ERROR) return nil, model end
+  local next_thinking = thinking_level(model, state.thinking_level)
+  if state.store then
+    local recorded, record_err = state.store:append_model_change(provider_id, model_id)
+    if not recorded then notify(record_err.message, vim.log.levels.ERROR) return nil, record_err end
+    if not state.store_seeded and next_thinking then
+      recorded, record_err = state.store:append_thinking_level_change(next_thinking)
+      if not recorded then notify(record_err.message, vim.log.levels.ERROR) return nil, record_err end
+    end
+    state.store_seeded = true
+  end
+  local saved, save_err = save_workspace_settings({
+    default_model = { provider = provider_id, model = model_id },
+  })
+  if not saved and not state.store then
+    notify(save_err.message, vim.log.levels.ERROR)
+    return nil, save_err
+  elseif not saved then
+    notify("model changed for this session but workspace settings were not saved: " .. save_err.message,
+      vim.log.levels.WARN)
+  end
   state.model = model
-  state.thinking_level = thinking_level(model, state.thinking_level)
+  state.model_selection = { provider = provider_id, model = model_id }
+  state.thinking_level = next_thinking
   update_context()
   return model
 end
@@ -392,6 +542,19 @@ function M.set_thinking_level(level)
     notify("thinking level " .. level .. " is not supported by " .. model_label(), vim.log.levels.WARN)
     return nil
   end
+  if state.store then
+    local recorded, record_err = state.store:append_thinking_level_change(level)
+    if not recorded then notify(record_err.message, vim.log.levels.ERROR) return nil, record_err end
+  end
+  local saved, save_err = save_workspace_settings({ default_thinking_level = level })
+  if not saved and not state.store then
+    notify(save_err.message, vim.log.levels.ERROR)
+    return nil, save_err
+  elseif not saved then
+    notify("thinking changed for this session but workspace settings were not saved: " .. save_err.message,
+      vim.log.levels.WARN)
+  end
+  state.store_seeded = state.store and true or state.store_seeded
   state.thinking_level = level
   update_context()
   return level
@@ -403,8 +566,8 @@ function M.cycle_thinking_level()
   if not ok then notify(util.normalize_error(model, "model").message, vim.log.levels.ERROR) return nil end
   local level = require("neoagent.thinking").next(model, state.thinking_level)
   if not level then notify("current model does not support thinking", vim.log.levels.WARN) return nil end
-  state.thinking_level = level
-  update_context()
+  level = M.set_thinking_level(level)
+  if not level then return nil end
   notify("thinking level: " .. level)
   return level
 end

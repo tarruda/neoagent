@@ -33,6 +33,34 @@ local function valid_message(message)
   return true
 end
 
+local function valid_entry(entry)
+  if entry.type == "message" then return valid_message(entry.message) end
+  if entry.type == "model_change" then
+    if type(entry.provider) ~= "string" or entry.provider == ""
+        or type(entry.modelId) ~= "string" or entry.modelId == "" then
+      return false, "model changes require provider and modelId"
+    end
+    return true
+  end
+  if entry.type == "thinking_level_change" then
+    if type(entry.thinkingLevel) ~= "string" or entry.thinkingLevel == "" then
+      return false, "thinking level changes require thinkingLevel"
+    end
+    return true
+  end
+  return false, "unsupported entry type: " .. tostring(entry.type)
+end
+
+local function apply_entry(store, entry)
+  if entry.type == "message" then
+    store._messages[#store._messages + 1] = util.copy(entry.message)
+  elseif entry.type == "model_change" then
+    store._model = { provider = entry.provider, model = entry.modelId }
+  elseif entry.type == "thinking_level_change" then
+    store._thinking_level = entry.thinkingLevel
+  end
+end
+
 function Store:load()
   return util.copy(self._messages)
 end
@@ -47,19 +75,31 @@ function Store:metadata()
   }
 end
 
-function Store:append(message)
-  local valid, validation_err = valid_message(message)
-  if not valid then
-    return nil, storage_error("Invalid message", validation_err)
-  end
-  local entry_id = random_id(8)
+function Store:state()
+  return {
+    model = util.copy(self._model),
+    thinking_level = self._thinking_level,
+  }
+end
+
+function Store:_append(entry_type, values, persist)
   local entry = {
-    type = "message",
-    id = entry_id,
+    type = entry_type,
+    id = random_id(8),
     parentId = self._parent_id or vim.NIL,
     timestamp = iso_time(util.now_ms()),
-    message = util.copy(message),
   }
+  for key, value in pairs(values) do entry[key] = util.copy(value) end
+  local valid, validation_err = valid_entry(entry)
+  if not valid then return nil, storage_error("Invalid " .. entry_type, validation_err) end
+
+  if not self._persisted and not persist then
+    self._pending[#self._pending + 1] = entry
+    self._parent_id = entry.id
+    apply_entry(self, entry)
+    return true
+  end
+
   local encoded_entry = vim.json.encode(entry) .. "\n"
 
   if not self._persisted then
@@ -74,20 +114,39 @@ function Store:append(message)
       timestamp = self._timestamp,
       cwd = self._cwd,
     }
-    ok, err = fs.write_all(self._path, vim.json.encode(header) .. "\n" .. encoded_entry, "wx", 384)
+    local contents = { vim.json.encode(header), "\n" }
+    for _, pending in ipairs(self._pending) do
+      contents[#contents + 1] = vim.json.encode(pending)
+      contents[#contents + 1] = "\n"
+    end
+    contents[#contents + 1] = encoded_entry
+    ok, err = fs.write_all(self._path, table.concat(contents), "wx", 384)
     if not ok then
       return nil, storage_error("Failed to create session file", err)
     end
     self._persisted = true
+    self._pending = {}
   else
     local ok, err = fs.write_all(self._path, encoded_entry, "a", 384)
     if not ok then
-      return nil, storage_error("Failed to append session message", err)
+      return nil, storage_error("Failed to append session entry", err)
     end
   end
-  self._parent_id = entry_id
-  self._messages[#self._messages + 1] = util.copy(message)
+  self._parent_id = entry.id
+  apply_entry(self, entry)
   return true
+end
+
+function Store:append(message)
+  return self:_append("message", { message = message }, true)
+end
+
+function Store:append_model_change(provider, model_id)
+  return self:_append("model_change", { provider = provider, modelId = model_id }, false)
+end
+
+function Store:append_thinking_level_change(level)
+  return self:_append("thinking_level_change", { thinkingLevel = level }, false)
 end
 
 function M.new(opts)
@@ -98,17 +157,19 @@ function M.new(opts)
   local id = random_id(12)
   local now = util.now_ms()
   local timestamp = iso_time(now)
-  local namespace = vim.fn.sha256(cwd)
   local filename = os.date("!%Y%m%dT%H%M%S", math.floor(now / 1000)) .. "_" .. id .. ".jsonl"
+  local workspace = require("neoagent.workspace_settings").new({ directory = opts.directory, root = cwd })
   return setmetatable({
-    _directory = fs.normalize(opts.directory),
     _cwd = cwd,
     _id = id,
     _timestamp = timestamp,
-    _path = fs.join(opts.directory, namespace, filename),
+    _path = fs.join(workspace.sessions_directory, filename),
     _persisted = false,
     _messages = {},
+    _pending = {},
     _parent_id = nil,
+    _model = nil,
+    _thinking_level = nil,
   }, Store)
 end
 
@@ -141,41 +202,50 @@ function M.open(path)
   local messages = {}
   local seen = {}
   local parent
+  local model
+  local thinking_level
   for index = 2, #decoded do
     local entry = decoded[index]
-    if entry.type ~= "message" then
-      return nil, storage_error("Invalid session at line " .. index, "unsupported entry type: " .. tostring(entry.type))
-    end
     if type(entry.id) ~= "string" or entry.id == "" or seen[entry.id] then
       return nil, storage_error("Invalid session at line " .. index, "missing or duplicate entry id")
     end
-    local expected_null = index == 2
     local is_null = entry.parentId == vim.NIL or entry.parentId == nil
-    if expected_null and not is_null or not expected_null and entry.parentId ~= parent then
+    if parent == nil and not is_null or parent ~= nil and entry.parentId ~= parent then
       return nil, storage_error("Invalid session at line " .. index, "broken or branching parent chain")
     end
-    local valid, message_err = valid_message(entry.message)
+    local valid, message_err = valid_entry(entry)
     if not valid then
       return nil, storage_error("Invalid session at line " .. index, message_err)
     end
     seen[entry.id] = true
     parent = entry.id
-    messages[#messages + 1] = entry.message
+    if entry.type == "message" then
+      messages[#messages + 1] = entry.message
+    elseif entry.type == "model_change" then
+      model = { provider = entry.provider, model = entry.modelId }
+    else
+      thinking_level = entry.thinkingLevel
+    end
   end
   return setmetatable({
-    _directory = vim.fs.dirname(vim.fs.dirname(path)),
     _cwd = header.cwd,
     _id = header.id,
     _timestamp = header.timestamp,
     _path = path,
     _persisted = true,
     _messages = messages,
+    _pending = {},
     _parent_id = parent,
+    _model = model,
+    _thinking_level = thinking_level,
   }, Store)
 end
 
 function M.list(directory, cwd)
-  local namespace = fs.join(fs.normalize(directory), vim.fn.sha256(fs.canonical(cwd)))
+  local namespace = require("neoagent.workspace_settings").new({
+    directory = directory,
+    root = cwd,
+  }).sessions_directory
   local handle = vim.uv.fs_scandir(namespace)
   if not handle then
     return {}
