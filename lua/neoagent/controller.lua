@@ -20,11 +20,14 @@ function M.from_config(options)
     workspace_overrides = {},
     store = nil,
     store_seeded = false,
-    view = nil,
     run = nil,
     login_run = nil,
     live_usage = nil,
     provider_status = nil,
+    pending_events = {},
+    last_result = nil,
+    listeners = {},
+    next_listener_id = 0,
     run_id = 0,
     status = "idle",
     destroyed = false,
@@ -37,6 +40,13 @@ function M.from_config(options)
 
   local function configured()
     return options
+  end
+
+  local function publish(update)
+    for _, listener in pairs(state.listeners) do
+      local ok, err = pcall(listener, update)
+      if not ok then notify("controller listener failed: " .. tostring(err), vim.log.levels.ERROR) end
+    end
   end
 
   local function model_label()
@@ -320,18 +330,21 @@ function M.from_config(options)
     })
   end
 
+  local function context()
+    return {
+      name = options.name or false,
+      model = model_label(),
+      thinking = state.thinking_level or false,
+      workspace = state.workspace and state.workspace.root or nil,
+      position = preferences().ui_position,
+      state = state.status,
+      context_usage = context_usage(),
+      provider_status = state.provider_status or false,
+    }
+  end
+
   local function update_context()
-    if state.view then
-      state.view:set_context({
-        model = model_label(),
-        thinking = state.thinking_level or false,
-        workspace = state.workspace and state.workspace.root or nil,
-        position = preferences().ui_position,
-        state = state.status,
-        context_usage = context_usage(),
-        provider_status = state.provider_status or false,
-      })
-    end
+    publish({ type = "context", context = context() })
   end
 
   local function submit(prompt)
@@ -346,6 +359,8 @@ function M.from_config(options)
       local tools = tool_array()
       local run_id = state.run_id + 1
       state.run_id = run_id
+      state.pending_events = {}
+      state.last_result = nil
       local selected_interaction = options.interaction or interaction
       local run = selected_interaction({
         session = state.session,
@@ -375,7 +390,12 @@ function M.from_config(options)
           elseif event.type == "message_end" then
             update_context()
           end
-          if state.view then state.view:apply(event) end
+          if event.type == "message_end" then
+            state.pending_events = {}
+          elseif event.type ~= "usage" and event.type ~= "provider_status" then
+            state.pending_events[#state.pending_events + 1] = util.copy(event)
+          end
+          publish({ type = "event", event = event })
           if event.type == "tool_end" and not event.message.isError
               and (event.call.name == "write_file" or event.call.name == "edit_file") then
             refresh_buffer(event.call.arguments.path)
@@ -386,17 +406,15 @@ function M.from_config(options)
           state.run = nil
           state.status = "idle"
           state.live_usage = nil
+          state.last_result = util.copy(done)
           update_context()
-          if state.view then state.view:finish(done) end
+          publish({ type = "finish", result = done })
         end,
       })
       assert(type(run) == "table" and type(run.cancel) == "function", "interaction must return a Run")
       state.run = run
       state.status = "running"
-      if state.view then
-        state.view:set_messages(state.session:messages())
-        state.view:set_input("")
-      end
+      publish({ type = "messages", messages = state.session:messages() })
       update_context()
       return run
     end)
@@ -408,57 +426,18 @@ function M.from_config(options)
     return result
   end
 
-  local function ensure_view()
-    if state.view and not state.view.destroyed then return state.view end
-    local ui_config = util.copy(options.ui)
-    ui_config.title = options.name
-    ui_config.position = preferences().ui_position
-    local factory = options.view or require("neoagent.ui").new
-    state.view = factory({
-      config = ui_config,
-      on_submit = submit,
-      on_stop = function() return controller:stop() end,
-      on_cycle_thinking = function() return controller:cycle_thinking_level() end,
-      on_position_change = function(position)
-        local saved, err = save_workspace_settings({ ui_position = position })
-        if not saved then
-          notify("window position changed but workspace settings were not saved: " .. err.message,
-            vim.log.levels.WARN)
-        end
-      end,
-      controller = controller,
-    })
-    assert(type(state.view) == "table", "View factory must return a View")
-    local methods = {
-      "open", "close", "is_open", "destroy", "set_messages", "set_input",
-      "set_context", "apply", "finish",
-    }
-    for _, method in ipairs(methods) do
-      assert(type(state.view[method]) == "function", "View must implement " .. method)
-    end
-    if state.session then state.view:set_messages(state.session:messages()) end
-    update_context()
-    return state.view
-  end
-
-  function controller:open()
-    local ok, opened, open_err = pcall(function()
-      ensure_session()
+  function controller:prepare()
+    local ok, err = pcall(function()
+      if not state.workspace then activate_workspace(vim.fn.getcwd()) end
       if preferences().default_model then ensure_model() end
-      local view = ensure_view()
       update_context()
-      return view:open()
     end)
-    if not ok then notify(util.normalize_error(opened, "ui").message, vim.log.levels.ERROR) return nil, opened end
-    return opened, open_err
-  end
-
-  function controller:close()
-    if state.view then state.view:close() end
-  end
-
-  function controller:toggle()
-    if state.view and state.view:is_open() then self:close() else return self:open() end
+    if not ok then
+      err = util.normalize_error(err, "controller")
+      notify(err.message, vim.log.levels.ERROR)
+      return nil, err
+    end
+    return true
   end
 
   function controller:send(text)
@@ -481,13 +460,12 @@ function M.from_config(options)
       state.model, state.model_selection, state.thinking_level = nil, nil, nil
     end
     state.live_usage, state.provider_status = nil, nil
+    state.pending_events, state.last_result = {}, nil
     local session, err = make_session(cwd)
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
     state.session = session
-    if state.view then
-      state.view:set_messages({})
-      update_context()
-    end
+    publish({ type = "messages", messages = {} })
+    update_context()
     return session
   end
 
@@ -503,6 +481,7 @@ function M.from_config(options)
     state.store, state.store_seeded = store, true
     state.model, state.model_selection, state.thinking_level = nil, nil, nil
     state.live_usage, state.provider_status = nil, nil
+    state.pending_events, state.last_result = {}, nil
     local stored = store:state()
     local workspace_default = preferences().default_model
     local candidates = {}
@@ -526,10 +505,8 @@ function M.from_config(options)
     if state.model then
       state.thinking_level = thinking_level(state.model, stored.thinking_level)
     end
-    if state.view then
-      state.view:set_messages(session:messages())
-      update_context()
-    end
+    publish({ type = "messages", messages = session:messages() })
+    update_context()
     return session
   end
 
@@ -561,7 +538,7 @@ function M.from_config(options)
     return path == current_path and "● " .. label or label
   end
 
-  function controller:resume(path)
+  function controller:resume(path, on_resumed)
     if state.run then notify("cannot resume while the agent is running", vim.log.levels.WARN) return nil end
     if path and path ~= "" then return resume_path(vim.fn.fnamemodify(path, ":p")) end
     local options = configured().persistence
@@ -575,12 +552,15 @@ function M.from_config(options)
       prompt = "Resume Neoagent session:",
       format_item = function(item) return labels[item] end,
     }, function(choice)
-      if choice and controller:resume(choice) then controller:open() end
+      if choice then
+        local session = controller:resume(choice)
+        if session and on_resumed then on_resumed(session) end
+      end
     end)
     return true
   end
 
-  function controller:select_model()
+  function controller:select_model(on_selected)
     if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local choices, err = require("neoagent.models").available(options, auth_manager)
     if not choices then
@@ -591,7 +571,10 @@ function M.from_config(options)
     vim.ui.select(choices, { prompt = "Select Neoagent model:" }, function(choice)
       if not choice then return end
       local provider_id, model_id = choice:match("^([^/]+)/(.+)$")
-      if provider_id and controller:set_model(provider_id, model_id) then controller:open() end
+      if provider_id then
+        local model = controller:set_model(provider_id, model_id)
+        if model and on_selected then on_selected(model) end
+      end
     end)
     return true
   end
@@ -745,6 +728,39 @@ function M.from_config(options)
     return true
   end
 
+  function controller:set_ui_position(position)
+    if not ui_positions[position] then return nil, util.error("ui", "invalid window position") end
+    if not state.workspace then activate_workspace(vim.fn.getcwd()) end
+    local saved, err = save_workspace_settings({ ui_position = position })
+    if not saved then return nil, err end
+    state.workspace_overrides.ui_position = position
+    update_context()
+    return position
+  end
+
+  function controller:subscribe(listener)
+    assert(type(listener) == "function", "controller listener must be a function")
+    state.next_listener_id = state.next_listener_id + 1
+    local id = state.next_listener_id
+    state.listeners[id] = listener
+    local subscribed = true
+    return function()
+      if not subscribed then return end
+      subscribed = false
+      state.listeners[id] = nil
+    end
+  end
+
+  function controller:snapshot()
+    local messages = state.session and state.session:messages() or {}
+    return {
+      messages = messages,
+      context = context(),
+      events = util.copy(state.pending_events),
+      result = util.copy(state.last_result),
+    }
+  end
+
   function controller:get_session() return state.session end
   function controller:get_model() return state.model end
   function controller:config() return util.copy(options) end
@@ -758,8 +774,7 @@ function M.from_config(options)
     if state.run then state.run:cancel() end
     if state.login_run then state.login_run:cancel() end
     state.run, state.login_run = nil, nil
-    if state.view then state.view:destroy() end
-    state.view = nil
+    state.listeners = {}
     pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
   end
 

@@ -79,7 +79,7 @@ before a request when expired.
 The important options are: >lua
 
   {
-    name = nil,                -- optional bundled View title label
+    name = nil,                -- optional Controller label in the View title
     default_registry = true,
     providers = {},
     apis = {},
@@ -90,7 +90,7 @@ The important options are: >lua
     tools = nil,               -- nil uses the coding preset
     execute_tool = nil,
     interaction = nil,
-    view = nil,
+    view = nil,                -- bundled Window's View constructor
     max_tool_rounds = 12,
     agents = {
       global_files = { stdpath("config") .. "/AGENTS.md" },
@@ -122,8 +122,9 @@ The important options are: >lua
 CONTROLLERS AND VIEWS                                *neoagent-controllers*
 
 `setup(opts)` constructs, installs, and returns the default Controller.
-Commands and top-level convenience functions dynamically forward to it.
-`new(opts)` constructs an independent Controller without changing the default:
+It also installs a single-Controller Window. Commands and top-level convenience
+functions target the active Controller in that Window. `new(opts)` constructs
+an independent Controller:
 >lua
 
   local neoagent = require("neoagent")
@@ -133,29 +134,44 @@ Commands and top-level convenience functions dynamically forward to it.
     tools = require("neoagent.tools").read_only(),
     persistence = { enabled = false },
     system_prompt = "Review without editing.",
+  })
+  local window = neoagent.new_window({
+    controllers = { coding, reviewer },
     ui = { position = "left" },
   })
-  reviewer:toggle()
+  neoagent.set_default_window(window)
 <
-Each Controller owns its Model selection, Session, Workspace, Run, and View.
-Its public operations are `open`, `close`, `toggle`, `send`, `stop`,
-`new_session`, `resume`, `select_model`, `set_model`, thinking-level methods,
-`login`, `cancel_login`, `get_session`, `get_model`, `config`, `is_running`,
-and `destroy`. Multiple Controllers can run concurrently. Controllers with a
-shared persistence directory use the same cwd-hashed files.
+Each Controller owns its Model selection, Session, Workspace, and Run. Its
+operations include `prepare`, `send`, `stop`, `new_session`, `resume`, model and
+thinking methods, login methods, `subscribe`, `snapshot`, `get_session`,
+`get_model`, `config`, `is_running`, and `destroy`. Multiple Controllers can run
+concurrently. Controllers with a shared persistence directory use the same
+cwd-hashed Workspace while retaining independent Sessions.
+
+A Window owns one View and selects an attached Controller. Its operations are
+`open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
+`cycle`, and `destroy`. It retains input drafts per Controller. Selection
+rehydrates canonical Session messages and transient events while every
+Controller Run continues independently. Each Controller's initial Session is
+created on its first send.
 
 `set_default(controller)` points commands and top-level functions at an
-existing Controller and returns the previous default, which remains usable.
-`default()` returns the current default. Another `setup()` destroys and
-replaces the current default; it is rejected while that Controller's agent Run
-is active.
+existing Controller and returns the previous active Controller.
+`set_default_window(window)` installs an assembled Window and returns the
+previous Window. `default()` and `default_window()` return the active Controller
+and command-facing Window. Another `setup()` destroys the current Window and
+the Controller owned by an earlier `setup()` call. An active Run on that owned
+Controller blocks the replacement.
 
-The `view` option is a factory receiving a table with `config`, `controller`,
-`on_submit`, `on_stop`, `on_cycle_thinking`, and `on_position_change`. It
-returns a passive View with the methods `open`, `close`, `is_open`, `destroy`,
-`set_messages`, `set_input`, `set_context`, `apply`, and `finish`. A custom View
-renders state and invokes these callbacks while the Controller owns the agent
-loop.
+`controller:subscribe(callback)` publishes messages, context, normalized agent
+events, and completion updates. Its unsubscribe function detaches the callback.
+`controller:snapshot()` lets a newly attached consumer reconstruct the current
+Session and partial Run.
+
+The `view` option is a factory receiving `config`, `window`, `on_submit`,
+`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, and `on_position_change`. It
+returns a passive View with `open`, `close`, `is_open`, `destroy`, `get_input`,
+`set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a
@@ -231,8 +247,9 @@ Custom compositions can add the tool directly with: >lua
 <
 
 Neoagent integrations are ordinary Lua modules loaded explicitly by Neovim
-configuration. They can construct independent Controllers with `new()` or
-replace the command-facing Controller with `set_default()`.
+configuration. They can construct independent Controllers with `new()`, attach
+them to a shared Window with `new_window()`, and install that Window with
+`set_default_window()`.
 
 AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
@@ -352,6 +369,7 @@ Default mappings:
   <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
+  <C-n>       Cycle through Controllers attached to this Window.
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.
@@ -412,11 +430,11 @@ credentials when `Model:stream()` starts and has no UI, Session, or tool
 dependency.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
-`usage`. A Model may emit `{ type = "provider_status", text = "..." }` for the
-default Controller and View to display in the bottom border. A successful
-result has `{ ok = true, message, text }`; a failure has `{ ok = false, error,
-message? }`. Non-empty partial output is retained in the optional failure
-message.
+`usage`. A Model may emit `{ type = "provider_status", text = "..." }`; the
+Controller retains it and an attached Window displays it in the bottom border.
+A successful result has `{ ok = true, message, text }`; a failure has
+`{ ok = false, error, message? }`. Non-empty partial output is retained in the
+optional failure message.
 
 A Run supports: >lua
 
@@ -492,7 +510,8 @@ Session adapters: >lua
   require("neoagent.chat").run(session, prompt, opts)
 <
 The top-level `require("neoagent")` module constructs Controllers with `new`,
-owns the replaceable `default`, and forwards the bundled commands and existing
-convenience operations to that default.
+constructs shared Windows with `new_window`, owns the replaceable default
+Window, and forwards commands and convenience operations to its active
+Controller.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

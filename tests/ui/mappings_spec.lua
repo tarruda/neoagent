@@ -5,11 +5,13 @@ describe("neoagent UI mappings", function()
   it("uses real encoded input for submit, cancellation, focus, docking, and close", function()
     local submitted
     local thinking_cycles = 0
+    local agent_cycles = 0
     local positions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
       on_submit = function(value) submitted = value end,
       on_cycle_thinking = function() thinking_cycles = thinking_cycles + 1 end,
+      on_cycle_agent = function() agent_cycles = agent_cycles + 1 end,
       on_position_change = function(position) positions[#positions + 1] = position end,
     })
     local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
@@ -20,6 +22,8 @@ describe("neoagent UI mappings", function()
     assert.are.equal("send me", submitted)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "x", false)
     assert.are.equal(1, thinking_cycles)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-n>", true, false, true), "x", false)
+    assert.are.equal(1, agent_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>H", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_win_get_config(result.transcript_win).col < 5 end))
     assert.are.same({ "left" }, positions)

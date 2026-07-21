@@ -126,6 +126,7 @@ Default UI mappings:
 | `<C-d>` | Hide the UI when the input is empty |
 | `<C-o>` | Expand or collapse tool output |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
+| `<C-n>` | Cycle through Controllers attached to this Window |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
@@ -149,7 +150,7 @@ The complete shape is intentionally small:
 
 ```lua
 require("neoagent").setup({
-  name = nil,                   -- optional label in the bundled View title
+  name = nil,                   -- optional Controller label in the View title
   default_registry = true,      -- compose the built-in OpenAI catalogs
   providers = {},
   apis = {},
@@ -163,7 +164,7 @@ require("neoagent").setup({
   tools = nil,                  -- nil selects the coding preset
   execute_tool = nil,           -- function(tool, arguments, ctx)
   interaction = nil,            -- replace the default chat.run composition
-  view = nil,                   -- replace the bundled View constructor
+  view = nil,                   -- replace the bundled Window's View constructor
   max_tool_rounds = 12,
   agents = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
@@ -195,9 +196,10 @@ require("neoagent").setup({
 
 ### Controllers and views
 
-`setup()` creates, installs, and returns the default Controller. Commands and
-top-level functions such as `toggle()` always forward to that Controller.
-Create any number of independent Controllers with `new()`:
+`setup()` creates a Controller, installs a single-Controller default Window,
+and returns the Controller. Commands and top-level functions target the active
+Controller in that Window. `new()` creates an independent Controller with its
+own Model selection, Session, Workspace, and Run:
 
 ```lua
 local neoagent = require("neoagent")
@@ -208,30 +210,45 @@ local reviewer = neoagent.new({
   tools = require("neoagent.tools").read_only(),
   persistence = { enabled = false },
   system_prompt = "Review the code without modifying it.",
-  ui = { position = "left" },
 })
 
-vim.keymap.set("n", "<leader>ar", function() reviewer:toggle() end)
+local window = neoagent.new_window({
+  controllers = { coding, reviewer },
+  ui = { position = "left" },
+})
+neoagent.set_default_window(window)
 ```
 
-Each Controller owns its Model selection, Session, Workspace, active Run, and
-View. Closing, stopping, or destroying one does not affect another. Call
-`controller:destroy()` when a short-lived instance is no longer needed.
-Bundled persistence shares its cwd-hashed files between Controllers using the
-same persistence directory.
+The Window owns one passive View and selects one attached Controller at a time.
+`window:select(controller_or_index)` selects directly and `window:cycle()`
+selects the next Controller. The bundled `<C-n>` mapping calls `cycle()`.
+Selection restores that Controller's transcript and input draft. Runs belong to
+Controllers, so every attached Controller can keep working concurrently.
+Sessions remain independent; each Controller's initial Session is created on
+its first send. The Window exposes `open`, `close`, `toggle`, `is_open`,
+`active`, `controllers`, `select`, `cycle`, and `destroy`.
 
 `neoagent.set_default(reviewer)` makes commands and top-level functions use an
-existing Controller and returns the previous default without destroying it.
-`neoagent.default()` returns the current default. `setup()` destroys and
-replaces the previous default and remains forbidden while its agent Run is
-active.
+existing Controller through a new single-Controller Window and returns the
+previous active Controller. `neoagent.set_default_window(window)` installs an
+assembled Window and returns the previous Window. `neoagent.default()` returns
+the active Controller; `neoagent.default_window()` returns its Window.
+`setup()` destroys the current command-facing Window and the Controller owned
+by an earlier `setup()` call. An active Run on that owned Controller blocks the
+replacement.
 
-The `view` option is a function receiving `config`, `controller`, `on_submit`,
-`on_stop`, `on_cycle_thinking`, and `on_position_change`. It returns a passive
-View implementing `open`, `close`, `is_open`, `destroy`, `set_messages`,
-`set_input`, `set_context`, `apply`, and `finish`. The View displays state and
-invokes the supplied callbacks while the Controller owns the agent loop. A
-fully custom window is an ordinary Controller option.
+A Controller publishes `{ type = "messages" | "context" | "event" |
+"finish", ... }` updates through `subscribe(callback)`; the returned function
+unsubscribes. `snapshot()` supplies the canonical messages, display context,
+and current transient run events for a newly attached consumer. These APIs let
+custom Windows observe Controllers while Controllers remain useful without UI.
+
+The `view` option is a function receiving `config`, `window`, `on_submit`,
+`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, and `on_position_change`. It
+returns a passive View implementing `open`, `close`, `is_open`, `destroy`,
+`get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
+`new_window()` uses the first Controller's configured `ui` and `view`, then
+recursively applies its own `ui` overrides.
 
 ### Model registry
 
@@ -307,9 +324,9 @@ persistence.
 
 Reading settings or opening an empty Session creates nothing. Selecting a
 model, thinking level, or dock position creates `settings.json` atomically.
-Session JSONL creation begins with its first accepted message. The built-in
-controller owns `default_model`, `default_thinking_level`, and `ui_position`;
-the workspace settings layer is reusable by other Lua workflows:
+Session JSONL creation begins with its first accepted message. The default
+composition persists `default_model`, `default_thinking_level`, and
+`ui_position`; the workspace settings layer is reusable by other Lua workflows:
 
 ```lua
 local settings = require("neoagent.workspace_settings").new({
@@ -347,9 +364,9 @@ then appended according to their configuration.
 The default coding preset includes `read_agent_documentation`. Its short tool
 description tells the model to call the tool only for questions about Neoagent
 itself, its configuration, APIs, or extensibility. The on-demand result
-summarizes the composition layers, includes Controller, tool/executor, and View
-examples, and provides absolute paths to the installed documentation, source,
-active init file, and Neovim configuration directory.
+summarizes the composition layers, includes Controller, Window, tool/executor,
+and View examples, and provides absolute paths to the installed documentation,
+source, active init file, and Neovim configuration directory.
 
 The `tools` option selects exactly those tools and overrides the default coding
 preset. To keep the four coding tools without the documentation tool:
@@ -371,8 +388,9 @@ Custom compositions can opt in directly with
 `require("neoagent.tools.read_agent_documentation").new()`.
 
 Personal integrations are ordinary Lua modules loaded explicitly by the user's
-Neovim configuration. They can construct a Controller with `neoagent.new()` or
-replace the command-facing instance with `neoagent.set_default()`.
+Neovim configuration. They can construct Controllers with `neoagent.new()`,
+assemble them into a shared Window with `neoagent.new_window()`, and install it
+with `neoagent.set_default_window()`.
 
 ### AGENTS.md and skills
 

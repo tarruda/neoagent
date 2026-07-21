@@ -32,11 +32,12 @@ local function documentation()
     "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
     "- Bundled Workspace settings persist model, thinking, and UI dock preferences per cwd.",
     "- `neoagent.new(opts)` creates an independent Controller with its own configuration, "
-      .. "model selection, Session, Workspace, Run, and View.",
-    "- `neoagent.setup(opts)` creates and installs the default Controller. Commands and "
-      .. "top-level convenience functions forward to it.",
-    "- `neoagent.set_default(controller)` installs that command-facing default and returns "
-      .. "the previous Controller, which remains usable.",
+      .. "model selection, Session, Workspace, and Run.",
+    "- `neoagent.new_window(opts)` attaches Controllers to one passive View. Selection "
+      .. "restores per-Controller messages and input drafts while Runs remain concurrent.",
+    "- `neoagent.setup(opts)` creates the default Controller and its single-Controller Window. "
+      .. "Commands target the active Controller in the default Window.",
+    "- `neoagent.set_default_window(window)` installs an assembled command-facing Window.",
     "",
     "A Controller created by `neoagent.new()` receives a complete configuration. Copy "
       .. "`neoagent.default():config()` first when it should derive from the default Controller.",
@@ -50,10 +51,12 @@ local function documentation()
     "opts.tools = require(\"neoagent.tools\").read_only()",
     "opts.persistence = { enabled = false }",
     "opts.system_prompt = \"Review this workspace without editing it.\"",
-    "opts.ui = vim.tbl_deep_extend(\"force\", opts.ui, { position = \"left\" })",
     "local reviewer = neoagent.new(opts)",
-    "reviewer:toggle()",
-    "-- neoagent.set_default(reviewer) -- make built-in commands use it",
+    "local window = neoagent.new_window({",
+    "  controllers = { neoagent.default(), reviewer },",
+    "  ui = { position = \"left\" },",
+    "})",
+    "neoagent.set_default_window(window)",
     "```",
     "",
     "## Custom tool and execution policy",
@@ -88,11 +91,10 @@ local function documentation()
     "## Custom View",
     "",
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
-      .. "`controller`, `on_submit`, `on_stop`, `on_cycle_thinking`, and "
-      .. "`on_position_change`. A passive View "
-      .. "implements `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`, "
-      .. "`set_context`, `apply`, and `finish`; it renders events while the Controller owns "
-      .. "the agent loop.",
+      .. "`window`, `on_submit`, `on_stop`, `on_cycle_thinking`, `on_cycle_agent`, and "
+      .. "`on_position_change`. A passive View implements `open`, `close`, `is_open`, "
+      .. "`destroy`, `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and "
+      .. "`finish`. Controllers publish snapshots and updates for custom Window adapters.",
     "",
     "## Installed paths",
     "",
@@ -102,6 +104,7 @@ local function documentation()
     "- Contributor guide: " .. root .. "/AGENTS.md",
     "- Core agent loop: " .. root .. "/lua/neoagent/agent.lua",
     "- Controller: " .. root .. "/lua/neoagent/controller.lua",
+    "- Window: " .. root .. "/lua/neoagent/window.lua",
     "- Configuration: " .. root .. "/lua/neoagent/config.lua",
     "- Bundled tools: " .. root .. "/lua/neoagent/tools",
     "- Bundled View: " .. root .. "/lua/neoagent/ui.lua",

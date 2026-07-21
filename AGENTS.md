@@ -35,11 +35,14 @@ changes.
   context explicitly. It does not mutate input messages or resolve defaults.
 - `Session.new()` remains a no-argument, tool-free in-memory message owner. A
   store is optional and injected.
-- The passive View consumes messages and events. It does not own or invoke the
-  agent loop.
+- The passive View consumes messages and events. A Window owns one View,
+  selects an active Controller, and retains one input draft per Controller.
 - Controllers are independent compositions of configuration, model selection,
-  Session, Workspace, Run, and View. The command-facing default is replaceable;
-  custom Controllers must not mutate or depend on it.
+  Session, Workspace, and Run. They publish snapshots and updates so Windows
+  and other consumers can attach without owning the agent loop.
+- Controller Runs remain independent when a shared Window selects another
+  Controller. The command-facing default Window is replaceable; custom
+  Controllers and Windows must not mutate or depend on it.
 - AGENTS.md and skill discovery are optional higher-level resource modules.
   The default controller injects complete AGENTS.md files broad-to-specific,
   but only skill metadata; complete skill instructions are read on demand.

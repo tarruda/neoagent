@@ -43,6 +43,7 @@ local defaults = {
       close_empty = "<C-d>",
       expand_tools = "<C-o>",
       cycle_thinking = "<S-Tab>",
+      cycle_agent = "<C-n>",
       dock_left = "<C-w>H",
       dock_bottom = "<C-w>J",
       dock_top = "<C-w>K",

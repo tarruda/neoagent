@@ -29,7 +29,7 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentModel")
     vim.ui.select = original_select
     assert.are.equal(model, require("neoagent").get_model())
-    assert.is_true(require("neoagent")._state().view:is_open())
+    assert.is_true(require("neoagent").default_window():_state().view:is_open())
     vim.cmd("NeoagentThinking high")
     assert.are.equal("high", require("neoagent").get_thinking_level())
     vim.cmd("NeoagentThinking")
@@ -37,7 +37,7 @@ describe("neoagent commands", function()
     require("neoagent").close()
     vim.cmd("NeoagentModel fake/test")
     assert.are.equal(model, require("neoagent").get_model())
-    assert.is_true(require("neoagent")._state().view:is_open())
+    assert.is_true(require("neoagent").default_window():_state().view:is_open())
 
     local directory = vim.fn.tempname()
     local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
@@ -49,7 +49,7 @@ describe("neoagent commands", function()
       apis = { fake = function() return model end },
     })
     vim.cmd("NeoagentResume " .. vim.fn.fnameescape(store:metadata().path))
-    assert.is_true(require("neoagent")._state().view:is_open())
+    assert.is_true(require("neoagent").default_window():_state().view:is_open())
     assert.are.equal("stored", require("neoagent").get_session():messages()[1].content)
 
     local auth_path = vim.fn.tempname() .. "/auth.json"
@@ -144,7 +144,7 @@ describe("neoagent commands", function()
     vim.ui.select = original_select
     vim.ui.input = original_input
     vim.ui.open = original_open
-    if require("neoagent")._state().view then require("neoagent")._state().view:destroy() end
+    require("neoagent").default_window():destroy()
     vim.fn.delete(directory, "rf")
     vim.fn.delete(vim.fs.dirname(auth_path), "rf")
   end)
