@@ -406,7 +406,7 @@ Default mappings:
   <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
-  <C-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
+  <M-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.

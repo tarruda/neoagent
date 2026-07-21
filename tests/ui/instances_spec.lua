@@ -114,7 +114,7 @@ describe("neoagent controller windows", function()
     local view = window:_state().view
     local transcript_buffer, input_buffer = view.transcript_buf, view.input_buf
     view:set_input("alpha draft")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-n>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<M-n>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return window:active() == beta end))
     assert.are.equal("", view:get_input())
     assert.matches("^beta ·", view:_title())

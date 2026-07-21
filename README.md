@@ -127,7 +127,7 @@ Default UI mappings:
 | `<C-d>` | Hide the UI when the input is empty |
 | `<C-o>` | Expand or collapse tool output |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
-| `<C-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
+| `<M-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
@@ -238,7 +238,7 @@ Attached Controllers require unique, non-empty names. A name is both the View
 label and the Controller's workspace-settings scope. Renaming a Controller
 selects a fresh settings scope; matching names in separate Windows share one.
 `window:select(controller_or_index)` selects directly and `window:cycle()`
-selects the next Controller. The bundled `<C-n>` mapping calls `cycle()`.
+selects the next Controller. The bundled `<M-n>` mapping calls `cycle()`.
 Selection restores that Controller's transcript and input draft. Runs belong to
 Controllers, so every attached Controller can keep working concurrently.
 Sessions remain independent; each Controller's initial Session is created on
