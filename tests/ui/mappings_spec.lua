@@ -6,29 +6,42 @@ describe("neoagent UI mappings", function()
     local submitted
     local thinking_cycles = 0
     local agent_cycles = 0
+    local model_selections = 0
+    local session_selections = 0
     local positions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
       on_submit = function(value) submitted = value end,
       on_cycle_thinking = function() thinking_cycles = thinking_cycles + 1 end,
       on_cycle_agent = function() agent_cycles = agent_cycles + 1 end,
+      on_select_model = function() model_selections = model_selections + 1 end,
+      on_resume_session = function() session_selections = session_selections + 1 end,
       on_position_change = function(position) positions[#positions + 1] = position end,
     })
     local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
     assert(result:open())
     result:set_input("send me")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc><C-s>", true, false, true), "x", false)
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
+      "i<A-m><A-r>", true, false, true), "x", false)
+    assert.are.equal(1, model_selections)
+    assert.are.equal(1, session_selections)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc><CR>", true, false, true), "x", false)
     assert.is_not_nil(submitted)
     assert.are.equal("send me", submitted)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "x", false)
     assert.are.equal(1, thinking_cycles)
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<M-n>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-n>", true, false, true), "x", false)
     assert.are.equal(1, agent_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>H", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_win_get_config(result.transcript_win).col < 5 end))
     assert.are.same({ "left" }, positions)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-m>", true, false, true), "x", false)
+    assert.are.equal(2, model_selections)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-r>", true, false, true), "x", false)
+    assert.are.equal(2, session_selections)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
       "<C-w>wZ<C-\\><C-n>", true, false, true), "x", false)
     assert(vim.wait(1000, function()

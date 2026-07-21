@@ -2,6 +2,7 @@ if vim.g.loaded_neoagent then return end
 vim.g.loaded_neoagent = true
 
 vim.api.nvim_create_user_command("Neoagent", function() require("neoagent").toggle() end, {})
+vim.api.nvim_create_user_command("NeoagentCycle", function() require("neoagent").cycle_agent() end, {})
 vim.api.nvim_create_user_command("NeoagentNew", function() require("neoagent").new_session() end, {})
 vim.api.nvim_create_user_command("NeoagentResume", function(opts)
   local neoagent = require("neoagent")

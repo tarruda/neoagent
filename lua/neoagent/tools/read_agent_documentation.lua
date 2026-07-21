@@ -95,8 +95,9 @@ local function documentation()
     "## Custom View",
     "",
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
-      .. "`window`, `on_submit`, `on_stop`, `on_cycle_thinking`, `on_cycle_agent`, and "
-      .. "`on_position_change`. A passive View implements `open`, `close`, `is_open`, "
+      .. "`window`, `on_submit`, `on_stop`, `on_cycle_thinking`, `on_cycle_agent`, "
+      .. "`on_select_model`, `on_resume_session`, and `on_position_change`. A passive "
+      .. "View implements `open`, `close`, `is_open`, "
       .. "`destroy`, `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and "
       .. "`finish`. Controllers publish snapshots and updates for custom Window adapters.",
     "",

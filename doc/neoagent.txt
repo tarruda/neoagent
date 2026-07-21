@@ -182,7 +182,8 @@ events, and completion updates. Its unsubscribe function detaches the callback.
 Session and partial Run.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
-`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, and `on_position_change`. It
+`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
+`on_resume_session`, and `on_position_change`. It
 returns a passive View with `open`, `close`, `is_open`, `destroy`, `get_input`,
 `set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
 
@@ -351,6 +352,7 @@ keeping the `init.lua` model, thinking, and UI position defaults authoritative.
 3. COMMANDS                                                   *neoagent-commands*
 
   :Neoagent                       Toggle the floating UI.
+  :NeoagentCycle                  Select the next Controller.
   :NeoagentNew                    Use a new empty UI Session.
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
@@ -396,7 +398,7 @@ its rate-limit headers.
 
 Default mappings:
 
-  <C-s>       Send from input in Normal or Insert mode.
+  <CR>        Send from input in Normal or Insert mode.
   <C-c>       Clear the input draft and return to Insert mode.
   <C-w>w or <C-w><C-w>
               Alternate between input and transcript in Normal, Insert, or
@@ -406,7 +408,9 @@ Default mappings:
   <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
-  <M-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
+  <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
+  <A-m>       Select a model (input Normal/Insert; transcript Normal).
+  <A-r>       Resume a session (input Normal/Insert; transcript Normal).
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.

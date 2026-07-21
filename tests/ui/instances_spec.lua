@@ -114,7 +114,7 @@ describe("neoagent controller windows", function()
     local view = window:_state().view
     local transcript_buffer, input_buffer = view.transcript_buf, view.input_buf
     view:set_input("alpha draft")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<M-n>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<A-n>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return window:active() == beta end))
     assert.are.equal("", view:get_input())
     assert.matches("^beta ·", view:_title())
@@ -137,6 +137,7 @@ describe("neoagent controller windows", function()
       local view = {
         input = "", messages = {}, context = {}, events = {}, opened = false,
         window = opts.window, on_submit = opts.on_submit,
+        on_select_model = opts.on_select_model,
       }
       function view:open() self.opened = true return true end
       function view:close() self.opened = false end
@@ -161,6 +162,15 @@ describe("neoagent controller windows", function()
     windows = { window }
     assert(window:open())
     assert.are.equal(window, created.window)
+    local selected_model = false
+    local original_select = vim.ui.select
+    vim.ui.select = function(_, _, callback)
+      selected_model = true
+      callback(nil)
+    end
+    assert(created.on_select_model())
+    vim.ui.select = original_select
+    assert.is_true(selected_model)
     created:set_input("question")
     local run = assert(created.on_submit(created:get_input()))
     assert(vim.wait(1000, function() return run:is_done() and created.result end))

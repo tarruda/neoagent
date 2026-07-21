@@ -106,6 +106,8 @@ function M.new(opts)
       on_stop = function() return active():stop() end,
       on_cycle_thinking = function() return active():cycle_thinking_level() end,
       on_cycle_agent = function() return window:cycle() end,
+      on_select_model = function() return active():select_model() end,
+      on_resume_session = function() return active():resume() end,
       on_position_change = function(position)
         state.position = position
         state.position_loaded = true

@@ -3,8 +3,9 @@ describe("neoagent commands", function()
     vim.g.loaded_neoagent = nil
     vim.cmd("runtime plugin/neoagent.lua")
     for _, name in ipairs({
-      "Neoagent", "NeoagentNew", "NeoagentResume", "NeoagentStop", "NeoagentModel", "NeoagentThinking",
-      "NeoagentLogin", "NeoagentCompact", "NeoagentBranch", "NeoagentFork",
+      "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
+      "NeoagentModel", "NeoagentThinking", "NeoagentLogin", "NeoagentCompact",
+      "NeoagentBranch", "NeoagentFork",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
@@ -20,6 +21,16 @@ describe("neoagent commands", function()
       } } } } },
       apis = { fake = function() return model end },
     })
+    vim.cmd("NeoagentCycle")
+    assert.are.equal("Chat", require("neoagent").default():config().name)
+    assert.is_false(require("neoagent").default_window():is_open())
+    vim.cmd("Neoagent")
+    assert.is_true(require("neoagent").default_window():is_open())
+    vim.cmd("Neoagent")
+    assert.is_false(require("neoagent").default_window():is_open())
+    vim.cmd("NeoagentCycle")
+    assert.are.equal("Neo", require("neoagent").default():config().name)
+    assert.is_false(require("neoagent").default_window():is_open())
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.same({ "fake/test" }, items)
