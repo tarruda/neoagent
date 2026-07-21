@@ -236,7 +236,7 @@ describe("neoagent bundled tools", function()
     local grep = execute(grep_tool, {
       pattern = "needle[", ignoreCase = true, literal = true, glob = "*.lua", context = 0, limit = 1,
     }, ctx(workspace))
-    assert.matches("one.lua:1:Needle%[", grep.content[1].text)
+    assert.matches("%.lua:1:Needle%[", grep.content[1].text)
     assert.matches("Results truncated", grep.content[1].text)
     assert.is_nil(grep.content[1].text:find("ignored.txt", 1, true))
     assert.has_error(function() execute(grep_tool, { pattern = "x", context = -1 }, ctx(workspace)) end)

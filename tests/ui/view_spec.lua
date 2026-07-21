@@ -70,6 +70,25 @@ describe("neoagent.ui", function()
     assert.are.equal("one\ntwo", result:get_input())
   end)
 
+  it("closes both windows when either one is closed externally", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    local transcript, input = result.transcript_win, result.input_win
+    vim.api.nvim_win_close(input, true)
+    assert(vim.wait(1000, function()
+      return not vim.api.nvim_win_is_valid(transcript) and not vim.api.nvim_win_is_valid(input)
+    end))
+    assert.is_false(result:is_open())
+
+    assert(result:open())
+    transcript, input = result.transcript_win, result.input_win
+    vim.api.nvim_win_close(transcript, true)
+    assert(vim.wait(1000, function()
+      return not vim.api.nvim_win_is_valid(transcript) and not vim.api.nvim_win_is_valid(input)
+    end))
+    assert.is_false(result:is_open())
+  end)
+
   it("renders partial tools and execution state dynamically without duplicate results", function()
     local result = view({ position = "center" })
     assert(result:open())

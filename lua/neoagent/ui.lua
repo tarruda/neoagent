@@ -523,9 +523,10 @@ function View:open(origin)
 end
 
 function View:close()
-  if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then vim.api.nvim_win_close(self.transcript_win, true) end
-  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then vim.api.nvim_win_close(self.input_win, true) end
+  local transcript_win, input_win = self.transcript_win, self.input_win
   self.transcript_win, self.input_win = nil, nil
+  if transcript_win and vim.api.nvim_win_is_valid(transcript_win) then vim.api.nvim_win_close(transcript_win, true) end
+  if input_win and vim.api.nvim_win_is_valid(input_win) then vim.api.nvim_win_close(input_win, true) end
   if self.origin_win and vim.api.nvim_win_is_valid(self.origin_win) then
     vim.api.nvim_set_current_win(self.origin_win)
     if self.origin_cursor then pcall(vim.api.nvim_win_set_cursor, self.origin_win, self.origin_cursor) end
@@ -615,7 +616,16 @@ function M.new(opts)
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {
     group = view.augroup,
-    callback = function()
+    callback = function(event)
+      if event.event == "WinClosed" then
+        local closed = tonumber(event.match)
+        if closed == view.transcript_win or closed == view.input_win then
+          vim.schedule(function()
+            if closed == view.transcript_win or closed == view.input_win then view:close() end
+          end)
+        end
+        return
+      end
       if view:is_open() and not view.layout_pending then
         view.layout_pending = true
         vim.schedule(function()
