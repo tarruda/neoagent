@@ -2,7 +2,18 @@ local config = require("neoagent.config")
 local models = require("neoagent.models")
 
 describe("neoagent configuration and model resolution", function()
-  before_each(function() config._reset() end)
+  local original_openai_key
+
+  before_each(function()
+    config._reset()
+    original_openai_key = vim.env.OPENAI_API_KEY
+    vim.env.OPENAI_API_KEY = nil
+  end)
+
+  after_each(function()
+    config._reset()
+    vim.env.OPENAI_API_KEY = original_openai_key
+  end)
 
   it("keeps setup out of direct core constructors", function()
     local model = require("neoagent.api.openai_completions").new({
@@ -105,7 +116,70 @@ describe("neoagent configuration and model resolution", function()
     vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 
+  it("composes and dynamically filters the default and user registries", function()
+    local path = vim.fn.tempname() .. "/auth.json"
+    config.setup({
+      auth = { path = path },
+      providers = {
+        openai = { models = {
+          ["gpt-4"] = false,
+          ["gpt-5.4"] = { reasoning = true, reasoning_effort = "high" },
+          custom = {},
+        } },
+        ["openai-codex"] = { models = {
+          ["gpt-5.5"] = { reasoning_effort = "high" },
+        } },
+        local_provider = { api = "custom", models = { local_model = {} } },
+      },
+    })
+    local providers = config.get().providers
+    assert.is_nil(providers.openai.models["gpt-4"])
+    assert.is_true(providers.openai.models["gpt-5.4"].reasoning)
+    assert.are.equal("high", providers.openai.models["gpt-5.4"].reasoning_effort)
+    assert.is_table(providers.openai.models.custom)
+    assert.is_table(providers["openai-codex"].models["gpt-5.6-terra"])
+    assert.is_true(providers["openai-codex"].models["gpt-5.5"].reasoning)
+    assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].reasoning_effort)
+    assert.are.same({ "local_provider/local_model" }, assert(models.available()))
+
+    vim.env.OPENAI_API_KEY = "api-key"
+    local available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "openai/custom"))
+    assert.is_true(vim.tbl_contains(available, "openai/gpt-5.4"))
+    assert.is_false(vim.tbl_contains(available, "openai/gpt-4"))
+    assert.is_false(vim.tbl_contains(available, "openai-codex/gpt-5.5"))
+
+    assert(require("neoagent.auth.store").new(path):write("openai-codex", {
+      access = "access", refresh = "refresh", expires = 9999999999999,
+    }))
+    available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "openai-codex/gpt-5.5"))
+
+    config.setup({ default_registry = false, providers = {
+      only = { api = "custom", models = { model = {} } },
+    } })
+    assert.are.same({ "only/model" }, assert(models.available()))
+    vim.fn.delete(vim.fs.dirname(path), "rf")
+  end)
+
+  it("allows default providers to be removed and reports API key failures", function()
+    config.setup({ providers = { openai = false } })
+    assert.is_nil(config.get().providers.openai)
+    assert.is_table(config.get().providers["openai-codex"])
+
+    config.setup({ default_registry = false, providers = { broken = {
+      api = "custom",
+      api_key = function() error("key failed") end,
+      models = { model = {} },
+    } } })
+    local available, err = models.available()
+    assert.is_nil(available)
+    assert.are.equal("model", err.kind)
+    assert.matches("key failed", err.detail)
+  end)
+
   it("validates geometry and configured identifiers", function()
+    assert.has_error(function() config.setup({ default_registry = "yes" }) end)
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = { api = "custom", api_key = 42, models = {} } } })

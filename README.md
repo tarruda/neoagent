@@ -64,49 +64,28 @@ providers = {
 }
 ```
 
-For an ordinary OpenAI API key, point the same API type at OpenAI:
-
-```lua
-providers = {
-  openai = {
-    api = "openai-responses",
-    base_url = "https://api.openai.com/v1",
-    api_key = function() return vim.env.OPENAI_API_KEY end,
-    models = {
-      ["gpt-5.4"] = { reasoning = true },
-    },
-  },
-}
-```
-
-For a ChatGPT Plus/Pro Codex subscription, use the Codex request profile and
-the built-in login method:
+Neoagent includes Pi's explicit OpenAI model catalog. Set `OPENAI_API_KEY`
+before starting Neovim and the `openai/*` entries become available in
+`:NeoagentModel`. To select one automatically:
 
 ```lua
 require("neoagent").setup({
-  providers = {
-    ["openai-codex"] = {
-      api = "openai-codex-responses",
-      base_url = "https://chatgpt.com/backend-api",
-      auth = "openai-codex",
-      models = {
-        ["gpt-5.5"] = {
-          reasoning = true,
-          reasoning_effort = "high",
-          reasoning_summary = "auto",
-        },
-      },
-    },
-  },
-  default_model = { provider = "openai-codex", model = "gpt-5.5" },
+  default_model = { provider = "openai", model = "gpt-5.4" },
 })
 ```
 
-Run `:NeoagentLogin openai-codex` once, then choose browser or headless device
-code login. Without an argument, `:NeoagentLogin` selects from every configured
-login method through `vim.ui.select`; `:NeoagentLogin!` cancels an active
-login. Model names are controlled by the Codex service and may change;
-configure the model available to your plan.
+The built-in Codex catalog becomes available after a successful ChatGPT
+Plus/Pro login:
+
+```vim
+:NeoagentLogin openai-codex
+:NeoagentModel
+```
+
+Choose browser or headless device-code login. Without an argument,
+`:NeoagentLogin` selects from every configured login method through
+`vim.ui.select`; `:NeoagentLogin!` cancels an active login. The explicit model
+catalog mirrors Pi and may change as the service changes.
 
 OAuth credentials are saved to
 `stdpath("state") .. "/neoagent/auth.json"`. Neoagent writes the file atomically
@@ -156,6 +135,7 @@ The complete shape is intentionally small:
 
 ```lua
 require("neoagent").setup({
+  default_registry = true,      -- compose the built-in OpenAI catalogs
   providers = {},
   apis = {},
   auth = {
@@ -183,6 +163,43 @@ require("neoagent").setup({
   },
 })
 ```
+
+### Model registry
+
+The final registry is the composition of Neoagent's defaults and the user
+`providers` table. The built-in `openai` provider is available when
+`OPENAI_API_KEY` resolves to a non-empty value. The built-in `openai-codex`
+provider is available when an `openai-codex` OAuth credential is stored.
+Providers without `auth` or `api_key`, such as local llama.cpp providers, are
+always available.
+
+User provider and model tables recursively override or extend matching
+defaults. Set a provider or model to `false` to remove it:
+
+```lua
+require("neoagent").setup({
+  providers = {
+    openai = {
+      api_key = function() return vim.env.MY_OPENAI_API_KEY end,
+      models = {
+        ["gpt-5.4"] = {
+          reasoning = true,
+          reasoning_effort = "high",
+        },
+        ["gpt-4"] = false,
+      },
+    },
+    ["openai-codex"] = false,
+  },
+})
+```
+
+Set `default_registry = false` to remove the complete built-in registry and
+use only `providers` from `init.lua`. The unmodified catalog is available from
+`require("neoagent.registry").defaults()`. The final composed table is
+`require("neoagent.config").get().providers`, while
+`require("neoagent.models").available()` returns the currently authenticated
+`provider/model` choices.
 
 The built-in prompt follows the active tool set and includes the current
 working directory. A string replaces it completely. To append instructions,

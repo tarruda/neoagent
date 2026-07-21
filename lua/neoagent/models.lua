@@ -3,6 +3,35 @@ local util = require("neoagent.util")
 
 local M = {}
 
+function M.available()
+  local configured = config.get()
+  local manager = require("neoagent.auth").configured()
+  local result = {}
+  for provider_id, provider in pairs(configured.providers) do
+    local available = true
+    if provider.auth then
+      local err
+      available, err = manager:has_credentials(provider.auth)
+      if available == nil then return nil, err end
+    elseif provider.api_key ~= nil then
+      local ok, key = pcall(function()
+        return type(provider.api_key) == "function" and provider.api_key() or provider.api_key
+      end)
+      if not ok then
+        return nil, util.error("model", "Failed to resolve API key for " .. provider_id, key)
+      end
+      available = type(key) == "string" and util.trim(key) ~= ""
+    end
+    if available then
+      for model_id in pairs(provider.models) do
+        result[#result + 1] = provider_id .. "/" .. model_id
+      end
+    end
+  end
+  table.sort(result)
+  return result
+end
+
 local function openai_factory(module, resolved)
   local layers = {}
   if resolved.provider.request_opts ~= nil then layers[#layers + 1] = resolved.provider.request_opts end

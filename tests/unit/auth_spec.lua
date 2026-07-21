@@ -109,10 +109,12 @@ describe("neoagent provider authentication", function()
   it("reports missing, malformed, and failed credentials", function()
     local storage = memory_store()
     local manager = auth.new({ methods = { plan = method() }, store = storage })
+    assert.is_false(manager:has_credentials("plan"))
     assert.are.equal("auth", wait(manager:resolve("missing")).error.kind)
     assert.are.equal("auth", wait(manager:resolve("plan")).error.kind)
 
     storage.values.plan = { expires = "later" }
+    assert.is_false(manager:has_credentials("plan"))
     assert.matches("invalid", wait(manager:resolve("plan")).error.message)
     storage.values.plan = { access = "old", refresh = "r", expires = 0 }
     local bad = method({ refresh = function()

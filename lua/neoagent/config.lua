@@ -3,6 +3,7 @@ local util = require("neoagent.util")
 local M = {}
 
 local defaults = {
+  default_registry = true,
   providers = {},
   apis = {},
   auth = {
@@ -46,6 +47,7 @@ local function validate_dimension(value, name)
 end
 
 local function validate(opts)
+  assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
   if opts.default_model ~= nil then
     assert(type(opts.default_model) == "table", "default_model must be a table")
     assert(type(opts.default_model.provider) == "string", "default_model.provider is required")
@@ -132,6 +134,7 @@ end
 function M.setup(opts)
   opts = opts or {}
   local configured = util.deep_merge(defaults, opts)
+  configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
   current = configured

@@ -333,11 +333,11 @@ end
 
 function M.select_model()
   if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
-  local choices = {}
-  for provider_id, provider in pairs(configured().providers) do
-    for model_id in pairs(provider.models) do choices[#choices + 1] = provider_id .. "/" .. model_id end
+  local choices, err = require("neoagent.models").available()
+  if not choices then
+    notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR)
+    return nil
   end
-  table.sort(choices)
   if #choices == 0 then notify("no models configured") return nil end
   vim.ui.select(choices, { prompt = "Select Neoagent model:" }, function(choice)
     if not choice then return end

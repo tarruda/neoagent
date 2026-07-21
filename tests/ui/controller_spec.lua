@@ -19,6 +19,7 @@ describe("neoagent default controller", function()
 
   local function setup_model(model, extra)
     local options = {
+      default_registry = false,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake-api", models = { test = {} } } },
@@ -263,7 +264,7 @@ describe("neoagent default controller", function()
     assert.are.equal(model, neoagent.get_model())
     assert.is_false(neoagent._state().view:is_open())
 
-    neoagent.setup({ persistence = { enabled = false }, providers = {}, tools = {} })
+    neoagent.setup({ default_registry = false, persistence = { enabled = false }, providers = {}, tools = {} })
     assert.is_nil(neoagent.select_model())
   end)
 end)

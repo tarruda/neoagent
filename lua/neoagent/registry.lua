@@ -1,0 +1,123 @@
+local util = require("neoagent.util")
+
+local M = {}
+
+-- Pi keeps these catalogs explicit rather than discovering aliases at runtime.
+-- Neoagent mirrors the model ids relevant to its OpenAI Responses backends.
+local function model_map(ids, options)
+  local result = {}
+  for _, id in ipairs(ids) do result[id] = util.copy(options or {}) end
+  return result
+end
+
+local defaults = {
+  openai = {
+    api = "openai-responses",
+    base_url = "https://api.openai.com/v1",
+    api_key = function() return vim.env.OPENAI_API_KEY end,
+    models = model_map({
+      "gpt-4",
+      "gpt-4-turbo",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-2024-05-13",
+      "gpt-4o-2024-08-06",
+      "gpt-4o-2024-11-20",
+      "gpt-4o-mini",
+      "gpt-5",
+      "gpt-5-chat-latest",
+      "gpt-5-codex",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-5-pro",
+      "gpt-5.1",
+      "gpt-5.1-chat-latest",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5.2",
+      "gpt-5.2-chat-latest",
+      "gpt-5.2-codex",
+      "gpt-5.2-pro",
+      "gpt-5.3-chat-latest",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-nano",
+      "gpt-5.4-pro",
+      "gpt-5.5",
+      "gpt-5.5-pro",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-realtime-2.1",
+      "o1",
+      "o1-pro",
+      "o3",
+      "o3-deep-research",
+      "o3-mini",
+      "o3-pro",
+      "o4-mini",
+      "o4-mini-deep-research",
+    }),
+  },
+  ["openai-codex"] = {
+    api = "openai-codex-responses",
+    base_url = "https://chatgpt.com/backend-api",
+    auth = "openai-codex",
+    models = model_map({
+      "gpt-5.3-codex-spark",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+    }, { reasoning = true }),
+  },
+}
+
+local function compose_models(base, user)
+  if user == nil then return util.copy(base or {}) end
+  if user == false then return {} end
+  assert(type(user) == "table", "provider models must be a table or false")
+  local result = util.copy(base or {})
+  for id, model in pairs(user) do
+    assert(type(id) == "string", "models must use string ids")
+    if model == false then
+      result[id] = nil
+    else
+      assert(type(model) == "table", "models must contain tables or false")
+      result[id] = util.deep_merge(result[id], model)
+    end
+  end
+  return result
+end
+
+function M.defaults()
+  return util.copy(defaults)
+end
+
+function M.compose(user, include_defaults)
+  assert(type(user) == "table", "providers must be a table")
+  local result = include_defaults == false and {} or M.defaults()
+  for id, provider in pairs(user) do
+    assert(type(id) == "string", "providers must use string ids")
+    if provider == false then
+      result[id] = nil
+    else
+      assert(type(provider) == "table", "providers must contain tables or false")
+      local base = result[id]
+      local override = util.copy(provider)
+      override.models = nil
+      result[id] = util.deep_merge(base, override)
+      result[id].models = compose_models(base and base.models, provider.models)
+    end
+  end
+  return result
+end
+
+return M

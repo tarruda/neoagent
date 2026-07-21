@@ -48,6 +48,10 @@ changes.
 - Provider login methods are plain Lua values with `login`, `refresh`, and
   `request_opts`. Credential resolution wraps a Model at stream time; OAuth
   flows and Models must not import or assume the command/UI adapter.
+- The final provider/model registry composes built-in defaults with the user
+  `providers` table. User entries override defaults; `false` removes a default
+  provider or model. Model selection filters the composition by configured
+  OAuth credentials or API keys without affecting direct Model constructors.
 - Persist credentials atomically outside user configuration. Credential
   directories created by the store use mode `0700`; files use mode `0600`.
   Never log access or refresh tokens.

@@ -12,6 +12,7 @@ describe("neoagent commands", function()
 
     local model = { provider = "fake", id = "test", stream = function() end }
     require("neoagent").setup({
+      default_registry = false,
       persistence = { enabled = false },
       providers = { fake = { api = "fake", models = { test = {} } } },
       apis = { fake = function() return model end },
@@ -35,6 +36,7 @@ describe("neoagent commands", function()
     local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
     assert(store:append({ role = "user", content = "stored", timestamp = 1 }))
     require("neoagent").setup({
+      default_registry = false,
       persistence = { enabled = true, directory = directory },
       providers = { fake = { api = "fake", models = { test = {} } } },
       apis = { fake = function() return model end },
@@ -87,7 +89,10 @@ describe("neoagent commands", function()
     }
     require("neoagent").setup({
       persistence = { enabled = false },
-      auth = { path = auth_path, methods = { test = login_method, waiting = waiting_method } },
+      auth = { path = auth_path, methods = {
+        ["openai-codex"] = login_method,
+        waiting = waiting_method,
+      } },
     })
     local original_input = vim.ui.input
     local original_open = vim.ui.open
@@ -105,19 +110,25 @@ describe("neoagent commands", function()
       end
       assert.are.equal("Select Neoagent login:", options.prompt)
       for _, item in ipairs(items) do
-        if item.id == "test" then
+        if item.id == "openai-codex" then
           assert.are.equal("Test subscription", options.format_item(item))
           callback(item)
           return
         end
       end
-      error("test login method was not offered")
+      error("OpenAI Codex login method was not offered")
     end
     vim.cmd("NeoagentLogin")
     assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
     assert.are.equal(1, logins)
-    assert.are.equal("token", require("neoagent.auth.store").new(auth_path):read("test").access)
+    assert.are.equal("token", require("neoagent.auth.store").new(auth_path):read("openai-codex").access)
     assert.are.same({ "https://login.test", "https://device.test" }, opened)
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Select Neoagent model:", options.prompt)
+      assert.is_true(vim.tbl_contains(items, "openai-codex/gpt-5.5"))
+      callback(nil)
+    end
+    vim.cmd("NeoagentModel")
     vim.cmd("NeoagentLogin waiting")
     assert.is_truthy(require("neoagent")._state().login_run)
     vim.cmd("NeoagentLogin!")

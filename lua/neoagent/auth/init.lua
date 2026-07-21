@@ -6,6 +6,13 @@ local M = {}
 local Manager = {}
 Manager.__index = Manager
 
+local function valid_credential(credential)
+  return type(credential) == "table"
+    and type(credential.access) == "string" and credential.access ~= ""
+    and type(credential.refresh) == "string" and credential.refresh ~= ""
+    and type(credential.expires) == "number"
+end
+
 local function method_for(self, id)
   local method = self.methods[id]
   if not method then error(util.error("auth", "Unknown login method: " .. tostring(id)), 0) end
@@ -15,9 +22,7 @@ end
 local function credential_from(result, action)
   if not result.ok then error(result.error, 0) end
   local credential = result.credential
-  if type(credential) ~= "table" or type(credential.access) ~= "string" or credential.access == ""
-      or type(credential.refresh) ~= "string" or credential.refresh == ""
-      or type(credential.expires) ~= "number" then
+  if not valid_credential(credential) then
     error(util.error("auth", action .. " returned an invalid credential"), 0)
   end
   return credential
@@ -64,9 +69,7 @@ function Manager:resolve(id, opts)
     local credential, read_err = self.store:read(id)
     if read_err then error(read_err, 0) end
     if not credential then error(util.error("auth", "Not logged in with " .. id), 0) end
-    if type(credential.expires) ~= "number" then
-      error(util.error("auth", "Stored credential is invalid"), 0)
-    end
+    if not valid_credential(credential) then error(util.error("auth", "Stored credential is invalid"), 0) end
     if self.now() >= credential.expires then
       credential = modify_store(self, id, function(current)
         if type(current) ~= "table" then return nil end
@@ -81,6 +84,13 @@ function Manager:resolve(id, opts)
     end
     return { ok = true, method = id, request_opts = override }
   end, { on_done = opts.on_done, error_kind = "auth" })
+end
+
+function Manager:has_credentials(id)
+  method_for(self, id)
+  local credential, err = self.store:read(id)
+  if err then return nil, err end
+  return valid_credential(credential)
 end
 
 function Manager:wrap(model, id)
