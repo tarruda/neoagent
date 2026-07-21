@@ -718,26 +718,60 @@ describe("neoagent default controller", function()
     assert.is_false(neoagent.stop())
   end)
 
-  it("selects persisted sessions when no resume path is supplied", function()
+  it("selects named and forked sessions by recent tree activity", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
-    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
-    assert(store:append({ role = "user", content = "resumed", timestamp = 1 }))
+    local storage = require("neoagent.storage")
+    local now = require("neoagent.util").now_ms()
+    local parent = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(parent:append({
+      role = "user", content = "parent preview", timestamp = now - 3 * 86400000,
+    }))
+    assert(parent:append_entry("session_info", { name = "Parent" }))
+    local child = assert(storage.fork(parent, { directory = directory }))
+    assert(child:append({
+      role = "user", content = "child work", timestamp = now - 65 * 60000,
+    }))
+    assert(child:append_entry("session_info", { name = "Child" }))
+    local grandchild = assert(storage.fork(child, { directory = directory }))
+    assert(grandchild:append({
+      role = "user", content = "deep work", timestamp = now - 10 * 60000,
+    }))
+    assert(grandchild:append_entry("session_info", { name = "Grandchild" }))
+    local sibling = assert(storage.fork(parent, { directory = directory }))
+    assert(sibling:append({
+      role = "user", content = "sibling work", timestamp = now - 30 * 60000,
+    }))
+    assert(sibling:append_entry("session_info", { name = "Sibling" }))
+    local other = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(other:append({
+      role = "user", content = "Recent\nroot", timestamp = now - 130 * 60000,
+    }))
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = directory } })
-    assert(neoagent.resume(store:metadata().path))
+    assert(neoagent.resume(parent:metadata().path))
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Resume Neoagent session:", options.prompt)
-      assert.are.same({ store:metadata().path }, items)
-      assert.matches("^● %d%d%d%d%-%d%d%-%d%d", options.format_item(items[1]))
-      assert.matches(" — resumed$", options.format_item(items[1]))
-      callback(items[1])
+      assert.are.equal(5, #items)
+      assert.are.equal(parent:metadata().path, items[1].path)
+      assert.are.equal(child:metadata().path, items[2].path)
+      assert.are.equal(parent:metadata().path, items[2].parent_session)
+      assert.are.equal(grandchild:metadata().path, items[3].path)
+      assert.are.equal(sibling:metadata().path, items[4].path)
+      assert.are.equal(other:metadata().path, items[5].path)
+      assert.matches("^● Parent%s+1%s+3d$", options.format_item(items[1]))
+      assert.matches("^  ├─ Child%s+2%s+1h$", options.format_item(items[2]))
+      assert.matches("^  │  └─ Grandchild%s+3%s+10m$", options.format_item(items[3]))
+      assert.matches("^  └─ Sibling%s+2%s+30m$", options.format_item(items[4]))
+      assert.matches("^  Recent root%s+1%s+2h$", options.format_item(items[5]))
+      callback(items[2])
     end
     local ok, err = pcall(neoagent.resume)
     vim.ui.select = original_select
     assert(ok, err)
-    assert.are.equal("resumed", neoagent.get_session():messages()[1].content)
+    assert.are.equal(child:metadata().path, neoagent.get_session():metadata().path)
+    assert.are.equal("child work", neoagent.get_session():messages()[2].content)
     assert.is_true(current_view():is_open())
 
     local empty = vim.fn.tempname()

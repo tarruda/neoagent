@@ -89,12 +89,55 @@ end
 function Store:name()
   local name
   for _, entry in ipairs(self._entries) do
-    if entry.type == "session_info" and type(entry.name) == "string" then
-      local candidate = util.trim(entry.name)
-      if candidate ~= "" then name = candidate end
+    if entry.type == "session_info" then
+      name = type(entry.name) == "string" and util.trim(entry.name) or nil
+      if name == "" then name = nil end
     end
   end
   return name
+end
+
+function Store:info()
+  local first_message
+  local message_count = 0
+  local modified_at
+  local unknown_activity = false
+  for _, entry in ipairs(self._entries) do
+    if entry.type == "message" then
+      message_count = message_count + 1
+      local message = entry.message
+      if message.role == "user" or message.role == "assistant" then
+        if type(message.timestamp) == "number" then
+          modified_at = math.max(modified_at or 0, message.timestamp)
+        else
+          unknown_activity = true
+        end
+        if not first_message and message.role == "user" then
+          local ok, text = pcall(util.text_content, message.content)
+          if ok and text ~= "" then first_message = text end
+        end
+      end
+    end
+  end
+  if modified_at == nil or unknown_activity then
+    local stat = vim.uv.fs_stat(self._path)
+    local mtime = stat and stat.mtime
+    if mtime then
+      modified_at = math.max(modified_at or 0,
+        mtime.sec * 1000 + math.floor((mtime.nsec or 0) / 1000000))
+    end
+  end
+  return {
+    path = self._path,
+    id = self._id,
+    cwd = self._cwd,
+    name = self:name(),
+    parent_session = self._parent_session,
+    created_at = self._timestamp,
+    modified_at = modified_at or 0,
+    message_count = message_count,
+    first_message = first_message or "(no messages)",
+  }
 end
 
 function Store:metadata()
@@ -393,6 +436,19 @@ function M.list(directory, cwd)
   end
   table.sort(paths, function(a, b) return a > b end)
   return paths
+end
+
+function M.list_sessions(directory, cwd)
+  local sessions = {}
+  for _, path in ipairs(M.list(directory, cwd)) do
+    local store = M.open(path)
+    if store then sessions[#sessions + 1] = store:info() end
+  end
+  table.sort(sessions, function(a, b)
+    if a.modified_at == b.modified_at then return a.path > b.path end
+    return a.modified_at > b.modified_at
+  end)
+  return sessions
 end
 
 return M

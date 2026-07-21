@@ -5,6 +5,85 @@ local M = {}
 local next_id = 0
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
 
+local function relative_age(modified_at, now)
+  local milliseconds = math.max(0, now - modified_at)
+  local minutes = math.floor(milliseconds / 60000)
+  local hours = math.floor(milliseconds / 3600000)
+  local days = math.floor(milliseconds / 86400000)
+  if minutes < 1 then return "now" end
+  if minutes < 60 then return minutes .. "m" end
+  if hours < 24 then return hours .. "h" end
+  if days < 7 then return days .. "d" end
+  if days < 30 then return math.floor(days / 7) .. "w" end
+  if days < 365 then return math.floor(days / 30) .. "mo" end
+  return math.floor(days / 365) .. "y"
+end
+
+local function session_text(info)
+  local text = info.name or info.first_message or "(no messages)"
+  text = util.trim(text:gsub("[%c%s]+", " "))
+  if text == "" then text = "(no messages)" end
+  if vim.fn.strchars(text) > 80 then text = vim.fn.strcharpart(text, 0, 80) .. "…" end
+  return text
+end
+
+local function session_choices(sessions, current_path)
+  local fs = require("neoagent.fs")
+  local by_path = {}
+  local nodes = {}
+  for _, info in ipairs(sessions) do
+    local node = { info = info, children = {}, latest = info.modified_at }
+    nodes[#nodes + 1] = node
+    by_path[fs.canonical(info.path)] = node
+  end
+
+  local roots = {}
+  for _, node in ipairs(nodes) do
+    local parent = node.info.parent_session and by_path[fs.canonical(node.info.parent_session)]
+    if parent and parent ~= node then
+      parent.children[#parent.children + 1] = node
+    else
+      roots[#roots + 1] = node
+    end
+  end
+
+  local function update_latest(node)
+    for _, child in ipairs(node.children) do
+      node.latest = math.max(node.latest, update_latest(child))
+    end
+    return node.latest
+  end
+  local function sort_nodes(values)
+    table.sort(values, function(a, b)
+      if a.latest == b.latest then return a.info.path > b.info.path end
+      return a.latest > b.latest
+    end)
+    for _, node in ipairs(values) do sort_nodes(node.children) end
+  end
+  for _, root in ipairs(roots) do update_latest(root) end
+  sort_nodes(roots)
+
+  local choices = {}
+  local current = current_path and fs.canonical(current_path)
+  local now = util.now_ms()
+  local function visit(node, prefix, branch, is_last)
+    local info = util.copy(node.info)
+    info.current = current ~= nil and fs.canonical(info.path) == current
+    local marker = info.current and "● " or "  "
+    info.label = string.format("%s%s%s  %d  %s", marker, prefix .. branch,
+      session_text(info), info.message_count, relative_age(info.modified_at, now))
+    choices[#choices + 1] = info
+    local child_prefix = prefix
+    if branch ~= "" then child_prefix = child_prefix .. (is_last and "   " or "│  ") end
+    for index, child in ipairs(node.children) do
+      local child_last = index == #node.children
+      visit(child, child_prefix, child_last and "└─ " or "├─ ", child_last)
+    end
+  end
+  for _, root in ipairs(roots) do visit(root, "", "", true) end
+  return choices
+end
+
 function M.from_config(options)
   assert(type(options) == "table", "controller configuration is required")
   options = util.copy(options)
@@ -847,50 +926,21 @@ function M.from_config(options)
     return true
   end
 
-  local function session_preview(path)
-    local store = require("neoagent.storage").open(path)
-    if not store then return "(unreadable session)" end
-    for _, message in ipairs(store:load()) do
-      if message.role == "user" then
-        local ok, text = pcall(util.text_content, message.content)
-        text = ok and util.trim(text:gsub("[%c%s]+", " ")) or ""
-        if text ~= "" then
-          local limit = 80
-          if vim.fn.strchars(text) > limit then return vim.fn.strcharpart(text, 0, limit) .. "…" end
-          return text
-        end
-      end
-    end
-    return "(no user message)"
-  end
-
-  local function session_label(path, current_path)
-    local name = vim.fn.fnamemodify(path, ":t")
-    local year, month, day, hour, minute, second, id = name:match(
-      "^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)_([^.]+)%.jsonl$"
-    )
-    local label = year and string.format("%s-%s-%s %s:%s:%s · %s", year, month, day, hour, minute, second, id:sub(1, 8))
-      or name
-    label = label .. " — " .. session_preview(path)
-    return path == current_path and "● " .. label or label
-  end
-
   function controller:resume(path, on_resumed)
     if state.run then notify("cannot resume while the agent is running", vim.log.levels.WARN) return nil end
     if path and path ~= "" then return resume_path(vim.fn.fnamemodify(path, ":p")) end
     local options = configured().persistence
-    local paths = require("neoagent.storage").list(options.directory, vim.fn.getcwd())
-    if #paths == 0 then notify("no sessions found for the current directory") return nil end
+    local sessions = require("neoagent.storage").list_sessions(options.directory, vim.fn.getcwd())
+    if #sessions == 0 then notify("no sessions found for the current directory") return nil end
     local metadata = state.session and state.session:metadata()
     local current_path = metadata and metadata.path
-    local labels = {}
-    for _, path in ipairs(paths) do labels[path] = session_label(path, current_path) end
-    vim.ui.select(paths, {
+    local choices = session_choices(sessions, current_path)
+    vim.ui.select(choices, {
       prompt = "Resume Neoagent session:",
-      format_item = function(item) return labels[item] end,
+      format_item = function(item) return item.label end,
     }, function(choice)
       if choice then
-        local session = controller:resume(choice)
+        local session = controller:resume(choice.path)
         if session and on_resumed then on_resumed(session) end
       end
     end)

@@ -206,6 +206,25 @@ describe("neoagent.storage", function()
     assert.are.equal(1, #reopened:find_entries("label"))
     assert.are.equal("start", reopened:label(first.id))
     assert.are.equal("Named session", reopened:name())
+    assert.are.same({
+      path = reopened:metadata().path,
+      id = reopened:metadata().id,
+      cwd = directory,
+      name = "Named session",
+      parent_session = "/tmp/parent.jsonl",
+      created_at = reopened:metadata().timestamp,
+      modified_at = reopened:info().modified_at,
+      message_count = 1,
+      first_message = "old",
+    }, reopened:info())
+    assert(reopened:append_entry("session_info", { name = "" }))
+    assert.is_nil(reopened:name())
+    assert.is_nil(reopened:info().name)
+
+    vim.fn.writefile({ "invalid" }, vim.fs.dirname(reopened:metadata().path) .. "/invalid.jsonl")
+    local listed = storage.list_sessions(directory, directory)
+    assert.are.equal(1, #listed)
+    assert.are.equal(reopened:metadata().path, listed[1].path)
   end)
 
   it("validates tree entry references before persistence", function()

@@ -125,8 +125,9 @@ function Session:name()
   if self._store and type(self._store.name) == "function" then return self._store:name() end
   local value
   for _, entry in ipairs(self._entries) do
-    if entry.type == "session_info" and type(entry.name) == "string" and util.trim(entry.name) ~= "" then
-      value = util.trim(entry.name)
+    if entry.type == "session_info" then
+      value = type(entry.name) == "string" and util.trim(entry.name) or nil
+      if value == "" then value = nil end
     end
   end
   return value

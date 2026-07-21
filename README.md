@@ -140,9 +140,10 @@ Commands are `:Neoagent`, `:NeoagentNew`, `:NeoagentResume [path]`,
 use `vim.ui.select` when their argument is omitted, so UI providers such as
 Telescope's `ui-select` extension enhance the pickers automatically.
 Selecting or directly specifying a session, model, branch, or fork opens the
-agent UI when it is closed. Resume entries include a preview of the first user
-message. Forking starts before the selected user message and restores its text
-to the input buffer for editing.
+agent UI when it is closed. Resume entries use the session name or first user
+message, show message count and relative activity, and group linked forks below
+their parent session. Forking starts before the selected user message and
+restores its text to the input buffer for editing.
 
 ```lua
 require("telescope").load_extension("ui-select")
@@ -689,6 +690,13 @@ the compacted LLM projection, and `entries()`, `entry(id)`, `leaf_id()`,
 moves the active leaf and optionally adds a Pi branch summary; the next append
 creates a child at that point. `label(id)` and `name()` resolve Pi metadata,
 while `append_entry(type, values)` provides the complete entry surface.
+
+`store:info()` returns discovery metadata for a persisted session: path, ID,
+cwd, optional name and parent, creation timestamp, latest message activity,
+message count, and first user message. `neoagent.storage.list_sessions()`
+returns these values for a workspace, ordered by recent activity. The default
+resume selector groups them through `parentSession`; branches inside one file
+remain available through `:NeoagentBranch`.
 
 `neoagent.storage.fork(store_or_path, opts)` writes a child session linked by
 `parentSession`. `opts.entry_id` chooses a branch point and `opts.position` is

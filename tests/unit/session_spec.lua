@@ -100,6 +100,11 @@ describe("neoagent.session", function()
     assert(session:append_entry("session_info", { name = "  Example  " }))
     assert.are.equal("Start", session:label(first.id))
     assert.are.equal("Example", session:name())
+    assert(session:append_entry("session_info", { name = "" }))
+    assert.is_nil(session:name())
+    assert(session:append_entry("session_info", { name = "Again" }))
+    assert(session:append_entry("session_info", { name = vim.NIL }))
+    assert.is_nil(session:name())
     assert.are.same({
       model = { provider = "openai", model = "gpt" },
       thinking_level = "high",

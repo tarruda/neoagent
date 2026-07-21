@@ -124,20 +124,35 @@ changes.
   `test`, `docs`, `refactor`, or `chore`.
 - Write the summary in the imperative mood, start it with lowercase unless it
   begins with a proper name, and do not end it with a period.
-- For a non-trivial commit, add a blank line followed by `-` bullets. Start
-  each bullet with an imperative verb, end it with a period, and wrap body
-  lines at 72 columns.
+- For a non-trivial commit, follow the subject with a blank line and a concise
+  overview paragraph. Explain the architectural shape of the change and how
+  its major components relate.
+- Follow the overview with a blank line and `-` bullets describing the
+  concrete behavior and coverage. Start each bullet with an imperative verb
+  and end it with a period.
+- Wrap every commit body line at 72 columns.
 - Keep each commit focused. The subject and body must describe only the staged
   changes.
 
 For example:
 
 ```text
-feat(auth): add Codex subscription login
+feat(session): add Pi trees and context compaction
 
-- Add provider-extensible login methods and secure credential storage.
-- Port Codex browser/device OAuth, refresh, and authenticated headers.
-- Cover callback, model, command, cancellation, and failure paths.
+Session and storage now own a Pi v3 append-only tree. Chat projects the
+active path into model context, and Controllers compose navigation,
+forks, and compaction while the reusable agent core remains independent.
+
+- Support every Pi v3 entry type, active leaves, labels, and linked
+  forks.
+- Add branch and fork APIs, commands, selectors, and input
+  restoration.
+- Compact context automatically, manually, and after provider
+  overflows.
+- Preserve tool-call boundaries, repeated summaries, cancellation,
+  and retry.
+- Document configuration and cover storage, lifecycle, and UI
+  behavior.
 ```
 
 ## Dependencies
