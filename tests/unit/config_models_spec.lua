@@ -49,6 +49,33 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(1, seen.model.value)
   end)
 
+  it("resolves configured OpenAI Responses models", function()
+    config.setup({
+      default_model = { provider = "openai", model = "reasoning" },
+      providers = {
+        openai = {
+          api = "openai-responses",
+          base_url = "http://localhost:8080/v1",
+          request_opts = { body = { metadata = { provider = true } } },
+          models = { reasoning = {
+            reasoning = true,
+            reasoning_effort = "high",
+            reasoning_summary = "detailed",
+            max_output_tokens = 100,
+            request_opts = { body = { metadata = { model = true } } },
+          } },
+        },
+      },
+    })
+    local resolved = models.resolve()
+    local request = resolved:_request({ messages = {}, tools = {} })
+    assert.are.equal("openai-responses", resolved.api)
+    assert.are.equal("http://localhost:8080/v1/responses", request.url)
+    assert.are.same({ provider = true, model = true }, request.body.metadata)
+    assert.are.same({ effort = "high", summary = "detailed" }, request.body.reasoning)
+    assert.are.equal(100, request.body.max_output_tokens)
+  end)
+
   it("validates geometry and configured identifiers", function()
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function()
@@ -56,5 +83,14 @@ describe("neoagent configuration and model resolution", function()
     end)
     config.setup({ providers = {} })
     assert.has_error(function() models.resolve("missing", "model") end)
+
+    local function invalid_model(model)
+      return config.setup({ providers = { bad = {
+        api = "openai-responses", base_url = "http://localhost/v1", models = { bad = model },
+      } } })
+    end
+    assert.has_error(function() invalid_model({ reasoning = "yes" }) end)
+    assert.has_error(function() invalid_model({ reasoning_effort = "" }) end)
+    assert.has_error(function() invalid_model({ reasoning_summary = 1 }) end)
   end)
 end)

@@ -1,0 +1,20 @@
+{
+  "steps": [
+    {
+      "expect": { "path": "/v1/responses" },
+      "respond": {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          {
+            "data": "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_partial\",\"role\":\"assistant\",\"content\":[]}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"partial\"}\n\n"
+          },
+          {
+            "delay_ms": 1500,
+            "data": "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

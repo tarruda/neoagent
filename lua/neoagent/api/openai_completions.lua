@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local request_opts = require("neoagent.api.request_opts")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
@@ -117,52 +118,6 @@ local function encode_tools(tools)
   return result
 end
 
-local function merge_request(request, override)
-  for key in pairs(override) do
-    if key ~= "url" and key ~= "headers" and key ~= "body" then
-      error(util.error("model", "Unsupported request_opts field: " .. tostring(key)), 0)
-    end
-  end
-  local merged = util.copy(request)
-  if override.url ~= nil then
-    if type(override.url) ~= "string" or override.url == "" then
-      error(util.error("model", "request_opts.url must be a non-empty string"), 0)
-    end
-    merged.url = override.url
-  end
-  if override.headers ~= nil then
-    if type(override.headers) ~= "table" or (next(override.headers) ~= nil and util.is_list(override.headers)) then
-      error(util.error("model", "request_opts.headers must be a table"), 0)
-    end
-    merged.headers = util.deep_merge(merged.headers, override.headers, function(key)
-      return type(key) == "string" and key:lower() or key
-    end)
-  end
-  if override.body ~= nil then
-    if type(override.body) ~= "table" or (next(override.body) ~= nil and util.is_list(override.body)) then
-      error(util.error("model", "request_opts.body must be a table"), 0)
-    end
-    merged.body = util.deep_merge(merged.body, override.body)
-  end
-  return merged
-end
-
-local function apply_request_opts(request, layer, ctx)
-  if layer == nil then
-    return request
-  end
-  local override = layer
-  if type(layer) == "function" then
-    local snapshot = util.copy(ctx)
-    snapshot.request = util.copy(request)
-    override = layer(snapshot)
-  end
-  if type(override) ~= "table" then
-    error(util.error("model", "request_opts must be a table or return a table"), 0)
-  end
-  return merge_request(request, override)
-end
-
 local function has_content(message)
   return message and #message.content > 0
 end
@@ -229,9 +184,9 @@ function Model:_request(call_opts)
     tools = util.copy(call_opts.tools or {}),
   }
   for _, layer in ipairs(self._request_opts) do
-    request = apply_request_opts(request, layer, ctx)
+    request = request_opts.apply(request, layer, ctx)
   end
-  request = apply_request_opts(request, call_opts.request_opts, ctx)
+  request = request_opts.apply(request, call_opts.request_opts, ctx)
   return request
 end
 
@@ -430,6 +385,5 @@ function M.new(opts)
 end
 
 M._encode_messages = encode_messages
-M._merge_request = merge_request
 
 return M

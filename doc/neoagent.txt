@@ -15,7 +15,8 @@ CONTENTS                                                        *neoagent-conten
 
 Neoagent supplies a streamed Model API, cancellable Runs, and a plain tool
 loop. Sessions, persistence, bundled tools, and the floating UI are optional
-layers. V1 supports OpenAI-compatible chat completions through curl.
+layers. OpenAI-compatible Chat Completions and stateless Responses APIs use
+curl.
 
 Requirements: Neovim 0.10+, curl 7.76+, rg, and fd. ImageMagick's `magick` is
 optional. Run >
@@ -38,6 +39,27 @@ Example for llama.cpp: >lua
     default_model = { provider = "local_llama", model = "coder" },
   })
 <
+For a Responses-compatible endpoint: >lua
+
+  providers = {
+    local_llama = {
+      api = "openai-responses",
+      base_url = "http://127.0.0.1:8080/v1",
+      models = {
+        coder = {
+          max_output_tokens = 8192,
+          reasoning = true,
+          reasoning_effort = "high",
+          reasoning_summary = "auto",
+        },
+      },
+    },
+  }
+<
+Responses requests always set `store = false`. Neoagent retains opaque
+reasoning, text, and function-call item identifiers in assistant messages so
+the complete history can be replayed statelessly.
+
 The important options are: >lua
 
   {
@@ -157,6 +179,10 @@ The direct Model constructor requires no setup: >lua
     on_done = function(result) end,
   })
 <
+Use `require("neoagent.api.openai_responses").new` for the same Model interface
+with a Responses endpoint. Its additional constructor options are
+`reasoning`, `reasoning_effort`, and `reasoning_summary`.
+
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
 `usage`. A successful result has `{ ok = true, message, text }`; a failure has
 `{ ok = false, error, message? }`. Non-empty partial output is retained in the

@@ -50,7 +50,7 @@ local function validate(opts)
     assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
-    if provider.api == "openai-completions" then
+    if provider.api == "openai-completions" or provider.api == "openai-responses" then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
     end
     if provider.api_key ~= nil then
@@ -61,6 +61,17 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      if provider.api == "openai-responses" then
+        if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
+        if model.reasoning_effort ~= nil then
+          assert(type(model.reasoning_effort) == "string" and model.reasoning_effort ~= "",
+            "model reasoning_effort must be a non-empty string")
+        end
+        if model.reasoning_summary ~= nil then
+          assert(type(model.reasoning_summary) == "string" and model.reasoning_summary ~= "",
+            "model reasoning_summary must be a non-empty string")
+        end
+      end
       if model.request_opts ~= nil then
         assert(type(model.request_opts) == "table" or type(model.request_opts) == "function", "model request_opts must be a table or function")
       end

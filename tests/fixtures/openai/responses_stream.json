@@ -1,0 +1,42 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "path": "/v1/responses",
+        "headers": { "authorization": "Bearer test-key" },
+        "body": {
+          "model": "test-model",
+          "input": [
+            {
+              "role": "user",
+              "content": [{ "type": "input_text", "text": "Hello" }]
+            }
+          ],
+          "stream": true,
+          "store": false
+        }
+      },
+      "respond": {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          {
+            "data": "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_http\",\"role\":\"assistant\",\"content\":[]}}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"Hel\"}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"lo\"}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_http\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\",\"annotations\":[]}]}}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

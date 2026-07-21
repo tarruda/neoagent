@@ -5,9 +5,9 @@ core provides streamed models, cancellable runs, and a tool loop. Sessions,
 workspace-aware tools, persistence, and the floating chat UI are ordinary
 layers built on that core and can be replaced independently.
 
-V1 targets OpenAI-compatible chat completions APIs, particularly llama.cpp.
-Requests use `curl`; the UI uses only Neovim buffers, windows, mappings,
-extmarks, and autocommands.
+Neoagent supports OpenAI-compatible Chat Completions and stateless Responses
+APIs, including llama.cpp. Requests use `curl`; the UI uses only Neovim
+buffers, windows, mappings, extmarks, and autocommands.
 
 ## Requirements
 
@@ -40,6 +40,27 @@ require("neoagent").setup({
 })
 
 vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>")
+```
+
+Use `openai-responses` for a Responses-compatible endpoint. Reasoning models
+may request an effort and summary; opaque response item signatures are retained
+in assistant messages so complete history can be replayed with `store = false`:
+
+```lua
+providers = {
+  local_llama = {
+    api = "openai-responses",
+    base_url = "http://127.0.0.1:8080/v1",
+    models = {
+      coder = {
+        max_output_tokens = 8192,
+        reasoning = true,
+        reasoning_effort = "high",
+        reasoning_summary = "auto",
+      },
+    },
+  },
+}
 ```
 
 `:Neoagent` opens two focusable floating windows. The input starts in Insert
@@ -198,6 +219,18 @@ local run = model:stream({
 })
 
 -- run:cancel(), run:is_done(), run:is_cancelled(), run:result()
+```
+
+The Responses constructor has the same Model interface:
+
+```lua
+local model = require("neoagent.api.openai_responses").new({
+  provider = "local",
+  model = "reasoning-model",
+  base_url = "http://127.0.0.1:8080/v1",
+  reasoning = true,
+  reasoning_effort = "high",
+})
 ```
 
 Callbacks are scheduled onto Neovim's main loop. Completion is exactly once.
