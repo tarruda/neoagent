@@ -5,11 +5,14 @@ describe("neoagent UI mappings", function()
   it("uses real encoded input for submit, cancellation, focus, docking, and close", function()
     local submitted
     local thinking_cycles = 0
+    local positions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
       on_submit = function(value) submitted = value end,
       on_cycle_thinking = function() thinking_cycles = thinking_cycles + 1 end,
+      on_position_change = function(position) positions[#positions + 1] = position end,
     })
+    local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
     assert(result:open())
     result:set_input("send me")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc><C-s>", true, false, true), "x", false)
@@ -19,8 +22,27 @@ describe("neoagent UI mappings", function()
     assert.are.equal(1, thinking_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>H", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_win_get_config(result.transcript_win).col < 5 end))
+    assert.are.same({ "left" }, positions)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
+      "<C-w>wZ<C-\\><C-n>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return input_focused() and result:get_input() == "send meZ"
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-w>w", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
+    assert(vim.wait(1000, input_focused))
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("v<C-w>w", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("v<C-w>w", true, false, true), "x", false)
+    assert(vim.wait(1000, input_focused))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w><C-w>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w><C-w>", true, false, true), "x", false)
+    assert(vim.wait(1000, input_focused))
     local output = {}
     for index = 1, 11 do output[index] = "result " .. index end
     result:set_messages({
@@ -48,6 +70,36 @@ describe("neoagent UI mappings", function()
     assert(vim.wait(1000, function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
+    end))
+    result:destroy()
+  end)
+
+  it("closes the paired windows from the input escape and empty-draft mappings", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    local origin = vim.api.nvim_get_current_win()
+    assert(result:open())
+    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.input_win end))
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result:is_open() and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc><Esc>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return not result:is_open() and vim.api.nvim_get_current_win() == origin
+    end))
+
+    assert(result:open())
+    result:set_input("keep")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result:is_open() end))
+    assert.are.equal("keep", result:get_input())
+    result:set_input("")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return not result:is_open() and vim.api.nvim_get_current_win() == origin
     end))
     result:destroy()
   end)

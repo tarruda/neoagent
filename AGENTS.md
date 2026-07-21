@@ -73,7 +73,8 @@ changes.
   with the first accepted message.
 - Bundled persistence shares one cwd-hashed workspace namespace between
   `settings.json` and `sessions/`. Workspace settings recursively override the
-  setup model/thinking defaults, and reads must not create files.
+  setup model, thinking, and UI position defaults, and reads must not create
+  files.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer controller state.

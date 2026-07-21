@@ -34,12 +34,14 @@ local defaults = {
   ui = {
     position = "auto",
     margin = 1,
-    input_height = 5,
+    input_height = 7,
     border = "rounded",
     mappings = {
       submit = "<C-s>",
       cancel_input = "<C-c>",
-      toggle_focus = "<C-w>w",
+      toggle_focus = { "<C-w>w", "<C-w><C-w>" },
+      triple_escape = "<Esc>",
+      close_empty = "<C-d>",
       expand_tools = "<C-o>",
       cycle_thinking = "<S-Tab>",
       dock_left = "<C-w>H",
@@ -168,7 +170,13 @@ local function validate(opts)
   assert(type(opts.ui.margin) == "number" and opts.ui.margin >= 0 and opts.ui.margin % 1 == 0, "ui.margin must be a non-negative integer")
   assert(type(opts.ui.input_height) == "number" and opts.ui.input_height >= 1 and opts.ui.input_height % 1 == 0, "ui.input_height must be a positive integer")
   for action, mapping in pairs(opts.ui.mappings) do
-    assert(type(action) == "string" and (type(mapping) == "string" or mapping == false), "UI mappings must be strings or false")
+    assert(type(action) == "string", "UI mapping names must be strings")
+    if type(mapping) == "table" then
+      string_list(mapping, "ui.mappings." .. action)
+    else
+      assert(type(mapping) == "string" or mapping == false,
+        "UI mappings must be strings, lists of strings, or false")
+    end
   end
   if opts.tools ~= nil then assert(type(opts.tools) == "table", "tools must be an array") end
   if opts.system_prompt ~= nil then assert(type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function", "system_prompt must be a string or function") end

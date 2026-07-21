@@ -3,6 +3,7 @@ local util = require("neoagent.util")
 
 local M = {}
 local next_id = 0
+local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
 
 function M.from_config(options)
   assert(type(options) == "table", "controller configuration is required")
@@ -46,6 +47,7 @@ function M.from_config(options)
     return {
       default_model = options.default_model,
       default_thinking_level = options.default_thinking_level,
+      ui_position = options.ui.position,
     }
   end
 
@@ -69,7 +71,20 @@ function M.from_config(options)
       if warn then notify("ignoring invalid workspace default_thinking_level", vim.log.levels.WARN) end
       accepted.default_thinking_level = nil
     end
+    if not ui_positions[merged.ui_position] then
+      if warn then notify("ignoring invalid workspace ui_position", vim.log.levels.WARN) end
+      accepted.ui_position = nil
+    end
     return accepted
+  end
+
+  local function save_workspace_settings(patch)
+    local persistence = configured().persistence
+    if not state.workspace_settings or not persistence.workspace_settings then return true end
+    local saved, err = state.workspace_settings:update(patch)
+    if not saved then return nil, err end
+    state.workspace_overrides = usable_workspace_settings(saved, false)
+    return true
   end
 
   local function activate_workspace(cwd)
@@ -265,6 +280,7 @@ function M.from_config(options)
         model = model_label(),
         thinking = state.thinking_level or false,
         workspace = state.workspace and state.workspace.root or nil,
+        position = preferences().ui_position,
         state = state.status,
       })
     end
@@ -335,12 +351,20 @@ function M.from_config(options)
     if state.view and not state.view.destroyed then return state.view end
     local ui_config = util.copy(options.ui)
     ui_config.title = options.name
+    ui_config.position = preferences().ui_position
     local factory = options.view or require("neoagent.ui").new
     state.view = factory({
       config = ui_config,
       on_submit = submit,
       on_stop = function() return controller:stop() end,
       on_cycle_thinking = function() return controller:cycle_thinking_level() end,
+      on_position_change = function(position)
+        local saved, err = save_workspace_settings({ ui_position = position })
+        if not saved then
+          notify("window position changed but workspace settings were not saved: " .. err.message,
+            vim.log.levels.WARN)
+        end
+      end,
       controller = controller,
     })
     assert(type(state.view) == "table", "View factory must return a View")
@@ -373,8 +397,7 @@ function M.from_config(options)
   end
 
   function controller:toggle()
-    local view = ensure_view()
-    if view:is_open() then self:close() else return self:open() end
+    if state.view and state.view:is_open() then self:close() else return self:open() end
   end
 
   function controller:send(text)
@@ -507,15 +530,6 @@ function M.from_config(options)
       local provider_id, model_id = choice:match("^([^/]+)/(.+)$")
       if provider_id and controller:set_model(provider_id, model_id) then controller:open() end
     end)
-    return true
-  end
-
-  local function save_workspace_settings(patch)
-    local options = configured().persistence
-    if not state.workspace_settings or not options.workspace_settings then return true end
-    local saved, err = state.workspace_settings:update(patch)
-    if not saved then return nil, err end
-    state.workspace_overrides = usable_workspace_settings(saved, false)
     return true
   end
 

@@ -58,9 +58,14 @@ describe("neoagent.ui", function()
     }))
     assert.are.equal(58, bottom.transcript.width)
     assert.is_true(bottom.transcript.row > top.transcript.row)
-    local center = assert(ui.layout({ columns = 100, lines = 40, position = "center", margin = 1, input_height = 5, border = "rounded" }))
-    assert.is_true(center.transcript.col > 1)
-    assert.is_true(center.transcript.row > 1)
+    local center = assert(ui.layout({
+      columns = 100, lines = 40, position = "center", margin = 1,
+      input_height = 7, border = "rounded",
+    }))
+    assert.are.equal(93, center.transcript.width)
+    assert.are.equal(2, center.transcript.col)
+    assert.are.equal(1, center.transcript.row)
+    assert.are.equal(7, center.input.height)
     local too_small, err = ui.layout({ columns = 4, lines = 4, position = "right", margin = 1, input_height = 5, border = "rounded" })
     assert.is_nil(too_small)
     assert.matches("does not fit", err)

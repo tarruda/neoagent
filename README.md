@@ -113,7 +113,9 @@ Default UI mappings:
 | --- | --- |
 | `<C-s>` | Send from input, in Normal or Insert mode |
 | `<C-c>` | Clear the current draft and return to Insert mode |
-| `<C-w>w` | Move directly between input and transcript |
+| `<C-w>w`, `<C-w><C-w>` | Alternate between input and transcript in Normal, Insert, or Visual mode |
+| Three quick `<Esc>` presses | Hide the UI from the input buffer |
+| `<C-d>` | Hide the UI when the input is empty |
 | `<C-o>` | Expand or collapse tool output |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
@@ -168,7 +170,7 @@ require("neoagent").setup({
   },
   persistence = {
     enabled = true,             -- false disables bundled sessions and settings
-    workspace_settings = true,  -- merge cwd-scoped model/thinking overrides
+    workspace_settings = true,  -- merge cwd-scoped model/thinking/UI overrides
     directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
   ui = {
@@ -176,7 +178,7 @@ require("neoagent").setup({
     width = nil,                 -- fraction or absolute columns
     height = nil,                -- fraction or absolute rows
     margin = 1,
-    input_height = 5,
+    input_height = 7,
     border = "rounded",
     mappings = {},               -- recursively merged with the defaults
   },
@@ -212,16 +214,16 @@ same persistence directory.
 
 `neoagent.set_default(reviewer)` makes commands and top-level functions use an
 existing Controller and returns the previous default without destroying it.
-`neoagent.default()` returns the current default. Calling `setup()` instead
-destroys and replaces the previous default, and remains forbidden while its
-agent Run is active.
+`neoagent.default()` returns the current default. `setup()` destroys and
+replaces the previous default and remains forbidden while its agent Run is
+active.
 
 The `view` option is a function receiving `config`, `controller`, `on_submit`,
-`on_stop`, and `on_cycle_thinking`. It returns a passive View implementing
-`open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`,
-`set_context`, `apply`, and `finish`. The View displays state and invokes the
-supplied callbacks while the Controller owns the agent loop. A fully custom
-window is an ordinary Controller option.
+`on_stop`, `on_cycle_thinking`, and `on_position_change`. It returns a passive
+View implementing `open`, `close`, `is_open`, `destroy`, `set_messages`,
+`set_input`, `set_context`, `apply`, and `finish`. The View displays state and
+invokes the supplied callbacks while the Controller owns the agent loop. A
+fully custom window is an ordinary Controller option.
 
 ### Model registry
 
@@ -283,19 +285,19 @@ The core agent remains unaware of thinking. Resolved Models expose their
 
 ### Workspace settings
 
-With persistence enabled, `:NeoagentModel` and `:NeoagentThinking` save their
-selection for the active Workspace. The setup values remain the base; overrides
+With persistence enabled, model selection, thinking level, and UI dock changes
+are saved for the active Workspace. The setup values remain the base; overrides
 from `workspaces/<sha256-of-canonical-root>/settings.json` merge recursively on
 top. A resumed session's last Pi `model_change` and `thinking_level_change`
 entries take precedence for that session. Set `persistence.workspace_settings`
 to `false` to keep `init.lua` authoritative while retaining session
 persistence.
 
-Reading settings or opening an empty Session creates nothing. Selecting a model
-or thinking level creates `settings.json` atomically. Session JSONL creation
-begins with its first accepted message. The built-in controller owns
-`default_model` and `default_thinking_level`; the workspace settings layer is
-reusable by other Lua workflows:
+Reading settings or opening an empty Session creates nothing. Selecting a
+model, thinking level, or dock position creates `settings.json` atomically.
+Session JSONL creation begins with its first accepted message. The built-in
+controller owns `default_model`, `default_thinking_level`, and `ui_position`;
+the workspace settings layer is reusable by other Lua workflows:
 
 ```lua
 local settings = require("neoagent.workspace_settings").new({
@@ -401,9 +403,12 @@ These layers are usable without the controller or UI. `neoagent.agents` and
 `neoagent.skills` each expose `discover(opts)` and `format(resources)`; their
 discovery results include non-fatal `diagnostics` for malformed resources.
 
-Set a mapping to `false` to disable it. With `position = "auto"`, Neoagent
-prefers floating over a non-focused ordinary window so the source stays
-visible; with one editor window it docks right.
+Set a mapping to a string or list of strings, or to `false` to disable it. With
+`position = "auto"`, Neoagent prefers floating over a non-focused ordinary
+window so the source stays visible; with one editor window it docks right. The
+centered layout uses 95% of the editor width and height by default. Explicit
+`width` and `height` values override that size. Dock mappings save the selected
+position when workspace settings are enabled.
 
 Neoagent maps `NormalFloat` to `Normal` in its windows so unstyled content
 inherits the editor background. Its own highlight groups are defined with

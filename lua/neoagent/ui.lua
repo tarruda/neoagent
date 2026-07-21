@@ -4,6 +4,7 @@ local util = require("neoagent.util")
 local M = {}
 local View = {}
 View.__index = View
+local escape_interval_ms = 500
 
 local highlight_links = {
   NeoagentAccent = "Identifier",
@@ -76,15 +77,15 @@ function M.layout(opts)
   local container = opts.container or { row = 0, col = 0, width = columns, height = lines }
   local horizontal = position == "left" or position == "right"
   local vertical = position == "top" or position == "bottom"
-  local default_width = horizontal and 0.45 or position == "center" and 0.72 or 1
-  local default_height = vertical and 0.45 or position == "center" and 0.72 or 1
+  local default_width = horizontal and 0.45 or position == "center" and 0.95 or 1
+  local default_height = vertical and 0.45 or position == "center" and 0.95 or 1
   local available_width = math.max(0, container.width - margin * 2)
   local available_height = math.max(0, container.height - margin * 2)
   local outer_width = math.min(available_width, dimension(opts.width, container.width, default_width))
   local outer_height = math.min(available_height, dimension(opts.height, container.height, default_height))
   local borders = border_size(opts.border)
   local content_width = outer_width - borders
-  local input_height = math.min(opts.input_height or 5, outer_height - borders * 2 - 1)
+  local input_height = math.min(opts.input_height or 7, outer_height - borders * 2 - 1)
   local transcript_height = outer_height - input_height - borders * 2
   if content_width < 1 or input_height < 1 or transcript_height < 1 then
     return nil, "Neoagent UI does not fit in the available editor area"
@@ -780,6 +781,10 @@ end
 
 function View:_map(buffer, modes, key, callback)
   if key == false or key == nil then return end
+  if type(key) == "table" then
+    for _, lhs in ipairs(key) do self:_map(buffer, modes, lhs, callback) end
+    return
+  end
   vim.keymap.set(modes, key, callback, { buffer = buffer, silent = true, nowait = true })
 end
 
@@ -791,8 +796,19 @@ function View:_map_buffers()
     vim.api.nvim_set_current_win(self.input_win)
     vim.cmd("startinsert")
   end)
-  self:_map(self.input_buf, "n", mappings.toggle_focus, function() self:focus_transcript() end)
-  self:_map(self.transcript_buf, "n", mappings.toggle_focus, function() self:focus_input() end)
+  self:_map(self.input_buf, { "n", "i", "x", "s" }, mappings.toggle_focus,
+    function() self:focus_transcript() end)
+  self:_map(self.transcript_buf, { "n", "x", "s" }, mappings.toggle_focus,
+    function() self:focus_input() end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.triple_escape, function() self:_escape() end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.close_empty, function()
+    if self:get_input() == "" then
+      self:close()
+      return
+    end
+    local keys = vim.api.nvim_replace_termcodes(mappings.close_empty, true, false, true)
+    vim.api.nvim_feedkeys(keys, "n", false)
+  end)
   self:_map(self.input_buf, { "n", "i" }, mappings.expand_tools, function() self:toggle_tools() end)
   self:_map(self.transcript_buf, "n", mappings.expand_tools, function() self:toggle_tools() end)
   self:_map(self.input_buf, { "n", "i" }, mappings.cycle_thinking, self.on_cycle_thinking)
@@ -802,8 +818,11 @@ function View:_map_buffers()
     dock_right = "right", dock_center = "center",
   }
   for action, position in pairs(docks) do
-    self:_map(self.input_buf, "n", mappings[action], function() self:set_position(position) end)
-    self:_map(self.transcript_buf, "n", mappings[action], function() self:set_position(position) end)
+    local function dock()
+      if self:set_position(position) then self.on_position_change(position) end
+    end
+    self:_map(self.input_buf, "n", mappings[action], dock)
+    self:_map(self.transcript_buf, "n", mappings[action], dock)
   end
   self:_map(self.transcript_buf, "n", mappings.close, function() self:close() end)
 end
@@ -867,10 +886,10 @@ end
 function View:open(origin)
   if self:is_open() then
     self:focus_input()
-    vim.schedule(function() if not self.destroyed and self:is_open() then self:focus_input() end end)
     return true
   end
   self:_ensure_buffers()
+  self.escape_count, self.escape_at = 0, nil
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
     self.origin_buf = vim.api.nvim_win_get_buf(self.origin_win)
@@ -888,13 +907,13 @@ function View:open(origin)
   self:_window_options(self.input_win, false)
   self:_flush()
   self:_sync_spinner()
-  vim.cmd("startinsert")
-  vim.schedule(function() if not self.destroyed and self:is_open() then self:focus_input() end end)
+  self:focus_input()
   return true
 end
 
 function View:close()
   self:_stop_spinner()
+  self.escape_count, self.escape_at = 0, nil
   local transcript_win, input_win = self.transcript_win, self.input_win
   if input_win and vim.api.nvim_win_is_valid(input_win)
       and vim.api.nvim_get_current_win() == input_win
@@ -908,6 +927,17 @@ function View:close()
     vim.api.nvim_set_current_win(self.origin_win)
     if self.origin_cursor then pcall(vim.api.nvim_win_set_cursor, self.origin_win, self.origin_cursor) end
   end
+end
+
+function View:_escape()
+  local now = vim.uv.hrtime() / 1000000
+  if not self.escape_at or now - self.escape_at > escape_interval_ms then
+    self.escape_count = 0
+  end
+  self.escape_count = self.escape_count + 1
+  self.escape_at = now
+  if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.cmd("stopinsert") end
+  if self.escape_count >= 3 then self:close() end
 end
 
 function View:destroy()
@@ -926,6 +956,9 @@ end
 
 function View:set_context(context)
   self.context = vim.tbl_extend("force", self.context or {}, context or {})
+  if context and context.position and context.position ~= self.position then
+    self:set_position(context.position)
+  end
   if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
     local cfg = vim.api.nvim_win_get_config(self.transcript_win)
     cfg.title = self:_title()
@@ -1007,7 +1040,14 @@ end
 function View:focus_input()
   if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
     vim.api.nvim_set_current_win(self.input_win)
-    vim.cmd("startinsert")
+    vim.cmd("startinsert!")
+    vim.schedule(function()
+      if not self.destroyed and self:is_open()
+          and vim.api.nvim_get_current_win() == self.input_win
+          and vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" then
+        vim.cmd("startinsert!")
+      end
+    end)
   end
 end
 
@@ -1020,6 +1060,7 @@ function M.new(opts)
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
     on_cycle_thinking = opts.on_cycle_thinking or function() end,
+    on_position_change = opts.on_position_change or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },

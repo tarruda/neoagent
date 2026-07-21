@@ -30,6 +30,7 @@ local function documentation()
     "- `neoagent.agent.run(opts)` receives its Model, messages, exact tools, executor, "
       .. "and context explicitly.",
     "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
+    "- Bundled Workspace settings persist model, thinking, and UI dock preferences per cwd.",
     "- `neoagent.new(opts)` creates an independent Controller with its own configuration, "
       .. "model selection, Session, Workspace, Run, and View.",
     "- `neoagent.setup(opts)` creates and installs the default Controller. Commands and "
@@ -87,7 +88,8 @@ local function documentation()
     "## Custom View",
     "",
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
-      .. "`controller`, `on_submit`, `on_stop`, and `on_cycle_thinking`. A passive View "
+      .. "`controller`, `on_submit`, `on_stop`, `on_cycle_thinking`, and "
+      .. "`on_position_change`. A passive View "
       .. "implements `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`, "
       .. "`set_context`, `apply`, and `finish`; it renders events while the Controller owns "
       .. "the agent loop.",

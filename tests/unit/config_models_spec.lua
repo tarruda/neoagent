@@ -186,6 +186,7 @@ describe("neoagent configuration and model resolution", function()
   end)
 
   it("validates geometry and configured identifiers", function()
+    assert.are.equal(7, config.setup({}).ui.input_height)
     assert.has_error(function() config.setup({ name = "" }) end)
     assert.has_error(function() config.setup({ view = true }) end)
     assert.has_error(function() config.setup({ default_registry = "yes" }) end)

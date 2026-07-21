@@ -103,7 +103,7 @@ The important options are: >lua
     },
     persistence = {
       enabled = true,
-      workspace_settings = true,
+      workspace_settings = true, -- model/thinking/UI position overrides
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
@@ -111,7 +111,7 @@ The important options are: >lua
       width = nil,
       height = nil,
       margin = 1,
-      input_height = 5,
+      input_height = 7,
       border = "rounded",
       mappings = {},
     },
@@ -139,20 +139,21 @@ Each Controller owns its Model selection, Session, Workspace, Run, and View.
 Its public operations are `open`, `close`, `toggle`, `send`, `stop`,
 `new_session`, `resume`, `select_model`, `set_model`, thinking-level methods,
 `login`, `cancel_login`, `get_session`, `get_model`, `config`, `is_running`,
-and `destroy`. Multiple Controllers can run concurrently. Bundled persistence
-continues to share cwd-hashed files when their persistence directories match.
+and `destroy`. Multiple Controllers can run concurrently. Controllers with a
+shared persistence directory use the same cwd-hashed files.
 
 `set_default(controller)` points commands and top-level functions at an
-existing Controller and returns the previous default without destroying it.
-`default()` returns the current default. In contrast, another `setup()`
-destroys and replaces the old default; it is rejected while that Controller's
-agent Run is active.
+existing Controller and returns the previous default, which remains usable.
+`default()` returns the current default. Another `setup()` destroys and
+replaces the current default; it is rejected while that Controller's agent Run
+is active.
 
 The `view` option is a factory receiving a table with `config`, `controller`,
-`on_submit`, `on_stop`, and `on_cycle_thinking`. It returns a passive View with
-the methods `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`,
-`set_context`, `apply`, and `finish`. A custom View renders state and invokes
-these callbacks but does not own the agent loop.
+`on_submit`, `on_stop`, `on_cycle_thinking`, and `on_position_change`. It
+returns a passive View with the methods `open`, `close`, `is_open`, `destroy`,
+`set_messages`, `set_input`, `set_context`, `apply`, and `finish`. A custom View
+renders state and invokes these callbacks while the Controller owns the agent
+loop.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a
@@ -274,13 +275,14 @@ WORKSPACE SETTINGS                                  *neoagent-workspace-settings
 
 The setup values are the base configuration. With persistence and
 `workspace_settings` enabled, the default controller recursively merges
-`default_model` and `default_thinking_level` from: >text
+`default_model`, `default_thinking_level`, and `ui_position` from: >text
 
   workspaces/<sha256-of-canonical-root>/settings.json
 <
-`:NeoagentModel` and `:NeoagentThinking` update that file atomically. A resumed
-session's latest Pi model and thinking entries take precedence for that
-session. Reading settings and opening an empty Session create no files.
+Model selection, thinking level, and UI dock changes update that file
+atomically. A resumed session's latest Pi model and thinking entries take
+precedence for that session. Reading settings and opening an empty Session
+create no files.
 
 The workspace settings layer is also usable independently: >lua
 
@@ -293,7 +295,7 @@ The workspace settings layer is also usable independently: >lua
   assert(settings:write(overrides)) -- replace all local overrides
 <
 Set `persistence.workspace_settings = false` to retain JSONL sessions while
-keeping the `init.lua` model and thinking defaults authoritative.
+keeping the `init.lua` model, thinking, and UI position defaults authoritative.
 
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
@@ -334,7 +336,12 @@ Default mappings:
 
   <C-s>       Send from input in Normal or Insert mode.
   <C-c>       Clear the input draft and return to Insert mode.
-  <C-w>w      Toggle directly between input and transcript.
+  <C-w>w or <C-w><C-w>
+              Alternate between input and transcript in Normal, Insert, or
+              Visual mode.
+  <Esc><Esc><Esc>
+              Hide the UI when pressed quickly from the input buffer.
+  <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
   <C-w>H/J/K/L
@@ -342,7 +349,10 @@ Default mappings:
   <C-w>=      Center the UI.
   q           Hide the UI from the transcript.
 
-Set a value in `ui.mappings` to another lhs, or to `false` to disable it.
+Set a value in `ui.mappings` to an lhs string or list of strings, or to `false`
+to disable it.
+The centered layout uses 95% of the editor width and height by default. Dock
+mappings save the selected position when workspace settings are enabled.
 Card colors are customizable through `NeoagentUserBackground`,
 `NeoagentToolPendingBackground`, `NeoagentToolSuccessBackground`, and
 `NeoagentToolErrorBackground`. Markdown highlight groups begin with
