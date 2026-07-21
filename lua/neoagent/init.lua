@@ -147,18 +147,37 @@ local function ensure_model()
 end
 
 local function system_prompt(value, tools)
+  local options = configured()
+  local agents_result = options.agents and require("neoagent.agents").discover({
+    cwd = state.workspace.root,
+    global_files = options.agents.global_files,
+    project_filenames = options.agents.project_filenames,
+  }) or { files = {}, diagnostics = {} }
+  local has_read = vim.tbl_contains(vim.tbl_map(function(tool) return tool.name end, tools), "read_file")
+  local skills_result = options.skills and has_read and require("neoagent.skills").discover({
+    cwd = state.workspace.root,
+    global_dirs = options.skills.global_dirs,
+    project_dirs = options.skills.project_dirs,
+  }) or { skills = {}, diagnostics = {} }
+  for _, diagnostic in ipairs(vim.list_extend(agents_result.diagnostics, skills_result.diagnostics)) do
+    notify(diagnostic.message .. ": " .. diagnostic.path, vim.log.levels.WARN)
+  end
   local context = {
     session = state.session,
     model = state.model,
     workspace = state.workspace,
     prompt = value,
     tools = tools,
+    agents = agents_result.files,
+    skills = skills_result.skills,
   }
-  local prompt = configured().system_prompt
+  local prompt = options.system_prompt
   if type(prompt) == "function" then
-    return prompt(context)
+    prompt = prompt(context)
+  elseif prompt == nil then
+    prompt = require("neoagent.system_prompt").default(context)
   end
-  return prompt == nil and require("neoagent.system_prompt").default(context) or prompt
+  return require("neoagent.system_prompt").compose(prompt, context)
 end
 
 local function tool_array()

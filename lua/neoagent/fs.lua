@@ -65,4 +65,19 @@ function M.canonical(path)
   return vim.uv.fs_realpath(path) or M.normalize(path)
 end
 
+function M.ancestors(path)
+  local current = M.canonical(path)
+  local marker = vim.fs.find(".git", { path = current, upward = true })[1]
+  local stop = marker and M.canonical(vim.fs.dirname(marker)) or nil
+  local result = {}
+  while true do
+    table.insert(result, 1, current)
+    if current == stop then break end
+    local parent = vim.fs.dirname(current)
+    if parent == current then break end
+    current = parent
+  end
+  return result
+end
+
 return M

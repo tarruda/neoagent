@@ -18,6 +18,17 @@ local defaults = {
     workspace_settings = true,
     directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
+  agents = {
+    global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
+    project_filenames = { "AGENTS.md" },
+  },
+  skills = {
+    global_dirs = {
+      vim.fn.expand("~/.agents/skills"),
+      vim.fn.stdpath("config") .. "/neoagent/skills",
+    },
+    project_dirs = { ".agents/skills" },
+  },
   max_tool_rounds = 12,
   ui = {
     position = "auto",
@@ -131,6 +142,22 @@ local function validate(opts)
   assert(type(opts.persistence.enabled) == "boolean", "persistence.enabled must be boolean")
   assert(type(opts.persistence.workspace_settings) == "boolean", "persistence.workspace_settings must be boolean")
   assert(type(opts.persistence.directory) == "string" and opts.persistence.directory ~= "", "persistence.directory is required")
+  local function string_list(value, name)
+    assert(util.is_list(value), name .. " must be a list")
+    for _, item in ipairs(value) do
+      assert(type(item) == "string" and item ~= "", name .. " must contain non-empty strings")
+    end
+  end
+  assert(opts.agents == false or type(opts.agents) == "table", "agents must be a table or false")
+  if opts.agents then
+    string_list(opts.agents.global_files, "agents.global_files")
+    string_list(opts.agents.project_filenames, "agents.project_filenames")
+  end
+  assert(opts.skills == false or type(opts.skills) == "table", "skills must be a table or false")
+  if opts.skills then
+    string_list(opts.skills.global_dirs, "skills.global_dirs")
+    string_list(opts.skills.project_dirs, "skills.project_dirs")
+  end
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
   assert(positions[opts.ui.position], "invalid ui.position")
   validate_dimension(opts.ui.width, "ui.width")

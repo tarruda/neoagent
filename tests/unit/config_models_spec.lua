@@ -221,4 +221,25 @@ describe("neoagent configuration and model resolution", function()
       } } })
     end)
   end)
+
+  it("configures or disables contextual resource locations", function()
+    local configured = config.setup({
+      agents = { global_files = { "/global/AGENTS.md" }, project_filenames = {} },
+      skills = { global_dirs = {}, project_dirs = { "skills" } },
+    })
+    assert.are.same({ "/global/AGENTS.md" }, configured.agents.global_files)
+    assert.are.same({}, configured.agents.project_filenames)
+    assert.are.same({}, configured.skills.global_dirs)
+    assert.are.same({ "skills" }, configured.skills.project_dirs)
+
+    configured = config.setup({ agents = false, skills = false })
+    assert.is_false(configured.agents)
+    assert.is_false(configured.skills)
+    assert.has_error(function() config.setup({ agents = "yes" }) end)
+    assert.has_error(function() config.setup({ agents = { global_files = "AGENTS.md" } }) end)
+    assert.has_error(function() config.setup({ agents = { project_filenames = { false } } }) end)
+    assert.has_error(function() config.setup({ skills = "yes" }) end)
+    assert.has_error(function() config.setup({ skills = { global_dirs = "skills" } }) end)
+    assert.has_error(function() config.setup({ skills = { project_dirs = { "" } } }) end)
+  end)
 end)

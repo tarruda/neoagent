@@ -154,6 +154,17 @@ require("neoagent").setup({
   execute_tool = nil,           -- function(tool, arguments, ctx)
   interaction = nil,            -- replace the default chat.run composition
   max_tool_rounds = 12,
+  agents = {
+    global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
+    project_filenames = { "AGENTS.md" },
+  },
+  skills = {
+    global_dirs = {
+      vim.fn.expand("~/.agents/skills"),
+      vim.fn.stdpath("config") .. "/neoagent/skills",
+    },
+    project_dirs = { ".agents/skills" },
+  },
   persistence = {
     enabled = true,             -- false disables bundled sessions and settings
     workspace_settings = true,  -- merge cwd-scoped model/thinking overrides
@@ -274,7 +285,51 @@ require("neoagent").setup({
 ```
 
 The callback context contains `session`, `model`, `workspace`, the submitted
-`prompt`, and the active `tools`.
+`prompt`, the active `tools`, and the discovered `agents` and `skills`. A
+custom string or callback replaces the base prompt; contextual resources are
+still appended. Set their configuration to `false` when the final prompt must
+exclude them.
+
+### AGENTS.md and skills
+
+The default controller reads `stdpath("config") .. "/AGENTS.md"`, then every
+`AGENTS.md` from the Git root through the active Workspace directory. Existing
+files are included in broad-to-specific order, so the nearest instructions
+have the last word. If no Git root exists, discovery walks from the filesystem
+root.
+
+Skills use the [Agent Skills](https://agentskills.io) `SKILL.md` layout. By
+default Neoagent recursively scans `~/.agents/skills`,
+`stdpath("config") .. "/neoagent/skills"`, and `.agents/skills` in each project
+ancestor. Later global directories override earlier ones by skill name;
+project skills override global skills, and nearer project skills override
+broader ones.
+
+Only each skill's name, description, and `SKILL.md` path enter the prompt. The
+model uses `read_file` to load the complete instructions when a task matches,
+then resolves referenced files relative to the skill directory. Consequently,
+skills are included only when the active tool set contains `read_file`.
+
+Replace either directory/file list to customize discovery, use an empty list
+to disable one class of location, or set `agents = false` or `skills = false`
+to disable that resource type entirely:
+
+```lua
+require("neoagent").setup({
+  agents = {
+    global_files = {},
+    project_filenames = { "AGENTS.md", "NEOAGENT.md" },
+  },
+  skills = {
+    global_dirs = { vim.fn.stdpath("config") .. "/my-skills" },
+    project_dirs = {},
+  },
+})
+```
+
+These layers are usable without the controller or UI. `neoagent.agents` and
+`neoagent.skills` each expose `discover(opts)` and `format(resources)`; their
+discovery results include non-fatal `diagnostics` for malformed resources.
 
 Set a mapping to `false` to disable it. With `position = "auto"`, Neoagent
 prefers floating over a non-focused ordinary window so the source stays

@@ -27,4 +27,13 @@ function M.default(context)
   }, "\n\n")
 end
 
+function M.compose(prompt, context)
+  local sections = { prompt }
+  local agents = require("neoagent.agents").format(context.agents)
+  local skills = require("neoagent.skills").format(context.skills)
+  if agents ~= "" then sections[#sections + 1] = agents end
+  if skills ~= "" then sections[#sections + 1] = skills end
+  return table.concat(sections, "\n\n")
+end
+
 return M

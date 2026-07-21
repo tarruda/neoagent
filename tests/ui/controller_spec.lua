@@ -25,6 +25,8 @@ describe("neoagent default controller", function()
       providers = { fake = { api = "fake-api", models = { test = {} } } },
       apis = { ["fake-api"] = function() return model end },
       tools = {},
+      agents = false,
+      skills = false,
       ui = { position = "center" },
     }
     for key, value in pairs(extra or {}) do options[key] = value end
@@ -75,6 +77,8 @@ describe("neoagent default controller", function()
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake-api", models = { test = {} } } },
       apis = { ["fake-api"] = function() return model end },
+      agents = false,
+      skills = false,
       interaction = function(options)
         captured = options
         return { cancel = function()
@@ -92,6 +96,74 @@ describe("neoagent default controller", function()
     assert.is_nil(captured.system_prompt:find("- grep:", 1, true))
     assert.is_nil(captured.system_prompt:find("- find:", 1, true))
     assert.is_truthy(captured.system_prompt:find("Current working directory: " .. vim.fn.getcwd(), 1, true))
+    assert.is_true(neoagent.stop())
+  end)
+
+  it("composes AGENTS.md and skill metadata into the controller prompt", function()
+    local root = vim.fn.tempname()
+    local skill_root = root .. "/skills"
+    local agents_path = root .. "/AGENTS.md"
+    local skill_path = skill_root .. "/review/SKILL.md"
+    paths[#paths + 1] = root
+    vim.fn.mkdir(vim.fs.dirname(skill_path), "p")
+    vim.fn.writefile({ "Always run the focused tests." }, agents_path)
+    vim.fn.writefile({
+      "---", "name: review", "description: Review Lua changes", "---",
+      "PRIVATE SKILL BODY", "",
+    }, skill_path)
+    local invalid_path = skill_root .. "/invalid/SKILL.md"
+    vim.fn.mkdir(vim.fs.dirname(invalid_path), "p")
+    vim.fn.writefile({ "missing frontmatter" }, invalid_path)
+    local captured
+    setup_model(fake_model.new({}), {
+      agents = { global_files = { agents_path }, project_filenames = {} },
+      skills = { global_dirs = { skill_root }, project_dirs = {} },
+      tools = { { name = "read_file", description = "Read a file" } },
+      system_prompt = function(context)
+        assert.are.equal(1, #context.agents)
+        assert.are.equal(1, #context.skills)
+        return "Custom base for " .. context.prompt
+      end,
+      interaction = function(options)
+        captured = options
+        return { cancel = function()
+          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
+        end }
+      end,
+    })
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message = message, level = level }
+    end
+    local ok, run = pcall(neoagent.send, "inspect")
+    vim.notify = original_notify
+    assert(ok)
+    assert(run)
+    assert.matches("missing YAML frontmatter", notifications[1].message)
+    assert.are.equal(vim.log.levels.WARN, notifications[1].level)
+    assert.matches("^Custom base for inspect", captured.system_prompt)
+    assert.matches("Always run the focused tests", captured.system_prompt)
+    assert.matches("<name>review</name>", captured.system_prompt)
+    assert.matches("Review Lua changes", captured.system_prompt)
+    assert.matches(vim.pesc(vim.uv.fs_realpath(skill_path)), captured.system_prompt)
+    assert.is_nil(captured.system_prompt:find("PRIVATE SKILL BODY", 1, true))
+    assert.is_true(neoagent.stop())
+
+    setup_model(fake_model.new({}), {
+      agents = false,
+      skills = { global_dirs = { skill_root }, project_dirs = {} },
+      tools = {},
+      system_prompt = "Tool-free chat",
+      interaction = function(options)
+        captured = options
+        return { cancel = function()
+          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
+        end }
+      end,
+    })
+    assert(neoagent.send("chat"))
+    assert.are.equal("Tool-free chat", captured.system_prompt)
     assert.is_true(neoagent.stop())
   end)
 

@@ -37,6 +37,9 @@ changes.
   store is optional and injected.
 - The passive View consumes messages and events. It does not own or invoke the
   agent loop.
+- AGENTS.md and skill discovery are optional higher-level resource modules.
+  The default controller injects complete AGENTS.md files broad-to-specific,
+  but only skill metadata; complete skill instructions are read on demand.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
   storage layer; the default controller may refresh an unmodified matching
   buffer after a successful disk mutation.

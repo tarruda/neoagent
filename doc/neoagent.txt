@@ -88,6 +88,17 @@ The important options are: >lua
     execute_tool = nil,
     interaction = nil,
     max_tool_rounds = 12,
+    agents = {
+      global_files = { stdpath("config") .. "/AGENTS.md" },
+      project_filenames = { "AGENTS.md" },
+    },
+    skills = {
+      global_dirs = {
+        expand("~/.agents/skills"),
+        stdpath("config") .. "/neoagent/skills",
+      },
+      project_dirs = { ".agents/skills" },
+    },
     persistence = {
       enabled = true,
       workspace_settings = true,
@@ -147,7 +158,36 @@ the exported default in a callback: >lua
   })
 <
 The callback context contains `session`, `model`, `workspace`, the submitted
-`prompt`, and the active `tools`.
+`prompt`, the active `tools`, and discovered `agents` and `skills`. A custom
+value replaces the base prompt, but contextual resources are appended unless
+their configuration is disabled.
+
+AGENTS.MD AND SKILLS                                  *neoagent-context-files*
+
+The default controller loads the global file
+`stdpath("config") .. "/AGENTS.md"`, followed by every `AGENTS.md` from the Git
+root through the active Workspace. Without a Git root it walks from the
+filesystem root. Existing files enter the prompt in broad-to-specific order.
+
+Agent Skills are `SKILL.md` files with YAML frontmatter containing `name` and
+`description`. Neoagent recursively scans these defaults:
+
+  ~/.agents/skills
+  stdpath("config") .. "/neoagent/skills"
+  <each project ancestor>/.agents/skills
+
+Later global locations override earlier skills with the same name. Project
+skills override global skills, and nearer project skills override broader
+ones. Only skill metadata and the `SKILL.md` path enter the prompt. The model
+loads full instructions on demand with `read_file`, so skills are included only
+when that tool is active. Relative references inside a skill resolve from the
+directory containing its `SKILL.md`.
+
+Replace the configured lists to customize discovery. An empty list disables
+that class of locations. Set `agents = false` or `skills = false` to disable a
+resource type completely. The independent `neoagent.agents` and
+`neoagent.skills` modules expose `discover(opts)` and `format(resources)` for
+custom workflows; discovery results include non-fatal `diagnostics`.
 
 Provider, model, and Model:stream() options may each define `request_opts` as
 a table or callback. Layers merge in that order. Only `url`, `headers`, and
