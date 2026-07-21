@@ -1,25 +1,59 @@
+local markdown = require("neoagent.markdown")
 local util = require("neoagent.util")
 
 local M = {}
 local View = {}
 View.__index = View
 
-local highlights = {
-  NeoagentUser = "Identifier",
-  NeoagentAssistant = "Normal",
+local highlight_links = {
+  NeoagentAccent = "Identifier",
   NeoagentThinking = "Comment",
-  NeoagentToolPending = "DiagnosticInfo",
-  NeoagentToolRunning = "DiagnosticWarn",
-  NeoagentToolSuccess = "DiagnosticOk",
+  NeoagentToolOutput = "Comment",
   NeoagentError = "DiagnosticError",
   NeoagentMuted = "Comment",
-  NeoagentTitle = "Title",
   NeoagentBorder = "FloatBorder",
+  NeoagentMarkdownHeading = "Title",
+  NeoagentMarkdownLink = "Underlined",
+  NeoagentMarkdownLinkUrl = "Comment",
+  NeoagentMarkdownCode = "String",
+  NeoagentMarkdownCodeBlock = "String",
+  NeoagentMarkdownCodeBorder = "Comment",
+  NeoagentMarkdownQuote = "Comment",
+  NeoagentMarkdownQuoteBorder = "Comment",
+  NeoagentMarkdownHr = "Comment",
+  NeoagentMarkdownListBullet = "Special",
+  NeoagentMarkdownTableBorder = "Comment",
+  NeoagentDiffAdded = "DiagnosticOk",
+  NeoagentDiffRemoved = "DiagnosticError",
+  NeoagentDiffContext = "Comment",
 }
 
 local function define_highlights()
-  for name, link in pairs(highlights) do
+  for name, link in pairs(highlight_links) do
     vim.api.nvim_set_hl(0, name, { link = link, default = true })
+  end
+  for name, value in pairs({
+    NeoagentMarkdownBold = { bold = true },
+    NeoagentMarkdownItalic = { italic = true },
+    NeoagentMarkdownUnderline = { underline = true },
+    NeoagentMarkdownStrike = { strikethrough = true },
+  }) do
+    value.default = true
+    vim.api.nvim_set_hl(0, name, value)
+  end
+  local light = vim.o.background == "light"
+  for name, background in pairs(light and {
+    NeoagentUserBackground = "#e8e8e8",
+    NeoagentToolPendingBackground = "#e8e8f0",
+    NeoagentToolSuccessBackground = "#e8f0e8",
+    NeoagentToolErrorBackground = "#f0e8e8",
+  } or {
+    NeoagentUserBackground = "#343541",
+    NeoagentToolPendingBackground = "#282832",
+    NeoagentToolSuccessBackground = "#283228",
+    NeoagentToolErrorBackground = "#3c2828",
+  }) do
+    vim.api.nvim_set_hl(0, name, { bg = background, default = true })
   end
 end
 
@@ -90,34 +124,6 @@ local function split_text(text)
   return vim.split(text or "", "\n", { plain = true })
 end
 
-local function preview(value, limit)
-  limit = limit or 4096
-  if #value <= limit then return value end
-  local half = math.floor((limit - 32) / 2)
-  return value:sub(1, half) .. "\n... [omitted] ...\n" .. value:sub(-half)
-end
-
-local function stable_json(value, indent)
-  indent = indent or 0
-  if value == vim.NIL then return "null" end
-  if type(value) ~= "table" then return vim.json.encode(value) end
-  if next(value) ~= nil and util.is_list(value) then
-    if #value == 0 then return "[]" end
-    local parts = {}
-    for _, child in ipairs(value) do parts[#parts + 1] = string.rep(" ", indent + 2) .. stable_json(child, indent + 2) end
-    return "[\n" .. table.concat(parts, ",\n") .. "\n" .. string.rep(" ", indent) .. "]"
-  end
-  local keys = {}
-  for key in pairs(value) do keys[#keys + 1] = key end
-  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-  if #keys == 0 then return "{}" end
-  local parts = {}
-  for _, key in ipairs(keys) do
-    parts[#parts + 1] = string.rep(" ", indent + 2) .. vim.json.encode(tostring(key)) .. ": " .. stable_json(value[key], indent + 2)
-  end
-  return "{\n" .. table.concat(parts, ",\n") .. "\n" .. string.rep(" ", indent) .. "}"
-end
-
 local function content_text(content)
   local parts = {}
   for _, block in ipairs(content or {}) do
@@ -138,12 +144,253 @@ local function image_notes(content)
   return result
 end
 
-local function block_lines(block)
-  local lines = { block.title }
-  for _, line in ipairs(split_text(block.text)) do lines[#lines + 1] = line end
-  for _, line in ipairs(block.extra or {}) do lines[#lines + 1] = line end
-  lines[#lines + 1] = ""
-  return lines
+local function rendered()
+  return { lines = {}, highlights = {}, line_groups = {} }
+end
+
+local function add_line(result, text, spans, line_group)
+  local row = #result.lines
+  result.lines[#result.lines + 1] = text
+  if line_group then result.line_groups[row] = line_group end
+  for _, span in ipairs(spans or {}) do
+    if span.end_col > span.col then
+      result.highlights[#result.highlights + 1] = {
+        row = row,
+        col = span.col,
+        end_col = span.end_col,
+        group = span.group,
+      }
+    end
+  end
+end
+
+local function append_rendered(target, source, gap)
+  if #source.lines == 0 then return end
+  if gap and #target.lines > 0 then add_line(target, "") end
+  local row_offset = #target.lines
+  vim.list_extend(target.lines, source.lines)
+  for row, group in pairs(source.line_groups or {}) do target.line_groups[row + row_offset] = group end
+  for _, span in ipairs(source.highlights or {}) do
+    target.highlights[#target.highlights + 1] = {
+      row = span.row + row_offset,
+      col = span.col,
+      end_col = span.end_col,
+      group = span.group,
+    }
+  end
+end
+
+local function plain(text, group)
+  local result = rendered()
+  if text == nil or text == "" then return result end
+  for _, line in ipairs(split_text(text)) do
+    local spans = #line > 0 and { { col = 0, end_col = #line, group = group or "NeoagentToolOutput" } } or nil
+    add_line(result, line, spans)
+  end
+  return result
+end
+
+local function segments(parts)
+  local text, spans = "", {}
+  for _, part in ipairs(parts) do
+    local start = #text
+    text = text .. (part.text or "")
+    if part.group and #text > start then
+      spans[#spans + 1] = { col = start, end_col = #text, group = part.group }
+    end
+  end
+  return text, spans
+end
+
+local function card(content, background)
+  local result = rendered()
+  add_line(result, "", nil, background)
+  for row, line in ipairs(content.lines) do
+    local spans = {}
+    for _, span in ipairs(content.highlights) do
+      if span.row == row - 1 then
+        spans[#spans + 1] = {
+          col = span.col + 1,
+          end_col = span.end_col + 1,
+          group = span.group,
+        }
+      end
+    end
+    add_line(result, " " .. line .. " ", spans, background)
+  end
+  add_line(result, "", nil, background)
+  add_line(result, "")
+  return result
+end
+
+local function prose(content, default_group, italic)
+  local result = rendered()
+  for row, line in ipairs(content.lines) do
+    local spans = {}
+    for _, span in ipairs(content.highlights) do
+      if span.row == row - 1 then
+        spans[#spans + 1] = {
+          col = span.col + 1,
+          end_col = span.end_col + 1,
+          group = span.group,
+        }
+      end
+    end
+    if #line > 0 and default_group then
+      spans[#spans + 1] = { col = 1, end_col = #line + 1, group = default_group }
+    end
+    if #line > 0 and italic then
+      spans[#spans + 1] = { col = 1, end_col = #line + 1, group = "NeoagentMarkdownItalic" }
+    end
+    add_line(result, " " .. line, spans)
+  end
+  add_line(result, "")
+  return result
+end
+
+local function partial_string(raw, key)
+  if not raw or raw == "" then return nil end
+  local key_start = raw:find('"' .. key .. '"', 1, true)
+  if not key_start then return nil end
+  local colon = raw:find(":", key_start + #key + 2, true)
+  local quote = colon and raw:find('"', colon + 1, true) or nil
+  if not quote then return nil end
+  local escaped = false
+  for index = quote + 1, #raw do
+    local char = raw:sub(index, index)
+    if escaped then
+      escaped = false
+    elseif char == "\\" then
+      escaped = true
+    elseif char == '"' then
+      local encoded = raw:sub(quote + 1, index - 1)
+      local ok, value = pcall(vim.json.decode, '"' .. encoded .. '"')
+      return ok and value or encoded
+    end
+  end
+  return raw:sub(quote + 1):gsub("\\n", "\n"):gsub("\\t", "\t"):gsub('\\"', '"'):gsub("\\\\", "\\")
+end
+
+local function partial_number(raw, key)
+  if not raw then return nil end
+  local key_start = raw:find('"' .. key .. '"', 1, true)
+  local colon = key_start and raw:find(":", key_start + #key + 2, true) or nil
+  return colon and tonumber(raw:sub(colon + 1):match("^%s*(-?[%d.]+)")) or nil
+end
+
+local partial_keys = { "path", "file_path", "command", "pattern", "glob", "offset", "limit", "content" }
+
+local function partial_arguments(raw)
+  if not raw or raw == "" then return {} end
+  local ok, decoded = pcall(vim.json.decode, raw)
+  if ok and type(decoded) == "table" then return decoded end
+  local result = {}
+  for _, key in ipairs(partial_keys) do
+    result[key] = partial_string(raw, key) or partial_number(raw, key)
+  end
+  return result
+end
+
+local tool_labels = {
+  read = "read",
+  read_file = "read",
+  write = "write",
+  write_file = "write",
+  edit = "edit",
+  edit_file = "edit",
+}
+
+local function summary_value(value)
+  if value == vim.NIL then return "null" end
+  if type(value) == "string" then
+    return #value > 80 and value:sub(1, 77) .. "..." or value
+  end
+  if type(value) ~= "table" then return tostring(value) end
+  if util.is_list(value) then return "[" .. #value .. " items]" end
+  return "{…}"
+end
+
+local function argument_text(value, fallback)
+  if value == nil then return fallback end
+  return summary_value(value)
+end
+
+local function numeric_argument(value)
+  if type(value) == "number" then return value end
+  if type(value) == "string" then return tonumber(value) end
+end
+
+local function read_range(args)
+  local offset = numeric_argument(args.offset)
+  local limit = numeric_argument(args.limit)
+  if (args.offset == nil or offset) and (args.limit == nil or limit) then
+    local first = offset or 1
+    local last = limit and first + limit - 1
+    return ":" .. first .. (last and "-" .. last or "")
+  end
+  local fields = {}
+  if args.offset ~= nil then fields[#fields + 1] = "offset=" .. argument_text(args.offset, "?") end
+  if args.limit ~= nil then fields[#fields + 1] = "limit=" .. argument_text(args.limit, "?") end
+  return " (" .. table.concat(fields, " ") .. ")"
+end
+
+local function tool_title(name, args)
+  name = type(name) == "string" and name or "<tool>"
+  local label = tool_labels[name] or name
+  if name == "shell" then
+    return segments({ { text = "$ " .. argument_text(args.command, "…"), group = "NeoagentMarkdownBold" } })
+  end
+  local parts = { { text = label, group = "NeoagentMarkdownBold" } }
+  if name == "read" or name == "read_file" or name == "write" or name == "write_file"
+      or name == "edit" or name == "edit_file" then
+    parts[#parts + 1] = { text = " " .. argument_text(args.path or args.file_path, "…"), group = "NeoagentAccent" }
+    if (name == "read" or name == "read_file") and (args.offset or args.limit) then
+      parts[#parts + 1] = { text = read_range(args), group = "DiagnosticWarn" }
+    end
+  elseif name == "grep" then
+    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…"), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in " .. argument_text(args.path, "."), group = "NeoagentToolOutput" }
+    if args.glob then parts[#parts + 1] = { text = " (" .. argument_text(args.glob, "?") .. ")", group = "NeoagentToolOutput" } end
+  elseif name == "find" then
+    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…"), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in " .. argument_text(args.path, "."), group = "NeoagentToolOutput" }
+  else
+    local values = {}
+    for key, value in pairs(args) do
+      if key ~= "content" and value ~= nil then values[#values + 1] = tostring(key) .. "=" .. summary_value(value) end
+    end
+    table.sort(values)
+    if #values > 0 then parts[#parts + 1] = { text = " " .. table.concat(values, " "), group = "NeoagentToolOutput" } end
+  end
+  return segments(parts)
+end
+
+local function limited(text, maximum, tail)
+  local lines = split_text(text)
+  while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
+  if maximum == nil or #lines <= maximum then return lines, 0 end
+  local omitted = #lines - maximum
+  if tail then return vim.list_slice(lines, omitted + 1, #lines), omitted end
+  return vim.list_slice(lines, 1, maximum), omitted
+end
+
+local function output_lines(text, maximum, tail, group, hint)
+  local result = rendered()
+  if text == nil or text == "" then return result end
+  local lines, omitted = limited(text, maximum, tail)
+  for _, line in ipairs(lines) do
+    local line_group = group
+    if group == "diff" then
+      line_group = line:sub(1, 1) == "+" and "NeoagentDiffAdded"
+        or line:sub(1, 1) == "-" and "NeoagentDiffRemoved" or "NeoagentDiffContext"
+    end
+    add_line(result, line, #line > 0 and { { col = 0, end_col = #line, group = line_group } } or nil)
+  end
+  if omitted > 0 then
+    local message = string.format("... (%d more lines%s)", omitted, hint and ", " .. hint .. " to expand" or "")
+    add_line(result, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
+  end
+  return result
 end
 
 function View:_save_view()
@@ -174,19 +421,130 @@ function View:_restore_view(state)
   end)
 end
 
-function View:_mark_block(block, start, finish)
+function View:_content_width()
+  if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
+    return math.max(1, vim.api.nvim_win_get_width(self.transcript_win) - 2)
+  end
+  return math.max(1, vim.o.columns - 2)
+end
+
+function View:_tool_output(block, args)
+  local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
+  local message = block.message
+  local update = block.update
+  local value = message and content_text(message.content) or update and content_text(update.content) or nil
+  local hint = (self.config.mappings or {}).expand_tools
+  hint = type(hint) == "string" and hint or nil
+  local maximum
+  if not self.tools_expanded then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
+
+  if name == "write" or name == "write_file" then
+    return output_lines(args.content, maximum, false, "NeoagentToolOutput", hint)
+  elseif name == "edit" or name == "edit_file" then
+    local diff = message and message.details and message.details.diff
+    if diff and diff ~= "" then return output_lines(diff, maximum, false, "diff", hint) end
+    if message and message.isError then return output_lines(value, maximum, false, "NeoagentError", hint) end
+    return rendered()
+  elseif name == "read" or name == "read_file" then
+    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+  elseif name == "shell" then
+    return output_lines(value, maximum, true, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+  elseif name == "grep" or name == "find" then
+    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+  elseif message and message.isError then
+    return output_lines(value, maximum, false, "NeoagentError", hint)
+  end
+  return output_lines(value, maximum, false, "NeoagentToolOutput", hint)
+end
+
+function View:_render_block(block)
+  if block.kind == "user" then
+    local content = markdown.render(block.text, { width = self:_content_width(), preserve_markers = true })
+    for _, note in ipairs(block.extra or {}) do
+      add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
+    end
+    return card(content, "NeoagentUserBackground")
+  elseif block.kind == "assistant" then
+    return prose(markdown.render(block.text, { width = self:_content_width() }))
+  elseif block.kind == "thinking" then
+    return prose(markdown.render(block.text, { width = self:_content_width() }), "NeoagentThinking", true)
+  elseif block.kind == "notice" then
+    return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
+  end
+
+  local args = block.call and block.call.arguments or partial_arguments(block.raw)
+  if type(args) ~= "table" then args = {} end
+  local content = rendered()
+  local title, spans = tool_title(block.name or (block.call and block.call.name), args)
+  add_line(content, title, spans)
+  append_rendered(content, self:_tool_output(block, args), true)
+  for _, note in ipairs(block.message and image_notes(block.message.content) or {}) do
+    add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
+  end
+  local background = block.state == "error" and "NeoagentToolErrorBackground"
+    or block.state == "success" and "NeoagentToolSuccessBackground" or "NeoagentToolPendingBackground"
+  return card(content, background)
+end
+
+function View:_mark_block(block, start, finish, content)
   block.mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
     end_row = finish,
     right_gravity = false,
     end_right_gravity = true,
   })
-  block.highlight_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
-    end_row = start,
-    end_col = #block.title,
-    hl_group = block.highlight,
-    priority = 100,
-  })
+  for row, group in pairs(content.line_groups) do
+    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + row, 0, {
+      line_hl_group = group,
+      priority = 50,
+    })
+  end
+  for _, span in ipairs(content.highlights) do
+    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + span.row, span.col, {
+      end_row = start + span.row,
+      end_col = span.end_col,
+      hl_group = span.group,
+      priority = 100,
+    })
+  end
   block.dirty = false
+end
+
+function View:_remove_status()
+  if not self.status_mark then return end
+  local position = vim.api.nvim_buf_get_extmark_by_id(self.transcript_buf, self.namespace, self.status_mark, { details = true })
+  if #position > 0 then
+    for _, mark in ipairs(self.status_decorations or {}) do pcall(vim.api.nvim_buf_del_extmark, self.transcript_buf, self.namespace, mark) end
+    vim.api.nvim_buf_del_extmark(self.transcript_buf, self.namespace, self.status_mark)
+    vim.api.nvim_buf_set_lines(self.transcript_buf, position[1], position[3].end_row, false, {})
+  end
+  self.status_mark, self.status_decorations = nil, nil
+end
+
+function View:_render_status()
+  if self.context.state ~= "running" and self.context.state ~= "stopping" then return end
+  local count = vim.api.nvim_buf_line_count(self.transcript_buf)
+  local start = self.has_rendered and count or 0
+  local finish = self.has_rendered and count or count
+  local frame = self.spinner_frames[self.spinner_frame]
+  local label = self.context.state == "stopping" and "Stopping..." or "Working..."
+  vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, { " " .. frame .. " " .. label })
+  self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
+    end_row = start + 1,
+    right_gravity = false,
+    end_right_gravity = true,
+  })
+  self.status_decorations = {
+    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 1, {
+      end_col = 1 + #frame,
+      hl_group = "NeoagentAccent",
+      priority = 100,
+    }),
+    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 2 + #frame, {
+      end_col = 2 + #frame + #label,
+      hl_group = "NeoagentMuted",
+      priority = 100,
+    }),
+  }
 end
 
 function View:_flush()
@@ -194,19 +552,21 @@ function View:_flush()
   if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
   local saved = self:_save_view()
   vim.bo[self.transcript_buf].modifiable = true
+  self:_remove_status()
   if self.full_dirty then
     vim.api.nvim_buf_clear_namespace(self.transcript_buf, self.namespace, 0, -1)
     local lines = {}
     local ranges = {}
     for _, block in ipairs(self.blocks) do
+      local content = self:_render_block(block)
       local start = #lines
-      vim.list_extend(lines, block_lines(block))
-      ranges[#ranges + 1] = { block = block, start = start, finish = #lines }
+      vim.list_extend(lines, content.lines)
+      ranges[#ranges + 1] = { block = block, content = content, start = start, finish = #lines }
     end
     if #lines == 0 then lines = { "" } end
     vim.api.nvim_buf_set_lines(self.transcript_buf, 0, -1, false, lines)
     for _, range in ipairs(ranges) do
-      self:_mark_block(range.block, range.start, range.finish)
+      self:_mark_block(range.block, range.start, range.finish, range.content)
     end
     self.has_rendered = #ranges > 0
     self.full_dirty = false
@@ -220,22 +580,20 @@ function View:_flush()
         if #position > 0 then
           start = position[1]
           finish = position[3].end_row
-          vim.api.nvim_buf_del_extmark(self.transcript_buf, self.namespace, block.mark)
-          if block.highlight_mark then
-            vim.api.nvim_buf_del_extmark(self.transcript_buf, self.namespace, block.highlight_mark)
-          end
+          vim.api.nvim_buf_clear_namespace(self.transcript_buf, self.namespace, start, finish)
         else
           local count = vim.api.nvim_buf_line_count(self.transcript_buf)
           start = self.has_rendered and count or 0
           finish = self.has_rendered and count or count
         end
-        local rendered = block_lines(block)
-        vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, rendered)
-        self:_mark_block(block, start, start + #rendered)
+        local content = self:_render_block(block)
+        vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, content.lines)
+        self:_mark_block(block, start, start + #content.lines, content)
         self.has_rendered = true
       end
     end
   end
+  self:_render_status()
   vim.bo[self.transcript_buf].modifiable = false
   self:_restore_view(saved)
 end
@@ -257,20 +615,18 @@ end
 
 function View:_message(message)
   if message.role == "user" then
-    local block = self:_add_block({ title = "You", text = util.text_content(message.content), extra = image_notes(message.content), highlight = "NeoagentUser" })
-    return block
+    return self:_add_block({ kind = "user", text = util.text_content(message.content), extra = image_notes(message.content) })
   elseif message.role == "assistant" then
     for _, content in ipairs(message.content or {}) do
       if content.type == "thinking" then
-        self:_add_block({ title = "Thinking", text = content.thinking or "", highlight = "NeoagentThinking" })
+        self:_add_block({ kind = "thinking", text = content.thinking or "" })
       elseif content.type == "text" then
-        self:_add_block({ title = "Assistant", text = content.text or "", highlight = "NeoagentAssistant" })
+        self:_add_block({ kind = "assistant", text = content.text or "" })
       elseif content.type == "toolCall" then
         local block = self:_add_block({
-          title = "… " .. (content.name or "<tool>") .. "  queued",
-          text = preview(stable_json(content.arguments or vim.empty_dict())),
-          arguments_text = preview(stable_json(content.arguments or vim.empty_dict())),
-          highlight = "NeoagentToolPending",
+          kind = "tool",
+          name = content.name,
+          state = "pending",
           call = util.copy(content),
         })
         if content.id then self.calls[content.id] = block end
@@ -279,8 +635,14 @@ function View:_message(message)
   elseif message.role == "toolResult" then
     local block = self.calls[message.toolCallId]
     if block and block.finished then return block end
-    local title = (message.isError and "✗ " or "✓ ") .. (message.toolName or "<tool>")
-    return self:_add_block({ title = title, text = content_text(message.content), extra = image_notes(message.content), highlight = message.isError and "NeoagentError" or "NeoagentToolSuccess", finished = true })
+    if not block then
+      block = self:_add_block({ kind = "tool", name = message.toolName, call = { name = message.toolName, arguments = {} } })
+      if message.toolCallId then self.calls[message.toolCallId] = block end
+    end
+    block.message = util.copy(message)
+    block.state = message.isError and "error" or "success"
+    block.finished, block.dirty = true, true
+    return block
   end
 end
 
@@ -297,13 +659,13 @@ end
 function View:apply(event)
   if event.type == "text_delta" then
     if not self.live_text then
-      self.live_text = self:_add_block({ title = "Assistant", text = "", highlight = "NeoagentAssistant" })
+      self.live_text = self:_add_block({ kind = "assistant", text = "" })
     end
     self.live_text.text = self.live_text.text .. (event.text or "")
     self.live_text.dirty = true
   elseif event.type == "thinking_delta" then
     if not self.live_thinking then
-      self.live_thinking = self:_add_block({ title = "Thinking", text = "", highlight = "NeoagentThinking" })
+      self.live_thinking = self:_add_block({ kind = "thinking", text = "" })
     end
     self.live_thinking.text = self.live_thinking.text .. (event.text or "")
     self.live_thinking.dirty = true
@@ -311,14 +673,12 @@ function View:apply(event)
     local key = self.response .. ":" .. tostring(event.index)
     local block = self.pending_calls[key]
     if not block then
-      block = self:_add_block({ title = "◌ <tool>  receiving", text = "", highlight = "NeoagentToolPending", raw = "" })
+      block = self:_add_block({ kind = "tool", name = event.name, state = "pending", raw = "" })
       self.pending_calls[key] = block
     end
     block.name = event.name or block.name
     block.id = event.id or block.id
     block.raw = block.raw .. (event.arguments_delta or "")
-    block.title = "◌ " .. (block.name or "<tool>") .. "  receiving"
-    block.text = preview(block.raw)
     block.dirty = true
   elseif event.type == "message_end" then
     local message = event.message
@@ -327,19 +687,16 @@ function View:apply(event)
       local call_index = 0
       for _, content in ipairs(message.content or {}) do
         if content.type == "text" then
-          if not self.live_text then self.live_text = self:_add_block({ title = "Assistant", text = content.text or "", highlight = "NeoagentAssistant" }) end
+          if not self.live_text then self.live_text = self:_add_block({ kind = "assistant", text = content.text or "" }) end
         elseif content.type == "thinking" then
-          if not self.live_thinking then self.live_thinking = self:_add_block({ title = "Thinking", text = content.thinking or "", highlight = "NeoagentThinking" }) end
+          if not self.live_thinking then self.live_thinking = self:_add_block({ kind = "thinking", text = content.thinking or "" }) end
         elseif content.type == "toolCall" then
           local block = self.pending_calls[self.response .. ":" .. call_index]
           if not block then
-            block = self:_add_block({ highlight = "NeoagentToolPending" })
+            block = self:_add_block({ kind = "tool", state = "pending" })
           end
           block.call = util.copy(content)
           block.id, block.name = content.id, content.name
-          block.title = "… " .. (content.name or "<tool>") .. "  queued"
-          block.arguments_text = preview(stable_json(content.arguments or vim.empty_dict()))
-          block.text = block.arguments_text
           if content.id then self.calls[content.id] = block end
           block.dirty = true
           call_index = call_index + 1
@@ -351,33 +708,27 @@ function View:apply(event)
   elseif event.type == "tool_start" then
     local block = self.calls[event.call.id]
     if not block then
-      block = self:_add_block({ text = preview(stable_json(event.call.arguments or vim.empty_dict())) })
+      block = self:_add_block({ kind = "tool" })
       self.calls[event.call.id] = block
     end
-    block.title = "● " .. event.call.name .. "  running"
-    block.highlight = "NeoagentToolRunning"
+    block.call, block.name, block.state = util.copy(event.call), event.call.name, "running"
     block.dirty = true
   elseif event.type == "tool_update" then
     local block = self.calls[event.call.id]
     if block then
-      local text = content_text(event.result.content)
-      local tail = require("neoagent.tools.truncate").tail(text, { max_lines = 12, max_bytes = 8 * 1024 })
-      block.text = (block.arguments_text and (block.arguments_text .. "\n\n") or "") .. tail.content
+      block.update = util.copy(event.result)
       block.dirty = true
     end
   elseif event.type == "tool_end" then
     local message = event.message
     local block = self.calls[event.call.id]
     if not block then
-      block = self:_add_block({})
+      block = self:_add_block({ kind = "tool" })
       self.calls[event.call.id] = block
     end
-    block.title = (message.isError and "✗ " or "✓ ") .. event.call.name
-    block.highlight = message.isError and "NeoagentError" or "NeoagentToolSuccess"
-    local text = content_text(message.content)
-    local head = require("neoagent.tools.truncate").head(text, { max_lines = 12, max_bytes = 8 * 1024 })
-    block.text = (block.arguments_text and (block.arguments_text .. "\n\n") or "") .. head.content
-    block.extra, block.finished = image_notes(message.content), true
+    block.call, block.name, block.message = util.copy(event.call), event.call.name, util.copy(message)
+    block.state = message.isError and "error" or "success"
+    block.update, block.finished = nil, true
     block.dirty = true
   end
   self:_schedule_flush()
@@ -387,9 +738,9 @@ function View:finish(result)
   if not result.ok then
     local cancelled = result.error and result.error.kind == "cancelled"
     self:_add_block({
-      title = cancelled and "Stopped" or "Failed",
+      kind = "notice",
       text = result.error and result.error.message or "Unknown error",
-      highlight = cancelled and "NeoagentMuted" or "NeoagentError",
+      error = not cancelled,
     })
   end
   self.context.state = "idle"
@@ -434,6 +785,8 @@ function View:_map_buffers()
   end)
   self:_map(self.input_buf, "n", mappings.toggle_focus, function() self:focus_transcript() end)
   self:_map(self.transcript_buf, "n", mappings.toggle_focus, function() self:focus_input() end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.expand_tools, function() self:toggle_tools() end)
+  self:_map(self.transcript_buf, "n", mappings.expand_tools, function() self:toggle_tools() end)
   local docks = {
     dock_left = "left", dock_bottom = "bottom", dock_top = "top",
     dock_right = "right", dock_center = "center",
@@ -490,7 +843,7 @@ function View:_window_options(win, transcript)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].foldcolumn = "0"
   vim.wo[win].cursorline = false
-  vim.wo[win].winhl = "Normal:NormalFloat,FloatBorder:NeoagentBorder"
+  vim.wo[win].winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder"
   if transcript then vim.wo[win].spell = false end
 end
 
@@ -500,7 +853,11 @@ function View:_title()
 end
 
 function View:open(origin)
-  if self:is_open() then self:focus_input() return true end
+  if self:is_open() then
+    self:focus_input()
+    vim.schedule(function() if not self.destroyed and self:is_open() then self:focus_input() end end)
+    return true
+  end
   self:_ensure_buffers()
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
@@ -518,11 +875,14 @@ function View:open(origin)
   self:_window_options(self.transcript_win, true)
   self:_window_options(self.input_win, false)
   self:_flush()
+  self:_sync_spinner()
   vim.cmd("startinsert")
+  vim.schedule(function() if not self.destroyed and self:is_open() then self:focus_input() end end)
   return true
 end
 
 function View:close()
+  self:_stop_spinner()
   local transcript_win, input_win = self.transcript_win, self.input_win
   self.transcript_win, self.input_win = nil, nil
   if transcript_win and vim.api.nvim_win_is_valid(transcript_win) then vim.api.nvim_win_close(transcript_win, true) end
@@ -555,6 +915,32 @@ function View:set_context(context)
     cfg.title_pos = "center"
     vim.api.nvim_win_set_config(self.transcript_win, cfg)
   end
+  self:_sync_spinner()
+end
+
+function View:_stop_spinner()
+  if not self.spinner_timer then return end
+  self.spinner_timer:stop()
+  self.spinner_timer:close()
+  self.spinner_timer = nil
+end
+
+function View:_sync_spinner()
+  local active = self.context.state == "running" or self.context.state == "stopping"
+  if not active or not self:is_open() then
+    self:_stop_spinner()
+    self:_schedule_flush()
+    return
+  end
+  if self.spinner_timer then return end
+  local timer = vim.uv.new_timer()
+  self.spinner_timer = timer
+  timer:start(80, 80, vim.schedule_wrap(function()
+    if self.destroyed or self.spinner_timer ~= timer then return end
+    self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
+    self:_schedule_flush()
+  end))
+  self:_schedule_flush()
 end
 
 function View:get_input()
@@ -581,9 +967,17 @@ function View:set_position(position)
   configs.input.title_pos = "center"
   vim.api.nvim_win_set_config(self.transcript_win, configs.transcript)
   vim.api.nvim_win_set_config(self.input_win, configs.input)
+  self.full_dirty = true
+  self:_schedule_flush()
   if vim.api.nvim_win_is_valid(focused) then vim.api.nvim_set_current_win(focused) end
   if mode:sub(1, 1) == "i" and focused == self.input_win then vim.cmd("startinsert") end
   return true
+end
+
+function View:toggle_tools()
+  self.tools_expanded = not self.tools_expanded
+  self.full_dirty = true
+  self:_schedule_flush()
 end
 
 function View:focus_transcript()
@@ -612,6 +1006,9 @@ function M.new(opts)
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },
     position = opts.config.position or "auto",
+    tools_expanded = false,
+    spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+    spinner_frame = 1,
   }, View)
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {
@@ -635,11 +1032,13 @@ function M.new(opts)
       end
     end,
   })
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = view.augroup,
+    callback = define_highlights,
+  })
   return view
 end
 
 M.View = View
-M._stable_json = stable_json
-M._preview = preview
 
 return M

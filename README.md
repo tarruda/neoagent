@@ -46,6 +46,14 @@ vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>")
 mode and remains an ordinary editable buffer. The transcript is an ordinary
 read-only buffer, so search, Visual selection, and yank work normally.
 
+The transcript renders assistant Markdown with headings, inline emphasis,
+links, lists, quotes, fenced code, rules, and tables. Thinking is muted and
+italic. User messages and tool calls use separate padded backgrounds; pending
+tools change to green on success or red on failure. Built-in tools show concise
+arguments and useful output instead of JSON. Read output is limited to ten
+lines until tool output is expanded. A spinner remains visible while the agent
+is working.
+
 Default UI mappings:
 
 | Mapping | Action |
@@ -53,6 +61,7 @@ Default UI mappings:
 | `<C-s>` | Send from input, in Normal or Insert mode |
 | `<C-c>` | Clear the current draft and return to Insert mode |
 | `<C-w>w` | Move directly between input and transcript |
+| `<C-o>` | Expand or collapse tool output |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
@@ -93,6 +102,14 @@ require("neoagent").setup({
 Set a mapping to `false` to disable it. With `position = "auto"`, Neoagent
 prefers floating over a non-focused ordinary window so the source stays
 visible; with one editor window it docks right.
+
+Neoagent maps `NormalFloat` to `Normal` in its windows so unstyled content
+inherits the editor background. Its own highlight groups are defined with
+`default = true`, so colors can be changed with normal Neovim configuration.
+The card groups are `NeoagentUserBackground`,
+`NeoagentToolPendingBackground`, `NeoagentToolSuccessBackground`, and
+`NeoagentToolErrorBackground`; Markdown groups use the
+`NeoagentMarkdown...` prefix.
 
 ### Request options
 

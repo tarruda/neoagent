@@ -114,6 +114,47 @@ than screenshots.
 All waits must be predicate-based and bounded. Clean up processes, timers,
 temporary directories, buffers, and windows in teardown paths.
 
+## Interactive UI debugging
+
+Headless UI tests are the primary regression suite, but a real terminal is
+useful while developing or diagnosing visual behavior, focus, mappings,
+streaming, and colors. Use a disposable tmux session so Neovim can keep running
+between commands and its terminal output can be inspected non-interactively.
+
+Start Neovim from the repository with this checkout prepended to
+`runtimepath`:
+
+```sh
+tmux new-session -d -s neoagent-debug -c "$PWD" \
+  "nvim -n -i NONE --cmd 'set runtimepath^=$PWD' README.md"
+```
+
+Use `nvim` from `PATH`, or use the current machine's `NVIM` override from
+`local.mk` when invoking the command. Never put that resolved path in a tracked
+file. `-n -i NONE` avoids swap and ShaDa side effects. The normal user config
+is intentionally loaded so provider settings, colors, and mappings can be
+tested; use a separate disposable config when isolation is the behavior under
+test.
+
+Useful tmux operations:
+
+```sh
+tmux send-keys -t neoagent-debug Escape ':Neoagent' Enter
+tmux send-keys -t neoagent-debug -l 'Inspect this project'
+tmux send-keys -t neoagent-debug C-s
+tmux capture-pane -p -e -t neoagent-debug -S -100
+tmux attach-session -t neoagent-debug
+tmux kill-session -t neoagent-debug
+```
+
+Send literal prompt text with `send-keys -l`; send control keys and `Enter`
+separately. Use the configured submit mapping if it differs from the default
+`<C-s>`. Keep ANSI escapes with `capture-pane -e` when checking foregrounds,
+backgrounds, or font attributes. Capture the UI both during streaming and
+after completion when debugging state transitions. Do not submit prompts to a
+metered or external model unless the user explicitly authorizes it. Always
+close the disposable session when inspection is complete.
+
 ## Coverage and completion
 
 - Every shipped Lua file under `lua/neoagent/` and `plugin/` must appear in the

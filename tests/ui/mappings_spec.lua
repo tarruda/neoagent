@@ -17,6 +17,22 @@ describe("neoagent UI mappings", function()
     assert(vim.wait(1000, function() return vim.api.nvim_win_get_config(result.transcript_win).col < 5 end))
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    local output = {}
+    for index = 1, 11 do output[index] = "result " .. index end
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "read", name = "read_file", arguments = { path = "file.txt" },
+      } } },
+      { role = "toolResult", toolCallId = "read", toolName = "read_file", isError = false,
+        content = { { type = "text", text = table.concat(output, "\n") } } },
+    })
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), "\n"):match("1 more lines") ~= nil
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), "\n"):match("result 11") ~= nil
+    end))
     result:focus_input()
     result:set_input("discard")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)

@@ -19,6 +19,7 @@ local defaults = {
       submit = "<C-s>",
       cancel_input = "<C-c>",
       toggle_focus = "<C-w>w",
+      expand_tools = "<C-o>",
       dock_left = "<C-w>H",
       dock_bottom = "<C-w>J",
       dock_top = "<C-w>K",
