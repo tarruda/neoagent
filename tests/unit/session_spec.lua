@@ -41,4 +41,27 @@ describe("neoagent.session", function()
     assert.is_nil(session)
     assert.are.equal("session", err.kind)
   end)
+
+  it("validates injected stores and initial message collections", function()
+    local session, err = Session.new({ store = {} })
+    assert.is_nil(session)
+    assert.matches("storage contract", err.message)
+
+    session, err = Session.new({ store = {
+      load = function() return nil, "unreadable" end,
+      append = function() return true end,
+    } })
+    assert.is_nil(session)
+    assert.are.equal("storage", err.kind)
+    assert.matches("unreadable", err.message)
+
+    session, err = Session.new({ messages = "not an array" })
+    assert.is_nil(session)
+    assert.matches("array", err.message)
+
+    local initial = { { role = "user", content = "hello" } }
+    session = assert(Session.new({ messages = initial }))
+    initial[1].content = "changed"
+    assert.are.equal("hello", session:messages()[1].content)
+  end)
 end)

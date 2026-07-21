@@ -28,4 +28,15 @@ describe("neoagent.util", function()
     assert.are.equal("two", result.Authorization)
     assert.are.equal("json", result.Accept)
   end)
+
+  it("normalizes list and message content values", function()
+    assert.is_false(util.is_list("not a table"))
+    assert.is_true(util.is_list(util.list()))
+    assert.are.equal("plain", util.text_content("plain"))
+    assert.are.same({ { type = "text", text = "plain" } }, util.content_blocks("plain"))
+    local content = { { type = "text", text = "copied" } }
+    local blocks = util.content_blocks(content)
+    blocks[1].text = "changed"
+    assert.are.equal("copied", content[1].text)
+  end)
 end)

@@ -53,4 +53,55 @@ describe("neoagent.chat", function()
     local result = wait(chat.send(session, "three", { model = replacement }))
     assert.is_true(result.ok)
   end)
+
+  it("surfaces user and assistant persistence failures", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
+    local rejecting = {
+      append = function() return nil, { kind = "storage", message = "read only" } end,
+      messages = function() return {} end,
+    }
+    local ok, err = pcall(chat.send, rejecting, "hello", { model = model })
+    assert.is_false(ok)
+    assert.are.equal("storage", err.kind)
+
+    local messages = {}
+    local writes = 0
+    local flaky = {
+      append = function(_, message)
+        writes = writes + 1
+        if writes == 2 then return nil, { kind = "storage", message = "disk full" } end
+        messages[#messages + 1] = message
+        return true
+      end,
+      messages = function() return vim.deepcopy(messages) end,
+    }
+    model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "lost" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "saved" } }) },
+    })
+    local result = wait(chat.send(flaky, "one", { model = model }))
+    assert.is_false(result.ok)
+    assert.are.equal("disk full", result.error.message)
+    result = wait(chat.send(flaky, "two", { model = model }))
+    assert.is_true(result.ok)
+  end)
+
+  it("stops persisting an agent run after the first storage failure", function()
+    local messages = {}
+    local writes = 0
+    local session = {
+      append = function(_, message)
+        writes = writes + 1
+        if writes == 2 then return nil, { kind = "storage", message = "unavailable" } end
+        messages[#messages + 1] = message
+        return true
+      end,
+      messages = function() return vim.deepcopy(messages) end,
+    }
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "answer" } }) } })
+    local result = wait(chat.run(session, "question", { model = model }))
+    assert.is_false(result.ok)
+    assert.are.equal("unavailable", result.error.message)
+    assert.are.equal(2, writes)
+  end)
 end)

@@ -43,7 +43,7 @@ coverage-report:
 	$(NVIM) --headless -u NONE -i NONE -c "set rtp^=. | lua package.path = './.deps/luacov/src/?.lua;./.deps/luacov/src/?/init.lua;' .. package.path; require('luacov.runner').run_report('.luacov')" -c qa
 
 coverage-check:
-	python3 scripts/check_coverage.py .coverage/luacov.report.out 90
+	python3 scripts/check_coverage.py .coverage/luacov.report.out 98
 
 clean:
 	rm -rf .test-data .coverage

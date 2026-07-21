@@ -58,4 +58,22 @@ describe("neoagent health", function()
     assert.is_true(contains(messages.warn, "magick"))
     assert.is_true(contains(messages.error, "configuration error"))
   end)
+
+  it("accepts the exact minimum curl version and rejects unknown output", function()
+    local root = vim.fn.tempname()
+    roots[#roots + 1] = root
+    vim.fn.mkdir(root, "p")
+    local curl = root .. "/curl"
+    assert(fs.write_all(curl, "#!/bin/sh\nprintf 'curl 7.76.0 exact\\n'\n", "w"))
+    assert(vim.uv.fs_chmod(curl, 493))
+    vim.env.PATH = root
+    require("neoagent.config").setup({ persistence = { enabled = false } })
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.ok, "curl 7.76.0 satisfies"))
+
+    messages.error = {}
+    assert(fs.write_all(curl, "#!/bin/sh\nprintf 'unknown version\\n'\n", "w"))
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.error, "could not determine"))
+  end)
 end)

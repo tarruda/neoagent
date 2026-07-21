@@ -36,6 +36,7 @@ describe("neoagent bundled tools", function()
     local read_only = tools.read_only()
     assert.are.same({ "read_file", "write_file", "edit_file", "shell" }, vim.tbl_map(function(t) return t.name end, coding))
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
+    assert.are.same({ "read_file", "write_file", "edit_file", "shell", "grep", "find" }, vim.tbl_map(function(t) return t.name end, tools.all()))
     assert.are_not.equal(coding[1], tools.coding()[1])
   end)
 
@@ -49,6 +50,33 @@ describe("neoagent bundled tools", function()
     result = execute(read, { path = "nested/file.txt", offset = 2, limit = 1 }, ctx(workspace))
     assert.matches("two", result.content[1].text)
     assert.matches("offset=3", result.content[1].text)
+  end)
+
+  it("validates and bounds text reads", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local read = require("neoagent.tools.read_file")
+    assert.has_error(function() execute(read, { path = "" }, ctx(workspace)) end)
+    assert.has_error(function() execute(read, { path = "missing" }, {}) end)
+    assert.has_error(function() execute(read, { path = "missing" }, ctx(workspace)) end)
+    assert.has_error(function() execute(read, { path = "missing", offset = 0 }, ctx(workspace)) end)
+    assert.has_error(function() execute(read, { path = "missing", limit = 1.5 }, ctx(workspace)) end)
+
+    assert(fs.write_all(root .. "/short.txt", "one\ntwo", "w"))
+    assert.are.equal("one\ntwo", execute(read, { path = "short.txt" }, ctx(workspace)).content[1].text)
+    assert.has_error(function() execute(read, { path = "short.txt", offset = 3 }, ctx(workspace)) end)
+    assert.has_error(function() execute(read, { path = "." }, ctx(workspace)) end)
+
+    assert(fs.write_all(root .. "/wide.txt", string.rep("x", 51 * 1024), "w"))
+    local wide = execute(read, { path = "wide.txt" }, ctx(workspace))
+    assert.matches("exceeds 50.0KB limit", wide.content[1].text)
+
+    local lines = {}
+    for index = 1, 2001 do lines[index] = "line " .. index end
+    assert(fs.write_all(root .. "/long.txt", table.concat(lines, "\n"), "w"))
+    local long = execute(read, { path = "long.txt" }, ctx(workspace))
+    assert.matches("Showing lines 1%-2000 of 2001", long.content[1].text)
+    assert.matches("offset=2001", long.content[1].text)
   end)
 
   it("returns supported images as raw base64 when ImageMagick is absent", function()
@@ -120,6 +148,8 @@ describe("neoagent bundled tools", function()
 
   it("rejects duplicate, overlapping, and no-op edits", function()
     local edit = require("neoagent.tools.edit_file")
+    assert.has_error(function() edit._apply("one", { { oldText = "missing", newText = "two" } }, "f") end)
+    assert.has_error(function() edit._apply("one", { { oldText = 1, newText = "two" } }, "f") end)
     assert.has_error(function() edit._apply("x x", { { oldText = "x", newText = "y" } }, "f") end)
     assert.has_error(function()
       edit._apply("abcdef", {
@@ -127,6 +157,12 @@ describe("neoagent bundled tools", function()
       }, "f")
     end)
     assert.has_error(function() edit._apply("x", { { oldText = "x", newText = "x" } }, "f") end)
+
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert.has_error(function()
+      execute(edit, { path = "missing", edits = {} }, ctx(workspace))
+    end)
   end)
 
   it("runs shell with updates and returns non-zero output as an error result", function()
@@ -141,6 +177,22 @@ describe("neoagent bundled tools", function()
     assert.matches("out", result.content[1].text)
     assert.matches("err", result.content[1].text)
     assert.is_true(#updates >= 1)
+  end)
+
+  it("keeps bounded shell output and saves the complete result", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local result = execute(require("neoagent.tools.shell"), {
+      command = "i=1; while [ \"$i\" -le 2100 ]; do printf '%s\\n' \"$i\"; i=$((i + 1)); done",
+    }, ctx(workspace))
+    assert.is_false(result.isError)
+    assert.matches("Output truncated", result.content[1].text)
+    assert.is_not_nil(result.details.output_path)
+    assert.is_not_nil(vim.uv.fs_stat(result.details.output_path))
+    vim.fn.delete(result.details.output_path)
+    assert.has_error(function()
+      execute(require("neoagent.tools.shell"), { command = "true", timeout = 0 }, ctx(workspace))
+    end)
   end)
 
   it("times out and cancels shell processes", function()
@@ -172,5 +224,25 @@ describe("neoagent bundled tools", function()
     assert.are.equal("No matches found", none.content[1].text)
     local found = execute(require("neoagent.tools.find"), { pattern = "*.lua" }, ctx(workspace))
     assert.matches("one.lua", found.content[1].text)
+  end)
+
+  it("applies search options and reports bounded results", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert(fs.write_all(root .. "/one.lua", "Needle[\ncontext\nNeedle[\n", "w"))
+    assert(fs.write_all(root .. "/two.lua", "Needle[\n", "w"))
+    assert(fs.write_all(root .. "/ignored.txt", "Needle[\n", "w"))
+    local grep_tool = require("neoagent.tools.grep")
+    local grep = execute(grep_tool, {
+      pattern = "needle[", ignoreCase = true, literal = true, glob = "*.lua", context = 0, limit = 1,
+    }, ctx(workspace))
+    assert.matches("one.lua:1:Needle%[", grep.content[1].text)
+    assert.matches("Results truncated", grep.content[1].text)
+    assert.is_nil(grep.content[1].text:find("ignored.txt", 1, true))
+    assert.has_error(function() execute(grep_tool, { pattern = "x", context = -1 }, ctx(workspace)) end)
+    assert.has_error(function() execute(grep_tool, { pattern = "x", glob = true }, ctx(workspace)) end)
+
+    local found = execute(require("neoagent.tools.find"), { pattern = "*.lua", limit = 1 }, ctx(workspace))
+    assert.matches("Results truncated", found.content[1].text)
   end)
 end)

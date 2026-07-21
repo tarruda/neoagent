@@ -42,6 +42,27 @@ describe("neoagent default controller", function()
     assert.matches("Assistant\nhello", lines)
   end)
 
+  it("uses the coding preset only when tools are not supplied", function()
+    local captured
+    local model = fake_model.new({})
+    neoagent.setup({
+      persistence = { enabled = false },
+      default_model = { provider = "fake", model = "test" },
+      providers = { fake = { api = "fake-api", models = { test = {} } } },
+      apis = { ["fake-api"] = function() return model end },
+      interaction = function(options)
+        captured = options
+        return { cancel = function()
+          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
+        end }
+      end,
+    })
+    assert(neoagent.send("inspect"))
+    assert.are.same({ "read_file", "write_file", "edit_file", "shell" },
+      vim.tbl_map(function(tool) return tool.name end, captured.tools))
+    assert.is_true(neoagent.stop())
+  end)
+
   it("keeps the draft when an interaction rejects setup", function()
     setup_model(fake_model.new({}), { interaction = function() error("cannot start") end })
     assert(neoagent.open())
@@ -117,8 +138,17 @@ describe("neoagent default controller", function()
     assert(store:append({ role = "user", content = "before", timestamp = 1 }))
     assert(store:append({
       role = "assistant",
-      content = { { type = "toolCall", id = "pending", name = "shell", arguments = { command = "true" } } },
+      content = { { type = "toolCall", id = "complete", name = "shell", arguments = { command = "true" } } },
       timestamp = 2,
+    }))
+    assert(store:append({
+      role = "toolResult", toolCallId = "complete", toolName = "shell",
+      content = { { type = "text", text = "done" } }, timestamp = 3,
+    }))
+    assert(store:append({
+      role = "assistant",
+      content = { { type = "toolCall", id = "pending", name = "shell", arguments = { command = "true" } } },
+      timestamp = 4,
     }))
     local path = store:metadata().path
     local cancelled = false
@@ -141,9 +171,10 @@ describe("neoagent default controller", function()
     assert.are.equal("before", neoagent.get_session():messages()[1].content)
     assert(neoagent.send("continue"))
     local messages = neoagent.get_session():messages()
-    assert.are.equal(3, #messages)
-    assert.are.equal("toolResult", messages[3].role)
-    assert.is_true(messages[3].isError)
+    assert.are.equal(5, #messages)
+    assert.are.equal("toolResult", messages[5].role)
+    assert.are.equal("pending", messages[5].toolCallId)
+    assert.is_true(messages[5].isError)
     assert.are.equal("prompt: continue", interaction_options.system_prompt)
     assert.is_nil(neoagent.new_session())
     assert.is_nil(neoagent.resume(path))
@@ -152,6 +183,30 @@ describe("neoagent default controller", function()
     assert.is_true(cancelled)
     assert.are.equal("idle", neoagent._state().status)
     assert.is_false(neoagent.stop())
+  end)
+
+  it("selects persisted sessions when no resume path is supplied", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append({ role = "user", content = "resumed", timestamp = 1 }))
+    setup_model(fake_model.new({}), { persistence = { enabled = true, directory = directory } })
+
+    local original_select = vim.ui.select
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Resume Neoagent session:", options.prompt)
+      assert.are.same({ store:metadata().path }, items)
+      callback(items[1])
+    end
+    local ok, err = pcall(neoagent.resume)
+    vim.ui.select = original_select
+    assert(ok, err)
+    assert.are.equal("resumed", neoagent.get_session():messages()[1].content)
+
+    local empty = vim.fn.tempname()
+    paths[#paths + 1] = empty
+    setup_model(fake_model.new({}), { persistence = { enabled = true, directory = empty } })
+    assert.is_nil(neoagent.resume())
   end)
 
   it("toggles the view and changes configured models", function()

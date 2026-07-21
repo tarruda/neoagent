@@ -68,6 +68,75 @@ describe("neoagent.agent", function()
     assert.matches("Unknown tool", result.new_messages[2].content[1].text)
   end)
 
+  it("forwards model events and preserves partial failed responses", function()
+    local partial = fake_model.assistant({ { type = "text", text = "partial" } }).message
+    local model = fake_model.new({ {
+      events = { { type = "text_delta", text = "partial" } },
+      result = { ok = false, message = partial, error = { kind = "transport", message = "disconnected" } },
+    } })
+    local events = {}
+    local result = wait(agent.run({
+      model = model,
+      messages = {},
+      on_event = function(event) events[#events + 1] = event end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("disconnected", result.error.message)
+    assert.are.equal("partial", result.new_messages[1].content[1].text)
+    assert(vim.wait(1000, function() return #events == 2 end))
+    assert.are.same({ "text_delta", "message_end" }, { events[1].type, events[2].type })
+  end)
+
+  it("turns invalid calls and executor failures into rich tool results", function()
+    local late_update
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "a", name = "invalid_args", arguments = { "not", "an", "object" } },
+        { type = "toolCall", id = "b", name = "missing_result", arguments = {} },
+        { type = "toolCall", id = "c", name = "bad_block", arguments = {} },
+        { type = "toolCall", id = "d", name = "throws", arguments = {} },
+        { type = "toolCall", id = "e", name = "rich", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local function tool(name, execute)
+      return { name = name, description = name, input_schema = { type = "object" }, execute = execute }
+    end
+    local events = {}
+    local result = wait(agent.run({
+      model = model,
+      messages = {},
+      tools = {
+        tool("invalid_args", function() error("must not execute") end),
+        tool("missing_result", function() return nil end),
+        tool("bad_block", function() return { content = { { type = "audio" } } } end),
+        tool("throws", function() error("executor exploded") end),
+        tool("rich", function(_, ctx)
+          ctx.on_update({ content = { { type = "audio" } } })
+          late_update = ctx.on_update
+          return {
+            content = { { type = "text", text = "edited" } },
+            details = { diff = "+changed" },
+            usage = { output = 3 },
+          }
+        end),
+      },
+      on_event = function(event) events[#events + 1] = event end,
+    }))
+    assert.is_true(result.ok)
+    for index = 2, 5 do assert.is_true(result.new_messages[index].isError) end
+    assert.matches("JSON object", result.new_messages[2].content[1].text)
+    assert.matches("result with content", result.new_messages[3].content[1].text)
+    assert.matches("unsupported content", result.new_messages[4].content[1].text)
+    assert.matches("executor exploded", result.new_messages[5].content[1].text)
+    assert.are.same({ diff = "+changed" }, result.new_messages[6].details)
+    assert.are.same({ output = 3 }, result.new_messages[6].usage)
+    local count = #events
+    late_update({ content = { { type = "text", text = "too late" } } })
+    vim.wait(20)
+    assert.are.equal(count, #events)
+  end)
+
   it("uses the custom execution boundary", function()
     local model = fake_model.new({
       { result = fake_model.assistant({

@@ -256,4 +256,4 @@ make coverage
 ```
 
 The coverage target fails unless every shipped Lua file is present in the
-report and aggregate line coverage is strictly greater than 90%.
+report and aggregate line coverage is strictly greater than 98%.

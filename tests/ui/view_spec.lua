@@ -30,6 +30,18 @@ describe("neoagent.ui", function()
     assert.are.equal(43, right.transcript.width)
     assert.are.equal(54, right.transcript.col)
     assert.are.equal(right.transcript.row + right.transcript.height + 2, right.input.row)
+    local top = assert(ui.layout({
+      columns = 100, lines = 40, position = "top", width = 0.5, height = 20,
+      margin = 1, input_height = 5, border = "rounded",
+    }))
+    assert.are.equal(48, top.transcript.width)
+    assert.are.equal(1, top.transcript.row)
+    local bottom = assert(ui.layout({
+      columns = 100, lines = 40, position = "bottom", width = 60, height = 20,
+      margin = 1, input_height = 5, border = "rounded",
+    }))
+    assert.are.equal(58, bottom.transcript.width)
+    assert.is_true(bottom.transcript.row > top.transcript.row)
     local center = assert(ui.layout({ columns = 100, lines = 40, position = "center", margin = 1, input_height = 5, border = "rounded" }))
     assert.is_true(center.transcript.col > 1)
     assert.is_true(center.transcript.row > 1)
@@ -91,6 +103,47 @@ describe("neoagent.ui", function()
     assert.are.equal(1, select(2, transcript:gsub("✓ write_file", "")))
     local marks = vim.api.nvim_buf_get_extmarks(result.transcript_buf, result.namespace, 0, -1, {})
     assert.is_true(#marks >= 3)
+  end)
+
+  it("renders attachments, structured arguments, and unannounced tool events", function()
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "user", content = {
+        { type = "text", text = "look" },
+        { type = "image", mimeType = "image/png", data = "AAAA" },
+      } },
+      { role = "assistant", content = {
+        { type = "thinking", thinking = "inspect it" },
+        { type = "toolCall", id = "history", name = "inspect", arguments = { "one", "two" } },
+      } },
+      { role = "toolResult", toolCallId = "history", toolName = "inspect", content = {
+        { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+      } },
+    })
+    assert(result:open())
+    result:apply({ type = "message_end", message = {
+      role = "assistant",
+      content = { { type = "toolCall", id = "complete", name = "replace", arguments = {
+        values = { "first", string.rep("x", 5000) },
+      } } },
+    } })
+    result:apply({ type = "tool_start", call = { id = "start-only", name = "read", arguments = { path = "x" } } })
+    result:apply({ type = "tool_end", call = { id = "end-only", name = "write" }, message = {
+      role = "toolResult", toolCallId = "end-only", toolName = "write",
+      content = { { type = "text", text = "done" } }, isError = false,
+    } })
+    assert(vim.wait(1000, function()
+      local rendered = text(result)
+      return rendered:match("approximately 3 bytes") ~= nil and rendered:match("%[omitted%]") ~= nil
+    end))
+    local transcript = text(result)
+    assert.matches("Thinking\ninspect it", transcript)
+    assert.matches("image attachment: image/png", transcript)
+    assert.matches("image attachment: image/jpeg", transcript)
+    assert.matches("%[\n%s+\"one\"", transcript)
+    assert.matches("%[omitted%]", transcript)
+    assert.matches("● read  running", transcript)
+    assert.matches("✓ write", transcript)
   end)
 
   it("reconstructs history, reports failures, and docks in place", function()

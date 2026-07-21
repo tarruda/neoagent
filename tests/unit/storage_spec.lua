@@ -74,4 +74,54 @@ describe("neoagent.storage", function()
     local _, err = storage.open(path)
     assert.matches("parent", err.detail)
   end)
+
+  it("rejects invalid messages before creating a session file", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local cases = {
+      { value = "text", message = "object" },
+      { value = { role = "system", content = "x" }, message = "role" },
+      { value = { role = "user" }, message = "content" },
+    }
+    for _, case in ipairs(cases) do
+      local ok, err = store:append(case.value)
+      assert.is_nil(ok)
+      assert.matches(case.message, err.detail)
+    end
+    assert.is_nil(vim.uv.fs_stat(store:metadata().path))
+  end)
+
+  it("reports malformed headers, entries, and messages precisely", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    assert.are.same({}, storage.list(directory, directory .. "/missing"))
+    local missing, missing_err = storage.open(directory .. "/missing.jsonl")
+    assert.is_nil(missing)
+    assert.matches("Failed to read", missing_err.message)
+
+    local path = directory .. "/bad.jsonl"
+    local header = { type = "session", version = 3, id = "session", timestamp = "time", cwd = directory }
+    local cases = {
+      { lines = { "42" }, detail = "expected object" },
+      { lines = { "{" }, detail = ".+" },
+      { lines = { vim.json.encode({ type = "session", version = 2 }) }, detail = "expected pi session" },
+      { lines = { vim.json.encode(header), vim.json.encode({ type = "other", id = "one" }) }, detail = "unsupported entry type" },
+      { lines = {
+        vim.json.encode(header),
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, message = { role = "user", content = "one" } }),
+        vim.json.encode({ type = "message", id = "one", parentId = "one", message = { role = "user", content = "two" } }),
+      }, detail = "duplicate entry id" },
+      { lines = {
+        vim.json.encode(header),
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, message = { role = "user" } }),
+      }, detail = "content is required" },
+    }
+    for _, case in ipairs(cases) do
+      vim.fn.writefile(case.lines, path)
+      local opened, err = storage.open(path)
+      assert.is_nil(opened)
+      assert.matches(case.detail, tostring(err.detail))
+    end
+  end)
 end)

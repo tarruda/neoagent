@@ -7,5 +7,14 @@ describe("neoagent commands", function()
     end
     assert.are.equal("", vim.fn.maparg("<leader>a", "n"))
     assert.is_false(pcall(vim.cmd, "NeoagentModel invalid"))
+
+    local model = { stream = function() end }
+    require("neoagent").setup({
+      persistence = { enabled = false },
+      providers = { fake = { api = "fake", models = { test = {} } } },
+      apis = { fake = function() return model end },
+    })
+    vim.cmd("NeoagentModel fake/test")
+    assert.are.equal(model, require("neoagent").get_model())
   end)
 end)

@@ -119,7 +119,7 @@ temporary directories, buffers, and windows in teardown paths.
 - Every shipped Lua file under `lua/neoagent/` and `plugin/` must appear in the
   LuaCov report, including modules that normal tests would not otherwise load.
 - Aggregate shipped-plugin Lua line coverage must remain strictly greater than
-  90%.
+  98%.
 - Add focused tests for behavior changes and regressions. Prefer meaningful
   protocol, lifecycle, and boundary tests over coverage-only assertions.
 - Do not claim completion until the full suite passes, the coverage checker
