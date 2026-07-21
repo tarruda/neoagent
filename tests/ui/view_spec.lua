@@ -254,6 +254,21 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function() return text(result):match('printf "ok"', 1, true) ~= nil end))
     assert.not_matches("command", text(result))
+
+    local escaped = "$ pwd && printf '\\nTop-level files:\\n' && find ."
+    result:apply({
+      type = "tool_call_delta", index = 1, name = "shell",
+      arguments_delta = [=[{"command":"pwd && printf '\\nTop-level files:\\n' && find .]=],
+    })
+    assert(vim.wait(1000, function() return text(result):find(escaped, 1, true) ~= nil end))
+    result:apply({ type = "tool_call_delta", index = 1, arguments_delta = [["}]] })
+    assert(vim.wait(1000, function() return text(result):find(escaped, 1, true) ~= nil end))
+
+    result:apply({
+      type = "tool_call_delta", index = 2, name = "shell",
+      arguments_delta = [=[{"command":"printf 'one\ntwo'"}]=],
+    })
+    assert(vim.wait(1000, function() return text(result):find("$ printf 'one\\ntwo'", 1, true) ~= nil end))
   end)
 
   it("reconstructs history, reports failures, and docks in place", function()

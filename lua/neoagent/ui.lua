@@ -268,7 +268,13 @@ local function partial_string(raw, key)
       return ok and value or encoded
     end
   end
-  return raw:sub(quote + 1):gsub("\\n", "\n"):gsub("\\t", "\t"):gsub('\\"', '"'):gsub("\\\\", "\\")
+  local encoded = raw:sub(quote + 1)
+  for trim = 0, math.min(6, #encoded) do
+    local candidate = encoded:sub(1, #encoded - trim)
+    local ok, value = pcall(vim.json.decode, '"' .. candidate .. '"')
+    if ok then return value end
+  end
+  return encoded
 end
 
 local function partial_number(raw, key)
@@ -303,6 +309,7 @@ local tool_labels = {
 local function summary_value(value)
   if value == vim.NIL then return "null" end
   if type(value) == "string" then
+    value = value:gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("\n", "\\n")
     return #value > 80 and value:sub(1, 77) .. "..." or value
   end
   if type(value) ~= "table" then return tostring(value) end
