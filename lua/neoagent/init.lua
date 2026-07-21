@@ -50,12 +50,19 @@ local function ensure_model()
   return state.model
 end
 
-local function system_prompt(value)
+local function system_prompt(value, tools)
+  local context = {
+    session = state.session,
+    model = state.model,
+    workspace = state.workspace,
+    prompt = value,
+    tools = tools,
+  }
   local prompt = configured().system_prompt
   if type(prompt) == "function" then
-    return prompt({ session = state.session, model = state.model, workspace = state.workspace, prompt = value })
+    return prompt(context)
   end
-  return prompt
+  return prompt == nil and require("neoagent.system_prompt").default(context) or prompt
 end
 
 local function tool_array()
@@ -147,6 +154,7 @@ local function submit(prompt)
     local closed, close_err = close_unmatched_calls()
     if not closed then error(close_err, 0) end
     local options = configured()
+    local tools = tool_array()
     local run_id = state.run_id + 1
     state.run_id = run_id
     local selected_interaction = options.interaction or interaction
@@ -154,8 +162,8 @@ local function submit(prompt)
       session = state.session,
       prompt = prompt,
       model = state.model,
-      system_prompt = system_prompt(prompt),
-      tools = tool_array(),
+      system_prompt = system_prompt(prompt, tools),
+      tools = tools,
       workspace = state.workspace,
       context = { workspace = state.workspace },
       execute_tool = options.execute_tool,
@@ -275,15 +283,67 @@ local function resume_path(path)
   return session
 end
 
+local function session_preview(path)
+  local store = require("neoagent.storage").open(path)
+  if not store then return "(unreadable session)" end
+  for _, message in ipairs(store:load()) do
+    if message.role == "user" then
+      local ok, text = pcall(util.text_content, message.content)
+      text = ok and util.trim(text:gsub("[%c%s]+", " ")) or ""
+      if text ~= "" then
+        local limit = 80
+        if vim.fn.strchars(text) > limit then return vim.fn.strcharpart(text, 0, limit) .. "…" end
+        return text
+      end
+    end
+  end
+  return "(no user message)"
+end
+
+local function session_label(path, current_path)
+  local name = vim.fn.fnamemodify(path, ":t")
+  local year, month, day, hour, minute, second, id = name:match(
+    "^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)_([^.]+)%.jsonl$"
+  )
+  local label = year and string.format("%s-%s-%s %s:%s:%s · %s", year, month, day, hour, minute, second, id:sub(1, 8))
+    or name
+  label = label .. " — " .. session_preview(path)
+  return path == current_path and "● " .. label or label
+end
+
 function M.resume(path)
   if state.run then notify("cannot resume while the agent is running", vim.log.levels.WARN) return nil end
   if path and path ~= "" then return resume_path(vim.fn.fnamemodify(path, ":p")) end
   local options = configured().persistence
   local paths = require("neoagent.storage").list(options.directory, vim.fn.getcwd())
   if #paths == 0 then notify("no sessions found for the current directory") return nil end
-  vim.ui.select(paths, { prompt = "Resume Neoagent session:" }, function(choice)
-    if choice then resume_path(choice) end
+  local metadata = state.session and state.session:metadata()
+  local current_path = metadata and metadata.path
+  local labels = {}
+  for _, path in ipairs(paths) do labels[path] = session_label(path, current_path) end
+  vim.ui.select(paths, {
+    prompt = "Resume Neoagent session:",
+    format_item = function(item) return labels[item] end,
+  }, function(choice)
+    if choice and M.resume(choice) then M.open() end
   end)
+  return true
+end
+
+function M.select_model()
+  if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
+  local choices = {}
+  for provider_id, provider in pairs(configured().providers) do
+    for model_id in pairs(provider.models) do choices[#choices + 1] = provider_id .. "/" .. model_id end
+  end
+  table.sort(choices)
+  if #choices == 0 then notify("no models configured") return nil end
+  vim.ui.select(choices, { prompt = "Select Neoagent model:" }, function(choice)
+    if not choice then return end
+    local provider_id, model_id = choice:match("^([^/]+)/(.+)$")
+    if provider_id and M.set_model(provider_id, model_id) then M.open() end
+  end)
+  return true
 end
 
 function M.set_model(provider_id, model_id)

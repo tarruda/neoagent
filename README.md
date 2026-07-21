@@ -67,7 +67,15 @@ Default UI mappings:
 | `q` | Hide the UI while the transcript is focused |
 
 Commands are `:Neoagent`, `:NeoagentNew`, `:NeoagentResume [path]`,
-`:NeoagentStop`, and `:NeoagentModel provider/model`.
+`:NeoagentStop`, and `:NeoagentModel [provider/model]`. Without an argument,
+the resume and model commands use `vim.ui.select`, so UI providers such as
+Telescope's `ui-select` extension enhance both pickers automatically.
+Selecting or directly specifying an entry also opens the agent UI when it is
+closed. Resume entries include a preview of the first user message.
+
+```lua
+require("telescope").load_extension("ui-select")
+```
 
 ## Configuration
 
@@ -78,7 +86,7 @@ require("neoagent").setup({
   providers = {},
   apis = {},
   default_model = nil,
-  system_prompt = nil,          -- string or function(context) -> string
+  system_prompt = nil,          -- nil uses the built-in coding prompt
   tools = nil,                  -- nil selects the coding preset
   execute_tool = nil,           -- function(tool, arguments, ctx)
   interaction = nil,            -- replace the default chat.run composition
@@ -98,6 +106,26 @@ require("neoagent").setup({
   },
 })
 ```
+
+The built-in prompt follows the active tool set and includes the current
+working directory. A string replaces it completely. To append instructions,
+compose the exported default from a callback:
+
+```lua
+local default_prompt = require("neoagent.system_prompt").default
+
+require("neoagent").setup({
+  system_prompt = function(context)
+    return table.concat({
+      default_prompt(context),
+      "Run the project formatter after editing Lua files.",
+    }, "\n\n")
+  end,
+})
+```
+
+The callback context contains `session`, `model`, `workspace`, the submitted
+`prompt`, and the active `tools`.
 
 Set a mapping to `false` to disable it. With `position = "auto"`, Neoagent
 prefers floating over a non-focused ordinary window so the source stays

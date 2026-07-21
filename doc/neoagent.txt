@@ -44,7 +44,7 @@ The important options are: >lua
     providers = {},
     apis = {},
     default_model = nil,
-    system_prompt = nil,       -- string or function(context)
+    system_prompt = nil,       -- nil uses the built-in coding prompt
     tools = nil,               -- nil uses the coding preset
     execute_tool = nil,
     interaction = nil,
@@ -61,6 +61,24 @@ The important options are: >lua
     },
   }
 <
+The built-in prompt follows the active tools and includes the current working
+directory. A string replaces it completely. Append instructions by composing
+the exported default in a callback: >lua
+
+  local default_prompt = require("neoagent.system_prompt").default
+
+  require("neoagent").setup({
+    system_prompt = function(context)
+      return table.concat({
+        default_prompt(context),
+        "Run the project formatter after editing Lua files.",
+      }, "\n\n")
+    end,
+  })
+<
+The callback context contains `session`, `model`, `workspace`, the submitted
+`prompt`, and the active `tools`.
+
 Provider, model, and Model:stream() options may each define `request_opts` as
 a table or callback. Layers merge in that order. Only `url`, `headers`, and
 `body` are accepted. Headers and body merge recursively, lists replace lists,
@@ -73,9 +91,13 @@ and header keys are case-insensitive.
   :NeoagentNew                    Use a new empty UI Session.
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
-  :NeoagentModel provider/model   Select a configured Model.
+  :NeoagentModel [provider/model] Select a configured Model or choose one.
 
 No global mappings are installed.
+The argument-free Session and Model selectors use `vim.ui.select`, allowing UI
+providers such as Telescope's `ui-select` extension to render both pickers.
+After a successful selection or direct argument, either command opens the agent
+UI if it is closed. Session entries include a preview of the first user message.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
@@ -212,6 +234,6 @@ Session adapters: >lua
 <
 The top-level `require("neoagent")` module is only the bundled UI controller:
 `setup`, `open`, `close`, `toggle`, `send`, `stop`, `new_session`, `resume`,
-`set_model`, `get_session`, and `get_model`.
+`select_model`, `set_model`, `get_session`, and `get_model`.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

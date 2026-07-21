@@ -60,6 +60,13 @@ describe("neoagent default controller", function()
     assert(neoagent.send("inspect"))
     assert.are.same({ "read_file", "write_file", "edit_file", "shell" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
+    assert.matches("Available tools:", captured.system_prompt)
+    for _, name in ipairs({ "read_file", "write_file", "edit_file", "shell" }) do
+      assert.is_truthy(captured.system_prompt:find("- " .. name .. ":", 1, true))
+    end
+    assert.is_nil(captured.system_prompt:find("- grep:", 1, true))
+    assert.is_nil(captured.system_prompt:find("- find:", 1, true))
+    assert.is_truthy(captured.system_prompt:find("Current working directory: " .. vim.fn.getcwd(), 1, true))
     assert.is_true(neoagent.stop())
   end)
 
@@ -155,7 +162,13 @@ describe("neoagent default controller", function()
     local interaction_options
     setup_model(fake_model.new({}), {
       persistence = { enabled = true, directory = directory },
-      system_prompt = function(context) return "prompt: " .. context.prompt end,
+      system_prompt = function(context)
+        assert.are.same({}, context.tools)
+        return table.concat({
+          require("neoagent.system_prompt").default(context),
+          "prompt: " .. context.prompt,
+        }, "\n\n")
+      end,
       interaction = function(options)
         interaction_options = options
         return {
@@ -175,9 +188,11 @@ describe("neoagent default controller", function()
     assert.are.equal("toolResult", messages[5].role)
     assert.are.equal("pending", messages[5].toolCallId)
     assert.is_true(messages[5].isError)
-    assert.are.equal("prompt: continue", interaction_options.system_prompt)
+    assert.matches("Available tools:\n%(none%)", interaction_options.system_prompt)
+    assert.matches("prompt: continue$", interaction_options.system_prompt)
     assert.is_nil(neoagent.new_session())
     assert.is_nil(neoagent.resume(path))
+    assert.is_nil(neoagent.select_model())
     assert.is_nil(neoagent.set_model("fake", "test"))
     assert.is_true(neoagent.stop())
     assert.is_true(cancelled)
@@ -191,22 +206,27 @@ describe("neoagent default controller", function()
     local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
     assert(store:append({ role = "user", content = "resumed", timestamp = 1 }))
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = directory } })
+    assert(neoagent.resume(store:metadata().path))
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Resume Neoagent session:", options.prompt)
       assert.are.same({ store:metadata().path }, items)
+      assert.matches("^● %d%d%d%d%-%d%d%-%d%d", options.format_item(items[1]))
+      assert.matches(" — resumed$", options.format_item(items[1]))
       callback(items[1])
     end
     local ok, err = pcall(neoagent.resume)
     vim.ui.select = original_select
     assert(ok, err)
     assert.are.equal("resumed", neoagent.get_session():messages()[1].content)
+    assert.is_true(neoagent._state().view:is_open())
 
     local empty = vim.fn.tempname()
     paths[#paths + 1] = empty
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = empty } })
     assert.is_nil(neoagent.resume())
+    assert.is_nil(neoagent._state().view)
   end)
 
   it("toggles the view and changes configured models", function()
@@ -220,5 +240,30 @@ describe("neoagent default controller", function()
     local model = assert(neoagent.set_model("fake", "test"))
     assert.are.equal("fake", model.id)
     assert.is_nil(neoagent.set_model("missing", "missing"))
+
+    setup_model(model, {
+      providers = { fake = { api = "fake-api", models = { test = {}, alpha = {} } } },
+    })
+    local original_select = vim.ui.select
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Select Neoagent model:", options.prompt)
+      assert.are.same({ "fake/alpha", "fake/test" }, items)
+      callback(items[1])
+    end
+    local ok, err = pcall(neoagent.select_model)
+    vim.ui.select = original_select
+    assert(ok, err)
+    assert.are.equal(model, neoagent.get_model())
+    assert.is_true(neoagent._state().view:is_open())
+
+    neoagent.close()
+    vim.ui.select = function(_, _, callback) callback(nil) end
+    assert(neoagent.select_model())
+    vim.ui.select = original_select
+    assert.are.equal(model, neoagent.get_model())
+    assert.is_false(neoagent._state().view:is_open())
+
+    neoagent.setup({ persistence = { enabled = false }, providers = {}, tools = {} })
+    assert.is_nil(neoagent.select_model())
   end)
 end)
