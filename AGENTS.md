@@ -43,14 +43,18 @@ changes.
 - Controller Runs remain independent when a shared Window selects another
   Controller. The command-facing default Window is replaceable; custom
   Controllers and Windows must not mutate or depend on it.
+- The bundled default Window starts with `Neo` and `Chat`. `Neo` uses the
+  configured coding composition. `Chat` has an empty system prompt and tool
+  list, with AGENTS.md and skill discovery disabled.
 - AGENTS.md and skill discovery are optional higher-level resource modules.
-  The default controller injects complete AGENTS.md files broad-to-specific,
-  but only skill metadata; complete skill instructions are read on demand.
+  The built-in Neo Controller injects complete AGENTS.md files
+  broad-to-specific, but only skill metadata; complete skill instructions are
+  read on demand.
 - Self-awareness is provided by an on-demand bundled documentation tool. Its
   description guides when it should be called; its result summarizes
   composition and points to installed source and config.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
-  storage layer; the default controller may refresh an unmodified matching
+  storage layer; the built-in Neo Controller may refresh an unmodified matching
   buffer after a successful disk mutation.
 - Default coding tools are exactly `read_file`, `write_file`, `edit_file`,
   `shell`, and `read_agent_documentation`. The read-only preset is exactly

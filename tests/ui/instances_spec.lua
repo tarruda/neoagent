@@ -63,11 +63,14 @@ describe("neoagent controller windows", function()
   it("constructs the command-facing Controller and Window lazily", function()
     local controller = neoagent.default()
     local window = neoagent.default_window()
-    controllers = { controller }
+    controllers = window:controllers()
     windows = { window }
     assert.are.equal(controller, window:active())
-    assert.are.same({ controller }, window:controllers())
-    assert.is_nil(controller:get_session())
+    assert.are.equal(2, #controllers)
+    assert.are.equal("Neo", controllers[1]:config().name)
+    assert.are.equal("Chat", controllers[2]:config().name)
+    assert.is_nil(controllers[1]:get_session())
+    assert.is_nil(controllers[2]:get_session())
   end)
 
   it("reports Controller preparation failures before opening its View", function()
@@ -99,7 +102,8 @@ describe("neoagent controller windows", function()
     local view = window:_state().view
     local transcript_buffer, input_buffer = view.transcript_buf, view.input_buf
     view:set_input("alpha draft")
-    assert.are.equal(beta, window:cycle())
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-n>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return window:active() == beta end))
     assert.are.equal("", view:get_input())
     assert.matches("^beta ·", view:_title())
     view:set_input("beta draft")
@@ -220,8 +224,10 @@ describe("neoagent controller windows", function()
 
   it("routes the command-facing default through a replaceable Window", function()
     local old = neoagent.setup(options("old", fake_model.new({})))
+    local old_window = neoagent.default_window()
     local replacement = neoagent.new(options("new", fake_model.new({})))
-    controllers = { old, replacement }
+    controllers = old_window:controllers()
+    controllers[#controllers + 1] = replacement
     local window = neoagent.new_window({ controllers = { old, replacement } })
     windows = { window }
 

@@ -35,8 +35,10 @@ local function documentation()
       .. "model selection, Session, Workspace, and Run.",
     "- `neoagent.new_window(opts)` attaches Controllers to one passive View. Selection "
       .. "restores per-Controller messages and input drafts while Runs remain concurrent.",
-    "- `neoagent.setup(opts)` creates the default Controller and its single-Controller Window. "
-      .. "Commands target the active Controller in the default Window.",
+    "- `neoagent.setup(opts)` creates the built-in Neo and Chat Controllers in one Window. "
+      .. "Neo uses the configured coding composition; Chat has an empty system prompt and "
+      .. "tool list with resource discovery disabled. Commands target the active Controller "
+      .. "in the default Window.",
     "- `neoagent.set_default_window(window)` installs an assembled command-facing Window.",
     "",
     "A Controller created by `neoagent.new()` receives a complete configuration. Copy "

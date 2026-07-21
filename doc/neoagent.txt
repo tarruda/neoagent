@@ -121,8 +121,11 @@ The important options are: >lua
 <
 CONTROLLERS AND VIEWS                                *neoagent-controllers*
 
-`setup(opts)` constructs, installs, and returns the default Controller.
-It also installs a single-Controller Window. Commands and top-level convenience
+`setup(opts)` constructs the built-in `Neo` and `Chat` Controllers, installs
+their shared default Window, and returns `Neo`. `Neo` uses the configured
+system prompt, resources, and tools. `Chat` shares the model and provider
+configuration while using an empty system prompt and tool list; AGENTS.md and
+skill discovery are disabled for it. Commands and top-level convenience
 functions target the active Controller in that Window. `new(opts)` constructs
 an independent Controller:
 >lua
@@ -160,8 +163,8 @@ existing Controller and returns the previous active Controller.
 `set_default_window(window)` installs an assembled Window and returns the
 previous Window. `default()` and `default_window()` return the active Controller
 and command-facing Window. Another `setup()` destroys the current Window and
-the Controller owned by an earlier `setup()` call. An active Run on that owned
-Controller blocks the replacement.
+the Controllers owned by an earlier `setup()` call. An active Run on either
+owned Controller blocks the replacement.
 
 `controller:subscribe(callback)` publishes messages, context, normalized agent
 events, and completion updates. Its unsubscribe function detaches the callback.
@@ -352,10 +355,12 @@ semantic summaries. Read output shows at most ten lines until tool output is
 expanded. A spinner is shown while an interaction is running.
 
 The top border shows model, thinking, run state, and used/total context with a
-percentage when the model declares `context_window`. `name` adds an optional
-leading label. Provider-specific status appears in the bottom border. Codex
-subscription responses show remaining 5-hour and weekly allowances when the
-service includes its rate-limit headers.
+percentage when the model declares `context_window`. It begins with the
+selected Controller's label when present; the bundled labels are `Neo` and
+`Chat`. `name` customizes the `Neo` label or labels a custom Controller.
+Provider-specific status appears in the bottom border. Codex subscription
+responses show remaining 5-hour and weekly allowances when the service includes
+its rate-limit headers.
 
 Default mappings:
 
@@ -369,7 +374,7 @@ Default mappings:
   <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
-  <C-n>       Cycle through Controllers attached to this Window.
+  <C-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.

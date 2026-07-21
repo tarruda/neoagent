@@ -144,7 +144,9 @@ describe("neoagent commands", function()
     vim.ui.select = original_select
     vim.ui.input = original_input
     vim.ui.open = original_open
-    require("neoagent").default_window():destroy()
+    local window = require("neoagent").default_window()
+    for _, controller in ipairs(window:controllers()) do controller:destroy() end
+    window:destroy()
     vim.fn.delete(directory, "rf")
     vim.fn.delete(vim.fs.dirname(auth_path), "rf")
   end)

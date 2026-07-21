@@ -12,8 +12,9 @@ describe("neoagent default controller", function()
   after_each(function()
     local state = neoagent._state()
     if state.run then state.run:cancel() end
-    neoagent.default_window():destroy()
-    neoagent.default():destroy()
+    local window = neoagent.default_window()
+    for _, controller in ipairs(window:controllers()) do controller:destroy() end
+    window:destroy()
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
   end)
@@ -96,7 +97,7 @@ describe("neoagent default controller", function()
     assert.are.equal("low", model.requests[1].request_opts.body.reasoning_effort)
   end)
 
-  it("uses the coding preset only when tools are not supplied", function()
+  it("composes the default Neo and Chat Controllers", function()
     local captured
     local model = fake_model.new({})
     neoagent.setup({
@@ -113,6 +114,8 @@ describe("neoagent default controller", function()
         end }
       end,
     })
+    assert(neoagent.open())
+    assert.matches("^Neo ·", current_view():_title())
     assert(neoagent.send("inspect"))
     assert.are.same({ "read_file", "write_file", "edit_file", "shell", "read_agent_documentation" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
@@ -126,6 +129,15 @@ describe("neoagent default controller", function()
     assert.matches("Use this only when the user asks about Neoagent", captured.system_prompt)
     assert.is_nil(captured.system_prompt:find("Main documentation:", 1, true))
     assert.is_truthy(captured.system_prompt:find("Current working directory: " .. vim.fn.getcwd(), 1, true))
+    assert.is_true(neoagent.stop())
+
+    assert.are.equal("Chat", neoagent.cycle_agent():config().name)
+    assert.matches("^Chat ·", current_view():_title())
+    assert.is_nil(neoagent.get_session())
+    assert(neoagent.send("hello"))
+    assert.are.same({}, captured.tools)
+    assert.are.equal("", captured.system_prompt)
+    assert.has_error(function() neoagent.setup({}) end)
     assert.is_true(neoagent.stop())
   end)
 

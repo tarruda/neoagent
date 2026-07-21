@@ -110,8 +110,9 @@ tool output is expanded. A spinner remains visible while the agent is working.
 
 The top border shows the selected model, thinking level, state, and
 used/total context with a percentage when the model declares
-`context_window`. The default title begins with the selected model; set `name`
-to prepend a label for a custom Controller. Provider-specific status occupies
+`context_window`. It begins with the selected Controller's label when present;
+the bundled Controllers are labeled `Neo` and `Chat`. Set `name` to customize
+the `Neo` label or label a custom Controller. Provider-specific status occupies
 the bottom border. Codex subscription models populate it with the remaining
 5-hour and weekly allowance when those response headers are available.
 
@@ -126,7 +127,7 @@ Default UI mappings:
 | `<C-d>` | Hide the UI when the input is empty |
 | `<C-o>` | Expand or collapse tool output |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
-| `<C-n>` | Cycle through Controllers attached to this Window |
+| `<C-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
@@ -196,10 +197,13 @@ require("neoagent").setup({
 
 ### Controllers and views
 
-`setup()` creates a Controller, installs a single-Controller default Window,
-and returns the Controller. Commands and top-level functions target the active
-Controller in that Window. `new()` creates an independent Controller with its
-own Model selection, Session, Workspace, and Run:
+`setup()` creates the built-in `Neo` and `Chat` Controllers, installs their
+shared default Window, and returns `Neo`. `Neo` uses the configured system
+prompt, resources, and tools. `Chat` uses the same model and provider
+configuration with an empty system prompt and tool list; AGENTS.md and skill
+discovery are disabled for it. Commands and top-level functions target the
+active Controller in the Window. `new()` creates an independent Controller
+with its own Model selection, Session, Workspace, and Run:
 
 ```lua
 local neoagent = require("neoagent")
@@ -233,9 +237,9 @@ existing Controller through a new single-Controller Window and returns the
 previous active Controller. `neoagent.set_default_window(window)` installs an
 assembled Window and returns the previous Window. `neoagent.default()` returns
 the active Controller; `neoagent.default_window()` returns its Window.
-`setup()` destroys the current command-facing Window and the Controller owned
-by an earlier `setup()` call. An active Run on that owned Controller blocks the
-replacement.
+`setup()` destroys the current command-facing Window and the Controllers owned
+by an earlier `setup()` call. An active Run on either owned Controller blocks
+the replacement.
 
 A Controller publishes `{ type = "messages" | "context" | "event" |
 "finish", ... }` updates through `subscribe(callback)`; the returned function

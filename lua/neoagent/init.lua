@@ -5,7 +5,36 @@ local util = require("neoagent.util")
 
 local M = {}
 local default_window
-local owned_controller
+local owned_controllers
+
+local function default_controllers(configured)
+  local neo = util.copy(configured)
+  neo.name = neo.name or "Neo"
+
+  local chat = util.copy(configured)
+  chat.name = "Chat"
+  chat.tools = {}
+  chat._tools_supplied = true
+  chat.system_prompt = ""
+  chat.agents = false
+  chat.skills = false
+
+  return {
+    Controller.from_config(neo),
+    Controller.from_config(chat),
+  }
+end
+
+local function any_owned_running()
+  for _, controller in ipairs(owned_controllers or {}) do
+    if controller:is_running() then return true end
+  end
+  return false
+end
+
+local function destroy_owned()
+  for _, controller in ipairs(owned_controllers or {}) do controller:destroy() end
+end
 
 local function window_for(controllers, opts)
   opts = opts or {}
@@ -31,8 +60,8 @@ end
 
 function M.default_window()
   if not default_window then
-    owned_controller = Controller.from_config(config.get())
-    default_window = window_for({ owned_controller })
+    owned_controllers = default_controllers(config.get())
+    default_window = window_for(owned_controllers)
   end
   return default_window
 end
@@ -42,27 +71,28 @@ function M.default()
 end
 
 function M.setup(opts)
-  if owned_controller and owned_controller:is_running() then
+  if any_owned_running() then
     error("Cannot reconfigure neoagent while a run is active")
   end
   local configured = config.setup(opts or {})
-  local replacement = Controller.from_config(configured)
-  local replacement_window = window_for({ replacement })
+  local replacements = default_controllers(configured)
+  local replacement_window = window_for(replacements)
   if default_window then default_window:destroy() end
-  if owned_controller then owned_controller:destroy() end
+  destroy_owned()
   default_window = replacement_window
-  owned_controller = replacement
-  return replacement
+  owned_controllers = replacements
+  return replacements[1]
 end
 
 function M.set_default(controller)
   assert(type(controller) == "table" and controller._neoagent_controller,
     "default must be a Neoagent Controller")
-  local previous = default_window and default_window:active() or owned_controller
+  local previous = default_window and default_window:active()
+    or (owned_controllers and owned_controllers[1])
   local replacement = window_for({ controller })
   if default_window then default_window:destroy() end
   default_window = replacement
-  owned_controller = nil
+  owned_controllers = nil
   config._set(controller:config())
   return previous
 end
@@ -72,7 +102,7 @@ function M.set_default_window(window)
     "default window must be a Neoagent Window")
   local previous = default_window
   default_window = window
-  owned_controller = nil
+  owned_controllers = nil
   config._set(window:active():config())
   return previous
 end
