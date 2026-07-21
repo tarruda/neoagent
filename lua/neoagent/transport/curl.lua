@@ -13,6 +13,16 @@ local function append_bounded(current, chunk)
   return current
 end
 
+local function append_headers(command, headers)
+  local names = {}
+  for name in pairs(headers or {}) do names[#names + 1] = name end
+  table.sort(names, function(a, b) return a:lower() < b:lower() end)
+  for _, name in ipairs(names) do
+    command[#command + 1] = "-H"
+    command[#command + 1] = name .. ": " .. tostring(headers[name])
+  end
+end
+
 function M.command(request)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
@@ -25,19 +35,44 @@ function M.command(request)
     "-X",
     "POST",
   }
-  local names = {}
-  for name in pairs(request.headers or {}) do
-    names[#names + 1] = name
-  end
-  table.sort(names, function(a, b) return a:lower() < b:lower() end)
-  for _, name in ipairs(names) do
-    command[#command + 1] = "-H"
-    command[#command + 1] = name .. ": " .. tostring(request.headers[name])
-  end
+  append_headers(command, request.headers)
   command[#command + 1] = "--data-binary"
   command[#command + 1] = "@-"
   command[#command + 1] = request.url
   return command
+end
+
+function M.fetch(opts)
+  opts = opts or {}
+  local request = assert(opts.request, "request is required")
+  assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
+  local command = { "curl", "--silent", "--show-error", "-X", request.method or "POST" }
+  append_headers(command, request.headers)
+  command[#command + 1] = "--data-binary"
+  command[#command + 1] = "@-"
+  command[#command + 1] = "--write-out"
+  command[#command + 1] = "\n%{http_code}"
+  command[#command + 1] = request.url
+  return async.run(function()
+    local completed = async.await(function(done)
+      local process
+      local ok, err = pcall(function()
+        process = vim.system(command, {
+          stdin = request.body or "",
+          text = false,
+        }, function(result)
+          if result.code == 0 then done.resolve(result) else done.reject(util.error(
+            "transport", "curl exited with status " .. tostring(result.code), result.stderr
+          )) end
+        end)
+      end)
+      if not ok then done.reject(util.error("transport", "Failed to start curl", err)) end
+      return function() if process then pcall(process.kill, process, 15) end end
+    end)
+    local body, status = (completed.stdout or ""):match("^(.*)\n(%d%d%d)$")
+    if not status then error(util.error("protocol", "curl response is missing an HTTP status"), 0) end
+    return { ok = true, status = tonumber(status), body = body }
+  end, { on_done = opts.on_done, error_kind = "transport" })
 end
 
 function M.request(opts)

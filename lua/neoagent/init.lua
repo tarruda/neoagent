@@ -9,6 +9,7 @@ local state = {
   workspace = nil,
   view = nil,
   run = nil,
+  login_run = nil,
   run_id = 0,
   status = "idle",
 }
@@ -355,13 +356,80 @@ function M.set_model(provider_id, model_id)
   return model
 end
 
+local function login_prompt(prompt, done)
+  if prompt.type == "select" then
+    vim.ui.select(prompt.options, {
+      prompt = prompt.message,
+      format_item = function(item) return item.label end,
+    }, function(choice)
+      if choice then done.resolve(choice.id) else done.reject(util.error("auth", "Login cancelled")) end
+    end)
+  else
+    vim.ui.input({ prompt = prompt.message .. " ", default = "" }, function(value)
+      if value and value ~= "" then done.resolve(value) else done.reject(util.error("auth", "Login cancelled")) end
+    end)
+  end
+end
+
+local function login_event(event)
+  if event.type == "auth_url" then
+    notify((event.instructions or "Open this URL to authenticate:") .. "\n" .. event.url)
+    pcall(vim.ui.open, event.url)
+  elseif event.type == "device_code" then
+    notify("Open " .. event.verificationUri .. " and enter code " .. event.userCode)
+    pcall(vim.ui.open, event.verificationUri)
+  elseif event.message then
+    notify(event.message)
+  end
+end
+
+function M.login(method_id)
+  if state.login_run then notify("a login is already active", vim.log.levels.WARN) return nil end
+  local methods = configured().auth.methods
+  if method_id == nil or method_id == "" then
+    local choices = {}
+    for id, method in pairs(methods) do choices[#choices + 1] = { id = id, label = method.name } end
+    table.sort(choices, function(a, b) return a.label < b.label end)
+    if #choices == 0 then notify("no login methods configured") return nil end
+    vim.ui.select(choices, {
+      prompt = "Select Neoagent login:",
+      format_item = function(item) return item.label end,
+    }, function(choice) if choice then M.login(choice.id) end end)
+    return true
+  end
+  if not methods[method_id] then notify("unknown login method: " .. method_id, vim.log.levels.ERROR) return nil end
+  local run = require("neoagent.auth").configured():login(method_id, {
+    prompt = login_prompt,
+    notify = login_event,
+    on_done = function(result)
+      state.login_run = nil
+      if result.ok then
+        notify("logged in with " .. methods[method_id].name .. "; credentials saved to " .. configured().auth.path)
+      elseif result.error.kind ~= "cancelled" then
+        notify(result.error.message, vim.log.levels.ERROR)
+      end
+    end,
+  })
+  state.login_run = run
+  return run
+end
+
+function M.cancel_login()
+  if not state.login_run then return false end
+  state.login_run:cancel()
+  return true
+end
+
 function M.get_session() return state.session end
 function M.get_model() return state.model end
 function M._state() return state end
 
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = vim.api.nvim_create_augroup("NeoagentLifecycle", { clear = true }),
-  callback = function() if state.run then state.run:cancel() end end,
+  callback = function()
+    if state.run then state.run:cancel() end
+    if state.login_run then state.login_run:cancel() end
+  end,
 })
 
 return M

@@ -16,6 +16,7 @@ local function openai_factory(module, resolved)
     reasoning = resolved.model.reasoning,
     reasoning_effort = resolved.model.reasoning_effort,
     reasoning_summary = resolved.model.reasoning_summary,
+    text_verbosity = resolved.model.text_verbosity,
     request_opts_layers = layers,
   })
 end
@@ -37,6 +38,8 @@ function M.resolve(provider_id, model_id)
     factory = function(value) return openai_factory("neoagent.api.openai_completions", value) end
   elseif not factory and provider.api == "openai-responses" then
     factory = function(value) return openai_factory("neoagent.api.openai_responses", value) end
+  elseif not factory and provider.api == "openai-codex-responses" then
+    factory = function(value) return openai_factory("neoagent.api.openai_codex_responses", value) end
   end
   if not factory then error("Unknown API: " .. tostring(provider.api)) end
   local resolved = {
@@ -47,6 +50,9 @@ function M.resolve(provider_id, model_id)
   }
   local concrete = factory(resolved)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
+  if provider.auth then
+    concrete = require("neoagent.auth").configured():wrap(concrete, provider.auth)
+  end
   return concrete
 end
 

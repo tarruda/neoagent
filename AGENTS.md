@@ -45,6 +45,12 @@ changes.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
+- Provider login methods are plain Lua values with `login`, `refresh`, and
+  `request_opts`. Credential resolution wraps a Model at stream time; OAuth
+  flows and Models must not import or assume the command/UI adapter.
+- Persist credentials atomically outside user configuration. Credential
+  directories created by the store use mode `0700`; files use mode `0600`.
+  Never log access or refresh tokens.
 - Persistence uses the supported Pi v3 linear JSONL subset. Opening Neovim or
   creating an empty Session must not create a session file; persistence starts
   with the first accepted message.

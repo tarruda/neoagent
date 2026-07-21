@@ -4,6 +4,7 @@ import signal
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl
 
 
 with open(sys.argv[1], "r", encoding="utf-8") as fixture_file:
@@ -26,10 +27,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
         raw = self.rfile.read(length)
-        try:
-            body = json.loads(raw)
-        except Exception as error:
-            body = {"_decode_error": str(error), "_raw": raw.decode("utf-8", "replace")}
+        if self.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+            body = dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
+        else:
+            try:
+                body = json.loads(raw)
+            except Exception as error:
+                body = {"_decode_error": str(error), "_raw": raw.decode("utf-8", "replace")}
         received = {
             "method": "POST",
             "path": self.path,
@@ -83,6 +87,9 @@ class Handler(BaseHTTPRequestHandler):
                 return f"header mismatch: {key}"
         if "body" in expected and expected["body"] != received["body"]:
             return "body mismatch"
+        for key, value in expected.get("body_contains", {}).items():
+            if received["body"].get(key) != value:
+                return f"body field mismatch: {key}"
         return None
 
     def _mismatch(self, message):

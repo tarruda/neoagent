@@ -1,0 +1,37 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "path": "/backend-api/codex/responses",
+        "headers": {
+          "authorization": "Bearer access-token",
+          "chatgpt-account-id": "integration-account",
+          "originator": "neoagent",
+          "openai-beta": "responses=experimental"
+        },
+        "body_contains": {
+          "model": "gpt-test",
+          "store": false,
+          "stream": true,
+          "instructions": "Be useful."
+        }
+      },
+      "respond": {
+        "headers": {
+          "Content-Type": "text/event-stream"
+        },
+        "chunks": [
+          {
+            "data": "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg\",\"role\":\"assistant\",\"content\":[]}}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"Codex works\"}\n\n"
+          },
+          {
+            "data": "data: {\"type\":\"response.done\",\"response\":{\"id\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Codex works\",\"annotations\":[]}] }]}}\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "path": "/oauth/token",
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "body_contains": {
+          "grant_type": "authorization_code",
+          "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+          "code": "integration-code",
+          "redirect_uri": "http://localhost:1455/auth/callback"
+        }
+      },
+      "respond": {
+        "json": {
+          "access_token": "header.eyJodHRwczpcL1wvYXBpLm9wZW5haS5jb21cL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiaW50ZWdyYXRpb24tYWNjb3VudCJ9fQ.signature",
+          "refresh_token": "integration-refresh",
+          "expires_in": 3600
+        }
+      }
+    }
+  ]
+}

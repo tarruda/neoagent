@@ -50,9 +50,9 @@ local function split_call_id(value)
   return call_id or tostring(value or ""), item_id
 end
 
-local function encode_messages(messages, system_prompt)
+local function encode_messages(messages, system_prompt, include_system)
   local result = util.list()
-  if system_prompt and system_prompt ~= "" then
+  if include_system ~= false and system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
   end
   for message_index, message in ipairs(messages) do
@@ -123,15 +123,16 @@ local function encode_messages(messages, system_prompt)
   return result
 end
 
-local function encode_tools(tools)
+local function encode_tools(tools, strict)
   local result = util.list()
+  if strict == nil then strict = false end
   for _, tool in ipairs(tools or {}) do
     result[#result + 1] = {
       type = "function",
       name = tool.name,
       description = tool.description,
       parameters = util.copy(tool.input_schema),
-      strict = false,
+      strict = strict,
     }
   end
   return result
@@ -171,14 +172,22 @@ function Model:_request(call_opts)
   if type(api_key) == "function" then api_key = api_key() end
   if api_key ~= nil and api_key ~= "" then headers.Authorization = "Bearer " .. api_key end
 
+  local codex = self._profile == "codex"
   local body = {
     model = self.id,
-    input = encode_messages(call_opts.messages, call_opts.system_prompt),
+    input = encode_messages(call_opts.messages, call_opts.system_prompt, not codex),
     stream = true,
     store = false,
   }
+  if codex then
+    body.instructions = call_opts.system_prompt or "You are a helpful assistant."
+    body.text = { verbosity = self._text_verbosity or "low" }
+    body.include = { "reasoning.encrypted_content" }
+    body.tool_choice = "auto"
+    body.parallel_tool_calls = true
+  end
   if self._max_output_tokens then body.max_output_tokens = math.max(16, self._max_output_tokens) end
-  local tools = encode_tools(call_opts.tools)
+  local tools = encode_tools(call_opts.tools, codex and vim.NIL or false)
   if #tools > 0 then body.tools = tools end
   if self._reasoning then
     body.reasoning = {
@@ -361,7 +370,8 @@ function Model:stream(opts)
         elseif event.type == "response.output_item.added" then
           index = register_index(index, item_id)
           create_slot(index, item)
-        elseif event.type == "response.reasoning_summary_text.delta" or event.type == "response.reasoning_text.delta" then
+        elseif event.type == "response.reasoning_summary_text.delta"
+            or event.type == "response.reasoning_text.delta" then
           index = register_index(index, item_id)
           local slot = slots[index]
           if slot and slot.type == "thinking" and type(event.delta) == "string" then
@@ -403,7 +413,7 @@ function Model:stream(opts)
         elseif event.type == "response.output_item.done" then
           index = register_index(index, item_id)
           finalize_item(index, item)
-        elseif event.type == "response.completed" then
+        elseif event.type == "response.completed" or event.type == "response.done" then
           finish_response(event.response or {}, false)
         elseif event.type == "response.incomplete" then
           finish_response(event.response or {}, true)
@@ -474,6 +484,8 @@ function M.new(opts)
     _reasoning = opts.reasoning == true,
     _reasoning_effort = opts.reasoning_effort,
     _reasoning_summary = opts.reasoning_summary,
+    _profile = opts.profile,
+    _text_verbosity = opts.text_verbosity,
     _request_opts = layers,
     _transport = opts.transport or curl,
   }, Model)

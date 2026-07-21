@@ -6,7 +6,8 @@ workspace-aware tools, persistence, and the floating chat UI are ordinary
 layers built on that core and can be replaced independently.
 
 Neoagent supports OpenAI-compatible Chat Completions and stateless Responses
-APIs, including llama.cpp. Requests use `curl`; the UI uses only Neovim
+APIs, including llama.cpp, plus ChatGPT subscription authentication for the
+OpenAI Codex Responses endpoint. Requests use `curl`; the UI uses only Neovim
 buffers, windows, mappings, extmarks, and autocommands.
 
 ## Requirements
@@ -63,6 +64,56 @@ providers = {
 }
 ```
 
+For an ordinary OpenAI API key, point the same API type at OpenAI:
+
+```lua
+providers = {
+  openai = {
+    api = "openai-responses",
+    base_url = "https://api.openai.com/v1",
+    api_key = function() return vim.env.OPENAI_API_KEY end,
+    models = {
+      ["gpt-5.4"] = { reasoning = true },
+    },
+  },
+}
+```
+
+For a ChatGPT Plus/Pro Codex subscription, use the Codex request profile and
+the built-in login method:
+
+```lua
+require("neoagent").setup({
+  providers = {
+    ["openai-codex"] = {
+      api = "openai-codex-responses",
+      base_url = "https://chatgpt.com/backend-api",
+      auth = "openai-codex",
+      models = {
+        ["gpt-5.5"] = {
+          reasoning = true,
+          reasoning_effort = "high",
+          reasoning_summary = "auto",
+        },
+      },
+    },
+  },
+  default_model = { provider = "openai-codex", model = "gpt-5.5" },
+})
+```
+
+Run `:NeoagentLogin openai-codex` once, then choose browser or headless device
+code login. Without an argument, `:NeoagentLogin` selects from every configured
+login method through `vim.ui.select`; `:NeoagentLogin!` cancels an active
+login. Model names are controlled by the Codex service and may change;
+configure the model available to your plan.
+
+OAuth credentials are saved to
+`stdpath("state") .. "/neoagent/auth.json"`. Neoagent writes the file atomically
+with mode `0600`; credential directories it creates use mode `0700`. An expired
+access token is refreshed before a Model request. The credential file is
+independent from session persistence and should never be committed or shared.
+
 `:Neoagent` opens two focusable floating windows. The input starts in Insert
 mode and remains an ordinary editable buffer. The transcript is an ordinary
 read-only buffer, so search, Visual selection, and yank work normally.
@@ -88,9 +139,10 @@ Default UI mappings:
 | `q` | Hide the UI while the transcript is focused |
 
 Commands are `:Neoagent`, `:NeoagentNew`, `:NeoagentResume [path]`,
-`:NeoagentStop`, and `:NeoagentModel [provider/model]`. Without an argument,
-the resume and model commands use `vim.ui.select`, so UI providers such as
-Telescope's `ui-select` extension enhance both pickers automatically.
+`:NeoagentStop`, `:NeoagentModel [provider/model]`, and
+`:NeoagentLogin [method]`. Without an argument, the resume, model, and login
+commands use `vim.ui.select`, so UI providers such as Telescope's `ui-select`
+extension enhance all three pickers automatically.
 Selecting or directly specifying an entry also opens the agent UI when it is
 closed. Resume entries include a preview of the first user message.
 
@@ -106,6 +158,10 @@ The complete shape is intentionally small:
 require("neoagent").setup({
   providers = {},
   apis = {},
+  auth = {
+    path = vim.fn.stdpath("state") .. "/neoagent/auth.json",
+    methods = {},                -- recursively merged with built-in methods
+  },
   default_model = nil,
   system_prompt = nil,          -- nil uses the built-in coding prompt
   tools = nil,                  -- nil selects the coding preset
@@ -191,6 +247,31 @@ callback receives `model`, `messages`, `system_prompt`, `tools`, and a snapshot
 of the request produced by earlier layers. It must return only `url`,
 `headers`, and/or `body`.
 
+### Provider login
+
+Provider login is also plain Lua. A provider names an entry from
+`auth.methods`. A method has `name`, `login(interaction)`,
+`refresh(credential)`, and `request_opts(credential)`. Login and refresh return
+cancellable Runs; `interaction.prompt(spec, done)` and
+`interaction.notify(event)` keep authentication independent from any UI. The
+last function derives recursive request options for a valid credential.
+
+Third-party plugins can supply methods directly in `setup()` or construct a
+standalone manager:
+
+```lua
+local manager = require("neoagent.auth").new({
+  methods = { my_plan = my_login_method },
+  store = my_credential_store, -- read(id), write(id, credential)
+})
+
+local authenticated_model = manager:wrap(model, "my_plan")
+```
+
+The wrapped value is still an ordinary Model. Authentication resolution and
+refresh happen when `model:stream()` starts; no Neoagent UI, Session, tools, or
+controller are involved.
+
 ## Use the core without the UI
 
 Constructing a model does not require `setup()`, a Session, tools, or a
@@ -232,6 +313,10 @@ local model = require("neoagent.api.openai_responses").new({
   reasoning_effort = "high",
 })
 ```
+
+`require("neoagent.api.openai_codex_responses").new` exposes the Codex SSE
+request profile directly. It intentionally performs no login or credential
+lookup; wrap it with an auth manager when authentication is wanted.
 
 Callbacks are scheduled onto Neovim's main loop. Completion is exactly once.
 The normalized stream events are `text_delta`, `thinking_delta`,
@@ -306,7 +391,7 @@ A buffer-transform plugin can stay much simpler: call `model:stream()`, append
 `result.text` as the authoritative final contents. It does not need a Session,
 agent, tools, Workspace, or the bundled UI.
 
-See `:help neoagent` and [design.md](design.md) for contracts and rationale.
+See `:help neoagent` for the public contracts.
 
 ## Development
 

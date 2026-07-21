@@ -76,6 +76,35 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(100, request.body.max_output_tokens)
   end)
 
+  it("resolves Codex Responses models through configured authentication", function()
+    local path = vim.fn.tempname() .. "/auth.json"
+    local method = {
+      name = "Plan",
+      login = function() end,
+      refresh = function() end,
+      request_opts = function(credential)
+        return { headers = { Authorization = "Bearer " .. credential.access } }
+      end,
+    }
+    config.setup({
+      auth = { path = path, methods = { plan = method } },
+      providers = { codex = {
+        api = "openai-codex-responses",
+        base_url = "https://chatgpt.com/backend-api",
+        auth = "plan",
+        models = { coder = { reasoning = true, text_verbosity = "low" } },
+      } },
+      default_model = { provider = "codex", model = "coder" },
+    })
+    assert(require("neoagent.auth.store").new(path):write("plan", {
+      access = "token", refresh = "refresh", expires = 9999999999999,
+    }))
+    local resolved = models.resolve()
+    assert.are.equal("openai-codex-responses", resolved.api)
+    assert.are.equal("codex", resolved.provider)
+    vim.fn.delete(vim.fs.dirname(path), "rf")
+  end)
+
   it("validates geometry and configured identifiers", function()
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function()
@@ -92,5 +121,17 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() invalid_model({ reasoning = "yes" }) end)
     assert.has_error(function() invalid_model({ reasoning_effort = "" }) end)
     assert.has_error(function() invalid_model({ reasoning_summary = 1 }) end)
+    assert.has_error(function()
+      config.setup({ providers = { bad = {
+        api = "openai-codex-responses", base_url = "http://localhost", models = {
+          bad = { text_verbosity = false },
+        },
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { bad = {
+        api = "custom", auth = "missing", models = {},
+      } } })
+    end)
   end)
 end)

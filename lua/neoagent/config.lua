@@ -5,6 +5,12 @@ local M = {}
 local defaults = {
   providers = {},
   apis = {},
+  auth = {
+    path = vim.fn.stdpath("state") .. "/neoagent/auth.json",
+    methods = {
+      ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
+    },
+  },
   persistence = {
     enabled = true,
     directory = vim.fn.stdpath("state") .. "/neoagent/sessions",
@@ -50,8 +56,12 @@ local function validate(opts)
     assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
-    if provider.api == "openai-completions" or provider.api == "openai-responses" then
+    if provider.api == "openai-completions" or provider.api == "openai-responses"
+        or provider.api == "openai-codex-responses" then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
+    end
+    if provider.auth ~= nil then
+      assert(type(provider.auth) == "string" and provider.auth ~= "", "provider auth must be a method name")
     end
     if provider.api_key ~= nil then
       assert(type(provider.api_key) == "string" or type(provider.api_key) == "function", "api_key must be a string or function")
@@ -61,7 +71,7 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
-      if provider.api == "openai-responses" then
+      if provider.api == "openai-responses" or provider.api == "openai-codex-responses" then
         if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
         if model.reasoning_effort ~= nil then
           assert(type(model.reasoning_effort) == "string" and model.reasoning_effort ~= "",
@@ -70,6 +80,10 @@ local function validate(opts)
         if model.reasoning_summary ~= nil then
           assert(type(model.reasoning_summary) == "string" and model.reasoning_summary ~= "",
             "model reasoning_summary must be a non-empty string")
+        end
+        if provider.api == "openai-codex-responses" and model.text_verbosity ~= nil then
+          assert(type(model.text_verbosity) == "string" and model.text_verbosity ~= "",
+            "model text_verbosity must be a non-empty string")
         end
       end
       if model.request_opts ~= nil then
@@ -80,6 +94,21 @@ local function validate(opts)
   assert(type(opts.apis) == "table", "apis must be a table")
   for name, factory in pairs(opts.apis) do
     assert(type(name) == "string" and type(factory) == "function", "apis must contain functions")
+  end
+  assert(type(opts.auth) == "table", "auth must be a table")
+  assert(type(opts.auth.path) == "string" and opts.auth.path ~= "", "auth.path is required")
+  assert(type(opts.auth.methods) == "table", "auth.methods must be a table")
+  for id, method in pairs(opts.auth.methods) do
+    assert(type(id) == "string" and type(method) == "table", "auth methods must be keyed tables")
+    assert(type(method.name) == "string" and method.name ~= "", "auth method name is required")
+    assert(type(method.login) == "function" and type(method.refresh) == "function"
+      and type(method.request_opts) == "function", "auth methods require login, refresh, and request_opts")
+  end
+  for id, provider in pairs(opts.providers) do
+    if provider.auth ~= nil then
+      assert(opts.auth.methods[provider.auth] ~= nil,
+        "provider " .. id .. " uses unknown auth method " .. provider.auth)
+    end
   end
   assert(type(opts.max_tool_rounds) == "number" and opts.max_tool_rounds >= 1 and opts.max_tool_rounds % 1 == 0, "max_tool_rounds must be a positive integer")
   assert(type(opts.persistence) == "table", "persistence must be a table")
