@@ -87,7 +87,7 @@ describe("neoagent default controller", function()
       end,
     })
     assert(neoagent.send("inspect"))
-    assert.are.same({ "read_file", "write_file", "edit_file", "shell" },
+    assert.are.same({ "read_file", "write_file", "edit_file", "shell", "read_agent_documentation" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
     assert.matches("Available tools:", captured.system_prompt)
     for _, name in ipairs({ "read_file", "write_file", "edit_file", "shell" }) do
@@ -95,7 +95,43 @@ describe("neoagent default controller", function()
     end
     assert.is_nil(captured.system_prompt:find("- grep:", 1, true))
     assert.is_nil(captured.system_prompt:find("- find:", 1, true))
+    assert.matches("read_agent_documentation", captured.system_prompt)
+    assert.matches("Use this only when the user asks about Neoagent", captured.system_prompt)
+    assert.is_nil(captured.system_prompt:find("Main documentation:", 1, true))
     assert.is_truthy(captured.system_prompt:find("Current working directory: " .. vim.fn.getcwd(), 1, true))
+    assert.is_true(neoagent.stop())
+  end)
+
+  it("uses an explicit tool list without adding the documentation tool", function()
+    local captured
+    local model = fake_model.new({})
+    local tools = {
+      require("neoagent.tools.read_file").new(),
+      require("neoagent.tools.write_file").new(),
+      require("neoagent.tools.edit_file").new(),
+      require("neoagent.tools.shell").new(),
+    }
+    neoagent.setup({
+      default_registry = false,
+      persistence = { enabled = false },
+      default_model = { provider = "fake", model = "test" },
+      providers = { fake = { api = "fake-api", models = { test = {} } } },
+      apis = { ["fake-api"] = function() return model end },
+      agents = false,
+      skills = false,
+      tools = tools,
+      interaction = function(options)
+        captured = options
+        return { cancel = function()
+          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
+        end }
+      end,
+    })
+    assert(neoagent.send("chat"))
+    assert.matches("You are Neo", captured.system_prompt)
+    assert.are.same({ "read_file", "write_file", "edit_file", "shell" },
+      vim.tbl_map(function(tool) return tool.name end, captured.tools))
+    assert.is_nil(captured.system_prompt:find("read_agent_documentation", 1, true))
     assert.is_true(neoagent.stop())
   end)
 

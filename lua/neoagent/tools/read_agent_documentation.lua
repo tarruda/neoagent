@@ -1,0 +1,133 @@
+local function plugin_root()
+  local source = debug.getinfo(1, "S").source
+  local path = source:sub(1, 1) == "@" and source:sub(2) or source
+  path = vim.fn.fnamemodify(path, ":p")
+  for _ = 1, 4 do path = vim.fs.dirname(path) end
+  return path
+end
+
+local function init_path()
+  local path = vim.env.MYVIMRC
+  if type(path) == "string" and path ~= "" then
+    return vim.fn.fnamemodify(path, ":p")
+  end
+  return vim.fn.stdpath("config") .. "/init.lua"
+end
+
+local function documentation()
+  local root = plugin_root()
+  return table.concat({
+    "# Neoagent configuration and extensibility",
+    "",
+    "Neoagent is composed from ordinary Lua values. Models, tools, executors, "
+      .. "Sessions, Controllers, and Views can be used or replaced independently. "
+      .. "There is no extension registry or auto-discovery: personal integrations "
+      .. "are Lua modules loaded by Neovim configuration.",
+    "",
+    "## Choose the smallest useful layer",
+    "",
+    "- A Model exposes `model:stream(opts)` and needs no Session, tools, Controller, or UI.",
+    "- `neoagent.agent.run(opts)` receives its Model, messages, exact tools, executor, "
+      .. "and context explicitly.",
+    "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
+    "- `neoagent.new(opts)` creates an independent Controller with its own configuration, "
+      .. "model selection, Session, Workspace, Run, and View.",
+    "- `neoagent.setup(opts)` creates and installs the default Controller. Commands and "
+      .. "top-level convenience functions forward to it.",
+    "- `neoagent.set_default(controller)` replaces that command-facing default without "
+      .. "destroying the previous Controller.",
+    "",
+    "A Controller created by `neoagent.new()` receives a complete configuration; it does "
+      .. "not inherit options from the default Controller.",
+    "",
+    "## Independent Controller example",
+    "",
+    "```lua",
+    "local neoagent = require(\"neoagent\")",
+    "local opts = neoagent.default():config() -- independent copy",
+    "opts.name = \"Review\"",
+    "opts.tools = require(\"neoagent.tools\").read_only()",
+    "opts.persistence = { enabled = false }",
+    "opts.system_prompt = \"Review this workspace without editing it.\"",
+    "opts.ui = vim.tbl_deep_extend(\"force\", opts.ui, { position = \"left\" })",
+    "local reviewer = neoagent.new(opts)",
+    "reviewer:toggle()",
+    "-- neoagent.set_default(reviewer) -- make built-in commands use it",
+    "```",
+    "",
+    "## Custom tool and execution policy",
+    "",
+    "A tool is a plain table. `execute_tool` is the boundary for approvals, logging, "
+      .. "sandbox delegation, or post-edit checks.",
+    "",
+    "```lua",
+    "local neoagent = require(\"neoagent\")",
+    "local inspect_buffer = {",
+    "  name = \"inspect_buffer\",",
+    "  description = \"Inspect editor state supplied by this integration.\",",
+    "  input_schema = { type = \"object\", properties = {}, additionalProperties = false },",
+    "  execute = function(arguments, ctx)",
+    "    return { content = { { type = \"text\", text = vim.inspect(ctx.context) } } }",
+    "  end,",
+    "}",
+    "",
+    "local custom_opts = neoagent.default():config()",
+    "custom_opts.tools = { inspect_buffer }",
+    "custom_opts.execute_tool = function(tool, arguments, ctx)",
+    "    -- Confirm, log, sandbox, lint, or typecheck here when appropriate.",
+    "    return tool.execute(arguments, ctx)",
+    "end",
+    "local controller = neoagent.new(custom_opts)",
+    "```",
+    "",
+    "Passing `tools` means exactly those tools; Neoagent never silently adds bundled tools. "
+      .. "The bundled coding preset contains read, write, edit, shell, and this documentation "
+      .. "tool. The read-only preset remains read, grep, and find.",
+    "",
+    "## Custom View",
+    "",
+    "Set `view = function(opts) return my_view end`. The factory receives `config`, "
+      .. "`controller`, `on_submit`, `on_stop`, and `on_cycle_thinking`. A passive View "
+      .. "implements `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`, "
+      .. "`set_context`, `apply`, and `finish`; it renders events but does not own the agent loop.",
+    "",
+    "## Installed paths",
+    "",
+    "- Plugin root: " .. root,
+    "- Main documentation: " .. root .. "/README.md",
+    "- Vim help: " .. root .. "/doc/neoagent.txt",
+    "- Contributor guide: " .. root .. "/AGENTS.md",
+    "- Core agent loop: " .. root .. "/lua/neoagent/agent.lua",
+    "- Controller: " .. root .. "/lua/neoagent/controller.lua",
+    "- Configuration: " .. root .. "/lua/neoagent/config.lua",
+    "- Bundled tools: " .. root .. "/lua/neoagent/tools",
+    "- Bundled View: " .. root .. "/lua/neoagent/ui.lua",
+    "- Active Neovim configuration: " .. init_path(),
+    "- Neovim configuration directory: " .. vim.fn.stdpath("config"),
+    "",
+    "Read the relevant documentation and source completely before changing Neoagent or "
+      .. "the user's configuration. Preserve unrelated configuration and prefer a separate "
+      .. "Lua module for personal integrations.",
+  }, "\n")
+end
+
+local function new()
+  return {
+    name = "read_agent_documentation",
+    description = "Read Neoagent's configuration and extensibility guide. Use this only when "
+      .. "the user asks about Neoagent itself, configuring or extending Neoagent, its Lua APIs, "
+      .. "tools, Controllers, Views, models, sessions, or UI. Do not call it for ordinary project work.",
+    input_schema = {
+      type = "object",
+      properties = {},
+      additionalProperties = false,
+    },
+    execute = function()
+      return { content = { { type = "text", text = documentation() } } }
+    end,
+  }
+end
+
+local M = new()
+M.new = new
+return M

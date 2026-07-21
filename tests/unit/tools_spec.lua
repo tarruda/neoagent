@@ -34,10 +34,39 @@ describe("neoagent bundled tools", function()
     local tools = require("neoagent.tools")
     local coding = tools.coding()
     local read_only = tools.read_only()
-    assert.are.same({ "read_file", "write_file", "edit_file", "shell" }, vim.tbl_map(function(t) return t.name end, coding))
+    assert.are.same({
+      "read_file", "write_file", "edit_file", "shell", "read_agent_documentation",
+    }, vim.tbl_map(function(t) return t.name end, coding))
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
-    assert.are.same({ "read_file", "write_file", "edit_file", "shell", "grep", "find" }, vim.tbl_map(function(t) return t.name end, tools.all()))
+    assert.are.same({
+      "read_file", "write_file", "edit_file", "shell", "grep", "find", "read_agent_documentation",
+    }, vim.tbl_map(function(t) return t.name end, tools.all()))
     assert.are_not.equal(coding[1], tools.coding()[1])
+  end)
+
+  it("returns the on-demand Neoagent extensibility guide", function()
+    local tool = require("neoagent.tools.read_agent_documentation")
+    assert.matches("Use this only when the user asks about Neoagent", tool.description)
+    assert.are.same({}, tool.input_schema.properties)
+    local original = vim.env.MYVIMRC
+    local init = vim.fn.tempname() .. "/init.lua"
+    vim.env.MYVIMRC = init
+    local result = execute(tool, {}, nil)
+    vim.env.MYVIMRC = original
+    local text = result.content[1].text
+    assert.matches("# Neoagent configuration and extensibility", text)
+    assert.matches("Choose the smallest useful layer", text)
+    assert.matches("Independent Controller example", text)
+    assert.matches("Custom tool and execution policy", text)
+    assert.matches("Custom View", text)
+    assert.is_truthy(text:find("Active Neovim configuration: " .. init, 1, true))
+    local root = text:match("Plugin root: ([^\n]+)")
+    assert.is_truthy(root and vim.uv.fs_stat(root .. "/lua/neoagent/agent.lua"))
+
+    vim.env.MYVIMRC = nil
+    text = execute(tool, {}, nil).content[1].text
+    vim.env.MYVIMRC = original
+    assert.is_truthy(text:find(vim.fn.stdpath("config") .. "/init.lua", 1, true))
   end)
 
   it("writes and reads disk without consulting buffers", function()

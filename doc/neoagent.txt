@@ -201,6 +201,36 @@ The callback context contains `session`, `model`, `workspace`, the submitted
 value replaces the base prompt, but contextual resources are appended unless
 their configuration is disabled.
 
+The default coding preset includes the `read_agent_documentation` tool. Its
+short description tells the model to call it only for Neoagent configuration,
+API, UI, or extensibility questions. The result contains a concise composition
+guide, Lua examples, and absolute paths to the installed documentation, source,
+active init file, and Neovim configuration directory.
+
+An explicit `tools` list is always exact and is never extended. To keep the
+four coding tools without the documentation tool: >lua
+
+  require("neoagent").setup({
+    tools = {
+      require("neoagent.tools.read_file").new(),
+      require("neoagent.tools.write_file").new(),
+      require("neoagent.tools.edit_file").new(),
+      require("neoagent.tools.shell").new(),
+    },
+  })
+<
+
+Use `tools = {}` for a tool-free chat composition.
+
+Custom compositions can add the tool directly with: >lua
+
+  require("neoagent.tools.read_agent_documentation").new()
+<
+
+Neoagent integrations are ordinary Lua modules loaded by Neovim configuration,
+not a separate extension framework. They can construct independent Controllers
+with `new()` or replace the command-facing Controller with `set_default()`.
+
 AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
 The default controller loads the global file
@@ -415,7 +445,7 @@ to add approval, logging, a native sandbox, or subagent behavior.
 
 Bundled presets: >lua
 
-  require("neoagent.tools").coding()    -- read/write/edit/shell
+  require("neoagent.tools").coding()    -- read/write/edit/shell/Neoagent docs
   require("neoagent.tools").read_only() -- read/grep/find
   require("neoagent.tools").all()
 <

@@ -332,6 +332,39 @@ custom string or callback replaces the base prompt; contextual resources are
 still appended. Set their configuration to `false` when the final prompt must
 exclude them.
 
+The default coding preset includes `read_agent_documentation`. Only its short
+tool description is always sent; it tells the model to call the tool only for
+questions about Neoagent itself,
+its configuration, APIs, or extensibility. The on-demand result summarizes the
+composition layers, includes Controller, tool/executor, and View examples, and
+provides absolute paths to the installed documentation, source, active init
+file, and Neovim configuration directory.
+
+Passing `tools` remains exact and takes precedence: Neoagent never injects a
+tool into an explicit list. To keep the four coding tools without the
+documentation tool:
+
+```lua
+require("neoagent").setup({
+  tools = {
+    require("neoagent.tools.read_file").new(),
+    require("neoagent.tools.write_file").new(),
+    require("neoagent.tools.edit_file").new(),
+    require("neoagent.tools.shell").new(),
+  },
+})
+```
+
+Use `tools = {}` for a tool-free chat composition.
+
+Custom compositions can opt in directly with
+`require("neoagent.tools.read_agent_documentation").new()`.
+
+Neoagent deliberately has no extension framework or auto-discovery. Personal
+integrations are ordinary Lua modules loaded by the user's Neovim
+configuration; they can construct a Controller with `neoagent.new()` or
+replace the command-facing instance with `neoagent.set_default()`.
+
 ### AGENTS.md and skills
 
 The default controller reads `stdpath("config") .. "/AGENTS.md"`, then every
@@ -530,11 +563,11 @@ local tool = {
 }
 ```
 
-The default coding preset is exactly `read_file`, `write_file`, `edit_file`,
-and `shell`. `require("neoagent.tools").read_only()` returns exactly
-`read_file`, `grep`, and `find`. All file tools operate on disk. They never use
-loaded buffers; the default controller merely asks Neovim to reload a matching
-unmodified buffer after a successful write or edit.
+The default coding preset is `read_file`, `write_file`, `edit_file`, `shell`,
+and `read_agent_documentation`. `require("neoagent.tools").read_only()` returns
+exactly `read_file`, `grep`, and `find`. All file tools operate on disk.
+They never use loaded buffers; the default controller merely asks Neovim to
+reload a matching unmodified buffer after a successful write or edit.
 
 Policy belongs at the executor boundary. For example, a third-party plugin can
 wrap execution with an approval UI or call a native sandbox binary, then invoke

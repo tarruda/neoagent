@@ -304,6 +304,7 @@ local tool_labels = {
   write_file = "write",
   edit = "edit",
   edit_file = "edit",
+  read_agent_documentation = "neoagent docs",
 }
 
 local function summary_value(value)

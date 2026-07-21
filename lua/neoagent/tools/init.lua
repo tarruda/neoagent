@@ -7,6 +7,7 @@ local modules = {
   shell = "neoagent.tools.shell",
   grep = "neoagent.tools.grep",
   find = "neoagent.tools.find",
+  read_agent_documentation = "neoagent.tools.read_agent_documentation",
 }
 
 local function tools(names)
@@ -18,7 +19,10 @@ local function tools(names)
 end
 
 function M.coding()
-  return tools({ "read_file", "write_file", "edit_file", "shell" })
+  return tools({
+    "read_file", "write_file", "edit_file", "shell",
+    "read_agent_documentation",
+  })
 end
 
 function M.read_only()
@@ -26,7 +30,10 @@ function M.read_only()
 end
 
 function M.all()
-  return tools({ "read_file", "write_file", "edit_file", "shell", "grep", "find" })
+  return tools({
+    "read_file", "write_file", "edit_file", "shell", "grep", "find",
+    "read_agent_documentation",
+  })
 end
 
 return M

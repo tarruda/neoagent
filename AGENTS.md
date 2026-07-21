@@ -43,11 +43,15 @@ changes.
 - AGENTS.md and skill discovery are optional higher-level resource modules.
   The default controller injects complete AGENTS.md files broad-to-specific,
   but only skill metadata; complete skill instructions are read on demand.
+- Self-awareness is provided by an on-demand bundled documentation tool. Its
+  description guides when it should be called; its result summarizes
+  composition and points to installed source and config.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
   storage layer; the default controller may refresh an unmodified matching
   buffer after a successful disk mutation.
-- Default coding tools are exactly `read_file`, `write_file`, `edit_file`, and
-  `shell`. The read-only preset is exactly `read_file`, `grep`, and `find`.
+- Default coding tools are exactly `read_file`, `write_file`, `edit_file`,
+  `shell`, and `read_agent_documentation`. The read-only preset is exactly
+  `read_file`, `grep`, and `find`.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
