@@ -3,6 +3,7 @@ local util = require("neoagent.util")
 local M = {}
 
 local defaults = {
+  name = "Neoagent",
   default_registry = true,
   default_thinking_level = "medium",
   providers = {},
@@ -49,6 +50,7 @@ local defaults = {
       close = "q",
     },
   },
+  view = nil,
 }
 
 local current
@@ -61,6 +63,7 @@ local function validate_dimension(value, name)
 end
 
 local function validate(opts)
+  assert(type(opts.name) == "string" and opts.name ~= "", "name must be a non-empty string")
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
     "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
@@ -171,16 +174,21 @@ local function validate(opts)
   if opts.system_prompt ~= nil then assert(type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function", "system_prompt must be a string or function") end
   if opts.execute_tool ~= nil then assert(type(opts.execute_tool) == "function", "execute_tool must be a function") end
   if opts.interaction ~= nil then assert(type(opts.interaction) == "function", "interaction must be a function") end
+  if opts.view ~= nil then assert(type(opts.view) == "function", "view must be a function") end
 end
 
-function M.setup(opts)
+function M.resolve(opts)
   opts = opts or {}
   local configured = util.deep_merge(defaults, opts)
   configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
-  current = configured
-  return M.get()
+  return util.copy(configured)
+end
+
+function M.setup(opts)
+  current = M.resolve(opts)
+  return util.copy(current)
 end
 
 function M.get()
@@ -190,6 +198,11 @@ end
 
 function M._reset()
   current = nil
+end
+
+function M._set(value)
+  validate(value)
+  current = util.copy(value)
 end
 
 return M

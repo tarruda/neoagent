@@ -859,7 +859,8 @@ end
 function View:_title()
   local model = self.context.model or "no model"
   local thinking = type(self.context.thinking) == "string" and " · think: " .. self.context.thinking or ""
-  return "Neoagent · " .. model .. thinking .. " · " .. (self.context.state or "idle")
+  return (self.config.title or "Neoagent") .. " · " .. model .. thinking .. " · "
+    .. (self.context.state or "idle")
 end
 
 function View:open(origin)

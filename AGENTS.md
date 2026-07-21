@@ -37,6 +37,9 @@ changes.
   store is optional and injected.
 - The passive View consumes messages and events. It does not own or invoke the
   agent loop.
+- Controllers are independent compositions of configuration, model selection,
+  Session, Workspace, Run, and View. The command-facing default is replaceable;
+  custom Controllers must not mutate or depend on it.
 - AGENTS.md and skill discovery are optional higher-level resource modules.
   The default controller injects complete AGENTS.md files broad-to-specific,
   but only skill metadata; complete skill instructions are read on demand.

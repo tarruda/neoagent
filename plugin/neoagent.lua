@@ -33,7 +33,7 @@ end, {
   nargs = "?",
   bang = true,
   complete = function()
-    local methods = require("neoagent.config").get().auth.methods
+    local methods = require("neoagent").default():config().auth.methods
     local result = {}
     for id in pairs(methods) do result[#result + 1] = id end
     table.sort(result)

@@ -3,9 +3,9 @@ local util = require("neoagent.util")
 
 local M = {}
 
-function M.available()
-  local configured = config.get()
-  local manager = require("neoagent.auth").configured()
+function M.available(configured, manager)
+  configured = configured or config.get()
+  manager = manager or require("neoagent.auth").configured(configured)
   local result = {}
   for provider_id, provider in pairs(configured.providers) do
     local available = true
@@ -51,8 +51,8 @@ local function openai_factory(module, resolved)
   })
 end
 
-function M.resolve(provider_id, model_id)
-  local configured = config.get()
+function M.resolve(provider_id, model_id, configured, manager)
+  configured = configured or config.get()
   if provider_id == nil or model_id == nil then
     local default = configured.default_model
     if not default then error("No default_model is configured") end
@@ -82,7 +82,8 @@ function M.resolve(provider_id, model_id)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
   if concrete.thinking == nil then concrete.thinking = util.copy(resolved.model.thinking) end
   if provider.auth then
-    concrete = require("neoagent.auth").configured():wrap(concrete, provider.auth)
+    manager = manager or require("neoagent.auth").configured(configured)
+    concrete = manager:wrap(concrete, provider.auth)
   end
   return concrete
 end

@@ -134,8 +134,8 @@ function M.new(opts)
   }, Manager)
 end
 
-function M.configured()
-  local options = require("neoagent.config").get().auth
+function M.configured(configured)
+  local options = configured and configured.auth or require("neoagent.config").get().auth
   return M.new({
     methods = options.methods,
     store = require("neoagent.auth.store").new(options.path),

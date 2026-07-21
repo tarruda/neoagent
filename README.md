@@ -140,6 +140,7 @@ The complete shape is intentionally small:
 
 ```lua
 require("neoagent").setup({
+  name = "Neoagent",            -- title of the bundled View
   default_registry = true,      -- compose the built-in OpenAI catalogs
   providers = {},
   apis = {},
@@ -153,6 +154,7 @@ require("neoagent").setup({
   tools = nil,                  -- nil selects the coding preset
   execute_tool = nil,           -- function(tool, arguments, ctx)
   interaction = nil,            -- replace the default chat.run composition
+  view = nil,                   -- replace the bundled View constructor
   max_tool_rounds = 12,
   agents = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
@@ -181,6 +183,46 @@ require("neoagent").setup({
   },
 })
 ```
+
+### Controllers and views
+
+`setup()` creates, installs, and returns the default Controller. Commands and
+top-level functions such as `toggle()` always forward to that Controller.
+Create any number of independent Controllers with `new()`:
+
+```lua
+local neoagent = require("neoagent")
+
+local coding = neoagent.setup({ name = "Coding" })
+local reviewer = neoagent.new({
+  name = "Review",
+  tools = require("neoagent.tools").read_only(),
+  persistence = { enabled = false },
+  system_prompt = "Review the code without modifying it.",
+  ui = { position = "left" },
+})
+
+vim.keymap.set("n", "<leader>ar", function() reviewer:toggle() end)
+```
+
+Each Controller owns its Model selection, Session, Workspace, active Run, and
+View. Closing, stopping, or destroying one does not affect another. Call
+`controller:destroy()` when a short-lived instance is no longer needed.
+Bundled persistence still deliberately shares its cwd-hashed files between
+Controllers using the same persistence directory.
+
+`neoagent.set_default(reviewer)` makes commands and top-level functions use an
+existing Controller and returns the previous default without destroying it.
+`neoagent.default()` returns the current default. Calling `setup()` instead
+destroys and replaces the previous default, and remains forbidden while its
+agent Run is active.
+
+The `view` option is a function receiving `config`, `controller`, `on_submit`,
+`on_stop`, and `on_cycle_thinking`. It returns a passive View implementing
+`open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`,
+`set_context`, `apply`, and `finish`. The View only displays state and invokes
+the supplied callbacks; it does not own the agent loop. This makes a fully
+custom window an ordinary Controller option rather than a global UI patch.
 
 ### Model registry
 

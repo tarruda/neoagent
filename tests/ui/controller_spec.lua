@@ -12,7 +12,7 @@ describe("neoagent default controller", function()
   after_each(function()
     local state = neoagent._state()
     if state.run then state.run:cancel() end
-    if state.view then state.view:destroy() end
+    neoagent.default():destroy()
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
   end)

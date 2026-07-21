@@ -77,6 +77,7 @@ before a request when expired.
 The important options are: >lua
 
   {
+    name = "Neoagent",
     default_registry = true,
     providers = {},
     apis = {},
@@ -87,6 +88,7 @@ The important options are: >lua
     tools = nil,               -- nil uses the coding preset
     execute_tool = nil,
     interaction = nil,
+    view = nil,
     max_tool_rounds = 12,
     agents = {
       global_files = { stdpath("config") .. "/AGENTS.md" },
@@ -115,6 +117,43 @@ The important options are: >lua
     },
   }
 <
+CONTROLLERS AND VIEWS                                *neoagent-controllers*
+
+`setup(opts)` constructs, installs, and returns the default Controller.
+Commands and top-level convenience functions dynamically forward to it.
+`new(opts)` constructs an independent Controller without changing the default:
+>lua
+
+  local neoagent = require("neoagent")
+  local coding = neoagent.setup({ name = "Coding" })
+  local reviewer = neoagent.new({
+    name = "Review",
+    tools = require("neoagent.tools").read_only(),
+    persistence = { enabled = false },
+    system_prompt = "Review without editing.",
+    ui = { position = "left" },
+  })
+  reviewer:toggle()
+<
+Each Controller owns its Model selection, Session, Workspace, Run, and View.
+Its public operations are `open`, `close`, `toggle`, `send`, `stop`,
+`new_session`, `resume`, `select_model`, `set_model`, thinking-level methods,
+`login`, `cancel_login`, `get_session`, `get_model`, `config`, `is_running`,
+and `destroy`. Multiple Controllers can run concurrently. Bundled persistence
+continues to share cwd-hashed files when their persistence directories match.
+
+`set_default(controller)` points commands and top-level functions at an
+existing Controller and returns the previous default without destroying it.
+`default()` returns the current default. In contrast, another `setup()`
+destroys and replaces the old default; it is rejected while that Controller's
+agent Run is active.
+
+The `view` option is a factory receiving a table with `config`, `controller`,
+`on_submit`, `on_stop`, and `on_cycle_thinking`. It returns a passive View with
+the methods `open`, `close`, `is_open`, `destroy`, `set_messages`, `set_input`,
+`set_context`, `apply`, and `finish`. A custom View renders state and invokes
+these callbacks but does not own the agent loop.
+
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a
 default provider or model: >lua
@@ -402,10 +441,8 @@ Session adapters: >lua
   require("neoagent.chat").send(session, prompt, opts)
   require("neoagent.chat").run(session, prompt, opts)
 <
-The top-level `require("neoagent")` module is only the bundled UI controller:
-`setup`, `open`, `close`, `toggle`, `send`, `stop`, `new_session`, `resume`,
-`select_model`, `set_model`, `available_thinking_levels`,
-`get_thinking_level`, `set_thinking_level`, `cycle_thinking_level`, `login`,
-`cancel_login`, `get_session`, and `get_model`.
+The top-level `require("neoagent")` module constructs Controllers with `new`,
+owns the replaceable `default`, and forwards the bundled commands and existing
+convenience operations to that default.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
