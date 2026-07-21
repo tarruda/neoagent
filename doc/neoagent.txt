@@ -33,7 +33,9 @@ Example for llama.cpp: >lua
       local_llama = {
         api = "openai-completions",
         base_url = "http://127.0.0.1:8080/v1",
-        models = { coder = { max_output_tokens = 8192 } },
+        models = {
+          coder = { context_window = 131072, max_output_tokens = 8192 },
+        },
       },
     },
     default_model = { provider = "local_llama", model = "coder" },
@@ -77,7 +79,7 @@ before a request when expired.
 The important options are: >lua
 
   {
-    name = "Neoagent",
+    name = nil,                -- optional bundled View title label
     default_registry = true,
     providers = {},
     apis = {},
@@ -332,6 +334,12 @@ to Normal so it inherits the editor background. Built-in tool results use
 semantic summaries. Read output shows at most ten lines until tool output is
 expanded. A spinner is shown while an interaction is running.
 
+The top border shows model, thinking, run state, and used/total context with a
+percentage when the model declares `context_window`. `name` adds an optional
+leading label. Provider-specific status appears in the bottom border. Codex
+subscription responses show remaining 5-hour and weekly allowances when the
+service includes its rate-limit headers.
+
 Default mappings:
 
   <C-s>       Send from input in Normal or Insert mode.
@@ -368,6 +376,7 @@ The direct Model constructor requires no setup: >lua
     model = "coder",
     base_url = "http://127.0.0.1:8080/v1",
     api_key = nil,                 -- string or callback
+    context_window = nil,          -- enables bundled context usage display
     max_output_tokens = nil,
     request_opts = nil,
     request_opts_layers = nil,
@@ -403,9 +412,11 @@ credentials when `Model:stream()` starts and has no UI, Session, or tool
 dependency.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
-`usage`. A successful result has `{ ok = true, message, text }`; a failure has
-`{ ok = false, error, message? }`. Non-empty partial output is retained in the
-optional failure message.
+`usage`. A Model may emit `{ type = "provider_status", text = "..." }` for the
+default Controller and View to display in the bottom border. A successful
+result has `{ ok = true, message, text }`; a failure has `{ ok = false, error,
+message? }`. Non-empty partial output is retained in the optional failure
+message.
 
 A Run supports: >lua
 

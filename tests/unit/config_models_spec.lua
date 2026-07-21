@@ -18,8 +18,10 @@ describe("neoagent configuration and model resolution", function()
   it("keeps setup out of direct core constructors", function()
     local model = require("neoagent.api.openai_completions").new({
       provider = "direct", model = "direct", base_url = "http://localhost/v1",
+      context_window = 128000,
     })
     assert.are.equal("direct", model.id)
+    assert.are.equal(128000, model.context_window)
   end)
 
   it("resolves configured built-in models with separate request layers", function()
@@ -32,6 +34,7 @@ describe("neoagent configuration and model resolution", function()
           request_opts = { body = { nested = { provider = true } } },
           models = {
             coder = {
+              context_window = 64000,
               max_output_tokens = 10,
               request_opts = { body = { nested = { model = true } } },
             },
@@ -43,13 +46,14 @@ describe("neoagent configuration and model resolution", function()
     local request = model:_request({ messages = {}, tools = {} })
     assert.are.same({ provider = true, model = true }, request.body.nested)
     assert.are.equal(10, request.body.max_completion_tokens)
+    assert.are.equal(64000, model.context_window)
   end)
 
   it("supports ordinary custom API factories", function()
     local seen
     config.setup({
       default_model = { provider = "custom", model = "one" },
-      providers = { custom = { api = "mine", models = { one = { value = 1 } } } },
+      providers = { custom = { api = "mine", models = { one = { value = 1, context_window = 4096 } } } },
       apis = { mine = function(resolved)
         seen = resolved
         return { stream = function() end }
@@ -58,6 +62,7 @@ describe("neoagent configuration and model resolution", function()
     local model = models.resolve("custom", "one")
     assert.is_function(model.stream)
     assert.are.equal(1, seen.model.value)
+    assert.are.equal(4096, model.context_window)
     assert.is_nil(model.thinking)
   end)
 
@@ -145,6 +150,7 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("custom-high", providers.openai.models["gpt-5.4"].thinking.high.body.reasoning.effort)
     assert.is_table(providers.openai.models.custom)
     assert.is_table(providers["openai-codex"].models["gpt-5.6-terra"])
+    assert.are.equal(272000, providers["openai-codex"].models["gpt-5.6-terra"].context_window)
     assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].thinking.high.body.reasoning.effort)
     assert.is_true(providers["openai-codex"].models["gpt-5.5"].thinking.high.body.metadata.user)
     assert.are.same({ "local_provider/local_model" }, assert(models.available()))
@@ -187,6 +193,7 @@ describe("neoagent configuration and model resolution", function()
 
   it("validates geometry and configured identifiers", function()
     assert.are.equal(7, config.setup({}).ui.input_height)
+    assert.is_nil(config.setup({}).name)
     assert.has_error(function() config.setup({ name = "" }) end)
     assert.has_error(function() config.setup({ view = true }) end)
     assert.has_error(function() config.setup({ default_registry = "yes" }) end)
@@ -211,6 +218,7 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() invalid_model({ thinking = { extreme = {} } }) end)
     assert.has_error(function() invalid_model({ thinking = { high = "yes" } }) end)
     assert.has_error(function() invalid_model({ reasoning = true, thinking = { high = {} } }) end)
+    assert.has_error(function() invalid_model({ context_window = 0 }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = {
         api = "openai-codex-responses", base_url = "http://localhost", models = {

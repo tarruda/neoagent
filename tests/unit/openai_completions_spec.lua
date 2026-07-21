@@ -19,7 +19,7 @@ describe("neoagent.api.openai_completions", function()
     local model = openai.new({ provider = "local", model = "test", base_url = "http://localhost/v1", transport = fake })
     local result = wait(model:stream({
       messages = { { role = "user", content = "Hello" } },
-      tools = { { name = "echo", description = "Echo", input_schema = { type = "object" } } },
+      tools = { { name = "echo", description = "Echo", input_schema = {} } },
       on_event = function(event) events[#events + 1] = event end,
     }))
     assert.is_true(result.ok)
@@ -29,6 +29,7 @@ describe("neoagent.api.openai_completions", function()
     assert.are.same({ text = "ok" }, result.message.content[3].arguments)
     assert.are.equal(5, result.message.usage.totalTokens)
     assert.are.equal(5, #events)
+    assert.is_truthy(fake.requests[1].body:find('"parameters":{}', 1, true))
   end)
 
   it("recursively merges request options without mutating inputs", function()

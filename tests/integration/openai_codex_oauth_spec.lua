@@ -72,12 +72,17 @@ describe("OpenAI Codex OAuth HTTP integration", function()
       model = "gpt-test",
       base_url = "http://127.0.0.1:" .. server.port .. "/backend-api",
     })
+    local provider_status
     local result = wait(manager:wrap(model, "codex"):stream({
       system_prompt = "Be useful.",
       messages = { { role = "user", content = "Hello" } },
+      on_event = function(event)
+        if event.type == "provider_status" then provider_status = event.text end
+      end,
     }))
     assert.is_true(result.ok)
     assert.are.equal("Codex works", result.text)
+    assert.are.equal("5h 75% left · weekly 50% left", provider_status)
     assert(vim.wait(1000, function() return #server.records >= 2 end))
     assert.are.equal("/backend-api/codex/responses", server.records[2].path)
   end)

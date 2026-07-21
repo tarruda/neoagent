@@ -877,10 +877,44 @@ function View:_window_options(win, transcript)
 end
 
 function View:_title()
-  local model = self.context.model or "no model"
-  local thinking = type(self.context.thinking) == "string" and " · think: " .. self.context.thinking or ""
-  return (self.config.title or "Neoagent") .. " · " .. model .. thinking .. " · "
-    .. (self.context.state or "idle")
+  local parts = {}
+  if type(self.config.title) == "string" and self.config.title ~= "" then
+    parts[#parts + 1] = self.config.title
+  end
+  parts[#parts + 1] = self.context.model or "no model"
+  if type(self.context.thinking) == "string" then
+    parts[#parts + 1] = "think: " .. self.context.thinking
+  end
+  local usage = self.context.context_usage
+  if type(usage) == "table" then
+    local function tokens(value)
+      if value < 1000 then return tostring(math.floor(value + 0.5)) end
+      local divisor, suffix = value >= 1000000 and 1000000 or 1000, value >= 1000000 and "m" or "k"
+      local formatted = string.format("%.1f", value / divisor):gsub("%.0$", "")
+      return formatted .. suffix
+    end
+    local percent = usage.percent > 0 and usage.percent < 0.1
+        and "<0.1" or string.format("%.1f", usage.percent)
+    parts[#parts + 1] = string.format("ctx %s/%s (%s%%)",
+      tokens(usage.used), tokens(usage.total), percent)
+  end
+  parts[#parts + 1] = self.context.state or "idle"
+  return table.concat(parts, " · ")
+end
+
+function View:_footer()
+  local status = self.context.provider_status
+  if type(status) ~= "string" or util.trim(status) == "" then return "" end
+  return " " .. util.trim(status) .. " "
+end
+
+function View:_decorate(configs)
+  configs.transcript.title = self:_title()
+  configs.transcript.title_pos = "center"
+  configs.input.title = "Input · " .. ((self.config.mappings or {}).submit or "send") .. " send"
+  configs.input.title_pos = "center"
+  configs.input.footer = self:_footer()
+  configs.input.footer_pos = "right"
 end
 
 function View:open(origin)
@@ -897,10 +931,7 @@ function View:open(origin)
   end
   local configs, err = self:_configs()
   if not configs then vim.notify(err, vim.log.levels.ERROR) return nil, err end
-  configs.transcript.title = self:_title()
-  configs.transcript.title_pos = "center"
-  configs.input.title = "Input · " .. ((self.config.mappings or {}).submit or "send") .. " send"
-  configs.input.title_pos = "center"
+  self:_decorate(configs)
   self.transcript_win = vim.api.nvim_open_win(self.transcript_buf, false, configs.transcript)
   self.input_win = vim.api.nvim_open_win(self.input_buf, true, configs.input)
   self:_window_options(self.transcript_win, true)
@@ -965,6 +996,12 @@ function View:set_context(context)
     cfg.title_pos = "center"
     vim.api.nvim_win_set_config(self.transcript_win, cfg)
   end
+  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
+    local cfg = vim.api.nvim_win_get_config(self.input_win)
+    cfg.footer = self:_footer()
+    cfg.footer_pos = "right"
+    vim.api.nvim_win_set_config(self.input_win, cfg)
+  end
   self:_sync_spinner()
 end
 
@@ -1011,10 +1048,7 @@ function View:set_position(position)
   local mode = vim.api.nvim_get_mode().mode
   local configs, err = self:_configs()
   if not configs then vim.notify(err, vim.log.levels.ERROR) return nil, err end
-  configs.transcript.title = self:_title()
-  configs.transcript.title_pos = "center"
-  configs.input.title = "Input · " .. ((self.config.mappings or {}).submit or "send") .. " send"
-  configs.input.title_pos = "center"
+  self:_decorate(configs)
   vim.api.nvim_win_set_config(self.transcript_win, configs.transcript)
   vim.api.nvim_win_set_config(self.input_win, configs.input)
   self.full_dirty = true

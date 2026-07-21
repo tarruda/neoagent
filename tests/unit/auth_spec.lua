@@ -59,7 +59,7 @@ describe("neoagent provider authentication", function()
     assert.are.equal("token", storage.values.plan.access)
 
     local seen
-    local model = { api = "fake", provider = "provider", id = "model" }
+    local model = { api = "fake", provider = "provider", id = "model", context_window = 128000 }
     function model:stream(opts)
       return async.run(function(run)
         seen = opts.request_opts({
@@ -73,6 +73,7 @@ describe("neoagent provider authentication", function()
     model.thinking = { high = { body = { reasoning_effort = "high" } } }
     local wrapped = manager:wrap(model, "plan")
     assert.are.same(model.thinking, wrapped.thinking)
+    assert.are.equal(128000, wrapped.context_window)
     result = wait(wrapped:stream({
       messages = {},
       request_opts = { body = { caller = true }, headers = { Authorization = "wrong" } },

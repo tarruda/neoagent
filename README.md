@@ -32,6 +32,7 @@ require("neoagent").setup({
       base_url = "http://127.0.0.1:8080/v1",
       models = {
         ["qwen3-coder"] = {
+          context_window = 131072,
           max_output_tokens = 8192,
         },
       },
@@ -107,6 +108,13 @@ tools change to green on success or red on failure. Built-in tools show concise
 semantic arguments and useful output. Read output is limited to ten lines until
 tool output is expanded. A spinner remains visible while the agent is working.
 
+The top border shows the selected model, thinking level, state, and
+used/total context with a percentage when the model declares
+`context_window`. The default title begins with the selected model; set `name`
+to prepend a label for a custom Controller. Provider-specific status occupies
+the bottom border. Codex subscription models populate it with the remaining
+5-hour and weekly allowance when those response headers are available.
+
 Default UI mappings:
 
 | Mapping | Action |
@@ -141,7 +149,7 @@ The complete shape is intentionally small:
 
 ```lua
 require("neoagent").setup({
-  name = "Neoagent",            -- title of the bundled View
+  name = nil,                   -- optional label in the bundled View title
   default_registry = true,      -- compose the built-in OpenAI catalogs
   providers = {},
   apis = {},
@@ -263,6 +271,10 @@ use only `providers` from `init.lua`. The unmodified catalog is available from
 `require("neoagent.config").get().providers`, while
 `require("neoagent.models").available()` returns the currently authenticated
 `provider/model` choices.
+
+Set `context_window` on custom model entries to enable the bundled View's
+context meter. Resolved built-in Models expose it as `model.context_window`.
+The Codex catalog declares a 272k-token context window.
 
 ### Thinking levels
 
@@ -486,6 +498,7 @@ local model = Model.new({
   provider = "local",
   model = "qwen3-coder",
   base_url = "http://127.0.0.1:8080/v1",
+  context_window = 131072,
 })
 
 local run = model:stream({
@@ -522,7 +535,9 @@ lookup; wrap it with an auth manager when authentication is wanted.
 
 Callbacks are scheduled onto Neovim's main loop. Completion is exactly once.
 The normalized stream events are `text_delta`, `thinking_delta`,
-`tool_call_delta`, and `usage`.
+`tool_call_delta`, and `usage`. Models may also emit
+`{ type = "provider_status", text = "..." }`; the default Controller retains
+the latest value and the bundled View renders it in the bottom border.
 
 Use the tool loop by passing the model, messages, and exact tool values:
 

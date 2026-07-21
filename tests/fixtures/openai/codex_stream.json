@@ -18,7 +18,11 @@
       },
       "respond": {
         "headers": {
-          "Content-Type": "text/event-stream"
+          "Content-Type": "text/event-stream",
+          "X-Codex-Primary-Used-Percent": "25",
+          "X-Codex-Primary-Window-Minutes": "300",
+          "X-Codex-Secondary-Used-Percent": "50",
+          "X-Codex-Secondary-Window-Minutes": "10080"
         },
         "chunks": [
           {

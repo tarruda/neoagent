@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local request_opts = require("neoagent.api.request_opts")
+local tool_schema = require("neoagent.api.tool_schema")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
@@ -131,7 +132,7 @@ local function encode_tools(tools, strict)
       type = "function",
       name = tool.name,
       description = tool.description,
-      parameters = util.copy(tool.input_schema),
+      parameters = tool_schema.normalize(tool.input_schema),
       strict = strict,
     }
   end
@@ -446,6 +447,12 @@ function Model:stream(opts)
       if transport_ok and transport_result.ok then parser:finish() end
       if not transport_ok then error(transport_result, 0) end
       if not transport_result.ok then error(transport_result.error, 0) end
+      if self._response_status then
+        local status = self._response_status(transport_result.response.headers or {})
+        if type(status) == "string" and status ~= "" then
+          run:emit({ type = "provider_status", text = status })
+        end
+      end
       if not terminal then error(util.error("protocol", "Stream ended before a terminal response event"), 0) end
       return message
     end)
@@ -481,6 +488,7 @@ function M.new(opts)
     api = "openai-responses",
     provider = opts.provider,
     id = opts.model,
+    context_window = opts.context_window,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
@@ -489,6 +497,7 @@ function M.new(opts)
     _reasoning_summary = opts.reasoning_summary,
     _profile = opts.profile,
     _text_verbosity = opts.text_verbosity,
+    _response_status = opts.response_status,
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _transport = opts.transport or curl,

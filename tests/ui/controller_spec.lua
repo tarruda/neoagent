@@ -45,6 +45,28 @@ describe("neoagent default controller", function()
     assert.matches(" hello", lines)
   end)
 
+  it("tracks model context usage and provider status", function()
+    local assistant = fake_model.assistant({ { type = "text", text = "done" } })
+    assistant.message.usage.totalTokens = nil
+    assistant.message.usage.input = 200
+    assistant.message.usage.output = 50
+    local model = fake_model.new({ {
+      events = {
+        { type = "usage", usage = { totalTokens = 250 } },
+        { type = "provider_status", text = "quota 70% left" },
+      },
+      result = assistant,
+    } })
+    model.context_window = 1000
+    setup_model(model)
+    assert(neoagent.open())
+    local run = assert(neoagent.send("measure"))
+    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert.are.same({ used = 250, total = 1000, percent = 25 },
+      neoagent._state().view.context.context_usage)
+    assert.are.equal("quota 70% left", neoagent._state().view.context.provider_status)
+  end)
+
   it("cycles model thinking profiles and applies them at request time", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "done" } }) } })
     setup_model(model, {

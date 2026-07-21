@@ -41,6 +41,7 @@ local function openai_factory(module, resolved)
     model = resolved.model_id,
     base_url = resolved.provider.base_url,
     api_key = resolved.provider.api_key,
+    context_window = resolved.model.context_window,
     max_output_tokens = resolved.model.max_output_tokens,
     reasoning = resolved.model.reasoning,
     reasoning_effort = resolved.model.reasoning_effort,
@@ -80,6 +81,7 @@ function M.resolve(provider_id, model_id, configured, manager)
   }
   local concrete = factory(resolved)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
+  if concrete.context_window == nil then concrete.context_window = resolved.model.context_window end
   if concrete.thinking == nil then concrete.thinking = util.copy(resolved.model.thinking) end
   if provider.auth then
     manager = manager or require("neoagent.auth").configured(configured)

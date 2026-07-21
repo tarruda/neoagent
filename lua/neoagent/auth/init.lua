@@ -100,6 +100,7 @@ function Manager:wrap(model, id)
     api = model.api,
     provider = model.provider,
     id = model.id,
+    context_window = model.context_window,
     thinking = util.copy(model.thinking),
   }
   function wrapped:stream(opts)

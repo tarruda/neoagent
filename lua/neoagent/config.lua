@@ -3,7 +3,6 @@ local util = require("neoagent.util")
 local M = {}
 
 local defaults = {
-  name = "Neoagent",
   default_registry = true,
   default_thinking_level = "medium",
   providers = {},
@@ -65,7 +64,8 @@ local function validate_dimension(value, name)
 end
 
 local function validate(opts)
-  assert(type(opts.name) == "string" and opts.name ~= "", "name must be a non-empty string")
+  assert(opts.name == nil or (type(opts.name) == "string" and opts.name ~= ""),
+    "name must be a non-empty string")
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
     "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
@@ -94,6 +94,10 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      if model.context_window ~= nil then
+        assert(type(model.context_window) == "number" and model.context_window > 0
+          and model.context_window % 1 == 0, "model context_window must be a positive integer")
+      end
       if model.thinking ~= nil and model.thinking ~= false then
         assert(type(model.thinking) == "table", "model thinking must be a table or false")
         assert(model.reasoning ~= true, "model thinking and static reasoning are mutually exclusive")

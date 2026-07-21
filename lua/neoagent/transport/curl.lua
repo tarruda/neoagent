@@ -23,7 +23,33 @@ local function append_headers(command, headers)
   end
 end
 
-function M.command(request)
+local function response_headers(path)
+  local ok, lines = pcall(vim.fn.readfile, path, "b")
+  if not ok then return {}, nil end
+  local headers = {}
+  local status
+  for _, line in ipairs(lines) do
+    local code = line:match("^HTTP/%S+%s+(%d%d%d)")
+    if code then
+      status = tonumber(code)
+    else
+      local name, value = line:match("^([^:]+):%s*(.-)%s*$")
+      if name then headers[name:lower()] = value end
+    end
+  end
+  return headers, status
+end
+
+local function response_error(body)
+  local ok, decoded = pcall(vim.json.decode, body or "")
+  if not ok or type(decoded) ~= "table" then return nil end
+  local value = decoded.error
+  if type(value) == "table" then value = value.message or value.code end
+  if type(value) ~= "string" then value = decoded.message or decoded.detail end
+  return type(value) == "string" and value ~= "" and value or nil
+end
+
+function M.command(request, header_path)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
   local command = {
@@ -35,6 +61,10 @@ function M.command(request)
     "-X",
     "POST",
   }
+  if header_path then
+    command[#command + 1] = "--dump-header"
+    command[#command + 1] = header_path
+  end
   append_headers(command, request.headers)
   command[#command + 1] = "--data-binary"
   command[#command + 1] = "@-"
@@ -79,60 +109,69 @@ function M.request(opts)
   opts = opts or {}
   local request = assert(opts.request, "request is required")
   return async.run(function()
+    local header_path = vim.fn.tempname()
     local stderr = ""
     local stdout = ""
-    local result = async.await(function(done)
-      local process
-      local ok, err = pcall(function()
-        process = vim.system(M.command(request), {
-          stdin = assert(request.body, "request.body is required"),
-          text = false,
-          stdout = function(read_err, data)
-            if read_err then
-              done.reject(util.error("transport", "Failed reading curl stdout", read_err))
-              return
-            end
-            if data and data ~= "" then
-              stdout = append_bounded(stdout, data)
-              if opts.on_chunk then
-                local chunk_ok, chunk_err = pcall(opts.on_chunk, data)
-                if not chunk_ok then
-                  done.reject(util.error("protocol", "Failed to process response stream", chunk_err))
-                  if process then
-                    pcall(process.kill, process, 15)
+    local completed, result = pcall(function()
+      return async.await(function(done)
+        local process
+        local ok, err = pcall(function()
+          process = vim.system(M.command(request, header_path), {
+            stdin = assert(request.body, "request.body is required"),
+            text = false,
+            stdout = function(read_err, data)
+              if read_err then
+                done.reject(util.error("transport", "Failed reading curl stdout", read_err))
+                return
+              end
+              if data and data ~= "" then
+                stdout = append_bounded(stdout, data)
+                if opts.on_chunk then
+                  local chunk_ok, chunk_err = pcall(opts.on_chunk, data)
+                  if not chunk_ok then
+                    done.reject(util.error("protocol", "Failed to process response stream", chunk_err))
+                    if process then pcall(process.kill, process, 15) end
                   end
                 end
               end
+            end,
+            stderr = function(read_err, data)
+              if read_err then
+                stderr = append_bounded(stderr, tostring(read_err))
+              elseif data then
+                stderr = append_bounded(stderr, data)
+              end
+            end,
+          }, function(finished)
+            if finished.code == 0 then
+              done.resolve({ code = 0, stdout = stdout, stderr = stderr })
+            else
+              done.reject(util.error(
+                "transport",
+                "curl exited with status " .. tostring(finished.code),
+                (stderr ~= "" and stderr or "")
+                  .. (stdout ~= "" and ((stderr ~= "" and "\n" or "") .. stdout) or "")
+              ))
             end
-          end,
-          stderr = function(read_err, data)
-            if read_err then
-              stderr = append_bounded(stderr, tostring(read_err))
-            elseif data then
-              stderr = append_bounded(stderr, data)
-            end
-          end,
-        }, function(completed)
-          if completed.code == 0 then
-            done.resolve({ code = 0, stdout = stdout, stderr = stderr })
-          else
-            done.reject(util.error(
-              "transport",
-              "curl exited with status " .. tostring(completed.code),
-              (stderr ~= "" and stderr or "") .. (stdout ~= "" and ((stderr ~= "" and "\n" or "") .. stdout) or "")
-            ))
-          end
+          end)
         end)
-      end)
-      if not ok then
-        done.reject(util.error("transport", "Failed to start curl", err))
-      end
-      return function()
-        if process then
-          pcall(process.kill, process, 15)
+        if not ok then done.reject(util.error("transport", "Failed to start curl", err)) end
+        return function()
+          if process then pcall(process.kill, process, 15) end
         end
-      end
+      end)
     end)
+    local headers, status = response_headers(header_path)
+    pcall(vim.fn.delete, header_path)
+    if not completed then
+      local err = util.normalize_error(result, "transport")
+      if status then
+        local message = response_error(stdout)
+        err.message = "HTTP " .. tostring(status) .. (message and ": " .. message or "")
+      end
+      error(err, 0)
+    end
+    result.headers, result.status = headers, status
     return { ok = true, response = result }
   end, {
     on_done = opts.on_done,

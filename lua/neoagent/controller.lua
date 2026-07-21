@@ -23,6 +23,8 @@ function M.from_config(options)
     view = nil,
     run = nil,
     login_run = nil,
+    live_usage = nil,
+    provider_status = nil,
     run_id = 0,
     status = "idle",
     destroyed = false,
@@ -40,6 +42,49 @@ function M.from_config(options)
   local function model_label()
     local selected = state.model_selection
     return selected and (selected.provider .. "/" .. selected.model) or "no model"
+  end
+
+  local function usage_tokens(usage)
+    if type(usage) ~= "table" then return nil end
+    if type(usage.totalTokens) == "number" and usage.totalTokens >= 0 then
+      return usage.totalTokens
+    end
+    local total = 0
+    for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
+      if type(usage[key]) == "number" then total = total + usage[key] end
+    end
+    return total
+  end
+
+  local function estimate_messages(messages, first)
+    local characters = 0
+    for index = first, #messages do
+      local ok, encoded = pcall(vim.json.encode, messages[index])
+      if ok then characters = characters + #encoded end
+    end
+    return math.ceil(characters / 4)
+  end
+
+  local function context_usage()
+    local total = state.model and state.model.context_window
+    if type(total) ~= "number" or total <= 0 or not state.session then return false end
+    local messages = state.session:messages()
+    local used
+    if state.live_usage then
+      used = state.live_usage.tokens
+      used = used + estimate_messages(messages, state.live_usage.message_count + 1)
+    else
+      for index = #messages, 1, -1 do
+        local message = messages[index]
+        local tokens = message.role == "assistant" and usage_tokens(message.usage) or nil
+        if tokens and message.stopReason ~= "aborted" and message.stopReason ~= "error" then
+          used = tokens + estimate_messages(messages, index + 1)
+          break
+        end
+      end
+      used = used or estimate_messages(messages, 1)
+    end
+    return { used = used, total = total, percent = used / total * 100 }
   end
 
   local function preference_defaults()
@@ -93,6 +138,7 @@ function M.from_config(options)
     state.workspace = require("neoagent.workspace").new({ root = root, cwd = root })
     state.workspace_settings, state.workspace_overrides = nil, {}
     state.model, state.model_selection, state.thinking_level = nil, nil, nil
+    state.live_usage, state.provider_status = nil, nil
     local options = configured().persistence
     if not options.enabled then return end
     state.workspace_settings = require("neoagent.workspace_settings").new({
@@ -282,6 +328,8 @@ function M.from_config(options)
         workspace = state.workspace and state.workspace.root or nil,
         position = preferences().ui_position,
         state = state.status,
+        context_usage = context_usage(),
+        provider_status = state.provider_status or false,
       })
     end
   end
@@ -315,6 +363,18 @@ function M.from_config(options)
         },
         on_event = function(event)
           if run_id ~= state.run_id then return end
+          if event.type == "usage" then
+            state.live_usage = {
+              tokens = usage_tokens(event.usage) or 0,
+              message_count = #state.session:messages() + 1,
+            }
+            update_context()
+          elseif event.type == "provider_status" then
+            state.provider_status = type(event.text) == "string" and event.text or nil
+            update_context()
+          elseif event.type == "message_end" then
+            update_context()
+          end
           if state.view then state.view:apply(event) end
           if event.type == "tool_end" and not event.message.isError
               and (event.call.name == "write_file" or event.call.name == "edit_file") then
@@ -325,6 +385,7 @@ function M.from_config(options)
           if run_id ~= state.run_id then return end
           state.run = nil
           state.status = "idle"
+          state.live_usage = nil
           update_context()
           if state.view then state.view:finish(done) end
         end,
@@ -419,6 +480,7 @@ function M.from_config(options)
     if state.workspace and state.workspace.root == root then
       state.model, state.model_selection, state.thinking_level = nil, nil, nil
     end
+    state.live_usage, state.provider_status = nil, nil
     local session, err = make_session(cwd)
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
     state.session = session
@@ -440,6 +502,7 @@ function M.from_config(options)
     state.session = session
     state.store, state.store_seeded = store, true
     state.model, state.model_selection, state.thinking_level = nil, nil, nil
+    state.live_usage, state.provider_status = nil, nil
     local stored = store:state()
     local workspace_default = preferences().default_model
     local candidates = {}
@@ -561,6 +624,7 @@ function M.from_config(options)
     state.model = model
     state.model_selection = { provider = provider_id, model = model_id }
     state.thinking_level = next_thinking
+    state.live_usage, state.provider_status = nil, nil
     update_context()
     return model
   end

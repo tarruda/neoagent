@@ -14,7 +14,7 @@ function M.new(responses)
       if response.error then
         return { ok = false, error = response.error }
       end
-      return { ok = true, response = { code = 0 } }
+      return { ok = true, response = { code = 0, headers = response.headers or {} } }
     end)
   end
   return fake

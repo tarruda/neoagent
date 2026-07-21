@@ -54,6 +54,7 @@ describe("OpenAI-compatible HTTP integration", function()
     local result = wait(model(server):stream({ messages = {} }))
     assert.is_false(result.ok)
     assert.are.equal("transport", result.error.kind)
+    assert.are.equal("HTTP 400: bad request", result.error.message)
     assert.matches("bad request", result.error.detail)
   end)
 

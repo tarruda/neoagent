@@ -23,7 +23,11 @@ describe("neoagent.api.openai_codex_responses", function()
     local request = model:_request({
       system_prompt = "Be precise.",
       messages = { { role = "user", content = "Hello" } },
-      tools = { { name = "read", description = "Read", input_schema = { type = "object" } } },
+      tools = { {
+        name = "read",
+        description = "Read",
+        input_schema = { type = "object", properties = {}, additionalProperties = false },
+      } },
     })
     assert.are.equal("openai-codex-responses", model.api)
     assert.are.equal("https://chatgpt.com/backend-api/codex/responses", request.url)
@@ -33,6 +37,7 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.are.equal("auto", request.body.tool_choice)
     assert.is_true(request.body.parallel_tool_calls)
     assert.are.equal(vim.NIL, request.body.tools[1].strict)
+    assert.are.equal("{}", vim.json.encode(request.body.tools[1].parameters.properties))
     assert.are.same({ "reasoning.encrypted_content" }, request.body.include)
 
     assert.are.equal("https://example.test/codex/responses", codex.new({
@@ -45,16 +50,54 @@ describe("neoagent.api.openai_codex_responses", function()
       type = "message", id = "msg", role = "assistant", status = "completed",
       content = { { type = "output_text", text = "done", annotations = {} } },
     } }
-    local transport = fake_transport.new({ { chunks = { event({
-      type = "response.done",
-      response = { id = "response", status = "completed", output = output },
-    }) } } })
+    local transport = fake_transport.new({ {
+      chunks = { event({
+        type = "response.done",
+        response = { id = "response", status = "completed", output = output },
+      }) },
+      headers = {
+        ["X-Codex-Primary-Used-Percent"] = "12.5",
+        ["X-Codex-Primary-Window-Minutes"] = "300",
+        ["X-Codex-Secondary-Used-Percent"] = "40",
+        ["X-Codex-Secondary-Window-Minutes"] = "10080",
+      },
+    } })
+    local emitted = {}
     local result = wait(codex.new({
       provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
       transport = transport,
-    }):stream({ messages = {} }))
+    }):stream({ messages = {}, on_event = function(value) emitted[#emitted + 1] = value end }))
     assert.is_true(result.ok)
     assert.are.equal("done", result.text)
     assert.are.equal("openai-codex-responses", result.message.api)
+    assert.are.same({
+      type = "provider_status",
+      text = "5h 87.5% left · weekly 60% left",
+    }, emitted[#emitted])
+  end)
+
+  it("omits disabled rate-limit windows from provider status", function()
+    local output = { {
+      type = "message", id = "msg", role = "assistant", status = "completed", content = {},
+    } }
+    local transport = fake_transport.new({ {
+      chunks = { event({
+        type = "response.done",
+        response = { id = "response", status = "completed", output = output },
+      }) },
+      headers = {
+        ["X-Codex-Primary-Used-Percent"] = "21",
+        ["X-Codex-Primary-Window-Minutes"] = "10080",
+        ["X-Codex-Secondary-Used-Percent"] = "0",
+        ["X-Codex-Secondary-Window-Minutes"] = "0",
+      },
+    } })
+    local emitted = {}
+    local result = wait(codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport,
+    }):stream({ messages = {}, on_event = function(value) emitted[#emitted + 1] = value end }))
+    assert.is_true(result.ok)
+    assert.are.same({ type = "provider_status", text = "weekly 79% left" }, emitted[#emitted])
   end)
 end)

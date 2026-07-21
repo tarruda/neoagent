@@ -323,13 +323,26 @@ describe("neoagent.ui", function()
     assert.matches("NormalFloat:Normal", vim.wo[result.transcript_win].winhl)
     assert.matches("NormalFloat:Normal", vim.wo[result.input_win].winhl)
     assert.is_not_nil(vim.api.nvim_get_hl(0, { name = "NeoagentUserBackground", link = false }).bg)
-    result:set_context({ state = "running" })
-    result:set_context({ thinking = "high" })
+    result:set_context({
+      state = "running",
+      thinking = "high",
+      context_usage = { used = 250, total = 1000, percent = 25 },
+      provider_status = "5h 80% left · weekly 60% left",
+    })
     local title = vim.api.nvim_win_get_config(result.transcript_win).title
     if type(title) == "table" then
       title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
     end
     assert.matches("think: high", title)
+    assert.matches("ctx 250/1k %(25.0%%%)", title)
+    assert.is_nil(title:find("Neoagent", 1, true))
+    local footer = vim.api.nvim_win_get_config(result.input_win).footer
+    if type(footer) == "table" then
+      footer = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, footer))
+    end
+    assert.are.equal(" 5h 80% left · weekly 60% left ", footer)
+    result:set_context({ provider_status = false })
+    assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
     assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
     local first = text(result):match("([^\n]+ Working%.%.%.)")
     assert(vim.wait(1000, function()

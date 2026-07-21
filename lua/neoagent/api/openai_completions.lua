@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local request_opts = require("neoagent.api.request_opts")
+local tool_schema = require("neoagent.api.tool_schema")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
@@ -111,7 +112,7 @@ local function encode_tools(tools)
       ["function"] = {
         name = tool.name,
         description = tool.description,
-        parameters = util.copy(tool.input_schema),
+        parameters = tool_schema.normalize(tool.input_schema),
       },
     }
   end
@@ -376,6 +377,7 @@ function M.new(opts)
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
+    context_window = opts.context_window,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
