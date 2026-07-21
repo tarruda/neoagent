@@ -194,6 +194,15 @@ function M.new(opts)
     return state.view ~= nil and state.view:is_open()
   end
 
+  function window:set_input(value)
+    assert(type(value) == "string", "Window input must be a string")
+    state.drafts[active()] = value
+    if state.view and not state.view.destroyed and state.rendered_controller == active() then
+      state.view:set_input(value)
+    end
+    return value
+  end
+
   function window:_state()
     return state
   end

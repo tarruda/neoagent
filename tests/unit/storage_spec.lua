@@ -43,7 +43,7 @@ describe("neoagent.storage", function()
     assert.are.equal("hello", reopened:load()[1].content)
   end)
 
-  it("writes and resumes a linear pi v3 JSONL session", function()
+  it("writes and resumes a Pi v3 JSONL session", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local cwd = vim.uv.fs_realpath(directory)
@@ -67,26 +67,36 @@ describe("neoagent.storage", function()
     assert.are.same({ store:metadata().path }, storage.list(directory, cwd))
   end)
 
-  it("rejects incomplete and branching input without rewriting it", function()
+  it("loads Pi branches and follows the persisted active leaf", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
-    local path = directory .. "/bad.jsonl"
-    vim.fn.writefile({ "{}" }, path, "b")
-    local _, incomplete = storage.open(path)
-    assert.matches("incomplete", incomplete.detail)
-
+    local path = directory .. "/tree.jsonl"
     local header = vim.json.encode({ type = "session", version = 3, id = "s", timestamp = "t", cwd = directory })
     local first = vim.json.encode({
       type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
       message = { role = "user", content = "one" },
     })
-    local branch = vim.json.encode({
-      type = "message", id = "two", parentId = vim.NIL, timestamp = "t",
-      message = { role = "user", content = "two" },
+    local left = vim.json.encode({
+      type = "message", id = "left", parentId = "one", timestamp = "t",
+      message = { role = "assistant", content = { { type = "text", text = "left" } } },
     })
-    vim.fn.writefile({ header, first, branch }, path)
-    local _, err = storage.open(path)
-    assert.matches("parent", err.detail)
+    local right = vim.json.encode({
+      type = "message", id = "right", parentId = "one", timestamp = "t",
+      message = { role = "assistant", content = { { type = "text", text = "right" } } },
+    })
+    local leaf = vim.json.encode({
+      type = "leaf", id = "move", parentId = "right", timestamp = "t", targetId = "left",
+    })
+    vim.fn.writefile({ "", header, first, left, right, leaf, "" }, path, "b")
+    local store = assert(storage.open(path))
+    assert.are.equal("left", store:leaf_id())
+    assert.are.same({ "one", "left" }, vim.tbl_map(function(message)
+      return type(message.content) == "string" and message.content or message.content[1].text
+    end, store:load()))
+    assert(store:set_leaf("right"))
+    local ok, _, appended = store:append({ role = "user", content = "continued" })
+    assert(ok)
+    assert.are.equal("right", appended.parentId)
   end)
 
   it("rejects invalid messages before creating a session file", function()
@@ -95,7 +105,7 @@ describe("neoagent.storage", function()
     local store = storage.new({ directory = directory, cwd = directory })
     local cases = {
       { value = "text", message = "object" },
-      { value = { role = "system", content = "x" }, message = "role" },
+      { value = { role = "", content = "x" }, message = "role" },
       { value = { role = "user" }, message = "content" },
     }
     for _, case in ipairs(cases) do
@@ -126,15 +136,21 @@ describe("neoagent.storage", function()
       { lines = { "42" }, detail = "expected object" },
       { lines = { "{" }, detail = ".+" },
       { lines = { vim.json.encode({ type = "session", version = 2 }) }, detail = "expected pi session" },
+      { lines = { vim.json.encode({
+        type = "session", version = 3, id = "session", timestamp = "time", cwd = directory, metadata = { 1 },
+      }) }, detail = "metadata must be an object" },
       { lines = { vim.json.encode(header), vim.json.encode({ type = "other", id = "one" }) }, detail = "unsupported entry type" },
       { lines = {
         vim.json.encode(header),
-        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, message = { role = "user", content = "one" } }),
-        vim.json.encode({ type = "message", id = "one", parentId = "one", message = { role = "user", content = "two" } }),
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+          message = { role = "user", content = "one" } }),
+        vim.json.encode({ type = "message", id = "one", parentId = "one", timestamp = "t",
+          message = { role = "user", content = "two" } }),
       }, detail = "duplicate entry id" },
       { lines = {
         vim.json.encode(header),
-        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, message = { role = "user" } }),
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+          message = { role = "user" } }),
       }, detail = "content is required" },
     }
     for _, case in ipairs(cases) do
@@ -143,5 +159,128 @@ describe("neoagent.storage", function()
       assert.is_nil(opened)
       assert.matches(case.detail, tostring(err.detail))
     end
+  end)
+
+  it("round-trips every Pi v3 entry type and projects compacted context", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({
+      directory = directory,
+      cwd = directory,
+      parent_session = "/tmp/parent.jsonl",
+      metadata = { owner = "test" },
+    })
+    assert(store:append_model_change("openai", "gpt-test"))
+    assert(store:append_thinking_level_change("high"))
+    assert(store:append_active_tools_change({ "read_file" }))
+    local ok, _, first = store:append({ role = "user", content = "old" })
+    assert(ok)
+    assert(store:append_entry("custom", { customType = "checkpoint", data = { value = 1 } }))
+    assert(store:append_entry("custom_message", {
+      customType = "notice", content = "custom context", display = true, details = { value = 2 },
+    }))
+    assert(store:append_entry("label", { targetId = first.id, label = "start" }))
+    assert(store:append_entry("session_info", { name = "Named session" }))
+    assert(store:append_entry("branch_summary", {
+      fromId = first.id, summary = "Returned branch", usage = { totalTokens = 2 }, fromHook = false,
+    }))
+    assert(store:append_entry("compaction", {
+      summary = "Old work", firstKeptEntryId = first.id, tokensBefore = 100,
+      details = { readFiles = { "README.md" } }, usage = { totalTokens = 3 }, fromHook = false,
+    }))
+
+    local reopened = assert(storage.open(store:metadata().path))
+    assert.are.equal("/tmp/parent.jsonl", reopened:metadata().parent_session)
+    assert.are.same({ owner = "test" }, reopened:metadata().data)
+    assert.are.equal(10, #reopened:entries())
+    assert.are.same({
+      model = { provider = "openai", model = "gpt-test" },
+      thinking_level = "high",
+      active_tools = { "read_file" },
+    }, reopened:state())
+    local context = assert(reopened:context_messages())
+    assert.matches("Old work", context[1].content[1].text)
+    assert.are.equal("old", context[2].content)
+    assert.are.equal("custom context", context[3].content[1].text)
+    assert.matches("Returned branch", context[4].content[1].text)
+    assert.are.equal(1, #reopened:find_entries("label"))
+    assert.are.equal("start", reopened:label(first.id))
+    assert.are.equal("Named session", reopened:name())
+  end)
+
+  it("validates tree entry references before persistence", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local ok, err = store:set_leaf("missing")
+    assert.is_nil(ok)
+    assert.matches("entry not found", err.detail)
+    ok, err = store:append_entry("leaf", { targetId = "missing" })
+    assert.is_nil(ok)
+    assert.matches("target does not exist", err.detail)
+    ok, err = store:append_entry("label", { targetId = "missing", label = "bad" })
+    assert.is_nil(ok)
+    assert.matches("target does not exist", err.detail)
+    ok, err = store:append_entry("compaction", {
+      summary = "bad", firstKeptEntryId = "missing", tokensBefore = 1,
+    })
+    assert.is_nil(ok)
+    assert.matches("first kept entry", err.detail)
+    assert.is_nil(vim.uv.fs_stat(store:metadata().path))
+    local forked, fork_err = storage.fork(store, { directory = directory })
+    assert.is_nil(forked)
+    assert.matches("not persisted", fork_err.detail)
+  end)
+
+  it("encodes empty Pi header metadata as an object", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory, metadata = {} })
+    assert(store:append({ role = "user", content = "metadata" }))
+    local header = vim.fn.readfile(store:metadata().path)[1]
+    assert.matches('"metadata":{}', header)
+    assert.are.same({}, assert(storage.open(store:metadata().path)):metadata().data)
+  end)
+
+  it("forks a Pi session at an entry into a linked child file", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local source = storage.new({ directory = directory, cwd = directory })
+    local _, _, first = source:append({ role = "user", content = "first" })
+    local _, _, answer = source:append({ role = "assistant", content = {} })
+    local _, _, second = source:append({ role = "user", content = "second" })
+    assert(source:append({ role = "assistant", content = {} }))
+
+    local before = assert(storage.fork(source, {
+      directory = directory, entry_id = second.id, position = "before",
+    }))
+    assert.are.equal(source:metadata().path, before:metadata().parent_session)
+    assert.are.same({ "first", "assistant" }, vim.tbl_map(function(message)
+      return message.role == "user" and message.content or message.role
+    end, before:load()))
+    assert.are.equal(answer.id, before:leaf_id())
+
+    local at = assert(storage.fork(source:metadata().path, {
+      directory = directory, entry_id = second.id, position = "at",
+    }))
+    assert.are.equal("second", at:load()[3].content)
+    local missing, err = storage.fork(source, { directory = directory, entry_id = "missing" })
+    assert.is_nil(missing)
+    assert.matches("entry not found", err.detail)
+    local invalid
+    invalid, err = storage.fork(source, { directory = directory, entry_id = answer.id, position = "before" })
+    assert.is_nil(invalid)
+    assert.matches("requires a user message", err.detail)
+    invalid, err = storage.fork(source, { directory = directory, entry_id = second.id, position = "sideways" })
+    assert.is_nil(invalid)
+    assert.matches("before or at", err.detail)
+    invalid, err = storage.fork({}, { directory = directory })
+    assert.is_nil(invalid)
+    assert.matches("source store", err.detail)
+
+    local full = assert(storage.fork(source, { directory = directory, metadata = { fork = true } }))
+    assert.are.equal(#source:entries(), #full:entries())
+    assert.are.same({ fork = true }, full:metadata().data)
+    assert.is_not_nil(first.id)
   end)
 end)

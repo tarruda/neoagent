@@ -86,6 +86,12 @@ The important options are: >lua
     auth = { path = ..., methods = {} },
     default_model = nil,
     default_thinking_level = "medium",
+    compaction = {
+      auto = true,
+      reserve_tokens = 16384,
+      keep_recent_tokens = 20000,
+      run = nil,
+    },
     system_prompt = nil,       -- nil uses the built-in coding prompt
     tools = nil,               -- nil uses the coding preset
     execute_tool = nil,
@@ -352,13 +358,16 @@ keeping the `init.lua` model, thinking, and UI position defaults authoritative.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentLogin [method]         Log in or select a login method.
   :NeoagentLogin!                 Cancel an active login.
+  :NeoagentCompact [instructions] Compact the active branch context.
+  :NeoagentBranch [entry-id]      Move the leaf or select a branch point.
+  :NeoagentFork [entry-id]        Fork before a user message or select one.
 
 No global mappings are installed.
-The argument-free Session, Model, and login selectors use `vim.ui.select`,
-allowing UI providers such as Telescope's `ui-select` extension to render all
-three pickers.
-After a successful selection or direct argument, either command opens the agent
-UI if it is closed. Session entries include a preview of the first user message.
+The argument-free Session, Model, login, branch, and fork selectors use
+`vim.ui.select`, allowing UI providers such as Telescope's `ui-select`
+extension to render all five pickers. Session entries include a preview of the
+first user message. Forking restores the selected user message to the input
+buffer for editing.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
@@ -526,17 +535,67 @@ The default JSONL Store is created with: >lua
   })
 <
 `directory` is the workspaces root. The store writes below
-`<directory>/<sha256-of-canonical-cwd>/sessions/`. It uses a Pi-compatible v3
-linear JSONL subset and creates no file until the first accepted message. Model
-and thinking state uses Pi's `model_change` and `thinking_level_change` entries
-without adding messages to the Session. All Controllers share this session
-directory and may resume any stored path. Use `storage.open(path)` to resume.
+`<directory>/<sha256-of-canonical-cwd>/sessions/`. It uses the full Pi v3
+append-only JSONL tree format and creates no file until the first accepted
+message. It supports message, model, thinking, active-tool, compaction,
+branch-summary, custom, custom-message, label, session-info, and leaf entries.
+All Controllers share this session directory and may resume any stored path.
+Use `storage.open(path)` to resume.
+
+Tree-aware Session methods are: >lua
+
+  session:messages()                 -- active branch for consumers
+  session:context_messages()         -- compacted LLM projection
+  session:entries()
+  session:entry(id)
+  session:leaf_id()
+  session:path([id])
+  session:state()
+  session:move_to(id[, summary])
+  session:append_entry(type, values)
+  session:label(id)
+  session:name()
+<
+`move_to()` changes the active leaf; the next append creates a branch child.
+The optional summary creates a Pi `branch_summary` entry. Fork a linked child
+session with: >lua
+
+  local child = require("neoagent.storage").fork(store_or_path, {
+    directory = directory,
+    entry_id = user_entry_id,
+    position = "before", -- or "at"
+  })
+<
+Omitting `entry_id` copies the complete append-only file. The default
+Controller exposes `branch`, `select_branch`, `fork`, and `select_fork`.
+
+CONTEXT COMPACTION                                  *neoagent-compaction*
+
+Automatic compaction starts after an interaction crosses the Model's context
+threshold, before a prompt when resumed context already exceeds it, and once
+for a provider context-overflow error. It asks the active Model for a
+structured summary with an empty tool list and appends a Pi `compaction`
+entry. Subsequent requests contain that checkpoint and the retained recent
+entries. Repeated compactions update the previous checkpoint; oversized turns
+receive a separate prefix summary to preserve tool-call boundaries.
+
+The threshold is `context_window - reserve_tokens`. Recent retention targets
+`keep_recent_tokens`. Defaults are reduced proportionally for smaller Model
+windows. Set `compaction = false` to disable all Controller compaction or
+`compaction.auto = false` to retain manual and overflow compaction. A custom
+`compaction.run(opts)` returns a cancellable Run with `summary`,
+`first_kept_entry_id`, `tokens_before`, and optional `usage` and `details`.
+The `neoagent.compaction` module exposes `settings`, `estimate_context`,
+`should_compact`, `prepare`, `serialize`, and `run` for direct composition.
 
 Session adapters: >lua
 
   require("neoagent.chat").send(session, prompt, opts)
   require("neoagent.chat").run(session, prompt, opts)
+  require("neoagent.chat").continue(session, opts)
 <
+`continue()` uses the projected context without appending another user
+message. Session adapters allow one active mutation per Session.
 The top-level `require("neoagent")` module constructs Controllers with `new`,
 constructs shared Windows with `new_window`, owns the replaceable default
 Window, and forwards commands and convenience operations to its active

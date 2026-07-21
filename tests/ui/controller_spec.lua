@@ -73,6 +73,186 @@ describe("neoagent default controller", function()
     assert.are.equal("quota 70% left", current_view().context.provider_status)
   end)
 
+  it("automatically compacts large contexts and persists the Pi checkpoint", function()
+    local assistant = fake_model.assistant({ { type = "text", text = string.rep("work ", 30) } })
+    assistant.message.usage.totalTokens = 90
+    local model = fake_model.new({
+      { result = assistant },
+      {
+        events = { { type = "provider_status", text = "summary quota" }, { type = "text_delta", text = "## Goal" } },
+        result = fake_model.assistant({ { type = "text", text = "## Goal\nContinue the work" } }),
+      },
+    })
+    model.context_window = 100
+    setup_model(model, {
+      compaction = { auto = true, reserve_tokens = 20, keep_recent_tokens = 10 },
+    })
+    assert(neoagent.open())
+    local run = assert(neoagent.send("perform the large task"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+    local entries = neoagent.get_session():entries()
+    assert.are.equal("compaction", entries[#entries].type)
+    assert.matches("Turn Context %(split turn%):.-## Goal\nContinue the work", entries[#entries].summary)
+    assert.are.equal(90, entries[#entries].tokensBefore)
+    assert.matches("context summarization assistant", model.requests[2].system_prompt)
+    local context = assert(neoagent.get_session():context_messages())
+    assert.matches("Continue the work", context[1].content[1].text)
+    local transcript = table.concat(vim.api.nvim_buf_get_lines(
+      current_view().transcript_buf, 0, -1, false), "\n")
+    assert.matches("Context compacted", transcript)
+    assert.are.equal("summary quota", current_view().context.provider_status)
+  end)
+
+  it("compacts an already-large resumed context before sending the next prompt", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append_model_change("fake", "test"))
+    assert(store:append({ role = "user", content = string.rep("old ", 30), timestamp = 1 }))
+    assert(store:append({
+      role = "assistant", content = { { type = "text", text = string.rep("work ", 30) } },
+      provider = "fake", model = "test", stopReason = "stop", timestamp = 2,
+      usage = { input = 80, output = 10, cacheRead = 0, cacheWrite = 0, totalTokens = 90 },
+    }))
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "checkpoint" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "answer" } }) },
+    })
+    model.context_window = 100
+    setup_model(model, {
+      persistence = { enabled = true, directory = directory },
+      compaction = { auto = true, reserve_tokens = 20, keep_recent_tokens = 10 },
+    })
+    assert(neoagent.resume(store:metadata().path))
+    local run = assert(neoagent.send("new question"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+    assert.matches("context summarization assistant", model.requests[1].system_prompt)
+    assert.are.equal("new question", model.requests[2].messages[#model.requests[2].messages].content)
+    assert.are.equal("compaction", neoagent.get_session():entries()[#neoagent.get_session():entries() - 2].type)
+  end)
+
+  it("compacts and retries a context overflow once on the active branch", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append_model_change("fake", "test"))
+    assert(store:append({ role = "user", content = string.rep("old ", 30), timestamp = 1 }))
+    assert(store:append({
+      role = "assistant", content = { { type = "text", text = string.rep("work ", 30) } },
+      provider = "fake", model = "test", stopReason = "stop", timestamp = 2,
+    }))
+    local overflow = fake_model.assistant({}, "error")
+    overflow.ok = false
+    overflow.error = {
+      kind = "model",
+      message = "request failed",
+      detail = { message = "the request exceeds the available context size" },
+    }
+    local model = fake_model.new({
+      { result = overflow },
+      { result = fake_model.assistant({ { type = "text", text = "checkpoint" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    model.context_window = 100
+    setup_model(model, {
+      persistence = { enabled = true, directory = directory },
+      compaction = { auto = false, reserve_tokens = 20, keep_recent_tokens = 10 },
+    })
+    assert(neoagent.resume(store:metadata().path))
+    local run = assert(neoagent.send("continue"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 3
+    end))
+    local messages = neoagent.get_session():messages()
+    assert.are.equal("recovered", messages[#messages].content[1].text)
+    assert.are.equal(2, vim.tbl_count(vim.tbl_filter(function(message)
+      return message.role == "user"
+    end, messages)))
+    assert.are.equal("compaction", neoagent.get_session():entries()[#neoagent.get_session():entries() - 1].type)
+  end)
+
+  it("runs a replaceable manual compactor with custom instructions", function()
+    local captured
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = string.rep("answer ", 20) } }) },
+    })
+    model.context_window = 100
+    setup_model(model, {
+      compaction = {
+        auto = false,
+        reserve_tokens = 20,
+        keep_recent_tokens = 5,
+        run = function(options)
+          captured = options
+          return require("neoagent.async").run(function()
+            return {
+              ok = true,
+              summary = "custom checkpoint",
+              first_kept_entry_id = options.preparation.first_kept_entry_id,
+              tokens_before = options.preparation.tokens_before,
+              details = { format = "custom" },
+            }
+          end, { on_event = options.on_event, on_done = options.on_done })
+        end,
+      },
+    })
+    assert(neoagent.open())
+    assert.is_nil(neoagent.compact())
+    local interaction = assert(neoagent.send("manual compact"))
+    assert(vim.wait(1000, function() return interaction:is_done() and neoagent._state().status == "idle" end))
+    local run = assert(neoagent.compact("focus on tests"))
+    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert.are.equal("focus on tests", captured.instructions)
+    local entries = neoagent.get_session():entries()
+    local checkpoint = entries[#entries]
+    assert.are.equal("compaction", checkpoint.type)
+    assert.is_true(checkpoint.fromHook)
+    assert.are.same({ format = "custom" }, checkpoint.details)
+  end)
+
+  it("reports manual compaction preconditions and failed summaries", function()
+    setup_model(fake_model.new({}), { compaction = false })
+    assert.is_nil(neoagent.compact())
+    assert(neoagent.new_session())
+    assert.is_nil(neoagent.compact())
+
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = string.rep("answer ", 20) } }) },
+    })
+    setup_model(model, {
+      compaction = {
+        auto = false, reserve_tokens = 20, keep_recent_tokens = 5,
+        run = function(options)
+          return require("neoagent.async").run(function()
+            return { ok = false, error = { kind = "compaction", message = "summary failed" } }
+          end, { on_event = options.on_event, on_done = options.on_done })
+        end,
+      },
+    })
+    assert(neoagent.open())
+    local interaction = assert(neoagent.send("manual compact"))
+    assert(vim.wait(1000, function() return interaction:is_done() and neoagent._state().status == "idle" end))
+    local run = assert(neoagent.compact())
+    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    local transcript = table.concat(vim.api.nvim_buf_get_lines(current_view().transcript_buf, 0, -1, false), "\n")
+    assert.matches("summary failed", transcript)
+
+    setup_model(fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "brief" } }),
+    } }), {
+      compaction = { auto = false, reserve_tokens = 20, keep_recent_tokens = 100 },
+    })
+    local short = assert(neoagent.send("short"))
+    assert(vim.wait(1000, function() return short:is_done() end))
+    local compacted, err = neoagent.compact()
+    assert.is_nil(compacted)
+    assert.matches("Nothing can be compacted", err.message)
+  end)
+
   it("cycles model thinking profiles and applies them at request time", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "done" } }) } })
     setup_model(model, {
@@ -263,6 +443,7 @@ describe("neoagent default controller", function()
     assert.is_nil(vim.uv.fs_stat(directory))
     assert(neoagent.new_session())
     assert.is_nil(vim.uv.fs_stat(directory))
+    assert.is_nil(neoagent.fork())
   end)
 
   it("persists workspace preferences and restores session-local model state", function()
@@ -274,6 +455,7 @@ describe("neoagent default controller", function()
         { result = fake_model.assistant({ { type = "text", text = "saved" } }) },
       } or {})
       models[id].provider, models[id].id = "fake", id
+      if id == "alpha" then models[id].responses[1].result.message.model = id end
     end
     local options = {
       default_registry = false,
@@ -563,6 +745,82 @@ describe("neoagent default controller", function()
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = empty } })
     assert.is_nil(neoagent.resume())
     assert.is_nil(neoagent.default_window():_state().view)
+  end)
+
+  it("navigates Pi session branches and creates linked forks", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(store:append_model_change("fake", "test"))
+    assert(store:append_thinking_level_change("high"))
+    local _, _, first = store:append({ role = "user", content = "question", timestamp = 1 })
+    local _, _, left = store:append({
+      role = "assistant", content = { { type = "text", text = "left" } },
+      provider = "fake", model = "test", timestamp = 2,
+    })
+    assert(store:set_leaf(first.id))
+    local _, _, right = store:append({
+      role = "assistant", content = { { type = "text", text = "right" } },
+      provider = "fake", model = "test", timestamp = 3,
+    })
+    setup_model(fake_model.new({}), {
+      persistence = { enabled = true, directory = directory },
+      providers = { fake = { api = "fake-api", models = { test = { thinking = {
+        off = {}, high = {},
+      } } } } },
+    })
+    assert(neoagent.resume(store:metadata().path))
+    assert.are.equal("right", neoagent.get_session():messages()[2].content[1].text)
+    local original_select = vim.ui.select
+    local selected
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Neoagent branch", options.prompt)
+      assert.is_true(#items >= 3)
+      local choice
+      for _, item in ipairs(items) do
+        if item.id == left.id then choice = item break end
+      end
+      assert.matches("assistant · left", options.format_item(choice))
+      callback(choice)
+    end
+    assert(neoagent.select_branch())
+    vim.ui.select = original_select
+    assert.are.equal("left", neoagent.get_session():messages()[2].content[1].text)
+    assert.are.equal("high", neoagent.get_thinking_level())
+
+    local source_path = neoagent.get_session():metadata().path
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Fork Neoagent session from", options.prompt)
+      assert.matches("user · question", options.format_item(items[1]))
+      callback(items[1])
+    end
+    assert(neoagent.select_fork())
+    vim.ui.select = original_select
+    local forked = neoagent.get_session()
+    selected = forked
+    assert.are.equal(source_path, forked:metadata().parent_session)
+    assert.are.same({}, forked:messages())
+    assert.are.equal("question", current_view():get_input())
+    assert.are.equal(2, #require("neoagent.storage").list(directory, vim.fn.getcwd()))
+    assert.is_not_nil(selected)
+  end)
+
+  it("reports branch and fork selection preconditions", function()
+    setup_model(fake_model.new({}))
+    assert.is_nil(neoagent.branch("missing"))
+    assert.is_nil(neoagent.select_branch())
+    assert.is_nil(neoagent.fork())
+    assert.is_nil(neoagent.select_fork())
+    assert(neoagent.new_session())
+    assert.is_nil(neoagent.select_branch())
+    assert.is_nil(neoagent.select_fork())
+    assert.is_nil(neoagent.fork())
+    local _, _, entry = neoagent.get_session():append({ role = "user", content = "memory" })
+    local ok, err = neoagent.branch("missing")
+    assert.is_nil(ok)
+    assert.matches("Entry not found", err.message)
+    assert(neoagent.branch(entry.id, { summary = "return here" }))
+    assert.are.equal("branchSummary", neoagent.get_session():messages()[2].role)
   end)
 
   it("toggles the view and changes configured models", function()

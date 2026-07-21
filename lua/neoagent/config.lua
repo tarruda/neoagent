@@ -30,6 +30,11 @@ local defaults = {
     project_dirs = { ".agents/skills" },
   },
   max_tool_rounds = 12,
+  compaction = {
+    auto = true,
+    reserve_tokens = 16384,
+    keep_recent_tokens = 20000,
+  },
   ui = {
     position = "auto",
     margin = 1,
@@ -76,6 +81,17 @@ local function validate(opts)
     assert(type(opts.default_model.model) == "string", "default_model.model is required")
   end
   assert(type(opts.providers) == "table", "providers must be a table")
+  if opts.compaction ~= false then
+    assert(type(opts.compaction) == "table", "compaction must be false or a table")
+    assert(type(opts.compaction.auto) == "boolean", "compaction.auto must be boolean")
+    for _, key in ipairs({ "reserve_tokens", "keep_recent_tokens" }) do
+      local value = opts.compaction[key]
+      assert(type(value) == "number" and value > 0 and value % 1 == 0,
+        "compaction." .. key .. " must be a positive integer")
+    end
+    assert(opts.compaction.run == nil or type(opts.compaction.run) == "function",
+      "compaction.run must be a function")
+  end
   for id, provider in pairs(opts.providers) do
     assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")

@@ -4,7 +4,7 @@ describe("neoagent commands", function()
     vim.cmd("runtime plugin/neoagent.lua")
     for _, name in ipairs({
       "Neoagent", "NeoagentNew", "NeoagentResume", "NeoagentStop", "NeoagentModel", "NeoagentThinking",
-      "NeoagentLogin",
+      "NeoagentLogin", "NeoagentCompact", "NeoagentBranch", "NeoagentFork",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
@@ -45,12 +45,30 @@ describe("neoagent commands", function()
     require("neoagent").setup({
       default_registry = false,
       persistence = { enabled = true, directory = directory },
+      default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake", models = { test = {} } } },
       apis = { fake = function() return model end },
     })
     vim.cmd("NeoagentResume " .. vim.fn.fnameescape(store:metadata().path))
     assert.is_true(require("neoagent").default_window():_state().view:is_open())
     assert.are.equal("stored", require("neoagent").get_session():messages()[1].content)
+    local entry_id = require("neoagent").get_session():leaf_id()
+    vim.cmd("NeoagentBranch " .. entry_id)
+    assert.are.equal(entry_id, require("neoagent").get_session():leaf_id())
+    local parent_path = require("neoagent").get_session():metadata().path
+    vim.cmd("NeoagentFork " .. entry_id)
+    assert.are.equal(parent_path, require("neoagent").get_session():metadata().parent_session)
+    assert.are.same({}, require("neoagent").get_session():messages())
+    assert.are.equal("stored", require("neoagent").default_window():_state().view:get_input())
+    assert(require("neoagent").resume(parent_path))
+    vim.ui.select = function(items, options, callback)
+      assert.is_true(options.prompt == "Neoagent branch" or options.prompt == "Fork Neoagent session from")
+      callback(items[1])
+    end
+    vim.cmd("NeoagentBranch")
+    vim.cmd("NeoagentFork")
+    vim.ui.select = original_select
+    vim.cmd("NeoagentCompact focus on current work")
 
     local auth_path = vim.fn.tempname() .. "/auth.json"
     local logins = 0
@@ -141,6 +159,9 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentLogin!")
     assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
     assert.is_true(cancelled_login)
+    local completions = vim.fn.getcompletion("NeoagentLogin ", "cmdline")
+    assert.is_true(vim.tbl_contains(completions, "openai-codex"))
+    assert.is_true(vim.tbl_contains(completions, "waiting"))
     vim.ui.select = original_select
     vim.ui.input = original_input
     vim.ui.open = original_open

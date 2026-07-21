@@ -34,6 +34,15 @@ describe("neoagent.chat", function()
     assert.are.equal(4, #session:messages())
   end)
 
+  it("continues projected Session context without appending another user message", function()
+    local session = assert(Session.new({ messages = { { role = "user", content = "existing" } } }))
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "continued" } }) } })
+    local result = wait(chat.continue(session, { model = model }))
+    assert.is_true(result.ok)
+    assert.are.equal(2, #session:messages())
+    assert.are.equal("existing", model.requests[1].messages[1].content)
+  end)
+
   it("rejects a second active mutation", function()
     local session = assert(Session.new())
     local model = {

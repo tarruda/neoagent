@@ -79,7 +79,8 @@ function M.from_config(options)
   local function context_usage()
     local total = state.model and state.model.context_window
     if type(total) ~= "number" or total <= 0 or not state.session then return false end
-    local messages = state.session:messages()
+    local messages = state.session:context_messages()
+    if not messages then return false end
     local used
     if state.live_usage then
       used = state.live_usage.tokens
@@ -362,6 +363,49 @@ function M.from_config(options)
     })
   end
 
+  local function continuation(options)
+    return require("neoagent.chat").continue(options.session, {
+      model = options.model,
+      system_prompt = options.system_prompt,
+      tools = options.tools,
+      context = options.context,
+      execute_tool = options.execute_tool,
+      max_rounds = options.max_rounds,
+      model_options = options.model_options,
+      on_event = options.on_event,
+      on_done = options.on_done,
+    })
+  end
+
+  local function is_context_overflow(result)
+    if not result or result.ok or not result.error then return false end
+    local parts = { result.error.message or "" }
+    if result.error.detail ~= nil then
+      local ok, encoded = pcall(vim.json.encode, result.error.detail)
+      parts[#parts + 1] = ok and encoded or tostring(result.error.detail)
+    end
+    local text = table.concat(parts, " "):lower()
+    for _, pattern in ipairs({ "rate limit", "too many requests" }) do
+      if text:find(pattern, 1, true) then return false end
+    end
+    for _, pattern in ipairs({
+      "context_length_exceeded", "model_context_window_exceeded",
+      "request_too_large", "prompt is too long", "prompt too long",
+      "input is too long for requested model", "exceeds the context window",
+      "maximum context length", "maximum prompt length",
+      "reduce the length of the messages", "maximum allowed input length",
+      "longer than the model's context length",
+      "exceeds the available context size", "greater than the context length",
+      "context window exceeds limit", "exceeded model token limit",
+      "token limit exceeded", "too many tokens", "too large for model",
+      "configured context size", "range of input length should be",
+      "request too large",
+    }) do
+      if text:find(pattern, 1, true) then return true end
+    end
+    return false
+  end
+
   local function context()
     return {
       name = options.name or false,
@@ -379,6 +423,96 @@ function M.from_config(options)
     publish({ type = "context", context = context() })
   end
 
+  local function compaction_settings()
+    local selected = configured().compaction
+    if selected == false or not state.model then return nil end
+    return require("neoagent.compaction").settings(selected, state.model.context_window)
+  end
+
+  local function needs_compaction()
+    local settings = compaction_settings()
+    if not settings or not settings.auto or not state.session then return false end
+    local messages = state.session:context_messages()
+    if not messages then return false end
+    local estimate = require("neoagent.compaction").estimate_context(messages)
+    return require("neoagent.compaction").should_compact(
+      estimate.tokens, state.model.context_window or 0, settings)
+  end
+
+  local function start_compaction(reason, instructions, run_id, after)
+    local settings = compaction_settings()
+    if not settings or not state.session then return nil end
+    local path, path_err = state.session:path()
+    if not path then return nil, path_err end
+    local preparation, prepare_err = require("neoagent.compaction").prepare(path, settings)
+    if not preparation then return nil, prepare_err end
+
+    local selected = configured().compaction.run or require("neoagent.compaction").run
+    state.status = "compacting"
+    state.pending_events = {}
+    publish({ type = "event", event = { type = "compaction_start", reason = reason } })
+    update_context()
+    local run
+    run = selected({
+      preparation = preparation,
+      model = state.model,
+      model_options = {
+        request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),
+      },
+      instructions = instructions,
+      reason = reason,
+      session = state.session,
+      on_event = function(event)
+        if run_id ~= state.run_id then return end
+        if event.type == "provider_status" then
+          state.provider_status = type(event.text) == "string" and event.text or nil
+          update_context()
+        end
+        publish({ type = "event", event = event })
+      end,
+      on_done = function(done)
+        if run_id ~= state.run_id then return end
+        local result = util.copy(done)
+        if done.ok then
+          local ok, err = state.session:append_entry("compaction", {
+            summary = done.summary,
+            firstKeptEntryId = done.first_kept_entry_id,
+            tokensBefore = done.tokens_before,
+            usage = done.usage,
+            details = done.details,
+            fromHook = selected ~= require("neoagent.compaction").run or nil,
+          })
+          if not ok then result = { ok = false, error = err } end
+        end
+        if result.ok then
+          local projected = assert(state.session:context_messages())
+          result.estimated_tokens_after = require("neoagent.compaction").estimate_context(projected).tokens
+          publish({ type = "messages", messages = state.session:messages() })
+        end
+        state.run = nil
+        state.status = "idle"
+        state.live_usage = nil
+        update_context()
+        publish({ type = "event", event = {
+          type = "compaction_end", reason = reason, result = result,
+        } })
+        if after then after(result) end
+      end,
+    })
+    assert(type(run) == "table" and type(run.cancel) == "function", "compaction.run must return a Run")
+    state.run = run
+    return run
+  end
+
+  local function finish_interaction(done)
+    state.run = nil
+    state.status = "idle"
+    state.live_usage = nil
+    state.last_result = util.copy(done)
+    update_context()
+    publish({ type = "finish", result = done })
+  end
+
   local function submit(prompt)
     if util.trim(prompt) == "" then return nil end
     if state.status ~= "idle" then notify("the agent is busy", vim.log.levels.WARN) return nil end
@@ -393,8 +527,8 @@ function M.from_config(options)
       state.run_id = run_id
       state.pending_events = {}
       state.last_result = nil
-      local selected_interaction = options.interaction or interaction
-      local run = selected_interaction({
+      local overflow_retried = false
+      local base = {
         session = state.session,
         prompt = prompt,
         model = state.model,
@@ -408,47 +542,86 @@ function M.from_config(options)
         model_options = {
           request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),
         },
-        on_event = function(event)
-          if run_id ~= state.run_id then return end
-          if event.type == "usage" then
-            state.live_usage = {
-              tokens = usage_tokens(event.usage) or 0,
-              message_count = #state.session:messages() + 1,
-            }
-            update_context()
-          elseif event.type == "provider_status" then
-            state.provider_status = type(event.text) == "string" and event.text or nil
-            update_context()
-          elseif event.type == "message_end" then
-            update_context()
-          end
-          if event.type == "message_end" then
-            state.pending_events = {}
-          elseif event.type ~= "usage" and event.type ~= "provider_status" then
-            state.pending_events[#state.pending_events + 1] = util.copy(event)
-          end
-          publish({ type = "event", event = event })
-          if event.type == "tool_end" and not event.message.isError
-              and (event.call.name == "write_file" or event.call.name == "edit_file") then
-            refresh_buffer(event.call.arguments.path)
-          end
-        end,
-        on_done = function(done)
-          if run_id ~= state.run_id then return end
-          state.run = nil
-          state.status = "idle"
-          state.live_usage = nil
-          state.last_result = util.copy(done)
+      }
+      local function on_event(event)
+        if run_id ~= state.run_id then return end
+        if event.type == "usage" then
+          state.live_usage = {
+            tokens = usage_tokens(event.usage) or 0,
+            message_count = #assert(state.session:context_messages()) + 1,
+          }
           update_context()
-          publish({ type = "finish", result = done })
-        end,
-      })
-      assert(type(run) == "table" and type(run.cancel) == "function", "interaction must return a Run")
-      state.run = run
-      state.status = "running"
-      publish({ type = "messages", messages = state.session:messages() })
-      update_context()
-      return run
+        elseif event.type == "provider_status" then
+          state.provider_status = type(event.text) == "string" and event.text or nil
+          update_context()
+        elseif event.type == "message_end" then
+          update_context()
+        end
+        if event.type == "message_end" then
+          state.pending_events = {}
+        elseif event.type ~= "usage" and event.type ~= "provider_status" then
+          state.pending_events[#state.pending_events + 1] = util.copy(event)
+        end
+        publish({ type = "event", event = event })
+        if event.type == "tool_end" and not event.message.isError
+            and (event.call.name == "write_file" or event.call.name == "edit_file") then
+          refresh_buffer(event.call.arguments.path)
+        end
+      end
+
+      local launch
+      local function abandon_overflow_message()
+        local path = assert(state.session:path())
+        local last = path[#path]
+        if last and last.type == "message" and last.message.role == "assistant"
+            and last.message.stopReason == "error" then
+          local parent = last.parentId == vim.NIL and nil or last.parentId
+          local moved, move_err = state.session:move_to(parent)
+          if not moved then error(move_err, 0) end
+          publish({ type = "messages", messages = state.session:messages() })
+        end
+      end
+
+      local function on_done(done)
+        if run_id ~= state.run_id then return end
+        local can_continue = options.continuation ~= nil or options.interaction == nil
+        if not overflow_retried and can_continue and is_context_overflow(done) then
+          overflow_retried = true
+          abandon_overflow_message()
+          local compacted = start_compaction("overflow", nil, run_id, function(result)
+            if result.ok then launch(true) else finish_interaction(done) end
+          end)
+          if compacted then return end
+        end
+        if needs_compaction() then
+          local compacted = start_compaction("threshold", nil, run_id, function()
+            finish_interaction(done)
+          end)
+          if compacted then return end
+        end
+        finish_interaction(done)
+      end
+
+      launch = function(continuing)
+        local call = vim.tbl_extend("force", {}, base)
+        call.on_event, call.on_done = on_event, on_done
+        local selected = continuing and (options.continuation or continuation)
+          or (options.interaction or interaction)
+        local run = selected(call)
+        assert(type(run) == "table" and type(run.cancel) == "function", "interaction must return a Run")
+        state.run = run
+        state.status = "running"
+        state.pending_events = {}
+        publish({ type = "messages", messages = state.session:messages() })
+        update_context()
+        return run
+      end
+
+      if needs_compaction() then
+        local compacted = start_compaction("threshold", nil, run_id, function() launch(false) end)
+        if compacted then return compacted end
+      end
+      return launch(false)
     end)
     if not ok then
       local err = util.normalize_error(result, "session")
@@ -476,6 +649,28 @@ function M.from_config(options)
     return submit(text)
   end
 
+  function controller:compact(instructions)
+    if state.run then notify("cannot compact while the agent is running", vim.log.levels.WARN) return nil end
+    if configured().compaction == false then notify("compaction is disabled") return nil end
+    if not state.session then notify("no active session") return nil end
+    local ok, err = pcall(ensure_model)
+    if not ok then
+      err = util.normalize_error(err, "compaction")
+      notify(err.message, vim.log.levels.ERROR)
+      return nil, err
+    end
+    local run_id = state.run_id + 1
+    state.run_id = run_id
+    state.last_result = nil
+    local run, compact_err = start_compaction("manual", instructions, run_id)
+    if not run then
+      compact_err = compact_err or util.error("compaction", "Nothing to compact")
+      notify(compact_err.message, vim.log.levels.WARN)
+      return nil, compact_err
+    end
+    return run
+  end
+
   function controller:stop()
     if not state.run then return false end
     state.status = "stopping"
@@ -501,20 +696,8 @@ function M.from_config(options)
     return session
   end
 
-  local function resume_path(path)
-    local store, err = require("neoagent.storage").open(path)
-    if not store then notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR) return nil, err end
-    local cwd = store:metadata().cwd
-    activate_workspace(cwd)
-    local session
-    session, err = require("neoagent.session").new({ store = store })
-    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.session = session
-    state.store, state.store_seeded = store, true
+  local function restore_session_preferences(stored)
     state.model, state.model_selection, state.thinking_level = nil, nil, nil
-    state.live_usage, state.provider_status = nil, nil
-    state.pending_events, state.last_result = {}, nil
-    local stored = store:state()
     local workspace_default = preferences().default_model
     local candidates = {}
     if stored.model then candidates[#candidates + 1] = stored.model end
@@ -537,9 +720,131 @@ function M.from_config(options)
     if state.model then
       state.thinking_level = thinking_level(state.model, stored.thinking_level)
     end
+  end
+
+  local function resume_path(path)
+    local store, err = require("neoagent.storage").open(path)
+    if not store then notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR) return nil, err end
+    local cwd = store:metadata().cwd
+    activate_workspace(cwd)
+    local session
+    session, err = require("neoagent.session").new({ store = store })
+    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    state.session = session
+    state.store, state.store_seeded = store, true
+    state.live_usage, state.provider_status = nil, nil
+    state.pending_events, state.last_result = {}, nil
+    restore_session_preferences(store:state())
     publish({ type = "messages", messages = session:messages() })
     update_context()
     return session
+  end
+
+  local function entry_label(entry, current)
+    local label = entry.type .. " · " .. entry.id:sub(1, 8)
+    if entry.type == "message" then
+      local ok, value = pcall(util.text_content, entry.message.content)
+      value = ok and util.trim(value:gsub("[%c%s]+", " ")) or ""
+      if value ~= "" then
+        if vim.fn.strchars(value) > 70 then value = vim.fn.strcharpart(value, 0, 70) .. "…" end
+        label = entry.message.role .. " · " .. value
+      else
+        label = entry.message.role .. " · " .. entry.id:sub(1, 8)
+      end
+    end
+    return entry.id == current and "● " .. label or label
+  end
+
+  function controller:branch(entry_id, summary)
+    if state.run then notify("cannot change branches while the agent is running", vim.log.levels.WARN) return nil end
+    if not state.session then notify("no active session") return nil end
+    local ok, err = state.session:move_to(entry_id, summary)
+    if not ok then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    state.pending_events, state.last_result = {}, nil
+    state.live_usage, state.provider_status = nil, nil
+    local stored = assert(state.session:state())
+    restore_session_preferences(stored)
+    state.store_seeded = stored.model ~= nil
+    publish({ type = "messages", messages = state.session:messages() })
+    update_context()
+    return true
+  end
+
+  function controller:select_branch(on_selected)
+    if not state.session then notify("no active session") return nil end
+    local entries = state.session:entries()
+    local current = state.session:leaf_id()
+    local choices = {}
+    for _, entry in ipairs(entries) do
+      if entry.type == "message" or entry.type == "custom_message"
+          or entry.type == "branch_summary" or entry.type == "compaction" then
+        choices[#choices + 1] = { id = entry.id, label = entry_label(entry, current) }
+      end
+    end
+    if #choices == 0 then notify("the active session has no entries") return nil end
+    vim.ui.select(choices, {
+      prompt = "Neoagent branch",
+      format_item = function(item) return item.label end,
+    }, function(choice)
+      if not choice then return end
+      local moved = controller:branch(choice.id)
+      if moved and on_selected then on_selected(choice.id) end
+    end)
+    return true
+  end
+
+  function controller:fork(entry_id, position)
+    if state.run then notify("cannot fork while the agent is running", vim.log.levels.WARN) return nil end
+    if not state.store or not state.store:metadata().persisted then
+      notify("the active session is not persisted")
+      return nil
+    end
+    local selected_text
+    if entry_id and (position == nil or position == "before") then
+      local target = state.session:entry(entry_id)
+      if target and target.type == "message" and target.message.role == "user" then
+        local text_ok, text = pcall(util.text_content, target.message.content)
+        if text_ok then selected_text = text end
+      end
+    end
+    local persistence = configured().persistence
+    local store, err = require("neoagent.storage").fork(state.store, {
+      directory = persistence.directory,
+      cwd = state.workspace.root,
+      entry_id = entry_id,
+      position = position,
+    })
+    if not store then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    local session
+    session, err = require("neoagent.session").new({ store = store })
+    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    state.store, state.store_seeded, state.session = store, true, session
+    state.pending_events, state.last_result = {}, nil
+    state.live_usage, state.provider_status = nil, nil
+    restore_session_preferences(store:state())
+    publish({ type = "messages", messages = session:messages() })
+    update_context()
+    return session, selected_text
+  end
+
+  function controller:select_fork(on_selected)
+    if not state.session then notify("no active session") return nil end
+    local choices = {}
+    for _, entry in ipairs(state.session:entries()) do
+      if entry.type == "message" and entry.message.role == "user" then
+        choices[#choices + 1] = { id = entry.id, label = entry_label(entry) }
+      end
+    end
+    if #choices == 0 then notify("the active session has no user messages") return nil end
+    vim.ui.select(choices, {
+      prompt = "Fork Neoagent session from",
+      format_item = function(item) return item.label end,
+    }, function(choice)
+      if not choice then return end
+      local forked, selected_text = controller:fork(choice.id, "before")
+      if forked and on_selected then on_selected(forked, selected_text) end
+    end)
+    return true
   end
 
   local function session_preview(path)

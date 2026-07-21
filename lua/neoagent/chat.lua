@@ -5,6 +5,23 @@ local util = require("neoagent.util")
 local M = {}
 local active = setmetatable({}, { __mode = "k" })
 
+local function context_messages(session, opts)
+  local source = opts.context_messages
+  local messages
+  local err
+  if type(source) == "function" then
+    messages, err = source(session)
+  elseif type(source) == "table" then
+    messages = util.copy(source)
+  elseif type(session.context_messages) == "function" then
+    messages, err = session:context_messages()
+  else
+    messages = session:messages()
+  end
+  if not messages then error(util.normalize_error(err, "session"), 0) end
+  return messages
+end
+
 local function begin(session, prompt)
   assert(type(session) == "table" and type(session.append) == "function", "session is required")
   assert(type(prompt) == "string", "prompt must be a string")
@@ -15,6 +32,11 @@ local function begin(session, prompt)
   if not ok then
     error(err, 0)
   end
+end
+
+local function ensure_inactive(session)
+  assert(type(session) == "table" and type(session.append) == "function", "session is required")
+  if active[session] then error(util.error("session", "Session already has an active run"), 0) end
 end
 
 local function finish_result(result, session)
@@ -30,7 +52,7 @@ function M.send(session, prompt, opts)
   local run
   run = async.run(function()
     local model_opts = util.copy(opts.model_options or {})
-    model_opts.messages = session:messages()
+    model_opts.messages = context_messages(session, opts)
     model_opts.system_prompt = opts.system_prompt
     model_opts.on_event = function(event) run:emit(event) end
     local result = opts.model:stream(model_opts):await()
@@ -52,16 +74,15 @@ function M.send(session, prompt, opts)
   return run
 end
 
-function M.run(session, prompt, opts)
+local function run_agent(session, opts)
   opts = opts or {}
   assert(type(opts.model) == "table", "model is required")
-  begin(session, prompt)
   local run
   run = async.run(function()
     local storage_error
     local child = agent.run({
       model = opts.model,
-      messages = session:messages(),
+      messages = context_messages(session, opts),
       system_prompt = opts.system_prompt,
       tools = opts.tools,
       model_options = opts.model_options,
@@ -97,6 +118,17 @@ function M.run(session, prompt, opts)
     active[session] = nil
   end
   return run
+end
+
+
+function M.run(session, prompt, opts)
+  begin(session, prompt)
+  return run_agent(session, opts)
+end
+
+function M.continue(session, opts)
+  ensure_inactive(session)
+  return run_agent(session, opts)
 end
 
 return M

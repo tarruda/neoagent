@@ -134,12 +134,15 @@ Default UI mappings:
 
 Commands are `:Neoagent`, `:NeoagentNew`, `:NeoagentResume [path]`,
 `:NeoagentStop`, `:NeoagentModel [provider/model]`,
-`:NeoagentThinking [level]`, and
-`:NeoagentLogin [method]`. Without an argument, the resume, model, and login
-commands use `vim.ui.select`, so UI providers such as Telescope's `ui-select`
-extension enhance all three pickers automatically.
-Selecting or directly specifying an entry also opens the agent UI when it is
-closed. Resume entries include a preview of the first user message.
+`:NeoagentThinking [level]`, `:NeoagentLogin [method]`,
+`:NeoagentCompact [instructions]`, `:NeoagentBranch [entry-id]`, and
+`:NeoagentFork [entry-id]`. The resume, model, login, branch, and fork commands
+use `vim.ui.select` when their argument is omitted, so UI providers such as
+Telescope's `ui-select` extension enhance the pickers automatically.
+Selecting or directly specifying a session, model, branch, or fork opens the
+agent UI when it is closed. Resume entries include a preview of the first user
+message. Forking starts before the selected user message and restores its text
+to the input buffer for editing.
 
 ```lua
 require("telescope").load_extension("ui-select")
@@ -161,6 +164,12 @@ require("neoagent").setup({
   },
   default_model = nil,
   default_thinking_level = "medium",
+  compaction = {
+    auto = true,
+    reserve_tokens = 16384,
+    keep_recent_tokens = 20000,
+    run = nil,                   -- replace summary generation
+  },
   system_prompt = nil,          -- nil uses the built-in coding prompt
   tools = nil,                  -- nil selects the coding preset
   execute_tool = nil,           -- function(tool, arguments, ctx)
@@ -233,7 +242,7 @@ Selection restores that Controller's transcript and input draft. Runs belong to
 Controllers, so every attached Controller can keep working concurrently.
 Sessions remain independent; each Controller's initial Session is created on
 its first send. The Window exposes `open`, `close`, `toggle`, `is_open`,
-`active`, `controllers`, `select`, `cycle`, and `destroy`.
+`set_input`, `active`, `controllers`, `select`, `cycle`, and `destroy`.
 
 `neoagent.set_default(reviewer)` makes commands and top-level functions use an
 existing Controller through a new single-Controller Window and returns the
@@ -318,6 +327,31 @@ rejected while an interaction is active so every agent run uses one level.
 The core agent remains unaware of thinking. Resolved Models expose their
 `thinking` table, and the default controller passes the selected layer through
 `model_options.request_opts`. Direct callers may do the same explicitly.
+
+### Context compaction
+
+The default Controller compacts context after an interaction crosses the model
+threshold, before a new prompt when a resumed session is already over it, and
+once in response to a provider context-overflow error. The threshold is
+`context_window - reserve_tokens`; recent context is retained up to roughly
+`keep_recent_tokens`. Defaults are reduced proportionally for model context
+windows smaller than those values.
+
+Compaction asks the active Model for a structured checkpoint with an empty tool
+list, appends a Pi `compaction` entry, and projects the checkpoint plus retained
+entries into subsequent model requests. Repeated compactions update the prior
+checkpoint. Oversized turns receive a separate prefix summary so a tool result
+remains attached to its tool call. `:NeoagentCompact [instructions]` starts the
+same operation manually. Set `compaction = false` to disable it or
+`compaction.auto = false` to retain manual and overflow compaction.
+
+`compaction.run` may replace summary generation with a function that receives
+the prepared entries, Model, request options, Session, reason, callbacks, and
+custom instructions. It returns a cancellable Run whose successful result has
+`summary`, `first_kept_entry_id`, `tokens_before`, and optional `usage` and
+`details`. The standalone `neoagent.compaction` module exposes `settings`,
+`estimate_context`, `should_compact`, `prepare`, `serialize`, and `run` for
+other Controller compositions.
 
 ### Workspace settings
 
@@ -528,7 +562,7 @@ local manager = require("neoagent.auth").new({
 local authenticated_model = manager:wrap(model, "my_plan")
 ```
 
-The wrapped value is still an ordinary Model. Authentication resolution and
+The wrapper is an ordinary Model. Authentication resolution and
 refresh happen when `model:stream()` starts; no Neoagent UI, Session, tools, or
 controller are involved.
 
@@ -640,17 +674,34 @@ the cleanup function returned by `start`.
 
 `require("neoagent.session").new()` creates only an in-memory message owner. It
 has no model, tools, Workspace, or harness. Pass an injected store if desired.
-`neoagent.storage` implements the default Pi-compatible v3 JSONL subset.
+`neoagent.storage` implements the full Pi v3 append-only JSONL tree format,
+including message, model, thinking, active-tool, compaction, branch-summary,
+custom, custom-message, label, session-info, and leaf entries.
 Storage uses `workspaces/<sha256-of-canonical-root>/sessions/*.jsonl`, and no file
 is created until the first message is accepted. Model and thinking changes use
-Pi's `model_change` and `thinking_level_change` entries, but remain outside the
-Session's message sequence. The session directory is shared by every Controller
-in the Workspace, so any Controller can resume any stored session.
+Pi's `model_change` and `thinking_level_change` entries. The session directory
+is shared by every Controller in the Workspace, so any Controller can resume
+any stored session.
+
+A Session exposes `messages()` for the active branch, `context_messages()` for
+the compacted LLM projection, and `entries()`, `entry(id)`, `leaf_id()`,
+`path([id])`, and `state()` for tree-aware consumers. `move_to(id[, summary])`
+moves the active leaf and optionally adds a Pi branch summary; the next append
+creates a child at that point. `label(id)` and `name()` resolve Pi metadata,
+while `append_entry(type, values)` provides the complete entry surface.
+
+`neoagent.storage.fork(store_or_path, opts)` writes a child session linked by
+`parentSession`. `opts.entry_id` chooses a branch point and `opts.position` is
+`"before"` for a user message or `"at"` for the entry itself. Omitting an entry
+copies the complete append-only file. The default Controller exposes the same
+operations as `branch`, `select_branch`, `fork`, and `select_fork`.
 
 `neoagent.chat.send(session, prompt, opts)` adds one model response.
 `neoagent.chat.run(session, prompt, opts)` runs the tool loop and appends every
-generated message. These adapters permit one active mutation per Session;
-independent Models, agent runs, and Sessions remain concurrent.
+generated message. `neoagent.chat.continue(session, opts)` runs from the current
+projected context without appending another user message. These adapters permit
+one active mutation per Session; independent Models, agent runs, and Sessions
+remain concurrent.
 
 A buffer-transform plugin can stay much simpler: call `model:stream()`, append
 `text_delta` values into a replacement buffer or scratch buffer, and apply

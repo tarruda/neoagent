@@ -124,8 +124,11 @@ end
 
 for _, method in ipairs({
   "send",
+  "compact",
   "stop",
   "new_session",
+  "branch",
+  "fork",
   "set_model",
   "available_thinking_levels",
   "get_thinking_level",
@@ -154,6 +157,23 @@ function M.select_model()
   local controller = M.default()
   return controller:select_model(function()
     if M.default() == controller then M.open() end
+  end)
+end
+
+function M.select_branch()
+  local controller = M.default()
+  return controller:select_branch(function()
+    if M.default() == controller then M.open() end
+  end)
+end
+
+function M.select_fork()
+  local controller = M.default()
+  return controller:select_fork(function(_, selected_text)
+    if M.default() == controller then
+      M.default_window():set_input(selected_text or "")
+      M.open()
+    end
   end)
 end
 

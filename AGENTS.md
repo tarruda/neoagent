@@ -76,9 +76,13 @@ changes.
 - Persist credentials atomically outside user configuration. Credential
   directories created by the store use mode `0700`; files use mode `0600`.
   Never log access or refresh tokens.
-- Persistence uses the supported Pi v3 linear JSONL subset. Opening Neovim or
-  creating an empty Session must not create a session file; persistence starts
-  with the first accepted message.
+- Persistence uses the full Pi v3 append-only JSONL tree format. Sessions expose
+  active-branch projection, leaf movement, branch summaries, labels, names, and
+  linked forks. Opening Neovim or creating an empty Session must not create a
+  session file; persistence starts with the first accepted message.
+- Compaction consumes a Session path and Model explicitly, writes Pi compaction
+  entries, retains safe turn boundaries, and supports repeated summaries.
+  Controllers own automatic thresholds, overflow recovery, and UI events.
 - Bundled persistence shares one cwd-hashed workspace namespace between
   `settings.json` and `sessions/`. Model and thinking preferences are scoped by
   Controller name; UI position and the session pool are shared. Every

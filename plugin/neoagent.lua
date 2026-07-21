@@ -11,6 +11,22 @@ end, {
   nargs = "?", complete = "file",
 })
 vim.api.nvim_create_user_command("NeoagentStop", function() require("neoagent").stop() end, {})
+vim.api.nvim_create_user_command("NeoagentCompact", function(opts)
+  require("neoagent").compact(opts.args ~= "" and opts.args or nil)
+end, { nargs = "?" })
+vim.api.nvim_create_user_command("NeoagentBranch", function(opts)
+  local neoagent = require("neoagent")
+  if opts.args == "" then neoagent.select_branch() else neoagent.branch(opts.args) end
+end, { nargs = "?" })
+vim.api.nvim_create_user_command("NeoagentFork", function(opts)
+  local neoagent = require("neoagent")
+  if opts.args == "" then neoagent.select_fork() return end
+  local forked, selected_text = neoagent.fork(opts.args, "before")
+  if forked then
+    neoagent.default_window():set_input(selected_text or "")
+    neoagent.open()
+  end
+end, { nargs = "?" })
 vim.api.nvim_create_user_command("NeoagentModel", function(opts)
   local neoagent = require("neoagent")
   if opts.args == "" then neoagent.select_model() return end

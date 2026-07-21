@@ -530,12 +530,14 @@ function View:_remove_status()
 end
 
 function View:_render_status()
-  if self.context.state ~= "running" and self.context.state ~= "stopping" then return end
+  if self.context.state ~= "running" and self.context.state ~= "stopping"
+      and self.context.state ~= "compacting" then return end
   local count = vim.api.nvim_buf_line_count(self.transcript_buf)
   local start = self.has_rendered and count or 0
   local finish = self.has_rendered and count or count
   local frame = self.spinner_frames[self.spinner_frame]
-  local label = self.context.state == "stopping" and "Stopping..." or "Working..."
+  local label = self.context.state == "stopping" and "Stopping..."
+    or self.context.state == "compacting" and "Compacting..." or "Working..."
   vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, { " " .. frame .. " " .. label })
   self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
     end_row = start + 1,
@@ -652,6 +654,17 @@ function View:_message(message)
     block.state = message.isError and "error" or "success"
     block.finished, block.dirty = true, true
     return block
+  elseif message.role == "compactionSummary" then
+    local tokens = type(message.tokensBefore) == "number" and string.format(" · %.1fk tokens", message.tokensBefore / 1000) or ""
+    return self:_add_block({ kind = "notice", text = "Context compacted" .. tokens })
+  elseif message.role == "branchSummary" then
+    return self:_add_block({ kind = "notice", text = "Branch context\n" .. (message.summary or "") })
+  elseif message.role == "custom" and message.display then
+    return self:_add_block({ kind = "notice", text = util.text_content(message.content) })
+  elseif message.role == "bashExecution" then
+    local text = "$ " .. (message.command or "")
+    if message.output and message.output ~= "" then text = text .. "\n" .. message.output end
+    return self:_add_block({ kind = "notice", text = text, error = message.exitCode and message.exitCode ~= 0 })
   end
 end
 
@@ -739,6 +752,12 @@ function View:apply(event)
     block.state = message.isError and "error" or "success"
     block.update, block.finished = nil, true
     block.dirty = true
+  elseif event.type == "compaction_end" and event.result and not event.result.ok then
+    self:_add_block({
+      kind = "notice",
+      text = event.result.error and event.result.error.message or "Compaction failed",
+      error = true,
+    })
   end
   self:_schedule_flush()
 end
