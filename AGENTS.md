@@ -45,6 +45,9 @@ changes.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
+- Thinking levels are model-declared request-option layers. The default
+  controller selects and displays a level; Models and `agent.run()` do not
+  interpret thinking semantics.
 - Provider login methods are plain Lua values with `login`, `refresh`, and
   `request_opts`. Credential resolution wraps a Model at stream time; OAuth
   flows and Models must not import or assume the command/UI adapter.

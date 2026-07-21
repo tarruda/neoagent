@@ -70,7 +70,9 @@ describe("neoagent provider authentication", function()
       end, { on_event = opts.on_event })
     end
     local streamed = {}
+    model.thinking = { high = { body = { reasoning_effort = "high" } } }
     local wrapped = manager:wrap(model, "plan")
+    assert.are.same(model.thinking, wrapped.thinking)
     result = wait(wrapped:stream({
       messages = {},
       request_opts = { body = { caller = true }, headers = { Authorization = "wrong" } },

@@ -39,7 +39,7 @@ Example for llama.cpp: >lua
     default_model = { provider = "local_llama", model = "coder" },
   })
 <
-For a Responses-compatible endpoint: >lua
+For a Responses-compatible endpoint with request-time thinking levels: >lua
 
   providers = {
     local_llama = {
@@ -48,9 +48,11 @@ For a Responses-compatible endpoint: >lua
       models = {
         coder = {
           max_output_tokens = 8192,
-          reasoning = true,
-          reasoning_effort = "high",
-          reasoning_summary = "auto",
+          thinking = {
+            off = {},
+            low = { body = { reasoning = { effort = "low" } } },
+            high = { body = { reasoning = { effort = "high" } } },
+          },
         },
       },
     },
@@ -80,6 +82,7 @@ The important options are: >lua
     apis = {},
     auth = { path = ..., methods = {} },
     default_model = nil,
+    default_thinking_level = "medium",
     system_prompt = nil,       -- nil uses the built-in coding prompt
     tools = nil,               -- nil uses the coding preset
     execute_tool = nil,
@@ -106,7 +109,12 @@ default provider or model: >lua
       openai = {
         api_key = function() return vim.env.MY_OPENAI_API_KEY end,
         models = {
-          ["gpt-5.4"] = { reasoning = true },
+          ["gpt-5.4"] = {
+            thinking = {
+              minimal = false,
+              high = { body = { reasoning = { effort = "high" } } },
+            },
+          },
           ["gpt-4"] = false,
         },
       },
@@ -142,6 +150,13 @@ a table or callback. Layers merge in that order. Only `url`, `headers`, and
 `body` are accepted. Headers and body merge recursively, lists replace lists,
 and header keys are case-insensitive.
 
+Models expose optional request-time thinking controls through a `thinking`
+table. Keys use the order `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+and `max`; values are request_opts tables or callbacks. Missing keys are
+unsupported and `false` removes an inherited level. The default controller
+passes the selected layer through `model_options.request_opts`; the Model and
+agent loop do not interpret thinking levels.
+
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
 
@@ -150,6 +165,7 @@ and header keys are case-insensitive.
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
+  :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentLogin [method]         Log in or select a login method.
   :NeoagentLogin!                 Cancel an active login.
 
@@ -183,6 +199,7 @@ Default mappings:
   <C-c>       Clear the input draft and return to Insert mode.
   <C-w>w      Toggle directly between input and transcript.
   <C-o>       Expand or collapse tool output.
+  <S-Tab>     Cycle through supported thinking levels.
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.

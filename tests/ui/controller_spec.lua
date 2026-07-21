@@ -43,6 +43,30 @@ describe("neoagent default controller", function()
     assert.matches(" hello", lines)
   end)
 
+  it("cycles model thinking profiles and applies them at request time", function()
+    local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "done" } }) } })
+    setup_model(model, {
+      default_thinking_level = "medium",
+      providers = { fake = { api = "fake-api", models = { test = { thinking = {
+        off = {},
+        low = { body = { reasoning_effort = "low" } },
+        medium = { body = { reasoning_effort = "medium" } },
+        high = function() return { body = { reasoning_effort = "high" } } end,
+      } } } } },
+    })
+    assert.are.same({ "off", "low", "medium", "high" }, assert(neoagent.available_thinking_levels()))
+    assert.are.equal("medium", neoagent.get_thinking_level())
+    assert.are.equal("high", neoagent.cycle_thinking_level())
+    assert.are.equal("high", neoagent.get_thinking_level())
+    assert.are.equal("off", neoagent.cycle_thinking_level())
+    assert.are.equal("low", neoagent.set_thinking_level("low"))
+    assert.is_nil(neoagent.set_thinking_level("minimal"))
+    assert.is_nil(neoagent.set_thinking_level("unknown"))
+    local run = assert(neoagent.send("think"))
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal("low", model.requests[1].request_opts.body.reasoning_effort)
+  end)
+
   it("uses the coding preset only when tools are not supplied", function()
     local captured
     local model = fake_model.new({})
@@ -195,6 +219,8 @@ describe("neoagent default controller", function()
     assert.is_nil(neoagent.resume(path))
     assert.is_nil(neoagent.select_model())
     assert.is_nil(neoagent.set_model("fake", "test"))
+    assert.is_nil(neoagent.cycle_thinking_level())
+    assert.is_nil(neoagent.set_thinking_level("high"))
     assert.is_true(neoagent.stop())
     assert.is_true(cancelled)
     assert.are.equal("idle", neoagent._state().status)
@@ -240,6 +266,7 @@ describe("neoagent default controller", function()
     assert.is_true(neoagent._state().view:is_open())
     local model = assert(neoagent.set_model("fake", "test"))
     assert.are.equal("fake", model.id)
+    assert.is_nil(neoagent.get_thinking_level())
     assert.is_nil(neoagent.set_model("missing", "missing"))
 
     setup_model(model, {

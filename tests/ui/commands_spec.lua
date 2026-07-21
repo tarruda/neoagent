@@ -3,7 +3,8 @@ describe("neoagent commands", function()
     vim.g.loaded_neoagent = nil
     vim.cmd("runtime plugin/neoagent.lua")
     for _, name in ipairs({
-      "Neoagent", "NeoagentNew", "NeoagentResume", "NeoagentStop", "NeoagentModel", "NeoagentLogin",
+      "Neoagent", "NeoagentNew", "NeoagentResume", "NeoagentStop", "NeoagentModel", "NeoagentThinking",
+      "NeoagentLogin",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
@@ -14,7 +15,9 @@ describe("neoagent commands", function()
     require("neoagent").setup({
       default_registry = false,
       persistence = { enabled = false },
-      providers = { fake = { api = "fake", models = { test = {} } } },
+      providers = { fake = { api = "fake", models = { test = { thinking = {
+        off = {}, high = { body = { reasoning_effort = "high" } },
+      } } } } },
       apis = { fake = function() return model end },
     })
     local original_select = vim.ui.select
@@ -27,6 +30,10 @@ describe("neoagent commands", function()
     vim.ui.select = original_select
     assert.are.equal(model, require("neoagent").get_model())
     assert.is_true(require("neoagent")._state().view:is_open())
+    vim.cmd("NeoagentThinking high")
+    assert.are.equal("high", require("neoagent").get_thinking_level())
+    vim.cmd("NeoagentThinking")
+    assert.are.equal("off", require("neoagent").get_thinking_level())
     require("neoagent").close()
     vim.cmd("NeoagentModel fake/test")
     assert.are.equal(model, require("neoagent").get_model())

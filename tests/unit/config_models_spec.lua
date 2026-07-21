@@ -58,6 +58,7 @@ describe("neoagent configuration and model resolution", function()
     local model = models.resolve("custom", "one")
     assert.is_function(model.stream)
     assert.are.equal(1, seen.model.value)
+    assert.is_nil(model.thinking)
   end)
 
   it("resolves configured OpenAI Responses models", function()
@@ -113,6 +114,7 @@ describe("neoagent configuration and model resolution", function()
     local resolved = models.resolve()
     assert.are.equal("openai-codex-responses", resolved.api)
     assert.are.equal("codex", resolved.provider)
+    assert.is_nil(resolved.thinking)
     vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 
@@ -123,23 +125,28 @@ describe("neoagent configuration and model resolution", function()
       providers = {
         openai = { models = {
           ["gpt-4"] = false,
-          ["gpt-5.4"] = { reasoning = true, reasoning_effort = "high" },
+          ["gpt-5.4"] = { thinking = {
+            minimal = false,
+            high = { body = { reasoning = { effort = "custom-high" } } },
+          } },
           custom = {},
         } },
         ["openai-codex"] = { models = {
-          ["gpt-5.5"] = { reasoning_effort = "high" },
+          ["gpt-5.5"] = { thinking = {
+            high = { body = { metadata = { user = true } } },
+          } },
         } },
         local_provider = { api = "custom", models = { local_model = {} } },
       },
     })
     local providers = config.get().providers
     assert.is_nil(providers.openai.models["gpt-4"])
-    assert.is_true(providers.openai.models["gpt-5.4"].reasoning)
-    assert.are.equal("high", providers.openai.models["gpt-5.4"].reasoning_effort)
+    assert.is_false(providers.openai.models["gpt-5.4"].thinking.minimal)
+    assert.are.equal("custom-high", providers.openai.models["gpt-5.4"].thinking.high.body.reasoning.effort)
     assert.is_table(providers.openai.models.custom)
     assert.is_table(providers["openai-codex"].models["gpt-5.6-terra"])
-    assert.is_true(providers["openai-codex"].models["gpt-5.5"].reasoning)
-    assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].reasoning_effort)
+    assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].thinking.high.body.reasoning.effort)
+    assert.is_true(providers["openai-codex"].models["gpt-5.5"].thinking.high.body.metadata.user)
     assert.are.same({ "local_provider/local_model" }, assert(models.available()))
 
     vim.env.OPENAI_API_KEY = "api-key"
@@ -180,6 +187,7 @@ describe("neoagent configuration and model resolution", function()
 
   it("validates geometry and configured identifiers", function()
     assert.has_error(function() config.setup({ default_registry = "yes" }) end)
+    assert.has_error(function() config.setup({ default_thinking_level = "extreme" }) end)
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = { api = "custom", api_key = 42, models = {} } } })
@@ -195,6 +203,10 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() invalid_model({ reasoning = "yes" }) end)
     assert.has_error(function() invalid_model({ reasoning_effort = "" }) end)
     assert.has_error(function() invalid_model({ reasoning_summary = 1 }) end)
+    assert.has_error(function() invalid_model({ thinking = "high" }) end)
+    assert.has_error(function() invalid_model({ thinking = { extreme = {} } }) end)
+    assert.has_error(function() invalid_model({ thinking = { high = "yes" } }) end)
+    assert.has_error(function() invalid_model({ reasoning = true, thinking = { high = {} } }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = {
         api = "openai-codex-responses", base_url = "http://localhost", models = {

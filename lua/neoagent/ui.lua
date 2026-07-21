@@ -787,6 +787,8 @@ function View:_map_buffers()
   self:_map(self.transcript_buf, "n", mappings.toggle_focus, function() self:focus_input() end)
   self:_map(self.input_buf, { "n", "i" }, mappings.expand_tools, function() self:toggle_tools() end)
   self:_map(self.transcript_buf, "n", mappings.expand_tools, function() self:toggle_tools() end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.cycle_thinking, self.on_cycle_thinking)
+  self:_map(self.transcript_buf, "n", mappings.cycle_thinking, self.on_cycle_thinking)
   local docks = {
     dock_left = "left", dock_bottom = "bottom", dock_top = "top",
     dock_right = "right", dock_center = "center",
@@ -849,7 +851,8 @@ end
 
 function View:_title()
   local model = self.context.model or "no model"
-  return "Neoagent · " .. model .. " · " .. (self.context.state or "idle")
+  local thinking = type(self.context.thinking) == "string" and " · think: " .. self.context.thinking or ""
+  return "Neoagent · " .. model .. thinking .. " · " .. (self.context.state or "idle")
 end
 
 function View:open(origin)
@@ -1002,6 +1005,7 @@ function M.new(opts)
     config = util.copy(opts.config),
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
+    on_cycle_thinking = opts.on_cycle_thinking or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },

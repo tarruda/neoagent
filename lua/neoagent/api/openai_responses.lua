@@ -486,6 +486,7 @@ function M.new(opts)
     _reasoning_summary = opts.reasoning_summary,
     _profile = opts.profile,
     _text_verbosity = opts.text_verbosity,
+    thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _transport = opts.transport or curl,
   }, Model)

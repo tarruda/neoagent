@@ -6,6 +6,7 @@ local M = {}
 local state = {
   session = nil,
   model = nil,
+  thinking_level = nil,
   workspace = nil,
   view = nil,
   run = nil,
@@ -24,6 +25,10 @@ end
 
 local function model_label()
   return state.model and (state.model.provider .. "/" .. state.model.id) or "no model"
+end
+
+local function thinking_level(model, preferred)
+  return require("neoagent.thinking").clamp(model, preferred or configured().default_thinking_level)
 end
 
 local function make_session(cwd)
@@ -48,6 +53,7 @@ end
 local function ensure_model()
   if state.model then return state.model end
   state.model = require("neoagent.models").resolve()
+  state.thinking_level = thinking_level(state.model, state.thinking_level)
   return state.model
 end
 
@@ -131,6 +137,7 @@ local function interaction(options)
     context = options.context,
     execute_tool = options.execute_tool,
     max_rounds = options.max_rounds,
+    model_options = options.model_options,
     on_event = options.on_event,
     on_done = options.on_done,
   })
@@ -140,6 +147,7 @@ local function update_context()
   if state.view then
     state.view:set_context({
       model = model_label(),
+      thinking = state.thinking_level or false,
       workspace = state.workspace and state.workspace.root or nil,
       state = state.status,
     })
@@ -169,6 +177,10 @@ local function submit(prompt)
       context = { workspace = state.workspace },
       execute_tool = options.execute_tool,
       max_rounds = options.max_tool_rounds,
+      thinking_level = state.thinking_level,
+      model_options = {
+        request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),
+      },
       on_event = function(event)
         if run_id ~= state.run_id then return end
         if state.view then state.view:apply(event) end
@@ -210,6 +222,7 @@ local function ensure_view()
     config = options.ui,
     on_submit = submit,
     on_stop = M.stop,
+    on_cycle_thinking = M.cycle_thinking_level,
   })
   if state.session then state.view:set_messages(state.session:messages()) end
   update_context()
@@ -219,7 +232,7 @@ end
 function M.setup(opts)
   if state.run then error("Cannot reconfigure neoagent while a run is active") end
   if state.view then state.view:destroy() end
-  state.session, state.model, state.workspace, state.view = nil, nil, nil, nil
+  state.session, state.model, state.thinking_level, state.workspace, state.view = nil, nil, nil, nil, nil
   state.status = "idle"
   return config.setup(opts)
 end
@@ -352,8 +365,48 @@ function M.set_model(provider_id, model_id)
   local ok, model = pcall(require("neoagent.models").resolve, provider_id, model_id)
   if not ok then notify(tostring(model), vim.log.levels.ERROR) return nil, model end
   state.model = model
+  state.thinking_level = thinking_level(model, state.thinking_level)
   update_context()
   return model
+end
+
+function M.available_thinking_levels()
+  local ok, model = pcall(ensure_model)
+  if not ok then return nil, util.normalize_error(model, "model") end
+  return require("neoagent.thinking").levels(model)
+end
+
+function M.get_thinking_level()
+  return state.thinking_level
+end
+
+function M.set_thinking_level(level)
+  if state.run then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
+  if not require("neoagent.thinking").is_level(level) then
+    notify("unknown thinking level: " .. tostring(level), vim.log.levels.ERROR)
+    return nil
+  end
+  local levels, err = M.available_thinking_levels()
+  if not levels then notify(err.message, vim.log.levels.ERROR) return nil, err end
+  if not vim.tbl_contains(levels, level) then
+    notify("thinking level " .. level .. " is not supported by " .. model_label(), vim.log.levels.WARN)
+    return nil
+  end
+  state.thinking_level = level
+  update_context()
+  return level
+end
+
+function M.cycle_thinking_level()
+  if state.run then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
+  local ok, model = pcall(ensure_model)
+  if not ok then notify(util.normalize_error(model, "model").message, vim.log.levels.ERROR) return nil end
+  local level = require("neoagent.thinking").next(model, state.thinking_level)
+  if not level then notify("current model does not support thinking", vim.log.levels.WARN) return nil end
+  state.thinking_level = level
+  update_context()
+  notify("thinking level: " .. level)
+  return level
 end
 
 local function login_prompt(prompt, done)

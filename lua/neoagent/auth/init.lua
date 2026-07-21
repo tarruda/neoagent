@@ -96,7 +96,12 @@ end
 function Manager:wrap(model, id)
   assert(type(model) == "table" and type(model.stream) == "function", "model is required")
   method_for(self, id)
-  local wrapped = { api = model.api, provider = model.provider, id = model.id }
+  local wrapped = {
+    api = model.api,
+    provider = model.provider,
+    id = model.id,
+    thinking = util.copy(model.thinking),
+  }
   function wrapped:stream(opts)
     opts = opts or {}
     return async.run(function(run)

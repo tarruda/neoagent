@@ -10,73 +10,136 @@ local function model_map(ids, options)
   return result
 end
 
+local function reasoning_opts(effort)
+  return {
+    body = {
+      reasoning = { effort = effort, summary = "auto" },
+      include = { "reasoning.encrypted_content" },
+    },
+  }
+end
+
+local function thinking_map(off)
+  return {
+    off = util.copy(off or {}),
+    minimal = reasoning_opts("minimal"),
+    low = reasoning_opts("low"),
+    medium = reasoning_opts("medium"),
+    high = reasoning_opts("high"),
+  }
+end
+
+local function add_thinking(models, ids, options)
+  for _, id in ipairs(ids) do
+    if models[id] then models[id].thinking = thinking_map(options and options.off) end
+  end
+end
+
+local openai_models = model_map({
+  "gpt-4",
+  "gpt-4-turbo",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "gpt-4o",
+  "gpt-4o-2024-05-13",
+  "gpt-4o-2024-08-06",
+  "gpt-4o-2024-11-20",
+  "gpt-4o-mini",
+  "gpt-5",
+  "gpt-5-chat-latest",
+  "gpt-5-codex",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5-pro",
+  "gpt-5.1",
+  "gpt-5.1-chat-latest",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+  "gpt-5.2",
+  "gpt-5.2-chat-latest",
+  "gpt-5.2-codex",
+  "gpt-5.2-pro",
+  "gpt-5.3-chat-latest",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-spark",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.4-pro",
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-realtime-2.1",
+  "o1",
+  "o1-pro",
+  "o3",
+  "o3-deep-research",
+  "o3-mini",
+  "o3-pro",
+  "o4-mini",
+  "o4-mini-deep-research",
+})
+
+add_thinking(openai_models, {
+  "gpt-5", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro",
+  "gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
+  "gpt-5.2", "gpt-5.2-codex", "gpt-5.2-pro", "gpt-5.3-codex",
+  "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+  "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.6-luna",
+  "gpt-5.6-sol", "gpt-5.6-terra", "o1", "o1-pro", "o3",
+  "o3-deep-research", "o3-mini", "o3-pro", "o4-mini", "o4-mini-deep-research",
+}, { off = { body = { reasoning = { effort = "none" } } } })
+
+for _, id in ipairs({
+  "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark",
+  "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro", "gpt-5.5",
+  "gpt-5.5-pro", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+}) do
+  if openai_models[id] and openai_models[id].thinking then
+    openai_models[id].thinking.xhigh = reasoning_opts("xhigh")
+  end
+end
+for _, id in ipairs({ "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" }) do
+  openai_models[id].thinking.max = reasoning_opts("max")
+end
+
+local codex_models = model_map({
+  "gpt-5.3-codex-spark",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.5",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+})
+add_thinking(codex_models, {
+  "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+  "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+})
+for _, model in pairs(codex_models) do
+  model.thinking.minimal = reasoning_opts("low")
+  model.thinking.xhigh = reasoning_opts("xhigh")
+end
+for _, id in ipairs({ "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" }) do
+  codex_models[id].thinking.max = reasoning_opts("max")
+end
+
 local defaults = {
   openai = {
     api = "openai-responses",
     base_url = "https://api.openai.com/v1",
     api_key = function() return vim.env.OPENAI_API_KEY end,
-    models = model_map({
-      "gpt-4",
-      "gpt-4-turbo",
-      "gpt-4.1",
-      "gpt-4.1-mini",
-      "gpt-4.1-nano",
-      "gpt-4o",
-      "gpt-4o-2024-05-13",
-      "gpt-4o-2024-08-06",
-      "gpt-4o-2024-11-20",
-      "gpt-4o-mini",
-      "gpt-5",
-      "gpt-5-chat-latest",
-      "gpt-5-codex",
-      "gpt-5-mini",
-      "gpt-5-nano",
-      "gpt-5-pro",
-      "gpt-5.1",
-      "gpt-5.1-chat-latest",
-      "gpt-5.1-codex",
-      "gpt-5.1-codex-max",
-      "gpt-5.1-codex-mini",
-      "gpt-5.2",
-      "gpt-5.2-chat-latest",
-      "gpt-5.2-codex",
-      "gpt-5.2-pro",
-      "gpt-5.3-chat-latest",
-      "gpt-5.3-codex",
-      "gpt-5.3-codex-spark",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.4-nano",
-      "gpt-5.4-pro",
-      "gpt-5.5",
-      "gpt-5.5-pro",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-realtime-2.1",
-      "o1",
-      "o1-pro",
-      "o3",
-      "o3-deep-research",
-      "o3-mini",
-      "o3-pro",
-      "o4-mini",
-      "o4-mini-deep-research",
-    }),
+    models = openai_models,
   },
   ["openai-codex"] = {
     api = "openai-codex-responses",
     base_url = "https://chatgpt.com/backend-api",
     auth = "openai-codex",
-    models = model_map({
-      "gpt-5.3-codex-spark",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-    }, { reasoning = true }),
+    models = codex_models,
   },
 }
 

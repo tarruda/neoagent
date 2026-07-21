@@ -46,6 +46,7 @@ local function openai_factory(module, resolved)
     reasoning_effort = resolved.model.reasoning_effort,
     reasoning_summary = resolved.model.reasoning_summary,
     text_verbosity = resolved.model.text_verbosity,
+    thinking = resolved.model.thinking,
     request_opts_layers = layers,
   })
 end
@@ -79,6 +80,7 @@ function M.resolve(provider_id, model_id)
   }
   local concrete = factory(resolved)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
+  if concrete.thinking == nil then concrete.thinking = util.copy(resolved.model.thinking) end
   if provider.auth then
     concrete = require("neoagent.auth").configured():wrap(concrete, provider.auth)
   end

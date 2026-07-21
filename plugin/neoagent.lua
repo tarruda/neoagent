@@ -18,6 +18,14 @@ vim.api.nvim_create_user_command("NeoagentModel", function(opts)
   if not provider then vim.notify("neoagent: expected provider/model", vim.log.levels.ERROR) return end
   if neoagent.set_model(provider, model) then neoagent.open() end
 end, { nargs = "?" })
+vim.api.nvim_create_user_command("NeoagentThinking", function(opts)
+  local neoagent = require("neoagent")
+  local level = opts.args == "" and neoagent.cycle_thinking_level() or neoagent.set_thinking_level(opts.args)
+  if level then neoagent.open() end
+end, {
+  nargs = "?",
+  complete = function() return require("neoagent.thinking").order end,
+})
 vim.api.nvim_create_user_command("NeoagentLogin", function(opts)
   local neoagent = require("neoagent")
   if opts.bang then neoagent.cancel_login() else neoagent.login(opts.args) end

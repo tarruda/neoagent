@@ -379,6 +379,7 @@ function M.new(opts)
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
+    thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _transport = opts.transport or curl,
   }, Model)

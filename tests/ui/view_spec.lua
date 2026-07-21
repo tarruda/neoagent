@@ -304,6 +304,12 @@ describe("neoagent.ui", function()
     assert.matches("NormalFloat:Normal", vim.wo[result.input_win].winhl)
     assert.is_not_nil(vim.api.nvim_get_hl(0, { name = "NeoagentUserBackground", link = false }).bg)
     result:set_context({ state = "running" })
+    result:set_context({ thinking = "high" })
+    local title = vim.api.nvim_win_get_config(result.transcript_win).title
+    if type(title) == "table" then
+      title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
+    end
+    assert.matches("think: high", title)
     assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
     local first = text(result):match("([^\n]+ Working%.%.%.)")
     assert(vim.wait(1000, function()

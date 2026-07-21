@@ -4,6 +4,7 @@ local M = {}
 
 local defaults = {
   default_registry = true,
+  default_thinking_level = "medium",
   providers = {},
   apis = {},
   auth = {
@@ -27,6 +28,7 @@ local defaults = {
       cancel_input = "<C-c>",
       toggle_focus = "<C-w>w",
       expand_tools = "<C-o>",
+      cycle_thinking = "<S-Tab>",
       dock_left = "<C-w>H",
       dock_bottom = "<C-w>J",
       dock_top = "<C-w>K",
@@ -48,6 +50,8 @@ end
 
 local function validate(opts)
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
+  assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
+    "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
   if opts.default_model ~= nil then
     assert(type(opts.default_model) == "table", "default_model must be a table")
     assert(type(opts.default_model.provider) == "string", "default_model.provider is required")
@@ -73,6 +77,15 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      if model.thinking ~= nil and model.thinking ~= false then
+        assert(type(model.thinking) == "table", "model thinking must be a table or false")
+        assert(model.reasoning ~= true, "model thinking and static reasoning are mutually exclusive")
+        for level, value in pairs(model.thinking) do
+          assert(require("neoagent.thinking").is_level(level), "unknown thinking level: " .. tostring(level))
+          assert(value == false or type(value) == "table" or type(value) == "function",
+            "thinking levels must contain request_opts tables, functions, or false")
+        end
+      end
       if provider.api == "openai-responses" or provider.api == "openai-codex-responses" then
         if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
         if model.reasoning_effort ~= nil then

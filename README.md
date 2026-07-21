@@ -43,9 +43,10 @@ require("neoagent").setup({
 vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>")
 ```
 
-Use `openai-responses` for a Responses-compatible endpoint. Reasoning models
-may request an effort and summary; opaque response item signatures are retained
-in assistant messages so complete history can be replayed with `store = false`:
+Use `openai-responses` for a Responses-compatible endpoint. A model can expose
+thinking levels as ordinary request-option layers. Opaque response item
+signatures are retained in assistant messages so complete history can be
+replayed with `store = false`:
 
 ```lua
 providers = {
@@ -55,9 +56,11 @@ providers = {
     models = {
       coder = {
         max_output_tokens = 8192,
-        reasoning = true,
-        reasoning_effort = "high",
-        reasoning_summary = "auto",
+        thinking = {
+          off = {},
+          low = { body = { reasoning = { effort = "low", summary = "auto" } } },
+          high = { body = { reasoning = { effort = "high", summary = "auto" } } },
+        },
       },
     },
   },
@@ -113,12 +116,14 @@ Default UI mappings:
 | `<C-c>` | Clear the current draft and return to Insert mode |
 | `<C-w>w` | Move directly between input and transcript |
 | `<C-o>` | Expand or collapse tool output |
+| `<S-Tab>` | Cycle through the current model's thinking levels |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
 
 Commands are `:Neoagent`, `:NeoagentNew`, `:NeoagentResume [path]`,
-`:NeoagentStop`, `:NeoagentModel [provider/model]`, and
+`:NeoagentStop`, `:NeoagentModel [provider/model]`,
+`:NeoagentThinking [level]`, and
 `:NeoagentLogin [method]`. Without an argument, the resume, model, and login
 commands use `vim.ui.select`, so UI providers such as Telescope's `ui-select`
 extension enhance all three pickers automatically.
@@ -143,6 +148,7 @@ require("neoagent").setup({
     methods = {},                -- recursively merged with built-in methods
   },
   default_model = nil,
+  default_thinking_level = "medium",
   system_prompt = nil,          -- nil uses the built-in coding prompt
   tools = nil,                  -- nil selects the coding preset
   execute_tool = nil,           -- function(tool, arguments, ctx)
@@ -183,8 +189,10 @@ require("neoagent").setup({
       api_key = function() return vim.env.MY_OPENAI_API_KEY end,
       models = {
         ["gpt-5.4"] = {
-          reasoning = true,
-          reasoning_effort = "high",
+          thinking = {
+            minimal = false,
+            high = { body = { reasoning = { effort = "high" } } },
+          },
         },
         ["gpt-4"] = false,
       },
@@ -200,6 +208,25 @@ use only `providers` from `init.lua`. The unmodified catalog is available from
 `require("neoagent.config").get().providers`, while
 `require("neoagent.models").available()` returns the currently authenticated
 `provider/model` choices.
+
+### Thinking levels
+
+Models opt into thinking controls with a `thinking` table. Keys use the fixed
+order `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Each value
+is an ordinary `request_opts` table or callback. Missing keys are unsupported;
+`false` removes an inherited built-in level. The selected layer merges after
+provider and model request options and before the request is sent.
+
+`default_thinking_level` is clamped to the closest level supported by the
+selected model. Use `:NeoagentThinking [level]`,
+`require("neoagent").set_thinking_level(level)`, or
+`require("neoagent").cycle_thinking_level()`. The default UI displays the
+effective level in its title and maps `<S-Tab>` in both windows. A change is
+rejected while an interaction is active so every agent run uses one level.
+
+The core agent remains unaware of thinking. Resolved Models expose their
+`thinking` table, and the default controller passes the selected layer through
+`model_options.request_opts`. Direct callers may do the same explicitly.
 
 The built-in prompt follows the active tool set and includes the current
 working directory. A string replaces it completely. To append instructions,
