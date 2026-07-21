@@ -2,7 +2,7 @@ local config = require("neoagent.config")
 local ui = require("neoagent.ui")
 
 describe("neoagent UI mappings", function()
-  it("uses real encoded input for submit, cancellation, focus, and docking", function()
+  it("uses real encoded input for submit, cancellation, focus, docking, and close", function()
     local submitted
     local thinking_cycles = 0
     local result = ui.new({
@@ -41,6 +41,14 @@ describe("neoagent UI mappings", function()
     result:set_input("discard")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "" end))
+    local origin = result.origin_win
+    vim.keymap.set({ "n", "i" }, "<C-a>", function() result:close() end, { buffer = result.input_buf })
+    result:focus_input()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>i<C-a>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return not result:is_open() and vim.api.nvim_get_current_win() == origin
+        and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
+    end))
     result:destroy()
   end)
 end)

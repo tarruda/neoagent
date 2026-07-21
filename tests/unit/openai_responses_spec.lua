@@ -25,7 +25,10 @@ end
 describe("neoagent.api.openai_responses", function()
   it("streams normalized reasoning, text, tools, and usage", function()
     local reasoning = {
-      type = "reasoning", id = "rs_1", summary = { { type = "summary_text", text = "think" } },
+      type = "reasoning", id = "rs_1", summary = {
+        { type = "summary_text", text = "think" },
+        { type = "summary_text", text = "again" },
+      },
       encrypted_content = "encrypted",
     }
     local message = {
@@ -42,6 +45,8 @@ describe("neoagent.api.openai_responses", function()
         item = { type = "reasoning", id = "rs_1", summary = util.list() } }),
       event({ type = "response.reasoning_summary_text.delta", output_index = 0, delta = "thi" }),
       event({ type = "response.reasoning_text.delta", output_index = 0, delta = "nk" }),
+      event({ type = "response.reasoning_summary_part.done", output_index = 0 }),
+      event({ type = "response.reasoning_summary_text.delta", output_index = 0, delta = "again" }),
       event({ type = "response.reasoning_summary_part.done", output_index = 0 }),
       event({ type = "response.output_item.done", output_index = 0, item = reasoning }),
       event({ type = "response.output_item.added", output_index = 1,
@@ -80,7 +85,12 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("Hello", result.text)
     assert.are.equal("toolUse", result.message.stopReason)
     assert.are.equal("resp_1", result.message.responseId)
-    assert.are.equal("think", result.message.content[1].thinking)
+    assert.are.equal("think\n\nagain", result.message.content[1].thinking)
+    local thinking = {}
+    for _, value in ipairs(emitted) do
+      if value.type == "thinking_delta" then thinking[#thinking + 1] = value.text end
+    end
+    assert.are.equal("think\n\nagain", table.concat(thinking))
     assert.are.equal("encrypted", vim.json.decode(result.message.content[1].thinkingSignature).encrypted_content)
     assert.are.equal("msg_1", result.message.content[2].textSignature)
     assert.are.equal("call_1|fc_1", result.message.content[3].id)

@@ -894,6 +894,11 @@ end
 function View:close()
   self:_stop_spinner()
   local transcript_win, input_win = self.transcript_win, self.input_win
+  if input_win and vim.api.nvim_win_is_valid(input_win)
+      and vim.api.nvim_get_current_win() == input_win
+      and vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
+    vim.cmd("stopinsert")
+  end
   self.transcript_win, self.input_win = nil, nil
   if transcript_win and vim.api.nvim_win_is_valid(transcript_win) then vim.api.nvim_win_close(transcript_win, true) end
   if input_win and vim.api.nvim_win_is_valid(input_win) then vim.api.nvim_win_close(input_win, true) end

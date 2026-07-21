@@ -375,16 +375,19 @@ function Model:stream(opts)
           index = register_index(index, item_id)
           local slot = slots[index]
           if slot and slot.type == "thinking" and type(event.delta) == "string" then
+            if event.type == "response.reasoning_summary_text.delta"
+                and slot.summary_part_done and event.delta ~= "" then
+              slot.block.thinking = slot.block.thinking .. "\n\n"
+              run:emit({ type = "thinking_delta", text = "\n\n" })
+              slot.summary_part_done = nil
+            end
             slot.block.thinking = slot.block.thinking .. event.delta
             run:emit({ type = "thinking_delta", text = event.delta })
           end
         elseif event.type == "response.reasoning_summary_part.done" then
           index = register_index(index, item_id)
           local slot = slots[index]
-          if slot and slot.type == "thinking" then
-            slot.block.thinking = slot.block.thinking .. "\n\n"
-            run:emit({ type = "thinking_delta", text = "\n\n" })
-          end
+          if slot and slot.type == "thinking" then slot.summary_part_done = true end
         elseif event.type == "response.output_text.delta" or event.type == "response.refusal.delta" then
           index = register_index(index, item_id)
           local slot = slots[index]

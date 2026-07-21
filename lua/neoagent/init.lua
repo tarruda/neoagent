@@ -332,7 +332,10 @@ end
 function M.open()
   local ok, opened, open_err = pcall(function()
     ensure_session()
-    return ensure_view():open()
+    if preferences().default_model then ensure_model() end
+    local view = ensure_view()
+    update_context()
+    return view:open()
   end)
   if not ok then notify(util.normalize_error(opened, "ui").message, vim.log.levels.ERROR) return nil, opened end
   return opened, open_err
