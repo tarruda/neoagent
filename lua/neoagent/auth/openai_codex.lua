@@ -291,6 +291,7 @@ function M.new(opts)
   end
 
   return {
+    type = "oauth",
     name = "OpenAI (ChatGPT Plus/Pro)",
     login = function(interaction)
       return async.run(function()

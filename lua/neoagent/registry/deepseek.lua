@@ -19,6 +19,7 @@ return {
   api = "openai-completions",
   base_url = "https://api.deepseek.com",
   api_key = function() return vim.env.DEEPSEEK_API_KEY end,
+  auth = "deepseek",
   request_opts = { body = { stream_options = { include_usage = true } } },
   models = models,
 }

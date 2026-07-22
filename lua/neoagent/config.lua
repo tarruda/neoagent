@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local api_key = require("neoagent.auth.api_key")
 
 local M = {}
 
@@ -10,6 +11,8 @@ local defaults = {
   auth = {
     path = vim.fn.stdpath("state") .. "/neoagent/auth.json",
     methods = {
+      openai = api_key.new({ name = "OpenAI API key" }),
+      deepseek = api_key.new({ name = "DeepSeek API key" }),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
     },
   },
@@ -179,8 +182,16 @@ local function validate(opts)
   for id, method in pairs(opts.auth.methods) do
     assert(type(id) == "string" and type(method) == "table", "auth methods must be keyed tables")
     assert(type(method.name) == "string" and method.name ~= "", "auth method name is required")
-    assert(type(method.login) == "function" and type(method.refresh) == "function"
-      and type(method.request_opts) == "function", "auth methods require login, refresh, and request_opts")
+    assert(method.type == nil or method.type == "api_key" or method.type == "oauth",
+      "auth method type must be api_key or oauth")
+    assert(type(method.login) == "function" and type(method.request_opts) == "function",
+      "auth methods require login and request_opts")
+    if method.type == "api_key" then
+      assert(method.refresh == nil or type(method.refresh) == "function",
+        "API key auth method refresh must be a function")
+    else
+      assert(type(method.refresh) == "function", "OAuth auth methods require refresh")
+    end
   end
   for id, provider in pairs(opts.providers) do
     if provider.auth ~= nil then

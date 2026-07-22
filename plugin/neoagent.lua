@@ -43,17 +43,25 @@ end, {
   nargs = "?",
   complete = function() return require("neoagent.thinking").order end,
 })
+local function auth_method_completion()
+  local methods = require("neoagent").default():config().auth.methods
+  local result = {}
+  for id in pairs(methods) do result[#result + 1] = id end
+  table.sort(result)
+  return result
+end
+
 vim.api.nvim_create_user_command("NeoagentLogin", function(opts)
   local neoagent = require("neoagent")
   if opts.bang then neoagent.cancel_login() else neoagent.login(opts.args) end
 end, {
   nargs = "?",
   bang = true,
-  complete = function()
-    local methods = require("neoagent").default():config().auth.methods
-    local result = {}
-    for id in pairs(methods) do result[#result + 1] = id end
-    table.sort(result)
-    return result
-  end,
+  complete = auth_method_completion,
+})
+vim.api.nvim_create_user_command("NeoagentLogout", function(opts)
+  require("neoagent").logout(opts.args)
+end, {
+  nargs = "?",
+  complete = auth_method_completion,
 })

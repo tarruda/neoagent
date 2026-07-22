@@ -89,6 +89,103 @@ describe("neoagent provider authentication", function()
     assert.are.equal("fake", wrapped.api)
   end)
 
+  it("stores non-expiring API keys and removes only the stored credential", function()
+    local storage = memory_store()
+    local api_key = require("neoagent.auth.api_key").new({ name = "Example API key" })
+    local manager = auth.new({ methods = { example = api_key }, store = storage })
+    local prompt
+    local result = wait(manager:login("example", {
+      prompt = function(value, done)
+        prompt = value
+        done.resolve("  secret-key  ")
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal("api_key", result.credential_type)
+    assert.are.same({ type = "secret", message = "Enter Example API key:" }, prompt)
+    assert.are.same({ type = "api_key", key = "secret-key" }, storage.values.example)
+
+    result = wait(manager:resolve("example"))
+    assert.is_true(result.ok)
+    assert.are.equal("Bearer secret-key", result.request_opts.headers.Authorization)
+    local listed = assert(manager:list_credentials())
+    assert.are.same({ { id = "example", name = "Example API key", type = "api_key" } }, listed)
+    assert.is_nil(listed[1].key)
+
+    assert.is_true(wait(manager:logout("example")).ok)
+    assert.is_nil(storage.values.example)
+    assert.is_false(manager:has_credentials("example"))
+  end)
+
+  it("derives provider-specific request options from stored API keys", function()
+    local storage = memory_store()
+    local selected = require("neoagent.auth.api_key").new({
+      name = "Header key",
+      prompt = "Enter provider secret:",
+      request_opts = function(credential)
+        return { headers = { ["x-api-key"] = credential.key } }
+      end,
+    })
+    local manager = auth.new({ methods = { header = selected }, store = storage })
+    local result = wait(manager:login("header", {
+      prompt = function(value, done)
+        assert.are.equal("Enter provider secret:", value.message)
+        done.resolve("provider-key")
+      end,
+    }))
+    assert.is_true(result.ok)
+    result = wait(manager:resolve("header"))
+    assert.are.equal("provider-key", result.request_opts.headers["x-api-key"])
+  end)
+
+  it("rejects malformed API-key methods and credentials without exposing secrets", function()
+    local selected = require("neoagent.auth.api_key").new({ name = "Validated key" })
+    local storage = memory_store({ key = {
+      type = "api_key", key = "secret", env = { ACCOUNT_ID = "account" },
+    } })
+    local manager = auth.new({ methods = { key = selected }, store = storage })
+    assert.is_true(wait(manager:resolve("key")).ok)
+
+    storage.values.key.env = { "invalid" }
+    local available, err = manager:has_credentials("key")
+    assert.is_nil(available)
+    assert.matches("invalid", err.message)
+
+    local blank = wait(manager:login("key", {
+      prompt = function(_, done) done.resolve("  ") end,
+    }))
+    assert.is_false(blank.ok)
+    assert.matches("required", blank.error.message)
+
+    local invalid_result = {
+      type = "api_key",
+      name = "Invalid result",
+      login = function() return { await = function() return nil end } end,
+      request_opts = function() return {} end,
+    }
+    manager = auth.new({ methods = { invalid = invalid_result }, store = memory_store() })
+    assert.matches("invalid result", wait(manager:login("invalid", {
+      prompt = function() end,
+    })).error.message)
+
+    local invalid_options = vim.deepcopy(invalid_result)
+    invalid_options.login = selected.login
+    invalid_options.request_opts = function() return "invalid" end
+    manager = auth.new({
+      methods = { invalid = invalid_options },
+      store = memory_store({ invalid = { type = "api_key", key = "secret" } }),
+    })
+    assert.matches("request_opts", wait(manager:resolve("invalid")).error.message)
+
+    local deletion_error = require("neoagent.util").error("auth", "Deletion failed")
+    local failing_store = memory_store({ key = { type = "api_key", key = "secret" } })
+    failing_store.delete = function() return false, deletion_error end
+    manager = auth.new({ methods = { key = selected }, store = failing_store })
+    local deleted = wait(manager:logout("key"))
+    assert.is_false(deleted.ok)
+    assert.are.equal("Deletion failed", deleted.error.message)
+  end)
+
   it("refreshes expired credentials before deriving request options", function()
     local storage = memory_store({ plan = {
       access = "old", refresh = "refresh", expires = 10, accountId = "account",
@@ -117,7 +214,9 @@ describe("neoagent provider authentication", function()
     assert.are.equal("auth", wait(manager:resolve("plan")).error.kind)
 
     storage.values.plan = { expires = "later" }
-    assert.is_false(manager:has_credentials("plan"))
+    local available, credential_err = manager:has_credentials("plan")
+    assert.is_nil(available)
+    assert.are.equal("auth", credential_err.kind)
     assert.matches("invalid", wait(manager:resolve("plan")).error.message)
     storage.values.plan = { access = "old", refresh = "r", expires = 0 }
     local bad = method({ refresh = function()
@@ -133,7 +232,10 @@ describe("neoagent provider authentication", function()
     local store = store_module.new(path)
     assert.is_nil(store:read("plan"))
     assert.is_nil(vim.uv.fs_stat(path))
+    assert.is_true(wait(store:delete("missing")).ok)
+    assert.is_nil(vim.uv.fs_stat(directory))
     assert(store:write("plan", { access = "secret", refresh = "r", expires = 1 }))
+    assert.is_true(wait(store:modify("plan", function() return nil end)).ok)
     assert.are.equal("secret", store:read("plan").access)
     local bit = require("bit")
     assert.are.equal(384, bit.band(vim.uv.fs_stat(path).mode, 511))
@@ -162,7 +264,23 @@ describe("neoagent provider authentication", function()
     assert.is_true(wait(first).ok)
     assert.is_true(wait(second).ok)
     assert.are.equal(2, store:read("count").value)
-    assert(store:delete("plan"))
+    assert(store:write("remove", { type = "api_key", key = "secret" }))
+    local updating = store:modify("remove", function(current)
+      async.await(function(done)
+        local timer = vim.defer_fn(function() done.resolve(true) end, 20)
+        return function() pcall(vim.fn.timer_stop, timer) end
+      end)
+      current.key = "updated"
+      return current
+    end)
+    local deleting = store:delete("remove")
+    assert.is_true(wait(updating).ok)
+    assert.is_true(wait(deleting).ok)
+    assert.is_nil(store:read("remove"))
+    local listed = assert(store:list())
+    assert.is_true(vim.tbl_contains(vim.tbl_map(function(item) return item.id end, listed), "plan"))
+    assert.is_nil(listed[1].access)
+    assert.is_true(wait(store:delete("plan")).ok)
     assert.is_nil(store:read("plan"))
     vim.fn.writefile({ "[]" }, path)
     local value, err = store:read("plan")

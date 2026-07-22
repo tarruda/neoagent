@@ -5,6 +5,7 @@ local util = require("neoagent.util")
 local M = {}
 local Store = {}
 Store.__index = Store
+local DELETE = {}
 
 local function failure(message, detail)
   return util.error("auth", message, detail)
@@ -64,6 +65,19 @@ function Store:read(id)
   return util.copy(values[id])
 end
 
+function Store:list()
+  local values, err = self:_read_all()
+  if not values then return nil, err end
+  local result = {}
+  for id, credential in pairs(values) do
+    local kind = type(credential) == "table" and credential.type or nil
+    if kind == nil and type(credential) == "table" and credential.access ~= nil then kind = "oauth" end
+    result[#result + 1] = { id = id, type = kind or "invalid" }
+  end
+  table.sort(result, function(a, b) return a.id < b.id end)
+  return result
+end
+
 function Store:_write_all(values)
   local directory = vim.fs.dirname(self.path)
   local directory_exists = vim.uv.fs_stat(directory) ~= nil
@@ -73,7 +87,8 @@ function Store:_write_all(values)
   if not directory_exists then vim.uv.fs_chmod(directory, 448) end
   local suffix = vim.uv.random(8):gsub(".", function(char) return string.format("%02x", char:byte()) end)
   local temporary = self.path .. "." .. suffix .. ".tmp"
-  ok, err = fs.write_all(temporary, vim.json.encode(values) .. "\n", "wx", 384)
+  local encoded = next(values) == nil and vim.empty_dict() or values
+  ok, err = fs.write_all(temporary, vim.json.encode(encoded) .. "\n", "wx", 384)
   if not ok then return nil, failure("Failed to write credentials", err) end
   ok, err = vim.uv.fs_rename(temporary, self.path)
   if not ok then
@@ -92,11 +107,10 @@ function Store:write(id, credential)
 end
 
 function Store:delete(id)
-  if not vim.uv.fs_stat(self.path) then return true end
-  local values, err = self:_read_all()
-  if not values then return nil, err end
-  values[id] = nil
-  return self:_write_all(values)
+  if not vim.uv.fs_stat(self.path) then
+    return async.run(function() return { ok = true } end, { error_kind = "auth" })
+  end
+  return self:modify(id, function() return DELETE end)
 end
 
 function Store:modify(id, fn)
@@ -112,12 +126,23 @@ function Store:modify(id, fn)
       local values, read_err = self:_read_all()
       if not values then error(read_err, 0) end
       local next_value = fn(util.copy(values[id]))
-      if next_value ~= nil then
+      local post
+      if next_value == DELETE then
+        local existed = values[id] ~= nil
+        values[id] = nil
+        if existed then
+          local written, write_err = self:_write_all(values)
+          if not written then error(write_err, 0) end
+        end
+      elseif next_value ~= nil then
         values[id] = util.copy(next_value)
         local written, write_err = self:_write_all(values)
         if not written then error(write_err, 0) end
+        post = next_value
+      else
+        post = values[id]
       end
-      return next_value or values[id]
+      return post
     end)
     release()
     if not ok then error(result, 0) end

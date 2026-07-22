@@ -1,6 +1,11 @@
 local config = require("neoagent.config")
 local models = require("neoagent.models")
 
+local function wait(run)
+  assert(vim.wait(3000, function() return run:is_done() end))
+  return run:result()
+end
+
 describe("neoagent configuration and model resolution", function()
   local original_openai_key
   local original_deepseek_key
@@ -89,7 +94,7 @@ describe("neoagent configuration and model resolution", function()
       },
     })
     local resolved = models.resolve()
-    local request = resolved:_request({ messages = {}, tools = {} })
+    local request = resolved._model:_request({ messages = {}, tools = {} })
     assert.are.equal("openai-responses", resolved.api)
     assert.are.equal("http://localhost:8080/v1/responses", request.url)
     assert.are.same({ provider = true, model = true }, request.body.metadata)
@@ -188,6 +193,7 @@ describe("neoagent configuration and model resolution", function()
 
     local provider = config.get().providers.deepseek
     assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("deepseek", provider.auth)
     assert.are.equal("https://api.deepseek.com", provider.base_url)
     local available = assert(models.available())
     assert.is_true(vim.tbl_contains(available, "deepseek/deepseek-v4-flash"))
@@ -198,7 +204,7 @@ describe("neoagent configuration and model resolution", function()
       require("neoagent.thinking").levels(models.resolve("deepseek", "deepseek-v4-flash")))
 
     local model = models.resolve("deepseek", "deepseek-v4-pro")
-    local request = model:_request({
+    local request = model._model:_request({
       messages = { { role = "assistant", content = {
         { type = "toolCall", id = "call-1", name = "inspect", arguments = { path = "x.lua" } },
       } } },
@@ -212,6 +218,52 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ type = "enabled" }, request.body.thinking)
     assert.are.equal("max", request.body.reasoning_effort)
     assert.are.equal("", request.body.messages[1].reasoning_content)
+  end)
+
+  it("prefers stored API keys and resumes ambient keys after logout", function()
+    local path = vim.fn.tempname() .. "/auth.json"
+    local ambient_calls = 0
+    local seen = {}
+    local async = require("neoagent.async")
+    local api_key = require("neoagent.auth.api_key").new({ name = "Mixed API key" })
+    local configured = config.setup({
+      default_registry = false,
+      auth = { path = path, methods = { mixed = api_key } },
+      providers = { mixed = {
+        api = "fake",
+        auth = "mixed",
+        api_key = function() ambient_calls = ambient_calls + 1 return "ambient-key" end,
+        models = { model = {} },
+      } },
+      apis = { fake = function(resolved)
+        local model = { api = "fake", provider = resolved.provider_id, id = resolved.model_id }
+        function model:stream(opts)
+          return async.run(function()
+            local key = resolved.provider.api_key()
+            local request = { headers = {} }
+            if key then request.headers.Authorization = "Bearer " .. key end
+            if opts.request_opts then request = opts.request_opts({ request = request }) end
+            seen[#seen + 1] = request.headers.Authorization
+            return { ok = true, text = "done" }
+          end)
+        end
+        return model
+      end },
+    })
+    local store = require("neoagent.auth.store").new(path)
+    assert(store:write("mixed", { type = "api_key", key = "stored-key" }))
+    local manager = require("neoagent.auth").configured(configured)
+    local model = models.resolve("mixed", "model", configured, manager)
+    assert.is_true(wait(model:stream({})).ok)
+    assert.are.same({ "Bearer stored-key" }, seen)
+    assert.are.equal(0, ambient_calls)
+
+    assert.is_true(wait(manager:logout("mixed")).ok)
+    local ambient_result = wait(model:stream({}))
+    assert.is_true(ambient_result.ok, vim.inspect(ambient_result))
+    assert.are.same({ "Bearer stored-key", "Bearer ambient-key" }, seen)
+    assert.are.equal(1, ambient_calls)
+    vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 
   it("allows default providers to be removed and reports API key failures", function()
@@ -260,6 +312,17 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() config.setup({ compaction = { run = true } }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = { api = "custom", api_key = 42, models = {} } } })
+    end)
+    assert.has_error(function()
+      config.setup({ auth = { methods = { invalid = {
+        type = "oauth", name = "Invalid", login = function() end, request_opts = function() return {} end,
+      } } } })
+    end)
+    assert.has_error(function()
+      config.setup({ auth = { methods = { invalid = {
+        type = "api_key", name = "Invalid", login = function() end,
+        refresh = true, request_opts = function() return {} end,
+      } } } })
     end)
     config.setup({ providers = {} })
     assert.has_error(function() models.resolve("missing", "model") end)

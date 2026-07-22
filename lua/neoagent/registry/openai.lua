@@ -147,6 +147,7 @@ return {
     api = "openai-responses",
     base_url = "https://api.openai.com/v1",
     api_key = function() return vim.env.OPENAI_API_KEY end,
+    auth = "openai",
     models = openai_models,
   },
   ["openai-codex"] = {

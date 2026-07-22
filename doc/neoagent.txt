@@ -64,10 +64,12 @@ Responses requests always set `store = false`. Neoagent retains opaque
 reasoning, text, and function-call item identifiers in assistant messages so
 the complete history can be replayed statelessly.
 
-Neoagent includes Pi's explicit OpenAI catalogs. `openai/*` models are shown by
-`:NeoagentModel` when `OPENAI_API_KEY` is non-empty. The built-in DeepSeek
-catalog uses the official OpenAI-compatible endpoint. Set `DEEPSEEK_API_KEY`
-to make `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available.
+Neoagent includes Pi's explicit OpenAI catalogs. Run `:NeoagentLogin openai`
+to enter an API key through a masked prompt, or set `OPENAI_API_KEY` before
+starting Neovim. Either source makes `openai/*` models available. The built-in
+DeepSeek catalog uses the official OpenAI-compatible endpoint. Run
+`:NeoagentLogin deepseek` or set `DEEPSEEK_API_KEY` to make
+`deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available.
 Both DeepSeek models declare a 1M-token context window, a 384k-token output
 limit, and `off`, `high`, and `max` thinking levels. Streamed
 `reasoning_content` is retained and replayed during tool turns. Select one by
@@ -85,7 +87,12 @@ For a ChatGPT Plus/Pro Codex subscription: >vim
 Choose browser or headless device-code login. Successful login activates the
 `openai-codex/*` catalog. Credentials are stored in
 `stdpath("state") .. "/neoagent/auth.json"` with mode 0600 and are refreshed
-before a request when expired. The bundled GPT-5.6 Codex models use the
+before a request when expired. Stored API keys use the same private credential
+file and do not expire. A stored credential takes precedence over an ambient
+API key. `:NeoagentLogout [method]` removes the stored value under the store
+lock; environment variables remain unchanged and become active again.
+
+The bundled GPT-5.6 Codex models use the
 official Responses Lite request profile: tools and instructions are leading
 developer input items, the Codex Lite header is set, reasoning context covers
 all turns, reasoning summaries are omitted by default, and the default coding
@@ -192,7 +199,8 @@ an independent Controller:
 <
 Each Controller owns its Model selection, Session, Workspace, and Run. Its
 operations include `prepare`, `send`, `steer`, `dequeue_steering`, `stop`,
-`new_session`, `resume`, model and thinking methods, login methods, `subscribe`,
+`new_session`, `resume`, model and thinking methods, login and logout methods,
+`subscribe`,
 `snapshot`, `get_session`, `get_model`, `config`, `is_running`, and `destroy`.
 `send` starts an interaction while idle and queues steering while working.
 Multiple Controllers can run concurrently. Controllers with a shared
@@ -255,10 +263,11 @@ default provider or model: >lua
   })
 <
 Set `default_registry = false` to use only the user `providers` table. Built-in
-providers with `auth` or `api_key` appear only when those credentials resolve;
-`openai` reads `OPENAI_API_KEY`, and `deepseek` reads `DEEPSEEK_API_KEY`.
-Providers without either are always available. The untouched defaults are
-returned by `require("neoagent.registry").defaults()`.
+providers with `auth` or `api_key` appear only when those credentials resolve.
+OpenAI and DeepSeek accept stored API keys and read `OPENAI_API_KEY` and
+`DEEPSEEK_API_KEY` as ambient fallbacks. Stored credentials own a provider
+until logout. Providers without either are always available. The untouched
+defaults are returned by `require("neoagent.registry").defaults()`.
 
 The built-in prompt follows the active tools and includes the current working
 directory. A string replaces it completely. Append instructions by composing
@@ -413,8 +422,9 @@ keeping the `init.lua` model, thinking, and UI position defaults authoritative.
   :NeoagentStop                   Cancel the active UI Run.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
-  :NeoagentLogin [method]         Log in or select a login method.
+  :NeoagentLogin [method]         Store an API key or authenticate an account.
   :NeoagentLogin!                 Cancel an active login.
+  :NeoagentLogout [method]        Remove a stored credential or select one.
   :NeoagentCompact [instructions] Compact the active branch context.
   :NeoagentBranch [entry-id]      Move the leaf or select a branch point.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
@@ -558,11 +568,33 @@ Authentication is separately composable: >lua
   })
   local authenticated_model = manager:wrap(model, "my_plan")
 <
-A method has `name`, `login(interaction)`, `refresh(credential)`, and
-`request_opts(credential)`. Login and refresh return Runs. A store implements
-`read(id)` and `write(id, credential)`. The wrapper resolves and refreshes
-credentials when `Model:stream()` starts and has no UI, Session, or tool
-dependency.
+Credentials have one of these tagged forms: >lua
+
+  { type = "api_key", key = "...", env = { OPTIONAL = "value" } }
+  { type = "oauth", access = "...", refresh = "...", expires = 0 }
+<
+Untagged OAuth values are accepted as OAuth credentials. A method has an
+optional `type`, `name`, `login(interaction)`, and `request_opts(credential)`.
+OAuth methods also have `refresh(credential)`. Login and refresh return Runs.
+The interaction prompt types are `text`, `secret`, `select`, and `manual_code`;
+the bundled Controller uses a masked command-line prompt for `secret`.
+
+`require("neoagent.auth.api_key").new({ name = "Example API key" })` creates a
+Bearer-key method. Its optional `request_opts(credential)` callback can derive
+another header profile.
+
+A store implements `read(id)` and `write(id, credential)`. `modify(id, fn)`
+serializes login and refresh when present. `list()` returns only credential IDs
+and types, and `delete(id)` removes a credential under the same lock. The
+bundled store implements all five operations atomically with private file and
+directory modes. `manager:list_credentials()` exposes secret-free metadata and
+`manager:logout(id)` returns a cancellable Run.
+
+The wrapper resolves credentials when `Model:stream()` starts and has no UI,
+Session, or tool dependency. `manager:wrap(model, id, { optional = true })`
+runs the underlying Model when no stored credential exists, allowing its
+ambient API-key callback to supply authentication. A stored credential remains
+authoritative and malformed stored values produce an auth error.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
 `usage`. A Model may emit `{ type = "provider_status", text = "..." }`; the

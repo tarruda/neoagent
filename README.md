@@ -24,9 +24,17 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 
 Choose a provider:
 
-- Set `OPENAI_API_KEY` before starting Neovim to use the built-in OpenAI models.
-- Set `DEEPSEEK_API_KEY` before starting Neovim to use `deepseek/deepseek-v4-flash` or `deepseek/deepseek-v4-pro`.
-- For a ChatGPT Plus or Pro subscription, run `:NeoagentLogin openai-codex`, complete the browser or device-code login, then select a subscription model with `:NeoagentModel`.
+- Run `:NeoagentLogin openai` to store an OpenAI API key, or set
+  `OPENAI_API_KEY` before starting Neovim.
+- Run `:NeoagentLogin deepseek` to store a DeepSeek API key, or set
+  `DEEPSEEK_API_KEY` before starting Neovim.
+- For a ChatGPT Plus or Pro subscription, run
+  `:NeoagentLogin openai-codex`, complete the browser or device-code login,
+  then select a subscription model with `:NeoagentModel`.
+
+API keys are entered through a masked prompt. A stored credential takes
+precedence over its environment variable. `:NeoagentLogout [method]` removes
+the stored credential and leaves environment variables unchanged.
 
 Configure an OpenAI model and a mapping:
 

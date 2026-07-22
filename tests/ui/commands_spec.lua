@@ -4,7 +4,7 @@ describe("neoagent commands", function()
     vim.cmd("runtime plugin/neoagent.lua")
     for _, name in ipairs({
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
-      "NeoagentModel", "NeoagentThinking", "NeoagentLogin", "NeoagentCompact",
+      "NeoagentModel", "NeoagentThinking", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
       "NeoagentBranch", "NeoagentFork",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
@@ -131,6 +131,7 @@ describe("neoagent commands", function()
       } },
     })
     local original_input = vim.ui.input
+    local original_inputsecret = vim.fn.inputsecret
     local original_open = vim.ui.open
     local opened = {}
     vim.ui.input = function(options, callback)
@@ -157,8 +158,34 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentLogin")
     assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
     assert.are.equal(1, logins)
-    assert.are.equal("token", require("neoagent.auth.store").new(auth_path):read("openai-codex").access)
+    local credential_store = require("neoagent.auth.store").new(auth_path)
+    assert.are.equal("token", credential_store:read("openai-codex").access)
     assert.are.same({ "https://login.test", "https://device.test" }, opened)
+
+    vim.fn.inputsecret = function(prompt)
+      assert.are.equal("Enter OpenAI API key: ", prompt)
+      return "stored-openai-key"
+    end
+    vim.cmd("NeoagentLogin openai")
+    assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
+    assert.are.same({ type = "api_key", key = "stored-openai-key" }, credential_store:read("openai"))
+    vim.cmd("NeoagentLogout openai")
+    assert(vim.wait(1000, function() return require("neoagent")._state().logout_run == nil end))
+    assert.is_nil(credential_store:read("openai"))
+    vim.fn.inputsecret = function() return "" end
+    vim.cmd("NeoagentLogin openai")
+    assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
+    assert.is_nil(credential_store:read("openai"))
+    local cancelled_secret_prompts = 0
+    vim.fn.inputsecret = function()
+      cancelled_secret_prompts = cancelled_secret_prompts + 1
+      return "should-not-be-read"
+    end
+    vim.cmd("NeoagentLogin openai")
+    vim.cmd("NeoagentLogin!")
+    assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
+    assert.are.equal(0, cancelled_secret_prompts)
+    assert.is_nil(credential_store:read("openai"))
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Select Neoagent model:", options.prompt)
       assert.is_true(vim.tbl_contains(items, "openai-codex/gpt-5.5"))
@@ -167,14 +194,36 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentModel")
     vim.cmd("NeoagentLogin waiting")
     assert.is_truthy(require("neoagent")._state().login_run)
+    assert.is_nil(require("neoagent").login("openai"))
+    assert.is_nil(require("neoagent").logout("openai-codex"))
     vim.cmd("NeoagentLogin!")
     assert(vim.wait(1000, function() return require("neoagent")._state().login_run == nil end))
     assert.is_true(cancelled_login)
     local completions = vim.fn.getcompletion("NeoagentLogin ", "cmdline")
     assert.is_true(vim.tbl_contains(completions, "openai-codex"))
     assert.is_true(vim.tbl_contains(completions, "waiting"))
+    completions = vim.fn.getcompletion("NeoagentLogout ", "cmdline")
+    assert.is_true(vim.tbl_contains(completions, "openai"))
+    assert.is_true(vim.tbl_contains(completions, "deepseek"))
+    vim.ui.select = function(items, options, callback)
+      assert.are.equal("Select Neoagent credential to remove:", options.prompt)
+      for _, item in ipairs(items) do
+        if item.id == "openai-codex" then
+          assert.are.equal("Test subscription (OAuth)", options.format_item(item))
+          callback(item)
+          return
+        end
+      end
+      error("stored OpenAI Codex credential was not offered")
+    end
+    vim.cmd("NeoagentLogout")
+    assert(vim.wait(1000, function() return require("neoagent")._state().logout_run == nil end))
+    assert.is_nil(credential_store:read("openai-codex"))
+    assert.is_nil(require("neoagent").logout("openai-codex"))
+    assert.is_nil(require("neoagent").logout())
     vim.ui.select = original_select
     vim.ui.input = original_input
+    vim.fn.inputsecret = original_inputsecret
     vim.ui.open = original_open
     local window = require("neoagent").default_window()
     for _, controller in ipairs(window:controllers()) do controller:destroy() end

@@ -13,9 +13,11 @@ function M.available(configured, manager)
       local err
       available, err = manager:has_credentials(provider.auth)
       if available == nil then return nil, err end
-    elseif provider.api_key ~= nil then
+    end
+    if provider.api_key ~= nil and (provider.auth == nil or not available) then
       local ok, key = pcall(function()
-        return type(provider.api_key) == "function" and provider.api_key() or provider.api_key
+        if type(provider.api_key) == "function" then return provider.api_key() end
+        return provider.api_key
       end)
       if not ok then
         return nil, util.error("model", "Failed to resolve API key for " .. provider_id, key)
@@ -89,13 +91,25 @@ function M.resolve(provider_id, model_id, configured, manager)
     provider = util.copy(provider),
     model = util.copy(model),
   }
+  if provider.auth then
+    manager = manager or require("neoagent.auth").configured(configured)
+    if provider.api_key ~= nil then
+      local ambient = provider.api_key
+      resolved.provider.api_key = function()
+        local stored, err = manager:has_credentials(provider.auth)
+        if stored == nil then error(err, 0) end
+        if stored then return nil end
+        if type(ambient) == "function" then return ambient() end
+        return ambient
+      end
+    end
+  end
   local concrete = factory(resolved)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
   if concrete.context_window == nil then concrete.context_window = resolved.model.context_window end
   if concrete.thinking == nil then concrete.thinking = util.copy(resolved.model.thinking) end
   if provider.auth then
-    manager = manager or require("neoagent.auth").configured(configured)
-    concrete = manager:wrap(concrete, provider.auth)
+    concrete = manager:wrap(concrete, provider.auth, { optional = provider.api_key ~= nil })
   end
   return concrete
 end

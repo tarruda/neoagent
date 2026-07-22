@@ -41,6 +41,7 @@ function M.from_config(options)
     store_seeded = false,
     run = nil,
     login_run = nil,
+    logout_run = nil,
     live_usage = nil,
     provider_status = nil,
     pending_events = {},
@@ -1048,10 +1049,25 @@ function M.from_config(options)
       }, function(choice)
         if choice then done.resolve(choice.id) else done.reject(util.error("auth", "Login cancelled")) end
       end)
-    else
+    elseif prompt.type == "secret" then
+      local active = true
+      vim.schedule(function()
+        if not active then return end
+        local ok, value = pcall(vim.fn.inputsecret, prompt.message .. " ")
+        if not active then return end
+        if ok and value ~= "" then
+          done.resolve(value)
+        else
+          done.reject(util.error("auth", "Login cancelled"))
+        end
+      end)
+      return function() active = false end
+    elseif prompt.type == "text" or prompt.type == "manual_code" then
       vim.ui.input({ prompt = prompt.message .. " ", default = "" }, function(value)
         if value and value ~= "" then done.resolve(value) else done.reject(util.error("auth", "Login cancelled")) end
       end)
+    else
+      done.reject(util.error("auth", "Unsupported login prompt: " .. tostring(prompt.type)))
     end
   end
 
@@ -1068,7 +1084,10 @@ function M.from_config(options)
   end
 
   function controller:login(method_id)
-    if state.login_run then notify("a login is already active", vim.log.levels.WARN) return nil end
+    if state.login_run or state.logout_run then
+      notify("an authentication operation is already active", vim.log.levels.WARN)
+      return nil
+    end
     local methods = configured().auth.methods
     if method_id == nil or method_id == "" then
       local choices = {}
@@ -1102,6 +1121,53 @@ function M.from_config(options)
     if not state.login_run then return false end
     state.login_run:cancel()
     return true
+  end
+
+  function controller:logout(method_id)
+    if state.login_run or state.logout_run then
+      notify("an authentication operation is already active", vim.log.levels.WARN)
+      return nil
+    end
+    local credentials, err = auth_manager:list_credentials()
+    if not credentials then notify(err.message, vim.log.levels.ERROR) return nil end
+    if method_id == nil or method_id == "" then
+      if #credentials == 0 then
+        notify("no stored credentials to remove; environment API keys are unchanged")
+        return nil
+      end
+      vim.ui.select(credentials, {
+        prompt = "Select Neoagent credential to remove:",
+        format_item = function(item)
+          local kind = item.type == "api_key" and "API key" or item.type == "oauth" and "OAuth" or "invalid"
+          return item.name .. " (" .. kind .. ")"
+        end,
+      }, function(choice) if choice then controller:logout(choice.id) end end)
+      return true
+    end
+    local selected
+    for _, credential in ipairs(credentials) do
+      if credential.id == method_id then selected = credential break end
+    end
+    if not selected then
+      notify("no stored credential for " .. method_id, vim.log.levels.WARN)
+      return nil
+    end
+    local run = auth_manager:logout(method_id, {
+      on_done = function(result)
+        state.logout_run = nil
+        if result.ok then
+          if selected.type == "api_key" then
+            notify("removed stored " .. selected.name .. "; environment API keys are unchanged")
+          else
+            notify("logged out of " .. selected.name)
+          end
+        elseif result.error.kind ~= "cancelled" then
+          notify(result.error.message, vim.log.levels.ERROR)
+        end
+      end,
+    })
+    state.logout_run = run
+    return run
   end
 
   function controller:set_ui_position(position)
@@ -1149,7 +1215,8 @@ function M.from_config(options)
     state.run_id = state.run_id + 1
     if state.run then state.run:cancel() end
     if state.login_run then state.login_run:cancel() end
-    state.run, state.login_run = nil, nil
+    if state.logout_run then state.logout_run:cancel() end
+    state.run, state.login_run, state.logout_run = nil, nil, nil
     state.listeners = {}
     pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
   end
@@ -1160,6 +1227,7 @@ function M.from_config(options)
     callback = function()
       if state.run then state.run:cancel() end
       if state.login_run then state.login_run:cancel() end
+      if state.logout_run then state.logout_run:cancel() end
     end,
   })
 

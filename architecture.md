@@ -84,10 +84,15 @@ layered before sending the request. The Codex adapter classifies provider
 errors, retries transient requests that produced no output, and reports safe
 metadata through an injected diagnostic callback.
 
-Authentication wraps a Model. Credentials are resolved at stream time, which
-keeps authentication independent from the API and UI layers. The configured
-Codex composition injects a private rotating JSONL diagnostic sink; direct
-Model construction remains independent from file logging.
+Authentication wraps a Model. Credentials are tagged API-key or OAuth values
+and are resolved at stream time, which keeps authentication independent from
+the API and UI layers. A stored credential owns its provider; an ambient API
+key is consulted when storage has no credential, and deleting the stored value
+restores the ambient source. OAuth refresh, login writes, and deletion are
+serialized by the credential store. Enumeration exposes only credential IDs
+and types. The configured Codex composition injects a private rotating JSONL
+diagnostic sink; direct Model construction remains independent from file
+logging.
 
 ## Tools and execution policy
 

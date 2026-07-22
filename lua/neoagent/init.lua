@@ -139,6 +139,7 @@ for _, method in ipairs({
   "cycle_thinking_level",
   "login",
   "cancel_login",
+  "logout",
   "get_session",
   "get_model",
   "_state",

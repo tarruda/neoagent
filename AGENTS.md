@@ -72,16 +72,19 @@ changes.
 - Thinking levels are model-declared request-option layers. The default
   controller selects and displays a level; Models and `agent.run()` do not
   interpret thinking semantics.
-- Provider login methods are plain Lua values with `login`, `refresh`, and
-  `request_opts`. Credential resolution wraps a Model at stream time; OAuth
-  flows and Models must not import or assume the command/UI adapter.
+- Provider login methods are plain Lua values with `login`, optional OAuth
+  `refresh`, and `request_opts`. Stored credentials are tagged API-key or OAuth
+  values, take precedence over ambient API keys, and are resolved around a
+  Model at stream time. OAuth flows and Models must not import or assume the
+  command/UI adapter.
 - The final provider/model registry composes built-in defaults with the user
   `providers` table. User entries override defaults; `false` removes a default
   provider or model. Model selection filters the composition by configured
   OAuth credentials or API keys without affecting direct Model constructors.
-- Persist credentials atomically outside user configuration. Credential
-  directories created by the store use mode `0700`; files use mode `0600`.
-  Never log access or refresh tokens.
+- Persist credentials atomically outside user configuration. Serialize login,
+  refresh, and deletion; enumerate only secret-free credential metadata.
+  Credential directories created by the store use mode `0700`; files use mode
+  `0600`. Never log API keys, access tokens, or refresh tokens.
 - Persistence uses the full Pi v3 append-only JSONL tree format. Sessions expose
   active-branch projection, leaf movement, branch summaries, labels, names, and
   linked forks. Opening Neovim or creating an empty Session must not create a
