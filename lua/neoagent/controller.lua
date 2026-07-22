@@ -105,6 +105,7 @@ function M.from_config(options)
     live_usage = nil,
     provider_status = nil,
     pending_events = {},
+    steering = {},
     last_result = nil,
     listeners = {},
     next_listener_id = 0,
@@ -435,6 +436,7 @@ function M.from_config(options)
       tools = options.tools,
       context = options.context,
       execute_tool = options.execute_tool,
+      get_steering_messages = options.get_steering_messages,
       max_rounds = options.max_rounds,
       model_options = options.model_options,
       on_event = options.on_event,
@@ -449,6 +451,7 @@ function M.from_config(options)
       tools = options.tools,
       context = options.context,
       execute_tool = options.execute_tool,
+      get_steering_messages = options.get_steering_messages,
       max_rounds = options.max_rounds,
       model_options = options.model_options,
       on_event = options.on_event,
@@ -495,6 +498,7 @@ function M.from_config(options)
       state = state.status,
       context_usage = context_usage(),
       provider_status = state.provider_status or false,
+      steering = vim.tbl_map(function(message) return message.text end, state.steering),
     }
   end
 
@@ -517,6 +521,9 @@ function M.from_config(options)
     return require("neoagent.compaction").should_compact(
       estimate.tokens, state.model.context_window or 0, settings)
   end
+
+  local submit
+  local schedule_steering
 
   local function start_compaction(reason, instructions, run_id, after)
     local settings = compaction_settings()
@@ -576,11 +583,27 @@ function M.from_config(options)
           type = "compaction_end", reason = reason, result = result,
         } })
         if after then after(result) end
+        if result.ok then schedule_steering() end
       end,
     })
     assert(type(run) == "table" and type(run.cancel) == "function", "compaction.run must return a Run")
     state.run = run
     return run
+  end
+
+  schedule_steering = function()
+    if state.destroyed or state.status ~= "idle" or #state.steering == 0 then return end
+    local message = state.steering[1]
+    vim.schedule(function()
+      if state.destroyed or state.status ~= "idle" or state.steering[1] ~= message then return end
+      table.remove(state.steering, 1)
+      update_context()
+      local run = submit(message.text)
+      if not run then
+        table.insert(state.steering, 1, message)
+        update_context()
+      end
+    end)
   end
 
   local function finish_interaction(done)
@@ -590,9 +613,10 @@ function M.from_config(options)
     state.last_result = util.copy(done)
     update_context()
     publish({ type = "finish", result = done })
+    if done.ok then schedule_steering() end
   end
 
-  local function submit(prompt)
+  submit = function(prompt)
     if util.trim(prompt) == "" then return nil end
     if state.status ~= "idle" then notify("the agent is busy", vim.log.levels.WARN) return nil end
     local ok, result = pcall(function()
@@ -616,6 +640,16 @@ function M.from_config(options)
         workspace = state.workspace,
         context = { workspace = state.workspace },
         execute_tool = options.execute_tool,
+        get_steering_messages = function()
+          if #state.steering == 0 then return {} end
+          local message = table.remove(state.steering, 1)
+          update_context()
+          return { {
+            role = "user",
+            content = message.text,
+            timestamp = message.timestamp,
+          } }
+        end,
         max_rounds = options.max_tool_rounds,
         thinking_level = state.thinking_level,
         model_options = {
@@ -725,7 +759,28 @@ function M.from_config(options)
   end
 
   function controller:send(text)
+    if state.status == "running" or state.status == "compacting" then
+      return controller:steer(text)
+    end
     return submit(text)
+  end
+
+  function controller:steer(text)
+    if util.trim(text) == "" then return nil end
+    if state.status ~= "running" and state.status ~= "compacting" then
+      notify("cannot steer while the agent is idle", vim.log.levels.WARN)
+      return nil
+    end
+    state.steering[#state.steering + 1] = { text = text, timestamp = util.now_ms() }
+    update_context()
+    return true
+  end
+
+  function controller:dequeue_steering()
+    local messages = vim.tbl_map(function(message) return message.text end, state.steering)
+    state.steering = {}
+    update_context()
+    return messages
   end
 
   function controller:compact(instructions)
@@ -766,7 +821,7 @@ function M.from_config(options)
       state.model, state.model_selection, state.thinking_level = nil, nil, nil
     end
     state.live_usage, state.provider_status = nil, nil
-    state.pending_events, state.last_result = {}, nil
+    state.pending_events, state.steering, state.last_result = {}, {}, nil
     local session, err = make_session(cwd)
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
     state.session = session
@@ -812,7 +867,7 @@ function M.from_config(options)
     state.session = session
     state.store, state.store_seeded = store, true
     state.live_usage, state.provider_status = nil, nil
-    state.pending_events, state.last_result = {}, nil
+    state.pending_events, state.steering, state.last_result = {}, {}, nil
     restore_session_preferences(store:state())
     publish({ type = "messages", messages = session:messages() })
     update_context()
@@ -839,7 +894,7 @@ function M.from_config(options)
     if not state.session then notify("no active session") return nil end
     local ok, err = state.session:move_to(entry_id, summary)
     if not ok then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.pending_events, state.last_result = {}, nil
+    state.pending_events, state.steering, state.last_result = {}, {}, nil
     state.live_usage, state.provider_status = nil, nil
     local stored = assert(state.session:state())
     restore_session_preferences(stored)
@@ -898,7 +953,7 @@ function M.from_config(options)
     session, err = require("neoagent.session").new({ store = store })
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
     state.store, state.store_seeded, state.session = store, true, session
-    state.pending_events, state.last_result = {}, nil
+    state.pending_events, state.steering, state.last_result = {}, {}, nil
     state.live_usage, state.provider_status = nil, nil
     restore_session_preferences(store:state())
     publish({ type = "messages", messages = session:messages() })

@@ -55,6 +55,31 @@ describe("neoagent.agent", function()
     }, events)
   end)
 
+  it("injects queued steering messages between assistant turns", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "second" } }) },
+    })
+    local queued = { {
+      role = "user",
+      content = "change direction",
+      timestamp = 2,
+    } }
+    local result = wait(agent.run({
+      model = model,
+      messages = { { role = "user", content = "begin", timestamp = 1 } },
+      get_steering_messages = function()
+        local messages = queued
+        queued = {}
+        return messages
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.same({ "assistant", "user", "assistant" },
+      vim.tbl_map(function(message) return message.role end, result.new_messages))
+    assert.are.equal("change direction", model.requests[2].messages[3].content)
+  end)
+
   it("turns unknown tools into error results", function()
     local model = fake_model.new({
       { result = fake_model.assistant({

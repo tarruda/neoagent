@@ -328,6 +328,7 @@ describe("neoagent.ui", function()
       thinking = "high",
       context_usage = { used = 250, total = 1000, percent = 25 },
       provider_status = "5h 80% left · weekly 60% left",
+      steering = { "check the tests" },
     })
     local title = vim.api.nvim_win_get_config(result.transcript_win).title
     if type(title) == "table" then
@@ -341,6 +342,20 @@ describe("neoagent.ui", function()
       footer = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, footer))
     end
     assert.are.equal(" 5h 80% left · weekly 60% left ", footer)
+    assert(vim.wait(1000, function()
+      return text(result):find("Steering: check the tests", 1, true) ~= nil
+        and text(result):find("<A-Up> to edit queued messages", 1, true) ~= nil
+    end))
+    result:apply({
+      type = "message_end",
+      message = { role = "user", content = "check the tests" },
+    })
+    result:set_context({ steering = {} })
+    assert(vim.wait(1000, function()
+      local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+      return vim.tbl_contains(lines, " check the tests ")
+        and text(result):find("Steering:", 1, true) == nil
+    end))
     result:set_context({ provider_status = false })
     assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
     assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
@@ -349,8 +364,11 @@ describe("neoagent.ui", function()
       local current = text(result):match("([^\n]+ Working%.%.%.)")
       return current and current ~= first
     end))
-    result:set_context({ state = "idle" })
-    assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") == nil end))
+    result:set_context({ state = "idle", steering = {} })
+    assert(vim.wait(1000, function()
+      return text(result):match("Working%.%.%.") == nil
+        and text(result):find("Steering:", 1, true) == nil
+    end))
   end)
 
   it("places auto UI over another editor window", function()

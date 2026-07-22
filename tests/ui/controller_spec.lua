@@ -51,6 +51,26 @@ describe("neoagent default controller", function()
     assert.matches(" hello", lines)
   end)
 
+  it("queues steering submissions one at a time during an active Run", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "second" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "third" } }) },
+    })
+    setup_model(model)
+    local run = assert(neoagent.send("begin"))
+    assert.is_true(neoagent.send("steer one"))
+    assert.is_true(neoagent.steer("steer two"))
+    assert.are.same({ "steer one", "steer two" },
+      neoagent.default():snapshot().context.steering)
+    assert(vim.wait(1000, function() return run:is_done() end))
+    local messages = neoagent.get_session():messages()
+    assert.are.same({ "user", "assistant", "user", "assistant", "user", "assistant" },
+      vim.tbl_map(function(message) return message.role end, messages))
+    assert.are.equal("steer one", model.requests[2].messages[3].content)
+    assert.are.equal("steer two", model.requests[3].messages[5].content)
+  end)
+
   it("tracks model context usage and provider status", function()
     local assistant = fake_model.assistant({ { type = "text", text = "done" } })
     assistant.message.usage.totalTokens = nil
@@ -433,6 +453,22 @@ describe("neoagent default controller", function()
     assert.are.equal(0, #neoagent.get_session():messages())
   end)
 
+  it("continues queued steering after a replaceable interaction settles", function()
+    local calls = {}
+    setup_model(fake_model.new({}), {
+      interaction = function(options)
+        calls[#calls + 1] = options
+        return { cancel = function() end }
+      end,
+    })
+    assert(neoagent.send("begin"))
+    assert.is_true(neoagent.send("queued"))
+    calls[1].on_done({ ok = true })
+    assert(vim.wait(1000, function() return #calls == 2 end))
+    assert.are.equal("queued", calls[2].prompt)
+    calls[2].on_done({ ok = false, error = { kind = "cancelled", message = "done" } })
+  end)
+
   it("creates no persistent file merely by opening or starting a new session", function()
     local directory = vim.fn.tempname()
     local model = fake_model.new({})
@@ -712,7 +748,18 @@ describe("neoagent default controller", function()
     assert.is_nil(neoagent.cycle_thinking_level())
     assert.is_nil(neoagent.set_thinking_level("high"))
     assert.has_error(function() neoagent.setup({}) end)
-    assert.is_true(neoagent.stop())
+    local view = current_view()
+    view:set_input("steer from the window")
+    assert.is_true(view.on_submit(view:get_input()))
+    assert.are.equal("", view:get_input())
+    assert.is_true(neoagent.steer("second steer"))
+    assert.are.same({ "steer from the window", "second steer" },
+      vim.tbl_map(function(message) return message.text end, neoagent._state().steering))
+    view:set_input("current draft")
+    view:focus_input()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return cancelled and neoagent._state().status == "idle" end))
+    assert.are.equal("steer from the window\n\nsecond steer\n\ncurrent draft", view:get_input())
     assert.is_true(cancelled)
     assert.are.equal("idle", neoagent._state().status)
     assert.is_false(neoagent.stop())

@@ -62,6 +62,8 @@ function M.run(opts)
     lookup[tool.name] = tool
   end
   local execute = opts.execute_tool or default_execute
+  local get_steering_messages = opts.get_steering_messages or function() return {} end
+  assert(type(get_steering_messages) == "function", "get_steering_messages must be a function")
   local max_rounds = opts.max_rounds or 12
   assert(type(max_rounds) == "number" and max_rounds >= 1 and max_rounds % 1 == 0, "max_rounds must be a positive integer")
 
@@ -102,15 +104,6 @@ function M.run(opts)
       last_message = model_result.message
       add(last_message)
       local calls = tool_calls(last_message)
-      if #calls == 0 then
-        return {
-          ok = true,
-          new_messages = generated,
-          message = last_message,
-          text = util.text_content(last_message.content),
-        }
-      end
-
       for _, call in ipairs(calls) do
         run:emit({ type = "tool_start", call = util.copy(call) })
         local result
@@ -164,7 +157,23 @@ function M.run(opts)
         add(message)
       end
 
-      if round == max_rounds then
+      local steering = round < max_rounds and get_steering_messages() or {}
+      assert(type(steering) == "table" and util.is_list(steering),
+        "get_steering_messages must return a list")
+      for _, message in ipairs(steering) do
+        assert(type(message) == "table" and message.role == "user",
+          "steering messages must be user messages")
+        add(util.copy(message))
+      end
+
+      if #calls == 0 and #steering == 0 then
+        return {
+          ok = true,
+          new_messages = generated,
+          message = last_message,
+          text = util.text_content(last_message.content),
+        }
+      elseif round == max_rounds then
         return {
           ok = false,
           new_messages = generated,

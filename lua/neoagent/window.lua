@@ -104,6 +104,7 @@ function M.new(opts)
         return run, err
       end,
       on_stop = function() return active():stop() end,
+      on_dequeue_steering = function() return active():dequeue_steering() end,
       on_cycle_thinking = function() return active():cycle_thinking_level() end,
       on_cycle_agent = function() return window:cycle() end,
       on_select_model = function() return active():select_model() end,

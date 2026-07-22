@@ -33,6 +33,9 @@ changes.
   `on_event` and `on_done` options and returns a cancellable Run.
 - `agent.run(opts)` receives its Model, messages, exact tools, executor, and
   context explicitly. It does not mutate input messages or resolve defaults.
+- Steering enters the core through an explicit `get_steering_messages`
+  callback and is consumed between assistant/tool turns. Each Controller owns
+  its pending steering queue; the Window restores queued text for editing.
 - `Session.new()` remains a no-argument, tool-free in-memory message owner. A
   store is optional and injected.
 - The passive View consumes messages and events. A Window owns one View,

@@ -151,11 +151,13 @@ an independent Controller:
   neoagent.set_default_window(window)
 <
 Each Controller owns its Model selection, Session, Workspace, and Run. Its
-operations include `prepare`, `send`, `stop`, `new_session`, `resume`, model and
-thinking methods, login methods, `subscribe`, `snapshot`, `get_session`,
-`get_model`, `config`, `is_running`, and `destroy`. Multiple Controllers can run
-concurrently. Controllers with a shared persistence directory use the same
-cwd-hashed Workspace while retaining independent Sessions.
+operations include `prepare`, `send`, `steer`, `dequeue_steering`, `stop`,
+`new_session`, `resume`, model and thinking methods, login methods, `subscribe`,
+`snapshot`, `get_session`, `get_model`, `config`, `is_running`, and `destroy`.
+`send` starts an interaction while idle and queues steering while working.
+Multiple Controllers can run concurrently. Controllers with a shared
+persistence directory use the same cwd-hashed Workspace while retaining
+independent Sessions and steering queues.
 
 Window Controllers require unique, non-empty names. A Controller name is its
 View label and workspace-settings scope. Renaming it selects a fresh scope;
@@ -182,8 +184,8 @@ events, and completion updates. Its unsubscribe function detaches the callback.
 Session and partial Run.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
-`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
-`on_resume_session`, and `on_position_change`. It
+`on_stop`, `on_dequeue_steering`, `on_cycle_thinking`, `on_cycle_agent`,
+`on_select_model`, `on_resume_session`, and `on_position_change`. It
 returns a passive View with `open`, `close`, `is_open`, `destroy`, `get_input`,
 `set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
 
@@ -396,10 +398,17 @@ Provider-specific status appears in the bottom border. Codex subscription
 responses show remaining 5-hour and weekly allowances when the service includes
 its rate-limit headers.
 
+Enter queues steering while the active Controller is working. The queue appears
+above the working indicator and drains one message after the current assistant
+response and tool calls. Alt-Up restores all pending steering messages to the
+input. Ctrl-C restores the queue and cancels the active Run; while idle it
+clears the draft.
+
 Default mappings:
 
   <CR>        Send from input in Normal or Insert mode.
-  <C-c>       Clear the input draft and return to Insert mode.
+  <C-c>       Interrupt the active Run and restore queued steering; clear the
+              draft while idle.
   <C-w>w or <C-w><C-w>
               Alternate between input and transcript in Normal, Insert, or
               Visual mode.
@@ -411,6 +420,7 @@ Default mappings:
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
   <A-r>       Resume a session (input Normal/Insert; transcript Normal).
+  <A-Up>      Restore queued steering messages to the input.
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.
   <C-w>=      Center the UI.
@@ -606,7 +616,10 @@ Session adapters: >lua
   require("neoagent.chat").continue(session, opts)
 <
 `continue()` uses the projected context without appending another user
-message. Session adapters allow one active mutation per Session.
+message. `run()` and `continue()` forward an optional `get_steering_messages`
+callback to the agent loop. It returns user-message tables to inject after the
+current assistant response and tool calls. Accepted messages are persisted.
+Session adapters allow one active mutation per Session.
 The top-level `require("neoagent")` module constructs Controllers with `new`,
 constructs shared Windows with `new_window`, owns the replaceable default
 Window, and forwards commands and convenience operations to its active

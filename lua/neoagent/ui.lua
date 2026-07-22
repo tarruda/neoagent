@@ -530,32 +530,55 @@ function View:_remove_status()
 end
 
 function View:_render_status()
-  if self.context.state ~= "running" and self.context.state ~= "stopping"
-      and self.context.state ~= "compacting" then return end
+  local active = self.context.state == "running" or self.context.state == "stopping"
+    or self.context.state == "compacting"
+  local steering = type(self.context.steering) == "table" and self.context.steering or {}
+  if not active and #steering == 0 then return end
   local count = vim.api.nvim_buf_line_count(self.transcript_buf)
   local start = self.has_rendered and count or 0
   local finish = self.has_rendered and count or count
-  local frame = self.spinner_frames[self.spinner_frame]
-  local label = self.context.state == "stopping" and "Stopping..."
-    or self.context.state == "compacting" and "Compacting..." or "Working..."
-  vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, { " " .. frame .. " " .. label })
+  local lines = {}
+  for _, message in ipairs(steering) do
+    local text = util.trim(tostring(message):gsub("%s+", " "))
+    lines[#lines + 1] = " Steering: " .. text
+  end
+  if #steering > 0 then
+    local key = (self.config.mappings or {}).dequeue_steering
+    local hint = type(key) == "string" and key or "Alt-Up"
+    lines[#lines + 1] = " ↳ " .. hint .. " to edit queued messages"
+  end
+  local spinner_row
+  if active then
+    local frame = self.spinner_frames[self.spinner_frame]
+    local label = self.context.state == "stopping" and "Stopping..."
+      or self.context.state == "compacting" and "Compacting..." or "Working..."
+    spinner_row = #lines
+    lines[#lines + 1] = " " .. frame .. " " .. label
+  end
+  vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, lines)
   self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
-    end_row = start + 1,
+    end_row = start + #lines,
     right_gravity = false,
     end_right_gravity = true,
   })
-  self.status_decorations = {
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 1, {
+  self.status_decorations = {}
+  for index, line in ipairs(lines) do
+    self.status_decorations[#self.status_decorations + 1] = vim.api.nvim_buf_set_extmark(
+      self.transcript_buf, self.namespace, start + index - 1, 0, {
+        end_col = #line,
+        hl_group = "NeoagentMuted",
+        priority = 100,
+      })
+  end
+  if spinner_row then
+    local frame = self.spinner_frames[self.spinner_frame]
+    self.status_decorations[#self.status_decorations + 1] = vim.api.nvim_buf_set_extmark(
+      self.transcript_buf, self.namespace, start + spinner_row, 1, {
       end_col = 1 + #frame,
       hl_group = "NeoagentAccent",
-      priority = 100,
-    }),
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 2 + #frame, {
-      end_col = 2 + #frame + #label,
-      hl_group = "NeoagentMuted",
-      priority = 100,
-    }),
-  }
+      priority = 110,
+    })
+  end
 end
 
 function View:_flush()
@@ -705,7 +728,9 @@ function View:apply(event)
   elseif event.type == "message_end" then
     local message = event.message
     self.messages[#self.messages + 1] = util.copy(message)
-    if message.role == "assistant" then
+    if message.role == "user" then
+      self:_message(message)
+    elseif message.role == "assistant" then
       local call_index = 0
       for _, content in ipairs(message.content or {}) do
         if content.type == "text" then
@@ -810,11 +835,8 @@ end
 function View:_map_buffers()
   local mappings = self.config.mappings or {}
   self:_map(self.input_buf, { "n", "i" }, mappings.submit, function() self.on_submit(self:get_input()) end)
-  self:_map(self.input_buf, { "n", "i" }, mappings.cancel_input, function()
-    if self:get_input() ~= "" then self:set_input("") end
-    vim.api.nvim_set_current_win(self.input_win)
-    vim.cmd("startinsert")
-  end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.interrupt, function() self:_interrupt(true) end)
+  self:_map(self.transcript_buf, "n", mappings.interrupt, function() self:_interrupt(false) end)
   self:_map(self.input_buf, { "n", "i", "x", "s" }, mappings.toggle_focus,
     function() self:focus_transcript() end)
   self:_map(self.transcript_buf, { "n", "x", "s" }, mappings.toggle_focus,
@@ -838,6 +860,10 @@ function View:_map_buffers()
   self:_map(self.transcript_buf, "n", mappings.select_model, self.on_select_model)
   self:_map(self.input_buf, { "n", "i" }, mappings.resume_session, self.on_resume_session)
   self:_map(self.transcript_buf, "n", mappings.resume_session, self.on_resume_session)
+  self:_map(self.input_buf, { "n", "i" }, mappings.dequeue_steering,
+    function() self:_restore_steering() end)
+  self:_map(self.transcript_buf, "n", mappings.dequeue_steering,
+    function() self:_restore_steering() end)
   local docks = {
     dock_left = "left", dock_bottom = "bottom", dock_top = "top",
     dock_right = "right", dock_center = "center",
@@ -997,6 +1023,30 @@ function View:_escape()
   if self.escape_count >= 3 then self:close() end
 end
 
+function View:_restore_steering()
+  local messages = util.copy(self.on_dequeue_steering())
+  if type(messages) ~= "table" or #messages == 0 then return 0 end
+  local current = self:get_input()
+  if util.trim(current) ~= "" then messages[#messages + 1] = current end
+  self:set_input(table.concat(messages, "\n\n"))
+  self:focus_input()
+  return #messages
+end
+
+function View:_interrupt(clear_input)
+  local active = self.context.state == "running" or self.context.state == "stopping"
+    or self.context.state == "compacting"
+  if active then
+    self:_restore_steering()
+    return self.on_stop()
+  end
+  if clear_input then
+    if self:get_input() ~= "" then self:set_input("") end
+    self:focus_input()
+  end
+  return false
+end
+
 function View:destroy()
   self:close()
   self.destroyed = true
@@ -1119,6 +1169,7 @@ function M.new(opts)
     config = util.copy(opts.config),
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
+    on_dequeue_steering = opts.on_dequeue_steering or function() return {} end,
     on_cycle_thinking = opts.on_cycle_thinking or function() end,
     on_cycle_agent = opts.on_cycle_agent or function() end,
     on_select_model = opts.on_select_model or function() end,

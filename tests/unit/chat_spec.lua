@@ -34,6 +34,27 @@ describe("neoagent.chat", function()
     assert.are.equal(4, #session:messages())
   end)
 
+  it("persists steering messages when the agent accepts them", function()
+    local session = assert(Session.new())
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "redirected" } }) },
+    })
+    local pending = { { role = "user", content = "steer", timestamp = 2 } }
+    local result = wait(chat.run(session, "begin", {
+      model = model,
+      get_steering_messages = function()
+        local messages = pending
+        pending = {}
+        return messages
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.same({ "user", "assistant", "user", "assistant" },
+      vim.tbl_map(function(message) return message.role end, session:messages()))
+    assert.are.equal("steer", session:messages()[3].content)
+  end)
+
   it("continues projected Session context without appending another user message", function()
     local session = assert(Session.new({ messages = { { role = "user", content = "existing" } } }))
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "continued" } }) } })

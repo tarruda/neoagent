@@ -88,6 +88,7 @@ local function run_agent(session, opts)
       model_options = opts.model_options,
       context = opts.context,
       execute_tool = opts.execute_tool,
+      get_steering_messages = opts.get_steering_messages,
       max_rounds = opts.max_rounds,
       on_event = function(event)
         if event.type == "message_end" and not storage_error then

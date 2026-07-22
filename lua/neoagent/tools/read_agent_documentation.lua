@@ -28,7 +28,7 @@ local function documentation()
     "",
     "- A Model exposes `model:stream(opts)` and can be used directly.",
     "- `neoagent.agent.run(opts)` receives its Model, messages, exact tools, executor, "
-      .. "and context explicitly.",
+      .. "context, and optional steering callback explicitly.",
     "- `Session.new()` is an in-memory, tool-free message owner unless a store is injected.",
     "- Bundled Workspace settings persist a shared UI dock plus name-scoped model and "
       .. "thinking preferences per cwd. Sessions remain shared across Controllers.",
@@ -95,8 +95,9 @@ local function documentation()
     "## Custom View",
     "",
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
-      .. "`window`, `on_submit`, `on_stop`, `on_cycle_thinking`, `on_cycle_agent`, "
-      .. "`on_select_model`, `on_resume_session`, and `on_position_change`. A passive "
+      .. "`window`, `on_submit`, `on_stop`, `on_dequeue_steering`, "
+      .. "`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`, "
+      .. "`on_resume_session`, and `on_position_change`. A passive "
       .. "View implements `open`, `close`, `is_open`, "
       .. "`destroy`, `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and "
       .. "`finish`. Controllers publish snapshots and updates for custom Window adapters.",

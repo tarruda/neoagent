@@ -8,6 +8,8 @@ describe("neoagent UI mappings", function()
     local agent_cycles = 0
     local model_selections = 0
     local session_selections = 0
+    local stops = 0
+    local queued = {}
     local positions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
@@ -16,6 +18,12 @@ describe("neoagent UI mappings", function()
       on_cycle_agent = function() agent_cycles = agent_cycles + 1 end,
       on_select_model = function() model_selections = model_selections + 1 end,
       on_resume_session = function() session_selections = session_selections + 1 end,
+      on_stop = function() stops = stops + 1 return true end,
+      on_dequeue_steering = function()
+        local messages = queued
+        queued = {}
+        return messages
+      end,
       on_position_change = function(position) positions[#positions + 1] = position end,
     })
     local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
@@ -29,6 +37,21 @@ describe("neoagent UI mappings", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc><CR>", true, false, true), "x", false)
     assert.is_not_nil(submitted)
     assert.are.equal("send me", submitted)
+    result:set_input("current draft")
+    queued = { "first steer", "second steer" }
+    result:set_context({ state = "running", steering = vim.deepcopy(queued) })
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<A-Up>", true, false, true), "x", false)
+    assert.are.equal("first steer\n\nsecond steer\n\ncurrent draft", result:get_input())
+    assert.are.equal(0, stops)
+    result:set_input("current draft")
+    queued = { "pending steer" }
+    result:set_context({ steering = vim.deepcopy(queued) })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert.are.equal("pending steer\n\ncurrent draft", result:get_input())
+    assert.are.equal(1, stops)
+    result:set_context({ state = "idle", steering = {} })
+    result:set_input("send me")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "x", false)
     assert.are.equal(1, thinking_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-n>", true, false, true), "x", false)

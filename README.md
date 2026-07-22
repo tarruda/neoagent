@@ -116,12 +116,18 @@ the `Neo` label or label a custom Controller. Provider-specific status occupies
 the bottom border. Codex subscription models populate it with the remaining
 5-hour and weekly allowance when those response headers are available.
 
+Submitting with Enter while the active Controller is working queues a steering
+message. The queue appears above the working indicator, and the agent consumes
+one message after its current assistant response and tool calls. Alt-Up restores
+all pending steering messages to the input, separated by blank lines. Ctrl-C
+does the same before cancelling the active Run; while idle it clears the draft.
+
 Default UI mappings:
 
 | Mapping | Action |
 | --- | --- |
 | `<CR>` | Send from input, in Normal or Insert mode |
-| `<C-c>` | Clear the current draft and return to Insert mode |
+| `<C-c>` | Interrupt the active Run and restore queued steering; clear the draft while idle |
 | `<C-w>w`, `<C-w><C-w>` | Alternate between input and transcript in Normal, Insert, or Visual mode |
 | Three quick `<Esc>` presses | Hide the UI from the input buffer |
 | `<C-d>` | Hide the UI when the input is empty |
@@ -130,6 +136,7 @@ Default UI mappings:
 | `<A-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
 | `<A-m>` | Select a model (input Normal/Insert; transcript Normal) |
 | `<A-r>` | Resume a session (input Normal/Insert; transcript Normal) |
+| `<A-Up>` | Restore queued steering messages to the input |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
 | `q` | Hide the UI while the transcript is focused |
@@ -250,6 +257,12 @@ Sessions remain independent; each Controller's initial Session is created on
 its first send. The Window exposes `open`, `close`, `toggle`, `is_open`,
 `set_input`, `active`, `controllers`, `select`, `cycle`, and `destroy`.
 
+`controller:send(text)` starts an interaction while idle and queues `text` as
+steering while working. `controller:steer(text)` explicitly queues a steering
+message. `controller:dequeue_steering()` removes and returns every pending
+message for editing. Pending messages belong to the Controller, so switching
+the shared Window leaves each Controller's queue and Run independent.
+
 `neoagent.set_default(reviewer)` makes commands and top-level functions use an
 existing Controller through a new single-Controller Window and returns the
 previous active Controller. `neoagent.set_default_window(window)` installs an
@@ -266,8 +279,8 @@ and current transient run events for a newly attached consumer. These APIs let
 custom Windows observe Controllers while Controllers remain useful without UI.
 
 The `view` option is a function receiving `config`, `window`, `on_submit`,
-`on_stop`, `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
-`on_resume_session`, and `on_position_change`. It
+`on_stop`, `on_dequeue_steering`, `on_cycle_thinking`, `on_cycle_agent`,
+`on_select_model`, `on_resume_session`, and `on_position_change`. It
 returns a passive View implementing `open`, `close`, `is_open`, `destroy`,
 `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
 `new_window()` uses the first Controller's configured `ui` and `view`, then
@@ -635,14 +648,19 @@ local run = require("neoagent.agent").run({
   tools = my_tools,             -- may be empty
   execute_tool = my_executor,   -- optional boundary/decorator
   context = my_context,
+  get_steering_messages = function()
+    return take_one_queued_user_message()
+  end,
   on_event = on_event,
   on_done = on_done,
 })
 ```
 
-`agent.run()` does not mutate `messages`, resolve global configuration, or
-invent tools. It executes calls sequentially and returns generated messages in
-`result.new_messages`.
+`get_steering_messages` is optional and returns a list of user-message tables.
+The loop calls it after each assistant response and its tool calls, before the
+next model request. `agent.run()` does not mutate `messages`, resolve global
+configuration, or invent tools. It executes calls sequentially and returns
+generated messages, including accepted steering, in `result.new_messages`.
 
 ## Tools and execution policy
 
@@ -712,10 +730,11 @@ operations as `branch`, `select_branch`, `fork`, and `select_fork`.
 
 `neoagent.chat.send(session, prompt, opts)` adds one model response.
 `neoagent.chat.run(session, prompt, opts)` runs the tool loop and appends every
-generated message. `neoagent.chat.continue(session, opts)` runs from the current
-projected context without appending another user message. These adapters permit
-one active mutation per Session; independent Models, agent runs, and Sessions
-remain concurrent.
+generated message. It forwards `get_steering_messages`, so accepted steering is
+persisted as ordinary user messages. `neoagent.chat.continue(session, opts)`
+runs from the current projected context without appending another user message.
+These adapters permit one active mutation per Session; independent Models,
+agent runs, and Sessions remain concurrent.
 
 A buffer-transform plugin can stay much simpler: call `model:stream()`, append
 `text_delta` values into a replacement buffer or scratch buffer, and apply

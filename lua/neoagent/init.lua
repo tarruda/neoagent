@@ -124,6 +124,8 @@ end
 
 for _, method in ipairs({
   "send",
+  "steer",
+  "dequeue_steering",
   "compact",
   "stop",
   "new_session",
