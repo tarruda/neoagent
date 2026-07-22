@@ -110,16 +110,16 @@ describe("neoagent.ui", function()
     assert.is_false(result:is_open())
   end)
 
-  it("renders partial tools and execution state dynamically without duplicate results", function()
+  it("reconciles provider-indexed partial tools without duplicate execution cards", function()
     local result = view({ position = "center" })
     assert(result:open())
     result:apply({ type = "thinking_delta", text = "considering" })
     result:apply({ type = "text_delta", text = "I'll edit." })
-    result:apply({ type = "tool_call_delta", index = 0, name = "write", arguments_delta = '{"path":"a' })
+    result:apply({ type = "tool_call_delta", index = 2, name = "write", arguments_delta = '{"path":"a' })
     assert(vim.wait(1000, function() return text(result):match("write a") ~= nil end))
     assert.not_matches('"path"', text(result))
     assert.is_true(has_line_group(result, "NeoagentToolPendingBackground"))
-    result:apply({ type = "tool_call_delta", index = 0, id = "c1", name = "write_file", arguments_delta = '.txt"}' })
+    result:apply({ type = "tool_call_delta", index = 2, id = "c1", name = "write_file", arguments_delta = '.txt"}' })
     result:apply({ type = "message_end", message = {
       role = "assistant",
       content = { { type = "thinking", thinking = "considering" }, { type = "text", text = "I'll edit." }, {
@@ -128,10 +128,14 @@ describe("neoagent.ui", function()
     } })
     result:apply({ type = "tool_start", call = { id = "c1", name = "write_file", arguments = { path = "a.txt" } } })
     result:apply({ type = "tool_update", call = { id = "c1", name = "write_file" }, result = { content = { { type = "text", text = "working" } } } })
-    result:apply({ type = "tool_end", call = { id = "c1", name = "write_file" }, message = {
-      role = "toolResult", toolCallId = "c1", toolName = "write_file",
-      content = { { type = "text", text = "written" } }, isError = false,
-    } })
+    result:apply({
+      type = "tool_end",
+      call = { id = "c1", name = "write_file", arguments = { path = "a.txt" } },
+      message = {
+        role = "toolResult", toolCallId = "c1", toolName = "write_file",
+        content = { { type = "text", text = "written" } }, isError = false,
+      },
+    })
     result:apply({ type = "message_end", message = {
       role = "toolResult", toolCallId = "c1", toolName = "write_file",
       content = { { type = "text", text = "written" } }, isError = false,

@@ -735,6 +735,7 @@ function View:apply(event)
     end
     block.name = event.name or block.name
     block.id = event.id or block.id
+    if block.id then self.calls[block.id] = block end
     block.raw = block.raw .. (event.arguments_delta or "")
     block.dirty = true
   elseif event.type == "message_end" then
@@ -750,7 +751,8 @@ function View:apply(event)
         elseif content.type == "thinking" then
           if not self.live_thinking then self.live_thinking = self:_add_block({ kind = "thinking", text = content.thinking or "" }) end
         elseif content.type == "toolCall" then
-          local block = self.pending_calls[self.response .. ":" .. call_index]
+          local block = content.id and self.calls[content.id]
+            or self.pending_calls[self.response .. ":" .. call_index]
           if not block then
             block = self:_add_block({ kind = "tool", state = "pending" })
           end
