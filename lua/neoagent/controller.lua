@@ -437,7 +437,6 @@ function M.from_config(options)
       context = options.context,
       execute_tool = options.execute_tool,
       get_steering_messages = options.get_steering_messages,
-      max_rounds = options.max_rounds,
       model_options = options.model_options,
       on_event = options.on_event,
       on_done = options.on_done,
@@ -452,7 +451,6 @@ function M.from_config(options)
       context = options.context,
       execute_tool = options.execute_tool,
       get_steering_messages = options.get_steering_messages,
-      max_rounds = options.max_rounds,
       model_options = options.model_options,
       on_event = options.on_event,
       on_done = options.on_done,
@@ -650,7 +648,6 @@ function M.from_config(options)
             timestamp = message.timestamp,
           } }
         end,
-        max_rounds = options.max_tool_rounds,
         thinking_level = state.thinking_level,
         model_options = {
           request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),

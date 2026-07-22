@@ -29,7 +29,6 @@ local defaults = {
     },
     project_dirs = { ".agents/skills" },
   },
-  max_tool_rounds = 12,
   compaction = {
     auto = true,
     reserve_tokens = 16384,
@@ -169,7 +168,6 @@ local function validate(opts)
         "provider " .. id .. " uses unknown auth method " .. provider.auth)
     end
   end
-  assert(type(opts.max_tool_rounds) == "number" and opts.max_tool_rounds >= 1 and opts.max_tool_rounds % 1 == 0, "max_tool_rounds must be a positive integer")
   assert(type(opts.persistence) == "table", "persistence must be a table")
   assert(type(opts.persistence.enabled) == "boolean", "persistence.enabled must be boolean")
   assert(type(opts.persistence.workspace_settings) == "boolean", "persistence.workspace_settings must be boolean")

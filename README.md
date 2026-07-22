@@ -194,7 +194,6 @@ require("neoagent").setup({
   execute_tool = nil,           -- function(tool, arguments, ctx)
   interaction = nil,            -- replace the default chat.run composition
   view = nil,                   -- replace the bundled Window's View constructor
-  max_tool_rounds = 12,
   agents = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
     project_filenames = { "AGENTS.md" },
@@ -676,7 +675,9 @@ local run = require("neoagent.agent").run({
 
 `get_steering_messages` is optional and returns a list of user-message tables.
 The loop calls it after each assistant response and its tool calls, before the
-next model request. `agent.run()` does not mutate `messages`, resolve global
+next model request. The loop continues while the model requests tools or the
+steering callback supplies another turn; a final assistant response or
+cancellation ends it. `agent.run()` does not mutate `messages`, resolve global
 configuration, or invent tools. It executes calls sequentially and returns
 generated messages, including accepted steering, in `result.new_messages`.
 

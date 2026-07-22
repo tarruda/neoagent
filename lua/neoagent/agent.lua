@@ -64,9 +64,6 @@ function M.run(opts)
   local execute = opts.execute_tool or default_execute
   local get_steering_messages = opts.get_steering_messages or function() return {} end
   assert(type(get_steering_messages) == "function", "get_steering_messages must be a function")
-  local max_rounds = opts.max_rounds or 12
-  assert(type(max_rounds) == "number" and max_rounds >= 1 and max_rounds % 1 == 0, "max_rounds must be a positive integer")
-
   return async.run(function(run)
     local working = util.copy(opts.messages)
     local generated = {}
@@ -78,7 +75,7 @@ function M.run(opts)
       run:emit({ type = "message_end", message = util.copy(message) })
     end
 
-    for round = 1, max_rounds do
+    while true do
       local model_opts = util.copy(opts.model_options or {})
       model_opts.messages = util.copy(working)
       model_opts.system_prompt = opts.system_prompt
@@ -157,7 +154,7 @@ function M.run(opts)
         add(message)
       end
 
-      local steering = round < max_rounds and get_steering_messages() or {}
+      local steering = get_steering_messages()
       assert(type(steering) == "table" and util.is_list(steering),
         "get_steering_messages must return a list")
       for _, message in ipairs(steering) do
@@ -172,13 +169,6 @@ function M.run(opts)
           new_messages = generated,
           message = last_message,
           text = util.text_content(last_message.content),
-        }
-      elseif round == max_rounds then
-        return {
-          ok = false,
-          new_messages = generated,
-          message = last_message,
-          error = util.error("limit", "Maximum tool rounds reached"),
         }
       end
     end

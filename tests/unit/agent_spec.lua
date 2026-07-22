@@ -206,20 +206,32 @@ describe("neoagent.agent", function()
     assert.are.equal("approved asynchronously", result.new_messages[2].content[1].text)
   end)
 
-  it("returns a limit error after the configured tool rounds", function()
-    local model = fake_model.new({ { result = fake_model.assistant({
-      { type = "toolCall", id = "c1", name = "echo", arguments = {} },
-    }, "toolUse") } })
+  it("continues tool calls until the model stops", function()
+    local responses = {}
+    for round = 1, 13 do
+      responses[#responses + 1] = { result = fake_model.assistant({
+        { type = "toolCall", id = "c" .. round, name = "echo", arguments = {} },
+      }, "toolUse") }
+    end
+    responses[#responses + 1] = {
+      result = fake_model.assistant({ { type = "text", text = "done" } }),
+    }
+    local model = fake_model.new(responses)
+    local executions = 0
     local result = wait(agent.run({
       model = model,
       messages = {},
-      max_rounds = 1,
       tools = { {
         name = "echo", description = "", input_schema = {},
-        execute = function() return { content = { { type = "text", text = "ok" } } } end,
+        execute = function()
+          executions = executions + 1
+          return { content = { { type = "text", text = "ok" } } }
+        end,
       } },
     }))
-    assert.is_false(result.ok)
-    assert.are.equal("limit", result.error.kind)
+    assert.is_true(result.ok)
+    assert.are.equal("done", result.text)
+    assert.are.equal(13, executions)
+    assert.are.equal(14, #model.requests)
   end)
 end)

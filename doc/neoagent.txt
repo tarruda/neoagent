@@ -97,7 +97,6 @@ The important options are: >lua
     execute_tool = nil,
     interaction = nil,
     view = nil,                -- bundled Window's View constructor
-    max_tool_rounds = 12,
     agents = {
       global_files = { stdpath("config") .. "/AGENTS.md" },
       project_filenames = { "AGENTS.md" },
@@ -528,14 +527,15 @@ The tool loop is: >lua
     tools = {},
     execute_tool = nil,
     context = nil,
-    max_rounds = 12,
     model_options = nil,
     on_event = nil,
     on_done = nil,
   })
 <
 It copies input messages, performs no global model lookup, and uses exactly the
-tools passed by the caller.
+tools passed by the caller. The loop continues while the model requests tools
+or steering supplies another turn. A final assistant response or cancellation
+ends the Run.
 
 To bridge a callback API inside a tool or executor: >lua
 
