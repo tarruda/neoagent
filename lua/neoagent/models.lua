@@ -34,7 +34,7 @@ function M.available(configured, manager)
   return result
 end
 
-local function openai_factory(module, resolved)
+local function api_factory(module, resolved)
   local layers = {}
   if resolved.provider.request_opts ~= nil then layers[#layers + 1] = resolved.provider.request_opts end
   if resolved.model.request_opts ~= nil then layers[#layers + 1] = resolved.model.request_opts end
@@ -78,11 +78,13 @@ function M.resolve(provider_id, model_id, configured, manager)
   if not model then error("Unknown model: " .. tostring(provider_id) .. "/" .. tostring(model_id)) end
   local factory = configured.apis[provider.api]
   if not factory and provider.api == "openai-completions" then
-    factory = function(value) return openai_factory("neoagent.api.openai_completions", value) end
+    factory = function(value) return api_factory("neoagent.api.openai_completions", value) end
   elseif not factory and provider.api == "openai-responses" then
-    factory = function(value) return openai_factory("neoagent.api.openai_responses", value) end
+    factory = function(value) return api_factory("neoagent.api.openai_responses", value) end
   elseif not factory and provider.api == "openai-codex-responses" then
-    factory = function(value) return openai_factory("neoagent.api.openai_codex_responses", value) end
+    factory = function(value) return api_factory("neoagent.api.openai_codex_responses", value) end
+  elseif not factory and provider.api == "anthropic-messages" then
+    factory = function(value) return api_factory("neoagent.api.anthropic_messages", value) end
   end
   if not factory then error("Unknown API: " .. tostring(provider.api)) end
   local resolved = {

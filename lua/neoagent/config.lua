@@ -113,7 +113,7 @@ local function validate(opts)
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
     if provider.api == "openai-completions" or provider.api == "openai-responses"
-        or provider.api == "openai-codex-responses" then
+        or provider.api == "openai-codex-responses" or provider.api == "anthropic-messages" then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
     end
     if provider.auth ~= nil then

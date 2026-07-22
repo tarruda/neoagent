@@ -11,8 +11,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 ## Features
 
 - Stream assistant responses, reasoning, tool calls, usage, and provider status directly in Neovim.
-- Use OpenAI-compatible Chat Completions and Responses APIs, local models such
-  as llama.cpp, built-in DeepSeek and Z.AI catalogs, or ChatGPT
+- Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
+  local models such as llama.cpp, built-in DeepSeek and Z.AI catalogs, or ChatGPT
   subscription authentication through OpenAI Codex.
 - Compose Models, tools, executors, Sessions, Controllers, and Views as ordinary Lua values with explicit dependencies.
 - Run cancellable agent loops with custom tools, steering messages, retry handling, and context compaction.

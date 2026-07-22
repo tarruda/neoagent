@@ -74,6 +74,7 @@ explicit provider catalogs under `lua/neoagent/registry/`.
 
 The built-in API adapters are:
 
+- Anthropic Messages
 - OpenAI-compatible chat completions
 - OpenAI Responses
 - OpenAI Codex Responses

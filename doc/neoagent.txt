@@ -15,8 +15,8 @@ CONTENTS                                                        *neoagent-conten
 
 Neoagent supplies a streamed Model API, cancellable Runs, and a plain tool
 loop. Sessions, persistence, bundled tools, and the floating UI are optional
-layers. OpenAI-compatible Chat Completions, stateless Responses, and the
-ChatGPT Codex subscription endpoint use curl.
+layers. Anthropic Messages, OpenAI-compatible Chat Completions, stateless
+Responses, and the ChatGPT Codex subscription endpoint use curl.
 
 Requirements: Neovim 0.10+, curl 7.76+, rg, and fd. ImageMagick's `magick` is
 optional. Run >
@@ -571,6 +571,14 @@ The direct Model constructor requires no setup: >lua
     on_done = function(result) end,
   })
 <
+Use `require("neoagent.api.anthropic_messages").new` for an Anthropic Messages
+endpoint with the same Model interface. It sends `POST /messages`,
+`anthropic-version: 2023-06-01`, `x-api-key` authentication when `api_key` is
+set, Anthropic content and tool blocks, and `max_tokens`. The default
+`max_output_tokens` is 4096. Signed and redacted thinking blocks are replayed;
+unsigned thinking is replayed as text. Streamed message, content, usage, stop,
+and error events are normalized into Neoagent messages and events.
+
 Use `require("neoagent.api.openai_responses").new` for the same Model interface
 with a Responses endpoint. Its additional constructor options are
 `reasoning`, `reasoning_effort`, `reasoning_summary`, and

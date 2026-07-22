@@ -62,6 +62,35 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(64000, model.context_window)
   end)
 
+  it("resolves configured Anthropic Messages models", function()
+    config.setup({
+      default_registry = false,
+      default_model = { provider = "local-anthropic", model = "coder" },
+      providers = {
+        ["local-anthropic"] = {
+          api = "anthropic-messages",
+          base_url = "http://localhost:8080/v1",
+          api_key = "local-key",
+          request_opts = { body = { metadata = { provider = true } } },
+          models = { coder = {
+            context_window = 64000,
+            max_output_tokens = 256,
+            request_opts = { body = { metadata = { model = true } } },
+          } },
+        },
+      },
+    })
+
+    local model = models.resolve()
+    local request = model:_request({ messages = {}, tools = {} })
+    assert.are.equal("anthropic-messages", model.api)
+    assert.are.equal("http://localhost:8080/v1/messages", request.url)
+    assert.are.equal("local-key", request.headers["x-api-key"])
+    assert.are.equal(256, request.body.max_tokens)
+    assert.are.same({ provider = true, model = true }, request.body.metadata)
+    assert.are.equal(64000, model.context_window)
+  end)
+
   it("supports ordinary custom API factories", function()
     local seen
     config.setup({
