@@ -151,6 +151,9 @@ describe("neoagent configuration and model resolution", function()
     assert.is_table(providers.openai.models.custom)
     assert.is_table(providers["openai-codex"].models["gpt-5.6-terra"])
     assert.are.equal(272000, providers["openai-codex"].models["gpt-5.6-terra"].context_window)
+    assert.is_true(providers["openai-codex"].models["gpt-5.6-terra"].responses_lite)
+    assert.is_nil(providers["openai-codex"].models["gpt-5.6-terra"].thinking.high.body.reasoning.context)
+    assert.is_nil(providers["openai-codex"].models["gpt-5.6-terra"].thinking.high.body.reasoning.summary)
     assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].thinking.high.body.reasoning.effort)
     assert.is_true(providers["openai-codex"].models["gpt-5.5"].thinking.high.body.metadata.user)
     assert.are.same({ "local_provider/local_model" }, assert(models.available()))
@@ -233,6 +236,7 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() invalid_model({ reasoning = "yes" }) end)
     assert.has_error(function() invalid_model({ reasoning_effort = "" }) end)
     assert.has_error(function() invalid_model({ reasoning_summary = 1 }) end)
+    assert.has_error(function() invalid_model({ reasoning_context = false }) end)
     assert.has_error(function() invalid_model({ thinking = "high" }) end)
     assert.has_error(function() invalid_model({ thinking = { extreme = {} } }) end)
     assert.has_error(function() invalid_model({ thinking = { high = "yes" } }) end)
@@ -242,6 +246,13 @@ describe("neoagent configuration and model resolution", function()
       config.setup({ providers = { bad = {
         api = "openai-codex-responses", base_url = "http://localhost", models = {
           bad = { text_verbosity = false },
+        },
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { bad = {
+        api = "openai-codex-responses", base_url = "http://localhost", models = {
+          bad = { responses_lite = "yes" },
         },
       } } })
     end)

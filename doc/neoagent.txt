@@ -74,7 +74,11 @@ Codex subscription: >vim
 Choose browser or headless device-code login. Successful login activates the
 `openai-codex/*` catalog. Credentials are stored in
 `stdpath("state") .. "/neoagent/auth.json"` with mode 0600 and are refreshed
-before a request when expired.
+before a request when expired. The bundled GPT-5.6 Codex models use the
+official Responses Lite request profile: tools and instructions are leading
+developer input items, the Codex Lite header is set, reasoning context covers
+all turns, reasoning summaries are omitted by default, and the default coding
+prompt asks for commentary updates plus a final answer through Codex channels.
 
 Codex retries transient transport, HTTP 429/5xx, and stream failures with
 cancellable exponential backoff. Requests without output receive up to four
@@ -523,11 +527,14 @@ The direct Model constructor requires no setup: >lua
 <
 Use `require("neoagent.api.openai_responses").new` for the same Model interface
 with a Responses endpoint. Its additional constructor options are
-`reasoning`, `reasoning_effort`, and `reasoning_summary`.
-`require("neoagent.api.openai_codex_responses").new` exposes the Codex SSE
-request profile without performing login or credential lookup. It accepts
-`request_max_retries` (default 4) and an `on_diagnostic(event)` callback.
-Direct construction writes no diagnostic file.
+`reasoning`, `reasoning_effort`, `reasoning_summary`, and
+`reasoning_context`. Set `reasoning_summary = "none"` to omit the summary
+parameter. `require("neoagent.api.openai_codex_responses").new` also accepts
+`responses_lite = true`, which sends tools and instructions as leading
+developer input items and sets the Codex Lite header. It exposes the Codex SSE
+request profile without performing login or credential lookup, accepts
+`request_max_retries` (default 4), and accepts an `on_diagnostic(event)`
+callback. Direct construction writes no diagnostic file.
 
 Authentication is separately composable: >lua
 

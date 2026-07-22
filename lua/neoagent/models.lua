@@ -53,6 +53,8 @@ local function openai_factory(module, resolved)
     reasoning = resolved.model.reasoning,
     reasoning_effort = resolved.model.reasoning_effort,
     reasoning_summary = resolved.model.reasoning_summary,
+    reasoning_context = resolved.model.reasoning_context,
+    responses_lite = resolved.model.responses_lite,
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
     request_opts_layers = layers,

@@ -707,7 +707,7 @@ function View:set_messages(messages)
   self.messages = util.copy(messages or {})
   self.blocks, self.calls, self.pending_calls = {}, {}, {}
   self.response = self.response + 1
-  self.live_text, self.live_thinking = nil, nil
+  self.live_text, self.live_texts, self.live_thinking = nil, {}, nil
   for _, message in ipairs(self.messages) do self:_message(message) end
   self.full_dirty = true
   self:_schedule_flush()
@@ -715,11 +715,16 @@ end
 
 function View:apply(event)
   if event.type == "text_delta" then
-    if not self.live_text then
-      self.live_text = self:_add_block({ kind = "assistant", text = "" })
+    self.live_texts = self.live_texts or {}
+    local key = event.index ~= nil and tostring(event.index) or "default"
+    local block = self.live_texts[key]
+    if not block then
+      block = self:_add_block({ kind = "assistant", text = "" })
+      self.live_texts[key] = block
+      if key == "default" then self.live_text = block end
     end
-    self.live_text.text = self.live_text.text .. (event.text or "")
-    self.live_text.dirty = true
+    block.text = block.text .. (event.text or "")
+    block.dirty = true
   elseif event.type == "thinking_delta" then
     if not self.live_thinking then
       self.live_thinking = self:_add_block({ kind = "thinking", text = "" })
@@ -745,9 +750,18 @@ function View:apply(event)
       self:_message(message)
     elseif message.role == "assistant" then
       local call_index = 0
+      self.live_texts = self.live_texts or {}
       for _, content in ipairs(message.content or {}) do
         if content.type == "text" then
-          if not self.live_text then self.live_text = self:_add_block({ kind = "assistant", text = content.text or "" }) end
+          local key = content.index ~= nil and tostring(content.index) or "default"
+          local block = self.live_texts[key] or (key == "default" and self.live_text or nil)
+          if block then
+            block.dirty = true
+          else
+            block = self:_add_block({ kind = "assistant", text = content.text or "" })
+            self.live_texts[key] = block
+            if key == "default" then self.live_text = block end
+          end
         elseif content.type == "thinking" then
           if not self.live_thinking then self.live_thinking = self:_add_block({ kind = "thinking", text = content.thinking or "" }) end
         elseif content.type == "toolCall" then
@@ -764,7 +778,7 @@ function View:apply(event)
         end
       end
       self.response = self.response + 1
-      self.live_text, self.live_thinking = nil, nil
+      self.live_text, self.live_texts, self.live_thinking = nil, {}, nil
     end
   elseif event.type == "tool_start" then
     local block = self.calls[event.call.id]

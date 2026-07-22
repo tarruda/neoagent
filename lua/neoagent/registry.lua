@@ -34,6 +34,21 @@ local function add_thinking(models, ids, options)
   end
 end
 
+local function configure_reasoning(thinking, options)
+  for _, value in pairs(thinking or {}) do
+    local body = type(value) == "table" and value.body or nil
+    local reasoning = type(body) == "table" and body.reasoning or nil
+    if type(reasoning) == "table" then
+      if options.summary == false then
+        reasoning.summary = nil
+      elseif options.summary ~= nil then
+        reasoning.summary = options.summary
+      end
+      if options.context ~= nil then reasoning.context = options.context end
+    end
+  end
+end
+
 local openai_models = model_map({
   "gpt-4",
   "gpt-4-turbo",
@@ -122,9 +137,12 @@ add_thinking(codex_models, {
 for _, model in pairs(codex_models) do
   model.thinking.minimal = reasoning_opts("low")
   model.thinking.xhigh = reasoning_opts("xhigh")
+  configure_reasoning(model.thinking, { summary = false })
 end
 for _, id in ipairs({ "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" }) do
+  codex_models[id].responses_lite = true
   codex_models[id].thinking.max = reasoning_opts("max")
+  configure_reasoning(codex_models[id].thinking, { summary = false })
 end
 
 local defaults = {

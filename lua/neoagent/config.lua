@@ -152,9 +152,16 @@ local function validate(opts)
           assert(type(model.reasoning_summary) == "string" and model.reasoning_summary ~= "",
             "model reasoning_summary must be a non-empty string")
         end
+        if model.reasoning_context ~= nil then
+          assert(type(model.reasoning_context) == "string" and model.reasoning_context ~= "",
+            "model reasoning_context must be a non-empty string")
+        end
         if provider.api == "openai-codex-responses" and model.text_verbosity ~= nil then
           assert(type(model.text_verbosity) == "string" and model.text_verbosity ~= "",
             "model text_verbosity must be a non-empty string")
+        end
+        if provider.api == "openai-codex-responses" and model.responses_lite ~= nil then
+          assert(type(model.responses_lite) == "boolean", "model responses_lite must be boolean")
         end
       end
       if model.request_opts ~= nil then

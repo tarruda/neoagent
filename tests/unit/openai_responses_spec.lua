@@ -33,6 +33,7 @@ describe("neoagent.api.openai_responses", function()
     }
     local message = {
       type = "message", id = "msg_1", role = "assistant", status = "completed",
+      phase = "commentary",
       content = { { type = "output_text", text = "Hello", annotations = util.list() } },
     }
     local call = {
@@ -50,7 +51,7 @@ describe("neoagent.api.openai_responses", function()
       event({ type = "response.reasoning_summary_part.done", output_index = 0 }),
       event({ type = "response.output_item.done", output_index = 0, item = reasoning }),
       event({ type = "response.output_item.added", output_index = 1,
-        item = { type = "message", id = "msg_1", content = util.list() } }),
+        item = { type = "message", id = "msg_1", phase = "commentary", content = util.list() } }),
       event({ type = "response.output_text.delta", output_index = 1, delta = "Hel" }),
       event({ type = "response.refusal.delta", output_index = 1, delta = "lo" }),
       event({ type = "response.output_item.done", output_index = 1, item = message }),
@@ -93,6 +94,10 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("think\n\nagain", table.concat(thinking))
     assert.are.equal("encrypted", vim.json.decode(result.message.content[1].thinkingSignature).encrypted_content)
     assert.are.equal("msg_1", result.message.content[2].textSignature)
+    assert.are.equal("commentary", result.message.content[2].phase)
+    local text_events = vim.tbl_filter(function(value) return value.type == "text_delta" end, emitted)
+    assert.are.equal(1, text_events[1].index)
+    assert.are.equal("commentary", text_events[1].phase)
     assert.are.equal("call_1|fc_1", result.message.content[3].id)
     assert.are.same({ text = "ok" }, result.message.content[3].arguments)
     assert.are.equal(7, result.message.usage.input)
@@ -130,7 +135,7 @@ describe("neoagent.api.openai_responses", function()
           { type = "thinking", thinking = "secret", thinkingSignature = vim.json.encode({
             type = "reasoning", id = "rs_saved", encrypted_content = "cipher", summary = util.list(),
           }) },
-          { type = "text", text = "checking", textSignature = '{"id":"msg_saved"}' },
+          { type = "text", text = "checking", phase = "commentary", textSignature = '{"id":"msg_saved"}' },
           { type = "toolCall", id = "call_saved|fc_saved", name = "inspect", arguments = { path = "x.lua" } },
         } },
         { role = "toolResult", toolCallId = "call_saved|fc_saved", content = {
@@ -166,6 +171,7 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("data:image/png;base64,AAAA", request.body.input[2].content[2].image_url)
     assert.are.equal("reasoning", request.body.input[3].type)
     assert.are.equal("msg_saved", request.body.input[4].id)
+    assert.are.equal("commentary", request.body.input[4].phase)
     assert.are.equal("fc_saved", request.body.input[5].id)
     assert.are.equal("data:image/jpeg;base64,BBBB", request.body.input[6].output[2].image_url)
     assert.are.equal("(no tool output)", request.body.input[7].output)

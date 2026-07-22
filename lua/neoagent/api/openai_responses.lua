@@ -71,7 +71,7 @@ local function encode_messages(messages, system_prompt, include_system)
           result[#result + 1] = item
         elseif block.type == "text" then
           text_index = text_index + 1
-          result[#result + 1] = {
+          local item = {
             type = "message",
             role = "assistant",
             status = "completed",
@@ -83,6 +83,8 @@ local function encode_messages(messages, system_prompt, include_system)
               annotations = util.list(),
             } },
           }
+          if type(block.phase) == "string" and block.phase ~= "" then item.phase = block.phase end
+          result[#result + 1] = item
         elseif block.type == "toolCall" then
           local call_id, item_id = split_call_id(block.id)
           local item = {
@@ -139,6 +141,21 @@ local function encode_tools(tools, strict)
   return result
 end
 
+local function developer_message(text)
+  return {
+    type = "message",
+    role = "developer",
+    content = { { type = "input_text", text = text } },
+  }
+end
+
+local function prepend_input(prefix, input)
+  local result = util.list()
+  vim.list_extend(result, prefix or {})
+  vim.list_extend(result, input or {})
+  return result
+end
+
 local function usage_from(raw)
   local input_details = type(raw.input_tokens_details) == "table" and raw.input_tokens_details or {}
   local output_details = type(raw.output_tokens_details) == "table" and raw.output_tokens_details or {}
@@ -176,27 +193,42 @@ function Model:_request(call_opts)
   if api_key ~= nil and api_key ~= "" then headers.Authorization = "Bearer " .. api_key end
 
   local codex = self._profile == "codex"
+  local responses_lite = codex and self._responses_lite == true
   local body = {
     model = self.id,
     input = encode_messages(call_opts.messages, call_opts.system_prompt, not codex),
     stream = true,
     store = false,
   }
+  local tools = encode_tools(call_opts.tools, codex and vim.NIL or false)
   if codex then
-    body.instructions = call_opts.system_prompt or "You are a helpful assistant."
     body.text = { verbosity = self._text_verbosity or "low" }
     body.include = { "reasoning.encrypted_content" }
     body.tool_choice = "auto"
-    body.parallel_tool_calls = true
+    if responses_lite then
+      headers["x-openai-internal-codex-responses-lite"] = "true"
+      local prefix = util.list({ { type = "additional_tools", role = "developer", tools = tools } })
+      if call_opts.system_prompt and call_opts.system_prompt ~= "" then
+        prefix[#prefix + 1] = developer_message(call_opts.system_prompt)
+      end
+      body.input = prepend_input(prefix, body.input)
+      body.parallel_tool_calls = false
+    else
+      body.instructions = call_opts.system_prompt or "You are a helpful assistant."
+      body.parallel_tool_calls = true
+      if #tools > 0 then body.tools = tools end
+    end
+  elseif #tools > 0 then
+    body.tools = tools
   end
   if self._max_output_tokens then body.max_output_tokens = math.max(16, self._max_output_tokens) end
-  local tools = encode_tools(call_opts.tools, codex and vim.NIL or false)
-  if #tools > 0 then body.tools = tools end
   if self._reasoning then
-    body.reasoning = {
-      effort = self._reasoning_effort or "medium",
-      summary = self._reasoning_summary or "auto",
-    }
+    local reasoning = { effort = self._reasoning_effort or "medium" }
+    if self._reasoning_summary ~= "none" then reasoning.summary = self._reasoning_summary or "auto" end
+    if self._reasoning_context or responses_lite then
+      reasoning.context = self._reasoning_context or "all_turns"
+    end
+    body.reasoning = reasoning
     body.include = { "reasoning.encrypted_content" }
   end
 
@@ -214,7 +246,13 @@ function Model:_request(call_opts)
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, context)
   end
-  return request_opts.apply(request, call_opts.request_opts, context)
+  request = request_opts.apply(request, call_opts.request_opts, context)
+  local reasoning_context = self._reasoning_context or (responses_lite and "all_turns" or nil)
+  if reasoning_context and type(request.body) == "table" and type(request.body.reasoning) == "table"
+      and request.body.reasoning.context == nil then
+    request.body.reasoning.context = reasoning_context
+  end
+  return request
 end
 
 function Model:stream(opts)
@@ -262,7 +300,8 @@ function Model:stream(opts)
           message.content[#message.content + 1] = block
           slots[index] = { type = "thinking", block = block }
         elseif item.type == "message" then
-          local block = { type = "text", text = "" }
+          local block = { type = "text", text = "", index = index }
+          if type(item.phase) == "string" and item.phase ~= "" then block.phase = item.phase end
           message.content[#message.content + 1] = block
           slots[index] = { type = "text", block = block }
         elseif item.type == "function_call" then
@@ -286,11 +325,14 @@ function Model:stream(opts)
         return slots[index]
       end
 
-      local function append_delta(slot, value, field, event_type)
+      local function append_delta(slot, value, field, event_type, event_fields)
         local previous = slot.block[field]
         local delta = value:sub(1, #previous) == previous and value:sub(#previous + 1) or ""
         slot.block[field] = value
-        if delta ~= "" then run:emit({ type = event_type, text = delta }) end
+        if delta ~= "" then
+          local emitted = vim.tbl_extend("force", { type = event_type, text = delta }, event_fields or {})
+          run:emit(emitted)
+        end
       end
 
       local function finalize_item(index, item)
@@ -310,7 +352,11 @@ function Model:stream(opts)
           for _, part in ipairs(item.content or {}) do
             parts[#parts + 1] = part.text or part.refusal or ""
           end
-          append_delta(slot, table.concat(parts), "text", "text_delta")
+          if type(item.phase) == "string" and item.phase ~= "" then slot.block.phase = item.phase end
+          append_delta(slot, table.concat(parts), "text", "text_delta", {
+            index = index,
+            phase = slot.block.phase,
+          })
           if item.id then slot.block.textSignature = item.id end
         elseif item.type == "function_call" and slot and slot.type == "toolCall" then
           local raw = item.arguments or slot.raw or "{}"
@@ -408,7 +454,7 @@ function Model:stream(opts)
           local slot = slots[index]
           if slot and slot.type == "text" and type(event.delta) == "string" then
             slot.block.text = slot.block.text .. event.delta
-            run:emit({ type = "text_delta", text = event.delta })
+            run:emit({ type = "text_delta", text = event.delta, index = index, phase = slot.block.phase })
           end
         elseif event.type == "response.function_call_arguments.delta" then
           index = register_index(index, item_id)
@@ -509,7 +555,9 @@ function M.new(opts)
     _reasoning = opts.reasoning == true,
     _reasoning_effort = opts.reasoning_effort,
     _reasoning_summary = opts.reasoning_summary,
+    _reasoning_context = opts.reasoning_context,
     _profile = opts.profile,
+    _responses_lite = opts.responses_lite == true,
     _text_verbosity = opts.text_verbosity,
     _response_status = opts.response_status,
     thinking = util.copy(opts.thinking),

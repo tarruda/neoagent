@@ -380,7 +380,12 @@ use only `providers` from `init.lua`. The unmodified catalog is available from
 
 Set `context_window` on custom model entries to enable the bundled View's
 context meter. Resolved built-in Models expose it as `model.context_window`.
-The Codex catalog declares a 272k-token context window.
+The Codex catalog declares a 272k-token context window. The bundled GPT-5.6
+Codex models use the official Responses Lite request profile: tools and
+instructions are sent as leading developer input items, the Codex Lite header
+is set, reasoning context covers all turns, reasoning summaries are omitted by
+default, and the default coding prompt asks for commentary updates plus a final
+answer through Codex channels.
 
 ### Thinking levels
 
@@ -685,8 +690,14 @@ local model = require("neoagent.api.openai_responses").new({
   base_url = "http://127.0.0.1:8080/v1",
   reasoning = true,
   reasoning_effort = "high",
+  reasoning_context = "all_turns",
 })
 ```
+
+Set `reasoning_summary = "none"` to omit the summary parameter. The Codex
+Responses constructor also accepts `responses_lite = true`, which sends tools
+and instructions as leading developer input items and sets the Codex Lite
+header.
 
 `require("neoagent.api.openai_codex_responses").new` exposes the Codex SSE
 request profile directly. It accepts `request_max_retries` (default `4`) and an

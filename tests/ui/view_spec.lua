@@ -478,6 +478,23 @@ describe("neoagent.ui", function()
     assert.is_true(cfg.width <= vim.api.nvim_win_get_width(other))
   end)
 
+  it("keeps indexed assistant text deltas in separate live blocks", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    result:apply({ type = "text_delta", index = 0, phase = "commentary", text = "checking" })
+    result:apply({ type = "text_delta", index = 1, phase = "final_answer", text = "done" })
+    result:apply({ type = "message_end", message = {
+      role = "assistant",
+      content = {
+        { type = "text", index = 0, phase = "commentary", text = "checking" },
+        { type = "text", index = 1, phase = "final_answer", text = "done" },
+      },
+    } })
+    assert(vim.wait(1000, function()
+      return text(result):find(" checking\n\n done", 1, true) ~= nil
+    end))
+  end)
+
   it("preserves transcript selection while appending and responds to resize", function()
     local result = view({ position = "center" })
     result:set_messages({

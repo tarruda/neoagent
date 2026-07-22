@@ -45,6 +45,52 @@ describe("neoagent.api.openai_codex_responses", function()
     }):_request({ messages = {}, tools = {} }).url)
   end)
 
+  it("builds the Codex Responses Lite request profile", function()
+    local model = codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://chatgpt.com/backend-api",
+      reasoning = true,
+      reasoning_effort = "high",
+      reasoning_summary = "none",
+      responses_lite = true,
+    })
+    local request = model:_request({
+      system_prompt = "Use Codex channels.",
+      messages = { { role = "user", content = "Hello" } },
+      tools = { {
+        name = "read",
+        description = "Read",
+        input_schema = { type = "object", properties = {}, additionalProperties = false },
+      } },
+    })
+
+    assert.are.equal("true", request.headers["x-openai-internal-codex-responses-lite"])
+    assert.is_nil(request.body.instructions)
+    assert.is_nil(request.body.tools)
+    assert.is_false(request.body.parallel_tool_calls)
+    assert.are.equal("additional_tools", request.body.input[1].type)
+    assert.are.equal("developer", request.body.input[1].role)
+    assert.are.equal("read", request.body.input[1].tools[1].name)
+    assert.are.equal("message", request.body.input[2].type)
+    assert.are.equal("developer", request.body.input[2].role)
+    assert.are.equal("Use Codex channels.", request.body.input[2].content[1].text)
+    assert.are.equal("user", request.body.input[3].role)
+    assert.are.same({ effort = "high", context = "all_turns" }, request.body.reasoning)
+
+    local layered = codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://chatgpt.com/backend-api",
+      responses_lite = true,
+    }):_request({
+      messages = {},
+      tools = {},
+      request_opts = { body = { reasoning = { effort = "medium" } } },
+    })
+    assert.are.same({ effort = "medium", context = "all_turns" }, layered.body.reasoning)
+  end)
+
   it("accepts the Codex response.done terminal event", function()
     local output = { {
       type = "message", id = "msg", role = "assistant", status = "completed",
