@@ -249,6 +249,9 @@ close the disposable session when inspection is complete.
   LuaCov report, including modules that normal tests would not otherwise load.
 - Aggregate shipped-plugin Lua line coverage must remain strictly greater than
   98%.
+- For every bug report, first add a focused regression test and verify that it
+  fails against the unmodified implementation for the reported reason. Then
+  implement the fix and verify that the same test passes.
 - Add focused tests for behavior changes and regressions. Prefer meaningful
   protocol, lifecycle, and boundary tests over coverage-only assertions.
 - Do not claim completion until the full suite passes, the coverage checker
