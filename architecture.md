@@ -42,7 +42,9 @@ Controllers, and UI:
   executes one HTTP exchange and returns response status and headers on both
   success and failure; failures also retain bounded process diagnostics.
 - `lua/neoagent/api/` provides provider protocol encoders and streaming
-  decoders.
+  decoders. Protocol packages keep request construction and event decoding as
+  focused internal modules while the public Model owns transport and
+  cancellation.
 - `lua/neoagent/agent.lua` implements the model and tool loop.
 
 A Model has one primary contract:
@@ -67,7 +69,8 @@ A final assistant response or cancellation ends the Run.
 ## Models and providers
 
 `lua/neoagent/models.lua` resolves provider and model configuration into
-concrete Models.
+concrete Models. `lua/neoagent/registry.lua` composes user overrides with the
+explicit provider catalogs under `lua/neoagent/registry/`.
 
 The built-in API adapters are:
 
@@ -132,6 +135,10 @@ files; persistence begins when the first message is accepted.
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.
 
+`lua/neoagent/compaction.lua` is the stable compaction API. Its planning module
+owns token estimates, safe boundaries, and preparation; its summary module
+owns serialization and cancellable Model execution.
+
 ## Controller
 
 `lua/neoagent/controller.lua` is the main higher-level composition boundary.
@@ -151,8 +158,10 @@ Each Controller owns:
 The Controller starts `chat.run()`, handles storage, replays provider-declared
 retryable turns after cancellable backoff, retries context overflows after
 compaction, refreshes unmodified buffers after file edits, and publishes
-updates. A replay removes a failed partial assistant message from the active
-branch before continuing the interaction:
+updates. Focused internal modules calculate context usage and format session
+choices; the Controller owns the mutable run and session state. A replay removes
+a failed partial assistant message from the active branch before continuing the
+interaction:
 
 ```lua
 { type = "messages", ... }
@@ -178,9 +187,11 @@ The Window:
 - Shares workspace input history
 - Leaves inactive Controllers running independently
 
-The View in `lua/neoagent/ui.lua` is passive: it renders messages and events and
-invokes callbacks supplied by the Window. It does not own the model or agent
-loop, which makes it replaceable with a custom UI.
+The passive View facade in `lua/neoagent/ui.lua` owns the paired window
+lifecycle and composes focused layout, rendering, transcript, and input modules
+under `lua/neoagent/ui/`. It renders messages and events and invokes callbacks
+supplied by the Window. It does not own the model or agent loop, which makes it
+replaceable with a custom UI.
 
 ## Public composition
 

@@ -1,4 +1,6 @@
 local config = require("neoagent.config")
+local context_metrics = require("neoagent.controller.context")
+local session_choices = require("neoagent.controller.session_choices")
 local util = require("neoagent.util")
 
 local M = {}
@@ -18,85 +20,6 @@ local function retry_delay(milliseconds)
       if not timer:is_closing() then timer:close() end
     end
   end)
-end
-
-local function relative_age(modified_at, now)
-  local milliseconds = math.max(0, now - modified_at)
-  local minutes = math.floor(milliseconds / 60000)
-  local hours = math.floor(milliseconds / 3600000)
-  local days = math.floor(milliseconds / 86400000)
-  if minutes < 1 then return "now" end
-  if minutes < 60 then return minutes .. "m" end
-  if hours < 24 then return hours .. "h" end
-  if days < 7 then return days .. "d" end
-  if days < 30 then return math.floor(days / 7) .. "w" end
-  if days < 365 then return math.floor(days / 30) .. "mo" end
-  return math.floor(days / 365) .. "y"
-end
-
-local function session_text(info)
-  local text = info.name or info.first_message or "(no messages)"
-  text = util.trim(text:gsub("[%c%s]+", " "))
-  if text == "" then text = "(no messages)" end
-  if vim.fn.strchars(text) > 80 then text = vim.fn.strcharpart(text, 0, 80) .. "…" end
-  return text
-end
-
-local function session_choices(sessions, current_path)
-  local fs = require("neoagent.fs")
-  local by_path = {}
-  local nodes = {}
-  for _, info in ipairs(sessions) do
-    local node = { info = info, children = {}, latest = info.modified_at }
-    nodes[#nodes + 1] = node
-    by_path[fs.canonical(info.path)] = node
-  end
-
-  local roots = {}
-  for _, node in ipairs(nodes) do
-    local parent = node.info.parent_session and by_path[fs.canonical(node.info.parent_session)]
-    if parent and parent ~= node then
-      parent.children[#parent.children + 1] = node
-    else
-      roots[#roots + 1] = node
-    end
-  end
-
-  local function update_latest(node)
-    for _, child in ipairs(node.children) do
-      node.latest = math.max(node.latest, update_latest(child))
-    end
-    return node.latest
-  end
-  local function sort_nodes(values)
-    table.sort(values, function(a, b)
-      if a.latest == b.latest then return a.info.path > b.info.path end
-      return a.latest > b.latest
-    end)
-    for _, node in ipairs(values) do sort_nodes(node.children) end
-  end
-  for _, root in ipairs(roots) do update_latest(root) end
-  sort_nodes(roots)
-
-  local choices = {}
-  local current = current_path and fs.canonical(current_path)
-  local now = util.now_ms()
-  local function visit(node, prefix, branch, is_last)
-    local info = util.copy(node.info)
-    info.current = current ~= nil and fs.canonical(info.path) == current
-    local marker = info.current and "● " or "  "
-    info.label = string.format("%s%s%s  %d  %s", marker, prefix .. branch,
-      session_text(info), info.message_count, relative_age(info.modified_at, now))
-    choices[#choices + 1] = info
-    local child_prefix = prefix
-    if branch ~= "" then child_prefix = child_prefix .. (is_last and "   " or "│  ") end
-    for index, child in ipairs(node.children) do
-      local child_last = index == #node.children
-      visit(child, child_prefix, child_last and "└─ " or "├─ ", child_last)
-    end
-  end
-  for _, root in ipairs(roots) do visit(root, "", "", true) end
-  return choices
 end
 
 function M.from_config(options)
@@ -148,79 +71,6 @@ function M.from_config(options)
   local function model_label()
     local selected = state.model_selection
     return selected and (selected.provider .. "/" .. selected.model) or "no model"
-  end
-
-  local function usage_tokens(usage)
-    if type(usage) ~= "table" then return nil end
-    if type(usage.totalTokens) == "number" and usage.totalTokens >= 0 then
-      return usage.totalTokens
-    end
-    local total = 0
-    for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
-      if type(usage[key]) == "number" then total = total + usage[key] end
-    end
-    return total
-  end
-
-  local function estimate_messages(messages, first)
-    local characters = 0
-    for index = first, #messages do
-      local ok, encoded = pcall(vim.json.encode, messages[index])
-      if ok then characters = characters + #encoded end
-    end
-    return math.ceil(characters / 4)
-  end
-
-  local function valid_assistant_usage(message)
-    if not message or message.role ~= "assistant"
-        or message.stopReason == "aborted" or message.stopReason == "error" then
-      return nil
-    end
-    return usage_tokens(message.usage)
-  end
-
-  local function historical_usage_is_current()
-    local path = state.session:path()
-    if not path then return true end
-    local compaction_index
-    for index, entry in ipairs(path) do
-      if entry.type == "compaction" then compaction_index = index end
-    end
-    if not compaction_index then return true end
-    for index = compaction_index + 1, #path do
-      local entry = path[index]
-      if entry.type == "message" and valid_assistant_usage(entry.message) ~= nil then return true end
-    end
-    return false
-  end
-
-  local function estimate_projected_context(messages)
-    local estimate = require("neoagent.compaction").estimate_tokens
-    local used = 0
-    for _, message in ipairs(messages) do used = used + estimate(message) end
-    return used
-  end
-
-  local function context_tokens(messages, include_live)
-    if include_live and state.live_usage then
-      return state.live_usage.tokens + estimate_messages(messages, state.live_usage.message_count + 1)
-    end
-    if historical_usage_is_current() then
-      for index = #messages, 1, -1 do
-        local tokens = valid_assistant_usage(messages[index])
-        if tokens ~= nil then return tokens + estimate_messages(messages, index + 1) end
-      end
-    end
-    return estimate_projected_context(messages)
-  end
-
-  local function context_usage()
-    local total = state.model and state.model.context_window
-    if type(total) ~= "number" or total <= 0 or not state.session then return false end
-    local messages = state.session:context_messages()
-    if not messages then return false end
-    local used = context_tokens(messages, true)
-    return { used = used, total = total, percent = used / total * 100 }
   end
 
   local function preference_defaults()
@@ -538,7 +388,7 @@ function M.from_config(options)
       workspace = state.workspace and state.workspace.root or nil,
       position = preferences().ui_position,
       state = state.status,
-      context_usage = context_usage(),
+      context_usage = context_metrics.display(state.session, state.model, state.live_usage),
       provider_status = state.provider_status or false,
       steering = vim.tbl_map(function(message) return message.text end, state.steering),
     }
@@ -614,7 +464,7 @@ function M.from_config(options)
         end
         if result.ok then
           local projected = assert(state.session:context_messages())
-          result.estimated_tokens_after = context_tokens(projected, false)
+          result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
           publish({ type = "messages", messages = state.session:messages() })
         end
         state.run = nil
@@ -702,7 +552,7 @@ function M.from_config(options)
         if run_id ~= state.run_id then return end
         if event.type == "usage" then
           state.live_usage = {
-            tokens = usage_tokens(event.usage) or 0,
+            tokens = context_metrics.usage_tokens(event.usage) or 0,
             message_count = #assert(state.session:context_messages()) + 1,
           }
           update_context()
@@ -1066,7 +916,7 @@ function M.from_config(options)
     if #sessions == 0 then notify("no sessions found for the current directory") return nil end
     local metadata = state.session and state.session:metadata()
     local current_path = metadata and metadata.path
-    local choices = session_choices(sessions, current_path)
+    local choices = session_choices.build(sessions, current_path)
     vim.ui.select(choices, {
       prompt = "Resume Neoagent session:",
       format_item = function(item) return item.label end,
