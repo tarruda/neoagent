@@ -2,6 +2,12 @@
 
 A small, hackable LLM and coding-agent toolkit for Neovim.
 
+![](assets/local-chat.gif)
+
+![](assets/inspect-project.gif)
+
+![](assets/edit-code.gif)
+
 ## Features
 
 - Stream assistant responses, reasoning, tool calls, usage, and provider status directly in Neovim.
