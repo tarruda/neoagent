@@ -41,9 +41,13 @@ local defaults = {
     scroll_on_submit = true,
     scroll_on_transcript_leave = true,
     scroll_on_reopen = true,
+    completion = {
+      sources = { "files" },
+    },
     border = "rounded",
     mappings = {
       submit = "<CR>",
+      complete = "<Tab>",
       interrupt = "<C-c>",
       toggle_focus = { "<C-w>w", "<C-w><C-w>" },
       close_input = "<Esc><Esc>",
@@ -207,6 +211,14 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_transcript_leave) == "boolean",
     "ui.scroll_on_transcript_leave must be boolean")
   assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
+  assert(opts.ui.completion == false or type(opts.ui.completion) == "table",
+    "ui.completion must be false or a table")
+  if opts.ui.completion then
+    string_list(opts.ui.completion.sources, "ui.completion.sources")
+    for _, source in ipairs(opts.ui.completion.sources) do
+      assert(source == "files", "unsupported ui.completion source: " .. source)
+    end
+  end
   for action, mapping in pairs(opts.ui.mappings) do
     assert(type(action) == "string", "UI mapping names must be strings")
     if type(mapping) == "table" then

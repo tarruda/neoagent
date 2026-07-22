@@ -149,6 +149,13 @@ message. The queue appears above the working indicator, and the agent consumes
 one message after its current assistant response and tool calls. Alt-Up restores
 all pending steering messages to the input, separated by blank lines. Ctrl-C
 does the same before cancelling the active Run; while idle it clears the draft.
+Insert-mode Tab opens Neovim's popup menu with filename matches relative to the
+current working directory and advances through them. Enter accepts the selected
+match without submitting the prompt. Up, Down, Ctrl-K, and Ctrl-J navigate an
+open completion menu. Set `ui.completion` to `false`, set
+`ui.completion.sources` to an empty list, or change `ui.mappings.complete` to
+configure the behavior. `files` is the supported completion source.
+
 Accepted input is shared by every Controller in the workspace. Insert-mode Up
 and Down or Ctrl-K and Ctrl-J browse the most recent 100 entries while
 preserving the current draft and ordinary multiline movement. Ctrl-R opens a
@@ -159,7 +166,8 @@ Default UI mappings:
 
 | Mapping | Action |
 | --- | --- |
-| `<CR>` | Send from input, in Normal or Insert mode |
+| `<CR>` | Accept popup completion, or send from input in Normal or Insert mode |
+| `<Tab>` | Open filename completion or select the next popup item in Insert mode |
 | `<C-c>` | Interrupt the active Run and restore queued steering; clear the draft while idle |
 | `<C-w>w`, `<C-w><C-w>` | Alternate between input and transcript in Normal, Insert, or Visual mode |
 | `<Esc><Esc>` | Hide the UI from input Normal mode |
@@ -247,6 +255,9 @@ require("neoagent").setup({
     scroll_on_submit = true,
     scroll_on_transcript_leave = true,
     scroll_on_reopen = true,
+    completion = {
+      sources = { "files" },
+    },
     border = "rounded",
     mappings = {},               -- recursively merged with the defaults
   },

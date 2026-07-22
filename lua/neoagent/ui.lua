@@ -852,6 +852,22 @@ function View:_ensure_buffers()
   end
 end
 
+function View:_complete_input()
+  local key
+  if vim.fn.pumvisible() == 1 then
+    key = "<C-n>"
+  else
+    local completion = self.config.completion
+    for _, source in ipairs(completion and completion.sources or {}) do
+      if source == "files" then key = "<C-x><C-f>" break end
+    end
+  end
+  if not key then return false end
+  key = vim.api.nvim_replace_termcodes(key, true, false, true)
+  vim.api.nvim_feedkeys(key, "in", false)
+  return true
+end
+
 function View:_map(buffer, modes, key, callback)
   if key == false or key == nil then return end
   if type(key) == "table" then
@@ -863,7 +879,16 @@ end
 
 function View:_map_buffers()
   local mappings = self.config.mappings or {}
+  local completion = self.config.completion
+  if completion and #(completion.sources or {}) > 0 then
+    self:_map(self.input_buf, "i", mappings.complete, function() self:_complete_input() end)
+  end
   self:_map(self.input_buf, { "n", "i" }, mappings.submit, function()
+    if vim.fn.pumvisible() == 1 then
+      local key = vim.api.nvim_replace_termcodes("<C-y>", true, false, true)
+      vim.api.nvim_feedkeys(key, "in", false)
+      return
+    end
     local submitted, err = self.on_submit(self:get_input())
     if submitted and self.config.scroll_on_submit then self:_scroll_transcript_to_bottom() end
     return submitted, err
@@ -1183,6 +1208,12 @@ end
 
 function View:_move_input_history(direction)
   if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then return false end
+  if vim.fn.pumvisible() == 1 then
+    local key = direction < 0 and "<C-p>" or "<C-n>"
+    key = vim.api.nvim_replace_termcodes(key, true, false, true)
+    vim.api.nvim_feedkeys(key, "in", false)
+    return true
+  end
   local cursor = vim.api.nvim_win_get_cursor(self.input_win)
   local line_count = vim.api.nvim_buf_line_count(self.input_buf)
   if direction < 0 then

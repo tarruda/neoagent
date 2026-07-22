@@ -144,6 +144,64 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("completes filenames through the input popup menu", function()
+    local submissions = {}
+    local popup_seen = false
+    local candidates = {}
+    local completed
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_submit = function(value)
+        submissions[#submissions + 1] = value
+        return true
+      end,
+    })
+    assert(result:open())
+    vim.api.nvim_create_autocmd("CompleteChanged", {
+      group = result.augroup,
+      buffer = result.input_buf,
+      callback = function()
+        popup_seen = vim.fn.pumvisible() == 1
+        candidates = vim.deepcopy(vim.fn.complete_info({ "items" }).items)
+      end,
+    })
+    vim.api.nvim_create_autocmd("CompleteDone", {
+      group = result.augroup,
+      buffer = result.input_buf,
+      callback = function() completed = vim.deepcopy(vim.v.completed_item) end,
+    })
+
+    local prompt = "inspect lua/neoagent/a"
+    result:set_input(prompt)
+    result:focus_input()
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
+      "A<Tab><Tab><Up><Down><CR>", true, false, true), "x", false)
+
+    assert.is_true(popup_seen)
+    assert.is_true(vim.tbl_contains(vim.tbl_map(function(item) return item.word end, candidates),
+      "lua/neoagent/agent.lua"))
+    assert.are.equal("lua/neoagent/agents.lua", completed.word)
+    assert.are.equal("inspect lua/neoagent/agents.lua", result:get_input())
+    assert.are.equal(0, #submissions)
+
+    result:focus_input()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+    assert.are.same({ "inspect lua/neoagent/agents.lua" }, submissions)
+    result:destroy()
+
+    local disabled = ui.new({
+      config = config.setup({ ui = { position = "center", completion = false } }).ui,
+    })
+    assert(disabled:open())
+    disabled:set_input(prompt)
+    disabled:focus_input()
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("A<Tab>", true, false, true), "x", false)
+    assert.are.equal(prompt .. "\t", disabled:get_input())
+    disabled:destroy()
+  end)
+
   it("browses multiline input history and opens history selection", function()
     local selections = 0
     local history = { "newest\ncontinued", "oldest" }
