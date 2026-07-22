@@ -65,8 +65,19 @@ reasoning, text, and function-call item identifiers in assistant messages so
 the complete history can be replayed statelessly.
 
 Neoagent includes Pi's explicit OpenAI catalogs. `openai/*` models are shown by
-`:NeoagentModel` when `OPENAI_API_KEY` is non-empty. For a ChatGPT Plus/Pro
-Codex subscription: >vim
+`:NeoagentModel` when `OPENAI_API_KEY` is non-empty. The built-in DeepSeek
+catalog uses the official OpenAI-compatible endpoint. Set `DEEPSEEK_API_KEY`
+to make `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available.
+Both DeepSeek models declare a 1M-token context window, a 384k-token output
+limit, and `off`, `high`, and `max` thinking levels. Streamed
+`reasoning_content` is retained and replayed during tool turns. Select one by
+default with: >lua
+
+  require("neoagent").setup({
+    default_model = { provider = "deepseek", model = "deepseek-v4-flash" },
+  })
+<
+For a ChatGPT Plus/Pro Codex subscription: >vim
 
   :NeoagentLogin openai-codex
   :NeoagentModel
@@ -245,7 +256,8 @@ default provider or model: >lua
 <
 Set `default_registry = false` to use only the user `providers` table. Built-in
 providers with `auth` or `api_key` appear only when those credentials resolve;
-providers without either are always available. The untouched defaults are
+`openai` reads `OPENAI_API_KEY`, and `deepseek` reads `DEEPSEEK_API_KEY`.
+Providers without either are always available. The untouched defaults are
 returned by `require("neoagent.registry").defaults()`.
 
 The built-in prompt follows the active tools and includes the current working

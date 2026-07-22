@@ -78,6 +78,19 @@ require("neoagent").setup({
 })
 ```
 
+The built-in DeepSeek catalog uses the official OpenAI-compatible endpoint.
+Set `DEEPSEEK_API_KEY` before starting Neovim to make
+`deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available. Both
+models declare a 1M-token context window, a 384k-token output limit, and
+`off`, `high`, and `max` thinking levels. Neoagent retains streamed
+`reasoning_content` and replays it during tool turns.
+
+```lua
+require("neoagent").setup({
+  default_model = { provider = "deepseek", model = "deepseek-v4-flash" },
+})
+```
+
 The built-in Codex catalog becomes available after a successful ChatGPT
 Plus/Pro login:
 
@@ -210,7 +223,7 @@ The complete shape is intentionally small:
 ```lua
 require("neoagent").setup({
   name = nil,                   -- Neo label and workspace-settings scope
-  default_registry = true,      -- compose the built-in OpenAI catalogs
+  default_registry = true,      -- compose the built-in provider catalogs
   providers = {},
   apis = {},
   auth = {
@@ -343,10 +356,11 @@ persistence directory, then recursively applies its own `ui` overrides.
 
 The final registry is the composition of Neoagent's defaults and the user
 `providers` table. The built-in `openai` provider is available when
-`OPENAI_API_KEY` resolves to a non-empty value. The built-in `openai-codex`
-provider is available when an `openai-codex` OAuth credential is stored.
-Providers without `auth` or `api_key`, such as local llama.cpp providers, are
-always available.
+`OPENAI_API_KEY` resolves to a non-empty value, and the built-in `deepseek`
+provider is available when `DEEPSEEK_API_KEY` resolves. The built-in
+`openai-codex` provider is available when an `openai-codex` OAuth credential
+is stored. Providers without `auth` or `api_key`, such as local llama.cpp
+providers, are always available.
 
 User provider and model tables recursively override or extend matching
 defaults. Set a provider or model to `false` to remove it:

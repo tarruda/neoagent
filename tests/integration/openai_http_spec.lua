@@ -49,6 +49,54 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("request", server.records[2].type)
   end)
 
+  it("streams DeepSeek reasoning and replays it through a tool turn", function()
+    local server = mock_server.start("tests/fixtures/deepseek/stream.json")
+    servers[#servers + 1] = server
+    local deepseek = openai.new({
+      provider = "deepseek",
+      model = "deepseek-v4-flash",
+      base_url = "http://127.0.0.1:" .. server.port,
+      api_key = "deepseek-key",
+      max_output_tokens = 384000,
+      request_opts = { body = { stream_options = { include_usage = true } } },
+    })
+    local tools = { {
+      name = "inspect",
+      description = "Inspect a path",
+      input_schema = { type = "object", properties = { path = { type = "string" } } },
+    } }
+    local request_opts = {
+      body = { thinking = { type = "enabled" }, reasoning_effort = "high" },
+    }
+    local user = { role = "user", content = "Inspect it" }
+    local first = wait(deepseek:stream({
+      messages = { user },
+      tools = tools,
+      request_opts = request_opts,
+    }))
+
+    assert.is_true(first.ok)
+    assert.are.equal("toolUse", first.message.stopReason)
+    assert.are.equal("reasoning_content", first.message.content[1].thinkingSignature)
+    assert.are.equal(4, first.message.usage.cacheRead)
+    assert.are.same({ path = "x.lua" }, first.message.content[2].arguments)
+
+    local second = wait(deepseek:stream({
+      messages = {
+        user,
+        first.message,
+        { role = "toolResult", toolCallId = "call-1", content = {
+          { type = "text", text = "return true" },
+        } },
+      },
+      tools = tools,
+      request_opts = request_opts,
+    }))
+    assert.is_true(second.ok)
+    assert.are.equal("Looks good.", second.text)
+    assert.are.equal("reasoning_content", second.message.content[2].thinkingSignature)
+  end)
+
   it("surfaces non-2xx bodies as transport errors", function()
     local server = mock_server.start("tests/fixtures/openai/error.json")
     servers[#servers + 1] = server

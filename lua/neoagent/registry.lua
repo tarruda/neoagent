@@ -145,12 +145,36 @@ for _, id in ipairs({ "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" }) do
   configure_reasoning(codex_models[id].thinking, { summary = false })
 end
 
+local deepseek_models = model_map({
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+}, {
+  context_window = 1000000,
+  max_output_tokens = 384000,
+})
+
+local deepseek_thinking = {
+  off = { body = { thinking = { type = "disabled" } } },
+  high = { body = { thinking = { type = "enabled" }, reasoning_effort = "high" } },
+  max = { body = { thinking = { type = "enabled" }, reasoning_effort = "max" } },
+}
+for _, model in pairs(deepseek_models) do
+  model.thinking = util.copy(deepseek_thinking)
+end
+
 local defaults = {
   openai = {
     api = "openai-responses",
     base_url = "https://api.openai.com/v1",
     api_key = function() return vim.env.OPENAI_API_KEY end,
     models = openai_models,
+  },
+  deepseek = {
+    api = "openai-completions",
+    base_url = "https://api.deepseek.com",
+    api_key = function() return vim.env.DEEPSEEK_API_KEY end,
+    request_opts = { body = { stream_options = { include_usage = true } } },
+    models = deepseek_models,
   },
   ["openai-codex"] = {
     api = "openai-codex-responses",

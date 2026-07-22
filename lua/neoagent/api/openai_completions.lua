@@ -36,7 +36,11 @@ local function encode_content(content)
   return result
 end
 
-local function encode_messages(messages, system_prompt)
+local reasoning_fields = { "reasoning_content", "reasoning", "reasoning_text" }
+local reasoning_field = {}
+for _, field in ipairs(reasoning_fields) do reasoning_field[field] = true end
+
+local function encode_messages(messages, system_prompt, requires_reasoning_content)
   local result = {}
   if system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
@@ -47,9 +51,16 @@ local function encode_messages(messages, system_prompt)
     elseif message.role == "assistant" then
       local text = {}
       local calls = {}
+      local reasoning = {}
       for _, block in ipairs(message.content or {}) do
         if block.type == "text" then
           text[#text + 1] = block.text or ""
+        elseif block.type == "thinking" and type(block.thinking) == "string" and block.thinking ~= "" then
+          local field = requires_reasoning_content and "reasoning_content" or block.thinkingSignature
+          if reasoning_field[field] then
+            reasoning[field] = reasoning[field] or {}
+            reasoning[field][#reasoning[field] + 1] = block.thinking
+          end
         elseif block.type == "toolCall" then
           calls[#calls + 1] = {
             id = block.id,
@@ -63,6 +74,12 @@ local function encode_messages(messages, system_prompt)
           role = "assistant",
           content = #text > 0 and table.concat(text) or vim.NIL,
         }
+        for field, values in pairs(reasoning) do
+          encoded[field] = table.concat(values, "\n")
+        end
+        if requires_reasoning_content and encoded.reasoning_content == nil then
+          encoded.reasoning_content = ""
+        end
         if #calls > 0 then
           encoded.tool_calls = calls
         end
@@ -163,7 +180,7 @@ function Model:_request(call_opts)
   end
   local body = {
     model = self.id,
-    messages = encode_messages(call_opts.messages, call_opts.system_prompt),
+    messages = encode_messages(call_opts.messages, call_opts.system_prompt, self._requires_reasoning_content),
     stream = true,
   }
   if self._max_output_tokens then
@@ -255,10 +272,19 @@ function Model:stream(opts)
           text_block.text = text_block.text .. delta.content
           run:emit({ type = "text_delta", text = delta.content })
         end
-        local thinking = delta.reasoning_content or delta.reasoning or delta.reasoning_text
-        if type(thinking) == "string" and thinking ~= "" then
+        local thinking
+        local thinking_signature
+        for _, field in ipairs(reasoning_fields) do
+          local value = delta[field]
+          if type(value) == "string" and value ~= "" then
+            thinking = value
+            thinking_signature = field
+            break
+          end
+        end
+        if thinking then
           if not thinking_block then
-            thinking_block = { type = "thinking", thinking = "" }
+            thinking_block = { type = "thinking", thinking = "", thinkingSignature = thinking_signature }
             message.content[#message.content + 1] = thinking_block
           end
           thinking_block.thinking = thinking_block.thinking .. thinking
@@ -381,6 +407,7 @@ function M.new(opts)
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
+    _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _transport = opts.transport or curl,

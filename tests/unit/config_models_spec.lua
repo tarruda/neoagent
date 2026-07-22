@@ -3,16 +3,20 @@ local models = require("neoagent.models")
 
 describe("neoagent configuration and model resolution", function()
   local original_openai_key
+  local original_deepseek_key
 
   before_each(function()
     config._reset()
     original_openai_key = vim.env.OPENAI_API_KEY
+    original_deepseek_key = vim.env.DEEPSEEK_API_KEY
     vim.env.OPENAI_API_KEY = nil
+    vim.env.DEEPSEEK_API_KEY = nil
   end)
 
   after_each(function()
     config._reset()
     vim.env.OPENAI_API_KEY = original_openai_key
+    vim.env.DEEPSEEK_API_KEY = original_deepseek_key
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -176,6 +180,38 @@ describe("neoagent configuration and model resolution", function()
     } })
     assert.are.same({ "only/model" }, assert(models.available()))
     vim.fn.delete(vim.fs.dirname(path), "rf")
+  end)
+
+  it("resolves the built-in DeepSeek catalog and request profile", function()
+    vim.env.DEEPSEEK_API_KEY = "deepseek-key"
+    config.setup({})
+
+    local provider = config.get().providers.deepseek
+    assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("https://api.deepseek.com", provider.base_url)
+    local available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "deepseek/deepseek-v4-flash"))
+    assert.is_true(vim.tbl_contains(available, "deepseek/deepseek-v4-pro"))
+    assert.are.equal(1000000, provider.models["deepseek-v4-flash"].context_window)
+    assert.are.equal(384000, provider.models["deepseek-v4-pro"].max_output_tokens)
+    assert.are.same({ "off", "high", "max" },
+      require("neoagent.thinking").levels(models.resolve("deepseek", "deepseek-v4-flash")))
+
+    local model = models.resolve("deepseek", "deepseek-v4-pro")
+    local request = model:_request({
+      messages = { { role = "assistant", content = {
+        { type = "toolCall", id = "call-1", name = "inspect", arguments = { path = "x.lua" } },
+      } } },
+      tools = {},
+      request_opts = model.thinking.max,
+    })
+    assert.are.equal("https://api.deepseek.com/chat/completions", request.url)
+    assert.are.equal("Bearer deepseek-key", request.headers.Authorization)
+    assert.are.equal(384000, request.body.max_completion_tokens)
+    assert.is_true(request.body.stream_options.include_usage)
+    assert.are.same({ type = "enabled" }, request.body.thinking)
+    assert.are.equal("max", request.body.reasoning_effort)
+    assert.are.equal("", request.body.messages[1].reasoning_content)
   end)
 
   it("allows default providers to be removed and reports API key failures", function()
