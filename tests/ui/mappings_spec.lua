@@ -114,6 +114,39 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("animates active status without mutating yankable transcript text", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({ {
+      role = "assistant",
+      content = { { type = "text", text = "yank target" } },
+    } })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    assert(vim.wait(1000, function()
+      if result.flush_pending or not result.status_mark then return false end
+      local mark = vim.api.nvim_buf_get_extmark_by_id(
+        result.transcript_buf, result.namespace, result.status_mark, { details = true }
+      )
+      return #mark > 0 and type(mark[3].virt_lines) == "table"
+    end))
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local changedtick = vim.api.nvim_buf_get_changedtick(result.transcript_buf)
+    local frame = result.spinner_frame
+    assert(vim.wait(1000, function() return result.spinner_frame ~= frame end))
+    assert.are.same(lines, vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+    assert.are.equal(changedtick, vim.api.nvim_buf_get_changedtick(result.transcript_buf))
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.fn.setreg("+", "sentinel")
+    vim.api.nvim_feedkeys('"+yy', "x", false)
+    local yanked = vim.fn.getreg("+")
+    result:destroy()
+    assert.matches("yank target", yanked)
+  end)
+
   it("closes the paired windows from input Normal mode and an empty draft", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

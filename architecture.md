@@ -193,8 +193,9 @@ The passive View facade in `lua/neoagent/ui.lua` owns the paired window
 lifecycle and composes focused layout, rendering, transcript, and input modules
 under `lua/neoagent/ui/`. It renders messages and events, presents compaction
 checkpoints as expandable cards, and invokes callbacks supplied by the Window.
-It does not own the model or agent loop, which makes it replaceable with a
-custom UI.
+Transient working and steering status uses virtual-line decoration so animation
+preserves transcript text and Normal-mode command state. The View does not own
+the model or agent loop, which makes it replaceable with a custom UI.
 
 ## Public composition
 

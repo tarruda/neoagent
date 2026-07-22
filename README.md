@@ -148,6 +148,8 @@ italic. User messages and tool calls use separate padded backgrounds; pending
 tools change to green on success or red on failure. Built-in tools show concise
 semantic arguments and useful output. Read output is limited to ten lines until
 tool output is expanded. A spinner remains visible while the agent is working.
+The spinner and steering queue use virtual decoration, preserving transcript
+text and pending Normal-mode commands during animation.
 
 The top border shows the selected model, thinking level, state, and
 used/total context with a percentage when the model declares

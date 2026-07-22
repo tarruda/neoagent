@@ -40,7 +40,9 @@ changes.
   store is optional and injected.
 - The passive View consumes messages and events. A Window owns one View,
   selects an active Controller, and retains one input draft per Controller.
-  Attached Controllers have unique, non-empty names.
+  Attached Controllers have unique, non-empty names. Transient status and
+  spinner updates use decoration and preserve transcript text and Normal-mode
+  command state.
 - Controllers are independent compositions of configuration, model selection,
   Session, Workspace, and Run. They publish compaction-aware transcript
   snapshots and updates so Windows and other consumers can attach without

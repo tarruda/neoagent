@@ -76,13 +76,8 @@ end
 
 function M:_remove_status()
   if not self.status_mark then return end
-  local position = vim.api.nvim_buf_get_extmark_by_id(self.transcript_buf, self.namespace, self.status_mark, { details = true })
-  if #position > 0 then
-    for _, mark in ipairs(self.status_decorations or {}) do pcall(vim.api.nvim_buf_del_extmark, self.transcript_buf, self.namespace, mark) end
-    vim.api.nvim_buf_del_extmark(self.transcript_buf, self.namespace, self.status_mark)
-    vim.api.nvim_buf_set_lines(self.transcript_buf, position[1], position[3].end_row, false, {})
-  end
-  self.status_mark, self.status_decorations = nil, nil
+  pcall(vim.api.nvim_buf_del_extmark, self.transcript_buf, self.namespace, self.status_mark)
+  self.status_mark = nil
 end
 
 function M:_render_status()
@@ -90,51 +85,37 @@ function M:_render_status()
     or self.context.state == "compacting"
   local steering = type(self.context.steering) == "table" and self.context.steering or {}
   if not active and #steering == 0 then return end
-  local count = vim.api.nvim_buf_line_count(self.transcript_buf)
-  local start = self.has_rendered and count or 0
-  local finish = self.has_rendered and count or count
   local lines = {}
   for _, message in ipairs(steering) do
     local text = util.trim(tostring(message):gsub("%s+", " "))
-    lines[#lines + 1] = " Steering: " .. text
+    lines[#lines + 1] = { { " Steering: " .. text, "NeoagentMuted" } }
   end
   if #steering > 0 then
     local key = (self.config.mappings or {}).dequeue_steering
     local hint = type(key) == "string" and key or "Alt-Up"
-    lines[#lines + 1] = " ↳ " .. hint .. " to edit queued messages"
+    lines[#lines + 1] = { { " ↳ " .. hint .. " to edit queued messages", "NeoagentMuted" } }
   end
-  local spinner_row
   if active then
     local frame = self.spinner_frames[self.spinner_frame]
     local label = self.context.state == "stopping" and "Stopping..."
       or self.context.state == "compacting" and "Compacting..." or "Working..."
-    spinner_row = #lines
-    lines[#lines + 1] = " " .. frame .. " " .. label
+    lines[#lines + 1] = {
+      { " ", "NeoagentMuted" },
+      { frame, "NeoagentAccent" },
+      { " " .. label, "NeoagentMuted" },
+    }
   end
-  vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, lines)
-  self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
-    end_row = start + #lines,
-    right_gravity = false,
-    end_right_gravity = true,
+  local row = math.max(0, vim.api.nvim_buf_line_count(self.transcript_buf) - 1)
+  self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, row, 0, {
+    virt_lines = lines,
+    virt_lines_above = true,
   })
-  self.status_decorations = {}
-  for index, line in ipairs(lines) do
-    self.status_decorations[#self.status_decorations + 1] = vim.api.nvim_buf_set_extmark(
-      self.transcript_buf, self.namespace, start + index - 1, 0, {
-        end_col = #line,
-        hl_group = "NeoagentMuted",
-        priority = 100,
-      })
-  end
-  if spinner_row then
-    local frame = self.spinner_frames[self.spinner_frame]
-    self.status_decorations[#self.status_decorations + 1] = vim.api.nvim_buf_set_extmark(
-      self.transcript_buf, self.namespace, start + spinner_row, 1, {
-      end_col = 1 + #frame,
-      hl_group = "NeoagentAccent",
-      priority = 110,
-    })
-  end
+end
+
+function M:_refresh_status()
+  if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
+  self:_remove_status()
+  self:_render_status()
 end
 
 function M:_flush()

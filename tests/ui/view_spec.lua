@@ -2,7 +2,15 @@ local config = require("neoagent.config")
 local ui = require("neoagent.ui")
 
 local function text(view)
-  return table.concat(vim.api.nvim_buf_get_lines(view.transcript_buf, 0, -1, false), "\n")
+  local lines = vim.api.nvim_buf_get_lines(view.transcript_buf, 0, -1, false)
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+    view.transcript_buf, view.namespace, 0, -1, { details = true }
+  )) do
+    for _, virtual in ipairs(mark[4].virt_lines or {}) do
+      lines[#lines + 1] = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, virtual))
+    end
+  end
+  return table.concat(lines, "\n")
 end
 
 local function has_line_group(view, name)

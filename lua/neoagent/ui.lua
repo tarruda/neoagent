@@ -259,7 +259,7 @@ function View:_sync_spinner()
   timer:start(80, 80, vim.schedule_wrap(function()
     if self.destroyed or self.spinner_timer ~= timer then return end
     self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
-    self:_schedule_flush()
+    self:_refresh_status()
   end))
   self:_schedule_flush()
 end
@@ -316,6 +316,7 @@ View._content_width = transcript._content_width
 View._mark_block = transcript._mark_block
 View._remove_status = transcript._remove_status
 View._render_status = transcript._render_status
+View._refresh_status = transcript._refresh_status
 View._flush = transcript._flush
 View._schedule_flush = transcript._schedule_flush
 View._add_block = transcript._add_block

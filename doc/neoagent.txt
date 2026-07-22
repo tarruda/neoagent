@@ -445,7 +445,9 @@ User messages have a distinct padded background. Tool cards use separate
 pending, successful, and failed backgrounds. Unstyled content maps NormalFloat
 to Normal so it inherits the editor background. Built-in tool results use
 semantic summaries. Read output shows at most ten lines until tool output is
-expanded. A spinner is shown while an interaction is running.
+expanded. A spinner is shown while an interaction is running. The spinner and
+steering queue use virtual decoration, preserving transcript text and pending
+Normal-mode commands during animation.
 
 The top border shows model, thinking, run state, and used/total context with a
 percentage when the model declares `context_window`. It begins with the
