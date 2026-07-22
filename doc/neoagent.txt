@@ -208,9 +208,9 @@ A Window owns one View and selects an attached Controller. Its operations are
 `cycle`, `set_input`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
 and shares workspace input history across Controllers. Selection rehydrates
-canonical Session messages and transient events while every Controller Run
-continues independently. Each Controller's initial Session is created on its
-first send.
+compaction-aware transcript messages and transient events while every
+Controller Run continues independently. Each Controller's initial Session is
+created on its first send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.
@@ -220,10 +220,10 @@ and command-facing Window. Another `setup()` destroys the current Window and
 the Controllers owned by an earlier `setup()` call. An active Run on either
 owned Controller blocks the replacement.
 
-`controller:subscribe(callback)` publishes messages, context, normalized agent
-events, and completion updates. Its unsubscribe function detaches the callback.
-`controller:snapshot()` lets a newly attached consumer reconstruct the current
-Session and partial Run.
+`controller:subscribe(callback)` publishes compaction-aware transcript
+messages, context, normalized agent events, and completion updates. Its
+unsubscribe function detaches the callback. `controller:snapshot()` lets a
+newly attached consumer reconstruct the current transcript and partial Run.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
@@ -488,7 +488,7 @@ Default mappings:
               Visual mode.
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
-  <C-o>       Expand or collapse tool output.
+  <C-o>       Expand or collapse tool output and compaction summaries.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
@@ -679,9 +679,13 @@ Automatic compaction starts after an interaction crosses the Model's context
 threshold, before a prompt when resumed context already exceeds it, and once
 for a provider context-overflow error. It asks the active Model for a
 structured summary with an empty tool list and appends a Pi `compaction`
-entry. Subsequent requests contain that checkpoint and the retained recent
-entries. Repeated compactions update the previous checkpoint; oversized turns
-receive a separate prefix summary to preserve tool-call boundaries.
+entry. Subsequent requests and Controller transcript snapshots contain that
+checkpoint and the retained recent entries. The built-in View renders an
+expandable compaction card followed by retained and subsequent messages;
+`<C-o>` toggles the complete summary. Prefix entries remain available through
+`session:messages()`, `session:path()`, the persisted JSONL tree, and branch
+navigation. Repeated compactions update the previous checkpoint; oversized
+turns receive a separate prefix summary to preserve tool-call boundaries.
 
 The threshold is `context_window - reserve_tokens`. Recent retention targets
 `keep_recent_tokens`. Defaults are reduced proportionally for smaller Model

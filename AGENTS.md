@@ -42,8 +42,9 @@ changes.
   selects an active Controller, and retains one input draft per Controller.
   Attached Controllers have unique, non-empty names.
 - Controllers are independent compositions of configuration, model selection,
-  Session, Workspace, and Run. They publish snapshots and updates so Windows
-  and other consumers can attach without owning the agent loop.
+  Session, Workspace, and Run. They publish compaction-aware transcript
+  snapshots and updates so Windows and other consumers can attach without
+  owning the agent loop; the Session retains the complete active branch.
 - Controller Runs remain independent when a shared Window selects another
   Controller. The command-facing default Window is replaceable; custom
   Controllers and Windows must not mutate or depend on it.

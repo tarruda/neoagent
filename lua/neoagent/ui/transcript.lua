@@ -234,8 +234,11 @@ function M:_message(message)
     block.finished, block.dirty = true, true
     return block
   elseif message.role == "compactionSummary" then
-    local tokens = type(message.tokensBefore) == "number" and string.format(" · %.1fk tokens", message.tokensBefore / 1000) or ""
-    return self:_add_block({ kind = "notice", text = "Context compacted" .. tokens })
+    return self:_add_block({
+      kind = "compaction",
+      summary = message.summary or "",
+      tokens_before = message.tokensBefore,
+    })
   elseif message.role == "branchSummary" then
     return self:_add_block({ kind = "notice", text = "Branch context\n" .. (message.summary or "") })
   elseif message.role == "custom" and message.display then

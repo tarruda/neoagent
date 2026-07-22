@@ -365,6 +365,32 @@ local function tool_output(self, block, args)
   return output_lines(value, maximum, false, "NeoagentToolOutput", hint)
 end
 
+local function format_token_count(value)
+  if type(value) ~= "number" then return "unknown token count" end
+  local digits = tostring(math.max(0, math.floor(value + 0.5)))
+  digits = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+  return digits .. " tokens"
+end
+
+local function compaction(self, block)
+  local content = rendered()
+  local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
+  add_line(content, label, label_spans)
+  add_line(content, "")
+  local token_count = format_token_count(block.tokens_before)
+  if self.tools_expanded then
+    local body = "**Compacted from " .. token_count .. "**"
+    if block.summary ~= "" then body = body .. "\n\n" .. block.summary end
+    append_rendered(content, markdown.render(body, { width = self:_content_width() }))
+  else
+    local hint = (self.config.mappings or {}).expand_tools
+    local suffix = type(hint) == "string" and " (" .. hint .. " to expand)" or ""
+    local message = "Compacted from " .. token_count .. suffix
+    add_line(content, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
+  end
+  return card(content, "NeoagentUserBackground")
+end
+
 function M.block(self, block)
   if block.kind == "user" then
     local content = markdown.render(block.text, { width = self:_content_width(), preserve_markers = true })
@@ -376,6 +402,8 @@ function M.block(self, block)
     return prose(markdown.render(block.text, { width = self:_content_width() }))
   elseif block.kind == "thinking" then
     return prose(markdown.render(block.text, { width = self:_content_width() }), "NeoagentThinking", true)
+  elseif block.kind == "compaction" then
+    return compaction(self, block)
   elseif block.kind == "notice" then
     return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
   end

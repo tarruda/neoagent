@@ -127,7 +127,9 @@ describe("neoagent default controller", function()
     assert.is_true(estimated < entries[#entries].tokensBefore)
     local transcript = table.concat(vim.api.nvim_buf_get_lines(
       current_view().transcript_buf, 0, -1, false), "\n")
-    assert.matches("Context compacted", transcript)
+    assert.matches("Compacted from 900 tokens", transcript)
+    assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
+    assert.not_matches("perform the large task", transcript)
     assert.are.equal("summary quota", current_view().context.provider_status)
   end)
 

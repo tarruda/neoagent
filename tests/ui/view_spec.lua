@@ -320,6 +320,32 @@ describe("neoagent.ui", function()
     assert.not_matches("more lines", text(result))
   end)
 
+  it("renders compaction summaries as expandable cards", function()
+    local result = view({ position = "center" })
+    result:set_messages({ {
+      role = "compactionSummary",
+      summary = "## Goal\nKeep the summary visible",
+      tokensBefore = 12345,
+    }, {
+      role = "assistant",
+      content = { { type = "text", text = "retained suffix" } },
+    } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Compacted from 12,345 tokens (<C-o> to expand)", 1, true) ~= nil
+    end))
+    assert.matches("%[compaction%]", text(result))
+    assert.not_matches("Keep the summary visible", text(result))
+    assert.matches("retained suffix", text(result))
+    assert.is_true(has_line_group(result, "NeoagentUserBackground"))
+
+    result:toggle_tools()
+    assert(vim.wait(1000, function()
+      return text(result):find("Keep the summary visible", 1, true) ~= nil
+    end))
+    assert.not_matches("to expand", text(result))
+  end)
+
   it("uses card backgrounds, inherits the editor background, and animates active states", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "user", content = "hello" } })

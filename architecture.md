@@ -159,8 +159,10 @@ The Controller starts `chat.run()`, handles storage, replays provider-declared
 retryable turns after cancellable backoff, retries context overflows after
 compaction, refreshes unmodified buffers after file edits, and publishes
 updates. Focused internal modules calculate context usage and format session
-choices; the Controller owns the mutable run and session state. A replay removes
-a failed partial assistant message from the active branch before continuing the
+choices; the Controller owns the mutable run and session state. Message updates
+and snapshots project the latest compaction checkpoint with its retained suffix,
+while the Session tree retains the complete active path. A replay removes a
+failed partial assistant message from the active branch before continuing the
 interaction:
 
 ```lua
@@ -189,9 +191,10 @@ The Window:
 
 The passive View facade in `lua/neoagent/ui.lua` owns the paired window
 lifecycle and composes focused layout, rendering, transcript, and input modules
-under `lua/neoagent/ui/`. It renders messages and events and invokes callbacks
-supplied by the Window. It does not own the model or agent loop, which makes it
-replaceable with a custom UI.
+under `lua/neoagent/ui/`. It renders messages and events, presents compaction
+checkpoints as expandable cards, and invokes callbacks supplied by the Window.
+It does not own the model or agent loop, which makes it replaceable with a
+custom UI.
 
 ## Public composition
 

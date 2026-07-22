@@ -185,7 +185,7 @@ Default UI mappings:
 | `<C-w>w`, `<C-w><C-w>` | Alternate between input and transcript in Normal, Insert, or Visual mode |
 | `<Esc><Esc>` | Hide the UI from input Normal mode |
 | `<C-d>` | Hide the UI when the input is empty |
-| `<C-o>` | Expand or collapse tool output |
+| `<C-o>` | Expand or collapse tool output and compaction summaries |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
 | `<A-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
 | `<A-m>` | Select a model (input Normal/Insert; transcript Normal) |
@@ -339,9 +339,10 @@ the replacement.
 
 A Controller publishes `{ type = "messages" | "context" | "event" |
 "finish", ... }` updates through `subscribe(callback)`; the returned function
-unsubscribes. `snapshot()` supplies the canonical messages, display context,
-and current transient run events for a newly attached consumer. These APIs let
-custom Windows observe Controllers while Controllers remain useful without UI.
+unsubscribes. `snapshot()` supplies compaction-aware transcript messages,
+display context, and current transient run events for a newly attached
+consumer. These APIs let custom Windows observe Controllers while Controllers
+remain useful without UI.
 
 The `view` option is a function receiving `config`, `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
@@ -431,11 +432,18 @@ windows smaller than those values.
 
 Compaction asks the active Model for a structured checkpoint with an empty tool
 list, appends a Pi `compaction` entry, and projects the checkpoint plus retained
-entries into subsequent model requests. Repeated compactions update the prior
-checkpoint. Oversized turns receive a separate prefix summary so a tool result
-remains attached to its tool call. `:NeoagentCompact [instructions]` starts the
-same operation manually. Set `compaction = false` to disable it or
-`compaction.auto = false` to retain manual and overflow compaction.
+entries into subsequent model requests. Controller message snapshots use the
+same compacted projection. The built-in View renders an expandable compaction
+card followed by retained and subsequent messages; `<C-o>` toggles the complete
+summary. Compacted prefix entries remain in the Session tree and JSONL file and
+are available through `Session:messages()`, `Session:path()`, and branch
+navigation.
+
+Repeated compactions update the prior checkpoint. Oversized turns receive a
+separate prefix summary so a tool result remains attached to its tool call.
+`:NeoagentCompact [instructions]` starts the same operation manually. Set
+`compaction = false` to disable it or `compaction.auto = false` to retain manual
+and overflow compaction.
 
 `compaction.run` may replace summary generation with a function that receives
 the prepared entries, Model, request options, Session, reason, callbacks, and

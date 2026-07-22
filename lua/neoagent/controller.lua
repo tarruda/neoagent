@@ -1,6 +1,7 @@
 local config = require("neoagent.config")
 local context_metrics = require("neoagent.controller.context")
 local session_choices = require("neoagent.controller.session_choices")
+local session_tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 
 local M = {}
@@ -209,6 +210,12 @@ function M.from_config(options)
     if not session then error(err, 0) end
     state.session = session
     return session
+  end
+
+  local function transcript_messages(session)
+    local path, err = session:path()
+    if not path then error(err, 0) end
+    return session_tree.messages(path, true)
   end
 
   local function ensure_model()
@@ -465,7 +472,7 @@ function M.from_config(options)
         if result.ok then
           local projected = assert(state.session:context_messages())
           result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
-          publish({ type = "messages", messages = state.session:messages() })
+          publish({ type = "messages", messages = transcript_messages(state.session) })
         end
         state.run = nil
         state.status = "idle"
@@ -583,7 +590,7 @@ function M.from_config(options)
           local parent = last.parentId == vim.NIL and nil or last.parentId
           local moved, move_err = state.session:move_to(parent)
           if not moved then error(move_err, 0) end
-          publish({ type = "messages", messages = state.session:messages() })
+          publish({ type = "messages", messages = transcript_messages(state.session) })
         end
       end
 
@@ -652,7 +659,7 @@ function M.from_config(options)
         state.run = run
         state.status = "running"
         state.pending_events = {}
-        publish({ type = "messages", messages = state.session:messages() })
+        publish({ type = "messages", messages = transcript_messages(state.session) })
         update_context()
         return run
       end
@@ -796,7 +803,7 @@ function M.from_config(options)
     state.live_usage, state.provider_status = nil, nil
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     restore_session_preferences(store:state())
-    publish({ type = "messages", messages = session:messages() })
+    publish({ type = "messages", messages = transcript_messages(session) })
     update_context()
     return session
   end
@@ -826,7 +833,7 @@ function M.from_config(options)
     local stored = assert(state.session:state())
     restore_session_preferences(stored)
     state.store_seeded = stored.model ~= nil
-    publish({ type = "messages", messages = state.session:messages() })
+    publish({ type = "messages", messages = transcript_messages(state.session) })
     update_context()
     return true
   end
@@ -883,7 +890,7 @@ function M.from_config(options)
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     state.live_usage, state.provider_status = nil, nil
     restore_session_preferences(store:state())
-    publish({ type = "messages", messages = session:messages() })
+    publish({ type = "messages", messages = transcript_messages(session) })
     update_context()
     return session, selected_text
   end
@@ -1121,7 +1128,7 @@ function M.from_config(options)
   end
 
   function controller:snapshot()
-    local messages = state.session and state.session:messages() or {}
+    local messages = state.session and transcript_messages(state.session) or {}
     return {
       messages = messages,
       context = context(),
