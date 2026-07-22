@@ -5,6 +5,21 @@ local M = {}
 local next_id = 0
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
 
+local function retry_delay(milliseconds)
+  return require("neoagent.async").await(function(done)
+    local timer = vim.uv.new_timer()
+    timer:start(math.max(1, milliseconds), 0, function()
+      timer:stop()
+      if not timer:is_closing() then timer:close() end
+      done.resolve(true)
+    end)
+    return function()
+      timer:stop()
+      if not timer:is_closing() then timer:close() end
+    end
+  end)
+end
+
 local function relative_age(modified_at, now)
   local milliseconds = math.max(0, now - modified_at)
   local minutes = math.floor(milliseconds / 60000)
@@ -658,6 +673,7 @@ function M.from_config(options)
       state.pending_events = {}
       state.last_result = nil
       local overflow_retried = false
+      local stream_retries = 0
       local base = {
         session = state.session,
         prompt = prompt,
@@ -709,7 +725,7 @@ function M.from_config(options)
       end
 
       local launch
-      local function abandon_overflow_message()
+      local function abandon_failed_message()
         local path = assert(state.session:path())
         local last = path[#path]
         if last and last.type == "message" and last.message.role == "assistant"
@@ -726,11 +742,44 @@ function M.from_config(options)
         local can_continue = options.continuation ~= nil or options.interaction == nil
         if not overflow_retried and can_continue and is_context_overflow(done) then
           overflow_retried = true
-          abandon_overflow_message()
+          abandon_failed_message()
           local compacted = start_compaction("overflow", nil, run_id, function(result)
             if result.ok then launch(true) else finish_interaction(done) end
           end)
           if compacted then return end
+        end
+        local retry_limit = done.error and tonumber(done.error.stream_max_retries) or 0
+        if can_continue and done.error and done.error.retryable == true
+            and stream_retries < retry_limit then
+          stream_retries = stream_retries + 1
+          abandon_failed_message()
+          state.pending_events = {}
+          state.live_usage = nil
+          local wait = tonumber(done.error.retry_after_ms)
+            or math.min(60000, 200 * (2 ^ (stream_retries - 1)))
+          state.provider_status = string.format("Reconnecting… %d/%d", stream_retries, retry_limit)
+          update_context()
+          local waiting
+          waiting = require("neoagent.async").run(function()
+            retry_delay(wait)
+            return { ok = true }
+          end, {
+            on_done = function(result)
+              if run_id ~= state.run_id then return end
+              state.provider_status = nil
+              if not result.ok then
+                finish_interaction(result)
+                return
+              end
+              local launched, launch_err = pcall(launch, true)
+              if not launched then
+                finish_interaction({ ok = false, error = util.normalize_error(launch_err, "controller") })
+              end
+            end,
+            error_kind = "controller",
+          })
+          state.run = waiting
+          return
         end
         if needs_compaction() then
           local compacted = start_compaction("threshold", nil, run_id, function()
@@ -743,6 +792,8 @@ function M.from_config(options)
 
       launch = function(continuing)
         local call = vim.tbl_extend("force", {}, base)
+        call.model_options = util.copy(base.model_options)
+        call.model_options.retry_attempt = stream_retries
         call.on_event, call.on_done = on_event, on_done
         local selected = continuing and (options.continuation or continuation)
           or (options.interaction or interaction)

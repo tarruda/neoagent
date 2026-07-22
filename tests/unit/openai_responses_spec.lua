@@ -224,6 +224,64 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("OK", result.text)
   end)
 
+  it("separates official reasoning summary parts", function()
+    local reasoning = {
+      type = "reasoning", id = "rs_parts", summary = {
+        { type = "summary_text", text = "first" },
+        { type = "summary_text", text = "second" },
+      },
+    }
+    local chunks = {
+      event({ type = "response.output_item.added", output_index = 0,
+        item = { type = "reasoning", id = "rs_parts", summary = util.list() } }),
+      event({ type = "response.reasoning_summary_part.added", output_index = 0, summary_index = 0 }),
+      event({ type = "response.reasoning_summary_text.delta", output_index = 0,
+        summary_index = 0, delta = "first" }),
+      event({ type = "response.reasoning_summary_part.added", output_index = 0, summary_index = 1 }),
+      event({ type = "response.reasoning_summary_text.delta", output_index = 0,
+        summary_index = 1, delta = "second" }),
+      event({ type = "response.output_item.done", output_index = 0, item = reasoning }),
+      event({ type = "response.completed", response = {
+        id = "resp_parts", status = "completed", output = { reasoning },
+      } }),
+    }
+    local emitted = {}
+    local result = wait(model(fake_transport.new({ { chunks = chunks } })):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "thinking_delta" then emitted[#emitted + 1] = value.text end
+      end,
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("first\n\nsecond", result.message.content[1].thinking)
+    assert.are.equal("first\n\nsecond", table.concat(emitted))
+  end)
+
+  it("accepts null Responses usage details", function()
+    local output = { {
+      type = "message", id = "msg_null_usage", role = "assistant", status = "completed",
+      content = { { type = "output_text", text = "done", annotations = util.list() } },
+    } }
+    local result = wait(model(fake_transport.new({ { chunks = { event({
+      type = "response.completed",
+      response = {
+        id = "resp_null_usage", status = "completed", output = output,
+        usage = {
+          input_tokens = 5,
+          output_tokens = 2,
+          total_tokens = 7,
+          input_tokens_details = vim.NIL,
+          output_tokens_details = vim.NIL,
+        },
+      },
+    }) } } })):stream({ messages = {} }))
+
+    assert.is_true(result.ok)
+    assert.are.equal(5, result.message.usage.input)
+    assert.are.equal(0, result.message.usage.reasoning)
+  end)
+
   it("replays function calls and outputs through the stateless agent loop", function()
     local call = {
       type = "function_call", id = "fc_loop", call_id = "call_loop", name = "echo", arguments = "{}",

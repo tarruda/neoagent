@@ -1,0 +1,32 @@
+{
+  "steps": [
+    {
+      "expect": { "path": "/v1/codex/responses" },
+      "respond": {
+        "status": 500,
+        "headers": {
+          "content-type": "application/json",
+          "x-request-id": "req-codex-retry",
+          "cf-ray": "ray-codex-retry"
+        },
+        "json": {
+          "error": {
+            "code": "internal_server_error",
+            "message": "temporary backend failure"
+          }
+        }
+      }
+    },
+    {
+      "expect": { "path": "/v1/codex/responses" },
+      "respond": {
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          {
+            "data": "data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp-retry\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg-retry\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"recovered\",\"annotations\":[]}] }]}}\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

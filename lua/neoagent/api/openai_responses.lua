@@ -140,19 +140,21 @@ local function encode_tools(tools, strict)
 end
 
 local function usage_from(raw)
-  local input_details = raw.input_tokens_details or {}
-  local output_details = raw.output_tokens_details or {}
-  local cache_read = input_details.cached_tokens or 0
-  local cache_write = input_details.cache_write_tokens or 0
-  local input = math.max(0, (raw.input_tokens or 0) - cache_read - cache_write)
-  local output = raw.output_tokens or 0
+  local input_details = type(raw.input_tokens_details) == "table" and raw.input_tokens_details or {}
+  local output_details = type(raw.output_tokens_details) == "table" and raw.output_tokens_details or {}
+  local cache_read = type(input_details.cached_tokens) == "number" and input_details.cached_tokens or 0
+  local cache_write = type(input_details.cache_write_tokens) == "number" and input_details.cache_write_tokens or 0
+  local raw_input = type(raw.input_tokens) == "number" and raw.input_tokens or 0
+  local output = type(raw.output_tokens) == "number" and raw.output_tokens or 0
+  local input = math.max(0, raw_input - cache_read - cache_write)
   return {
     input = input,
     output = output,
     cacheRead = cache_read,
     cacheWrite = cache_write,
-    reasoning = output_details.reasoning_tokens or 0,
-    totalTokens = raw.total_tokens or (input + output + cache_read + cache_write),
+    reasoning = type(output_details.reasoning_tokens) == "number" and output_details.reasoning_tokens or 0,
+    totalTokens = type(raw.total_tokens) == "number" and raw.total_tokens
+      or (input + output + cache_read + cache_write),
     cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
   }
 end
@@ -376,19 +378,31 @@ function Model:stream(opts)
           index = register_index(index, item_id)
           local slot = slots[index]
           if slot and slot.type == "thinking" and type(event.delta) == "string" then
-            if event.type == "response.reasoning_summary_text.delta"
-                and slot.summary_part_done and event.delta ~= "" then
-              slot.block.thinking = slot.block.thinking .. "\n\n"
-              run:emit({ type = "thinking_delta", text = "\n\n" })
-              slot.summary_part_done = nil
+            if event.type == "response.reasoning_summary_text.delta" then
+              local summary_index = type(event.summary_index) == "number" and event.summary_index or nil
+              local changed = summary_index ~= nil and slot.summary_index ~= nil
+                and summary_index ~= slot.summary_index
+              if (slot.summary_part_pending or changed) and slot.block.thinking ~= ""
+                  and event.delta ~= "" then
+                slot.block.thinking = slot.block.thinking .. "\n\n"
+                run:emit({ type = "thinking_delta", text = "\n\n" })
+              end
+              slot.summary_part_pending = nil
+              if summary_index ~= nil then slot.summary_index = summary_index end
             end
             slot.block.thinking = slot.block.thinking .. event.delta
             run:emit({ type = "thinking_delta", text = event.delta })
           end
-        elseif event.type == "response.reasoning_summary_part.done" then
+        elseif event.type == "response.reasoning_summary_part.added"
+            or event.type == "response.reasoning_summary_part.done" then
           index = register_index(index, item_id)
           local slot = slots[index]
-          if slot and slot.type == "thinking" then slot.summary_part_done = true end
+          if slot and slot.type == "thinking" then
+            local summary_index = type(event.summary_index) == "number" and event.summary_index or nil
+            slot.summary_part_pending = event.type == "response.reasoning_summary_part.done"
+              or summary_index == nil or summary_index > 0
+            if summary_index ~= nil then slot.summary_index = summary_index end
+          end
         elseif event.type == "response.output_text.delta" or event.type == "response.refusal.delta" then
           index = register_index(index, item_id)
           local slot = slots[index]

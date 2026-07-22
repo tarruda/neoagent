@@ -239,6 +239,18 @@ describe("neoagent configuration and model resolution", function()
     end)
     assert.has_error(function()
       config.setup({ providers = { bad = {
+        api = "openai-codex-responses", base_url = "http://localhost",
+        diagnostics = true, models = {},
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { bad = {
+        api = "openai-codex-responses", base_url = "http://localhost",
+        diagnostics = {}, models = {},
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { bad = {
         api = "custom", auth = "missing", models = {},
       } } })
     end)

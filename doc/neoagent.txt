@@ -76,6 +76,26 @@ Choose browser or headless device-code login. Successful login activates the
 `stdpath("state") .. "/neoagent/auth.json"` with mode 0600 and are refreshed
 before a request when expired.
 
+Codex retries transient transport, HTTP 429/5xx, and stream failures with
+cancellable exponential backoff. Requests without output receive up to four
+retries. The default Controller replays a retryable failed turn up to five
+times and removes any failed assistant message from the active branch.
+
+Configured Codex failures are appended as private JSONL diagnostics to
+`stdpath("state") .. "/neoagent/codex.log"`. The 1 MiB log rotates to
+`codex.log.1`. Records contain error classification, attempt counts, HTTP
+status, curl exit code, request ID, and Cloudflare ray ID. Credentials, request
+and response bodies, full header collections, and conversation content are
+excluded. Configure or disable the log on the provider: >lua
+
+  providers = {
+    ["openai-codex"] = {
+      diagnostics = { path = vim.fn.stdpath("state") .. "/my-codex.log" },
+      -- diagnostics = false,
+    },
+  }
+<
+
 The important options are: >lua
 
   {
@@ -490,7 +510,9 @@ Use `require("neoagent.api.openai_responses").new` for the same Model interface
 with a Responses endpoint. Its additional constructor options are
 `reasoning`, `reasoning_effort`, and `reasoning_summary`.
 `require("neoagent.api.openai_codex_responses").new` exposes the Codex SSE
-request profile without performing login or credential lookup.
+request profile without performing login or credential lookup. It accepts
+`request_max_retries` (default 4) and an `on_diagnostic(event)` callback.
+Direct construction writes no diagnostic file.
 
 Authentication is separately composable: >lua
 

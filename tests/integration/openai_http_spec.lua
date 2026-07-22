@@ -1,4 +1,5 @@
 local mock_server = require("tests.helpers.mock_server")
+local codex = require("neoagent.api.openai_codex_responses")
 local openai = require("neoagent.api.openai_completions")
 local responses = require("neoagent.api.openai_responses")
 
@@ -107,6 +108,31 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.is_false(result.ok)
     assert.are.equal("protocol", result.error.kind)
     assert.are.equal("Invalid JSON in SSE response", result.error.message)
+  end)
+
+  it("retries Codex HTTP 500 responses with request diagnostics", function()
+    local server = mock_server.start("tests/fixtures/openai/codex_retry.json")
+    servers[#servers + 1] = server
+    local diagnostics = {}
+    local result = wait(codex.new({
+      provider = "mock-codex",
+      model = "gpt-test",
+      base_url = "http://127.0.0.1:" .. server.port .. "/v1",
+      request_max_retries = 1,
+      sleep = function() end,
+      on_diagnostic = function(value) diagnostics[#diagnostics + 1] = value end,
+    }):stream({ messages = {} }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("recovered", result.text)
+    assert(vim.wait(1000, function() return #server.records >= 3 end))
+    assert.are.equal(2, vim.tbl_count(vim.tbl_filter(function(record)
+      return record.type == "request"
+    end, server.records)))
+    assert.are.equal("request_retry", diagnostics[1].type)
+    assert.are.equal(500, diagnostics[1].status)
+    assert.are.equal("req-codex-retry", diagnostics[1].request_id)
+    assert.are.equal("ray-codex-retry", diagnostics[1].cf_ray)
   end)
 
   it("cancels Responses API curl and preserves partial output", function()

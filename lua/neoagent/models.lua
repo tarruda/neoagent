@@ -36,6 +36,13 @@ local function openai_factory(module, resolved)
   local layers = {}
   if resolved.provider.request_opts ~= nil then layers[#layers + 1] = resolved.provider.request_opts end
   if resolved.model.request_opts ~= nil then layers[#layers + 1] = resolved.model.request_opts end
+  local on_diagnostic
+  if module == "neoagent.api.openai_codex_responses" and resolved.provider.diagnostics ~= false then
+    local logger = require("neoagent.provider_log")
+    local selected = resolved.provider.diagnostics
+    local path = type(selected) == "table" and selected.path or logger.codex_path()
+    on_diagnostic = logger.callback(path)
+  end
   return require(module).new({
     provider = resolved.provider_id,
     model = resolved.model_id,
@@ -49,6 +56,7 @@ local function openai_factory(module, resolved)
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
     request_opts_layers = layers,
+    on_diagnostic = on_diagnostic,
   })
 end
 

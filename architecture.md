@@ -77,10 +77,14 @@ The built-in API adapters are:
 
 Each adapter translates Neoagent's normalized messages and events into the
 provider protocol. Provider, model, and per-call `request_opts` are recursively
-layered before sending the request.
+layered before sending the request. The Codex adapter classifies provider
+errors, retries transient requests that produced no output, and reports safe
+metadata through an injected diagnostic callback.
 
 Authentication wraps a Model. Credentials are resolved at stream time, which
-keeps authentication independent from the API and UI layers.
+keeps authentication independent from the API and UI layers. The configured
+Codex composition injects a private rotating JSONL diagnostic sink; direct
+Model construction remains independent from file logging.
 
 ## Tools and execution policy
 
@@ -140,12 +144,15 @@ Each Controller owns:
 - Current cancellable Run
 - Steering queue
 - Authentication interactions
+- Retryable turn replay
 - Context compaction
 - AGENTS.md and skill discovery
 
-The Controller starts `chat.run()`, handles storage, retries context overflows
-after compaction, refreshes unmodified buffers after file edits, and publishes
-updates:
+The Controller starts `chat.run()`, handles storage, replays provider-declared
+retryable turns after cancellable backoff, retries context overflows after
+compaction, refreshes unmodified buffers after file edits, and publishes
+updates. A replay removes a failed partial assistant message from the active
+branch before continuing the interaction:
 
 ```lua
 { type = "messages", ... }

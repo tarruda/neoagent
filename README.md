@@ -97,6 +97,30 @@ with mode `0600`; credential directories it creates use mode `0700`. An expired
 access token is refreshed before a Model request. The credential file is
 independent from session persistence and should never be committed or shared.
 
+Codex retries transient transport, HTTP 429/5xx, and stream failures with
+cancellable exponential backoff. Requests that fail before producing output
+receive up to four retries. The default Controller replays a retryable failed
+turn up to five times, removing any failed partial assistant message from the
+active branch before each attempt. Context limits, usage limits, invalid
+requests, policy errors, and cancellation remain terminal or follow context
+compaction.
+
+The configured Codex provider appends failed-attempt diagnostics to
+`stdpath("state") .. "/neoagent/codex.log"`. The private JSONL log rotates to
+`codex.log.1` at 1 MiB and contains error classification, attempt counts, HTTP
+status, curl exit code, `x-request-id`, and `cf-ray`. It excludes credentials,
+request and response bodies, full header collections, and conversation
+content. Override its path or disable it through the provider composition:
+
+```lua
+providers = {
+  ["openai-codex"] = {
+    diagnostics = { path = vim.fn.stdpath("state") .. "/my-codex.log" },
+    -- diagnostics = false,
+  },
+}
+```
+
 `:Neoagent` opens two focusable floating windows. The input starts in Insert
 mode and remains an ordinary editable buffer. The transcript is an ordinary
 read-only buffer, so search, Visual selection, and yank work normally. By
@@ -653,8 +677,10 @@ local model = require("neoagent.api.openai_responses").new({
 ```
 
 `require("neoagent.api.openai_codex_responses").new` exposes the Codex SSE
-request profile directly. It intentionally performs no login or credential
-lookup; wrap it with an auth manager when authentication is wanted.
+request profile directly. It accepts `request_max_retries` (default `4`) and an
+`on_diagnostic(event)` callback. Direct construction performs no login,
+credential lookup, or file logging; wrap it with an auth manager and inject a
+diagnostic callback when those layers are wanted.
 
 Callbacks are scheduled onto Neovim's main loop. Completion is exactly once.
 The normalized stream events are `text_delta`, `thinking_delta`,

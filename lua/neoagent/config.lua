@@ -116,6 +116,12 @@ local function validate(opts)
     if provider.request_opts ~= nil then
       assert(type(provider.request_opts) == "table" or type(provider.request_opts) == "function", "request_opts must be a table or function")
     end
+    if provider.api == "openai-codex-responses" and provider.diagnostics ~= nil
+        and provider.diagnostics ~= false then
+      assert(type(provider.diagnostics) == "table", "provider diagnostics must be false or a table")
+      assert(type(provider.diagnostics.path) == "string" and provider.diagnostics.path ~= "",
+        "provider diagnostics.path is required")
+    end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
       if model.context_window ~= nil then

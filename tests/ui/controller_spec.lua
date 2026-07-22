@@ -201,6 +201,59 @@ describe("neoagent default controller", function()
     assert.are.equal("compaction", neoagent.get_session():entries()[#neoagent.get_session():entries() - 1].type)
   end)
 
+  it("replays retryable partial turns without retaining the failed branch", function()
+    local failed = fake_model.assistant({ { type = "thinking", thinking = "partial" } }, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "model",
+      message = "upstream disconnected",
+      retryable = true,
+      stream_max_retries = 5,
+      retry_after_ms = 1,
+    }
+    local model = fake_model.new({
+      { events = { { type = "thinking_delta", text = "partial" } }, result = failed },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    setup_model(model)
+    assert(neoagent.open())
+    local run = assert(neoagent.send("retry this"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+
+    local messages = neoagent.get_session():messages()
+    assert.are.equal(2, #messages)
+    assert.are.equal("retry this", messages[1].content)
+    assert.are.equal("recovered", messages[2].content[1].text)
+    assert.is_true(neoagent._state().last_result.ok)
+    assert.is_nil(neoagent._state().provider_status)
+  end)
+
+  it("cancels a pending retry without launching another turn", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "HTTP 503: overloaded",
+      retryable = true,
+      stream_max_retries = 5,
+      retry_after_ms = 10000,
+    }
+    local model = fake_model.new({ { result = failed } })
+    setup_model(model)
+    assert(neoagent.send("stop retrying"))
+    assert(vim.wait(1000, function()
+      return neoagent._state().provider_status == "Reconnecting… 1/5"
+    end))
+    assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, function() return neoagent._state().status == "idle" end))
+
+    assert.are.equal(1, #model.requests)
+    assert.are.equal("cancelled", neoagent._state().last_result.error.kind)
+    assert.is_nil(neoagent._state().provider_status)
+  end)
+
   it("runs a replaceable manual compactor with custom instructions", function()
     local captured
     local model = fake_model.new({

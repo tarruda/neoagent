@@ -86,6 +86,12 @@ changes.
 - Compaction consumes a Session path and Model explicitly, writes Pi compaction
   entries, retains safe turn boundaries, and supports repeated summaries.
   Controllers own automatic thresholds, overflow recovery, and UI events.
+- Codex Models classify provider failures and retry transient requests that
+  produced no output. Controllers replay explicitly retryable failed turns,
+  removing any failed assistant message from the active branch first.
+- Configured Codex diagnostics contain bounded error and request-correlation
+  metadata. They never contain credential values, request or response bodies,
+  or conversation content.
 - Bundled persistence uses one cwd-hashed workspace namespace for
   `settings.json`, `input-history.jsonl`, and `sessions/`. Model and thinking
   preferences are scoped by Controller name; UI position, input history, and
