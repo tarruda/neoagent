@@ -16,10 +16,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 - Run cancellable agent loops with custom tools, steering messages, retry handling, and context compaction.
 - Use the bundled coding tools for reading, writing, editing, shell commands, and on-demand Neoagent documentation.
 - Persist conversations as Pi v3 JSONL trees with branches, linked forks, labels, model state, and compaction checkpoints.
-- Work from a floating Markdown UI with separate transcript and input windows, model and thinking selection, input history, filename completion, and multiple independent Controllers.
+- Work from a floating Markdown UI with separate transcript and input windows.
 - Start with two bundled Controllers: **Neo** for coding tasks and **Chat** for tool-free conversation.
-- Extend execution policy with a custom `execute_tool` function for confirmation, logging, or sandbox delegation.
-- Run without Lua plugin dependencies. Neoagent requires Neovim 0.10+, curl 7.76+, `rg`, and `fd`; ImageMagick is optional.
 - See `:help neoagent` for the complete configuration and API reference.
 
 ## Quick configuration
