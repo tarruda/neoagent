@@ -11,7 +11,9 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 ## Features
 
 - Stream assistant responses, reasoning, tool calls, usage, and provider status directly in Neovim.
-- Use OpenAI-compatible Chat Completions and Responses APIs, local models such as llama.cpp, the built-in DeepSeek catalog, or ChatGPT subscription authentication through OpenAI Codex.
+- Use OpenAI-compatible Chat Completions and Responses APIs, local models such
+  as llama.cpp, built-in DeepSeek and Z.AI catalogs, or ChatGPT
+  subscription authentication through OpenAI Codex.
 - Compose Models, tools, executors, Sessions, Controllers, and Views as ordinary Lua values with explicit dependencies.
 - Run cancellable agent loops with custom tools, steering messages, retry handling, and context compaction.
 - Use the bundled coding tools for reading, writing, editing, shell commands, and on-demand Neoagent documentation.
@@ -28,6 +30,9 @@ Choose a provider:
   `OPENAI_API_KEY` before starting Neovim.
 - Run `:NeoagentLogin deepseek` to store a DeepSeek API key, or set
   `DEEPSEEK_API_KEY` before starting Neovim.
+- Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
+  before starting Neovim. The credential enables both the metered API and
+  global Coding Plan catalogs.
 - For a ChatGPT Plus or Pro subscription, run
   `:NeoagentLogin openai-codex`, complete the browser or device-code login,
   then select a subscription model with `:NeoagentModel`.
@@ -57,5 +62,15 @@ To use DeepSeek by default, replace `default_model` with:
 default_model = {
   provider = "deepseek",
   model = "deepseek-v4-flash",
+}
+```
+
+For Z.AI, use `zai` for the metered API or `zai-coding-plan` for the global
+Coding Plan:
+
+```lua
+default_model = {
+  provider = "zai-coding-plan",
+  model = "glm-5.2",
 }
 ```

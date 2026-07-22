@@ -13,6 +13,7 @@ local defaults = {
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
+      zai = api_key.new({ name = "Z.AI API key" }),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
     },
   },

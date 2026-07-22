@@ -81,6 +81,8 @@ changes.
   `providers` table. User entries override defaults; `false` removes a default
   provider or model. Model selection filters the composition by configured
   OAuth credentials or API keys without affecting direct Model constructors.
+- Provider additions cover both the metered API and subscription or coding-plan
+  endpoint when the provider offers both.
 - Persist credentials atomically outside user configuration. Serialize login,
   refresh, and deletion; enumerate only secret-free credential metadata.
   Credential directories created by the store use mode `0700`; files use mode

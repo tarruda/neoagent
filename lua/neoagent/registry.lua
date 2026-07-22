@@ -7,6 +7,8 @@ local defaults = {
   openai = openai.openai,
   ["openai-codex"] = openai["openai-codex"],
   deepseek = require("neoagent.registry.deepseek"),
+  zai = require("neoagent.registry.zai"),
+  ["zai-coding-plan"] = require("neoagent.registry.zai_coding_plan"),
 }
 
 local function compose_models(base, user)

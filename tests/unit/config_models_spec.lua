@@ -9,19 +9,23 @@ end
 describe("neoagent configuration and model resolution", function()
   local original_openai_key
   local original_deepseek_key
+  local original_zai_key
 
   before_each(function()
     config._reset()
     original_openai_key = vim.env.OPENAI_API_KEY
     original_deepseek_key = vim.env.DEEPSEEK_API_KEY
+    original_zai_key = vim.env.ZAI_API_KEY
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
+    vim.env.ZAI_API_KEY = nil
   end)
 
   after_each(function()
     config._reset()
     vim.env.OPENAI_API_KEY = original_openai_key
     vim.env.DEEPSEEK_API_KEY = original_deepseek_key
+    vim.env.ZAI_API_KEY = original_zai_key
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -218,6 +222,80 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ type = "enabled" }, request.body.thinking)
     assert.are.equal("max", request.body.reasoning_effort)
     assert.are.equal("", request.body.messages[1].reasoning_content)
+  end)
+
+  it("resolves the built-in Z.AI API and Coding Plan catalogs", function()
+    vim.env.ZAI_API_KEY = "zai-key"
+    config.setup({})
+
+    local provider = config.get().providers.zai
+    assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("https://api.z.ai/api/paas/v4", provider.base_url)
+    assert.are.equal("zai", provider.auth)
+    local plan = config.get().providers["zai-coding-plan"]
+    assert.are.equal("https://api.z.ai/api/coding/paas/v4", plan.base_url)
+    assert.are.equal("zai", plan.auth)
+
+    local available = assert(models.available())
+    for _, id in ipairs({
+      "glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v", "glm-4.6",
+      "glm-4.6v", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-5",
+      "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5v-turbo",
+    }) do
+      assert.is_true(vim.tbl_contains(available, "zai/" .. id))
+    end
+    for _, id in ipairs({
+      "glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5v-turbo",
+    }) do
+      assert.is_true(vim.tbl_contains(available, "zai-coding-plan/" .. id))
+    end
+    assert.is_false(vim.tbl_contains(available, "zai-coding-plan/glm-4.5"))
+
+    local glm52 = models.resolve("zai-coding-plan", "glm-5.2")
+    assert.are.same({ "off", "low", "medium", "high", "max" },
+      require("neoagent.thinking").levels(glm52))
+    local tools = { {
+      name = "inspect",
+      description = "Inspect a path",
+      input_schema = { type = "object", properties = { path = { type = "string" } } },
+    } }
+    local request = glm52._model:_request({
+      messages = { { role = "user", content = "Inspect it" } },
+      tools = tools,
+      request_opts = glm52.thinking.max,
+    })
+    assert.are.equal("https://api.z.ai/api/coding/paas/v4/chat/completions", request.url)
+    assert.are.equal("Bearer zai-key", request.headers.Authorization)
+    assert.are.equal(131072, request.body.max_completion_tokens)
+    assert.is_true(request.body.stream_options.include_usage)
+    assert.is_true(request.body.tool_stream)
+    assert.are.same({ type = "enabled", clear_thinking = false }, request.body.thinking)
+    assert.are.equal("max", request.body.reasoning_effort)
+
+    request = glm52._model:_request({
+      messages = {}, tools = {}, request_opts = glm52.thinking.off,
+    })
+    assert.is_nil(request.body.tool_stream)
+    assert.are.same({ type = "disabled" }, request.body.thinking)
+    assert.is_nil(request.body.reasoning_effort)
+
+    local glm45 = models.resolve("zai", "glm-4.5")
+    assert.are.same({ "off", "minimal", "low", "medium", "high" },
+      require("neoagent.thinking").levels(glm45))
+    request = glm45._model:_request({ messages = {}, tools = tools, request_opts = glm45.thinking.medium })
+    assert.are.same({ type = "enabled", clear_thinking = false }, request.body.thinking)
+    assert.is_nil(request.body.reasoning_effort)
+    assert.is_nil(request.body.tool_stream)
+    assert.are.equal(98304, request.body.max_completion_tokens)
+
+    local glm46v = models.resolve("zai", "glm-4.6v")
+    request = glm46v._model:_request({
+      messages = {}, tools = tools, request_opts = glm46v.thinking.high,
+    })
+    assert.are.equal("https://api.z.ai/api/paas/v4/chat/completions", request.url)
+    assert.is_true(request.body.tool_stream)
+    assert.are.equal(32768, request.body.max_completion_tokens)
+    assert.are.equal(128000, glm46v.context_window)
   end)
 
   it("prefers stored API keys and resumes ambient keys after logout", function()

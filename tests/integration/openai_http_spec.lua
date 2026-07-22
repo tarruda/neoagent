@@ -97,6 +97,60 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("reasoning_content", second.message.content[2].thinkingSignature)
   end)
 
+  it("streams Z.AI reasoning and streamed tools through its API profile", function()
+    local server = mock_server.start("tests/fixtures/zai/stream.json")
+    servers[#servers + 1] = server
+    local zai = openai.new({
+      provider = "zai",
+      model = "glm-5.2",
+      base_url = "http://127.0.0.1:" .. server.port,
+      api_key = "zai-key",
+      max_output_tokens = 131072,
+      request_opts_layers = {
+        { body = { stream_options = { include_usage = true } } },
+        function(context)
+          return #context.tools > 0 and { body = { tool_stream = true } } or {}
+        end,
+      },
+    })
+    local tools = { {
+      name = "inspect",
+      description = "Inspect a path",
+      input_schema = { type = "object", properties = { path = { type = "string" } } },
+    } }
+    local request_opts = { body = {
+      thinking = { type = "enabled", clear_thinking = false },
+      reasoning_effort = "max",
+    } }
+    local user = { role = "user", content = "Inspect it" }
+    local first = wait(zai:stream({
+      messages = { user },
+      tools = tools,
+      request_opts = request_opts,
+    }))
+
+    assert.is_true(first.ok)
+    assert.are.equal("toolUse", first.message.stopReason)
+    assert.are.equal("reasoning_content", first.message.content[1].thinkingSignature)
+    assert.are.equal(4, first.message.usage.cacheRead)
+    assert.are.same({ path = "x.lua" }, first.message.content[2].arguments)
+
+    local second = wait(zai:stream({
+      messages = {
+        user,
+        first.message,
+        { role = "toolResult", toolCallId = "call-1", content = {
+          { type = "text", text = "return true" },
+        } },
+      },
+      tools = tools,
+      request_opts = request_opts,
+    }))
+    assert.is_true(second.ok)
+    assert.are.equal("Looks good.", second.text)
+    assert.are.equal("reasoning_content", second.message.content[2].thinkingSignature)
+  end)
+
   it("surfaces non-2xx bodies as transport errors", function()
     local server = mock_server.start("tests/fixtures/openai/error.json")
     servers[#servers + 1] = server
