@@ -371,6 +371,66 @@ describe("neoagent.ui", function()
     end))
   end)
 
+  it("scrolls the transcript after submit and when leaving it", function()
+    local function scrolling_view(overrides)
+      local submissions = 0
+      local result = ui.new({
+        config = config.setup({ ui = vim.tbl_extend("force", { position = "center" }, overrides or {}) }).ui,
+        on_submit = function()
+          submissions = submissions + 1
+          return true
+        end,
+      })
+      views[#views + 1] = result
+      local lines = {}
+      for index = 1, 40 do lines[index] = "line " .. index end
+      result:set_messages({ {
+        role = "assistant",
+        content = { { type = "text", text = table.concat(lines, "\n") } },
+      } })
+      assert(result:open())
+      assert(vim.wait(1000, function()
+        return vim.api.nvim_buf_line_count(result.transcript_buf) >= 40
+      end))
+      return result, function() return submissions end
+    end
+
+    local function submit(result)
+      result:set_input("send")
+      result:focus_input()
+      vim.cmd("stopinsert")
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+    end
+
+    local result, submissions = scrolling_view()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 2, 0 })
+    submit(result)
+    assert(vim.wait(1000, function() return submissions() == 1 end))
+    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
+      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 3, 0 })
+    result:focus_input()
+    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
+      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+    result:close()
+
+    local fixed, fixed_submissions = scrolling_view({
+      scroll_on_submit = false,
+      scroll_on_transcript_leave = false,
+    })
+    vim.api.nvim_win_set_cursor(fixed.transcript_win, { 2, 0 })
+    submit(fixed)
+    assert(vim.wait(1000, function() return fixed_submissions() == 1 end))
+    assert.are.equal(2, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+
+    fixed:focus_transcript()
+    vim.api.nvim_win_set_cursor(fixed.transcript_win, { 3, 0 })
+    fixed:focus_input()
+    assert.are.equal(3, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+  end)
+
   it("places auto UI over another editor window", function()
     local origin = vim.api.nvim_get_current_win()
     vim.cmd("vsplit")

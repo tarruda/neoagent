@@ -401,6 +401,19 @@ local function output_lines(text, maximum, tail, group, hint)
   return result
 end
 
+function View:_scroll_transcript_to_bottom()
+  if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win)
+      or not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then
+    return false
+  end
+  vim.api.nvim_win_call(self.transcript_win, function()
+    local count = vim.api.nvim_buf_line_count(self.transcript_buf)
+    vim.api.nvim_win_set_cursor(0, { count, 0 })
+    vim.cmd("normal! zb")
+  end)
+  return true
+end
+
 function View:_save_view()
   if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win) then return nil end
   local current = vim.api.nvim_get_current_win()
@@ -809,6 +822,13 @@ function View:_ensure_buffers()
     vim.bo[self.transcript_buf].undofile = false
     vim.bo[self.transcript_buf].filetype = "neoagent"
     vim.bo[self.transcript_buf].modifiable = false
+    vim.api.nvim_create_autocmd("WinLeave", {
+      group = self.augroup,
+      buffer = self.transcript_buf,
+      callback = function()
+        if self.config.scroll_on_transcript_leave then self:_scroll_transcript_to_bottom() end
+      end,
+    })
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     self.input_buf = vim.api.nvim_create_buf(false, true)
@@ -841,7 +861,11 @@ end
 
 function View:_map_buffers()
   local mappings = self.config.mappings or {}
-  self:_map(self.input_buf, { "n", "i" }, mappings.submit, function() self.on_submit(self:get_input()) end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.submit, function()
+    local submitted, err = self.on_submit(self:get_input())
+    if submitted and self.config.scroll_on_submit then self:_scroll_transcript_to_bottom() end
+    return submitted, err
+  end)
   self:_map(self.input_buf, { "n", "i" }, mappings.interrupt, function() self:_interrupt(true) end)
   self:_map(self.transcript_buf, "n", mappings.interrupt, function() self:_interrupt(false) end)
   self:_map(self.input_buf, { "n", "i", "x", "s" }, mappings.toggle_focus,

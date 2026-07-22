@@ -119,6 +119,8 @@ The important options are: >lua
       height = nil,
       margin = 1,
       input_height = 7,
+      scroll_on_submit = true,
+      scroll_on_transcript_leave = true,
       border = "rounded",
       mappings = {},
     },
@@ -390,7 +392,10 @@ selected user message to the input buffer for editing.
 
 The input and transcript are real, focusable Neovim buffers. Input opens in
 Insert mode. The transcript supports normal search, motions, Visual selection,
-and yank. Assistant text renders Markdown headings, emphasis, links, lists,
+and yank. An accepted submission scrolls the transcript to the bottom by
+default, as does leaving the transcript window. Set `ui.scroll_on_submit` or
+`ui.scroll_on_transcript_leave` to false to preserve its position for those
+actions. Assistant text renders Markdown headings, emphasis, links, lists,
 quotes, fenced code, rules, and tables. Thinking is muted and italic. Streaming
 output includes partial thinking, text, semantic tool arguments, execution
 updates, results, cancellation, and errors.

@@ -38,6 +38,8 @@ local defaults = {
     position = "auto",
     margin = 1,
     input_height = 7,
+    scroll_on_submit = true,
+    scroll_on_transcript_leave = true,
     border = "rounded",
     mappings = {
       submit = "<CR>",
@@ -194,6 +196,9 @@ local function validate(opts)
   validate_dimension(opts.ui.height, "ui.height")
   assert(type(opts.ui.margin) == "number" and opts.ui.margin >= 0 and opts.ui.margin % 1 == 0, "ui.margin must be a non-negative integer")
   assert(type(opts.ui.input_height) == "number" and opts.ui.input_height >= 1 and opts.ui.input_height % 1 == 0, "ui.input_height must be a positive integer")
+  assert(type(opts.ui.scroll_on_submit) == "boolean", "ui.scroll_on_submit must be boolean")
+  assert(type(opts.ui.scroll_on_transcript_leave) == "boolean",
+    "ui.scroll_on_transcript_leave must be boolean")
   for action, mapping in pairs(opts.ui.mappings) do
     assert(type(action) == "string", "UI mapping names must be strings")
     if type(mapping) == "table" then
