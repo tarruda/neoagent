@@ -95,6 +95,15 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("/v1/responses", server.records[2].path)
   end)
 
+  it("preserves stream protocol errors behind successful HTTP responses", function()
+    local server = mock_server.start("tests/fixtures/openai/responses_protocol_error.json")
+    servers[#servers + 1] = server
+    local result = wait(responses_model(server):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.are.equal("Invalid JSON in SSE response", result.error.message)
+  end)
+
   it("cancels Responses API curl and preserves partial output", function()
     local server = mock_server.start("tests/fixtures/openai/responses_cancel.json")
     servers[#servers + 1] = server

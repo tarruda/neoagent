@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "path": "/v1/responses",
+        "body": {
+          "model": "test-model",
+          "input": [],
+          "stream": true,
+          "store": false
+        }
+      },
+      "respond": {
+        "status": 200,
+        "headers": { "content-type": "text/event-stream" },
+        "chunks": [
+          { "data": "data: not-json\n\n" }
+        ]
+      }
+    }
+  ]
+}

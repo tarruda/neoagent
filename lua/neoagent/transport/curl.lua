@@ -49,6 +49,17 @@ local function response_error(body)
   return type(value) == "string" and value ~= "" and value or nil
 end
 
+local function curl_error(code, stderr)
+  local detail = util.trim(stderr or "")
+  local message = "curl exited with status " .. tostring(code)
+  if detail ~= "" then
+    local summary = detail:gsub("%s+", " ")
+    if #summary > 300 then summary = summary:sub(1, 297) .. "..." end
+    message = message .. ": " .. summary
+  end
+  return util.error("transport", message, detail)
+end
+
 function M.command(request, header_path)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
@@ -129,7 +140,7 @@ function M.request(opts)
                 if opts.on_chunk then
                   local chunk_ok, chunk_err = pcall(opts.on_chunk, data)
                   if not chunk_ok then
-                    done.reject(util.error("protocol", "Failed to process response stream", chunk_err))
+                    done.reject(util.normalize_error(chunk_err, "protocol"))
                     if process then pcall(process.kill, process, 15) end
                   end
                 end
@@ -146,12 +157,7 @@ function M.request(opts)
             if finished.code == 0 then
               done.resolve({ code = 0, stdout = stdout, stderr = stderr })
             else
-              done.reject(util.error(
-                "transport",
-                "curl exited with status " .. tostring(finished.code),
-                (stderr ~= "" and stderr or "")
-                  .. (stdout ~= "" and ((stderr ~= "" and "\n" or "") .. stdout) or "")
-              ))
+              done.reject(curl_error(finished.code, stderr))
             end
           end)
         end)
@@ -165,9 +171,10 @@ function M.request(opts)
     pcall(vim.fn.delete, header_path)
     if not completed then
       local err = util.normalize_error(result, "transport")
-      if status then
+      if status and (status < 200 or status >= 300) then
         local message = response_error(stdout)
         err.message = "HTTP " .. tostring(status) .. (message and ": " .. message or "")
+        if stdout ~= "" then err.detail = stdout end
       end
       error(err, 0)
     end
