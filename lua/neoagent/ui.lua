@@ -1114,6 +1114,7 @@ end
 
 function View:_sync_spinner()
   local active = self.context.state == "running" or self.context.state == "stopping"
+    or self.context.state == "compacting"
   if not active or not self:is_open() then
     self:_stop_spinner()
     self:_schedule_flush()

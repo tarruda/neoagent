@@ -156,26 +156,55 @@ function M.from_config(options)
     return math.ceil(characters / 4)
   end
 
+  local function valid_assistant_usage(message)
+    if not message or message.role ~= "assistant"
+        or message.stopReason == "aborted" or message.stopReason == "error" then
+      return nil
+    end
+    return usage_tokens(message.usage)
+  end
+
+  local function historical_usage_is_current()
+    local path = state.session:path()
+    if not path then return true end
+    local compaction_index
+    for index, entry in ipairs(path) do
+      if entry.type == "compaction" then compaction_index = index end
+    end
+    if not compaction_index then return true end
+    for index = compaction_index + 1, #path do
+      local entry = path[index]
+      if entry.type == "message" and valid_assistant_usage(entry.message) ~= nil then return true end
+    end
+    return false
+  end
+
+  local function estimate_projected_context(messages)
+    local estimate = require("neoagent.compaction").estimate_tokens
+    local used = 0
+    for _, message in ipairs(messages) do used = used + estimate(message) end
+    return used
+  end
+
+  local function context_tokens(messages, include_live)
+    if include_live and state.live_usage then
+      return state.live_usage.tokens + estimate_messages(messages, state.live_usage.message_count + 1)
+    end
+    if historical_usage_is_current() then
+      for index = #messages, 1, -1 do
+        local tokens = valid_assistant_usage(messages[index])
+        if tokens ~= nil then return tokens + estimate_messages(messages, index + 1) end
+      end
+    end
+    return estimate_projected_context(messages)
+  end
+
   local function context_usage()
     local total = state.model and state.model.context_window
     if type(total) ~= "number" or total <= 0 or not state.session then return false end
     local messages = state.session:context_messages()
     if not messages then return false end
-    local used
-    if state.live_usage then
-      used = state.live_usage.tokens
-      used = used + estimate_messages(messages, state.live_usage.message_count + 1)
-    else
-      for index = #messages, 1, -1 do
-        local message = messages[index]
-        local tokens = message.role == "assistant" and usage_tokens(message.usage) or nil
-        if tokens and message.stopReason ~= "aborted" and message.stopReason ~= "error" then
-          used = tokens + estimate_messages(messages, index + 1)
-          break
-        end
-      end
-      used = used or estimate_messages(messages, 1)
-    end
+    local used = context_tokens(messages, true)
     return { used = used, total = total, percent = used / total * 100 }
   end
 
@@ -570,7 +599,7 @@ function M.from_config(options)
         end
         if result.ok then
           local projected = assert(state.session:context_messages())
-          result.estimated_tokens_after = require("neoagent.compaction").estimate_context(projected).tokens
+          result.estimated_tokens_after = context_tokens(projected, false)
           publish({ type = "messages", messages = state.session:messages() })
         end
         state.run = nil

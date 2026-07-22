@@ -95,7 +95,7 @@ describe("neoagent default controller", function()
 
   it("automatically compacts large contexts and persists the Pi checkpoint", function()
     local assistant = fake_model.assistant({ { type = "text", text = string.rep("work ", 30) } })
-    assistant.message.usage.totalTokens = 90
+    assistant.message.usage.totalTokens = 900
     local model = fake_model.new({
       { result = assistant },
       {
@@ -103,9 +103,9 @@ describe("neoagent default controller", function()
         result = fake_model.assistant({ { type = "text", text = "## Goal\nContinue the work" } }),
       },
     })
-    model.context_window = 100
+    model.context_window = 1000
     setup_model(model, {
-      compaction = { auto = true, reserve_tokens = 20, keep_recent_tokens = 10 },
+      compaction = { auto = true, reserve_tokens = 200, keep_recent_tokens = 10 },
     })
     assert(neoagent.open())
     local run = assert(neoagent.send("perform the large task"))
@@ -115,10 +115,16 @@ describe("neoagent default controller", function()
     local entries = neoagent.get_session():entries()
     assert.are.equal("compaction", entries[#entries].type)
     assert.matches("Turn Context %(split turn%):.-## Goal\nContinue the work", entries[#entries].summary)
-    assert.are.equal(90, entries[#entries].tokensBefore)
+    assert.are.equal(900, entries[#entries].tokensBefore)
     assert.matches("context summarization assistant", model.requests[2].system_prompt)
     local context = assert(neoagent.get_session():context_messages())
     assert.matches("Continue the work", context[1].content[1].text)
+    local estimated = 0
+    for _, message in ipairs(context) do
+      estimated = estimated + require("neoagent.compaction").estimate_tokens(message)
+    end
+    assert.are.equal(estimated, current_view().context.context_usage.used)
+    assert.is_true(estimated < entries[#entries].tokensBefore)
     local transcript = table.concat(vim.api.nvim_buf_get_lines(
       current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches("Context compacted", transcript)

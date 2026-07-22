@@ -316,7 +316,7 @@ describe("neoagent.ui", function()
     assert.not_matches("more lines", text(result))
   end)
 
-  it("uses card backgrounds, inherits the editor background, and animates work", function()
+  it("uses card backgrounds, inherits the editor background, and animates active states", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "user", content = "hello" } })
     assert(result:open())
@@ -324,7 +324,7 @@ describe("neoagent.ui", function()
     assert.matches("NormalFloat:Normal", vim.wo[result.input_win].winhl)
     assert.is_not_nil(vim.api.nvim_get_hl(0, { name = "NeoagentUserBackground", link = false }).bg)
     result:set_context({
-      state = "running",
+      state = "compacting",
       thinking = "high",
       context_usage = { used = 250, total = 1000, percent = 25 },
       provider_status = "5h 80% left · weekly 60% left",
@@ -358,12 +358,14 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
-    assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
-    local first = text(result):match("([^\n]+ Working%.%.%.)")
+    assert(vim.wait(1000, function() return text(result):match("Compacting%.%.%.") ~= nil end))
+    local first = text(result):match("([^\n]+ Compacting%.%.%.)")
     assert(vim.wait(1000, function()
-      local current = text(result):match("([^\n]+ Working%.%.%.)")
+      local current = text(result):match("([^\n]+ Compacting%.%.%.)")
       return current and current ~= first
     end))
+    result:set_context({ state = "running" })
+    assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
     result:set_context({ state = "idle", steering = {} })
     assert(vim.wait(1000, function()
       return text(result):match("Working%.%.%.") == nil
