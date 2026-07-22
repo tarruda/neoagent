@@ -2,11 +2,11 @@
 
 A small, hackable LLM and coding-agent toolkit for Neovim.
 
-![](assets/local-chat.gif)
-
 ![](assets/inspect-project.gif)
 
 ![](assets/edit-code.gif)
+
+![](assets/local-chat.gif)
 
 ## Features
 
