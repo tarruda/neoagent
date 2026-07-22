@@ -4,7 +4,6 @@ local util = require("neoagent.util")
 local M = {}
 local View = {}
 View.__index = View
-local escape_interval_ms = 500
 
 local highlight_links = {
   NeoagentAccent = "Identifier",
@@ -820,6 +819,14 @@ function View:_ensure_buffers()
     vim.bo[self.input_buf].filetype = "neoagent-input"
     vim.api.nvim_buf_set_lines(self.input_buf, 0, -1, false, { "" })
     self:_map_buffers()
+    vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+      group = self.augroup,
+      buffer = self.input_buf,
+      callback = function()
+        local tick = vim.api.nvim_buf_get_changedtick(self.input_buf)
+        if self.history_changedtick ~= tick then self:_reset_input_history() end
+      end,
+    })
   end
 end
 
@@ -841,7 +848,7 @@ function View:_map_buffers()
     function() self:focus_transcript() end)
   self:_map(self.transcript_buf, { "n", "x", "s" }, mappings.toggle_focus,
     function() self:focus_input() end)
-  self:_map(self.input_buf, { "n", "i" }, mappings.triple_escape, function() self:_escape() end)
+  self:_map(self.input_buf, "n", mappings.close_input, function() self:close() end)
   self:_map(self.input_buf, { "n", "i" }, mappings.close_empty, function()
     if self:get_input() == "" then
       self:close()
@@ -860,6 +867,12 @@ function View:_map_buffers()
   self:_map(self.transcript_buf, "n", mappings.select_model, self.on_select_model)
   self:_map(self.input_buf, { "n", "i" }, mappings.resume_session, self.on_resume_session)
   self:_map(self.transcript_buf, "n", mappings.resume_session, self.on_resume_session)
+  self:_map(self.input_buf, "i", mappings.history_previous,
+    function() self:_move_input_history(-1) end)
+  self:_map(self.input_buf, "i", mappings.history_next,
+    function() self:_move_input_history(1) end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.select_history, self.on_select_history)
+  self:_map(self.transcript_buf, "n", mappings.select_history, self.on_select_history)
   self:_map(self.input_buf, { "n", "i" }, mappings.dequeue_steering,
     function() self:_restore_steering() end)
   self:_map(self.transcript_buf, "n", mappings.dequeue_steering,
@@ -975,7 +988,6 @@ function View:open(origin)
     return true
   end
   self:_ensure_buffers()
-  self.escape_count, self.escape_at = 0, nil
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
     self.origin_buf = vim.api.nvim_win_get_buf(self.origin_win)
@@ -996,7 +1008,6 @@ end
 
 function View:close()
   self:_stop_spinner()
-  self.escape_count, self.escape_at = 0, nil
   local transcript_win, input_win = self.transcript_win, self.input_win
   if input_win and vim.api.nvim_win_is_valid(input_win)
       and vim.api.nvim_get_current_win() == input_win
@@ -1010,17 +1021,6 @@ function View:close()
     vim.api.nvim_set_current_win(self.origin_win)
     if self.origin_cursor then pcall(vim.api.nvim_win_set_cursor, self.origin_win, self.origin_cursor) end
   end
-end
-
-function View:_escape()
-  local now = vim.uv.hrtime() / 1000000
-  if not self.escape_at or now - self.escape_at > escape_interval_ms then
-    self.escape_count = 0
-  end
-  self.escape_count = self.escape_count + 1
-  self.escape_at = now
-  if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.cmd("stopinsert") end
-  if self.escape_count >= 3 then self:close() end
 end
 
 function View:_restore_steering()
@@ -1111,8 +1111,72 @@ function View:get_input()
   return table.concat(vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false), "\n")
 end
 
+function View:_reset_input_history()
+  self.history_index = 0
+  self.history_draft = nil
+  self.history_changedtick = nil
+end
+
+function View:_set_history_input(text, placement, cursor)
+  vim.api.nvim_buf_set_lines(self.input_buf, 0, -1, false, split_text(text))
+  self.history_changedtick = vim.api.nvim_buf_get_changedtick(self.input_buf)
+  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then return end
+  local lines = vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
+  local target = cursor
+  if not target then
+    target = placement == "start" and { 1, 0 } or { #lines, #lines[#lines] }
+  end
+  pcall(vim.api.nvim_win_set_cursor, self.input_win, target)
+end
+
+function View:_browse_input_history(direction)
+  local history = self.on_input_history()
+  if type(history) ~= "table" or #history == 0 then return false end
+  local next_index = self.history_index - direction
+  if next_index < 0 or next_index > #history then return false end
+  if self.history_index == 0 and next_index > 0 then
+    self.history_draft = {
+      text = self:get_input(),
+      cursor = vim.api.nvim_win_get_cursor(self.input_win),
+    }
+  end
+  self.history_index = next_index
+  if next_index == 0 then
+    local draft = self.history_draft or { text = "" }
+    self:_set_history_input(draft.text, "end", draft.cursor)
+    self.history_draft = nil
+  else
+    self:_set_history_input(history[next_index], direction < 0 and "start" or "end")
+  end
+  return true
+end
+
+function View:_move_input_history(direction)
+  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then return false end
+  local cursor = vim.api.nvim_win_get_cursor(self.input_win)
+  local line_count = vim.api.nvim_buf_line_count(self.input_buf)
+  if direction < 0 then
+    if self.history_index > 0 or self:get_input() == "" or cursor[1] == 1 and cursor[2] == 0 then
+      return self:_browse_input_history(direction)
+    elseif cursor[1] == 1 then
+      vim.api.nvim_win_set_cursor(self.input_win, { 1, 0 })
+      return false
+    end
+  elseif self.history_index > 0 then
+    return self:_browse_input_history(direction)
+  elseif cursor[1] == line_count then
+    local line = vim.api.nvim_buf_get_lines(self.input_buf, line_count - 1, line_count, false)[1]
+    vim.api.nvim_win_set_cursor(self.input_win, { line_count, #line })
+    return false
+  end
+  local key = direction < 0 and "<Up>" or "<Down>"
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "n", false)
+  return false
+end
+
 function View:set_input(text)
   self:_ensure_buffers()
+  self:_reset_input_history()
   vim.api.nvim_buf_set_lines(self.input_buf, 0, -1, false, split_text(text))
 end
 
@@ -1170,6 +1234,8 @@ function M.new(opts)
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
     on_dequeue_steering = opts.on_dequeue_steering or function() return {} end,
+    on_input_history = opts.on_input_history or function() return {} end,
+    on_select_history = opts.on_select_history or function() end,
     on_cycle_thinking = opts.on_cycle_thinking or function() end,
     on_cycle_agent = opts.on_cycle_agent or function() end,
     on_select_model = opts.on_select_model or function() end,
@@ -1182,6 +1248,7 @@ function M.new(opts)
     tools_expanded = false,
     spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
     spinner_frame = 1,
+    history_index = 0,
   }, View)
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {

@@ -114,7 +114,7 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
-  it("closes the paired windows from the input escape and empty-draft mappings", function()
+  it("closes the paired windows from input Normal mode and an empty draft", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
     })
@@ -141,6 +141,67 @@ describe("neoagent UI mappings", function()
     assert(vim.wait(1000, function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
     end))
+    result:destroy()
+  end)
+
+  it("browses multiline input history and opens history selection", function()
+    local selections = 0
+    local history = { "newest\ncontinued", "oldest" }
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_input_history = function() return vim.deepcopy(history) end,
+      on_select_history = function() selections = selections + 1 end,
+    })
+    assert(result:open())
+    vim.cmd("stopinsert")
+    result:set_input("draft")
+    vim.api.nvim_win_set_cursor(result.input_win, { 1, 5 })
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      local cursor = vim.api.nvim_win_get_cursor(result.input_win)
+      return result:get_input() == "draft" and cursor[1] == 1 and cursor[2] == 0
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result:get_input() == "newest\ncontinued" end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result:get_input() == "oldest" end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      local cursor = vim.api.nvim_win_get_cursor(result.input_win)
+      return result:get_input() == "newest\ncontinued" and cursor[1] == 2 and cursor[2] == 9
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      local cursor = vim.api.nvim_win_get_cursor(result.input_win)
+      return result:get_input() == "draft" and cursor[1] == 1 and cursor[2] == 0
+    end))
+
+    result:set_input("")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-k>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result:get_input() == "newest\ncontinued" end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-j>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result:get_input() == "" end))
+
+    result:set_input("first\nsecond")
+    vim.api.nvim_win_set_cursor(result.input_win, { 2, 3 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_win_get_cursor(result.input_win)[1] == 1
+        and result:get_input() == "first\nsecond"
+    end))
+    vim.api.nvim_win_set_cursor(result.input_win, { 2, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      local cursor = vim.api.nvim_win_get_cursor(result.input_win)
+      return cursor[1] == 2 and cursor[2] >= 5
+    end))
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-r>", true, false, true), "x", false)
+    assert.are.equal(1, selections)
+    result:focus_transcript()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-r>", true, false, true), "x", false)
+    assert.are.equal(2, selections)
     result:destroy()
   end)
 end)

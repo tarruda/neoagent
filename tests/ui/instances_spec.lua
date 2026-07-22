@@ -247,6 +247,62 @@ describe("neoagent controller windows", function()
     assert.are.equal("alpha", beta:get_session():messages()[1].content)
   end)
 
+  it("shares and persists input history for a workspace", function()
+    local directory = vim.fn.tempname()
+    paths = { directory }
+    local extra = { persistence = { enabled = true, directory = directory } }
+    local alpha = neoagent.new(options("alpha", fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "a" } }),
+    } }), extra))
+    local beta = neoagent.new(options("beta", fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "b" } }),
+    } }), extra))
+    controllers = { alpha, beta }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert(window:open())
+    local view = window:_state().view
+    local alpha_run = assert(view.on_submit("alpha\nquestion"))
+    assert(vim.wait(1000, function() return alpha_run:is_done() end))
+    assert.are.equal(beta, window:cycle())
+    local beta_run = assert(view.on_submit("beta question"))
+    assert(vim.wait(1000, function() return beta_run:is_done() end))
+    assert.are.same({ "beta question", "alpha\nquestion" }, window:input_history())
+
+    local store = require("neoagent.input_history").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert.are.same({ "beta question", "alpha\nquestion" }, assert(store:load()))
+    local content = assert(require("neoagent.fs").read(store.path))
+    assert.are.equal('"alpha\\nquestion"\n"beta question"\n', content)
+
+    local selected
+    local original_select = vim.ui.select
+    vim.ui.select = function(items, opts, callback)
+      assert.are.equal("Select Neoagent input history:", opts.prompt)
+      assert.are.equal("alpha question", opts.format_item(items[2]))
+      assert.are.equal(string.rep("x", 100) .. "…", opts.format_item(string.rep("x", 101)))
+      selected = items[2]
+      callback(items[2])
+    end
+    assert(window:select_input_history())
+    vim.ui.select = original_select
+    assert.are.equal("alpha\nquestion", selected)
+    assert.are.equal("alpha\nquestion", view:get_input())
+    assert(window:add_input_history("manual entry"))
+    assert.are.same({ "manual entry", "beta question", "alpha\nquestion" },
+      window:input_history())
+
+    local replacement = neoagent.new(options("replacement", fake_model.new({}), extra))
+    controllers[#controllers + 1] = replacement
+    local replacement_window = neoagent.new_window({ controllers = { replacement } })
+    windows[#windows + 1] = replacement_window
+    assert(replacement_window:open())
+    assert.are.same({ "manual entry", "beta question", "alpha\nquestion" },
+      replacement_window:input_history())
+  end)
+
   it("routes the command-facing default through a replaceable Window", function()
     local old = neoagent.setup(options("old", fake_model.new({})))
     local old_window = neoagent.default_window()

@@ -121,6 +121,11 @@ message. The queue appears above the working indicator, and the agent consumes
 one message after its current assistant response and tool calls. Alt-Up restores
 all pending steering messages to the input, separated by blank lines. Ctrl-C
 does the same before cancelling the active Run; while idle it clears the draft.
+Accepted input is shared by every Controller in the workspace. Insert-mode Up
+and Down or Ctrl-K and Ctrl-J browse the most recent 100 entries while
+preserving the current draft and ordinary multiline movement. Ctrl-R opens a
+searchable history selector; Telescope's `ui-select` extension renders it when
+available.
 
 Default UI mappings:
 
@@ -129,13 +134,15 @@ Default UI mappings:
 | `<CR>` | Send from input, in Normal or Insert mode |
 | `<C-c>` | Interrupt the active Run and restore queued steering; clear the draft while idle |
 | `<C-w>w`, `<C-w><C-w>` | Alternate between input and transcript in Normal, Insert, or Visual mode |
-| Three quick `<Esc>` presses | Hide the UI from the input buffer |
+| `<Esc><Esc>` | Hide the UI from input Normal mode |
 | `<C-d>` | Hide the UI when the input is empty |
 | `<C-o>` | Expand or collapse tool output |
 | `<S-Tab>` | Cycle through the current model's thinking levels |
 | `<A-n>` | Cycle Controllers (input Normal/Insert; transcript Normal) |
 | `<A-m>` | Select a model (input Normal/Insert; transcript Normal) |
 | `<A-r>` | Resume a session (input Normal/Insert; transcript Normal) |
+| `<Up>`, `<Down>`, `<C-k>`, `<C-j>` | Browse workspace input history from Insert mode |
+| `<C-r>` | Select workspace input history (input Normal/Insert; transcript Normal) |
 | `<A-Up>` | Restore queued steering messages to the input |
 | `<C-w>H/J/K/L` | Dock left, bottom, top, or right |
 | `<C-w>=` | Center the UI |
@@ -147,9 +154,9 @@ Commands are `:Neoagent`, `:NeoagentCycle`, `:NeoagentNew`,
 `:NeoagentCompact [instructions]`, `:NeoagentBranch [entry-id]`, and
 `:NeoagentFork [entry-id]`. `:Neoagent` toggles visibility;
 `:NeoagentCycle` selects the next Controller without changing visibility. The
-resume, model, login, branch, and fork commands
-use `vim.ui.select` when their argument is omitted, so UI providers such as
-Telescope's `ui-select` extension enhance the pickers automatically.
+resume, model, login, branch, and fork commands and the input-history mapping
+use `vim.ui.select`, so UI providers such as Telescope's `ui-select` extension
+enhance the pickers automatically.
 Selecting or directly specifying a session, model, branch, or fork opens the
 agent UI when it is closed. Resume entries use the session name or first user
 message, show message count and relative activity, and group linked forks below
@@ -255,7 +262,11 @@ Selection restores that Controller's transcript and input draft. Runs belong to
 Controllers, so every attached Controller can keep working concurrently.
 Sessions remain independent; each Controller's initial Session is created on
 its first send. The Window exposes `open`, `close`, `toggle`, `is_open`,
-`set_input`, `active`, `controllers`, `select`, `cycle`, and `destroy`.
+`set_input`, `input_history`, `add_input_history`, `select_input_history`,
+`active`, `controllers`, `select`, `cycle`, and `destroy`.
+Accepted View submissions enter one workspace history shared by every attached
+Controller. Selecting a Controller retains its own draft while Up, Down, and
+Ctrl-R draw from the shared history.
 
 `controller:send(text)` starts an interaction while idle and queues `text` as
 steering while working. `controller:steer(text)` explicitly queues a steering
@@ -279,12 +290,13 @@ and current transient run events for a newly attached consumer. These APIs let
 custom Windows observe Controllers while Controllers remain useful without UI.
 
 The `view` option is a function receiving `config`, `window`, `on_submit`,
-`on_stop`, `on_dequeue_steering`, `on_cycle_thinking`, `on_cycle_agent`,
-`on_select_model`, `on_resume_session`, and `on_position_change`. It
-returns a passive View implementing `open`, `close`, `is_open`, `destroy`,
-`get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
-`new_window()` uses the first Controller's configured `ui` and `view`, then
-recursively applies its own `ui` overrides.
+`on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
+`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`, `on_resume_session`,
+and `on_position_change`. It returns a passive View implementing `open`,
+`close`, `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`,
+`set_context`, `apply`, and `finish`.
+`new_window()` uses the first Controller's configured `ui`, `view`, and
+persistence directory, then recursively applies its own `ui` overrides.
 
 ### Model registry
 
@@ -407,8 +419,14 @@ while retaining session persistence.
 
 Reading settings or opening an empty Session creates nothing. Selecting a
 model, thinking level, or dock position creates `settings.json` atomically.
-Session JSONL creation begins with its first accepted message. The workspace
-settings layer is reusable by other Lua workflows:
+The bundled Window stores its 100 most recent accepted inputs in
+`workspaces/<sha256-of-canonical-root>/input-history.jsonl`. Entries are JSON
+strings ordered from oldest to newest, so multiline input round-trips exactly.
+The history file is shared across Controllers, collapses consecutive duplicate
+inputs, and is written atomically. It is active whenever persistence is
+enabled, including when `workspace_settings` is false. Session JSONL creation
+begins with its first accepted message. The workspace settings layer is
+reusable by other Lua workflows:
 
 ```lua
 local settings = require("neoagent.workspace_settings").new({

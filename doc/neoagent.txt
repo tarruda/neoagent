@@ -165,10 +165,12 @@ matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, and `destroy`. It retains input drafts per Controller. Selection
-rehydrates canonical Session messages and transient events while every
-Controller Run continues independently. Each Controller's initial Session is
-created on its first send.
+`cycle`, `set_input`, `input_history`, `add_input_history`,
+`select_input_history`, and `destroy`. It retains input drafts per Controller
+and shares workspace input history across Controllers. Selection rehydrates
+canonical Session messages and transient events while every Controller Run
+continues independently. Each Controller's initial Session is created on its
+first send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.
@@ -184,10 +186,11 @@ events, and completion updates. Its unsubscribe function detaches the callback.
 Session and partial Run.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
-`on_stop`, `on_dequeue_steering`, `on_cycle_thinking`, `on_cycle_agent`,
-`on_select_model`, `on_resume_session`, and `on_position_change`. It
-returns a passive View with `open`, `close`, `is_open`, `destroy`, `get_input`,
-`set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
+`on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
+`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`, `on_resume_session`,
+and `on_position_change`. It returns a passive View with `open`, `close`,
+`is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
+`apply`, and `finish`.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a
@@ -337,6 +340,15 @@ latest Pi model and thinking entries take precedence for that session. Every
 Controller can list and resume every Session in the shared workspace session
 directory. Reading settings and opening an empty Session create no files.
 
+The bundled Window keeps its 100 most recent accepted inputs in: >text
+
+  workspaces/<sha256-of-canonical-root>/input-history.jsonl
+<
+Each line is a JSON string, ordered from oldest to newest. The file preserves
+multiline inputs, collapses consecutive duplicates, and is shared by every
+Controller in the workspace. It is written atomically whenever persistence is
+enabled. Input history remains active when `workspace_settings` is false.
+
 The workspace settings layer is also usable independently: >lua
 
   local settings = require("neoagent.workspace_settings").new({
@@ -367,12 +379,12 @@ keeping the `init.lua` model, thinking, and UI position defaults authoritative.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
 
 No global mappings are installed.
-The argument-free Session, Model, login, branch, and fork selectors use
-`vim.ui.select`, allowing UI providers such as Telescope's `ui-select`
-extension to render all five pickers. Resume entries use the session name or
-first user message, include message count and relative activity, and group
-linked forks below their parent. Forking restores the selected user message to
-the input buffer for editing.
+The argument-free Session, Model, login, branch, and fork selectors and the
+input-history mapping use `vim.ui.select`, allowing UI providers such as
+Telescope's `ui-select` extension to render each picker. Resume entries use the
+session name or first user message, include message count and relative
+activity, and group linked forks below their parent. Forking restores the
+selected user message to the input buffer for editing.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
@@ -404,6 +416,13 @@ response and tool calls. Alt-Up restores all pending steering messages to the
 input. Ctrl-C restores the queue and cancels the active Run; while idle it
 clears the draft.
 
+Accepted input is shared by every Controller in the workspace. Insert-mode Up
+and Down or Ctrl-K and Ctrl-J browse the most recent 100 entries. Multiline
+cursor movement takes precedence until the cursor reaches the first or last
+line, and returning past the newest entry restores the previous draft. Ctrl-R
+opens a searchable history selector and places the selected entry in the
+active draft.
+
 Default mappings:
 
   <CR>        Send from input in Normal or Insert mode.
@@ -412,14 +431,17 @@ Default mappings:
   <C-w>w or <C-w><C-w>
               Alternate between input and transcript in Normal, Insert, or
               Visual mode.
-  <Esc><Esc><Esc>
-              Hide the UI when pressed quickly from the input buffer.
+  <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
   <C-o>       Expand or collapse tool output.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
   <A-r>       Resume a session (input Normal/Insert; transcript Normal).
+  <Up>/<Down> or <C-k>/<C-j>
+              Browse workspace input history from Insert mode.
+  <C-r>       Select workspace input history (input Normal/Insert; transcript
+              Normal).
   <A-Up>      Restore queued steering messages to the input.
   <C-w>H/J/K/L
               Dock left, bottom, top, or right.

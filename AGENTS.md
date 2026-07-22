@@ -86,10 +86,11 @@ changes.
 - Compaction consumes a Session path and Model explicitly, writes Pi compaction
   entries, retains safe turn boundaries, and supports repeated summaries.
   Controllers own automatic thresholds, overflow recovery, and UI events.
-- Bundled persistence shares one cwd-hashed workspace namespace between
-  `settings.json` and `sessions/`. Model and thinking preferences are scoped by
-  Controller name; UI position and the session pool are shared. Every
-  Controller can resume every workspace Session. Reads must not create files.
+- Bundled persistence uses one cwd-hashed workspace namespace for
+  `settings.json`, `input-history.jsonl`, and `sessions/`. Model and thinking
+  preferences are scoped by Controller name; UI position, input history, and
+  the session pool are shared. Every Controller can resume every workspace
+  Session. Reads must not create files.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer controller state.

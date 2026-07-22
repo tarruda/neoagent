@@ -27,6 +27,10 @@ function M.new(opts)
     controllers = vim.list_slice(opts.controllers),
     active = opts.active or 1,
     drafts = setmetatable({}, { __mode = "k" }),
+    histories = {},
+    history_stores = {},
+    workspace_root = nil,
+    persistence = util.copy(opts.persistence),
     view = nil,
     rendered_controller = nil,
     unsubscribe = nil,
@@ -45,6 +49,65 @@ function M.new(opts)
     return state.controllers[state.active]
   end
 
+  local function history_store(root)
+    local persistence = state.persistence
+    if not persistence or not persistence.enabled then return nil end
+    if not state.history_stores[root] then
+      state.history_stores[root] = require("neoagent.input_history").new({
+        directory = persistence.directory,
+        root = root,
+      })
+    end
+    return state.history_stores[root]
+  end
+
+  local function load_history(root, refresh)
+    if not root then return {} end
+    if state.histories[root] and not refresh then return state.histories[root] end
+    local store = history_store(root)
+    if not store then
+      state.histories[root] = state.histories[root] or {}
+      return state.histories[root]
+    end
+    local history, err = store:load()
+    if not history then
+      notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.WARN)
+      state.histories[root] = state.histories[root] or {}
+      return state.histories[root]
+    end
+    state.histories[root] = history
+    return history
+  end
+
+  local function select_workspace(root)
+    local changed = state.workspace_root ~= root
+    state.workspace_root = root
+    load_history(root)
+    return changed
+  end
+
+  local function record_history(text)
+    local root = state.workspace_root
+    text = util.trim(text)
+    if not root or text == "" then return true end
+    local store = history_store(root)
+    if not store then
+      local history = load_history(root)
+      if history[1] ~= text then
+        table.insert(history, 1, text)
+        if #history > 100 then table.remove(history) end
+      end
+      return true
+    end
+    local history, err = store:add(text)
+    if not history then
+      notify("input history was not saved: " .. err.message, vim.log.levels.WARN)
+      return nil, err
+    end
+    state.histories[root] = history
+    return true
+  end
+
   local function context(value)
     value = util.copy(value or {})
     if not state.position_loaded and value.position then
@@ -59,6 +122,9 @@ function M.new(opts)
     local view = state.view
     if not view or view.destroyed then return end
     if update.type == "context" then
+      if select_workspace(update.context.workspace) then
+        view:set_input(view:get_input())
+      end
       view:set_context(context(update.context))
     elseif update.type == "messages" then
       view:set_messages(update.messages)
@@ -79,6 +145,7 @@ function M.new(opts)
     local prepared, err = controller:prepare()
     if not prepared then return nil, err end
     local snapshot = controller:snapshot()
+    select_workspace(snapshot.context.workspace)
     state.view:set_messages(snapshot.messages)
     state.view:set_context(context(snapshot.context))
     for _, event in ipairs(snapshot.events) do state.view:apply(event) end
@@ -98,6 +165,7 @@ function M.new(opts)
         local controller = active()
         local run, err = controller:send(prompt)
         if run then
+          record_history(prompt)
           state.drafts[controller] = ""
           if active() == controller then state.view:set_input("") end
         end
@@ -105,6 +173,8 @@ function M.new(opts)
       end,
       on_stop = function() return active():stop() end,
       on_dequeue_steering = function() return active():dequeue_steering() end,
+      on_input_history = function() return window:input_history() end,
+      on_select_history = function() return window:select_input_history() end,
       on_cycle_thinking = function() return active():cycle_thinking_level() end,
       on_cycle_agent = function() return window:cycle() end,
       on_select_model = function() return active():select_model() end,
@@ -204,6 +274,37 @@ function M.new(opts)
       state.view:set_input(value)
     end
     return value
+  end
+
+  function window:input_history()
+    return util.copy(load_history(state.workspace_root))
+  end
+
+  function window:add_input_history(value)
+    assert(type(value) == "string", "Window history input must be a string")
+    return record_history(value)
+  end
+
+  function window:select_input_history()
+    local history = self:input_history()
+    if #history == 0 then notify("no input history found for the current workspace") return nil end
+    vim.ui.select(history, {
+      prompt = "Select Neoagent input history:",
+      format_item = function(item)
+        local label = util.trim(item:gsub("[%c%s]+", " "))
+        if vim.fn.strchars(label) > 100 then
+          label = vim.fn.strcharpart(label, 0, 100) .. "…"
+        end
+        return label
+      end,
+    }, function(choice)
+      if not choice then return end
+      self:set_input(choice)
+      if state.view and state.view:is_open() and type(state.view.focus_input) == "function" then
+        state.view:focus_input()
+      end
+    end)
+    return true
   end
 
   function window:_state()
