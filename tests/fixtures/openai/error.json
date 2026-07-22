@@ -4,7 +4,11 @@
       "expect": { "path": "/v1/chat/completions" },
       "respond": {
         "status": 400,
-        "headers": { "content-type": "application/json" },
+        "headers": {
+          "content-type": "application/json",
+          "x-request-id": "req-error",
+          "cf-ray": "ray-error"
+        },
         "json": { "error": { "message": "bad request" } }
       }
     }

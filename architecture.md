@@ -38,7 +38,9 @@ Controllers, and UI:
 
 - `lua/neoagent/async.lua` provides the cancellable coroutine-based `Run`
   abstraction.
-- `lua/neoagent/transport/` provides curl transport and SSE parsing.
+- `lua/neoagent/transport/` provides curl transport and SSE parsing. Curl
+  executes one HTTP exchange and returns response status and headers on both
+  success and failure; failures also retain bounded process diagnostics.
 - `lua/neoagent/api/` provides provider protocol encoders and streaming
   decoders.
 - `lua/neoagent/agent.lua` implements the model and tool loop.

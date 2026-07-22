@@ -57,7 +57,10 @@ local function curl_error(code, stderr)
     if #summary > 300 then summary = summary:sub(1, 297) .. "..." end
     message = message .. ": " .. summary
   end
-  return util.error("transport", message, detail)
+  local err = util.error("transport", message, detail)
+  err.exit_code = code
+  if detail ~= "" then err.stderr = detail end
+  return err
 end
 
 function M.command(request, header_path)
@@ -171,6 +174,9 @@ function M.request(opts)
     pcall(vim.fn.delete, header_path)
     if not completed then
       local err = util.normalize_error(result, "transport")
+      if status or next(headers) ~= nil then
+        err.response = { status = status, headers = headers }
+      end
       if status and (status < 200 or status >= 300) then
         local message = response_error(stdout)
         err.message = "HTTP " .. tostring(status) .. (message and ": " .. message or "")
