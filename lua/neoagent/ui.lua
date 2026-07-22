@@ -1013,6 +1013,7 @@ function View:open(origin)
     self:focus_input()
     return true
   end
+  local reopening = self.has_opened
   self:_ensure_buffers()
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
@@ -1027,6 +1028,8 @@ function View:open(origin)
   self:_window_options(self.transcript_win, true)
   self:_window_options(self.input_win, false)
   self:_flush()
+  self.has_opened = true
+  if reopening and self.config.scroll_on_reopen then self:_scroll_transcript_to_bottom() end
   self:_sync_spinner()
   self:focus_input()
   return true
@@ -1276,6 +1279,7 @@ function M.new(opts)
     spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
     spinner_frame = 1,
     history_index = 0,
+    has_opened = false,
   }, View)
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {

@@ -124,10 +124,10 @@ providers = {
 `:Neoagent` opens two focusable floating windows. The input starts in Insert
 mode and remains an ordinary editable buffer. The transcript is an ordinary
 read-only buffer, so search, Visual selection, and yank work normally. By
-default, an accepted submission scrolls the transcript to the bottom, as does
-leaving the transcript window. Set `ui.scroll_on_submit` or
-`ui.scroll_on_transcript_leave` to `false` to preserve its position for those
-actions.
+default, an accepted submission scrolls the transcript to the bottom. Leaving
+the transcript window and reopening the UI do the same. Set
+`ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
+`ui.scroll_on_reopen` to `false` to preserve its position for that action.
 
 The transcript renders assistant Markdown with headings, inline emphasis,
 links, lists, quotes, fenced code, rules, and tables. Thinking is muted and
@@ -246,6 +246,7 @@ require("neoagent").setup({
     input_height = 7,
     scroll_on_submit = true,
     scroll_on_transcript_leave = true,
+    scroll_on_reopen = true,
     border = "rounded",
     mappings = {},               -- recursively merged with the defaults
   },

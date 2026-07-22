@@ -437,6 +437,34 @@ describe("neoagent.ui", function()
     assert.are.equal(3, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
   end)
 
+  it("scrolls the transcript after it is hidden and shown again", function()
+    local lines = {}
+    for index = 1, 40 do lines[index] = "line " .. index end
+    local messages = { {
+      role = "assistant",
+      content = { { type = "text", text = table.concat(lines, "\n") } },
+    } }
+    local function open_at_line(overrides, line)
+      local result = view(vim.tbl_extend("force", { position = "center" }, overrides or {}))
+      result:set_messages(messages)
+      assert(result:open())
+      assert(vim.wait(1000, function()
+        return vim.api.nvim_buf_line_count(result.transcript_buf) >= 40
+      end))
+      vim.api.nvim_win_set_cursor(result.transcript_win, { line, 0 })
+      result:close()
+      assert(result:open())
+      return result
+    end
+
+    local result = open_at_line(nil, 2)
+    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
+      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+
+    local fixed = open_at_line({ scroll_on_reopen = false }, 3)
+    assert.are.equal(3, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+  end)
+
   it("places auto UI over another editor window", function()
     local origin = vim.api.nvim_get_current_win()
     vim.cmd("vsplit")

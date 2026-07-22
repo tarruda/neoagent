@@ -40,6 +40,7 @@ local defaults = {
     input_height = 7,
     scroll_on_submit = true,
     scroll_on_transcript_leave = true,
+    scroll_on_reopen = true,
     border = "rounded",
     mappings = {
       submit = "<CR>",
@@ -205,6 +206,7 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_submit) == "boolean", "ui.scroll_on_submit must be boolean")
   assert(type(opts.ui.scroll_on_transcript_leave) == "boolean",
     "ui.scroll_on_transcript_leave must be boolean")
+  assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
   for action, mapping in pairs(opts.ui.mappings) do
     assert(type(action) == "string", "UI mapping names must be strings")
     if type(mapping) == "table" then
