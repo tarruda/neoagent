@@ -46,7 +46,7 @@ local defaults = {
     keep_recent_tokens = 20000,
   },
   ui = {
-    position = "auto",
+    position = "center",
     margin = 1,
     input_height = 7,
     scroll_on_submit = true,
