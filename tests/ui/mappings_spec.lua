@@ -188,6 +188,55 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("yanks an input Visual selection to the clipboard while streaming", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({ {
+      role = "assistant",
+      content = { { type = "text", text = "existing response" } },
+    } })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    result:set_input("clipboard target")
+    result:focus_input()
+    local focus_settled = false
+    vim.schedule(function() focus_settled = true end)
+    assert(vim.wait(1000, function() return focus_settled end))
+    vim.cmd("stopinsert")
+    vim.api.nvim_win_set_cursor(result.input_win, { 1, 0 })
+    vim.fn.setreg("+", "sentinel")
+    vim.cmd("normal! v8l")
+    local mode = vim.api.nvim_get_mode().mode
+    local cursor = vim.api.nvim_win_get_cursor(result.input_win)
+    local anchor = vim.fn.getpos("v")
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local changedtick = vim.api.nvim_buf_get_changedtick(result.transcript_buf)
+    local footer = vim.deepcopy(vim.api.nvim_win_get_config(result.transcript_win).footer)
+
+    result:apply({ type = "text_delta", text = "streamed response" })
+    result:set_context({ provider_status = "updated" })
+    local next_tick = false
+    vim.schedule(function() next_tick = true end)
+    assert(vim.wait(1000, function() return next_tick end))
+    assert.are.equal(mode, vim.api.nvim_get_mode().mode)
+    assert.are.same(cursor, vim.api.nvim_win_get_cursor(result.input_win))
+    assert.are.same(anchor, vim.fn.getpos("v"))
+    assert.are.same(lines, vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+    assert.are.equal(changedtick, vim.api.nvim_buf_get_changedtick(result.transcript_buf))
+    assert.are.same(footer, vim.api.nvim_win_get_config(result.transcript_win).footer)
+
+    vim.api.nvim_feedkeys('"+y', "x", false)
+    local yanked = vim.fn.getreg("+")
+    result:close()
+    assert(result:open())
+    assert.matches("streamed response", table.concat(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false
+    ), "\n"))
+    result:destroy()
+    assert.are.equal("clipboard", yanked)
+  end)
+
   it("closes the paired windows from input Normal mode and an empty draft", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

@@ -508,8 +508,9 @@ User messages have a distinct padded background. Tool cards use separate
 pending, successful, and failed backgrounds. Unstyled content maps NormalFloat
 to Normal so it inherits the editor background. Built-in tool results use
 semantic summaries. Read output shows at most ten lines until tool output is
-expanded. Transcript text updates wait for pending operators and active Visual
-selections, preserving register, operator, and selection state while streaming.
+expanded. Visible transcript updates pause during active Visual selections in
+the transcript or input, preserving register, operator, and selection state
+while streaming.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response

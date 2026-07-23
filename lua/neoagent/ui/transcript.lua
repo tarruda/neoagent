@@ -3,10 +3,24 @@ local util = require("neoagent.util")
 
 local M = {}
 
-local function operator_pending(view)
-  return view.transcript_win and vim.api.nvim_win_is_valid(view.transcript_win)
-    and vim.api.nvim_get_current_win() == view.transcript_win
-    and vim.fn.state("o") ~= ""
+local selection_modes = {
+  v = true,
+  V = true,
+  ["\22"] = true,
+  s = true,
+  S = true,
+  ["\19"] = true,
+}
+
+function M.interaction_pending(view)
+  if not view.transcript_win or not vim.api.nvim_win_is_valid(view.transcript_win)
+      or vim.fn.state("o") == "" then
+    return false
+  end
+  local current = vim.api.nvim_get_current_win()
+  if current == view.transcript_win then return true end
+  return current == view.input_win
+    and selection_modes[vim.api.nvim_get_mode().mode] == true
 end
 
 local function flush_when_safe(view)
@@ -129,7 +143,7 @@ function M:_render_status()
 end
 
 function M:_flush()
-  if operator_pending(self) then
+  if M.interaction_pending(self) then
     flush_when_safe(self)
     return
   end

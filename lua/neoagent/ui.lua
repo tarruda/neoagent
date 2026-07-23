@@ -260,7 +260,7 @@ end
 
 function View:_refresh_transcript_border()
   if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win) then return false end
-  if vim.api.nvim_get_current_win() == self.transcript_win and vim.fn.state("o") ~= "" then
+  if transcript.interaction_pending(self) then
     self.border_dirty = true
     return false
   end
