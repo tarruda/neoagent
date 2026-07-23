@@ -147,6 +147,46 @@ describe("neoagent UI mappings", function()
     assert.matches("yank target", yanked)
   end)
 
+  it("preserves a selected yank register while transcript text streams", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({ {
+      role = "assistant",
+      content = { { type = "text", text = "streaming yank target" } },
+    } })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.fn.setreg("a", "sentinel")
+
+    vim.api.nvim_feedkeys('"a', "x", false)
+    assert.matches("o", vim.fn.state("oS"))
+    assert.are.equal("a", vim.v.register)
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local changedtick = vim.api.nvim_buf_get_changedtick(result.transcript_buf)
+
+    result:apply({ type = "text_delta", text = "streamed response" })
+    local next_tick = false
+    vim.schedule(function() next_tick = true end)
+    assert(vim.wait(1000, function() return next_tick end))
+    assert.are.same(lines, vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+    assert.are.equal(changedtick, vim.api.nvim_buf_get_changedtick(result.transcript_buf))
+    assert.are.equal("sentinel", vim.fn.getreg("a"))
+    assert.matches("o", vim.fn.state("oS"))
+    assert.are.equal("a", vim.v.register)
+
+    result:focus_input()
+    vim.api.nvim_exec_autocmds("SafeState", {})
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false
+      ), "\n"):match("streamed response") ~= nil
+    end))
+    result:destroy()
+  end)
+
   it("closes the paired windows from input Normal mode and an empty draft", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

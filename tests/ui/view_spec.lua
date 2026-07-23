@@ -529,7 +529,7 @@ describe("neoagent.ui", function()
     end))
   end)
 
-  it("preserves transcript selection while appending and responds to resize", function()
+  it("defers transcript updates during Visual selection and responds to resize", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "select this\nsecond line" },
@@ -544,12 +544,18 @@ describe("neoagent.ui", function()
     local cursor = vim.api.nvim_win_get_cursor(result.transcript_win)
     local anchor = vim.fn.getpos("v")
     result:apply({ type = "text_delta", text = "streamed later" })
-    assert(vim.wait(1000, function() return text(result):match("streamed later") ~= nil end))
+    local next_tick = false
+    vim.schedule(function() next_tick = true end)
+    assert(vim.wait(1000, function() return next_tick end))
+    assert.is_nil(text(result):match("streamed later"))
     assert.are.equal(mode, vim.api.nvim_get_mode().mode)
     assert.are.same(cursor, vim.api.nvim_win_get_cursor(result.transcript_win))
     assert.are.same(anchor, vim.fn.getpos("v"))
 
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
+    result:focus_input()
+    vim.api.nvim_exec_autocmds("SafeState", {})
+    assert(vim.wait(1000, function() return text(result):match("streamed later") ~= nil end))
     local old_width = vim.api.nvim_win_get_width(result.transcript_win)
     vim.o.columns = 90
     vim.api.nvim_exec_autocmds("VimResized", {})

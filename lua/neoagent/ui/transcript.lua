@@ -3,6 +3,34 @@ local util = require("neoagent.util")
 
 local M = {}
 
+local function operator_pending(view)
+  return view.transcript_win and vim.api.nvim_win_is_valid(view.transcript_win)
+    and vim.api.nvim_get_current_win() == view.transcript_win
+    and vim.fn.state("o") ~= ""
+end
+
+local function flush_when_safe(view)
+  if view.safe_flush_autocmd then return end
+  local id
+  id = vim.api.nvim_create_autocmd("SafeState", {
+    group = view.augroup,
+    once = true,
+    callback = function()
+      if view.safe_flush_autocmd == id then view.safe_flush_autocmd = nil end
+      if view.destroyed then return end
+      view.flush_pending = false
+      view:_schedule_flush()
+    end,
+  })
+  view.safe_flush_autocmd = id
+end
+
+local function clear_safe_flush(view)
+  if not view.safe_flush_autocmd then return end
+  pcall(vim.api.nvim_del_autocmd, view.safe_flush_autocmd)
+  view.safe_flush_autocmd = nil
+end
+
 function M:_scroll_transcript_to_bottom()
   if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win)
       or not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then
@@ -113,12 +141,18 @@ function M:_render_status()
 end
 
 function M:_refresh_status()
+  if operator_pending(self) then return end
   if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
   self:_remove_status()
   self:_render_status()
 end
 
 function M:_flush()
+  if operator_pending(self) then
+    flush_when_safe(self)
+    return
+  end
+  clear_safe_flush(self)
   self.flush_pending = false
   if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
   local saved = self:_save_view()
