@@ -354,6 +354,23 @@ describe("neoagent.ui", function()
     assert.not_matches("to expand", text(result))
   end)
 
+  it("centers idle status before context information is available", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    local footer = vim.api.nvim_win_get_config(result.transcript_win).footer
+    local offset = 0
+    local idle_offset
+    for _, chunk in ipairs(footer) do
+      if chunk[1] == " Idle " then
+        idle_offset = offset
+        break
+      end
+      offset = offset + vim.fn.strdisplaywidth(chunk[1])
+    end
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.are.equal(math.floor((width - vim.fn.strdisplaywidth(" Idle ")) / 2), idle_offset)
+  end)
+
   it("uses card backgrounds, inherits the editor background, and animates active states", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "user", content = "hello" } })
@@ -372,6 +389,7 @@ describe("neoagent.ui", function()
     if type(title) == "table" then
       title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
     end
+    assert.are.equal(" no model · think: high ", title)
     assert.matches("think: high", title)
     assert.is_nil(title:find("ctx ", 1, true))
     assert.is_nil(title:find("Neoagent", 1, true))
@@ -383,10 +401,41 @@ describe("neoagent.ui", function()
       end
       return value
     end
+    local function input_footer()
+      local value = vim.api.nvim_win_get_config(result.input_win).footer
+      if type(value) == "table" then
+        value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
+      end
+      return value
+    end
     local transcript_config = vim.api.nvim_win_get_config(result.transcript_win)
     assert.are.equal("left", transcript_config.footer_pos)
-    assert.are.equal("NeoagentAccent", transcript_config.footer[2][2])
-    assert.are.equal("NeoagentMuted", transcript_config.footer[3][2])
+    local activity_border = transcript_config.footer[1][1]
+    local accent_chunks = vim.tbl_filter(function(chunk)
+      return chunk[2] == "NeoagentAccent"
+    end, transcript_config.footer)
+    assert.are.equal(1, #accent_chunks)
+    assert.are.equal(result.spinner_frames[result.spinner_frame], accent_chunks[1][1])
+    local footer_offset = 0
+    local context_start
+    local before_context = {}
+    for _, chunk in ipairs(transcript_config.footer) do
+      if chunk[1]:find("ctx ", 1, true) then
+        context_start = footer_offset
+        break
+      end
+      before_context[#before_context + 1] = chunk[1]
+      footer_offset = footer_offset + vim.fn.strdisplaywidth(chunk[1])
+    end
+    assert.are.equal(math.floor(vim.api.nvim_win_get_width(result.transcript_win) / 2), context_start)
+    assert.matches("Compacting%.%.%. $", table.concat(before_context))
+    local narrow_footer = result:_transcript_footer(24)
+    local narrow_text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, narrow_footer))
+    assert.are.equal(24, vim.fn.strdisplaywidth(narrow_text))
+    assert.matches("^…", narrow_text)
+    assert.matches("…$", narrow_text)
+    local tiny_footer = result:_transcript_footer(1)
+    assert.are.equal("…", table.concat(vim.tbl_map(function(chunk) return chunk[1] end, tiny_footer)))
     assert.matches("Compacting%.%.%.", transcript_footer())
     assert.is_nil(transcript_footer():find("think:", 1, true))
     assert.is_not_nil(transcript_footer():find(
@@ -394,7 +443,10 @@ describe("neoagent.ui", function()
     ))
     assert.are.equal(vim.api.nvim_win_get_width(result.transcript_win),
       vim.fn.strdisplaywidth(transcript_footer()))
-    assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
+    local input_config = vim.api.nvim_win_get_config(result.input_win)
+    assert.is_nil(input_config.title)
+    assert.are.equal("center", input_config.footer_pos)
+    assert.are.equal(" Input · <CR> send ", input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
         and text(result):find("<A-Up> to edit queued messages", 1, true) ~= nil
@@ -410,7 +462,7 @@ describe("neoagent.ui", function()
         and text(result):find("Steering:", 1, true) == nil
     end))
     result:set_context({ provider_status = false })
-    assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
+    assert.are.equal(" Input · <CR> send ", input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))
     assert.matches("Compacting%.%.%.", transcript_footer())
@@ -422,15 +474,18 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ state = "running" })
     assert.matches("Working%.%.%.", transcript_footer())
+    assert.are.equal(activity_border, vim.api.nvim_win_get_config(result.transcript_win).footer[1][1])
     assert.is_nil(text(result):match("Working%.%.%."))
     result:set_context({ state = "idle", steering = {} })
     assert(vim.wait(1000, function()
       local footer_text = transcript_footer()
       return footer_text and footer_text:find("Working", 1, true) == nil
+        and footer_text:find("Idle", 1, true) ~= nil
         and footer_text:find("think:", 1, true) == nil
         and footer_text:find("ctx 250/1k (25.0%)", 1, true) ~= nil
         and text(result):find("Steering:", 1, true) == nil
     end))
+    assert.are.equal(activity_border, vim.api.nvim_win_get_config(result.transcript_win).footer[1][1])
   end)
 
   it("scrolls the transcript after submit and when leaving it", function()

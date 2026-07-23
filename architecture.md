@@ -200,16 +200,9 @@ The Window:
 - Shares workspace input history
 - Leaves inactive Controllers running independently
 
-The passive View facade in `lua/neoagent/ui.lua` owns the paired window
-lifecycle and composes focused layout, rendering, transcript, and input modules
-under `lua/neoagent/ui/`. It renders messages and events, presents compaction
-checkpoints as expandable cards, and invokes callbacks supplied by the Window.
-The transcript title renders the Controller label, model, and thinking level.
-Its footer renders active state on the left and context usage followed by
-provider status on the right. Steering status uses virtual-line decoration.
-Transcript text updates wait for pending operators and active Visual selections,
-preserving register, operator, and selection state while streaming. The
-replaceable View remains independent of the model and agent loop.
+The passive View consumes Controller snapshots and updates and invokes callbacks
+supplied by the Window. Its replaceable interface keeps presentation independent
+from the model and agent loop.
 
 ## Public composition
 

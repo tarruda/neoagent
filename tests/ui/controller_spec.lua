@@ -376,7 +376,7 @@ describe("neoagent default controller", function()
       end,
     })
     assert(neoagent.open())
-    assert.matches("^Neo ·", current_view():_title())
+    assert.matches("^ Neo ·", current_view():_title())
     assert(neoagent.send("inspect"))
     assert.are.same({ "read_file", "write_file", "edit_file", "shell", "read_agent_documentation" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
@@ -393,7 +393,7 @@ describe("neoagent default controller", function()
     assert.is_true(neoagent.stop())
 
     assert.are.equal("Chat", neoagent.cycle_agent():config().name)
-    assert.matches("^Chat ·", current_view():_title())
+    assert.matches("^ Chat ·", current_view():_title())
     assert.is_nil(neoagent.get_session())
     assert(neoagent.send("hello"))
     assert.are.same({}, captured.tools)

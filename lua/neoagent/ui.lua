@@ -138,24 +138,76 @@ function View:_title()
   if type(self.context.thinking) == "string" then
     parts[#parts + 1] = "think: " .. self.context.thinking
   end
-  return table.concat(parts, " · ")
+  return " " .. table.concat(parts, " · ") .. " "
+end
+
+local function slice_to_display_width(text, max_width, from_end)
+  local characters = vim.fn.strchars(text)
+  local low, high = 0, characters
+  while low < high do
+    local count = math.floor((low + high + 1) / 2)
+    local start = from_end and characters - count or 0
+    local candidate = vim.fn.strcharpart(text, start, count)
+    if vim.fn.strdisplaywidth(candidate) <= max_width then
+      low = count
+    else
+      high = count - 1
+    end
+  end
+  local start = from_end and characters - low or 0
+  return vim.fn.strcharpart(text, start, low)
+end
+
+local function truncate_right(text, max_width)
+  if vim.fn.strdisplaywidth(text) <= max_width then return text end
+  if max_width == 1 then return "…" end
+  return slice_to_display_width(text, max_width - 1, false) .. "…"
+end
+
+local function fit_left_chunks(chunks, width, max_width)
+  if width <= max_width then return chunks, width end
+  if max_width <= 0 then return {}, 0 end
+  local remaining = max_width - 1
+  local fitted = {}
+  for index = #chunks, 1, -1 do
+    if remaining <= 0 then break end
+    local chunk = chunks[index]
+    local chunk_width = vim.fn.strdisplaywidth(chunk[1])
+    if chunk_width <= remaining then
+      table.insert(fitted, 1, chunk)
+      remaining = remaining - chunk_width
+    else
+      local suffix = slice_to_display_width(chunk[1], remaining, true)
+      if suffix ~= "" then
+        table.insert(fitted, 1, { suffix, chunk[2] })
+        remaining = remaining - vim.fn.strdisplaywidth(suffix)
+      end
+    end
+  end
+  table.insert(fitted, 1, { "…", "NeoagentMuted" })
+  local fitted_width = 0
+  for _, chunk in ipairs(fitted) do
+    fitted_width = fitted_width + vim.fn.strdisplaywidth(chunk[1])
+  end
+  return fitted, fitted_width
 end
 
 function View:_transcript_footer(width)
-  local chunks = {}
+  width = math.max(1, width or 1)
+  local left = {}
   local left_width = 0
-  local function add(text, group)
-    chunks[#chunks + 1] = { text, group }
+  local function add_left(text, group)
+    left[#left + 1] = { text, group }
     left_width = left_width + vim.fn.strdisplaywidth(text)
   end
-  if active_state(self.context) then
-    local label = self.context.state == "stopping" and "Stopping..."
-      or self.context.state == "compacting" and "Compacting..." or "Working..."
-    add(" ", "NeoagentMuted")
-    add(self.spinner_frames[self.spinner_frame], "NeoagentAccent")
-    add(" " .. label, "NeoagentMuted")
-  end
-  if #chunks > 0 then add(" ", "NeoagentMuted") end
+  local active = active_state(self.context)
+  local label = active and (self.context.state == "stopping" and "Stopping..."
+    or self.context.state == "compacting" and "Compacting..." or "Working...") or "Idle"
+  local label_padding = vim.fn.strdisplaywidth("Compacting...") - vim.fn.strdisplaywidth(label) + 1
+  add_left(" ", "NeoagentMuted")
+  add_left(active and self.spinner_frames[self.spinner_frame] or " ",
+    active and "NeoagentAccent" or "NeoagentMuted")
+  add_left(" " .. label .. string.rep(" ", label_padding), "NeoagentMuted")
 
   local right_parts = {}
   local context = context_status(self.context)
@@ -165,13 +217,36 @@ function View:_transcript_footer(width)
     status = util.trim(status)
     if status ~= "" then right_parts[#right_parts + 1] = "(" .. status .. ")" end
   end
-  if #right_parts > 0 then
-    local right = " " .. table.concat(right_parts, " ") .. " "
-    local padding = math.max(1, (width or 1) - left_width - vim.fn.strdisplaywidth(right))
-    add(string.rep(bottom_border_character(self.config.border), padding), "NeoagentBorder")
-    add(right, "NeoagentMuted")
+  local right = #right_parts > 0 and " " .. table.concat(right_parts, " ") .. " " or nil
+  if not active and not right then
+    local idle = truncate_right(" Idle ", width)
+    local idle_width = vim.fn.strdisplaywidth(idle)
+    local before = math.floor((width - idle_width) / 2)
+    local after = width - idle_width - before
+    local border = bottom_border_character(self.config.border)
+    local centered = {}
+    if before > 0 then centered[#centered + 1] = { string.rep(border, before), "NeoagentBorder" } end
+    centered[#centered + 1] = { idle, "NeoagentMuted" }
+    if after > 0 then centered[#centered + 1] = { string.rep(border, after), "NeoagentBorder" } end
+    return centered
   end
-  return #chunks > 0 and chunks or ""
+
+  local midpoint = math.floor(width / 2)
+  left, left_width = fit_left_chunks(left, left_width, midpoint)
+  if right then right = truncate_right(right, width - midpoint) end
+
+  local chunks = {}
+  local used = 0
+  local function add(text, group)
+    if text == "" then return end
+    chunks[#chunks + 1] = { text, group }
+    used = used + vim.fn.strdisplaywidth(text)
+  end
+  add(string.rep(bottom_border_character(self.config.border), midpoint - left_width), "NeoagentBorder")
+  for _, chunk in ipairs(left) do add(chunk[1], chunk[2]) end
+  if right then add(right, "NeoagentMuted") end
+  add(string.rep(bottom_border_character(self.config.border), width - used), "NeoagentBorder")
+  return chunks
 end
 
 function View:_decorate(configs)
@@ -179,8 +254,8 @@ function View:_decorate(configs)
   configs.transcript.title_pos = "center"
   configs.transcript.footer = self:_transcript_footer(configs.transcript.width)
   configs.transcript.footer_pos = "left"
-  configs.input.title = "Input · " .. ((self.config.mappings or {}).submit or "send") .. " send"
-  configs.input.title_pos = "center"
+  configs.input.footer = " Input · " .. ((self.config.mappings or {}).submit or "send") .. " send "
+  configs.input.footer_pos = "center"
 end
 
 function View:_refresh_transcript_border()
