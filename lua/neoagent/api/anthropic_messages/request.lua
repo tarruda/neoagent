@@ -136,7 +136,13 @@ function M.build(model, call_opts)
   }
   local api_key = model._api_key
   if type(api_key) == "function" then api_key = api_key() end
-  if api_key ~= nil and api_key ~= "" then headers["x-api-key"] = api_key end
+  if api_key ~= nil and api_key ~= "" then
+    if api_key:find("sk-ant-oat", 1, true) then
+      headers.Authorization = "Bearer " .. api_key
+    else
+      headers["x-api-key"] = api_key
+    end
+  end
 
   local body = {
     model = model.id,

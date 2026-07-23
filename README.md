@@ -12,8 +12,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 
 - Stream assistant responses, reasoning, tool calls, usage, and provider status directly in Neovim.
 - Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
-  local models such as llama.cpp, built-in DeepSeek and Z.AI catalogs, or ChatGPT
-  subscription authentication through OpenAI Codex.
+  local models with llama.cpp, built-in Anthropic, DeepSeek, and Z.AI
+  catalogs, or Claude and ChatGPT subscription authentication.
 - Compose Models, tools, executors, Sessions, Controllers, and Views as ordinary Lua values with explicit dependencies.
 - Run cancellable agent loops with custom tools, steering messages, retry handling, and context compaction.
 - Use the bundled coding tools for reading, writing, editing, shell commands, and on-demand Neoagent documentation.
@@ -28,6 +28,10 @@ Choose a provider:
 
 - Run `:NeoagentLogin openai` to store an OpenAI API key, or set
   `OPENAI_API_KEY` before starting Neovim.
+- Run `:NeoagentLogin anthropic` to store an Anthropic API key, or set
+  `ANTHROPIC_API_KEY` before starting Neovim.
+- For Claude Pro or Max authentication, run `:NeoagentLogin anthropic-plan`,
+  or provide an existing `ANTHROPIC_OAUTH_TOKEN`.
 - Run `:NeoagentLogin deepseek` to store a DeepSeek API key, or set
   `DEEPSEEK_API_KEY` before starting Neovim.
 - Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
@@ -39,7 +43,9 @@ Choose a provider:
 
 API keys are entered through a masked prompt. A stored credential takes
 precedence over its environment variable. `:NeoagentLogout [method]` removes
-the stored credential and leaves environment variables unchanged.
+the stored credential and leaves environment variables unchanged. Anthropic
+currently bills third-party Claude subscription OAuth requests as extra usage
+per token; they do not consume included Claude plan limits.
 
 Configure an OpenAI model and a mapping:
 
@@ -55,6 +61,18 @@ vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>", {
   desc = "Open Neoagent",
 })
 ```
+
+For Anthropic API-key billing, use `anthropic`; use `anthropic-plan` with
+Claude Pro/Max OAuth:
+
+```lua
+default_model = {
+  provider = "anthropic",
+  model = "claude-sonnet-4-6",
+}
+```
+
+Set `provider = "anthropic-plan"` in the same value for Claude Pro/Max OAuth.
 
 To use DeepSeek by default, replace `default_model` with:
 

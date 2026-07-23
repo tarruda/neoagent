@@ -14,6 +14,13 @@ local defaults = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
       zai = api_key.new({ name = "Z.AI API key" }),
+      anthropic = api_key.new({
+        name = "Anthropic API key",
+        request_opts = function(credential)
+          return { headers = { ["x-api-key"] = credential.key } }
+        end,
+      }),
+      ["anthropic-plan"] = require("neoagent.auth.anthropic").new(),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
     },
   },

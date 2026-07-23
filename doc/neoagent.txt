@@ -66,8 +66,30 @@ the complete history can be replayed statelessly.
 
 Neoagent includes Pi's explicit OpenAI catalogs. Run `:NeoagentLogin openai`
 to enter an API key through a masked prompt, or set `OPENAI_API_KEY` before
-starting Neovim. Either source makes `openai/*` models available. The built-in
-DeepSeek catalog uses the official OpenAI-compatible endpoint. Run
+starting Neovim. Either source makes `openai/*` models available.
+
+Anthropic uses the official Messages endpoint through two catalogs. Run
+`:NeoagentLogin anthropic` or set `ANTHROPIC_API_KEY` for metered API-key
+billing and `anthropic/*` models. Run `:NeoagentLogin anthropic-plan` for the
+Claude Pro/Max browser or manual-code OAuth flow, or set an existing
+`ANTHROPIC_OAUTH_TOKEN`, to enable the matching `anthropic-plan/*` catalog.
+The catalogs contain Claude Opus 4.1, 4.5, 4.6, 4.7, and 4.8; Sonnet 4.5, 4.6,
+and 5; Haiku 4.5; Fable 5; and their listed dated aliases.
+
+Adaptive models expose their provider-supported effort levels through `low`,
+`medium`, `high`, `xhigh`, and `max`. Budget-thinking models expose `off`,
+`minimal`, `low`, `medium`, and `high` with budgets from 1024 to 16384 tokens.
+Requests use ephemeral prompt-cache breakpoints, eager tool-input streaming,
+signed thinking replay, and normalized cache usage. The plan composition adds
+Claude Code identity and OAuth headers. Anthropic currently bills third-party
+subscription OAuth requests as extra usage per token; included Claude plan
+limits do not cover these requests. Select API-key billing by default with: >lua
+
+  require("neoagent").setup({
+    default_model = { provider = "anthropic", model = "claude-sonnet-4-6" },
+  })
+<
+The built-in DeepSeek catalog uses the official OpenAI-compatible endpoint. Run
 `:NeoagentLogin deepseek` or set `DEEPSEEK_API_KEY` to make
 `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available.
 Both DeepSeek models declare a 1M-token context window, a 384k-token output
@@ -285,9 +307,11 @@ default provider or model: >lua
 <
 Set `default_registry = false` to use only the user `providers` table. Built-in
 providers with `auth` or `api_key` appear only when those credentials resolve.
-OpenAI, DeepSeek, and Z.AI accept stored API keys and read `OPENAI_API_KEY`,
-`DEEPSEEK_API_KEY`, and `ZAI_API_KEY` as ambient fallbacks. Stored credentials
-own a provider until logout. Providers without either are always available.
+OpenAI, Anthropic, DeepSeek, and Z.AI accept stored API keys and read
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, and `ZAI_API_KEY`
+as ambient fallbacks. `anthropic-plan` accepts stored OAuth or
+`ANTHROPIC_OAUTH_TOKEN`. Stored credentials own a provider until logout.
+Providers without either are always available.
 The untouched defaults are returned by
 `require("neoagent.registry").defaults()`.
 
@@ -573,8 +597,9 @@ The direct Model constructor requires no setup: >lua
 <
 Use `require("neoagent.api.anthropic_messages").new` for an Anthropic Messages
 endpoint with the same Model interface. It sends `POST /messages`,
-`anthropic-version: 2023-06-01`, `x-api-key` authentication when `api_key` is
-set, Anthropic content and tool blocks, and `max_tokens`. The default
+`anthropic-version: 2023-06-01`, `x-api-key` authentication for API keys,
+Bearer authentication for `sk-ant-oat` OAuth tokens, Anthropic content and
+tool blocks, and `max_tokens`. The default
 `max_output_tokens` is 4096. Signed and redacted thinking blocks are replayed;
 unsigned thinking is replayed as text. Streamed message, content, usage, stop,
 and error events are normalized into Neoagent messages and events.

@@ -91,7 +91,9 @@ the API and UI layers. A stored credential owns its provider; an ambient API
 key is consulted when storage has no credential, and deleting the stored value
 restores the ambient source. OAuth refresh, login writes, and deletion are
 serialized by the credential store. Enumeration exposes only credential IDs
-and types. The configured Codex composition injects a private rotating JSONL
+and types. Anthropic's plan composition uses cancellable PKCE callback or
+manual-code login and derives Claude Code identity headers at request time.
+The configured Codex composition injects a private rotating JSONL
 diagnostic sink; direct Model construction remains independent from file
 logging.
 

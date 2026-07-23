@@ -9,6 +9,8 @@ local defaults = {
   deepseek = require("neoagent.registry.deepseek"),
   zai = require("neoagent.registry.zai"),
   ["zai-coding-plan"] = require("neoagent.registry.zai_coding_plan"),
+  anthropic = require("neoagent.registry.anthropic"),
+  ["anthropic-plan"] = require("neoagent.registry.anthropic_plan"),
 }
 
 local function compose_models(base, user)

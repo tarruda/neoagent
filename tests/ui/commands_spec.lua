@@ -206,6 +206,8 @@ describe("neoagent commands", function()
     assert.is_true(vim.tbl_contains(completions, "openai"))
     assert.is_true(vim.tbl_contains(completions, "deepseek"))
     assert.is_true(vim.tbl_contains(completions, "zai"))
+    assert.is_true(vim.tbl_contains(completions, "anthropic"))
+    assert.is_true(vim.tbl_contains(completions, "anthropic-plan"))
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Select Neoagent credential to remove:", options.prompt)
       for _, item in ipairs(items) do

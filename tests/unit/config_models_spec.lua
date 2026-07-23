@@ -10,15 +10,21 @@ describe("neoagent configuration and model resolution", function()
   local original_openai_key
   local original_deepseek_key
   local original_zai_key
+  local original_anthropic_key
+  local original_anthropic_oauth_token
 
   before_each(function()
     config._reset()
     original_openai_key = vim.env.OPENAI_API_KEY
     original_deepseek_key = vim.env.DEEPSEEK_API_KEY
     original_zai_key = vim.env.ZAI_API_KEY
+    original_anthropic_key = vim.env.ANTHROPIC_API_KEY
+    original_anthropic_oauth_token = vim.env.ANTHROPIC_OAUTH_TOKEN
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
+    vim.env.ANTHROPIC_API_KEY = nil
+    vim.env.ANTHROPIC_OAUTH_TOKEN = nil
   end)
 
   after_each(function()
@@ -26,6 +32,8 @@ describe("neoagent configuration and model resolution", function()
     vim.env.OPENAI_API_KEY = original_openai_key
     vim.env.DEEPSEEK_API_KEY = original_deepseek_key
     vim.env.ZAI_API_KEY = original_zai_key
+    vim.env.ANTHROPIC_API_KEY = original_anthropic_key
+    vim.env.ANTHROPIC_OAUTH_TOKEN = original_anthropic_oauth_token
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -325,6 +333,111 @@ describe("neoagent configuration and model resolution", function()
     assert.is_true(request.body.tool_stream)
     assert.are.equal(32768, request.body.max_completion_tokens)
     assert.are.equal(128000, glm46v.context_window)
+  end)
+
+  it("resolves Anthropic API-key and Claude plan catalogs", function()
+    local path = vim.fn.tempname() .. "/auth.json"
+    vim.env.ANTHROPIC_API_KEY = "anthropic-key"
+    config.setup({ auth = { path = path } })
+
+    local configured = config.get()
+    assert.are.equal("anthropic-messages", configured.providers.anthropic.api)
+    assert.are.equal("https://api.anthropic.com/v1", configured.providers.anthropic.base_url)
+    assert.are.equal("anthropic", configured.providers.anthropic.auth)
+    assert.are.equal("anthropic-plan", configured.providers["anthropic-plan"].auth)
+    local stored_key_opts = configured.auth.methods.anthropic.request_opts({
+      type = "api_key", key = "stored-anthropic",
+    })
+    assert.are.equal("stored-anthropic", stored_key_opts.headers["x-api-key"])
+    local available = assert(models.available())
+    for _, id in ipairs({
+      "claude-opus-4-1", "claude-opus-4-1-20250805",
+      "claude-opus-4-5", "claude-opus-4-5-20251101",
+      "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+      "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
+      "claude-sonnet-4-6", "claude-sonnet-5",
+      "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-fable-5",
+    }) do
+      assert.is_true(vim.tbl_contains(available, "anthropic/" .. id))
+    end
+    assert.is_false(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
+
+    local opus = models.resolve("anthropic", "claude-opus-4-8")
+    assert.are.same({ "low", "medium", "high", "xhigh", "max" },
+      require("neoagent.thinking").levels(opus))
+    local tools = { {
+      name = "inspect",
+      description = "Inspect a path",
+      input_schema = { type = "object", properties = { path = { type = "string" } } },
+    } }
+    local request = opus._model:_request({
+      system_prompt = "Be concise",
+      messages = { { role = "user", content = "Inspect it" } },
+      tools = tools,
+      request_opts = opus.thinking.xhigh,
+    })
+    assert.are.equal("https://api.anthropic.com/v1/messages", request.url)
+    assert.are.equal("anthropic-key", request.headers["x-api-key"])
+    assert.are.equal(1000000, opus.context_window)
+    assert.are.equal(128000, request.body.max_tokens)
+    assert.are.same({ type = "adaptive", display = "summarized" }, request.body.thinking)
+    assert.are.equal("xhigh", request.body.output_config.effort)
+    assert.are.equal("Be concise", request.body.system[1].text)
+    assert.are.equal("ephemeral", request.body.system[1].cache_control.type)
+    assert.are.equal("ephemeral", request.body.messages[1].content[1].cache_control.type)
+    assert.is_true(request.body.tools[1].eager_input_streaming)
+    assert.are.equal("ephemeral", request.body.tools[1].cache_control.type)
+
+    local haiku = models.resolve("anthropic", "claude-haiku-4-5")
+    assert.are.same({ "off", "minimal", "low", "medium", "high" },
+      require("neoagent.thinking").levels(haiku))
+    request = haiku._model:_request({
+      messages = { { role = "user", content = "Hello" } },
+      tools = {},
+      request_opts = haiku.thinking.medium,
+    })
+    assert.are.equal("interleaved-thinking-2025-05-14", request.headers["anthropic-beta"])
+    assert.are.same({
+      type = "enabled", budget_tokens = 8192, display = "summarized",
+    }, request.body.thinking)
+    assert.are.equal(64000, request.body.max_tokens)
+    request = haiku._model:_request({
+      messages = {}, tools = {}, request_opts = haiku.thinking.off,
+    })
+    assert.are.same({ type = "disabled" }, request.body.thinking)
+    assert.are.equal("interleaved-thinking-2025-05-14", request.headers["anthropic-beta"])
+
+    vim.env.ANTHROPIC_OAUTH_TOKEN = "sk-ant-oat-environment"
+    available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
+    local ambient_plan = models.resolve("anthropic-plan", "claude-haiku-4-5")
+    request = ambient_plan._model:_request({
+      messages = {}, tools = {}, request_opts = ambient_plan.thinking.medium,
+    })
+    assert.are.equal("Bearer sk-ant-oat-environment", request.headers.Authorization)
+    assert.matches("oauth%-2025", request.headers["anthropic-beta"])
+    vim.env.ANTHROPIC_OAUTH_TOKEN = nil
+
+    assert(require("neoagent.auth.store").new(path):write("anthropic-plan", {
+      type = "oauth", access = "plan-access", refresh = "plan-refresh", expires = 9999999999999,
+    }))
+    available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
+    local plan = models.resolve("anthropic-plan", "claude-opus-4-8")
+    request = plan._model:_request({
+      system_prompt = "Use the project tools",
+      messages = { { role = "user", content = {
+        { type = "text", text = "Inspect it" },
+      } } },
+      tools = tools,
+      request_opts = plan.thinking.high,
+    })
+    assert.are.equal("You are Claude Code, Anthropic's official CLI for Claude.",
+      request.body.system[1].text)
+    assert.are.equal("Use the project tools", request.body.system[2].text)
+    assert.are.equal("ephemeral", request.body.messages[1].content[1].cache_control.type)
+    assert.is_nil(request.headers["x-api-key"])
+    vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 
   it("prefers stored API keys and resumes ambient keys after logout", function()
