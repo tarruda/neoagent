@@ -16,6 +16,33 @@ vim.env.XDG_STATE_HOME = root .. "/.test-data/state"
 vim.env.XDG_CACHE_HOME = root .. "/.test-data/cache"
 vim.opt.shadafile = "NONE"
 
+local clipboard_contents = {
+  ["+"] = { {}, "v" },
+  ["*"] = { {}, "v" },
+}
+local function clipboard_copy(register)
+  return function(lines, regtype)
+    clipboard_contents[register] = { vim.deepcopy(lines), regtype }
+  end
+end
+local function clipboard_paste(register)
+  return function()
+    return vim.deepcopy(clipboard_contents[register])
+  end
+end
+vim.g.clipboard = {
+  name = "neoagent-test",
+  copy = {
+    ["+"] = clipboard_copy("+"),
+    ["*"] = clipboard_copy("*"),
+  },
+  paste = {
+    ["+"] = clipboard_paste("+"),
+    ["*"] = clipboard_paste("*"),
+  },
+  cache_enabled = 0,
+}
+
 if vim.env.NEOAGENT_COVERAGE == "1" then
   vim.fn.mkdir(root .. "/.coverage", "p")
   local runner = require("luacov.runner")

@@ -41,3 +41,22 @@ jobs:
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
         run: make test
+
+  test-macos:
+    name: test (macOS, stable)
+    runs-on: macos-14
+    env:
+      NVIM: nvim
+      PLENARY_DIR: ${{ github.workspace }}/.deps/plenary.nvim
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install system dependencies
+        run: brew install ripgrep fd imagemagick
+      - name: Install pinned test dependencies
+        run: make deps
+      - name: Run complete suite
+        run: make test

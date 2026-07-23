@@ -4,7 +4,7 @@ NVIM ?= nvim
 PLENARY_DIR ?= $(CURDIR)/.deps/plenary.nvim
 TEST_CMD = $(NVIM) --headless --noplugin -u tests/minimal_init.lua
 TEST_ENV = NEOAGENT_NVIM=$(NVIM) PLENARY_DIR=$(PLENARY_DIR)
-PLENARY_COMMIT = 1ee0ded0564accb986115039a1798a95917b789c
+PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
 .PHONY: deps test test-unit test-integration test-ui coverage coverage-report coverage-check clean

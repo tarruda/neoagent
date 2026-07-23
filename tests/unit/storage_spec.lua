@@ -8,7 +8,7 @@ local original_write_all = fs.write_all
 local function tempdir()
   local path = vim.fn.tempname()
   assert.are.equal(1, vim.fn.mkdir(path, "p"))
-  return path
+  return assert(vim.uv.fs_realpath(path))
 end
 
 describe("neoagent.storage", function()

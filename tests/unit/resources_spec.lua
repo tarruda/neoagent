@@ -162,8 +162,8 @@ describe("neoagent contextual resources", function()
     skill(root, "missing-description", "---\nname: missing-description\n---\nBody\n")
     skill(root, "long-description", "---\nname: long-description\ndescription: "
       .. string.rep("x", 1025) .. "\n---\nBody\n")
-    local unreadable = skill(root, "unreadable",
-      "---\nname: unreadable\ndescription: denied\n---\nBody\n")
+    local unreadable = assert(vim.uv.fs_realpath(skill(root, "unreadable",
+      "---\nname: unreadable\ndescription: denied\n---\nBody\n")))
 
     local original = fs.read
     fs.read = function(path)
