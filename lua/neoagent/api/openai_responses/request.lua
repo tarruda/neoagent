@@ -76,7 +76,7 @@ local function encode_messages(messages, system_prompt, include_system)
             type = "function_call",
             call_id = call_id,
             name = block.name,
-            arguments = vim.json.encode(block.arguments or vim.empty_dict()),
+            arguments = util.json_encode(block.arguments or vim.empty_dict()),
           }
           if item_id then item.id = item_id end
           result[#result + 1] = item

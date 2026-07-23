@@ -70,6 +70,9 @@ changes.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
+- Model request bodies and replayed JSON tool arguments use canonical key
+  ordering so process restarts do not perturb otherwise unchanged prompt-cache
+  prefixes for persisted Sessions.
 - Thinking levels are model-declared request-option layers. The default
   controller selects and displays a level; Models and `agent.run()` do not
   interpret thinking semantics.
@@ -124,6 +127,9 @@ changes.
   defines a current API guarantee, safety boundary, prohibition, or error.
 - Preserve unrelated user changes and generated local configuration.
 - Keep public behavior documented in `README.md` and `doc/neoagent.txt`.
+- Keep `README.md` focused on presenting the project and concise setup; place
+  implementation details and narrow behavioral guarantees in
+  `doc/neoagent.txt` or `architecture.md`.
 - Track multi-step implementation work in `TODO.md` when requested.
 - Do not weaken validation, cancellation, or coverage collection merely to
   make a test pass.

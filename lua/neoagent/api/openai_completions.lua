@@ -65,7 +65,7 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
           calls[#calls + 1] = {
             id = block.id,
             type = "function",
-            ["function"] = { name = block.name, arguments = vim.json.encode(block.arguments or vim.empty_dict()) },
+            ["function"] = { name = block.name, arguments = util.json_encode(block.arguments or vim.empty_dict()) },
           }
         end
       end
@@ -325,7 +325,7 @@ function Model:stream(opts)
         request = {
           url = request.url,
           headers = request.headers,
-          body = vim.json.encode(request.body),
+          body = util.json_encode(request.body),
         },
         on_chunk = function(chunk)
           local parsed, err = parser:feed(chunk)

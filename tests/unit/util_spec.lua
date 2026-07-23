@@ -29,6 +29,21 @@ describe("neoagent.util", function()
     assert.are.equal("json", result.Accept)
   end)
 
+  it("encodes JSON objects canonically across persistence round trips", function()
+    local value = vim.json.decode(
+      [[{"zeta":true,"items":[{"d":4,"c":3}],"alpha":{"b":2,"a":1}}]]
+    )
+    local expected = [[{"alpha":{"a":1,"b":2},"items":[{"c":3,"d":4}],"zeta":true}]]
+    assert.are.equal(expected, util.json_encode(value))
+    assert.are.equal(expected, util.json_encode(vim.json.decode(vim.json.encode(value))))
+    assert.are.equal("null", util.json_encode(vim.NIL))
+    local cyclic = {}
+    cyclic.self = cyclic
+    assert.has_error(function() util.json_encode(cyclic) end, "cannot encode circular JSON value")
+    assert.has_error(function() util.json_encode({ [0] = "invalid" }) end,
+      "JSON object keys must be strings")
+  end)
+
   it("normalizes list and message content values", function()
     assert.is_false(util.is_list("not a table"))
     assert.is_true(util.is_list(util.list()))

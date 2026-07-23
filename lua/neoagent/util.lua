@@ -19,6 +19,33 @@ function M.is_list(value)
   return vim.tbl_islist(value)
 end
 
+local function encode_json(value, stack)
+  if type(value) ~= "table" then return vim.json.encode(value) end
+  if stack[value] then error("cannot encode circular JSON value", 0) end
+  stack[value] = true
+  local parts = {}
+  if M.is_list(value) then
+    for index = 1, #value do parts[index] = encode_json(value[index], stack) end
+    stack[value] = nil
+    return "[" .. table.concat(parts, ",") .. "]"
+  end
+  local keys = {}
+  for key in pairs(value) do
+    if type(key) ~= "string" then error("JSON object keys must be strings", 0) end
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    parts[#parts + 1] = vim.json.encode(key) .. ":" .. encode_json(value[key], stack)
+  end
+  stack[value] = nil
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
+function M.json_encode(value)
+  return encode_json(value, {})
+end
+
 function M.copy(value, seen)
   if type(value) ~= "table" then
     return value

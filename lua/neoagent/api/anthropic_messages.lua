@@ -244,7 +244,7 @@ function Model:stream(opts)
         request = {
           url = outgoing.url,
           headers = outgoing.headers,
-          body = vim.json.encode(outgoing.body),
+          body = util.json_encode(outgoing.body),
         },
         on_chunk = function(chunk)
           local parsed, err = parser:feed(chunk)

@@ -136,7 +136,8 @@ describe("neoagent.api.openai_responses", function()
             type = "reasoning", id = "rs_saved", encrypted_content = "cipher", summary = util.list(),
           }) },
           { type = "text", text = "checking", phase = "commentary", textSignature = '{"id":"msg_saved"}' },
-          { type = "toolCall", id = "call_saved|fc_saved", name = "inspect", arguments = { path = "x.lua" } },
+          { type = "toolCall", id = "call_saved|fc_saved", name = "inspect",
+            arguments = { zeta = true, path = "x.lua", alpha = { second = 2, first = 1 } } },
         } },
         { role = "toolResult", toolCallId = "call_saved|fc_saved", content = {
           { type = "text", text = "image" },
@@ -173,6 +174,8 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("msg_saved", request.body.input[4].id)
     assert.are.equal("commentary", request.body.input[4].phase)
     assert.are.equal("fc_saved", request.body.input[5].id)
+    assert.are.equal([[{"alpha":{"first":1,"second":2},"path":"x.lua","zeta":true}]],
+      request.body.input[5].arguments)
     assert.are.equal("data:image/jpeg;base64,BBBB", request.body.input[6].output[2].image_url)
     assert.are.equal("(no tool output)", request.body.input[7].output)
     assert.is_nil(request.body.input[8].id)

@@ -41,6 +41,10 @@ Example for llama.cpp: >lua
     default_model = { provider = "local_llama", model = "coder" },
   })
 <
+Model requests use canonical JSON object ordering, including replayed tool-call
+arguments. Process restarts preserve otherwise unchanged local prompt-cache
+prefixes across persisted conversation resumes.
+
 For a Responses-compatible endpoint with request-time thinking levels: >lua
 
   providers = {

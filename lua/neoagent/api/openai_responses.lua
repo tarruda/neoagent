@@ -33,7 +33,7 @@ function Model:stream(opts)
         request = {
           url = request.url,
           headers = request.headers,
-          body = vim.json.encode(request.body),
+          body = util.json_encode(request.body),
         },
         on_chunk = function(chunk)
           local parsed, err = parser:feed(chunk)

@@ -29,7 +29,10 @@ describe("neoagent.api.openai_completions", function()
     assert.are.same({ text = "ok" }, result.message.content[3].arguments)
     assert.are.equal(5, result.message.usage.totalTokens)
     assert.are.equal(5, #events)
-    assert.is_truthy(fake.requests[1].body:find('"parameters":{}', 1, true))
+    assert.are.equal(1, fake.requests[1].body:find('{"messages":', 1, true))
+    assert.is_truthy(fake.requests[1].body:find(
+      '"function":{"description":"Echo","name":"echo","parameters":{}}', 1, true
+    ))
   end)
 
   it("recursively merges request options without mutating inputs", function()
@@ -88,7 +91,8 @@ describe("neoagent.api.openai_completions", function()
         } },
         { role = "assistant", content = {
           { type = "text", text = "checking" },
-          { type = "toolCall", id = "call-1", name = "inspect", arguments = { path = "x.lua" } },
+          { type = "toolCall", id = "call-1", name = "inspect",
+            arguments = { zeta = true, path = "x.lua", alpha = { second = 2, first = 1 } } },
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
           { type = "image", mimeType = "image/jpeg", data = "BBBB" },
@@ -107,7 +111,8 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal("Be precise", request.body.messages[1].content)
     assert.are.equal("data:image/png;base64,AAAA", request.body.messages[2].content[2].image_url.url)
     assert.are.equal("checking", request.body.messages[3].content)
-    assert.are.same({ path = "x.lua" }, vim.json.decode(request.body.messages[3].tool_calls[1]["function"].arguments))
+    assert.are.equal([[{"alpha":{"first":1,"second":2},"path":"x.lua","zeta":true}]],
+      request.body.messages[3].tool_calls[1]["function"].arguments)
     assert.are.equal("(see attached image)", request.body.messages[4].content)
     assert.are.equal("data:image/jpeg;base64,BBBB", request.body.messages[5].content[2].image_url.url)
     assert.are.equal("(no tool output)", request.body.messages[6].content)
