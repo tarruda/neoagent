@@ -150,6 +150,10 @@ describe("neoagent provider authentication", function()
     local available, err = manager:has_credentials("key")
     assert.is_nil(available)
     assert.matches("invalid", err.message)
+    storage.values.key.env = { ACCOUNT_ID = "" }
+    available, err = manager:has_credentials("key")
+    assert.is_nil(available)
+    assert.matches("invalid", err.message)
 
     local blank = wait(manager:login("key", {
       prompt = function(_, done) done.resolve("  ") end,
@@ -224,6 +228,56 @@ describe("neoagent provider authentication", function()
     end })
     manager = auth.new({ methods = { plan = bad }, store = storage })
     assert.matches("invalid credential", wait(manager:resolve("plan")).error.message)
+  end)
+
+  it("protects OAuth refresh against missing support and credential races", function()
+    local expired = { access = "old", refresh = "refresh", expires = 10 }
+    local without_refresh = auth.new({
+      methods = { plan = method({ refresh = false }) },
+      store = memory_store({ plan = expired }),
+      now = function() return 10 end,
+    })
+    assert.matches("cannot refresh", wait(without_refresh:resolve("plan")).error.message)
+
+    local reads = 0
+    local refreshed = { access = "concurrent", refresh = "new", expires = 500 }
+    local concurrent_store = memory_store()
+    concurrent_store.read = function()
+      reads = reads + 1
+      return vim.deepcopy(reads == 1 and expired or refreshed)
+    end
+    local concurrent = auth.new({
+      methods = { plan = method() }, store = concurrent_store, now = function() return 10 end,
+    })
+    local result = wait(concurrent:resolve("plan"))
+    assert.is_true(result.ok)
+    assert.are.equal("Bearer concurrent", result.request_opts.headers.Authorization)
+
+    local function modifying_store(current, replacement)
+      local store = memory_store({ plan = expired })
+      store.modify = function(_, _, fn)
+        return async.run(function()
+          fn(vim.deepcopy(current))
+          return { ok = true, credential = vim.deepcopy(replacement) }
+        end)
+      end
+      return store
+    end
+    local changed_during_refresh = auth.new({
+      methods = { plan = method() },
+      store = modifying_store(expired, {}),
+      now = function() return 10 end,
+    })
+    assert.matches("changed during refresh",
+      wait(changed_during_refresh:resolve("plan")).error.message)
+
+    local invalid_during_refresh = auth.new({
+      methods = { plan = method() },
+      store = modifying_store({}, refreshed),
+      now = function() return 10 end,
+    })
+    assert.matches("Stored credential is invalid",
+      wait(invalid_during_refresh:resolve("plan")).error.message)
   end)
 
   it("stores credentials only when written and uses restrictive modes", function()

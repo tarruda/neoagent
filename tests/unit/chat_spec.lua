@@ -64,6 +64,49 @@ describe("neoagent.chat", function()
     assert.are.equal("existing", model.requests[1].messages[1].content)
   end)
 
+  it("accepts explicit context projections without exposing mutable input", function()
+    local session = assert(Session.new({ messages = { { role = "user", content = "stored" } } }))
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "function" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "table" } }) },
+    })
+    local projected = { { role = "user", content = "projected" } }
+    local result = wait(chat.continue(session, {
+      model = model,
+      context_messages = function(selected)
+        assert.are.equal(session, selected)
+        return projected
+      end,
+    }))
+    assert.is_true(result.ok)
+    projected[1].content = "changed"
+    assert.are.equal("projected", model.requests[1].messages[1].content)
+
+    result = wait(chat.continue(session, {
+      model = model,
+      context_messages = { { role = "user", content = "fixed" } },
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal("fixed", model.requests[2].messages[1].content)
+  end)
+
+  it("clears active state after synchronous startup failures", function()
+    local session = assert(Session.new())
+    local throwing = { stream = function() error("stream startup failed") end }
+    local sent = chat.send(session, "first", { model = throwing })
+    assert.is_true(sent:is_done())
+    assert.matches("stream startup failed", sent:result().error.message)
+
+    local invalid = chat.run(session, "second", { model = {} })
+    assert.is_true(invalid:is_done())
+    assert.matches("model is required", invalid:result().error.message)
+
+    local recovered = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    assert.is_true(wait(chat.send(session, "third", { model = recovered })).ok)
+  end)
+
   it("rejects a second active mutation", function()
     local session = assert(Session.new())
     local model = {

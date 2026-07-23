@@ -183,6 +183,35 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.are.same({ 200 }, delays)
   end)
 
+  it("honors provider retry delays with the default cancellable timer", function()
+    local output = { {
+      type = "message", id = "msg", role = "assistant", status = "completed",
+      content = { { type = "output_text", text = "recovered", annotations = {} } },
+    } }
+    local transport = fake_transport.new({
+      { error = {
+        kind = "transport",
+        message = "HTTP 429: slow down",
+        response = { status = 429, headers = { ["retry-after-ms"] = "1" } },
+      } },
+      { chunks = { event({
+        type = "response.done",
+        response = { id = "response", status = "completed", output = output },
+      }) } },
+    })
+    local result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = transport,
+      request_max_retries = 1,
+    }):stream({ messages = {} }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("recovered", result.text)
+    assert.are.equal(2, #transport.requests)
+  end)
+
   it("cancels a Codex request during retry backoff", function()
     local retrying = false
     local transport = fake_transport.new({ { error = {

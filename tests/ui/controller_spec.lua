@@ -351,6 +351,19 @@ describe("neoagent default controller", function()
     local compacted, err = neoagent.compact()
     assert.is_nil(compacted)
     assert.matches("Nothing can be compacted", err.message)
+
+    neoagent.setup({
+      default_registry = false,
+      persistence = { enabled = false },
+      providers = {},
+      tools = {},
+      agents = false,
+      skills = false,
+    })
+    assert(neoagent.new_session())
+    local unresolved, model_err = neoagent.compact()
+    assert.is_nil(unresolved)
+    assert.matches("No default_model", model_err.message)
   end)
 
   it("cycles model thinking profiles and applies them at request time", function()
@@ -549,6 +562,25 @@ describe("neoagent default controller", function()
     calls[2].on_done({ ok = false, error = { kind = "cancelled", message = "done" } })
   end)
 
+  it("restores queued steering when a scheduled submission cannot start", function()
+    local calls = {}
+    setup_model(fake_model.new({}), {
+      interaction = function(options)
+        calls[#calls + 1] = options
+        if #calls > 1 then error("queued interaction failed") end
+        return { cancel = function() end }
+      end,
+    })
+    assert(neoagent.send("begin"))
+    assert.is_true(neoagent.send("queued"))
+    calls[1].on_done({ ok = true })
+    assert(vim.wait(1000, function()
+      return #calls == 2 and neoagent._state().status == "idle"
+        and vim.deep_equal(neoagent.default():snapshot().context.steering, { "queued" })
+    end))
+    assert.are.equal(2, #calls)
+  end)
+
   it("creates no persistent file merely by opening or starting a new session", function()
     local directory = vim.fn.tempname()
     local model = fake_model.new({})
@@ -667,6 +699,86 @@ describe("neoagent default controller", function()
     assert.are.equal("low", neoagent.get_thinking_level())
     assert(neoagent.set_model("fake", "test"))
     assert.are.equal("alpha", assert(settings:load()).controllers.Neo.default_model.model)
+  end)
+
+  it("keeps model and thinking changes consistent across persistence failures", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local model = fake_model.new({})
+    setup_model(model, {
+      persistence = { enabled = true, workspace_settings = true, directory = directory },
+      default_thinking_level = "low",
+      providers = { fake = { api = "fake-api", models = { test = { thinking = {
+        off = {}, low = {}, high = {},
+      } } } } },
+    })
+    local controller = neoagent.default()
+    assert(controller:prepare())
+    local state = controller:_state()
+    local save_error = { kind = "storage", message = "settings unavailable" }
+    state.workspace_settings = { update = function() return nil, save_error end }
+
+    state.store = nil
+    local selected, err = controller:set_model("fake", "test")
+    assert.is_nil(selected)
+    assert.are.equal(save_error, err)
+
+    local journal_error = { kind = "storage", message = "journal unavailable" }
+    state.store = {
+      append_model_change = function() return nil, journal_error end,
+    }
+    selected, err = controller:set_model("fake", "test")
+    assert.is_nil(selected)
+    assert.are.equal(journal_error, err)
+
+    state.store_seeded = false
+    state.store = {
+      append_model_change = function() return true end,
+      append_thinking_level_change = function() return nil, journal_error end,
+    }
+    selected, err = controller:set_model("fake", "test")
+    assert.is_nil(selected)
+    assert.are.equal(journal_error, err)
+
+    state.store = {
+      append_model_change = function() return true end,
+      append_thinking_level_change = function() return true end,
+    }
+    selected = assert(controller:set_model("fake", "test"))
+    assert.are.equal(model, selected)
+    assert.is_true(state.store_seeded)
+
+    state.store.append_thinking_level_change = function() return nil, journal_error end
+    local level
+    level, err = controller:set_thinking_level("high")
+    assert.is_nil(level)
+    assert.are.equal(journal_error, err)
+
+    state.store = nil
+    level, err = controller:set_thinking_level("high")
+    assert.is_nil(level)
+    assert.are.equal(save_error, err)
+    assert.are.equal("low", controller:get_thinking_level())
+
+    state.store = { append_thinking_level_change = function() return true end }
+    assert.are.equal("high", controller:set_thinking_level("high"))
+    assert.are.equal("high", controller:get_thinking_level())
+  end)
+
+  it("cancels interaction and authentication Runs when destroyed", function()
+    setup_model(fake_model.new({}))
+    local controller = neoagent.default()
+    local cancelled = {}
+    local state = controller:_state()
+    state.run = { cancel = function() cancelled.run = true end }
+    state.login_run = { cancel = function() cancelled.login = true end }
+    state.logout_run = { cancel = function() cancelled.logout = true end }
+
+    controller:destroy()
+    assert.are.same({ run = true, login = true, logout = true }, cancelled)
+    assert.is_nil(state.run)
+    assert.is_nil(state.login_run)
+    assert.is_nil(state.logout_run)
   end)
 
   it("falls back from invalid workspace and session preferences", function()
@@ -968,6 +1080,7 @@ describe("neoagent default controller", function()
 
   it("reports branch and fork selection preconditions", function()
     setup_model(fake_model.new({}))
+    assert.is_nil(neoagent.steer("idle steering"))
     assert.is_nil(neoagent.branch("missing"))
     assert.is_nil(neoagent.select_branch())
     assert.is_nil(neoagent.fork())

@@ -154,6 +154,35 @@ describe("neoagent bundled tools", function()
     assert.are.equal(png, vim.base64.decode(result.content[2].data))
   end)
 
+  it("re-encodes oversized images as bounded JPEG payloads", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local png = "\137PNG\r\n\26\nraw"
+    assert(fs.write_all(root .. "/image.png", png, "w"))
+    local magick = root .. "/magick"
+    assert(fs.write_all(magick, table.concat({
+      "#!/bin/sh",
+      "if [ \"$1\" = identify ]; then",
+      "  case \"$4\" in *.jpg) printf '1600 1600' ;; *) printf '3000 3000' ;; esac",
+      "  exit 0",
+      "fi",
+      "for output do :; done",
+      "case \" $* \" in",
+      "  *' -quality '*) printf 'bounded jpeg' > \"$output\" ;;",
+      "  *) dd if=/dev/zero of=\"$output\" bs=3600000 count=1 2>/dev/null ;;",
+      "esac",
+    }, "\n"), "w"))
+    assert(vim.uv.fs_chmod(magick, 493))
+    local old_path = vim.env.PATH
+    vim.env.PATH = root .. ":" .. old_path
+    local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
+    vim.env.PATH = old_path
+
+    assert.are.equal("image/jpeg", result.content[2].mimeType)
+    assert.are.equal("bounded jpeg", vim.base64.decode(result.content[2].data))
+    assert.matches("Resized from 3000x3000 to 1600x1600", result.content[1].text)
+  end)
+
   it("applies exact and tolerant edits while preserving BOM and CRLF", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root

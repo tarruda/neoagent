@@ -79,6 +79,24 @@ describe("neoagent.ui", function()
     assert.matches("does not fit", err)
   end)
 
+  it("uses configured border characters in the transcript footer", function()
+    local cases = {
+      { border = { "a", "b", "c", "d", "e", { "B", "NeoagentBorder" } }, expected = "B" },
+      { border = "double", expected = "═" },
+      { border = "solid", expected = " " },
+    }
+    for _, case in ipairs(cases) do
+      local result = view({ border = case.border })
+      local border = {}
+      for _, chunk in ipairs(result:_transcript_footer(20)) do
+        if chunk[2] == "NeoagentBorder" then border[#border + 1] = chunk[1] end
+      end
+      local rendered = table.concat(border)
+      assert.is_true(#rendered > 0)
+      assert.are.equal(case.expected, vim.fn.strcharpart(rendered, 0, 1))
+    end
+  end)
+
   it("opens ordinary focusable buffers and preserves the draft across close", function()
     local origin = vim.api.nvim_get_current_win()
     local result = view({ position = "center" })
@@ -290,9 +308,14 @@ describe("neoagent.ui", function()
 
   it("reconstructs history, reports failures, and docks in place", function()
     local result = view({ position = "right" })
+    assert.are.equal(vim.o.columns - 2, result:_content_width())
     result:set_messages({
       { role = "user", content = "hello" },
       { role = "assistant", content = { { type = "text", text = "hi" } } },
+      { role = "branchSummary", summary = "returned branch context" },
+      { role = "custom", display = true, content = "visible checkpoint" },
+      { role = "custom", display = false, content = "hidden checkpoint" },
+      { role = "bashExecution", command = "make test", output = "failed", exitCode = 2 },
     })
     assert(result:open())
     assert(vim.wait(1000, function() return text(result):match("hello") ~= nil end))
@@ -303,6 +326,12 @@ describe("neoagent.ui", function()
     result:finish({ ok = false, error = { kind = "model", message = "broken" } })
     assert(vim.wait(1000, function() return text(result):match("broken") ~= nil end))
     assert.matches("broken", text(result))
+    assert.matches("Branch context", text(result))
+    assert.matches("returned branch context", text(result))
+    assert.matches("visible checkpoint", text(result))
+    assert.not_matches("hidden checkpoint", text(result))
+    assert.matches("%$ make test", text(result))
+    assert.matches("failed", text(result))
   end)
 
   it("collapses read output and expands all returned lines", function()

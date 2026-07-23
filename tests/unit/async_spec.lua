@@ -70,6 +70,38 @@ describe("neoagent.async", function()
     assert.matches("could not start", failed:result().error.message)
   end)
 
+  it("reports callback failures without changing the completed Run", function()
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message = message, level = level }
+    end
+    local run = async.run(function() return { ok = true } end, {
+      on_done = function() error("callback exploded") end,
+    })
+    assert(vim.wait(1000, function() return #notifications == 1 end))
+    vim.notify = original_notify
+
+    assert.is_true(run:result().ok)
+    assert.matches("callback exploded", notifications[1].message)
+    assert.are.equal(vim.log.levels.ERROR, notifications[1].level)
+  end)
+
+  it("honors cancellation before awaiting and ignores late handlers", function()
+    local run = async.run(function(self)
+      self:cancel()
+      async.await(function() end)
+    end)
+    assert.is_true(run:is_done())
+    assert.is_false(run:result().ok)
+    assert.are.equal("cancelled", run:result().error.kind)
+
+    local called = false
+    local remove = run:on_cancel(function() called = true end)
+    remove()
+    assert.is_false(called)
+  end)
+
   it("provides stable behavior after completion", function()
     local run = async.run(function() end)
     assert.is_true(run:is_done())

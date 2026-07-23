@@ -184,6 +184,17 @@ describe("neoagent contextual resources", function()
       result.diagnostics), "skill name is required"))
   end)
 
+  it("adds interaction guidance for Codex response models", function()
+    local prompt = require("neoagent.system_prompt").default({
+      model = { api = "openai-codex-responses" },
+      workspace = { cwd = "/workspace" },
+      tools = {},
+    })
+    assert.matches("Share concise progress updates", prompt)
+    assert.matches("commentary", prompt)
+    assert.matches("final", prompt)
+  end)
+
   it("deduplicates linked skill files and reports directory scan failures", function()
     local base = vim.fn.tempname()
     local root = base .. "/skills"

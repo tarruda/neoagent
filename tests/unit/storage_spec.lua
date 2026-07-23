@@ -1,5 +1,9 @@
 local Session = require("neoagent.session")
 local storage = require("neoagent.storage")
+local fs = require("neoagent.fs")
+
+local original_mkdirp = fs.mkdirp
+local original_write_all = fs.write_all
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -11,6 +15,8 @@ describe("neoagent.storage", function()
   local dirs = {}
 
   after_each(function()
+    fs.mkdirp = original_mkdirp
+    fs.write_all = original_write_all
     for _, path in ipairs(dirs) do
       vim.fn.delete(path, "rf")
     end
@@ -136,6 +142,8 @@ describe("neoagent.storage", function()
       { lines = { "42" }, detail = "expected object" },
       { lines = { "{" }, detail = ".+" },
       { lines = { vim.json.encode({ type = "session", version = 2 }) }, detail = "expected pi session" },
+      { lines = { vim.json.encode(vim.tbl_extend("force", header, { parentSession = 42 })) },
+        detail = "parentSession must be a string" },
       { lines = { vim.json.encode({
         type = "session", version = 3, id = "session", timestamp = "time", cwd = directory, metadata = { 1 },
       }) }, detail = "metadata must be an object" },
@@ -159,6 +167,33 @@ describe("neoagent.storage", function()
       assert.is_nil(opened)
       assert.matches(case.detail, tostring(err.detail))
     end
+  end)
+
+  it("preserves in-memory state when session writes fail", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+
+    fs.mkdirp = function() return nil, "permission denied" end
+    local ok, err = store:append({ role = "user", content = "first" })
+    assert.is_nil(ok)
+    assert.matches("create session directory", err.message)
+    assert.are.equal(0, #store:entries())
+
+    fs.mkdirp = original_mkdirp
+    fs.write_all = function() return nil, "disk full" end
+    ok, err = store:append({ role = "user", content = "first" })
+    assert.is_nil(ok)
+    assert.matches("create session file", err.message)
+    assert.are.equal(0, #store:entries())
+
+    fs.write_all = original_write_all
+    assert(store:append({ role = "user", content = "first" }))
+    fs.write_all = function() return nil, "disk full" end
+    ok, err = store:append({ role = "assistant", content = {} })
+    assert.is_nil(ok)
+    assert.matches("append session entry", err.message)
+    assert.are.equal(1, #store:entries())
   end)
 
   it("round-trips every Pi v3 entry type and projects compacted context", function()

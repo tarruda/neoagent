@@ -437,6 +437,15 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("Use the project tools", request.body.system[2].text)
     assert.are.equal("ephemeral", request.body.messages[1].content[1].cache_control.type)
     assert.is_nil(request.headers["x-api-key"])
+
+    request = plan._model:_request({
+      messages = { { role = "user", content = {
+        { type = "text", text = "See image" },
+        { type = "image", mimeType = "image/png", data = "AAAA" },
+      } } },
+      tools = {},
+    })
+    assert.are.equal("ephemeral", request.body.messages[1].content[2].cache_control.type)
     vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 

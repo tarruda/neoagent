@@ -30,6 +30,7 @@ describe("Anthropic OAuth HTTP integration", function()
       now = function() return 1000000 end,
     })
     local callback_result
+    local rejected_callbacks = {}
     local login = method.login({
       prompt = function(prompt, done)
         assert.are.equal("select", prompt.type)
@@ -37,11 +38,25 @@ describe("Anthropic OAuth HTTP integration", function()
       end,
       notify = function(event)
         if event.type ~= "auth_url" then return end
+        assert.matches("Complete login in your browser", event.instructions)
         local state = assert(query_value(event.url, "state"))
-        vim.system({
-          "curl", "--silent", "--show-error",
-          "http://127.0.0.1:53692/callback?code=callback-code&state=" .. vim.uri_encode(state),
-        }, { text = true }, function(result) callback_result = result end)
+        local base = "http://127.0.0.1:53692"
+        local function request(path, next_request)
+          vim.system({ "curl", "--silent", "--show-error", base .. path }, { text = true }, function(result)
+            rejected_callbacks[#rejected_callbacks + 1] = result.stdout
+            next_request()
+          end)
+        end
+        request("/wrong", function()
+          request("/callback?code=wrong&state=wrong", function()
+            request("/callback?state=" .. vim.uri_encode(state), function()
+              vim.system({
+                "curl", "--silent", "--show-error",
+                base .. "/callback?code=callback-code&state=" .. vim.uri_encode(state),
+              }, { text = true }, function(result) callback_result = result end)
+            end)
+          end)
+        end)
       end,
     })
     local logged_in = wait(login)
@@ -50,6 +65,10 @@ describe("Anthropic OAuth HTTP integration", function()
     assert.are.equal("access-1", logged_in.credential.access)
     assert(vim.wait(1000, function() return callback_result ~= nil end))
     assert.are.equal(0, callback_result.code)
+    assert.are.equal(3, #rejected_callbacks)
+    assert.matches("Callback route not found", rejected_callbacks[1])
+    assert.matches("State mismatch", rejected_callbacks[2])
+    assert.matches("Missing authorization code", rejected_callbacks[3])
     local refreshed = wait(method.refresh(logged_in.credential))
     assert.is_true(refreshed.ok)
     assert.are.equal("access-2", refreshed.credential.access)
