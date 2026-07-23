@@ -134,12 +134,10 @@ add_thinking(codex_models, {
 for _, model in pairs(codex_models) do
   model.thinking.minimal = reasoning_opts("low")
   model.thinking.xhigh = reasoning_opts("xhigh")
-  configure_reasoning(model.thinking, { summary = false })
 end
 for _, id in ipairs({ "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra" }) do
   codex_models[id].responses_lite = true
   codex_models[id].thinking.max = reasoning_opts("max")
-  configure_reasoning(codex_models[id].thinking, { summary = false })
 end
 
 return {
