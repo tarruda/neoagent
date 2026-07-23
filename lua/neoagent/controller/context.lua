@@ -28,7 +28,9 @@ local function valid_assistant_usage(message)
       or message.stopReason == "aborted" or message.stopReason == "error" then
     return nil
   end
-  return M.usage_tokens(message.usage)
+  local tokens = M.usage_tokens(message.usage)
+  if tokens ~= nil and tokens > 0 then return tokens end
+  return nil
 end
 
 local function historical_usage_is_current(session)

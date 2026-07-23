@@ -499,7 +499,10 @@ default. Leaving the transcript window and reopening the UI do the same. Set
 Assistant text renders Markdown headings, emphasis, links, lists,
 quotes, fenced code, rules, and tables. Thinking is muted and italic. Streaming
 output includes partial thinking, text, semantic tool arguments, execution
-updates, results, cancellation, and errors.
+updates, results, cancellation, and errors. When the selected Model declares a
+`context_window`, the footer displays used and total context tokens. It uses
+the latest positive provider usage plus an estimate for trailing messages, and
+estimates the projected messages when provider usage is unavailable.
 
 User messages have a distinct padded background. Tool cards use separate
 pending, successful, and failed backgrounds. Unstyled content maps NormalFloat
@@ -590,6 +593,10 @@ The direct Model constructor requires no setup: >lua
     on_done = function(result) end,
   })
 <
+The OpenAI Chat Completions adapter requests a final streamed usage chunk with
+`stream_options.include_usage = true`. Provider, model, and call-level
+`request_opts` may override that request field.
+
 Use `require("neoagent.api.anthropic_messages").new` for an Anthropic Messages
 endpoint with the same Model interface. It sends `POST /messages`,
 `anthropic-version: 2023-06-01`, `x-api-key` authentication for API keys,

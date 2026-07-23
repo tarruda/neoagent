@@ -93,6 +93,25 @@ describe("neoagent default controller", function()
     assert.are.equal("quota 70% left", current_view().context.provider_status)
   end)
 
+  it("estimates context when a provider omits streamed usage", function()
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "done" } }),
+    } })
+    model.context_window = 1000
+    setup_model(model)
+    assert(neoagent.open())
+    local run = assert(neoagent.send("measure"))
+    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+
+    local messages = assert(neoagent.get_session():context_messages())
+    local estimated = 0
+    for _, message in ipairs(messages) do
+      estimated = estimated + require("neoagent.compaction").estimate_tokens(message)
+    end
+    assert.are.equal(estimated, current_view().context.context_usage.used)
+    assert.is_true(estimated > 0)
+  end)
+
   it("automatically compacts large contexts and persists the Pi checkpoint", function()
     local assistant = fake_model.assistant({ { type = "text", text = string.rep("work ", 30) } })
     assistant.message.usage.totalTokens = 900

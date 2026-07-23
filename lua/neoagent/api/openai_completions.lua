@@ -182,6 +182,7 @@ function Model:_request(call_opts)
     model = self.id,
     messages = encode_messages(call_opts.messages, call_opts.system_prompt, self._requires_reasoning_content),
     stream = true,
+    stream_options = { include_usage = true },
   }
   if self._max_output_tokens then
     body.max_completion_tokens = self._max_output_tokens

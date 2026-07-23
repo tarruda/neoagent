@@ -35,6 +35,17 @@ describe("neoagent.api.openai_completions", function()
     ))
   end)
 
+  it("requests usage in streamed responses by default", function()
+    local model = openai.new({
+      provider = "local",
+      model = "test",
+      base_url = "http://localhost/v1",
+    })
+    local request = model:_request({ messages = {} })
+
+    assert.is_true(request.body.stream_options.include_usage)
+  end)
+
   it("recursively merges request options without mutating inputs", function()
     local provider_opts = {
       headers = { ["X-Test"] = "provider" },
