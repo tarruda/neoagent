@@ -20,6 +20,8 @@ changes.
 - Do not introduce built-in approval or permission policy. Approval prompts,
   logging, sandbox delegation, and similar policy belong in an
   `execute_tool(tool, arguments, ctx)` decorator.
+- When a provider offers metered API and subscription or coding-plan access,
+  support both compositions.
 - Do not hardcode machine-specific paths. Executables and test dependencies
   must come from `PATH`, Make variables, environment variables, or
   repository-relative dependency directories.
@@ -40,75 +42,39 @@ changes.
   store is optional and injected.
 - The passive View consumes messages and events. A Window owns one View,
   selects an active Controller, and retains one input draft per Controller.
-  Attached Controllers have unique, non-empty names. Transient status and
-  spinner updates use decoration. Transcript text updates wait for pending
-  operators and active Visual selections, preserving register, operator, and
-  selection state while streaming.
-- Controllers are independent compositions of configuration, model selection,
-  Session, Workspace, and Run. They publish compaction-aware transcript
-  snapshots and updates so Windows and other consumers can attach without
-  owning the agent loop; the Session retains the complete active branch.
+  Attached Controllers have unique, non-empty names.
+- Controllers compose configuration, model selection, Session, Workspace, and
+  Run. They publish transcript snapshots and updates while the Session retains
+  the complete active branch.
 - Controller Runs remain independent when a shared Window selects another
   Controller. The command-facing default Window is replaceable; custom
   Controllers and Windows must not mutate or depend on it.
-- The bundled default Window starts with `Neo` and `Chat`. `Neo` uses the
-  configured coding composition. `Chat` has an empty system prompt and tool
-  list, with AGENTS.md and skill discovery disabled.
-- AGENTS.md and skill discovery are optional higher-level resource modules.
-  The built-in Neo Controller injects complete AGENTS.md files
-  broad-to-specific, but only skill metadata; complete skill instructions are
-  read on demand.
-- Self-awareness is provided by an on-demand bundled documentation tool. Its
-  description guides when it should be called; its result summarizes
-  composition and points to installed source and config.
+- AGENTS.md and skill discovery are optional higher-level resource modules;
+  reusable core layers do not depend on them.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
   storage layer; the built-in Neo Controller may refresh an unmodified matching
   buffer after a successful disk mutation.
-- Default coding tools are exactly `read_file`, `write_file`, `edit_file`,
-  `shell`, and `read_agent_documentation`. The read-only preset is exactly
-  `read_file`, `grep`, and `find`.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
-- Model request bodies and replayed JSON tool arguments use canonical key
-  ordering so process restarts do not perturb otherwise unchanged prompt-cache
-  prefixes for persisted Sessions.
 - Thinking levels are model-declared request-option layers. The default
   controller selects and displays a level; Models and `agent.run()` do not
   interpret thinking semantics.
-- Provider login methods are plain Lua values with `login`, optional OAuth
-  `refresh`, and `request_opts`. Stored credentials are tagged API-key or OAuth
-  values, take precedence over ambient API keys, and are resolved around a
-  Model at stream time. OAuth flows and Models must not import or assume the
+- Authentication wraps Models at stream time through injected login methods
+  and credential storage. OAuth flows and Models remain independent from the
   command/UI adapter.
-- The final provider/model registry composes built-in defaults with the user
-  `providers` table. User entries override defaults; `false` removes a default
-  provider or model. Model selection filters the composition by configured
-  OAuth credentials or API keys without affecting direct Model constructors.
-- Provider additions cover both the metered API and subscription or coding-plan
-  endpoint when the provider offers both.
+- The provider/model registry explicitly composes built-in defaults with user
+  overrides without affecting direct Model constructors.
 - Persist credentials atomically outside user configuration. Serialize login,
   refresh, and deletion; enumerate only secret-free credential metadata.
   Credential directories created by the store use mode `0700`; files use mode
   `0600`. Never log API keys, access tokens, or refresh tokens.
-- Persistence uses the full Pi v3 append-only JSONL tree format. Sessions expose
-  active-branch projection, leaf movement, branch summaries, labels, names, and
-  linked forks. Opening Neovim or creating an empty Session must not create a
-  session file; persistence starts with the first accepted message.
-- Compaction consumes a Session path and Model explicitly, writes Pi compaction
-  entries, retains safe turn boundaries, and supports repeated summaries.
-  Controllers own automatic thresholds, overflow recovery, and UI events.
-- Codex Models classify provider failures and retry transient requests that
-  produced no output. Controllers replay explicitly retryable failed turns,
-  removing any failed assistant message from the active branch first.
-- Configured Codex diagnostics contain bounded error and request-correlation
-  metadata. They never contain credential values, request or response bodies,
-  or conversation content.
-- Bundled persistence uses one cwd-hashed workspace namespace for
-  `settings.json`, `input-history.jsonl`, and `sessions/`. Model and thinking
-  preferences are scoped by Controller name; UI position, input history, and
-  the session pool are shared. Every Controller can resume every workspace
-  Session. Reads must not create files.
+- Persistence remains compatible with the Pi v3 append-only tree format.
+  Opening Neovim or creating an empty Session must not create a session file.
+- Compaction receives its Session path and Model explicitly. Controllers own
+  automatic compaction and overflow recovery.
+- Provider diagnostics are bounded and never contain credentials, request or
+  response bodies, or conversation content.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer controller state.
@@ -126,10 +92,9 @@ changes.
   behavior, and composition. Negative wording is appropriate only when it
   defines a current API guarantee, safety boundary, prohibition, or error.
 - Preserve unrelated user changes and generated local configuration.
-- Keep public behavior documented in `README.md` and `doc/neoagent.txt`.
-- Keep `README.md` focused on presenting the project and concise setup; place
-  implementation details and narrow behavioral guarantees in
-  `doc/neoagent.txt` or `architecture.md`.
+- Keep `README.md` focused on project presentation and concise setup. Document
+  complete public behavior in `doc/neoagent.txt` and implementation design in
+  `architecture.md`.
 - Track multi-step implementation work in `TODO.md` when requested.
 - Do not weaken validation, cancellation, or coverage collection merely to
   make a test pass.

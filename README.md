@@ -10,16 +10,21 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 
 ## Features
 
-- Stream assistant responses, reasoning, tool calls, usage, and provider status directly in Neovim.
+- Stream assistant responses, reasoning, tool calls, usage, and provider status
+  directly in Neovim.
 - Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
   local models with llama.cpp, built-in Anthropic, DeepSeek, and Z.AI
   catalogs, or Claude and ChatGPT subscription authentication.
-- Compose Models, tools, executors, Sessions, Controllers, and Views as ordinary Lua values with explicit dependencies.
-- Run cancellable agent loops with custom tools, steering messages, retry handling, and context compaction.
-- Use the bundled coding tools for reading, writing, editing, shell commands, and on-demand Neoagent documentation.
-- Persist conversations as Pi v3 JSONL trees with branches, linked forks, labels, model state, and compaction checkpoints.
+- Compose Models, tools, executors, Sessions, Controllers, and Views as
+  ordinary Lua values with explicit dependencies.
+- Run cancellable agent loops with custom tools, steering messages, retry
+  handling, and context compaction.
+- Use bundled coding tools for file operations, shell commands, and on-demand
+  Neoagent documentation.
+- Persist conversations with branches, linked forks, labels, model state, and
+  context compaction.
 - Work from a floating Markdown UI with separate transcript and input windows.
-- Start with two bundled Controllers: **Neo** for coding tasks and **Chat** for tool-free conversation.
+- Start with **Neo** for coding tasks and **Chat** for tool-free conversation.
 - See `:help neoagent` for the complete configuration and API reference.
 
 ## Quick configuration
