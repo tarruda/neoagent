@@ -4,6 +4,7 @@ local util = require("neoagent.util")
 local M = {}
 
 local highlight_links = {
+  NeoagentWindowTitle = "NeoagentMuted",
   NeoagentAccent = "Identifier",
   NeoagentThinking = "Comment",
   NeoagentToolOutput = "Comment",

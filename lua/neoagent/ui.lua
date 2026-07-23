@@ -124,7 +124,7 @@ function View:_window_options(win, transcript)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].foldcolumn = "0"
   vim.wo[win].cursorline = false
-  vim.wo[win].winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder"
+  vim.wo[win].winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder,FloatTitle:NeoagentWindowTitle"
   if transcript then vim.wo[win].spell = false end
 end
 
