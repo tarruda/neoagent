@@ -373,13 +373,28 @@ describe("neoagent.ui", function()
       title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
     end
     assert.matches("think: high", title)
-    assert.matches("ctx 250/1k %(25.0%%%)", title)
+    assert.is_nil(title:find("ctx ", 1, true))
     assert.is_nil(title:find("Neoagent", 1, true))
-    local footer = vim.api.nvim_win_get_config(result.input_win).footer
-    if type(footer) == "table" then
-      footer = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, footer))
+    assert.is_nil(title:find("compacting", 1, true))
+    local function transcript_footer()
+      local value = vim.api.nvim_win_get_config(result.transcript_win).footer
+      if type(value) == "table" then
+        value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
+      end
+      return value
     end
-    assert.are.equal(" 5h 80% left · weekly 60% left ", footer)
+    local transcript_config = vim.api.nvim_win_get_config(result.transcript_win)
+    assert.are.equal("left", transcript_config.footer_pos)
+    assert.are.equal("NeoagentAccent", transcript_config.footer[2][2])
+    assert.are.equal("NeoagentMuted", transcript_config.footer[3][2])
+    assert.matches("Compacting%.%.%.", transcript_footer())
+    assert.is_nil(transcript_footer():find("think:", 1, true))
+    assert.is_not_nil(transcript_footer():find(
+      "ctx 250/1k (25.0%) (5h 80% left · weekly 60% left)", 1, true
+    ))
+    assert.are.equal(vim.api.nvim_win_get_width(result.transcript_win),
+      vim.fn.strdisplaywidth(transcript_footer()))
+    assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
         and text(result):find("<A-Up> to edit queued messages", 1, true) ~= nil
@@ -396,17 +411,24 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.is_nil(vim.api.nvim_win_get_config(result.input_win).footer)
-    assert(vim.wait(1000, function() return text(result):match("Compacting%.%.%.") ~= nil end))
-    local first = text(result):match("([^\n]+ Compacting%.%.%.)")
+    assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
+    assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))
+    assert.matches("Compacting%.%.%.", transcript_footer())
+    assert.is_nil(text(result):match("Compacting%.%.%."))
+    local first = transcript_footer()
     assert(vim.wait(1000, function()
-      local current = text(result):match("([^\n]+ Compacting%.%.%.)")
+      local current = transcript_footer()
       return current and current ~= first
     end))
     result:set_context({ state = "running" })
-    assert(vim.wait(1000, function() return text(result):match("Working%.%.%.") ~= nil end))
+    assert.matches("Working%.%.%.", transcript_footer())
+    assert.is_nil(text(result):match("Working%.%.%."))
     result:set_context({ state = "idle", steering = {} })
     assert(vim.wait(1000, function()
-      return text(result):match("Working%.%.%.") == nil
+      local footer_text = transcript_footer()
+      return footer_text and footer_text:find("Working", 1, true) == nil
+        and footer_text:find("think:", 1, true) == nil
+        and footer_text:find("ctx 250/1k (25.0%)", 1, true) ~= nil
         and text(result):find("Steering:", 1, true) == nil
     end))
   end)

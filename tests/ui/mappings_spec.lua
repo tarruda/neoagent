@@ -114,7 +114,7 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
-  it("animates active status without mutating yankable transcript text", function()
+  it("animates the transcript footer without mutating yankable text", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
     })
@@ -124,17 +124,18 @@ describe("neoagent UI mappings", function()
     } })
     assert(result:open())
     result:set_context({ state = "running" })
-    assert(vim.wait(1000, function()
-      if result.flush_pending or not result.status_mark then return false end
-      local mark = vim.api.nvim_buf_get_extmark_by_id(
-        result.transcript_buf, result.namespace, result.status_mark, { details = true }
-      )
-      return #mark > 0 and type(mark[3].virt_lines) == "table"
-    end))
+    local function footer()
+      local value = vim.api.nvim_win_get_config(result.transcript_win).footer
+      if type(value) == "table" then
+        value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
+      end
+      return value
+    end
+    assert(vim.wait(1000, function() return footer() and footer():match("Working%.%.%.") end))
     local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
     local changedtick = vim.api.nvim_buf_get_changedtick(result.transcript_buf)
-    local frame = result.spinner_frame
-    assert(vim.wait(1000, function() return result.spinner_frame ~= frame end))
+    local first = footer()
+    assert(vim.wait(1000, function() return footer() ~= first end))
     assert.are.same(lines, vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
     assert.are.equal(changedtick, vim.api.nvim_buf_get_changedtick(result.transcript_buf))
 

@@ -109,10 +109,8 @@ function M:_remove_status()
 end
 
 function M:_render_status()
-  local active = self.context.state == "running" or self.context.state == "stopping"
-    or self.context.state == "compacting"
   local steering = type(self.context.steering) == "table" and self.context.steering or {}
-  if not active and #steering == 0 then return end
+  if #steering == 0 then return end
   local lines = {}
   for _, message in ipairs(steering) do
     local text = util.trim(tostring(message):gsub("%s+", " "))
@@ -123,28 +121,11 @@ function M:_render_status()
     local hint = type(key) == "string" and key or "Alt-Up"
     lines[#lines + 1] = { { " ↳ " .. hint .. " to edit queued messages", "NeoagentMuted" } }
   end
-  if active then
-    local frame = self.spinner_frames[self.spinner_frame]
-    local label = self.context.state == "stopping" and "Stopping..."
-      or self.context.state == "compacting" and "Compacting..." or "Working..."
-    lines[#lines + 1] = {
-      { " ", "NeoagentMuted" },
-      { frame, "NeoagentAccent" },
-      { " " .. label, "NeoagentMuted" },
-    }
-  end
   local row = math.max(0, vim.api.nvim_buf_line_count(self.transcript_buf) - 1)
   self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, row, 0, {
     virt_lines = lines,
     virt_lines_above = true,
   })
-end
-
-function M:_refresh_status()
-  if operator_pending(self) then return end
-  if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
-  self:_remove_status()
-  self:_render_status()
 end
 
 function M:_flush()
@@ -154,6 +135,7 @@ function M:_flush()
   end
   clear_safe_flush(self)
   self.flush_pending = false
+  if self.border_dirty then self:_refresh_transcript_border() end
   if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then return end
   local saved = self:_save_view()
   vim.bo[self.transcript_buf].modifiable = true

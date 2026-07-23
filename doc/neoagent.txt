@@ -505,22 +505,24 @@ User messages have a distinct padded background. Tool cards use separate
 pending, successful, and failed backgrounds. Unstyled content maps NormalFloat
 to Normal so it inherits the editor background. Built-in tool results use
 semantic summaries. Read output shows at most ten lines until tool output is
-expanded. A spinner is shown while an interaction is running. The spinner and
-steering queue use virtual decoration. Transcript text updates wait for pending
-operators and active Visual selections, preserving register, operator, and
-selection state while streaming.
+expanded. The transcript bottom-left border shows an accented spinner with a
+muted Working, Stopping, or Compacting label while active. Idle state omits the
+spinner and active label. Provider-specific status and used/total context occupy
+the bottom-right border. Provider status appears in parentheses to the right of
+context usage. Context usage includes a percentage when the model declares
+`context_window`. Codex subscription responses show remaining 5-hour and weekly
+allowances when the service includes its rate-limit headers. The steering queue
+uses virtual decoration. Transcript text updates wait for pending operators and
+active Visual selections, preserving register, operator, and selection state
+while streaming.
 
-The top border shows model, thinking, run state, and used/total context with a
-percentage when the model declares `context_window`. It begins with the
-selected Controller's label when present; the bundled labels are `Neo` and
-`Chat`. `name` customizes the `Neo` label or labels a custom Controller.
-Provider-specific status appears in the bottom border. Codex subscription
-responses show remaining 5-hour and weekly allowances when the service includes
-its rate-limit headers.
+The top border shows the selected Controller's label, model, and thinking level.
+The bundled labels are `Neo` and `Chat`; `name` customizes the `Neo` label or
+labels a custom Controller.
 
 Enter queues steering while the active Controller is working. The queue appears
-above the working indicator and drains one message after the current assistant
-response and tool calls. Alt-Up restores all pending steering messages to the
+in the transcript and drains one message after the current assistant response
+and tool calls. Alt-Up restores all pending steering messages to the
 input. Ctrl-C restores the queue and cancels the active Run; while idle it
 clears the draft.
 

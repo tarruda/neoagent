@@ -8,6 +8,40 @@ local M = { layout = layout.layout }
 local View = {}
 View.__index = View
 
+local function active_state(context)
+  return context.state == "running" or context.state == "stopping"
+    or context.state == "compacting"
+end
+
+local function token_count(value)
+  if value < 1000 then return tostring(math.floor(value + 0.5)) end
+  local divisor, suffix = value >= 1000000 and 1000000 or 1000, value >= 1000000 and "m" or "k"
+  local formatted = string.format("%.1f", value / divisor):gsub("%.0$", "")
+  return formatted .. suffix
+end
+
+local function context_status(context)
+  local usage = context.context_usage
+  if type(usage) ~= "table" then return nil end
+  local percent = usage.percent > 0 and usage.percent < 0.1
+      and "<0.1" or string.format("%.1f", usage.percent)
+  return string.format("ctx %s/%s (%s%%)",
+    token_count(usage.used), token_count(usage.total), percent)
+end
+
+local function bottom_border_character(border)
+  if type(border) == "table" then
+    local value = border[6] or border[2]
+    if type(value) == "table" then value = value[1] end
+    if type(value) == "string" and value ~= "" then return value end
+  elseif border == "double" then
+    return "═"
+  elseif border == "solid" then
+    return " "
+  end
+  return "─"
+end
+
 function View:_ensure_buffers()
   if not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then
     self.transcript_buf = vim.api.nvim_create_buf(false, true)
@@ -104,36 +138,65 @@ function View:_title()
   if type(self.context.thinking) == "string" then
     parts[#parts + 1] = "think: " .. self.context.thinking
   end
-  local usage = self.context.context_usage
-  if type(usage) == "table" then
-    local function tokens(value)
-      if value < 1000 then return tostring(math.floor(value + 0.5)) end
-      local divisor, suffix = value >= 1000000 and 1000000 or 1000, value >= 1000000 and "m" or "k"
-      local formatted = string.format("%.1f", value / divisor):gsub("%.0$", "")
-      return formatted .. suffix
-    end
-    local percent = usage.percent > 0 and usage.percent < 0.1
-        and "<0.1" or string.format("%.1f", usage.percent)
-    parts[#parts + 1] = string.format("ctx %s/%s (%s%%)",
-      tokens(usage.used), tokens(usage.total), percent)
-  end
-  parts[#parts + 1] = self.context.state or "idle"
   return table.concat(parts, " · ")
 end
 
-function View:_footer()
+function View:_transcript_footer(width)
+  local chunks = {}
+  local left_width = 0
+  local function add(text, group)
+    chunks[#chunks + 1] = { text, group }
+    left_width = left_width + vim.fn.strdisplaywidth(text)
+  end
+  if active_state(self.context) then
+    local label = self.context.state == "stopping" and "Stopping..."
+      or self.context.state == "compacting" and "Compacting..." or "Working..."
+    add(" ", "NeoagentMuted")
+    add(self.spinner_frames[self.spinner_frame], "NeoagentAccent")
+    add(" " .. label, "NeoagentMuted")
+  end
+  if #chunks > 0 then add(" ", "NeoagentMuted") end
+
+  local right_parts = {}
+  local context = context_status(self.context)
+  if context then right_parts[#right_parts + 1] = context end
   local status = self.context.provider_status
-  if type(status) ~= "string" or util.trim(status) == "" then return "" end
-  return " " .. util.trim(status) .. " "
+  if type(status) == "string" then
+    status = util.trim(status)
+    if status ~= "" then right_parts[#right_parts + 1] = "(" .. status .. ")" end
+  end
+  if #right_parts > 0 then
+    local right = " " .. table.concat(right_parts, " ") .. " "
+    local padding = math.max(1, (width or 1) - left_width - vim.fn.strdisplaywidth(right))
+    add(string.rep(bottom_border_character(self.config.border), padding), "NeoagentBorder")
+    add(right, "NeoagentMuted")
+  end
+  return #chunks > 0 and chunks or ""
 end
 
 function View:_decorate(configs)
   configs.transcript.title = self:_title()
   configs.transcript.title_pos = "center"
+  configs.transcript.footer = self:_transcript_footer(configs.transcript.width)
+  configs.transcript.footer_pos = "left"
   configs.input.title = "Input · " .. ((self.config.mappings or {}).submit or "send") .. " send"
   configs.input.title_pos = "center"
-  configs.input.footer = self:_footer()
-  configs.input.footer_pos = "right"
+end
+
+function View:_refresh_transcript_border()
+  if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win) then return false end
+  if vim.api.nvim_get_current_win() == self.transcript_win and vim.fn.state("o") ~= "" then
+    self.border_dirty = true
+    return false
+  end
+  local cfg = vim.api.nvim_win_get_config(self.transcript_win)
+  cfg.title = self:_title()
+  cfg.title_pos = "center"
+  cfg.footer = self:_transcript_footer(vim.api.nvim_win_get_width(self.transcript_win))
+  cfg.footer_pos = "left"
+  vim.api.nvim_win_set_config(self.transcript_win, cfg)
+  self.border_dirty = false
+  return true
 end
 
 function View:open(origin)
@@ -191,8 +254,7 @@ function View:_restore_steering()
 end
 
 function View:_interrupt(clear_input)
-  local active = self.context.state == "running" or self.context.state == "stopping"
-    or self.context.state == "compacting"
+  local active = active_state(self.context)
   if active then
     self:_restore_steering()
     return self.on_stop()
@@ -223,19 +285,9 @@ function View:set_context(context)
   if context and context.position and context.position ~= self.position then
     self:set_position(context.position)
   end
-  if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
-    local cfg = vim.api.nvim_win_get_config(self.transcript_win)
-    cfg.title = self:_title()
-    cfg.title_pos = "center"
-    vim.api.nvim_win_set_config(self.transcript_win, cfg)
-  end
-  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
-    local cfg = vim.api.nvim_win_get_config(self.input_win)
-    cfg.footer = self:_footer()
-    cfg.footer_pos = "right"
-    vim.api.nvim_win_set_config(self.input_win, cfg)
-  end
+  self:_refresh_transcript_border()
   self:_sync_spinner()
+  self:_schedule_flush()
 end
 
 function View:_stop_spinner()
@@ -246,8 +298,7 @@ function View:_stop_spinner()
 end
 
 function View:_sync_spinner()
-  local active = self.context.state == "running" or self.context.state == "stopping"
-    or self.context.state == "compacting"
+  local active = active_state(self.context)
   if not active or not self:is_open() then
     self:_stop_spinner()
     self:_schedule_flush()
@@ -259,7 +310,7 @@ function View:_sync_spinner()
   timer:start(80, 80, vim.schedule_wrap(function()
     if self.destroyed or self.spinner_timer ~= timer then return end
     self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
-    self:_refresh_status()
+    self:_refresh_transcript_border()
   end))
   self:_schedule_flush()
 end
@@ -316,7 +367,6 @@ View._content_width = transcript._content_width
 View._mark_block = transcript._mark_block
 View._remove_status = transcript._remove_status
 View._render_status = transcript._render_status
-View._refresh_status = transcript._refresh_status
 View._flush = transcript._flush
 View._schedule_flush = transcript._schedule_flush
 View._add_block = transcript._add_block
