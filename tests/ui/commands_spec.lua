@@ -4,7 +4,7 @@ describe("neoagent commands", function()
     vim.cmd("runtime plugin/neoagent.lua")
     for _, name in ipairs({
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
-      "NeoagentModel", "NeoagentThinking", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
+      "NeoagentModel", "NeoagentThinking", "NeoagentPosition", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
       "NeoagentBranch", "NeoagentFork",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
@@ -21,6 +21,21 @@ describe("neoagent commands", function()
       } } } } },
       apis = { fake = function() return model end },
     })
+    vim.cmd("NeoagentPosition left")
+    assert.are.equal("left", require("neoagent").default_window():_state().view.position)
+    assert.is_true(require("neoagent").default_window():is_open())
+    require("neoagent").close()
+    local position_select = vim.ui.select
+    vim.ui.select = function(items, options, callback)
+      assert.are.same({ "auto", "left", "right", "top", "bottom", "center" }, items)
+      assert.are.equal("Select Neoagent window position:", options.prompt)
+      callback("bottom")
+    end
+    vim.cmd("NeoagentPosition")
+    vim.ui.select = position_select
+    assert.are.equal("bottom", require("neoagent").default_window():_state().view.position)
+    assert.is_true(require("neoagent").default_window():is_open())
+    require("neoagent").close()
     vim.cmd("NeoagentCycle")
     assert.are.equal("Chat", require("neoagent").default():config().name)
     assert.is_false(require("neoagent").default_window():is_open())

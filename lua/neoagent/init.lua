@@ -4,6 +4,7 @@ local Window = require("neoagent.window")
 local util = require("neoagent.util")
 
 local M = {}
+local positions = { "auto", "left", "right", "top", "bottom", "center" }
 local default_window
 local owned_controllers
 
@@ -155,6 +156,23 @@ function M.resume(path)
   return controller:resume(path, path and nil or function()
     if M.default() == controller then M.open() end
   end)
+end
+
+function M.select_position()
+  vim.ui.select(positions, { prompt = "Select Neoagent window position:" }, function(choice)
+    if choice then M.set_position(choice) end
+  end)
+  return true
+end
+
+function M.set_position(position)
+  local selected, err = M.default_window():set_position(position)
+  if not selected then
+    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    return nil, err
+  end
+  M.open()
+  return selected, err
 end
 
 function M.select_model()

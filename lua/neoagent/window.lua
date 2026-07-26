@@ -1,6 +1,7 @@
 local util = require("neoagent.util")
 
 local M = {}
+local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
 
 local function assert_controller(controller)
   assert(type(controller) == "table" and controller._neoagent_controller,
@@ -179,15 +180,6 @@ function M.new(opts)
       on_cycle_agent = function() return window:cycle() end,
       on_select_model = function() return active():select_model() end,
       on_resume_session = function() return active():resume() end,
-      on_position_change = function(position)
-        state.position = position
-        state.position_loaded = true
-        local saved, err = active():set_ui_position(position)
-        if not saved then
-          notify("window position changed but workspace settings were not saved: " .. err.message,
-            vim.log.levels.WARN)
-        end
-      end,
       window = window,
     })
     assert(type(state.view) == "table", "View factory must return a View")
@@ -265,6 +257,21 @@ function M.new(opts)
 
   function window:is_open()
     return state.view ~= nil and state.view:is_open()
+  end
+
+  function window:set_position(position)
+    if not ui_positions[position] then return nil, util.error("ui", "invalid window position") end
+    state.position = position
+    state.position_loaded = true
+    local saved, err = active():set_ui_position(position)
+    if state.view and not state.view.destroyed then
+      state.view:set_context(context(active():snapshot().context))
+    end
+    if not saved then
+      notify("window position changed but workspace settings were not saved: " .. err.message,
+        vim.log.levels.WARN)
+    end
+    return position, err
   end
 
   function window:set_input(value)

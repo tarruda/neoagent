@@ -80,17 +80,6 @@ function M:_map_buffers()
     function() self:_restore_steering() end)
   self:_map(self.transcript_buf, "n", mappings.dequeue_steering,
     function() self:_restore_steering() end)
-  local docks = {
-    dock_left = "left", dock_bottom = "bottom", dock_top = "top",
-    dock_right = "right", dock_center = "center",
-  }
-  for action, position in pairs(docks) do
-    local function dock()
-      if self:set_position(position) then self.on_position_change(position) end
-    end
-    self:_map(self.input_buf, "n", mappings[action], dock)
-    self:_map(self.transcript_buf, "n", mappings[action], dock)
-  end
   self:_map(self.transcript_buf, "n", mappings.close, function() self:close() end)
 end
 

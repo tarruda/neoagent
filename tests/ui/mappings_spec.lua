@@ -2,7 +2,7 @@ local config = require("neoagent.config")
 local ui = require("neoagent.ui")
 
 describe("neoagent UI mappings", function()
-  it("uses real encoded input for submit, cancellation, focus, docking, and close", function()
+  it("uses real encoded input for submit, cancellation, focus, and close", function()
     local submitted
     local thinking_cycles = 0
     local agent_cycles = 0
@@ -10,7 +10,6 @@ describe("neoagent UI mappings", function()
     local session_selections = 0
     local stops = 0
     local queued = {}
-    local positions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
       on_submit = function(value) submitted = value end,
@@ -24,7 +23,6 @@ describe("neoagent UI mappings", function()
         queued = {}
         return messages
       end,
-      on_position_change = function(position) positions[#positions + 1] = position end,
     })
     local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
     assert(result:open())
@@ -56,9 +54,6 @@ describe("neoagent UI mappings", function()
     assert.are.equal(1, thinking_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-n>", true, false, true), "x", false)
     assert.are.equal(1, agent_cycles)
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>H", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_win_get_config(result.transcript_win).col < 5 end))
-    assert.are.same({ "left" }, positions)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
     assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-m>", true, false, true), "x", false)
@@ -111,6 +106,22 @@ describe("neoagent UI mappings", function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
     end))
+    result:destroy()
+  end)
+
+  it("leaves window-management chords available to Neovim", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    assert(result:open())
+    vim.cmd("stopinsert")
+    for _, buffer in ipairs({ result.input_buf, result.transcript_buf }) do
+      vim.api.nvim_buf_call(buffer, function()
+        for _, key in ipairs({ "<C-w>H", "<C-w>J", "<C-w>K", "<C-w>L", "<C-w>=" }) do
+          assert.are.equal("", vim.fn.maparg(key, "n"))
+        end
+      end)
+    end
     result:destroy()
   end)
 

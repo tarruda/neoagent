@@ -475,7 +475,6 @@ function M.new(opts)
     on_cycle_agent = opts.on_cycle_agent or function() end,
     on_select_model = opts.on_select_model or function() end,
     on_resume_session = opts.on_resume_session or function() end,
-    on_position_change = opts.on_position_change or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },

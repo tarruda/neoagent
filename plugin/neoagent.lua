@@ -43,6 +43,13 @@ end, {
   nargs = "?",
   complete = function() return require("neoagent.thinking").order end,
 })
+vim.api.nvim_create_user_command("NeoagentPosition", function(opts)
+  local neoagent = require("neoagent")
+  if opts.args == "" then neoagent.select_position() else neoagent.set_position(opts.args) end
+end, {
+  nargs = "?",
+  complete = function() return { "auto", "left", "right", "top", "bottom", "center" } end,
+})
 local function auth_method_completion()
   local methods = require("neoagent").default():config().auth.methods
   local result = {}

@@ -620,11 +620,7 @@ describe("neoagent default controller", function()
     }
     neoagent.setup(options)
     assert(neoagent.open())
-    local view = current_view()
-    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == view.input_win end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_get_mode().mode:sub(1, 1) == "n" end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>H", true, false, true), "x", false)
+    assert.are.equal("left", neoagent.set_position("left"))
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
