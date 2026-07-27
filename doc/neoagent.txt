@@ -41,10 +41,6 @@ Example for llama.cpp: >lua
     default_model = { provider = "local_llama", model = "coder" },
   })
 <
-Model requests use canonical JSON object ordering, including replayed tool-call
-arguments. Process restarts preserve otherwise unchanged local prompt-cache
-prefixes across persisted conversation resumes.
-
 For a Responses-compatible endpoint with request-time thinking levels: >lua
 
   providers = {
@@ -64,98 +60,31 @@ For a Responses-compatible endpoint with request-time thinking levels: >lua
     },
   }
 <
-Responses requests always set `store = false`. Neoagent retains opaque
-reasoning, text, and function-call item identifiers in assistant messages so
-the complete history can be replayed statelessly.
+BUILT-IN PROVIDERS                              *neoagent-built-in-providers*
 
-Neoagent includes Pi's explicit OpenAI catalogs. Run `:NeoagentLogin openai`
-to enter an API key through a masked prompt, or set `OPENAI_API_KEY` before
-starting Neovim. Either source makes `openai/*` models available.
+The default registry contains these provider IDs:
 
-Anthropic uses the official Messages endpoint through two catalogs. Run
-`:NeoagentLogin anthropic` or set `ANTHROPIC_API_KEY` for metered API-key
-billing and `anthropic/*` models. Run `:NeoagentLogin anthropic-plan` for the
-Claude Pro/Max browser or manual-code OAuth flow, or set an existing
-`ANTHROPIC_OAUTH_TOKEN`, to enable the matching `anthropic-plan/*` catalog.
-The catalogs contain Claude Opus 4.1, 4.5, 4.6, 4.7, and 4.8; Sonnet 4.5, 4.6,
-and 5; Haiku 4.5; Fable 5; and their listed dated aliases.
+  openai             OpenAI API; `:NeoagentLogin openai` or `OPENAI_API_KEY`.
+  openai-codex       ChatGPT Codex plan; `:NeoagentLogin openai-codex`.
+  anthropic          Anthropic API; `:NeoagentLogin anthropic` or
+                     `ANTHROPIC_API_KEY`.
+  anthropic-plan     Claude plan OAuth; `:NeoagentLogin anthropic-plan` or
+                     `ANTHROPIC_OAUTH_TOKEN`.
+  deepseek           DeepSeek API; `:NeoagentLogin deepseek` or
+                     `DEEPSEEK_API_KEY`.
+  zai                Z.AI API and Coding Plan; `:NeoagentLogin zai` or
+                     `ZAI_API_KEY`.
+  zai-coding-plan    Z.AI Coding Plan models using the same `zai` credential.
 
-Adaptive models expose their provider-supported effort levels through `low`,
-`medium`, `high`, `xhigh`, and `max`. Budget-thinking models expose `off`,
-`minimal`, `low`, `medium`, and `high` with budgets from 1024 to 16384 tokens.
-Requests use ephemeral prompt-cache breakpoints, eager tool-input streaming,
-signed thinking replay, and normalized cache usage. The plan composition adds
-Claude Code identity and OAuth headers. Anthropic currently bills third-party
-subscription OAuth requests as extra usage per token; included Claude plan
-limits do not cover these requests. Select API-key billing by default with: >lua
+`:NeoagentModel` lists the models currently available from configured and
+authenticated providers.
 
-  require("neoagent").setup({
-    default_model = { provider = "anthropic", model = "claude-sonnet-4-6" },
-  })
-<
-The built-in DeepSeek catalog uses the official OpenAI-compatible endpoint. Run
-`:NeoagentLogin deepseek` or set `DEEPSEEK_API_KEY` to make
-`deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` available.
-Both DeepSeek models declare a 1M-token context window, a 384k-token output
-limit, and `off`, `high`, and `max` thinking levels. Streamed
-`reasoning_content` is retained and replayed during tool turns. Select one by
-default with: >lua
+Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
+credentials take precedence over environment variables. `:NeoagentLogout`
+removes a stored credential and restores any matching environment source.
 
-  require("neoagent").setup({
-    default_model = { provider = "deepseek", model = "deepseek-v4-flash" },
-  })
-<
-Z.AI provides a metered API and a global Coding Plan. Run `:NeoagentLogin zai`
-or set `ZAI_API_KEY` to enable both catalogs. The `zai` provider uses
-`https://api.z.ai/api/paas/v4` and contains `glm-4.5`, `glm-4.5-air`,
-`glm-4.5-flash`, `glm-4.5v`, `glm-4.6`, `glm-4.6v`, `glm-4.7`,
-`glm-4.7-flash`, `glm-4.7-flashx`, `glm-5`, `glm-5-turbo`, `glm-5.1`,
-`glm-5.2`, and `glm-5v-turbo`. The `zai-coding-plan` provider uses
-`https://api.z.ai/api/coding/paas/v4` and contains `glm-4.5-air`, `glm-4.7`,
-`glm-5-turbo`, `glm-5.1`, `glm-5.2`, and `glm-5v-turbo`.
-
-GLM-5.2 declares a 1M-token context window and exposes `off`, `low`, `medium`,
-`high`, and `max` thinking profiles; its enabled profiles map to the provider's
-`high` and `max` efforts. The other models expose toggle profiles from `off`
-through `high`. GLM-4.5V, GLM-4.6V, and GLM-5V-Turbo accept image input. Z.AI
-reasoning is retained across tool turns, supported models request streamed tool
-calls, and streamed usage is normalized. Select a Coding Plan model by default
-with: >lua
-
-  require("neoagent").setup({
-    default_model = { provider = "zai-coding-plan", model = "glm-5.2" },
-  })
-<
-For a ChatGPT Plus/Pro Codex subscription: >vim
-
-  :NeoagentLogin openai-codex
-  :NeoagentModel
-<
-Choose browser or headless device-code login. Successful login activates the
-`openai-codex/*` catalog. Credentials are stored in
-`stdpath("state") .. "/neoagent/auth.json"` with mode 0600 and are refreshed
-before a request when expired. Stored API keys use the same private credential
-file and do not expire. A stored credential takes precedence over an ambient
-API key. `:NeoagentLogout [method]` removes the stored value under the store
-lock; environment variables remain unchanged and become active again.
-
-The bundled GPT-5.6 Codex models use the
-official Responses Lite request profile: tools and instructions are leading
-developer input items, the Codex Lite header is set, reasoning context covers
-all turns, reasoning summaries are omitted by default, and the default coding
-prompt asks for commentary updates plus a final answer through Codex channels.
-
-Codex retries transient transport, HTTP 429/5xx, and stream failures with
-cancellable exponential backoff. Requests without output receive up to four
-retries. The default Controller replays a retryable failed turn up to five
-times and removes any failed assistant message from the active branch.
-
-Configured Codex failures are appended as private JSONL diagnostics to
-`stdpath("state") .. "/neoagent/codex.log"`. The 1 MiB log rotates to
-`codex.log.1`. Records contain error classification, attempt counts, HTTP
-status, curl exit code, request ID, and Cloudflare ray ID. Credentials, request
-and response bodies, full header collections, and conversation content are
-excluded. Configure or disable the log on the provider: >lua
+Codex provider diagnostics default to
+`stdpath("state") .. "/neoagent/codex.log"`. Configure or disable them with: >lua
 
   providers = {
     ["openai-codex"] = {
@@ -164,11 +93,13 @@ excluded. Configure or disable the log on the provider: >lua
     },
   }
 <
+Diagnostic records exclude credentials, request and response bodies, and
+conversation content.
 
 The important options are: >lua
 
   {
-    name = nil,                -- Neo label and workspace-settings scope
+    name = nil,                -- Controller label and settings scope
     default_registry = true,
     providers = {},
     apis = {},
@@ -203,7 +134,7 @@ The important options are: >lua
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
-      position = "auto",      -- auto/left/right/top/bottom/center
+      position = "center",    -- auto/left/right/top/bottom/center
       width = nil,
       height = nil,
       margin = 1,
@@ -244,15 +175,41 @@ an independent Controller:
   })
   neoagent.set_default_window(window)
 <
-Each Controller owns its Model selection, Session, Workspace, and Run. Its
-operations include `prepare`, `send`, `steer`, `dequeue_steering`, `stop`,
-`new_session`, `resume`, model and thinking methods, login and logout methods,
-`subscribe`,
-`snapshot`, `get_session`, `get_model`, `config`, `is_running`, and `destroy`.
+Controller methods are: >lua
+
+  controller:prepare()
+  controller:send(text)
+  controller:steer(text)
+  controller:dequeue_steering()
+  controller:compact([instructions])
+  controller:stop()
+  controller:new_session()
+  controller:resume([path[, on_resumed]])
+  controller:branch(entry_id[, summary])
+  controller:select_branch([on_selected])
+  controller:fork([entry_id[, position]])
+  controller:select_fork([on_selected])
+  controller:select_model([on_selected])
+  controller:set_model(provider, model)
+  controller:available_thinking_levels()
+  controller:get_thinking_level()
+  controller:set_thinking_level(level)
+  controller:cycle_thinking_level()
+  controller:login([method])
+  controller:cancel_login()
+  controller:logout([method])
+  controller:set_ui_position(position)
+  controller:subscribe(callback)
+  controller:snapshot()
+  controller:get_session()
+  controller:get_model()
+  controller:config()
+  controller:is_running()
+  controller:destroy()
+<
 `send` starts an interaction while idle and queues steering while working.
-Multiple Controllers can run concurrently. Controllers with a shared
-persistence directory use the same cwd-hashed Workspace while retaining
-independent Sessions and steering queues.
+Controllers have independent Sessions, model selections, steering queues, and
+Runs. Controllers using the same persistence directory share workspace data.
 
 Window Controllers require unique, non-empty names. A Controller name is its
 View label and workspace-settings scope. Renaming it selects a fresh scope;
@@ -262,10 +219,9 @@ A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
 `cycle`, `set_position`, `set_input`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
-and shares workspace input history across Controllers. Selection rehydrates
-compaction-aware transcript messages and transient events while every
-Controller Run continues independently. Each Controller's initial Session is
-created on its first send.
+and shares workspace input history. Selection restores the active transcript
+and draft while inactive Controller Runs continue. A Controller's initial
+Session is created on its first send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.
@@ -273,13 +229,13 @@ existing Controller and returns the previous active Controller.
 previous Window. `default()` and `default_window()` return the active Controller
 and command-facing Window. `set_position(position)` updates that Window and
 `select_position()` opens its position selector. Another `setup()` destroys the
-the Controllers owned by an earlier `setup()` call. An active Run on either
-owned Controller blocks the replacement.
+Controllers owned by an earlier `setup()` call. An active Run on either owned
+Controller blocks the replacement.
 
-`controller:subscribe(callback)` publishes compaction-aware transcript
-messages, context, normalized agent events, and completion updates. Its
-unsubscribe function detaches the callback. `controller:snapshot()` lets a
-newly attached consumer reconstruct the current transcript and partial Run.
+`controller:subscribe(callback)` publishes `messages`, `context`, `event`, and
+`finish` updates and returns an unsubscribe function. `controller:snapshot()`
+returns the current messages, context, pending events, and result for a newly
+attached consumer.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
@@ -310,15 +266,10 @@ default provider or model: >lua
     },
   })
 <
-Set `default_registry = false` to use only the user `providers` table. Built-in
-providers with `auth` or `api_key` appear only when those credentials resolve.
-OpenAI, Anthropic, DeepSeek, and Z.AI accept stored API keys and read
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, and `ZAI_API_KEY`
-as ambient fallbacks. `anthropic-plan` accepts stored OAuth or
-`ANTHROPIC_OAUTH_TOKEN`. Stored credentials own a provider until logout.
-Providers without either are always available.
-The untouched defaults are returned by
-`require("neoagent.registry").defaults()`.
+Set `default_registry = false` to use only the user `providers` table. A
+provider with `auth` or `api_key` is available when its credential resolves;
+providers without either are always available. The built-in catalog is
+returned by `require("neoagent.registry").defaults()`.
 
 The built-in prompt follows the active tools and includes the current working
 directory. A string replaces it completely. Append instructions by composing
@@ -340,14 +291,9 @@ The callback context contains `session`, `model`, `workspace`, the submitted
 value replaces the base prompt, but contextual resources are appended unless
 their configuration is disabled.
 
-The default coding preset includes the `read_agent_documentation` tool. Its
-short description tells the model to call it only for Neoagent configuration,
-API, UI, or extensibility questions. The result contains a concise composition
-guide, Lua examples, and absolute paths to the installed documentation, source,
-active init file, and Neovim configuration directory.
-
-The `tools` option selects exactly those tools and overrides the default coding
-preset. To keep the four coding tools without the documentation tool: >lua
+The default coding preset includes `read_agent_documentation`. The `tools`
+option selects exactly the supplied tools. To keep the four coding tools
+without the documentation tool: >lua
 
   require("neoagent").setup({
     tools = {
@@ -405,50 +351,23 @@ and header keys are case-insensitive.
 
 Models expose optional request-time thinking controls through a `thinking`
 table. Keys use the order `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-and `max`; values are request_opts tables or callbacks. Missing keys are
-unsupported and `false` removes an inherited level. The default controller
-passes the selected layer through `model_options.request_opts`; the Model and
-agent loop do not interpret thinking levels.
+and `max`; values are `request_opts` tables or callbacks. Missing keys are
+unsupported and `false` removes an inherited level. The selected level supplies
+request options for Controller Model calls.
 
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
-The setup values are the base configuration. With persistence and
-`workspace_settings` enabled, Controllers recursively merge name-scoped model
-and thinking overrides plus the shared UI position from: >text
+With persistence and `workspace_settings` enabled, model and thinking
+preferences are scoped by Controller name and UI position is shared by the
+workspace. An unnamed standalone Controller uses the `default` scope. A
+resumed Session's recorded model and thinking values take precedence for that
+Session.
 
-  workspaces/<sha256-of-canonical-root>/settings.json
-<
-The file uses this shape: >json
-
-  {
-    "ui_position": "right",
-    "controllers": {
-      "Neo": {
-        "default_model": { "provider": "openai-codex", "model": "gpt-5.5" },
-        "default_thinking_level": "high"
-      },
-      "Chat": {
-        "default_model": { "provider": "openai", "model": "gpt-5.4" },
-        "default_thinking_level": "medium"
-      }
-    }
-  }
-<
-Names are case-sensitive. An unnamed standalone Controller uses the `default`
-scope. Top-level model and thinking values act as shared fallbacks. Model,
-thinking, and UI dock changes update the file atomically. A resumed session's
-latest Pi model and thinking entries take precedence for that session. Every
-Controller can list and resume every Session in the shared workspace session
-directory. Reading settings and opening an empty Session create no files.
-
-The bundled Window keeps its 100 most recent accepted inputs in: >text
-
-  workspaces/<sha256-of-canonical-root>/input-history.jsonl
-<
-Each line is a JSON string, ordered from oldest to newest. The file preserves
-multiline inputs, collapses consecutive duplicates, and is shared by every
-Controller in the workspace. It is written atomically whenever persistence is
-enabled. Input history remains active when `workspace_settings` is false.
+The bundled Window keeps the 100 most recent accepted inputs for each
+workspace and shares them across its Controllers. Set
+`persistence.workspace_settings = false` to keep configured model, thinking,
+and position defaults authoritative while retaining Sessions and input
+history.
 
 The workspace settings layer is also usable independently: >lua
 
@@ -458,11 +377,10 @@ The workspace settings layer is also usable independently: >lua
   })
   local effective, overrides = assert(settings:merge(defaults))
   assert(settings:update({ my_option = { enabled = true } }))
-  assert(settings:write(overrides)) -- replace all local overrides
+  assert(settings:write(overrides))
 <
-Set `persistence.workspace_settings = false` to retain JSONL sessions while
-keeping the `init.lua` model, thinking, and UI position defaults authoritative.
-
+The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
+`write(settings)`, and `update(patch)`.
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
 
@@ -481,38 +399,22 @@ keeping the `init.lua` model, thinking, and UI position defaults authoritative.
   :NeoagentBranch [entry-id]      Move the leaf or select a branch point.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
 
-No global mappings are installed.
-The argument-free Session, Model, position, login, branch, and fork selectors
-and the input-history mapping use `vim.ui.select`, allowing UI providers such
-as Telescope's `ui-select` extension to render each picker. Resume entries use the
-session name or first user message, include message count and relative
-activity, and group linked forks below their parent. Forking restores the
-selected user message to the input buffer for editing.
+No global mappings are installed. Argument-free selectors and the input-history
+selector use `vim.ui.select`, so configured `vim.ui` providers can render them.
+Fork selection restores the selected user message to the input buffer.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
 
-The input and transcript are real, focusable Neovim buffers. Input opens in
-Insert mode. The transcript supports normal search, motions, Visual selection,
-and yank. An accepted submission scrolls the transcript to the bottom by
-default. Leaving the transcript window and reopening the UI do the same. Set
-`ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
-`ui.scroll_on_reopen` to false to preserve its position for that action.
-Assistant text renders Markdown headings, emphasis, links, lists,
-quotes, fenced code, rules, and tables. Thinking is muted and italic. Streaming
-output includes partial thinking, text, semantic tool arguments, execution
-updates, results, cancellation, and errors. When the selected Model declares a
-`context_window`, the footer displays used and total context tokens. It uses
-the latest positive provider usage plus an estimate for trailing messages, and
-estimates the projected messages when provider usage is unavailable.
+The input and transcript are focusable Neovim buffers. Input opens in Insert
+mode, and the transcript supports normal search, motions, Visual selection,
+and yank. Set `ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
+`ui.scroll_on_reopen` to control automatic scrolling.
 
-User messages have a distinct padded background. Tool cards use separate
-pending, successful, and failed backgrounds. Unstyled content maps NormalFloat
-to Normal so it inherits the editor background. Built-in tool results use
-semantic summaries. Read output shows at most ten lines until tool output is
-expanded. Visible transcript updates pause during active Visual selections in
-the transcript or input, preserving register, operator, and selection state
-while streaming.
+Assistant text renders Markdown, and thinking uses a muted italic style. The
+footer displays context usage when the selected Model declares a
+`context_window`. Tool output and compaction summaries can be expanded with
+the configured `expand_tools` mapping.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -563,8 +465,9 @@ Set a value in `ui.mappings` to an lhs string or list of strings, or to `false`
 to disable it.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
-saved when workspace settings are enabled.
-The centered layout uses 95% of the editor width and height by default.
+saved when workspace settings are enabled. `ui.width` and `ui.height` accept a
+fraction in `(0, 1]`, an integer greater than one, or `nil` for the layout
+default.
 Card colors are customizable through `NeoagentUserBackground`,
 `NeoagentToolPendingBackground`, `NeoagentToolSuccessBackground`, and
 `NeoagentToolErrorBackground`. Markdown highlight groups begin with
@@ -595,29 +498,19 @@ The direct Model constructor requires no setup: >lua
     on_done = function(result) end,
   })
 <
-The OpenAI Chat Completions adapter requests a final streamed usage chunk with
-`stream_options.include_usage = true`. Provider, model, and call-level
-`request_opts` may override that request field.
-
 Use `require("neoagent.api.anthropic_messages").new` for an Anthropic Messages
-endpoint with the same Model interface. It sends `POST /messages`,
-`anthropic-version: 2023-06-01`, `x-api-key` authentication for API keys,
-Bearer authentication for `sk-ant-oat` OAuth tokens, Anthropic content and
-tool blocks, and `max_tokens`. The default
-`max_output_tokens` is 4096. Signed and redacted thinking blocks are replayed;
-unsigned thinking is replayed as text. Streamed message, content, usage, stop,
-and error events are normalized into Neoagent messages and events.
+endpoint with the same Model interface. Its default `max_output_tokens` is
+4096.
 
-Use `require("neoagent.api.openai_responses").new` for the same Model interface
-with a Responses endpoint. Its additional constructor options are
-`reasoning`, `reasoning_effort`, `reasoning_summary`, and
-`reasoning_context`. Set `reasoning_summary = "none"` to omit the summary
-parameter. `require("neoagent.api.openai_codex_responses").new` also accepts
-`responses_lite = true`, which sends tools and instructions as leading
-developer input items and sets the Codex Lite header. It exposes the Codex SSE
-request profile without performing login or credential lookup, accepts
-`request_max_retries` (default 4), and accepts an `on_diagnostic(event)`
-callback. Direct construction writes no diagnostic file.
+Use `require("neoagent.api.openai_responses").new` for a Responses endpoint.
+Its additional constructor options are `reasoning`, `reasoning_effort`,
+`reasoning_summary`, and `reasoning_context`. Set
+`reasoning_summary = "none"` to omit summaries.
+
+`require("neoagent.api.openai_codex_responses").new` adds
+`responses_lite`, `request_max_retries` (default 4), and
+`on_diagnostic(event)` options. Direct construction requires explicit
+authentication and diagnostic handling.
 
 Authentication is separately composable: >lua
 
@@ -642,18 +535,13 @@ the bundled Controller uses a masked command-line prompt for `secret`.
 Bearer-key method. Its optional `request_opts(credential)` callback can derive
 another header profile.
 
-A store implements `read(id)` and `write(id, credential)`. `modify(id, fn)`
-serializes login and refresh when present. `list()` returns only credential IDs
-and types, and `delete(id)` removes a credential under the same lock. The
-bundled store implements all five operations atomically with private file and
-directory modes. `manager:list_credentials()` exposes secret-free metadata and
-`manager:logout(id)` returns a cancellable Run.
+A store implements `read(id)`, `write(id, credential)`, `modify(id, fn)`,
+`list()`, and `delete(id)`. `manager:list_credentials()` returns secret-free
+metadata, and `manager:logout(id)` returns a cancellable Run.
 
-The wrapper resolves credentials when `Model:stream()` starts and has no UI,
-Session, or tool dependency. `manager:wrap(model, id, { optional = true })`
-runs the underlying Model when no stored credential exists, allowing its
-ambient API-key callback to supply authentication. A stored credential remains
-authoritative and malformed stored values produce an auth error.
+`manager:wrap(model, id, { optional = true })` runs the underlying Model when
+no stored credential exists, allowing its ambient API-key callback to supply
+authentication. Stored credentials take precedence over ambient credentials.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
 `usage`. A Model may emit `{ type = "provider_status", text = "..." }`; the
@@ -725,13 +613,9 @@ The default JSONL Store is created with: >lua
     cwd = cwd,
   })
 <
-`directory` is the workspaces root. The store writes below
-`<directory>/<sha256-of-canonical-cwd>/sessions/`. It uses the full Pi v3
-append-only JSONL tree format and creates no file until the first accepted
-message. It supports message, model, thinking, active-tool, compaction,
-branch-summary, custom, custom-message, label, session-info, and leaf entries.
-All Controllers share this session directory and may resume any stored path.
-Use `storage.open(path)` to resume.
+`directory` is the workspaces root. The Store uses the Pi v3 append-only JSONL
+format and creates no file until the first accepted message. Use
+`require("neoagent.storage").open(path)` to open an existing Store.
 
 Tree-aware Session methods are: >lua
 
@@ -763,27 +647,19 @@ Controller exposes `branch`, `select_branch`, `fork`, and `select_fork`.
 `store:info()` returns the path, ID, cwd, optional name and parent, creation
 timestamp, latest message activity, message count, and first user message.
 `storage.list_sessions(directory, cwd)` returns these values in recent-activity
-order. The resume selector groups linked files through `parentSession`.
-Branches within a file remain available through `:NeoagentBranch`.
+order.
 
 CONTEXT COMPACTION                                  *neoagent-compaction*
 
-Automatic compaction starts after an interaction crosses the Model's context
-threshold, before a prompt when resumed context already exceeds it, and once
-for a provider context-overflow error. It asks the active Model for a
-structured summary with an empty tool list and appends a Pi `compaction`
-entry. Subsequent requests and Controller transcript snapshots contain that
-checkpoint and the retained recent entries. The built-in View renders an
-expandable compaction card followed by retained and subsequent messages;
-`<C-o>` toggles the complete summary. Prefix entries remain available through
-`session:messages()`, `session:path()`, the persisted JSONL tree, and branch
-navigation. Repeated compactions update the previous checkpoint; oversized
-turns receive a separate prefix summary to preserve tool-call boundaries.
+Automatic compaction runs at the configured context threshold and after a
+provider context-overflow error. Subsequent Model requests use the summary and
+retained recent messages; the complete Session tree remains available for
+navigation. The bundled View expands compaction summaries with the configured
+`expand_tools` mapping.
 
-The threshold is `context_window - reserve_tokens`. Recent retention targets
-`keep_recent_tokens`. Defaults are reduced proportionally for smaller Model
-windows. Set `compaction = false` to disable all Controller compaction or
-`compaction.auto = false` to retain manual and overflow compaction. A custom
+The threshold is `context_window - reserve_tokens`, and recent retention uses
+`keep_recent_tokens`. Set `compaction = false` to disable Controller compaction
+or `compaction.auto = false` to retain manual and overflow compaction. A custom
 `compaction.run(opts)` returns a cancellable Run with `summary`,
 `first_kept_entry_id`, `tokens_before`, and optional `usage` and `details`.
 The `neoagent.compaction` module exposes `settings`, `estimate_context`,
