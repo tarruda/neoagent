@@ -136,6 +136,25 @@ describe("neoagent.ui", function()
     assert.is_false(result:is_open())
   end)
 
+  it("reconciles finalized reasoning blocks with streamed thinking", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    result:apply({ type = "thinking_delta", index = 0, text = "first" })
+    result:apply({ type = "thinking_delta", index = 1, text = "second" })
+    result:apply({ type = "message_end", message = {
+      role = "assistant",
+      content = {
+        { type = "thinking", index = 0, thinking = "first summary" },
+        { type = "thinking", index = 1, thinking = "second summary" },
+      },
+    } })
+
+    assert(vim.wait(1000, function()
+      return text(result):find("second summary", 1, true) ~= nil
+    end))
+    assert.matches("first summary\n\n second summary", text(result))
+  end)
+
   it("reconciles provider-indexed partial tools without duplicate execution cards", function()
     local result = view({ position = "center" })
     assert(result:open())

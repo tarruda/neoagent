@@ -267,6 +267,45 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal("first\n\nsecond", table.concat(emitted))
   end)
 
+  it("keeps multiple reasoning output items distinct", function()
+    local first = {
+      type = "reasoning", id = "rs_first",
+      summary = { { type = "summary_text", text = "first" } },
+    }
+    local second = {
+      type = "reasoning", id = "rs_second",
+      summary = { { type = "summary_text", text = "second" } },
+    }
+    local chunks = {
+      event({ type = "response.output_item.added", output_index = 0,
+        item = { type = "reasoning", id = "rs_first", summary = util.list() } }),
+      event({ type = "response.reasoning_summary_text.delta", output_index = 0,
+        delta = "first" }),
+      event({ type = "response.output_item.done", output_index = 0, item = first }),
+      event({ type = "response.output_item.added", output_index = 1,
+        item = { type = "reasoning", id = "rs_second", summary = util.list() } }),
+      event({ type = "response.reasoning_summary_text.delta", output_index = 1,
+        delta = "second" }),
+      event({ type = "response.output_item.done", output_index = 1, item = second }),
+      event({ type = "response.completed", response = {
+        id = "resp_multiple", status = "completed", output = { first, second },
+      } }),
+    }
+    local emitted = {}
+    local result = wait(model(fake_transport.new({ { chunks = chunks } })):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "thinking_delta" then emitted[#emitted + 1] = value end
+      end,
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.equal(0, result.message.content[1].index)
+    assert.are.equal(1, result.message.content[2].index)
+    assert.are.equal(0, emitted[1].index)
+    assert.are.equal(1, emitted[2].index)
+  end)
+
   it("accepts null Responses usage details", function()
     local output = { {
       type = "message", id = "msg_null_usage", role = "assistant", status = "completed",

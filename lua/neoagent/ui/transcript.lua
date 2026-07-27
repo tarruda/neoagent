@@ -265,7 +265,8 @@ function M:set_messages(messages)
   self.messages = util.copy(messages or {})
   self.blocks, self.calls, self.pending_calls = {}, {}, {}
   self.response = self.response + 1
-  self.live_text, self.live_texts, self.live_thinking = nil, {}, nil
+  self.live_text, self.live_texts = nil, {}
+  self.live_thinking, self.live_thinkings = nil, {}
   for _, message in ipairs(self.messages) do self:_message(message) end
   self.full_dirty = true
   self:_schedule_flush()
@@ -284,11 +285,16 @@ function M:apply(event)
     block.text = block.text .. (event.text or "")
     block.dirty = true
   elseif event.type == "thinking_delta" then
-    if not self.live_thinking then
-      self.live_thinking = self:_add_block({ kind = "thinking", text = "" })
+    self.live_thinkings = self.live_thinkings or {}
+    local key = event.index ~= nil and tostring(event.index) or "default"
+    local block = self.live_thinkings[key]
+    if not block then
+      block = self:_add_block({ kind = "thinking", text = "" })
+      self.live_thinkings[key] = block
+      if key == "default" then self.live_thinking = block end
     end
-    self.live_thinking.text = self.live_thinking.text .. (event.text or "")
-    self.live_thinking.dirty = true
+    block.text = block.text .. (event.text or "")
+    block.dirty = true
   elseif event.type == "tool_call_delta" then
     local key = self.response .. ":" .. tostring(event.index)
     local block = self.pending_calls[key]
@@ -321,7 +327,18 @@ function M:apply(event)
             if key == "default" then self.live_text = block end
           end
         elseif content.type == "thinking" then
-          if not self.live_thinking then self.live_thinking = self:_add_block({ kind = "thinking", text = content.thinking or "" }) end
+          self.live_thinkings = self.live_thinkings or {}
+          local key = content.index ~= nil and tostring(content.index) or "default"
+          local block = self.live_thinkings[key]
+            or (key == "default" and self.live_thinking or nil)
+          if block then
+            block.text = content.thinking or ""
+            block.dirty = true
+          else
+            block = self:_add_block({ kind = "thinking", text = content.thinking or "" })
+            self.live_thinkings[key] = block
+            if key == "default" then self.live_thinking = block end
+          end
         elseif content.type == "toolCall" then
           local block = content.id and self.calls[content.id]
             or self.pending_calls[self.response .. ":" .. call_index]
@@ -336,7 +353,8 @@ function M:apply(event)
         end
       end
       self.response = self.response + 1
-      self.live_text, self.live_texts, self.live_thinking = nil, {}, nil
+      self.live_text, self.live_texts = nil, {}
+      self.live_thinking, self.live_thinkings = nil, {}
     end
   elseif event.type == "tool_start" then
     local block = self.calls[event.call.id]

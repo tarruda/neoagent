@@ -68,7 +68,7 @@ function M.new(model, emit)
 
   local function create_slot(index, item)
     if item.type == "reasoning" then
-      local block = { type = "thinking", thinking = "" }
+      local block = { type = "thinking", thinking = "", index = index }
       message.content[#message.content + 1] = block
       slots[index] = { type = "thinking", block = block }
     elseif item.type == "message" then
@@ -116,7 +116,8 @@ function M.new(model, emit)
       end
       local summary = join(item.summary)
       local text = summary ~= "" and summary or join(item.content)
-      append_delta(slot, text ~= "" and text or slot.block.thinking, "thinking", "thinking_delta")
+      append_delta(slot, text ~= "" and text or slot.block.thinking,
+        "thinking", "thinking_delta", { index = index })
       slot.block.thinkingSignature = vim.json.encode(item)
       if item.id then reasoning[item.id] = slot.block end
     elseif item.type == "message" and slot and slot.type == "text" then
@@ -203,13 +204,13 @@ function M.new(model, emit)
           if (slot.summary_part_pending or changed) and slot.block.thinking ~= ""
               and event.delta ~= "" then
             slot.block.thinking = slot.block.thinking .. "\n\n"
-            emit({ type = "thinking_delta", text = "\n\n" })
+            emit({ type = "thinking_delta", text = "\n\n", index = index })
           end
           slot.summary_part_pending = nil
           if summary_index ~= nil then slot.summary_index = summary_index end
         end
         slot.block.thinking = slot.block.thinking .. event.delta
-        emit({ type = "thinking_delta", text = event.delta })
+        emit({ type = "thinking_delta", text = event.delta, index = index })
       end
     elseif event.type == "response.reasoning_summary_part.added"
         or event.type == "response.reasoning_summary_part.done" then
