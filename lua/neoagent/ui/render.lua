@@ -161,7 +161,11 @@ end
 
 local function prose(content, default_group, italic)
   local result = rendered()
-  for row, line in ipairs(content.lines) do
+  local finish = #content.lines
+  while finish > 0 and not content.lines[finish]:find("%S") do finish = finish - 1 end
+  if finish == 0 then return result end
+  for row = 1, finish do
+    local line = content.lines[row]
     local spans = {}
     for _, span in ipairs(content.highlights) do
       if span.row == row - 1 then

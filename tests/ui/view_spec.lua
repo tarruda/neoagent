@@ -155,6 +155,39 @@ describe("neoagent.ui", function()
     assert.matches("first summary\n\n second summary", text(result))
   end)
 
+  it("uses structural spacing for provider prose ending in linefeeds", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    result:set_messages({ {
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "considering\n" },
+        { type = "text", text = "done\n\n" },
+      },
+    } })
+
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    assert.are.same({ " considering", "", " done", "" },
+      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+  end)
+
+  it("omits whitespace-only prose between thinking and tools", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    result:set_messages({ {
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "considering" },
+        { type = "text", text = "\n\n" },
+        { type = "toolCall", id = "c1", name = "read_file", arguments = { path = "x" } },
+      },
+    } })
+
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    assert.are.same({ " considering", "", "", " read x ", "", "" },
+      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+  end)
+
   it("reconciles provider-indexed partial tools without duplicate execution cards", function()
     local result = view({ position = "center" })
     assert(result:open())
