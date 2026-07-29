@@ -11,6 +11,14 @@ local MIME = {
   bmp = "image/bmp",
 }
 
+local MAGICK_FORMAT = {
+  [MIME.png] = "png",
+  [MIME.jpeg] = "jpeg",
+  [MIME.gif] = "gif",
+  [MIME.webp] = "webp",
+  [MIME.bmp] = "bmp",
+}
+
 local function detect(data)
   if data:sub(1, 8) == "\137PNG\r\n\26\n" then return MIME.png end
   if data:sub(1, 3) == "\255\216\255" then return MIME.jpeg end
@@ -29,34 +37,43 @@ local function image_result(data, mime, note)
 end
 
 local function run_magick(data, mime)
-  local input = vim.fn.tempname()
-  local extension = mime == MIME.jpeg and ".jpg" or ".png"
-  local output = vim.fn.tempname() .. extension
-  local function cleanup()
-    vim.uv.fs_unlink(input)
-    vim.uv.fs_unlink(output)
-  end
+  local input_format = assert(MAGICK_FORMAT[mime])
+  local input = input_format .. ":-[0]"
+  local output_format = mime == MIME.jpeg and "jpeg" or "png"
   local ok, result = pcall(function()
-    assert(fs.write_all(input, data, "w", 384))
-    local identified = common.process({ "magick", "identify", "-format", "%w %h", input })
+    local identified = common.process({
+      "magick", "identify", "-format", "%w %h", input,
+    }, {
+      stdin = data,
+    })
     if identified.code ~= 0 then error(identified.stderr) end
     local ow, oh = identified.stdout:match("(%d+)%s+(%d+)")
-    local converted = common.process({ "magick", input .. "[0]", "-auto-orient", "-resize", "2000x2000>", output })
+    local converted = common.process({
+      "magick", input, "-auto-orient", "-resize", "2000x2000>",
+      output_format .. ":-",
+    }, {
+      stdin = data,
+    })
     if converted.code ~= 0 then error(converted.stderr) end
-    local bytes = assert(fs.read(output))
-    local transmitted_mime = extension == ".jpg" and MIME.jpeg or MIME.png
+    local bytes = converted.stdout
+    local transmitted_mime = output_format == "jpeg" and MIME.jpeg or MIME.png
     if #vim.base64.encode(bytes) > 4.5 * 1024 * 1024 then
-      vim.uv.fs_unlink(output)
-      extension = ".jpg"
-      output = vim.fn.tempname() .. extension
+      output_format = "jpeg"
       local reduced = common.process({
-        "magick", input .. "[0]", "-auto-orient", "-resize", "1600x1600>", "-quality", "80", output,
+        "magick", input, "-auto-orient", "-resize", "1600x1600>",
+        "-quality", "80", output_format .. ":-",
+      }, {
+        stdin = data,
       })
       if reduced.code ~= 0 then error(reduced.stderr) end
-      bytes = assert(fs.read(output))
+      bytes = reduced.stdout
       transmitted_mime = MIME.jpeg
     end
-    local final_identified = common.process({ "magick", "identify", "-format", "%w %h", output })
+    local final_identified = common.process({
+      "magick", "identify", "-format", "%w %h", output_format .. ":-[0]",
+    }, {
+      stdin = bytes,
+    })
     local tw, th = final_identified.stdout:match("(%d+)%s+(%d+)")
     local note = "Read image file [" .. transmitted_mime .. "]"
     if ow and oh and tw and th and (ow ~= tw or oh ~= th) then
@@ -64,7 +81,6 @@ local function run_magick(data, mime)
     end
     return image_result(bytes, transmitted_mime, note)
   end)
-  cleanup()
   if not ok then
     return nil, result
   end

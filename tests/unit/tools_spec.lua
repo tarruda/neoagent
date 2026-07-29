@@ -129,24 +129,24 @@ describe("neoagent bundled tools", function()
     assert(fs.write_all(root .. "/image.png", png, "w"))
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
-      "#!/bin/sh",
+      "#!" .. vim.o.shell,
       "if [ \"$1\" = identify ]; then",
-      "  case \"$4\" in *.png|*.jpg) printf '2000 667' ;; *) printf '3000 1000' ;; esac",
+      "  input=$(cat)",
+      "  case \"$input\" in *converted*) printf '2000 667' ;; *) printf '3000 1000' ;; esac",
       "  exit 0",
       "fi",
-      "input=$1",
-      "input=${input%\\[0\\]}",
-      "for output do :; done",
-      "cp \"$input\" \"$output\"",
+      "printf converted",
+      "cat",
     }, "\n"), "w"))
     assert(vim.uv.fs_chmod(magick, 493))
     local old_path = vim.env.PATH
     vim.env.PATH = root .. ":" .. old_path
     local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     assert.matches("Resized from 3000x1000 to 2000x667", result.content[1].text)
-    assert.are.equal(png, vim.base64.decode(result.content[2].data))
+    assert.are.equal("converted" .. png, vim.base64.decode(result.content[2].data))
 
-    assert(fs.write_all(magick, "#!/bin/sh\nprintf failure >&2\nexit 2\n", "w"))
+    assert(fs.write_all(magick,
+      "#!" .. vim.o.shell .. "\nprintf failure >&2\nexit 2\n", "w"))
     assert(vim.uv.fs_chmod(magick, 493))
     result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path
@@ -161,15 +161,15 @@ describe("neoagent bundled tools", function()
     assert(fs.write_all(root .. "/image.png", png, "w"))
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
-      "#!/bin/sh",
+      "#!" .. vim.o.shell,
       "if [ \"$1\" = identify ]; then",
-      "  case \"$4\" in *.jpg) printf '1600 1600' ;; *) printf '3000 3000' ;; esac",
+      "  input=$(cat)",
+      "  case \"$input\" in *bounded*) printf '1600 1600' ;; *) printf '3000 3000' ;; esac",
       "  exit 0",
       "fi",
-      "for output do :; done",
       "case \" $* \" in",
-      "  *' -quality '*) printf 'bounded jpeg' > \"$output\" ;;",
-      "  *) dd if=/dev/zero of=\"$output\" bs=3600000 count=1 2>/dev/null ;;",
+      "  *' -quality '*) printf 'bounded jpeg' ;;",
+      "  *) dd if=/dev/zero bs=3600000 count=1 2>/dev/null ;;",
       "esac",
     }, "\n"), "w"))
     assert(vim.uv.fs_chmod(magick, 493))

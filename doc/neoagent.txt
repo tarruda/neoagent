@@ -618,6 +618,8 @@ Bundled presets: >lua
   require("neoagent.tools").all()
 <
 File tools operate on disk, never loaded buffers.
+ImageMagick transformations stream image bytes through stdin and stdout and
+create no temporary files.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.
