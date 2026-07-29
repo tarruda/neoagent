@@ -592,7 +592,8 @@ The tool loop is: >lua
 It copies input messages, performs no global model lookup, and uses exactly the
 tools passed by the caller. The loop continues while the model requests tools
 or steering supplies another turn. A final assistant response or cancellation
-ends the Run.
+ends the Run. Executor context includes `model`, `run`, `execute_tool`,
+`context`, `on_update`, and a copy of the current tool call in `call`.
 
 To bridge a callback API inside a tool or executor: >lua
 
@@ -610,6 +611,19 @@ A tool is `{ name, description, input_schema, execute }`. `execute(arguments,
 ctx)` returns `{ content = { ... }, isError?, details? }`; content blocks are
 text or base64 images. Replace or decorate `execute_tool(tool, arguments, ctx)`
 to add approval, logging, a native sandbox, or subagent behavior.
+
+Bundled tools use `ctx.fs` for model-directed disk access and
+`ctx.process(argv, opts)` for subprocesses when an executor supplies them.
+Direct calls use `neoagent.fs` and `require("neoagent.process").run`.
+Decorators can copy `ctx`, replace either capability for one invocation, and
+then invoke the next executor. The filesystem capability implements `read`,
+`mkdirp`, and `write_all`.
+
+Process options support `cwd`, `env`, `clear_env`, `stdin`, `timeout_ms`,
+`kill_grace_ms`, and `on_output`. The host runner executes argv with
+`vim.system`, captures ordered output, escalates timed-out or cancelled
+processes from TERM to KILL, and returns `code`, `signal`, `stdout`, `stderr`,
+`output`, and `timed_out`.
 
 Bundled presets: >lua
 

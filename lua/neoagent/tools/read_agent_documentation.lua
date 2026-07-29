@@ -84,7 +84,7 @@ local function documentation()
     "local custom_opts = neoagent.default():config()",
     "custom_opts.tools = { inspect_buffer }",
     "custom_opts.execute_tool = function(tool, arguments, ctx)",
-    "    -- Confirm, log, sandbox, lint, or typecheck here when appropriate.",
+    "    -- Confirm, log, delegate effects, lint, or typecheck here.",
     "    return tool.execute(arguments, ctx)",
     "end",
     "local controller = neoagent.new(custom_opts)",
@@ -93,6 +93,8 @@ local function documentation()
     "Passing `tools` selects exactly those tools. The bundled coding preset contains read, "
       .. "write, edit, shell, and this documentation "
       .. "tool. The read-only preset remains read, grep, and find.",
+    "Bundled tools resolve model-directed effects through optional `ctx.fs` and "
+      .. "`ctx.process` capabilities. Direct Lua calls use host implementations.",
     "",
     "## Custom View",
     "",

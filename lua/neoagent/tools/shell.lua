@@ -22,7 +22,7 @@ local function new()
         error("timeout must be a positive number")
       end
       local last_update = 0
-      local result = common.process({ vim.o.shell, vim.o.shellcmdflag, command }, {
+      local result = common.process(ctx, { vim.o.shell, vim.o.shellcmdflag, command }, {
         cwd = common.workspace(ctx).cwd,
         timeout_ms = timeout and math.floor(timeout * 1000) or nil,
         on_output = function(_, _, _, _, output)

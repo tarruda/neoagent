@@ -1,5 +1,4 @@
 local common = require("neoagent.tools.common")
-local fs = require("neoagent.fs")
 
 local function normalize_lf(text)
   return text:gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -185,6 +184,7 @@ local function new()
         error("edits must contain at least one replacement")
       end
       local absolute = common.workspace(ctx):resolve(path)
+      local fs = common.fs(ctx)
       local raw, err = fs.read(absolute)
       if not raw then error("Could not edit file " .. path .. ": " .. tostring(err)) end
       local bom = raw:sub(1, 3) == "\239\187\191" and raw:sub(1, 3) or ""

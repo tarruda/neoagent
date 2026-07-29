@@ -21,10 +21,13 @@ local function new()
       local limit = arguments.limit or 1000
       if type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0 then error("limit must be a positive integer") end
       local search = arguments.path and workspace:resolve(common.require_string(arguments, "path")) or workspace.cwd
-      local stat = vim.uv.fs_stat(search)
-      if not stat or stat.type ~= "directory" then error("find path is not a directory: " .. tostring(arguments.path or ".")) end
-      local result = common.process({ "fd", "--hidden", "--glob", "--", pattern, "." }, { cwd = search })
-      if result.code ~= 0 then error("fd exited with status " .. result.code .. ": " .. result.stderr) end
+      local result = common.process(ctx, {
+        "fd", "--hidden", "--glob", "--", pattern, ".",
+      }, { cwd = search })
+      if result.code ~= 0 then
+        error("find path is not a directory or fd exited with status "
+          .. result.code .. ": " .. result.stderr)
+      end
       local source = vim.split(result.stdout, "\n", { plain = true, trimempty = true })
       if #source == 0 then return { content = { { type = "text", text = "No files found" } } } end
       local output = {}

@@ -8,11 +8,15 @@ local function fixture()
   return root, Workspace.new({ root = root, cwd = root })
 end
 
-local function ctx(workspace, updates)
-  return {
+local function ctx(workspace, updates, capabilities)
+  local result = {
     context = { workspace = workspace },
     on_update = function(value) if updates then updates[#updates + 1] = value end end,
   }
+  for key, value in pairs(capabilities or {}) do
+    result[key] = value
+  end
+  return result
 end
 
 local function execute(tool, arguments, context)
@@ -42,6 +46,145 @@ describe("neoagent bundled tools", function()
       "read_file", "write_file", "edit_file", "shell", "grep", "find", "read_agent_documentation",
     }, vim.tbl_map(function(t) return t.name end, tools.all()))
     assert.are_not.equal(coding[1], tools.coding()[1])
+  end)
+
+  it("uses injected filesystem and process operations", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local files = {
+      [root .. "/read.txt"] = "injected read",
+      [root .. "/edit.txt"] = "before",
+    }
+    local operations = {}
+    local injected_fs = {
+      read = function(path)
+        operations[#operations + 1] = { "read", path }
+        return files[path], files[path] and nil or "missing"
+      end,
+      mkdirp = function(path)
+        operations[#operations + 1] = { "mkdirp", path }
+        return true
+      end,
+      write_all = function(path, data)
+        operations[#operations + 1] = { "write", path, data }
+        files[path] = data
+        return true
+      end,
+    }
+    local commands = {}
+    local injected_process = function(command, opts)
+      commands[#commands + 1] = { command = command, opts = opts }
+      if command[1] == "rg" then
+        return { code = 1, signal = 0, stdout = "", stderr = "", output = "" }
+      elseif command[1] == "fd" then
+        return {
+          code = 0,
+          signal = 0,
+          stdout = "found.lua\n",
+          stderr = "",
+          output = "found.lua\n",
+        }
+      end
+      return {
+        code = 0,
+        signal = 0,
+        stdout = "injected",
+        stderr = "",
+        output = "injected",
+      }
+    end
+    local context = ctx(workspace, nil, {
+      fs = injected_fs,
+      process = injected_process,
+    })
+
+    local read = execute(require("neoagent.tools.read_file"), {
+      path = "read.txt",
+    }, context)
+    assert.are.equal("injected read", read.content[1].text)
+    execute(require("neoagent.tools.write_file"), {
+      path = "nested.txt",
+      content = "written",
+    }, context)
+    execute(require("neoagent.tools.edit_file"), {
+      path = "edit.txt",
+      edits = { { oldText = "before", newText = "after" } },
+    }, context)
+    local shell = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, context)
+    local grep = execute(require("neoagent.tools.grep"), {
+      pattern = "ignored",
+    }, context)
+    local found = execute(require("neoagent.tools.find"), {
+      pattern = "*.lua",
+    }, context)
+
+    assert.are.equal("written", files[root .. "/nested.txt"])
+    assert.are.equal("after", files[root .. "/edit.txt"])
+    assert.are.equal("injected", shell.content[1].text)
+    assert.are.equal("No matches found", grep.content[1].text)
+    assert.are.equal("found.lua", found.content[1].text)
+    assert.are.equal("mkdirp", operations[2][1])
+    assert.are.same({
+      vim.o.shell, vim.o.shellcmdflag, "ignored",
+    }, commands[1].command)
+    assert.are.equal("rg", commands[2].command[1])
+    assert.are.equal("fd", commands[3].command[1])
+  end)
+
+  it("streams every ImageMagick invocation through stdin and stdout", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local magick = root .. "/magick"
+    assert(fs.write_all(magick, "placeholder\n", "w"))
+    assert(vim.uv.fs_chmod(magick, 493))
+    local old_path = vim.env.PATH
+    vim.env.PATH = root .. ":" .. old_path
+
+    local png = "\137PNG\r\n\26\ninjected"
+    local converted = "\137PNG\r\n\26\nconverted"
+    local calls = {}
+    local process = function(command, opts)
+      calls[#calls + 1] = { command = command, opts = opts }
+      if command[2] == "identify" then
+        return {
+          code = 0,
+          signal = 0,
+          stdout = opts.stdin == png and "3000 1000" or "2000 667",
+          stderr = "",
+          output = opts.stdin == png and "3000 1000" or "2000 667",
+        }
+      end
+      return {
+        code = 0,
+        signal = 0,
+        stdout = converted,
+        stderr = "",
+        output = converted,
+      }
+    end
+    local result = execute(require("neoagent.tools.read_file"), {
+      path = "image.png",
+    }, ctx(workspace, nil, {
+      fs = {
+        read = function(path)
+          assert.are.equal(root .. "/image.png", path)
+          return png
+        end,
+      },
+      process = process,
+    }))
+    vim.env.PATH = old_path
+
+    assert.are.equal(converted, vim.base64.decode(result.content[2].data))
+    assert.matches("Resized from 3000x1000 to 2000x667", result.content[1].text)
+    assert.are.equal(3, #calls)
+    for _, call in ipairs(calls) do
+      assert.are.equal("magick", call.command[1])
+      assert.is_truthy(call.command[#call.command]:find(":-", 1, true))
+      assert.is_truthy(call.opts.stdin)
+    end
   end)
 
   it("returns the on-demand Neoagent extensibility guide", function()

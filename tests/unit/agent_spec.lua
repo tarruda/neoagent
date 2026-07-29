@@ -176,6 +176,7 @@ describe("neoagent.agent", function()
       tools = { { name = "echo", description = "", input_schema = {}, execute = function() error("unused") end } },
       execute_tool = function(tool, arguments, ctx)
         called = tool.name == "echo" and arguments.value and ctx.model == model
+          and ctx.call.id == "c1" and ctx.call.name == "echo"
         return { content = { { type = "text", text = "approved" } } }
       end,
     }))
@@ -204,6 +205,61 @@ describe("neoagent.agent", function()
     }))
     assert.is_true(result.ok)
     assert.are.equal("approved asynchronously", result.new_messages[2].content[1].text)
+  end)
+
+  it("propagates cancellation from an active tool without another model turn", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "c1", name = "wait", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "must not run" } }) },
+    })
+    local cleaned = false
+    local run = agent.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "wait",
+        description = "",
+        input_schema = { type = "object" },
+        execute = function()
+          return require("neoagent.async").await(function()
+            return function() cleaned = true end
+          end)
+        end,
+      } },
+    })
+    vim.defer_fn(function() run:cancel() end, 10)
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.is_false(run:result().ok)
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_true(cleaned)
+    assert.are.equal(1, #model.requests)
+  end)
+
+  it("propagates cancellation raised by an executor decorator", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "c1", name = "cancel", arguments = {} },
+      }, "toolUse") },
+    })
+    local run = agent.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "cancel",
+        description = "",
+        input_schema = { type = "object" },
+        execute = function() error("unused") end,
+      } },
+      execute_tool = function()
+        error(require("neoagent.async").cancelled_error, 0)
+      end,
+    })
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.is_false(run:result().ok)
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(1, #model.requests)
   end)
 
   it("continues tool calls until the model stops", function()

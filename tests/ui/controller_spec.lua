@@ -51,6 +51,39 @@ describe("neoagent default controller", function()
     assert.matches(" hello", lines)
   end)
 
+  it("identifies the Controller in executor context", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "c1", name = "inspect", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local captured
+    local tool = {
+      name = "inspect",
+      description = "",
+      input_schema = {
+        type = "object",
+        properties = {},
+        additionalProperties = false,
+      },
+      execute = function()
+        return { content = { { type = "text", text = "inspected" } } }
+      end,
+    }
+    setup_model(model, {
+      tools = { tool },
+      execute_tool = function(selected, arguments, ctx)
+        captured = ctx.context
+        return selected.execute(arguments, ctx)
+      end,
+    })
+    local run = assert(neoagent.send("inspect"))
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal("Neo", captured.controller)
+    assert.are.equal(vim.fn.getcwd(), captured.workspace.cwd)
+  end)
+
   it("queues steering submissions one at a time during an active Run", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "first" } }) },

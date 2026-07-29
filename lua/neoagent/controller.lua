@@ -593,7 +593,10 @@ function M.from_config(options)
         system_prompt = system_prompt(prompt, tools),
         tools = tools,
         workspace = state.workspace,
-        context = { workspace = state.workspace },
+        context = {
+          workspace = state.workspace,
+          controller = options.name,
+        },
         execute_tool = options.execute_tool,
         get_steering_messages = function()
           if #state.steering == 0 then return {} end

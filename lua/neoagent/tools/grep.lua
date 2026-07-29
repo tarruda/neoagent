@@ -43,7 +43,7 @@ local function new()
       command[#command + 1] = "--"
       command[#command + 1] = pattern
       command[#command + 1] = arguments.path and workspace:resolve(common.require_string(arguments, "path")) or "."
-      local result = common.process(command, { cwd = workspace.cwd })
+      local result = common.process(ctx, command, { cwd = workspace.cwd })
       if result.code ~= 0 and result.code ~= 1 then error("rg exited with status " .. result.code .. ": " .. result.stderr) end
       if result.code == 1 or result.stdout == "" then
         return { content = { { type = "text", text = "No matches found" } } }

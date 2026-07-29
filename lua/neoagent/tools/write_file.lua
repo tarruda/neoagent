@@ -1,4 +1,3 @@
-local fs = require("neoagent.fs")
 local common = require("neoagent.tools.common")
 
 local function new()
@@ -18,6 +17,7 @@ local function new()
       local path = common.require_string(arguments, "path")
       local content = common.require_string(arguments, "content", true)
       local absolute = common.workspace(ctx):resolve(path)
+      local fs = common.fs(ctx)
       local ok, err = fs.mkdirp(vim.fs.dirname(absolute))
       if not ok then
         error("Could not create parent directory for " .. path .. ": " .. tostring(err))

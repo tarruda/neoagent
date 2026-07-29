@@ -116,6 +116,7 @@ function M.run(opts)
             run = run,
             execute_tool = execute,
             context = opts.context,
+            call = util.copy(call),
           }
           ctx.on_update = function(update)
             if not active or run:is_cancelled() or run:is_done() then
@@ -128,11 +129,14 @@ function M.run(opts)
           end
           local executed, value = pcall(execute, tool, util.copy(call.arguments), ctx)
           active = false
+          if run:is_cancelled() then error(async.cancelled_error, 0) end
           if executed then
             local valid, normalized = pcall(validate_tool_result, value)
             result = valid and normalized or error_result(normalized)
           else
-            result = error_result(value)
+            local err = util.normalize_error(value, "tool")
+            if err.kind == "cancelled" then error(err, 0) end
+            result = error_result(err)
           end
         end
 

@@ -1,6 +1,5 @@
 local async = require("neoagent.async")
 local common = require("neoagent.tools.common")
-local fs = require("neoagent.fs")
 local truncate = require("neoagent.tools.truncate")
 
 local MIME = {
@@ -36,19 +35,19 @@ local function image_result(data, mime, note)
   }
 end
 
-local function run_magick(data, mime)
+local function run_magick(data, mime, ctx)
   local input_format = assert(MAGICK_FORMAT[mime])
   local input = input_format .. ":-[0]"
   local output_format = mime == MIME.jpeg and "jpeg" or "png"
   local ok, result = pcall(function()
-    local identified = common.process({
+    local identified = common.process(ctx, {
       "magick", "identify", "-format", "%w %h", input,
     }, {
       stdin = data,
     })
     if identified.code ~= 0 then error(identified.stderr) end
     local ow, oh = identified.stdout:match("(%d+)%s+(%d+)")
-    local converted = common.process({
+    local converted = common.process(ctx, {
       "magick", input, "-auto-orient", "-resize", "2000x2000>",
       output_format .. ":-",
     }, {
@@ -59,7 +58,7 @@ local function run_magick(data, mime)
     local transmitted_mime = output_format == "jpeg" and MIME.jpeg or MIME.png
     if #vim.base64.encode(bytes) > 4.5 * 1024 * 1024 then
       output_format = "jpeg"
-      local reduced = common.process({
+      local reduced = common.process(ctx, {
         "magick", input, "-auto-orient", "-resize", "1600x1600>",
         "-quality", "80", output_format .. ":-",
       }, {
@@ -69,7 +68,7 @@ local function run_magick(data, mime)
       bytes = reduced.stdout
       transmitted_mime = MIME.jpeg
     end
-    local final_identified = common.process({
+    local final_identified = common.process(ctx, {
       "magick", "identify", "-format", "%w %h", output_format .. ":-[0]",
     }, {
       stdin = bytes,
@@ -111,14 +110,14 @@ local function new()
       if limit ~= nil and (type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0) then
         error("limit must be a positive integer")
       end
-      local data, err = fs.read(common.workspace(ctx):resolve(path))
+      local data, err = common.fs(ctx).read(common.workspace(ctx):resolve(path))
       if not data then
         error("Could not read file " .. path .. ": " .. tostring(err))
       end
       local mime = detect(data)
       if mime then
         if vim.fn.executable("magick") == 1 and async.current() then
-          local processed, process_err = run_magick(data, mime)
+          local processed, process_err = run_magick(data, mime, ctx)
           if processed then return processed end
           return image_result(data, mime, "Read image file [" .. mime .. "]\n[ImageMagick resize failed: " .. tostring(process_err) .. "; sending original]")
         end

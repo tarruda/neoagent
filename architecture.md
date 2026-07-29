@@ -123,7 +123,14 @@ The default coding tools live under `lua/neoagent/tools/`:
 
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
 composition can add confirmation, sandboxing, logging, or post-edit checks
-there without changing the tool or core agent loop.
+there without changing the tool or core agent loop. The context includes the
+Model, active Run, caller context, executor, update callback, and a copy of the
+current tool call.
+
+Bundled tools resolve model-directed disk and subprocess work through optional
+`ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
+filesystem and `neoagent.process` runner. A decorated executor can copy the
+context and replace either capability for one invocation.
 
 ## Sessions and persistence
 
