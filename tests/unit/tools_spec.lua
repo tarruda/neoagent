@@ -57,6 +57,7 @@ describe("neoagent bundled tools", function()
     }
     local operations = {}
     local injected_fs = {
+      create_temp = function() return root .. "/shell.log" end,
       read = function(path)
         operations[#operations + 1] = { "read", path }
         return files[path], files[path] and nil or "missing"
@@ -65,9 +66,9 @@ describe("neoagent bundled tools", function()
         operations[#operations + 1] = { "mkdirp", path }
         return true
       end,
-      write_all = function(path, data)
+      write_all = function(path, data, flags)
         operations[#operations + 1] = { "write", path, data }
-        files[path] = data
+        files[path] = flags == "a" and (files[path] or "") .. data or data
         return true
       end,
     }
@@ -84,6 +85,9 @@ describe("neoagent bundled tools", function()
           stderr = "",
           output = "found.lua\n",
         }
+      end
+      if opts.capture == false and opts.on_output then
+        opts.on_output("injected", false)
       end
       return {
         code = 0,
@@ -394,6 +398,97 @@ describe("neoagent bundled tools", function()
     assert.has_error(function()
       execute(require("neoagent.tools.shell"), { command = "true", timeout = 0 }, ctx(workspace))
     end)
+  end)
+
+  it("spills shell output incrementally through the injected filesystem", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local spill_path = root .. "/full.log"
+    local files = {}
+    local writes = {}
+    local injected_fs = {
+      create_temp = function(prefix)
+        assert.are.equal("neoagent-shell-", prefix)
+        return spill_path
+      end,
+      write_all = function(path, data, flags, mode)
+        writes[#writes + 1] = { path = path, data = data, flags = flags, mode = mode }
+        files[path] = flags == "a" and (files[path] or "") .. data or data
+        return true
+      end,
+    }
+    local expected = {}
+    local injected_process = function(_, opts)
+      assert.is_false(opts.capture)
+      for index = 1, 2101 do
+        local chunk = tostring(index) .. "\n"
+        expected[#expected + 1] = chunk
+        opts.on_output(chunk, false)
+      end
+      return {
+        code = 0,
+        signal = 0,
+        stdout = "",
+        stderr = "",
+        output = "",
+        timed_out = false,
+      }
+    end
+    local result = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, nil, {
+      fs = injected_fs,
+      process = injected_process,
+    }))
+
+    assert.is_false(result.isError)
+    assert.are.equal(spill_path, result.details.output_path)
+    assert.are.equal(table.concat(expected), files[spill_path])
+    assert.are.equal("w", writes[1].flags)
+    assert.are.equal(384, writes[1].mode)
+    assert.is_true(#writes > 1)
+    for index = 2, #writes do
+      assert.are.equal("a", writes[index].flags)
+    end
+  end)
+
+  it("keeps a bounded shell tail when spill creation or writing fails", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    for _, failure in ipairs({ "create failed", "write failed" }) do
+      local injected_fs = {
+        create_temp = function()
+          if failure == "create failed" then return nil, failure end
+          return root .. "/partial.log"
+        end,
+        write_all = function() return nil, failure end,
+      }
+      local injected_process = function(_, opts)
+        assert.is_false(opts.capture)
+        opts.on_output(string.rep("x", 120 * 1024), false)
+        return {
+          code = 0,
+          signal = 0,
+          stdout = "",
+          stderr = "",
+          output = "",
+          timed_out = false,
+        }
+      end
+      local result = execute(require("neoagent.tools.shell"), {
+        command = "ignored",
+      }, ctx(workspace, nil, {
+        fs = injected_fs,
+        process = injected_process,
+      }))
+
+      assert.is_false(result.isError)
+      assert.matches(failure, result.content[1].text)
+      assert.is_true(#result.content[1].text < 52 * 1024)
+      assert.is_nil(result.details.output_path)
+      assert.are.equal(120 * 1024, result.details.truncation.totalBytes)
+      assert.are.equal("bytes", result.details.truncation.truncatedBy)
+    end
   end)
 
   it("times out and cancels shell processes", function()

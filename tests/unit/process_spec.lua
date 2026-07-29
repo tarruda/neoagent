@@ -24,6 +24,31 @@ describe("neoagent process runner", function()
     assert.are.equal("visible:unset", completed.stdout)
   end)
 
+  it("streams output without retaining it when capture is disabled", function()
+    local chunks = {}
+    local completed = complete(function()
+      return process.run({
+        "sh", "-c", "printf out; printf err >&2",
+      }, {
+        capture = false,
+        on_output = function(data, is_stderr)
+          chunks[#chunks + 1] = { data = data, is_stderr = is_stderr }
+        end,
+      })
+    end)
+    assert.are.equal(0, completed.code)
+    assert.are.equal("", completed.stdout)
+    assert.are.equal("", completed.stderr)
+    assert.are.equal("", completed.output)
+    local streams = { stdout = "", stderr = "" }
+    for _, chunk in ipairs(chunks) do
+      local stream = chunk.is_stderr and "stderr" or "stdout"
+      streams[stream] = streams[stream] .. chunk.data
+    end
+    assert.are.equal("out", streams.stdout)
+    assert.are.equal("err", streams.stderr)
+  end)
+
   it("escalates timed-out TERM-resistant processes to KILL", function()
     local completed = complete(function()
       return process.run({

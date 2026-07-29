@@ -8,6 +8,18 @@ function M.join(...)
   return vim.fs.joinpath(...)
 end
 
+function M.create_temp(prefix)
+  local template = M.join(vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+  local fd, path = vim.uv.fs_mkstemp(template)
+  if not fd then return nil, path end
+  local ok, err = vim.uv.fs_close(fd)
+  if not ok then
+    vim.uv.fs_unlink(path)
+    return nil, err
+  end
+  return path
+end
+
 function M.read(path)
   local stat, stat_err = vim.uv.fs_stat(path)
   if not stat then

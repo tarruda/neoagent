@@ -130,7 +130,8 @@ current tool call.
 Bundled tools resolve model-directed disk and subprocess work through optional
 `ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
 filesystem and `neoagent.process` runner. A decorated executor can copy the
-context and replace either capability for one invocation.
+context and replace either capability for one invocation. Shell output uses
+bounded memory and streams overflow through the filesystem capability.
 
 ## Sessions and persistence
 

@@ -616,14 +616,14 @@ Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.
 Direct calls use `neoagent.fs` and `require("neoagent.process").run`.
 Decorators can copy `ctx`, replace either capability for one invocation, and
-then invoke the next executor. The filesystem capability implements `read`,
-`mkdirp`, and `write_all`.
+then invoke the next executor. The filesystem capability implements
+`create_temp`, `read`, `mkdirp`, and `write_all`.
 
-Process options support `cwd`, `env`, `clear_env`, `stdin`, `timeout_ms`,
-`kill_grace_ms`, and `on_output`. The host runner executes argv with
-`vim.system`, captures ordered output, escalates timed-out or cancelled
-processes from TERM to KILL, and returns `code`, `signal`, `stdout`, `stderr`,
-`output`, and `timed_out`.
+Process options support `cwd`, `env`, `clear_env`, `stdin`, `capture`,
+`timeout_ms`, `kill_grace_ms`, and `on_output`. The host runner executes argv
+with `vim.system`, captures ordered output unless `capture` is false, escalates
+timed-out or cancelled processes from TERM to KILL, and returns `code`,
+`signal`, `stdout`, `stderr`, `output`, and `timed_out`.
 
 Bundled presets: >lua
 
@@ -634,6 +634,8 @@ Bundled presets: >lua
 File tools operate on disk, never loaded buffers.
 ImageMagick transformations stream image bytes through stdin and stdout and
 create no temporary files.
+The shell tool retains a bounded output tail and streams overflow to a
+temporary log through `ctx.fs`.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.

@@ -17,6 +17,7 @@ end
 function M.run(command, opts)
   opts = opts or {}
   local stdout, stderr, output = "", "", ""
+  local capture = opts.capture ~= false
   local timed_out = false
   local result = async.await(function(done)
     local process
@@ -64,8 +65,10 @@ function M.run(command, opts)
         if err then
           done.reject(util.error("tool", "Failed reading process stdout", err))
         elseif data and accepting_output then
-          stdout = stdout .. data
-          output = output .. data
+          if capture then
+            stdout = stdout .. data
+            output = output .. data
+          end
           if opts.on_output then
             opts.on_output(data, false, stdout, stderr, output)
           end
@@ -75,8 +78,10 @@ function M.run(command, opts)
         if err then
           done.reject(util.error("tool", "Failed reading process stderr", err))
         elseif data and accepting_output then
-          stderr = stderr .. data
-          output = output .. data
+          if capture then
+            stderr = stderr .. data
+            output = output .. data
+          end
           if opts.on_output then
             opts.on_output(data, true, stdout, stderr, output)
           end

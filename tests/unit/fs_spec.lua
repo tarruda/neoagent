@@ -10,6 +10,8 @@ describe("neoagent.fs", function()
       read = vim.uv.fs_read,
       write = vim.uv.fs_write,
       close = vim.uv.fs_close,
+      mkstemp = vim.uv.fs_mkstemp,
+      unlink = vim.uv.fs_unlink,
       mkdir = vim.fn.mkdir,
     }
   end)
@@ -20,7 +22,31 @@ describe("neoagent.fs", function()
     vim.uv.fs_read = original.read
     vim.uv.fs_write = original.write
     vim.uv.fs_close = original.close
+    vim.uv.fs_mkstemp = original.mkstemp
+    vim.uv.fs_unlink = original.unlink
     vim.fn.mkdir = original.mkdir
+  end)
+
+  it("reports temporary file creation and close failures", function()
+    vim.uv.fs_mkstemp = function(template)
+      assert.are.equal(
+        vim.fs.joinpath(vim.uv.os_tmpdir(), "neoagent-test-XXXXXX"),
+        template
+      )
+      return nil, "create failed"
+    end
+    local path, err = fs.create_temp("neoagent-test-")
+    assert.is_nil(path)
+    assert.are.equal("create failed", err)
+
+    local removed
+    vim.uv.fs_mkstemp = function() return 7, "/tmp/neoagent-test-file" end
+    vim.uv.fs_close = function() return nil, "close failed" end
+    vim.uv.fs_unlink = function(value) removed = value return true end
+    path, err = fs.create_temp()
+    assert.is_nil(path)
+    assert.are.equal("close failed", err)
+    assert.are.equal("/tmp/neoagent-test-file", removed)
   end)
 
   it("reports open and read failures and closes opened files", function()

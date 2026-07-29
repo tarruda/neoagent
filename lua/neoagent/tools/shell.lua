@@ -1,6 +1,100 @@
 local common = require("neoagent.tools.common")
-local fs = require("neoagent.fs")
 local truncate = require("neoagent.tools.truncate")
+
+local function output_capture(filesystem)
+  local tail = ""
+  local total_bytes = 0
+  local completed_lines = 0
+  local has_open_line = false
+  local output_path
+  local spill_error
+
+  local function total_lines()
+    return completed_lines + (has_open_line and 1 or 0)
+  end
+
+  local function is_truncated()
+    return total_bytes > truncate.MAX_BYTES or total_lines() > truncate.MAX_LINES
+  end
+
+  local function count_lines(data)
+    local newlines = 0
+    local last_newline
+    local start = 1
+    while true do
+      local position = data:find("\n", start, true)
+      if not position then break end
+      newlines = newlines + 1
+      last_newline = position
+      start = position + 1
+    end
+    completed_lines = completed_lines + newlines
+    if last_newline then
+      has_open_line = last_newline < #data
+    elseif data ~= "" then
+      has_open_line = true
+    end
+  end
+
+  local function spill(data)
+    local flags = output_path and "a" or "w"
+    if not output_path then
+      local err
+      output_path, err = filesystem.create_temp("neoagent-shell-")
+      if not output_path then
+        spill_error = err
+        return
+      end
+      data = tail
+    end
+    local ok, err = filesystem.write_all(output_path, data, flags, 384)
+    if not ok then
+      output_path = nil
+      spill_error = err
+    end
+  end
+
+  local function trim_tail()
+    tail = truncate.tail(tail, {
+      max_lines = truncate.MAX_LINES * 2,
+      max_bytes = truncate.MAX_BYTES * 2,
+    }).content
+  end
+
+  local function append(data)
+    total_bytes = total_bytes + #data
+    count_lines(data)
+    tail = tail .. data
+    if not spill_error then
+      if output_path then
+        spill(data)
+      elseif is_truncated() then
+        spill(tail)
+      end
+    end
+    if output_path or spill_error then trim_tail() end
+  end
+
+  local function snapshot(options)
+    local result = truncate.tail(tail, options)
+    if not options then
+      result.totalBytes = total_bytes
+      result.totalLines = total_lines()
+      result.truncated = is_truncated()
+      if result.truncated and result.truncatedBy == nil then
+        result.truncatedBy = total_bytes > truncate.MAX_BYTES and "bytes" or "lines"
+      end
+    end
+    return result
+  end
+
+  return {
+    append = append,
+    snapshot = snapshot,
+    output_path = function() return output_path end,
+    spill_error = function() return spill_error end,
+  }
+end
 
 local function new()
   return {
@@ -21,32 +115,33 @@ local function new()
       if timeout ~= nil and (type(timeout) ~= "number" or timeout <= 0) then
         error("timeout must be a positive number")
       end
+      local capture = output_capture(common.fs(ctx))
       local last_update = 0
       local result = common.process(ctx, { vim.o.shell, vim.o.shellcmdflag, command }, {
+        capture = false,
         cwd = common.workspace(ctx).cwd,
         timeout_ms = timeout and math.floor(timeout * 1000) or nil,
-        on_output = function(_, _, _, _, output)
+        on_output = function(data)
+          capture.append(data)
           local now = vim.uv.hrtime()
           if ctx.on_update and now - last_update >= 100 * 1000 * 1000 then
             last_update = now
-            local snapshot = truncate.tail(output, { max_lines = 12, max_bytes = 8 * 1024 })
+            local snapshot = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
             ctx.on_update({ content = { { type = "text", text = snapshot.content } } })
           end
         end,
       })
-      local output = result.output
-      if output == "" then output = "(no output)" end
-      local shortened = truncate.tail(output)
-      local text = shortened.content
+      local shortened = capture.snapshot()
+      local text = shortened.content == "" and "(no output)" or shortened.content
       local details = { exit_code = result.code, signal = result.signal, truncation = shortened }
       if shortened.truncated then
-        local path = vim.fn.tempname() .. "-neoagent-shell.log"
-        local ok, err = fs.write_all(path, output, "w", 384)
-        if ok then
+        local path = capture.output_path()
+        if path then
           details.output_path = path
           text = string.format("[Output truncated; full output: %s]\n%s", path, text)
         else
-          text = string.format("[Output truncated; could not save full output: %s]\n%s", tostring(err), text)
+          text = string.format("[Output truncated; could not save full output: %s]\n%s",
+            tostring(capture.spill_error()), text)
         end
       end
       local is_error = result.timed_out or result.code ~= 0
