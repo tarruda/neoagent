@@ -8,6 +8,60 @@ local M = {}
 local next_id = 0
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
 
+local non_retryable_error_patterns = {
+  "insufficient_quota", "quota exceeded", "usage limit", "usage_limit",
+  "available balance", "out of budget", "billing",
+}
+
+local retryable_error_patterns = {
+  "overloaded", "rate limit", "rate_limit", "too many requests",
+  "service unavailable", "server error", "internal error", "provider returned error",
+  "network error", "connection error", "connection refused", "connection lost",
+  "connection reset", "other side closed", "fetch failed", "getaddrinfo",
+  "enotfound", "eai_again", "upstream connect", "reset before headers",
+  "socket hang up", "socket connection was closed", "timed out", "timeout",
+  "terminated", "websocket closed", "websocket error", "transfer closed",
+  "empty reply from server", "broken pipe", "failure when receiving data",
+  "unexpected eof", "premature close", "ended without", "stream ended before",
+  "request did not get a response", "you can retry your request",
+  "try your request again", "please retry your request", "resourceexhausted",
+}
+
+local retryable_status = {
+  [408] = true, [409] = true, [429] = true, [500] = true, [502] = true,
+  [503] = true, [504] = true, [524] = true,
+}
+
+local function error_text(err)
+  local parts = { type(err.message) == "string" and err.message or "" }
+  if err.detail ~= nil then
+    local ok, encoded = pcall(vim.json.encode, err.detail)
+    parts[#parts + 1] = ok and encoded or tostring(err.detail)
+  end
+  return table.concat(parts, " "):lower()
+end
+
+local function has_pattern(text, patterns)
+  for _, pattern in ipairs(patterns) do
+    if text:find(pattern, 1, true) then return true end
+  end
+  return false
+end
+
+local function is_retryable_error(err)
+  if type(err) ~= "table" or err.kind == "cancelled" then return false end
+  if type(err.retryable) == "boolean" then return err.retryable end
+
+  local text = error_text(err)
+  if has_pattern(text, non_retryable_error_patterns) then return false end
+  local response = type(err.response) == "table" and err.response or {}
+  local status = tonumber(err.status) or tonumber(response.status)
+    or tonumber(text:match("http%s+(%d%d%d)"))
+  if status and status >= 400 then return retryable_status[status] == true end
+  if err.kind == "transport" then return true end
+  return has_pattern(text, retryable_error_patterns)
+end
+
 local function retry_delay(milliseconds)
   return require("neoagent.async").await(function(done)
     local timer = vim.uv.new_timer()
@@ -606,15 +660,19 @@ function M.from_config(options)
           end)
           if compacted then return end
         end
-        local retry_limit = done.error and tonumber(done.error.stream_max_retries) or 0
-        if can_continue and done.error and done.error.retryable == true
+        local retry_settings = options.retry
+        local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0
+        local provider_limit = done.error and tonumber(done.error.stream_max_retries)
+        if provider_limit then retry_limit = math.min(retry_limit, provider_limit) end
+        if can_continue and done.error and is_retryable_error(done.error)
             and stream_retries < retry_limit then
           stream_retries = stream_retries + 1
           abandon_failed_message()
           state.pending_events = {}
           state.live_usage = nil
           local wait = tonumber(done.error.retry_after_ms)
-            or math.min(60000, 200 * (2 ^ (stream_retries - 1)))
+            or retry_settings.base_delay_ms * (2 ^ (stream_retries - 1))
+          wait = math.max(0, math.min(60000, wait))
           state.provider_status = string.format("Reconnecting… %d/%d", stream_retries, retry_limit)
           update_context()
           local waiting

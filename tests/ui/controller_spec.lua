@@ -251,6 +251,104 @@ describe("neoagent default controller", function()
     assert.is_nil(neoagent._state().provider_status)
   end)
 
+  it("retries interrupted transports without provider-specific error metadata", function()
+    local failed = fake_model.assistant({ { type = "text", text = "partial" } }, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "curl exited with status 18: curl: (18) transfer closed with outstanding read data remaining",
+      exit_code = 18,
+    }
+    local model = fake_model.new({
+      { events = { { type = "text_delta", text = "partial" } }, result = failed },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    setup_model(model, {
+      retry = { enabled = true, max_retries = 3, base_delay_ms = 1 },
+    })
+    assert(neoagent.open())
+    local run = assert(neoagent.send("retry this"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+
+    local messages = neoagent.get_session():messages()
+    assert.are.equal(2, #messages)
+    assert.are.equal("retry this", messages[1].content)
+    assert.are.equal("recovered", messages[2].content[1].text)
+    assert.is_true(neoagent._state().last_result.ok)
+  end)
+
+  it("retries premature protocol stream endings", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "protocol",
+      message = "Stream ended without finish_reason or [DONE]",
+    }
+    local model = fake_model.new({
+      { result = failed },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    setup_model(model, {
+      retry = { enabled = true, max_retries = 1, base_delay_ms = 1 },
+    })
+    local run = assert(neoagent.send("retry truncated stream"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+
+    assert.is_true(neoagent._state().last_result.ok)
+  end)
+
+  it("bounds automatic retries with the configured retry budget", function()
+    local function interrupted()
+      local failed = fake_model.assistant({}, "error")
+      failed.ok = false
+      failed.error = { kind = "transport", message = "connection refused" }
+      return failed
+    end
+    local model = fake_model.new({
+      { result = interrupted() },
+      { result = interrupted() },
+      { result = fake_model.assistant({ { type = "text", text = "too late" } }) },
+    })
+    setup_model(model, {
+      retry = { enabled = true, max_retries = 1, base_delay_ms = 1 },
+    })
+    local run = assert(neoagent.send("bounded retry"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+    end))
+
+    assert.are.equal(2, #model.requests)
+    assert.is_false(neoagent._state().last_result.ok)
+  end)
+
+  it("does not retry terminal HTTP transport failures", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "HTTP 401: invalid API key",
+      response = { status = 401 },
+    }
+    local model = fake_model.new({
+      { result = failed },
+      { result = fake_model.assistant({ { type = "text", text = "unexpected" } }) },
+    })
+    setup_model(model, {
+      retry = { enabled = true, max_retries = 3, base_delay_ms = 1 },
+    })
+    local run = assert(neoagent.send("do not retry"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and neoagent._state().status == "idle"
+    end))
+
+    assert.are.equal(1, #model.requests)
+    assert.is_false(neoagent._state().last_result.ok)
+  end)
+
   it("cancels a pending retry without launching another turn", function()
     local failed = fake_model.assistant({}, "error")
     failed.ok = false
@@ -265,7 +363,7 @@ describe("neoagent default controller", function()
     setup_model(model)
     assert(neoagent.send("stop retrying"))
     assert(vim.wait(1000, function()
-      return neoagent._state().provider_status == "Reconnecting… 1/5"
+      return neoagent._state().provider_status == "Reconnecting… 1/3"
     end))
     assert.is_true(neoagent.stop())
     assert(vim.wait(1000, function() return neoagent._state().status == "idle" end))

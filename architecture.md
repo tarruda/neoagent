@@ -162,19 +162,20 @@ Each Controller owns:
 - Current cancellable Run
 - Steering queue
 - Authentication interactions
-- Retryable turn replay
+- Retryable turn replay and cancellable backoff
 - Context compaction
 - AGENTS.md and skill discovery
 
-The Controller starts `chat.run()`, handles storage, replays provider-declared
-retryable turns after cancellable backoff, retries context overflows after
-compaction, refreshes unmodified buffers after file edits, and publishes
-updates. Focused internal modules calculate context usage and format session
-choices; the Controller owns the mutable run and session state. Message updates
-and snapshots project the latest compaction checkpoint with its retained suffix,
-while the Session tree retains the complete active path. A replay removes a
-failed partial assistant message from the active branch before continuing the
-interaction:
+The Controller starts `chat.run()`, handles storage, classifies transient
+transport and provider failures, and replays eligible turns under the configured
+retry budget. Provider retry metadata can declare eligibility, delay, and a
+stricter attempt cap. It retries context overflows after compaction, refreshes
+unmodified buffers after file edits, and publishes updates. Focused internal
+modules calculate context usage and format session choices; the Controller owns
+the mutable run and session state. Message updates and snapshots project the
+latest compaction checkpoint with its retained suffix, while the Session tree
+retains the complete active path. A replay removes a failed partial assistant
+message from the active branch before continuing the interaction:
 
 ```lua
 { type = "messages", ... }

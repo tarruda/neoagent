@@ -106,6 +106,11 @@ The important options are: >lua
     auth = { path = ..., methods = {} },
     default_model = nil,
     default_thinking_level = "medium",
+    retry = {
+      enabled = true,
+      max_retries = 3,
+      base_delay_ms = 2000,
+    },
     compaction = {
       auto = true,
       reserve_tokens = 16384,
@@ -243,6 +248,16 @@ The `view` option is a factory receiving `config`, `window`, `on_submit`,
 `on_resume_session`. It returns a passive View with `open`, `close`,
 `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
 `apply`, and `finish`.
+
+Controllers automatically replay assistant turns after transient transport and
+provider failures. The default retry delays are 2, 4, and 8 seconds. Set
+`retry.enabled = false`, or configure `retry.max_retries` and
+`retry.base_delay_ms`, to change this policy. Backoff is cancellable with the
+normal interrupt action. Failed partial assistant output is removed from the
+active branch before replay, while the Session retains it as inactive history.
+HTTP authentication, invalid-request, quota, billing, and context-window
+failures fail immediately; context-window failures follow the compaction
+recovery path.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a

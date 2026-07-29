@@ -40,6 +40,11 @@ local defaults = {
     },
     project_dirs = { ".agents/skills" },
   },
+  retry = {
+    enabled = true,
+    max_retries = 3,
+    base_delay_ms = 2000,
+  },
   compaction = {
     auto = true,
     reserve_tokens = 16384,
@@ -99,6 +104,12 @@ local function validate(opts)
     assert(type(opts.default_model.model) == "string", "default_model.model is required")
   end
   assert(type(opts.providers) == "table", "providers must be a table")
+  assert(type(opts.retry) == "table", "retry must be a table")
+  assert(type(opts.retry.enabled) == "boolean", "retry.enabled must be boolean")
+  assert(type(opts.retry.max_retries) == "number" and opts.retry.max_retries >= 0
+    and opts.retry.max_retries % 1 == 0, "retry.max_retries must be a non-negative integer")
+  assert(type(opts.retry.base_delay_ms) == "number" and opts.retry.base_delay_ms > 0
+    and opts.retry.base_delay_ms % 1 == 0, "retry.base_delay_ms must be a positive integer")
   if opts.compaction ~= false then
     assert(type(opts.compaction) == "table", "compaction must be false or a table")
     assert(type(opts.compaction.auto) == "boolean", "compaction.auto must be boolean")
