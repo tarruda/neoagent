@@ -95,16 +95,25 @@ local function documentation()
       .. "tool. The read-only preset remains read, grep, and find.",
     "Bundled tools resolve model-directed effects through optional `ctx.fs` and "
       .. "`ctx.process` capabilities. Direct Lua calls use host implementations.",
+    "Executors can create `require(\"neoagent.dialog\").new()`, inject its "
+      .. "lifetime-scoped `ctx.dialog` capability with "
+      .. "`neoagent.dialog.wrap`, and pass the source as the `dialogs` option "
+      .. "to `neoagent.new_window()`. Callers define transcript or floating "
+      .. "placement, action IDs, labels, keys, and optional editable input. "
+      .. "The source fails when no presenter is attached.",
     "",
     "## Custom View",
     "",
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
       .. "`window`, `on_submit`, `on_stop`, `on_dequeue_steering`, "
       .. "`on_input_history`, `on_select_history`, `on_cycle_thinking`, "
-      .. "`on_cycle_agent`, `on_select_model`, and `on_resume_session`. A passive "
+      .. "`on_cycle_agent`, `on_select_model`, `on_resume_session`, and "
+      .. "`on_dialog_action` and `on_dialog_dismiss`. A passive "
       .. "View implements `open`, `close`, `is_open`, "
       .. "`destroy`, `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and "
-      .. "`finish`. Controllers publish snapshots and updates for custom Window adapters.",
+      .. "`finish`; Views used with a dialog source also implement "
+      .. "`set_dialog`. Controllers publish snapshots and updates for custom "
+      .. "Window adapters.",
     "",
     "## Installed paths",
     "",

@@ -245,9 +245,45 @@ attached consumer.
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
 `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`, and
-`on_resume_session`. It returns a passive View with `open`, `close`,
+`on_resume_session`, `on_dialog_action`, and `on_dialog_dismiss`. A View used
+by a Window with a dialog source implements `set_dialog(snapshot)`. The
+factory returns a passive View with `open`, `close`,
 `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
 `apply`, and `finish`.
+
+An executor can inject an optional `ctx.dialog` capability and attach its
+source to a Window:
+>lua
+
+  local dialogs = require("neoagent.dialog").new()
+  local opts = controller:config()
+  opts.execute_tool = require("neoagent.dialog").wrap(
+    dialogs, opts.execute_tool)
+  controller = require("neoagent").new(opts)
+  local window = neoagent.new_window({
+    controllers = { controller },
+    dialogs = dialogs,
+  })
+
+  local response = ctx.dialog:show({
+    placement = "transcript",
+    title = "Deploy release",
+    body = "Deploy release 1.2.3 to production?",
+    actions = {
+      { id = "deploy", label = "deploy", key = "y" },
+      { id = "cancel", label = "cancel", key = "n" },
+    },
+  }):await()
+<
+`show()` returns a cancellable Run whose successful result contains the
+caller-defined `action`. Dialogs use FIFO order. Each action supplies its own
+key and label. `placement = "transcript"` presents the body and actions in the
+transcript surface. `placement = "float"` opens a focused floating surface;
+an optional `input = { label, value, multiline }` adds editable text and the
+result includes `input`. A request fails when no presenter is attached.
+Presenter loss cancels pending dialogs and sets
+`presenter_unavailable = true`. The injected capability expires with the tool
+call. Headless compositions can omit it.
 
 Controllers automatically replay assistant turns after transient transport and
 provider failures. The default retry delays are 2, 4, and 8 seconds. Set

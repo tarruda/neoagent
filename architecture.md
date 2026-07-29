@@ -122,7 +122,7 @@ The default coding tools live under `lua/neoagent/tools/`:
 - `read_agent_documentation`
 
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
-composition can add confirmation, sandboxing, logging, or post-edit checks
+composition can add dialogs, sandboxing, logging, or post-edit checks
 there without changing the tool or core agent loop. The context includes the
 Model, active Run, caller context, executor, update callback, and a copy of the
 current tool call.
@@ -212,6 +212,14 @@ The Window:
 The passive View consumes Controller snapshots and updates and invokes callbacks
 supplied by the Window. Its replaceable interface keeps presentation independent
 from the model and agent loop.
+
+An optional dialog source lets an executor inject a lifetime-scoped
+`ctx.dialog` capability and publish bounded asynchronous requests to a Window.
+Requests select transcript or floating placement, provide their own actions,
+and may collect editable text. The Window owns presenter attachment and
+teardown, while the bundled View renders requests without interpreting action
+IDs. The source resolves requests in FIFO order and cancels pending requests
+when its presenter detaches.
 
 ## Public composition
 

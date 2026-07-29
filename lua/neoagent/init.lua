@@ -46,6 +46,7 @@ local function window_for(controllers, opts)
     config = util.deep_merge(first.ui, opts.ui or {}),
     view = opts.view or first.view,
     persistence = first.persistence,
+    dialogs = opts.dialogs,
   })
 end
 

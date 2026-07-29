@@ -47,7 +47,8 @@ end
 
 function M:_scroll_transcript_to_bottom()
   if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win)
-      or not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf) then
+      or not self.transcript_buf or not vim.api.nvim_buf_is_valid(self.transcript_buf)
+      or vim.api.nvim_win_get_buf(self.transcript_win) ~= self.transcript_buf then
     return false
   end
   vim.api.nvim_win_call(self.transcript_win, function()
@@ -59,7 +60,10 @@ function M:_scroll_transcript_to_bottom()
 end
 
 function M:_save_view()
-  if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win) then return nil end
+  if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win)
+      or vim.api.nvim_win_get_buf(self.transcript_win) ~= self.transcript_buf then
+    return nil
+  end
   local current = vim.api.nvim_get_current_win()
   local mode = vim.api.nvim_get_mode().mode
   local state = { current = current == self.transcript_win, mode = mode }
@@ -72,7 +76,10 @@ function M:_save_view()
 end
 
 function M:_restore_view(state)
-  if not state or not vim.api.nvim_win_is_valid(self.transcript_win) then return end
+  if not state or not vim.api.nvim_win_is_valid(self.transcript_win)
+      or vim.api.nvim_win_get_buf(self.transcript_win) ~= self.transcript_buf then
+    return
+  end
   local visual = state.current and (state.mode == "v" or state.mode == "V" or state.mode == "\22")
   vim.api.nvim_win_call(self.transcript_win, function()
     if state.at_bottom and not visual then
@@ -117,29 +124,61 @@ function M:_mark_block(block, start, finish, content)
 end
 
 function M:_remove_status()
-  if not self.status_mark then return end
-  pcall(vim.api.nvim_buf_del_extmark, self.transcript_buf, self.namespace, self.status_mark)
+  if self.status_mark then
+    pcall(vim.api.nvim_buf_del_extmark,
+      self.transcript_buf, self.namespace, self.status_mark)
+  end
+  if self.dialog_status_mark and self.dialog_buf
+      and vim.api.nvim_buf_is_valid(self.dialog_buf) then
+    pcall(vim.api.nvim_buf_del_extmark,
+      self.dialog_buf, self.namespace, self.dialog_status_mark)
+  end
   self.status_mark = nil
+  self.dialog_status_mark = nil
 end
 
-function M:_render_status()
-  local steering = type(self.context.steering) == "table" and self.context.steering or {}
-  if #steering == 0 then return end
+local function status_lines(view)
+  local steering = type(view.context.steering) == "table"
+    and view.context.steering or {}
+  if #steering == 0 then return nil end
   local lines = {}
   for _, message in ipairs(steering) do
     local text = util.trim(tostring(message):gsub("%s+", " "))
     lines[#lines + 1] = { { " Steering: " .. text, "NeoagentMuted" } }
   end
-  if #steering > 0 then
-    local key = (self.config.mappings or {}).dequeue_steering
-    local hint = type(key) == "string" and key or "Alt-Up"
-    lines[#lines + 1] = { { " ↳ " .. hint .. " to edit queued messages", "NeoagentMuted" } }
+  local key = (view.config.mappings or {}).dequeue_steering
+  local hint = type(key) == "string" and key or "Alt-Up"
+  lines[#lines + 1] =
+    { { " ↳ " .. hint .. " to edit queued messages", "NeoagentMuted" } }
+  return lines
+end
+
+function M:_render_dialog_status(lines)
+  if not self.dialog_buf
+      or self.dialog_win
+      or not vim.api.nvim_buf_is_valid(self.dialog_buf) then
+    return
   end
+  lines = lines or status_lines(self)
+  if not lines then return end
+  local row = math.min(self.dialog_status_row or 0,
+    vim.api.nvim_buf_line_count(self.dialog_buf) - 1)
+  self.dialog_status_mark = vim.api.nvim_buf_set_extmark(
+    self.dialog_buf, self.namespace, row, 0, {
+      virt_lines = lines,
+      virt_lines_above = true,
+    })
+end
+
+function M:_render_status()
+  local lines = status_lines(self)
+  if not lines then return end
   local row = math.max(0, vim.api.nvim_buf_line_count(self.transcript_buf) - 1)
   self.status_mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, row, 0, {
     virt_lines = lines,
     virt_lines_above = true,
   })
+  self:_render_dialog_status(lines)
 end
 
 function M:_flush()

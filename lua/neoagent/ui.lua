@@ -1,5 +1,6 @@
 local input = require("neoagent.ui.input")
 local layout = require("neoagent.ui.layout")
+local dialog = require("neoagent.ui.dialog")
 local render = require("neoagent.ui.render")
 local transcript = require("neoagent.ui.transcript")
 local util = require("neoagent.util")
@@ -200,14 +201,21 @@ function View:_transcript_footer(width)
     left[#left + 1] = { text, group }
     left_width = left_width + vim.fn.strdisplaywidth(text)
   end
+  local waiting = self.dialog ~= nil
   local active = active_state(self.context)
-  local label = active and (self.context.state == "stopping" and "Stopping..."
-    or self.context.state == "compacting" and "Compacting..." or "Working...") or "Idle"
-  local label_padding = vim.fn.strdisplaywidth("Compacting...") - vim.fn.strdisplaywidth(label) + 1
+  local spinning = active and not waiting
+  local label = waiting and "Waiting for response"
+    or active and (self.context.state == "stopping" and "Stopping..."
+      or self.context.state == "compacting" and "Compacting..." or "Working...")
+    or "Idle"
+  local label_padding = waiting and 1
+    or vim.fn.strdisplaywidth("Compacting...")
+      - vim.fn.strdisplaywidth(label) + 1
   add_left(" ", "NeoagentMuted")
-  add_left(active and self.spinner_frames[self.spinner_frame] or " ",
-    active and "NeoagentAccent" or "NeoagentMuted")
-  add_left(" " .. label .. string.rep(" ", label_padding), "NeoagentMuted")
+  add_left(spinning and self.spinner_frames[self.spinner_frame] or " ",
+    spinning and "NeoagentAccent" or "NeoagentMuted")
+  add_left(" " .. label .. string.rep(" ", label_padding),
+    waiting and "NeoagentDialogAction" or "NeoagentMuted")
 
   local right_parts = {}
   local context = context_status(self.context)
@@ -218,7 +226,7 @@ function View:_transcript_footer(width)
     if status ~= "" then right_parts[#right_parts + 1] = "(" .. status .. ")" end
   end
   local right = #right_parts > 0 and " " .. table.concat(right_parts, " ") .. " " or nil
-  if not active and not right then
+  if not active and not waiting and not right then
     local idle = truncate_right(" Idle ", width)
     local idle_width = vim.fn.strdisplaywidth(idle)
     local before = math.floor((width - idle_width) / 2)
@@ -297,11 +305,16 @@ function View:open(origin)
   self.has_opened = true
   if reopening and self.config.scroll_on_reopen then self:_scroll_transcript_to_bottom() end
   self:_sync_spinner()
-  self:focus_input()
+  if self.dialog then
+    self:_show_dialog()
+  else
+    self:focus_input()
+  end
   return true
 end
 
 function View:close()
+  self:_hide_dialog_surface()
   self:_stop_spinner()
   local transcript_win, input_win = self.transcript_win, self.input_win
   if input_win and vim.api.nvim_win_is_valid(input_win)
@@ -343,6 +356,7 @@ end
 
 function View:destroy()
   self:close()
+  self.dialog = nil
   self.destroyed = true
   if self.augroup then pcall(vim.api.nvim_del_augroup_by_id, self.augroup) end
   for _, buffer in ipairs({ self.transcript_buf, self.input_buf }) do
@@ -373,7 +387,7 @@ function View:_stop_spinner()
 end
 
 function View:_sync_spinner()
-  local active = active_state(self.context)
+  local active = active_state(self.context) and not self.dialog
   if not active or not self:is_open() then
     self:_stop_spinner()
     self:_schedule_flush()
@@ -441,6 +455,7 @@ View._restore_view = transcript._restore_view
 View._content_width = transcript._content_width
 View._mark_block = transcript._mark_block
 View._remove_status = transcript._remove_status
+View._render_dialog_status = transcript._render_dialog_status
 View._render_status = transcript._render_status
 View._flush = transcript._flush
 View._schedule_flush = transcript._schedule_flush
@@ -449,6 +464,16 @@ View._message = transcript._message
 View.set_messages = transcript.set_messages
 View.apply = transcript.apply
 View.finish = transcript.finish
+
+View._copy_transcript_marks = dialog._copy_transcript_marks
+View._hide_dialog_surface = dialog._hide_dialog_surface
+View._dialog_input = dialog._dialog_input
+View._respond_to_dialog = dialog._respond_to_dialog
+View._map_dialog_actions = dialog._map_dialog_actions
+View._show_transcript_dialog = dialog._show_transcript_dialog
+View._show_float_dialog = dialog._show_float_dialog
+View._show_dialog = dialog._show_dialog
+View.set_dialog = dialog.set_dialog
 
 View._complete_input = input._complete_input
 View._map = input._map
@@ -475,6 +500,8 @@ function M.new(opts)
     on_cycle_agent = opts.on_cycle_agent or function() end,
     on_select_model = opts.on_select_model or function() end,
     on_resume_session = opts.on_resume_session or function() end,
+    on_dialog_action = opts.on_dialog_action or function() end,
+    on_dialog_dismiss = opts.on_dialog_dismiss or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },
@@ -491,6 +518,15 @@ function M.new(opts)
     callback = function(event)
       if event.event == "WinClosed" then
         local closed = tonumber(event.match)
+        if closed == view.dialog_win and not view.hiding_dialog then
+          local id = view.dialog and view.dialog.active.id
+          view.dialog_win = nil
+          vim.schedule(function()
+            if id and view.dialog and view.dialog.active.id == id then
+              view.on_dialog_dismiss(id)
+            end
+          end)
+        end
         if closed == view.transcript_win or closed == view.input_win then
           vim.schedule(function()
             if closed == view.transcript_win or closed == view.input_win then view:close() end

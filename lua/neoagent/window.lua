@@ -13,6 +13,14 @@ function M.new(opts)
   assert(type(opts.controllers) == "table" and #opts.controllers > 0,
     "Window requires at least one Controller")
   assert(type(opts.config) == "table", "Window UI config is required")
+  if opts.dialogs ~= nil then
+    assert(type(opts.dialogs) == "table"
+      and type(opts.dialogs.subscribe) == "function"
+      and type(opts.dialogs.choose) == "function"
+      and type(opts.dialogs.cancel) == "function"
+      and type(opts.dialogs.cancel_pending) == "function",
+      "Window dialogs must provide subscribe, choose, cancel, and cancel_pending")
+  end
   local names = {}
   for _, controller in ipairs(opts.controllers) do
     assert_controller(controller)
@@ -35,6 +43,8 @@ function M.new(opts)
     view = nil,
     rendered_controller = nil,
     unsubscribe = nil,
+    dialog_unsubscribe = nil,
+    dialog = nil,
     position = opts.config.position,
     position_loaded = false,
     destroyed = false,
@@ -180,6 +190,14 @@ function M.new(opts)
       on_cycle_agent = function() return window:cycle() end,
       on_select_model = function() return active():select_model() end,
       on_resume_session = function() return active():resume() end,
+      on_dialog_action = function(id, action, input)
+        if not opts.dialogs then return nil end
+        return opts.dialogs:choose(id, action, input)
+      end,
+      on_dialog_dismiss = function(id)
+        if not opts.dialogs then return nil end
+        return opts.dialogs:cancel(id, "dialog dismissed by user")
+      end,
       window = window,
     })
     assert(type(state.view) == "table", "View factory must return a View")
@@ -188,6 +206,11 @@ function M.new(opts)
       "set_messages", "set_context", "apply", "finish",
     }) do
       assert(type(state.view[method]) == "function", "View must implement " .. method)
+    end
+    if opts.dialogs then
+      assert(type(state.view.set_dialog) == "function",
+        "View must implement set_dialog when Window dialogs are configured")
+      state.view:set_dialog(state.dialog)
     end
     return state.view
   end
@@ -321,6 +344,11 @@ function M.new(opts)
   function window:destroy()
     if state.destroyed then return end
     state.destroyed = true
+    if opts.dialogs then
+      opts.dialogs:cancel_pending("dialog Window destroyed", {
+        presenter_unavailable = true,
+      })
+    end
     if state.view and not state.view.destroyed then
       state.drafts[active()] = state.view:get_input()
       state.view:destroy()
@@ -329,9 +357,41 @@ function M.new(opts)
     state.rendered_controller = nil
     if state.unsubscribe then state.unsubscribe() end
     state.unsubscribe = nil
+    if state.dialog_unsubscribe then state.dialog_unsubscribe() end
+    state.dialog_unsubscribe = nil
   end
 
   subscribe()
+  if opts.dialogs then
+    state.dialog_unsubscribe =
+      opts.dialogs:subscribe(function(snapshot)
+        state.dialog = snapshot.active and util.copy(snapshot) or nil
+        if state.destroyed then return end
+        if snapshot.active then
+          local ok, opened = pcall(window.open, window)
+          if not ok or not opened then
+            opts.dialogs:cancel_pending(
+              "dialog presenter unavailable", {
+                presenter_unavailable = true,
+              })
+            return
+          end
+          if state.view and not state.view.destroyed then
+            local presented = pcall(
+              state.view.set_dialog, state.view, snapshot)
+            if not presented then
+              opts.dialogs:cancel_pending(
+                "dialog presenter unavailable", {
+                  presenter_unavailable = true,
+                })
+            end
+          end
+        elseif state.view and not state.view.destroyed
+            and type(state.view.set_dialog) == "function" then
+          pcall(state.view.set_dialog, state.view, nil)
+        end
+      end)
+  end
   return window
 end
 

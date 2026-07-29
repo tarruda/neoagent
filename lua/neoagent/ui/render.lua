@@ -6,6 +6,7 @@ local M = {}
 local highlight_links = {
   NeoagentWindowTitle = "NeoagentMuted",
   NeoagentAccent = "Identifier",
+  NeoagentDialogBackground = "NeoagentUserBackground",
   NeoagentThinking = "Comment",
   NeoagentToolOutput = "Comment",
   NeoagentError = "DiagnosticError",
@@ -32,6 +33,12 @@ local function define_highlights()
     vim.api.nvim_set_hl(0, name, { link = link, default = true })
   end
   for name, value in pairs({
+    NeoagentDialogAction = {
+      fg = vim.o.background == "light" and "#005f87" or "#00ffff",
+      ctermfg = vim.o.background == "light" and 24 or 6,
+      bold = true,
+    },
+    NeoagentDialogTitle = { bold = true },
     NeoagentMarkdownBold = { bold = true },
     NeoagentMarkdownItalic = { italic = true },
     NeoagentMarkdownUnderline = { underline = true },
