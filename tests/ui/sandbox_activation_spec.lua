@@ -98,7 +98,7 @@ describe("neoagent sandbox activation warning", function()
     assert.are.equal(1, #notifications)
   end)
 
-  it("warns once when native isolation activates degraded", function()
+  it("keeps degraded activation silent", function()
     local window = build("Neo", {
       ok = true,
       platform = "linux",
@@ -111,12 +111,9 @@ describe("neoagent sandbox activation warning", function()
     })
     assert.are.equal(0, #notifications)
     assert.is_true(window:toggle())
-    assert.are.equal(1, #notifications)
-    assert.matches("degraded isolation", notifications[1][1])
-    assert.matches("inherited host procfs", notifications[1][1])
-    assert.are.equal(vim.log.levels.WARN, notifications[1][2])
+    assert.are.equal(0, #notifications)
     window:toggle()
     assert.is_true(window:toggle())
-    assert.are.equal(1, #notifications)
+    assert.are.equal(0, #notifications)
   end)
 end)

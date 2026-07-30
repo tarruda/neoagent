@@ -142,14 +142,6 @@ function M.warning(name, status)
     bounded(name or "Neo"), bounded(reason))
 end
 
-function M.degraded_warning(name, status)
-  local reason = status and status.degraded_reason
-    or "some isolation capabilities are unavailable"
-  return string.format(
-    "neoagent: sandbox active for %s with degraded isolation: %s",
-    bounded(name or "Neo"), bounded(reason))
-end
-
 local function base_executor(tool, arguments, ctx)
   return tool.execute(arguments, ctx)
 end
@@ -209,11 +201,6 @@ function M.controller(configured, opts)
   copied._sandbox_status = util.copy(status)
   copied._sandbox_status.enabled = true
   copied._sandbox_status.active = true
-  if status.degraded then
-    copied.view = require("neoagent.sandbox.view").warn_once(
-      copied.view, M.degraded_warning(copied.name or "Neo", status),
-      copied.name or "Neo")
-  end
 
   local dialogs = require("neoagent.dialog").new()
   local paths = opts.paths or selected.paths or path_module.posix

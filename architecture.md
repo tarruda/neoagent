@@ -307,10 +307,11 @@ staging root's device and inode identity is recorded and revalidated before use
 and cleanup. Profiles that expose every host staging directory and changed root
 identities fail closed.
 
-Activation failure preserves the configured host executor. Activation failure
-and degraded activation wrap the configured View factory with a sandbox-owned
-warning shown once when the requesting Controller first becomes visible.
-Runtime failure after activation is fail-closed.
+Activation failure preserves the configured host executor and wraps the
+configured View factory with a sandbox-owned warning shown once when the
+requesting Controller first becomes visible. Successful activation records
+its full or degraded isolation status for `:NeoagentSandboxInfo`. Runtime
+failure after activation is fail-closed.
 
 ## Sessions and persistence
 

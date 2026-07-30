@@ -317,9 +317,10 @@ to inspect the active backend, isolation level, and available capabilities.
 Activation failures include their setup stage and reason.
 
 When activation requirements fail, Neo retains its configured host executor.
-A warning is shown once when Neo is first displayed. Degraded activation also
-shows a one-time warning. Failures after successful activation fail closed as
-tool errors and never retry through the host executor.
+A warning is shown once when Neo is first displayed. Successful activation
+reports full or degraded isolation through |:NeoagentSandboxInfo|. Failures
+after successful activation fail closed as tool errors and never retry through
+the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps
