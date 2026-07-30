@@ -20,6 +20,12 @@ function M.create_temp(prefix)
   return path
 end
 
+function M.create_temp_directory(prefix)
+  local template = M.join(
+    vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+  return vim.uv.fs_mkdtemp(template)
+end
+
 function M.read(path)
   local stat, stat_err = vim.uv.fs_stat(path)
   if not stat then
