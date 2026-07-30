@@ -76,6 +76,9 @@ Sandboxing defaults to disabled. Run `:NeoagentSandboxInfo` to inspect its
 status. It mediates bundled-tool file and process operations; custom tool Lua
 runs in Neovim and must use the injected capabilities to participate. See
 `:help neoagent-sandbox` for configuration and platform details.
+Windows sandboxing requires Neovim 0.12+ and uses the bundled
+LuaJIT/Win32-FFI runtime; run its elevated one-time setup command before
+enabling the sandbox.
 
 For Anthropic API-key billing, use `anthropic`; use `anthropic-plan` with
 Claude Pro/Max OAuth:

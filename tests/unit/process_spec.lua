@@ -54,7 +54,8 @@ describe("neoagent process runner", function()
       return process.run({
         "sh", "-c", "trap '' TERM; while :; do sleep 1; done",
       }, {
-        timeout_ms = 20,
+        -- The timeout leaves the spawned shell time to install its TERM trap.
+        timeout_ms = 500,
         kill_grace_ms = 20,
       })
     end)
@@ -65,7 +66,7 @@ describe("neoagent process runner", function()
       return process.run({
         "sh", "-c", "trap '' TERM; while :; do sleep 1; done",
       }, {
-        timeout_ms = 20,
+        timeout_ms = 500,
         kill_grace_ms = 0,
       })
     end)

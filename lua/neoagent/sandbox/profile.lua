@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local path_module = require("neoagent.sandbox.path")
 
 local M = {}
 
@@ -24,33 +25,22 @@ local function assert_keys(value, allowed, name)
   end
 end
 
-local function absolute_path(value, name)
+local function absolute_path(value, name, paths)
   if type(value) ~= "string" or value == "" or value:find("\0", 1, true) then
     invalid(name .. " must be a non-empty absolute path without NUL bytes")
   end
-  local normalized = vim.fs.normalize(value)
-  if normalized:sub(1, 1) ~= "/" then invalid(name .. " must be absolute") end
-  local current, suffix = normalized, {}
-  local canonical = vim.uv.fs_realpath(current)
-  while not canonical do
-    local parent = vim.fs.dirname(current)
-    if parent == current then break end
-    table.insert(suffix, 1, vim.fs.basename(current))
-    current = parent
-    canonical = vim.uv.fs_realpath(current)
+  local ok, normalized = pcall(paths.normalize, value)
+  if not ok or not paths.is_absolute(normalized) then
+    invalid(name .. " must be absolute")
   end
-  if canonical then
-    for _, part in ipairs(suffix) do
-      canonical = vim.fs.joinpath(canonical, part)
-    end
-    if vim.fs.normalize(canonical) ~= normalized then
-      invalid(name .. " must use a canonical path")
-    end
+  local canonical = paths.canonical_candidate(normalized)
+  if paths.key(canonical) ~= paths.key(normalized) then
+    invalid(name .. " must use a canonical path")
   end
   return normalized
 end
 
-local function normalize_filesystem(value)
+local function normalize_filesystem(value, paths)
   assert_object(value, "filesystem")
   assert_keys(value, { default = true, entries = true }, "filesystem")
   if value.default ~= "read" then
@@ -68,18 +58,19 @@ local function normalize_filesystem(value)
     if not access[source.access] then
       invalid(name .. ".access must be deny, read, or write")
     end
-    local path = absolute_path(source.path, name .. ".path")
-    if path == "/" then
+    local path = absolute_path(source.path, name .. ".path", paths)
+    if paths.key(path) == paths.key(paths.root(path)) then
       invalid(name .. ".path cannot override the filesystem default")
     end
-    local stat = vim.uv.fs_stat(path)
+    local stat = paths.stat(path)
     if source.access == "write" and not stat then
       invalid(name .. ".path must exist for write access")
     end
-    local existing = by_path[path]
+    local key = paths.key(path)
+    local existing = by_path[key]
     if not existing
         or precedence[source.access] > precedence[existing.access] then
-      by_path[path] = {
+      by_path[key] = {
         path = path,
         access = source.access,
       }
@@ -88,13 +79,15 @@ local function normalize_filesystem(value)
   local entries = {}
   for _, entry in pairs(by_path) do entries[#entries + 1] = entry end
   table.sort(entries, function(left, right)
-    if #left.path ~= #right.path then return #left.path < #right.path end
-    return left.path < right.path
+    local left_depth, right_depth =
+      paths.depth(left.path), paths.depth(right.path)
+    if left_depth ~= right_depth then return left_depth < right_depth end
+    return paths.key(left.path) < paths.key(right.path)
   end)
   return { default = "read", entries = entries }
 end
 
-local function normalize_environment(value)
+local function normalize_environment(value, paths)
   assert_object(value, "environment")
   assert_keys(value, { clear = true, inherit = true, set = true }, "environment")
   if type(value.clear) ~= "boolean" then
@@ -108,26 +101,35 @@ local function normalize_environment(value)
     if type(name) ~= "string" or not name:match(environment_name) then
       invalid("environment.inherit[" .. index .. "] must be a variable name")
     end
-    if not seen[name] then
-      seen[name] = true
+    local key = paths.environment_key(name)
+    if not seen[key] then
+      seen[key] = name
       inherit[#inherit + 1] = name
     end
   end
   assert_object(value.set, "environment.set")
   local set = {}
-  for name, item in pairs(value.set) do
+  local names = vim.tbl_keys(value.set)
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local item = value.set[name]
     if type(name) ~= "string" or not name:match(environment_name) then
       invalid("environment.set contains an invalid variable name")
     end
     if type(item) ~= "string" or item:find("\0", 1, true) then
       invalid("environment.set values must be strings without NUL bytes")
     end
-    set[name] = item
+    local key = paths.environment_key(name)
+    local spelling = seen[key] or name
+    set[spelling] = item
+    seen[key] = spelling
   end
   return { clear = value.clear, inherit = inherit, set = set }
 end
 
-function M.validate(source)
+function M.validate(source, opts)
+  opts = opts or {}
+  local paths = opts.paths or path_module.posix
   assert_object(source, "profile")
   assert_keys(source, {
     id = true,
@@ -143,20 +145,20 @@ function M.validate(source)
   end
   local normalized = {
     id = source.id,
-    filesystem = normalize_filesystem(source.filesystem),
+    filesystem = normalize_filesystem(source.filesystem, paths),
     network = source.network,
-    environment = normalize_environment(source.environment),
+    environment = normalize_environment(source.environment, paths),
   }
   return util.copy(normalized), util.json_encode(normalized)
 end
 
-function M.resolve(source, ctx)
+function M.resolve(source, ctx, opts)
   if type(source) == "function" then
     local ok, value = pcall(source, ctx)
     if not ok then error(util.normalize_error(value, "sandbox"), 0) end
     source = value
   end
-  return M.validate(source)
+  return M.validate(source, opts)
 end
 
 return M

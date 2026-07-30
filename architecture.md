@@ -183,13 +183,22 @@ agent.run() ── tool call ──────────┘
                                │          namespaces, mounts, seccomp,
                                │          supervision, framed output
                                │
-                               └── macOS
-                                    ├── lua/neoagent/sandbox/macos/
+                               ├── macOS
+                               │    ├── lua/neoagent/sandbox/macos/
+                               │    │     check/fs/exec adapter,
+                               │    │     Seatbelt profile compiler
+                               │    ├── /usr/bin/sandbox-exec
+                               │    └── scripts/sandbox_macos_runtime.lua
+                               │          filesystem and process supervision
+                               │
+                               └── Windows
+                                    ├── lua/neoagent/sandbox/windows/
                                     │     check/fs/exec adapter,
-                                    │     Seatbelt profile compiler
-                                    ├── /usr/bin/sandbox-exec
-                                    └── scripts/sandbox_macos_runtime.lua
-                                          filesystem and process supervision
+                                    │     ACL-plan compiler, framed protocol
+                                    └── scripts/sandbox_windows_runtime.lua
+                                          standalone headless child:
+                                          Win32 FFI, accounts, DPAPI, ACLs,
+                                          restricted tokens, WFP, Job Objects
 ```
 
 The connections back into Neoagent are ordinary Lua extension points: default
@@ -209,20 +218,21 @@ sandbox composition.
 Enforcement copies each tool context and injects:
 
 - a filesystem capability that evaluates lexical and canonical profile access
-  before performing direct file operations inside the native backend; and
+  before performing direct file operations inside the selected backend; and
 - a process capability that resolves the profile, cwd, argv, environment,
-  streaming, timeout, and cancellation behavior for the native backend.
+  streaming, timeout, and cancellation behavior for the selected backend.
 
 Both capabilities expire at the end of the tool call. The shell overflow path
 uses a host temporary file recorded by path and inode. Later sandboxed reads
-revalidate its identity and add an exact read grant to the native backend.
-Native filesystem operations accept regular files and run with a bounded
+revalidate its identity and add an exact read grant to the selected backend.
+Backend filesystem operations accept regular files and run with a bounded
 timeout.
 
-The default profile grants write access to canonical `/tmp` and the active host
-temporary directory and points `TMPDIR`, `TMP`, and `TEMP` at the active
-directory. Linux and macOS expose those paths as ordinary host-backed profile
-roots, so temporary artifacts remain available across tool invocations.
+The default profile grants a platform-selected shared temporary directory and
+points `TMPDIR`, `TMP`, and `TEMP` at it. POSIX systems use the active host
+temporary directory and also grant canonical `/tmp`. Windows uses the managed
+`shared-tmp` directory beneath the protected sandbox state. Temporary
+artifacts remain available across tool invocations.
 
 Escalation copies tool schemas and adds reserved request fields under
 `options`. A valid request publishes a sandbox-defined transcript dialog
@@ -237,8 +247,44 @@ Conservative POSIX, cmd, and PowerShell tokenizers accept one literal command;
 operators, redirections, expansions, substitutions, and unsupported shell
 syntax suppress the option and cannot match an existing prefix.
 
-`neoagent.sandbox.platform` selects explicit Linux and macOS modules. The
-Linux runtime is a standalone headless Neovim script that uses LuaJIT FFI for
+`neoagent.sandbox.platform` selects explicit Linux, macOS, and Windows modules.
+Shared path operations select POSIX or Windows semantics for roots,
+containment, canonical candidates, sorting, and environment keys. The Windows
+profile compiler projects longest-path policy into writable ACL roots and
+explicit read/write deny paths. A missing protected child of a writable root
+becomes a journaled, identity-checked placeholder when its parent exists. The
+compiler supports a nested writable root beneath a read rule and rejects
+writes reopened below a deny rule and policy shapes whose ACL projection would
+widen access.
+
+The Windows Lua adapter launches a standalone headless Neovim runtime and
+speaks a bounded, versioned, binary-safe framed protocol over its standard
+streams. Elevated setup provisions random dedicated offline and online local
+accounts, current-user DPAPI state, persistent account-scoped Windows
+Filtering Platform rules with per-state random filter identifiers, and a
+managed shared temporary directory inside the protected state tree. A live
+probe proves the required capabilities before activation. Each execution uses
+a freshly generated restricting SID, revalidates canonical profile paths and
+state-directory separation, and applies ACL grants and carveouts. Parent write
+grants omit delete-child authority. The owner runtime starts an internal
+runner under the selected sandbox account with `CreateProcessWithLogonW` over
+account-scoped named pipes whose peer process IDs are verified. The runner
+restricts its primary token and handles direct filesystem calls through
+impersonation.
+Process launch uses `CreateProcessAsUserW`, quoted Windows argv, executable
+resolution through the explicit `PATH` and `PATHEXT`, a case-insensitive
+explicit environment, and a fresh private desktop. The owner runtime and account
+runner each assign their suspended child atomically to a kill-on-close Job
+Object, so cancellation covers both stages and every descendant. Restricted
+network profiles use the offline account; enabled profiles use the online
+account. Capability ACL leases are serialized per state directory and revoked
+at completion.
+The owner-only state records dedicated account identities, each transient
+capability ACL lease, and owned placeholder identities. The next run
+reconciles the mutation journal after interruption. Stale capability SIDs
+carry no authority.
+
+The Linux runtime is a standalone headless Neovim script that uses LuaJIT FFI for
 user, mount, PID, IPC, and UTS namespaces, bind mounts, tmpfs, capability
 removal, seccomp, descendant supervision, and framed binary MessagePack output.
 Restricted-network profiles also use a network namespace and socket filters.

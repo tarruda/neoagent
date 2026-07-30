@@ -18,6 +18,8 @@ function M.select(os, modules)
     return modules.linux or require("neoagent.sandbox.linux")
   elseif os == "OSX" then
     return modules.macos or require("neoagent.sandbox.macos")
+  elseif os == "Windows" then
+    return modules.windows or require("neoagent.sandbox.windows")
   end
   return nil, unsupported(os)
 end

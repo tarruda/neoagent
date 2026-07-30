@@ -301,7 +301,8 @@ around its tools: >lua
   })
 <
 Sandboxing defaults to disabled. Linux uses namespaces and seccomp; macOS uses
-`/usr/bin/sandbox-exec`.
+`/usr/bin/sandbox-exec`; Windows uses the bundled standalone LuaJIT/Win32-FFI
+runtime.
 
 Successful activation wraps only the built-in Neo Controller. Chat remains
 tool-free. `neoagent.new()` and direct Controller constructors do not interpret
@@ -323,12 +324,14 @@ tool errors and never retry through the host executor.
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps
 `<workspace>/.git` read-only, restricts networking, and clears the environment
-to an explicit inherited set. It grants canonical `/tmp` and the active host
-temporary directory, then sets `TMPDIR`, `TMP`, and `TEMP` to the active
-directory. Files created there remain visible to later sandbox invocations and
-host processes until they are removed. Read-only access includes host files
-outside the Workspace; add deny entries for sensitive paths. Override the
-profile with a table merged over the default: >lua
+to an explicit inherited set. POSIX systems grant the active host temporary
+directory and canonical `/tmp`. Windows uses the managed `shared-tmp`
+directory beneath its protected sandbox state. The profile points `TMPDIR`,
+`TMP`, and `TEMP` at the selected directory. Files created there remain
+visible to later sandbox invocations and host processes until they are
+removed. Read-only access includes host files outside the Workspace; add deny
+entries for sensitive paths. Override the profile with a table merged over
+the default: >lua
 
   sandbox = {
     enabled = true,
@@ -347,6 +350,64 @@ profile with a table merged over the default: >lua
 Lists replace their defaults. Entry access is `read`, `write`, or `deny`;
 paths are canonical absolute paths and writable roots must exist. The
 filesystem default is `read`. `network` is `restricted` or `enabled`.
+
+Windows paths may use drive roots or UNC shares. Profile and policy comparison
+is case-insensitive, environment variable names share Windows casing
+semantics, and device paths, alternate data streams, reserved device names,
+and non-canonical paths are rejected. Windows sandboxing requires Neovim
+0.12 or newer.
+
+The default state directory is
+`<stdpath("state")>/neoagent/windows-sandbox`. Set
+`NEOAGENT_WINDOWS_SANDBOX_STATE` before starting Neovim to select another
+directory. From an elevated PowerShell in the plugin checkout, provision the
+directory once: >
+
+  nvim --headless -u NONE -i NONE -n \
+    -l scripts/sandbox_windows_runtime.lua -- --setup
+<
+Setup creates dedicated offline and online local accounts, stores random
+passwords with current-user DPAPI in an owner-only state directory, and
+installs persistent identity-scoped Windows Filtering Platform rules for the
+offline account. Each state directory owns random filter identifiers, so
+separate Neoagent installations do not replace one another's filters. Setup
+creates `<state-directory>/shared-tmp` as the only default Windows temporary
+write root. A state file is accepted only by the Windows identity that created
+it.
+
+Activation runs a live runtime probe. The probe verifies a fresh restricting
+SID, filesystem write and deny rules, account-authenticated runner launch,
+private-desktop process launch, Job Object supervision, shared
+temporary-directory writes, and blocked offline loopback networking. Any
+missing guarantee leaves the backend inactive.
+
+Each Windows operation compiles the resolved profile into writable ACL roots
+and read/write deny carveouts. Existing carveouts are opened without following
+their final reparse point and checked by filesystem identity. A missing read or
+deny child beneath a writable root is protected by a runtime-owned directory
+placeholder when its parent exists. The placeholder identity is journaled and
+only that exact object is removed after the call. A write entry below a deny
+entry cannot be represented and fails before execution. A nested write below
+a read entry becomes a separate writable ACL root. The runtime canonicalizes
+the plan again, rejects overlap with its protected state
+directory, creates an ephemeral restricting SID, and removes the account and
+restricting-SID ACEs when the operation ends. Parent write grants omit
+delete-child authority so a protected child cannot be removed through its
+parent. A state-directory-scoped Windows mutex serializes ACL leases. The
+owner-only state journals every transient ACL and placeholder before mutation,
+and the next operation reconciles the journal after interruption.
+
+`network = "restricted"` selects the WFP-blocked offline account.
+`network = "enabled"` selects the online account. The owner runtime launches an
+internal runner with `CreateProcessWithLogonW` over account-ACL-scoped named
+pipes and verifies both pipe peer process IDs.
+That runner creates a restricted primary token and starts the requested
+process with `CreateProcessAsUserW` on a fresh private desktop. The runner and
+target both start suspended and enter nested kill-on-close Job Objects before
+their first instruction. Cancelling or timing out the runtime terminates both
+stages and the complete process tree. Protocol handles are excluded from
+target inheritance. Direct file operations impersonate the restricted token
+and use the same framed, binary-safe protocol.
 
 On Linux, missing read-only and denied paths beneath a writable entry remain
 absent from the host filesystem. The namespace supervisor mediates creation
@@ -374,7 +435,7 @@ A callback can calculate the complete profile per tool call: >lua
     end,
   }
 <
-Bundled file and subprocess operations use the selected native backend and the
+Bundled file and subprocess operations use the selected backend and the
 same resolved profile. Tool Lua runs in Neovim, so custom tools participate in
 the sandbox only when they route effects through `ctx.fs` and `ctx.process`.
 

@@ -1,6 +1,13 @@
 local common = require("neoagent.tools.common")
 local truncate = require("neoagent.tools.truncate")
 
+local function shell_argv(command)
+  local argv = vim.fn.split(vim.o.shell)
+  vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
+  argv[#argv + 1] = command
+  return argv
+end
+
 local function output_capture(filesystem)
   local tail = ""
   local total_bytes = 0
@@ -117,7 +124,7 @@ local function new()
       end
       local capture = output_capture(common.fs(ctx))
       local last_update = 0
-      local result = common.process(ctx, { vim.o.shell, vim.o.shellcmdflag, command }, {
+      local result = common.process(ctx, shell_argv(command), {
         capture = false,
         cwd = common.workspace(ctx).cwd,
         timeout_ms = timeout and math.floor(timeout * 1000) or nil,

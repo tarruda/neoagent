@@ -1,50 +1,25 @@
 local util = require("neoagent.util")
+local path_module = require("neoagent.sandbox.path")
 
 local M = {}
 
 local rank = { deny = 0, read = 1, write = 2 }
 local tie = { deny = 3, write = 2, read = 1 }
 
-local function contains(root, path)
-  return root == "/" or path == root
-    or path:sub(1, #root + 1) == root .. "/"
-end
-
-local function access_for(profile, path)
+local function access_for(profile, path, paths)
   local selected = profile.filesystem.default
   local specificity = -1
   for _, entry in ipairs(profile.filesystem.entries) do
-    if contains(entry.path, path) then
-      local length = #entry.path
-      if length > specificity
-          or length == specificity and tie[entry.access] > tie[selected] then
+    if paths.contains(entry.path, path) then
+      local depth = paths.depth(entry.path)
+      if depth > specificity
+          or depth == specificity and tie[entry.access] > tie[selected] then
         selected = entry.access
-        specificity = length
+        specificity = depth
       end
     end
   end
   return selected
-end
-
-local function canonical_candidate(path)
-  local resolved = vim.uv.fs_realpath(path)
-  if resolved then return vim.fs.normalize(resolved) end
-  local current, suffix = path, {}
-  while true do
-    local parent = vim.fs.dirname(current)
-    if parent == current then break end
-    table.insert(suffix, 1, vim.fs.basename(current))
-    current = parent
-    resolved = vim.uv.fs_realpath(current)
-    if resolved then
-      local result = vim.fs.normalize(resolved)
-      for _, part in ipairs(suffix) do
-        result = vim.fs.joinpath(result, part)
-      end
-      return vim.fs.normalize(result)
-    end
-  end
-  return vim.fs.normalize(path)
 end
 
 local function workspace(ctx)
@@ -55,34 +30,36 @@ local function workspace(ctx)
   end
 end
 
-function M.resolve_path(ctx, path)
+function M.resolve_path(ctx, path, paths)
+  paths = paths or path_module.posix
   if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then
     error(util.error("sandbox",
       "Sandbox path must be a non-empty string without NUL bytes"), 0)
   end
   local lexical
-  if path:sub(1, 1) == "/" then
-    lexical = vim.fs.normalize(path)
+  if paths.is_absolute(path) then
+    lexical = paths.normalize(path)
   else
     local active = workspace(ctx)
     if not active then
       error(util.error("sandbox",
         "Relative sandbox paths require ctx.context.workspace"), 0)
     end
-    lexical = active:resolve(path)
+    lexical = paths.normalize(active:resolve(path))
   end
-  return lexical, canonical_candidate(lexical)
+  return lexical, paths.canonical_candidate(lexical)
 end
 
-function M.access(profile, lexical, canonical)
-  local first = access_for(profile, lexical)
-  local second = access_for(profile, canonical)
+function M.access(profile, lexical, canonical, paths)
+  paths = paths or path_module.posix
+  local first = access_for(profile, lexical, paths)
+  local second = access_for(profile, canonical, paths)
   return rank[first] <= rank[second] and first or second, first, second
 end
 
-function M.allows(profile, lexical, canonical, required)
+function M.allows(profile, lexical, canonical, required, paths)
   local granted, lexical_access, canonical_access =
-    M.access(profile, lexical, canonical)
+    M.access(profile, lexical, canonical, paths)
   return rank[granted] >= rank[required],
     granted, lexical_access, canonical_access
 end

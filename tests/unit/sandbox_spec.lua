@@ -221,15 +221,145 @@ describe("neoagent sandbox composition", function()
     assert.are.equal("deny", granted)
   end)
 
+  it("applies Windows path and environment semantics without changing profiles", function()
+    local path_module = require("neoagent.sandbox.path")
+    local existing = {
+      ["c:\\repo"] = true,
+      ["c:\\repo\\.git"] = true,
+      ["c:\\temp"] = true,
+      ["c:\\state\\shared-tmp"] = true,
+    }
+    local paths = path_module.windows({
+      realpath = function(path)
+        local key = vim.fn.tolower((path:gsub("/", "\\")))
+        return existing[key] and path or nil
+      end,
+      stat = function(path)
+        local key = vim.fn.tolower((path:gsub("/", "\\")))
+        return existing[key] and { type = "directory" } or nil
+      end,
+    })
+
+    assert.are.equal("C:\\Repo\\file.txt",
+      paths.normalize("c:/Repo/child/../file.txt"))
+    assert.are.equal("\\\\server\\share\\folder",
+      paths.normalize("//server/share/folder/"))
+    assert.are.equal("\\\\server\\share\\folder",
+      paths.normalize("\\\\?\\UNC\\server\\share\\folder"))
+    assert.are.equal("C:\\Repo\\file",
+      paths.normalize("\\\\?\\C:\\Repo\\file"))
+    assert.is_true(paths.contains("C:\\Repo", "c:/repo/File.txt"))
+    assert.is_true(paths.contains("C:\\", "c:/repo/File.txt"))
+    assert.is_true(paths.contains("C:\\Ärea", "c:\\ärea\\File.txt"))
+    assert.is_false(paths.contains("C:\\Repo", "C:\\Repository"))
+    assert.are.equal("D:\\other",
+      paths.join("C:\\Repo", "D:\\other"))
+    assert.are.equal("c:\\repo", paths.key("C:/Repo"))
+    assert.are.equal(paths.key("C:\\Ärea"), paths.key("c:\\ärea"))
+    assert.are.equal(paths.environment_key("Ärea"),
+      paths.environment_key("äREA"))
+    assert.has_error(function() paths.normalize("C:relative") end)
+    assert.has_error(function() paths.normalize("\\\\server") end)
+    assert.has_error(function() paths.normalize("\\\\.\\PhysicalDrive0") end)
+    assert.has_error(function() paths.normalize("C:\\Repo\\file:stream") end)
+    assert.has_error(function() paths.normalize("C:\\Repo\\CON") end)
+    assert.has_error(function() paths.validate_component("NUL.txt") end)
+    assert.has_error(function() paths.validate_component("COM¹.txt") end)
+    assert.has_error(function() paths.validate_component("trailing.") end)
+    assert.are.equal("spill-", paths.validate_component("spill-"))
+    assert.has_error(function()
+      path_module.posix.validate_component("two/parts")
+    end)
+    assert.are.equal("windows", path_module.for_os("Windows").name)
+    assert.are.equal(path_module.posix, path_module.for_os("Linux"))
+
+    existing["c:\\repo\\existing"] = true
+    assert.are.equal("C:\\Repo\\existing\\missing\\child",
+      paths.canonical_candidate(
+        "C:\\Repo\\existing\\missing\\child"))
+
+    local source = {
+      id = "windows-test",
+      filesystem = {
+        default = "read",
+        entries = {
+          { path = "C:\\Repo", access = "write" },
+          { path = "c:/repo/.git", access = "read" },
+        },
+      },
+      network = "restricted",
+      environment = {
+        clear = true,
+        inherit = { "Path", "PATH", "TEMP" },
+        set = { path = "C:\\bin", Temp = "C:\\Temp" },
+      },
+    }
+    local normalized = require("neoagent.sandbox.profile").validate(
+      source, { paths = paths })
+    assert.are.same({ "Path", "TEMP" }, normalized.environment.inherit)
+    assert.are.same({ Path = "C:\\bin", TEMP = "C:\\Temp" },
+      normalized.environment.set)
+    assert.are.equal("write", normalized.filesystem.entries[1].access)
+    assert.are.equal("read", normalized.filesystem.entries[2].access)
+
+    local fake_workspace = {
+      resolve = function(_, value)
+        return paths.join("C:\\Repo", value)
+      end,
+    }
+    local lexical, canonical =
+      require("neoagent.sandbox.policy").resolve_path({
+        context = { workspace = fake_workspace },
+      }, "src/../README.md", paths)
+    assert.are.equal("C:\\Repo\\README.md", lexical)
+    assert.are.equal(lexical, canonical)
+    assert.is_true(require("neoagent.sandbox.policy").allows(
+      normalized, "c:\\repo\\new.txt", "C:\\Repo\\new.txt",
+      "write", paths))
+
+    local original_tmpdir = vim.uv.os_tmpdir
+    vim.uv.os_tmpdir = function() return "C:\\Temp" end
+    local defaults = require("neoagent.sandbox.composition").default_profile({
+      context = { workspace = { root = "C:\\Repo" } },
+    }, paths)
+    vim.uv.os_tmpdir = original_tmpdir
+    assert.are.same({
+      "PATH",
+      "SystemRoot",
+      "WINDIR",
+      "COMSPEC",
+      "PATHEXT",
+    }, defaults.environment.inherit)
+    assert.are.equal("C:\\Temp", defaults.environment.set.TEMP)
+
+    local dedicated =
+      require("neoagent.sandbox.composition").default_profile({
+        context = { workspace = { root = "C:\\Repo" } },
+      }, paths, "C:\\state\\shared-tmp")
+    assert.are.equal("C:\\state\\shared-tmp",
+      dedicated.environment.set.TEMP)
+    assert.are.same({
+      { path = "C:\\Repo", access = "write" },
+      { path = "C:\\state\\shared-tmp", access = "write" },
+      { path = "C:\\Repo\\.git", access = "read" },
+    }, dedicated.filesystem.entries)
+  end)
+
   it("dispatches platforms explicitly and reports unsupported systems", function()
-    local linux, macos = {}, {}
+    local linux, macos, windows = {}, {}, {}
     local dispatch = require("neoagent.sandbox.platform")
     assert.are.equal(linux,
-      dispatch.select("Linux", { linux = linux, macos = macos }))
+      dispatch.select("Linux",
+        { linux = linux, macos = macos, windows = windows }))
     assert.are.equal(macos,
-      dispatch.select("OSX", { linux = linux, macos = macos }))
+      dispatch.select("OSX",
+        { linux = linux, macos = macos, windows = windows }))
+    assert.are.equal(windows,
+      dispatch.select("Windows",
+        { linux = linux, macos = macos, windows = windows }))
     local selected, status =
-      dispatch.select("Plan9", { linux = linux, macos = macos })
+      dispatch.select("Plan9",
+        { linux = linux, macos = macos, windows = windows })
     assert.is_nil(selected)
     assert.is_false(status.ok)
     assert.matches("unsupported platform",
@@ -819,8 +949,8 @@ describe("neoagent sandbox execution", function()
     local temporary = vim.fs.joinpath(root, "spill")
     local raw_calls = {}
     local raw_fs = {
-      create_temp = function()
-        raw_calls[#raw_calls + 1] = "create_temp"
+      create_temp = function(_, directory)
+        raw_calls[#raw_calls + 1] = "create_temp:" .. tostring(directory)
         return temporary
       end,
       read = function(path)
@@ -853,6 +983,7 @@ describe("neoagent sandbox execution", function()
       platform = platform,
       profile = profile(root),
       fs = raw_fs,
+      temporary_root = root,
     })
     local execute = box:wrap()
     local value = execute({
@@ -866,7 +997,7 @@ describe("neoagent sandbox execution", function()
     }, {}, context(root))
     assert.are.equal("ok", value.content[1].text)
     assert.are.same({
-      "create_temp",
+      "create_temp:" .. root,
       "write:" .. temporary,
       "read:" .. temporary,
       "platform:mkdirp",

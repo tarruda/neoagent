@@ -17,6 +17,15 @@ describe("neoagent.fs", function()
     }
   end)
 
+  it("recognizes host-specific absolute paths", function()
+    assert.is_true(fs.is_absolute("/tmp/file", "Linux"))
+    assert.is_false(fs.is_absolute("tmp/file", "Linux"))
+    assert.is_true(fs.is_absolute("C:\\repo\\file", "Windows"))
+    assert.is_true(fs.is_absolute("\\\\server\\share\\file", "Windows"))
+    assert.is_false(fs.is_absolute("C:relative", "Windows"))
+    assert.is_false(fs.is_absolute("\\rooted", "Windows"))
+  end)
+
   after_each(function()
     vim.uv.fs_stat = original.stat
     vim.uv.fs_open = original.open
@@ -32,12 +41,12 @@ describe("neoagent.fs", function()
   it("reports temporary file creation and close failures", function()
     vim.uv.fs_mkstemp = function(template)
       assert.are.equal(
-        vim.fs.joinpath(vim.uv.os_tmpdir(), "neoagent-test-XXXXXX"),
+        vim.fs.joinpath("custom", "neoagent-test-XXXXXX"),
         template
       )
       return nil, "create failed"
     end
-    local path, err = fs.create_temp("neoagent-test-")
+    local path, err = fs.create_temp("neoagent-test-", "custom")
     assert.is_nil(path)
     assert.are.equal("create failed", err)
 

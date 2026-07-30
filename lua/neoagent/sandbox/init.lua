@@ -1,5 +1,6 @@
 local platform_dispatch = require("neoagent.sandbox.platform")
 local profile_module = require("neoagent.sandbox.profile")
+local path_module = require("neoagent.sandbox.path")
 local util = require("neoagent.util")
 
 local M = {}
@@ -36,7 +37,12 @@ function M.sandbox_exec(argv, opts)
     end
     active_services.capabilities = util.copy(status.capabilities or {})
   end
-  local profile = profile_module.resolve(opts.profile, opts.ctx)
+  local paths = opts.paths or selected.paths or path_module.posix
+  local profile = profile_module.resolve(
+    opts.profile, opts.ctx, { paths = paths })
+  if type(selected.compile) == "function" then
+    profile = selected.compile(profile, opts.ctx, active_services)
+  end
   local request = util.copy(opts)
   request.profile = profile
   request.argv = vim.list_slice(argv)

@@ -1,4 +1,5 @@
 local policy = require("neoagent.sandbox.policy")
+local path_module = require("neoagent.sandbox.path")
 local profile_module = require("neoagent.sandbox.profile")
 local result = require("neoagent.sandbox.result")
 local util = require("neoagent.util")
@@ -18,16 +19,31 @@ local function workspace(ctx)
   return context and context.workspace or context
 end
 
-local function effective_environment(profile, source)
+local function effective_environment(profile, source, paths)
   source = source or vim.fn.environ()
   local environment = profile.environment
   local values = environment.clear and {} or util.copy(source)
+  local by_key = {}
+  local source_names = vim.tbl_keys(source)
+  table.sort(source_names)
+  for _, name in ipairs(source_names) do
+    local key = paths.environment_key(name)
+    if not by_key[key] then by_key[key] = name end
+  end
+  local function assign(name, value)
+    local key = paths.environment_key(name)
+    local existing = by_key[key]
+    if existing and existing ~= name then values[existing] = nil end
+    values[name] = value
+    by_key[key] = name
+  end
   if environment.clear then
     for _, name in ipairs(environment.inherit) do
-      if source[name] ~= nil then values[name] = source[name] end
+      local source_name = by_key[paths.environment_key(name)]
+      if source_name then assign(name, source[source_name]) end
     end
   end
-  for name, value in pairs(environment.set) do values[name] = value end
+  for name, item in pairs(environment.set) do assign(name, item) end
   return values
 end
 
@@ -67,10 +83,17 @@ local function validate_argv(argv)
 end
 
 function Enforcement:_resolve_profile(ctx)
+  local profile, fingerprint
   if self._fingerprint then
-    return self._configured_profile, self._fingerprint
+    profile, fingerprint = self._configured_profile, self._fingerprint
+  else
+    profile, fingerprint = profile_module.resolve(
+      self._profile_source, ctx, { paths = self._paths })
   end
-  return profile_module.resolve(self._profile_source, ctx)
+  if type(self._platform.compile) == "function" then
+    profile = self._platform.compile(profile, ctx, self._services)
+  end
+  return profile, fingerprint
 end
 
 function Enforcement:_guarded_fs(ctx, profile, require_active)
@@ -100,10 +123,10 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
         return raw.write_all(path, arguments.data, arguments.flags, arguments.mode)
       end
     end
-    local lexical, canonical = policy.resolve_path(ctx, path)
+    local lexical, canonical = policy.resolve_path(ctx, path, self._paths)
     local required = operation == "read" and "read" or "write"
     local allowed, granted = policy.allows(
-      profile, lexical, canonical, required)
+      profile, lexical, canonical, required, self._paths)
     if not allowed then
       error(denied("filesystem." .. required, lexical,
         profile, platform, granted), 0)
@@ -139,12 +162,19 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
         error(util.error("sandbox",
           "Sandbox temporary prefix must be a basename without NUL bytes"), 0)
       end
-      local path, err = raw.create_temp(prefix)
+      if prefix ~= nil then
+        local valid = pcall(self._paths.validate_component, prefix)
+        if not valid then
+          error(util.error("sandbox",
+            "Sandbox temporary prefix is invalid for this platform"), 0)
+        end
+      end
+      local path, err = raw.create_temp(prefix, self._temporary_root)
       if path then
         temporary[path] = true
-        local lexical = vim.fs.normalize(path)
-        local canonical = vim.uv.fs_realpath(lexical)
-        local stat = canonical and vim.uv.fs_stat(canonical)
+        local lexical = self._paths.normalize(path)
+        local canonical = self._paths.realpath(lexical)
+        local stat = canonical and self._paths.stat(canonical)
         if stat and stat.type == "file" then
           local record = {
             lexical = lexical,
@@ -187,8 +217,10 @@ function Enforcement:_guarded_process(
     if type(cwd) ~= "string" or cwd == "" then
       error(util.error("sandbox", "Sandbox process cwd is required"), 0)
     end
-    local lexical, canonical = policy.resolve_path(ctx, cwd)
-    local allowed, granted = policy.allows(profile, lexical, canonical, "read")
+    local lexical, canonical =
+      policy.resolve_path(ctx, cwd, self._paths)
+    local allowed, granted = policy.allows(
+      profile, lexical, canonical, "read", self._paths)
     if not allowed then
       error(denied("filesystem.read", lexical,
         profile, self._platform, granted), 0)
@@ -196,7 +228,7 @@ function Enforcement:_guarded_process(
     local request = {
       argv = validate_argv(argv),
       cwd = canonical,
-      env = effective_environment(profile, self._environ()),
+      env = effective_environment(profile, self._environ(), self._paths),
       clear_env = true,
       stdin = opts.stdin,
       capture = opts.capture,
@@ -290,15 +322,19 @@ function M.new(opts)
     "sandbox platform must implement exec and fs")
   local raw_fs = opts.fs or require("neoagent.fs")
   local raw_process = opts.process or require("neoagent.process").run
+  local paths = opts.paths or opts.platform.paths or path_module.posix
   local configured_profile, fingerprint = opts.profile, nil
   if type(configured_profile) == "table" then
-    configured_profile, fingerprint = profile_module.validate(configured_profile)
+    configured_profile, fingerprint = profile_module.validate(
+      configured_profile, { paths = paths })
   end
   return setmetatable({
     _profile_source = opts.profile,
     _configured_profile = configured_profile,
     _fingerprint = fingerprint,
     _platform = opts.platform,
+    _paths = paths,
+    _temporary_root = opts.temporary_root,
     _fs = raw_fs,
     _temporary_paths = {},
     _environ = opts.environ or vim.fn.environ,

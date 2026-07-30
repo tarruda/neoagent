@@ -64,3 +64,45 @@ jobs:
         run: make deps
       - name: Run complete suite
         run: make test
+
+  test-windows:
+    name: test (Windows, stable)
+    runs-on: windows-2022
+    env:
+      PLENARY_DIR: ${{ github.workspace }}\.deps\plenary.nvim
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install pinned test dependency
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .deps | Out-Null
+          git clone https://github.com/nvim-lua/plenary.nvim.git .deps/plenary.nvim
+          git -C .deps/plenary.nvim checkout 74b06c6c75e4eeb3108ec01852001636d85a932b
+      - name: Provision Windows sandbox identities and policy
+        shell: pwsh
+        run: |
+          $state = Join-Path $env:RUNNER_TEMP "neoagent-windows-sandbox"
+          $nvim = (Get-Command nvim).Source
+          $script = (Resolve-Path "scripts/sandbox_windows_runtime.lua").Path
+          $env:NEOAGENT_WINDOWS_SANDBOX_STATE = $state
+          "NEOAGENT_WINDOWS_SANDBOX_STATE=$state" >> $env:GITHUB_ENV
+          "NEOAGENT_NVIM=$nvim" >> $env:GITHUB_ENV
+          & $nvim --headless -u NONE -i NONE -n `
+            -l $script -- --setup
+          if ($LASTEXITCODE -ne 0) { throw "sandbox setup failed" }
+      - name: Run Windows sandbox suite
+        shell: pwsh
+        run: |
+          # Fresh sandbox identities cold-start PowerShell on hosted runners.
+          # This timeout covers the complete spec file, including that startup.
+          & $env:NEOAGENT_NVIM --headless --noplugin `
+            -u tests/minimal_init.lua `
+            -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 120000 }"
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) {
+            throw "Windows tests failed (Neovim exit code $testExit)"
+          }
