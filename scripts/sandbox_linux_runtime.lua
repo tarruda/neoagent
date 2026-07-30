@@ -1,3 +1,17 @@
+-- This file is a standalone LuaJIT program launched by Neoagent. It receives
+-- a JSON sandbox specification through NEOAGENT_SANDBOX_SPEC, receives command
+-- input on stdin, and writes length-prefixed MessagePack events to stdout.
+--
+-- The runtime creates this process tree:
+--
+--   protocol relay
+--     `- namespace init (PID 1 inside the sandbox)
+--          `- target command and its descendants
+--
+-- The relay keeps Neoagent's protocol and signal handling outside the target.
+-- Namespace init owns sandbox setup, syscall mediation, and descendant cleanup.
+-- The target receives the requested stdin, stdout, stderr, cwd, and environment.
+
 local ffi = require("ffi")
 local bit = require("bit")
 
@@ -6,6 +20,9 @@ if jit.os ~= "Linux" then
   os.exit(2)
 end
 
+-- LuaJIT FFI calls the Linux C ABI directly. These declarations are the small
+-- libc and kernel surface used to build the sandbox, supervise processes, and
+-- mediate selected system calls.
 ffi.cdef([[
 typedef int pid_t;
 typedef unsigned int uid_t;
@@ -245,6 +262,9 @@ local SIG_BLOCK, SIG_UNBLOCK = 0, 1
 local WNOHANG = 1
 local SC_OPEN_MAX = 4
 
+-- System-call numbers are part of the CPU architecture ABI. Named entries keep
+-- the policy below readable while the x64 and arm64 tables supply the numbers
+-- understood by each kernel.
 local abi_by_arch = {
   x64 = {
     audit_arch = 0xC000003E,
@@ -322,6 +342,11 @@ local abi_by_arch = {
 }
 local abi = abi_by_arch[jit.arch]
 
+-- Runtime protocol -----------------------------------------------------------
+--
+-- Every stdout message is a four-byte big-endian length followed by a
+-- MessagePack map. Child setup errors travel over private control pipes first,
+-- so the relay can turn them into the same public error event.
 local function write_all(fd, data)
   local offset = 0
   while offset < #data do
@@ -437,6 +462,9 @@ local function bootstrap_single_thread()
   finish(bit.band(bit.rshift(raw, 8), 0xff))
 end
 
+-- Validate every value before it influences namespace setup, mounts, process
+-- arguments, or the environment. The specification variable is cleared early
+-- so the target command cannot inherit the sandbox control document.
 local encoded = vim.uv.os_getenv("NEOAGENT_SANDBOX_SPEC", 512 * 1024 + 1)
 vim.uv.os_unsetenv("NEOAGENT_SANDBOX_SPEC")
 if not abi then terminal_error("architecture", 0) end
@@ -523,6 +551,11 @@ if not single_threaded then
   terminal_error("threads", thread_count or 0)
 end
 
+-- Runtime lifetime and signals ----------------------------------------------
+--
+-- The kernel kills the runtime when its launching editor disappears. Regular
+-- termination signals are read from signalfd, then forwarded by namespace init
+-- to the target process group so descendants receive them together.
 local editor_pid = C.getppid()
 if C.prctl(PR_SET_PDEATHSIG, SIG.KILL, 0, 0, 0) ~= 0
     or C.getppid() ~= editor_pid then
@@ -551,6 +584,13 @@ local function cwrite(path, data)
   return ok
 end
 
+-- Namespace setup ------------------------------------------------------------
+--
+-- A user namespace maps the invoking user to UID/GID 0 inside the sandbox.
+-- That namespace-local root can arrange mounts while retaining the invoking
+-- user's permissions on the host. Mount, IPC, hostname, and optional network
+-- namespaces isolate the corresponding kernel resources. The PID namespace
+-- takes effect for the children created later.
 local host_uid, host_gid = tonumber(C.getuid()), tonumber(C.getgid())
 local flags = bit.bor(CLONE.NEWUSER, CLONE.NEWNS,
   CLONE.NEWIPC, CLONE.NEWUTS)
@@ -662,6 +702,12 @@ local function readonly(path, enabled)
   return true
 end
 
+-- Filesystem view ------------------------------------------------------------
+--
+-- The caller supplies an empty staging directory and its recorded identity.
+-- Verifying that identity closes a path-replacement race before mounting. A
+-- tmpfs staging root holds a recursive, read-only bind of the host filesystem;
+-- private runtime and device mounts are then layered over that base.
 local root = spec.root
 local newroot = root .. "/newroot"
 local root_stat = vim.uv.fs_lstat(root)
@@ -758,6 +804,10 @@ local function contains(root, path)
     or path:sub(1, #root + 1) == root .. "/"
 end
 
+-- Profile entries are applied from broad paths to specific paths. A writable
+-- or readable child can therefore be granted inside a denied parent. Denied
+-- directories become empty tmpfs mounts, and denied files become a harmless
+-- read-only file mount.
 local entries = {}
 for _, entry in ipairs(spec.profile.filesystem.entries or {}) do
   entries[#entries + 1] = entry
@@ -830,6 +880,9 @@ for _, entry in ipairs(entries) do
   end
 end
 
+-- pivot_root makes the constructed tree become "/". Keeping a descriptor for
+-- the previous root allows it to be detached immediately, removing the
+-- target's route back to the host mount tree.
 local oldroot = C.open("/", bit.bor(O.RDONLY, O.DIRECTORY, O.CLOEXEC))
 if oldroot < 0 or C.chdir(newroot) ~= 0 then terminal_error("pivot-chdir") end
 if C.syscall(abi.pivot_root,
@@ -888,6 +941,12 @@ local function receive_fd(socket)
   return tonumber(ffi.cast("int *", control + 16)[0])
 end
 
+-- Process plumbing -----------------------------------------------------------
+--
+-- Separate pipes carry target output, setup confirmation, relayed signals, and
+-- final status. The Unix socket pair carries the seccomp listener descriptor
+-- from the target to namespace init, because file descriptors require a Unix
+-- socket control message when transferred between processes.
 local stdin_copy = C.dup(0)
 if stdin_copy < 0 then terminal_error("stdin") end
 local stdout_r, stdout_w = pipe()
@@ -898,6 +957,13 @@ local confirm_r, confirm_w = pipe()
 local status_r, status_w = pipe()
 local listener_parent, listener_child = socket_pair()
 
+-- Privilege and system-call policy ------------------------------------------
+--
+-- Namespace init drops every capability after completing mount setup. The
+-- target also sets no_new_privs and installs a seccomp filter. The filter
+-- rejects dangerous kernel operations and network calls for restricted
+-- profiles. Filesystem calls that need path-aware policy are sent to namespace
+-- init through seccomp user notifications.
 local function drop_capabilities(error_fd)
   for capability = 0, 63 do
     if C.prctl(PR_CAPBSET_DROP, capability, 0, 0, 0) ~= 0
@@ -1019,6 +1085,10 @@ local function install_seccomp(error_fd, notify)
   end
 end
 
+-- A seccomp notification contains raw syscall arguments from the target. Path
+-- arguments are pointers in the target's address space, so the supervisor
+-- copies bounded strings with process_vm_readv and interprets relative paths
+-- through the target's /proc/<pid>/cwd or /proc/<pid>/fd entries.
 local function remote_data(pid, address, size)
   if size < 0 or size > 65536 then return nil end
   local buffer = ffi.new("unsigned char[?]", math.max(size, 1))
@@ -1265,6 +1335,9 @@ local function open_is_mutating(flags)
     bit.bor(O.WRONLY, 2, O.CREAT, O.TRUNC, O.APPEND, O.TMPFILE)) ~= 0
 end
 
+-- For an allowed open, namespace init performs the operation against a captured
+-- directory descriptor and installs the resulting descriptor into the target.
+-- This keeps the path check and open tied to the same filesystem location.
 local function open_notification(listener, notification, dirfd, path_index,
     flags, mode, how_data)
   local pid = tonumber(notification.pid)
@@ -1571,6 +1644,12 @@ local function handle_notification(listener)
   return send_response(listener, notification, 0, E.ENOSYS)
 end
 
+-- Process supervision --------------------------------------------------------
+--
+-- This fork enters the new PID namespace. Its child becomes PID 1 there, which
+-- gives it responsibility for forwarding signals and reaping every descendant.
+-- PID 1 then creates the target as a process-group leader, allowing one signal
+-- or cleanup operation to cover the complete command tree.
 local init = C.fork()
 if init < 0 then terminal_error("fork-init") end
 if init == 0 then
@@ -1619,6 +1698,9 @@ if init == 0 then
   end
   drop_capabilities(control_w)
 
+  -- The target branch wires standard streams, selects the requested cwd,
+  -- installs seccomp, and then runs a probe, a filesystem operation, or execve.
+  -- The init branch retains only the descriptors required for supervision.
   local target_pid = C.fork()
   if target_pid < 0 then child_error(confirm_w, "fork-target") end
   if target_pid == 0 then
@@ -1759,6 +1841,9 @@ if init == 0 then
   C.close(stdin_copy)
   C.close(stdout_w)
   C.close(stderr_w)
+  -- Namespace init alternates between target status, forwarded signals, and
+  -- seccomp requests. When the target exits it terminates and reaps remaining
+  -- descendants before reporting a single final status to the relay.
   local target_status = ffi.new("int[1]")
   local command_poll = ffi.new("struct pollfd[2]")
   local command_buffer = ffi.new("char[256]")
@@ -1803,6 +1888,9 @@ if init == 0 then
   finish(0)
 end
 
+-- The original process is the protocol relay. It waits for both setup phases
+-- before announcing readiness, then converts raw stdout/stderr bytes into
+-- ordered protocol events while forwarding signals and awaiting final status.
 C.close(stdout_w)
 C.close(stderr_w)
 C.close(control_w)

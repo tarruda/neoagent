@@ -1,3 +1,20 @@
+-- This file is a standalone LuaJIT program launched by Neoagent. It has three
+-- entry modes:
+--
+--   --setup    create dedicated local accounts and persistent network policy
+--   default    validate a request, lease filesystem access, and start a runner
+--   --runner   create a restricted token and supervise the target command
+--
+-- A normal request creates this process tree:
+--
+--   host runtime (the invoking user)
+--     `- account runner (dedicated offline or online local account)
+--          `- target command and its descendants (restricted token)
+--
+-- The host and runner exchange length-prefixed MessagePack frames over
+-- identity-checked named pipes. The host owns temporary ACL changes and crash
+-- recovery; the runner owns the target job, standard streams, and deadline.
+
 local ffi = require("ffi")
 local bit = require("bit")
 
@@ -6,6 +23,9 @@ if jit.os ~= "Windows" then
   os.exit(2)
 end
 
+-- LuaJIT FFI calls the Win32 ABI directly. These declarations cover process
+-- creation, access tokens, filesystem ACLs, jobs, named pipes, local accounts,
+-- the Windows Filtering Platform, and the small Winsock probe.
 ffi.cdef([[
 typedef void *HANDLE;
 typedef void *HLOCAL;
@@ -408,6 +428,9 @@ int __stdcall WSAGetLastError(void);
 USHORT __stdcall htons(USHORT);
 ]])
 
+-- Each short name identifies the system DLL that owns a group of operations:
+-- kernel/process I/O, security, accounts, encryption, desktops, firewall, and
+-- sockets respectively.
 local K = ffi.load("kernel32")
 local A = ffi.load("advapi32")
 local N = ffi.load("netapi32")
@@ -593,6 +616,8 @@ WIN32.FILE.SANDBOX_DENY_WRITE = bit.bor(
   WIN32.FILE.DELETE_CHILD, WIN32.ACCESS.WRITE_DACL,
   WIN32.ACCESS.WRITE_OWNER)
 
+-- Protocol and lifecycle limits live together so bounded reads, output
+-- polling, cleanup, and state migrations remain easy to audit.
 local RUNTIME = {
   MAX_FRAME = 1024 * 1024,
   STATE_VERSION = 1,
@@ -673,6 +698,11 @@ local function random_hex(bytes)
   end))
 end
 
+-- Runtime protocol -----------------------------------------------------------
+--
+-- Frames use a four-byte big-endian length followed by a MessagePack map. The
+-- same format is used between Neoagent and the host runtime and between the
+-- host and account runner.
 local function write_all(handle, data)
   local offset = 0
   local written = ffi.new("DWORD[1]")
@@ -779,6 +809,11 @@ local function read_standard_input()
   return table.concat(chunks)
 end
 
+-- Windows security identities and ACLs --------------------------------------
+--
+-- A SID is Windows' stable identity value for a user or capability. ACL
+-- entries grant or deny permissions to SIDs. These helpers convert SID forms,
+-- inspect tokens, and apply narrowly scoped entries to filesystem objects.
 local function sid_string(sid)
   local pointer = ffi.new("WCHAR *[1]")
   if A.ConvertSidToStringSidW(sid, pointer) == 0 then
@@ -958,6 +993,13 @@ local function revoke_path(path, sid)
   })
 end
 
+-- Persistent setup state -----------------------------------------------------
+--
+-- Setup creates two ordinary local accounts: an offline identity covered by
+-- firewall rules and an online identity for network-enabled profiles. Their
+-- random passwords are encrypted for the invoking user with DPAPI. Atomic
+-- replacement keeps the account, firewall, and recovery records well formed
+-- across interruption.
 local function dpapi(value, decrypt)
   local source = ffi.new("BYTE[?]", math.max(#value, 1))
   if #value > 0 then ffi.copy(source, value, #value) end
@@ -1134,6 +1176,9 @@ local function guid(value)
   return result
 end
 
+-- Windows Filtering Platform rules attach network policy to the offline
+-- account SID. Outbound connect and local bind layers cover IPv4 and IPv6, so
+-- every process running as that account receives the same kernel policy.
 local WFP = {
   PROVIDER = guid("51b8691c-e229-49b4-b796-91b3989dcf11"),
   SUBLAYER = guid("b00928a8-a6ac-4988-a737-7f06e9ece8c1"),
@@ -1301,6 +1346,9 @@ local function mkdir(path)
   end
 end
 
+-- Setup is the privileged, persistent phase. It creates or refreshes both
+-- accounts, installs the offline account's firewall filters, prepares a shared
+-- temporary directory, and protects the saved state for the invoking user.
 local function setup(directory)
   mkdir(directory)
   local owner_sid = current_user_sid_string()
@@ -1372,6 +1420,12 @@ local function setup(directory)
   }))
 end
 
+-- Request preparation --------------------------------------------------------
+--
+-- One named mutex serializes ACL leases and recovery for a state directory.
+-- Paths are normalized, resolved, and compared case-insensitively before any
+-- access rule is changed. Existing paths must retain the identity selected by
+-- validation.
 local function mutex_name(directory)
   return "Local\\NeoagentSandbox-" .. vim.fn.sha256(
     tostring(directory):lower()):sub(1, 32)
@@ -1494,6 +1548,10 @@ local function copy_list(value, stage, missing)
   return result
 end
 
+-- Validation turns the request into canonical paths and checks that runtime
+-- files, target executables, temporary storage, and protected paths form a
+-- coherent policy. The later ACL code can therefore operate on resolved
+-- objects with a bounded, well-typed specification.
 local function validate_spec(spec, directory)
   if type(spec) ~= "table" or spec.v ~= RUNTIME.PROTOCOL_VERSION then
     failure("specification-version", 0)
@@ -1624,6 +1682,11 @@ local function validate_spec(spec, directory)
   return spec
 end
 
+-- Per-request ACL lease and recovery ----------------------------------------
+--
+-- Each request receives a random capability SID. ACLs combine that capability
+-- with the selected account SID: the account identifies the runner, while the
+-- capability makes writable grants specific to this request's target token.
 local function capability_sid()
   local components = {}
   local random = vim.uv.random(16)
@@ -1744,6 +1807,10 @@ function cleanup_placeholder(record)
   K.RemoveDirectoryW(wide(path))
 end
 
+-- The state file is also a cleanup journal. Every temporary ACL and placeholder
+-- is recorded before application, allowing this pass to revoke an interrupted
+-- request on the next launch. File identities and private marker contents prove
+-- that a placeholder still belongs to this runtime before removal.
 local function recovery_cleanup(state)
   local recovery = state.recovery
   if type(recovery) ~= "table" or type(recovery.paths) ~= "table" then
@@ -1835,6 +1902,10 @@ local function covered_by(paths, path)
   return false
 end
 
+-- Windows enforces the profile through temporary ACL entries. Account grants
+-- let the runner load Neovim and enter required paths; capability grants and
+-- deny entries constrain the restricted target token. All touched paths are
+-- journaled before their ACLs change.
 local function apply_runtime_acls(directory, state, spec, account_sid_string,
     capability_sid_string)
   local filesystem = spec.profile.windows
@@ -1919,6 +1990,12 @@ local function finish_runtime_acls(directory, state)
   encode_state(directory, state)
 end
 
+-- Command construction and process containment ------------------------------
+--
+-- CreateProcess receives one mutable command-line string, so arguments follow
+-- the documented Windows backslash-and-quote encoding. cmd.exe command tails
+-- use a temporary batch file because cmd applies its own command-language
+-- parsing after CreateProcess has parsed the executable arguments.
 local function quote_argument(value)
   if value == "" then return '""' end
   if not value:find('[%s"]') then return value end
@@ -2018,6 +2095,9 @@ local function utf16_block(environment)
   return block
 end
 
+-- A kill-on-close job groups a process with all descendants. Closing or
+-- terminating the runner and target jobs therefore provides bounded cleanup
+-- for both process trees.
 local function create_job(stage)
   local job = K.CreateJobObjectW(nil, nil)
   if invalid_handle(job) then failure(stage or "job-create") end
@@ -2039,6 +2119,9 @@ local function assign_job(job, process, stage)
   end
 end
 
+-- Extended startup attributes place the target in its job during creation and
+-- expose exactly the three standard-stream handles. Containment and handle
+-- ownership are established before the first target instruction runs.
 local function target_process_attributes(job, stdin_handle, stdout_handle,
     stderr_handle)
   local size = ffi.new("SIZE_T[1]")
@@ -2084,6 +2167,10 @@ local function target_process_attributes(job, stdin_handle, stdout_handle,
   }
 end
 
+-- Named pipes form the private host-runner control channel. Their ACL names the
+-- selected account, and both endpoints verify the connecting process ID. This
+-- pairs the expected account identity with the exact process launched by the
+-- host.
 local function pipe_security(account_sid_string)
   local descriptor = security_descriptor(
     "D:(A;;GA;;;" .. account_sid_string .. ")")
@@ -2185,6 +2272,9 @@ local function runner_argv(spec, input_pipe, output_pipe, host_pid,
   return argv
 end
 
+-- The host logs on the selected account and starts a suspended runner. It
+-- assigns the runner job before resuming the thread, then completes the
+-- identity-checked named-pipe handshake.
 local function spawn_runner(spec, account, password, capability_sid_string)
   local suffix = random_hex(16)
   local input_name = "\\\\.\\pipe\\neoagent-sandbox-" .. suffix .. "-in"
@@ -2301,6 +2391,13 @@ local function enable_privilege(token, name)
   if err ~= WIN32.ERROR.SUCCESS then failure("token-privilege", err) end
 end
 
+-- Restricted target identity -------------------------------------------------
+--
+-- CreateRestrictedToken removes privileges and adds a restricting SID set.
+-- Windows access checks must then satisfy the token's ordinary identity and
+-- its restricting identities. The account, per-request capability, logon SID,
+-- and Everyone SID preserve required runtime access while ACLs constrain file
+-- mutations.
 local function restricted_token(account_sid_string, capability_sid_string)
   local base = current_token()
   local account = sid_from_string(account_sid_string)
@@ -2373,6 +2470,9 @@ local function close_private_desktop(value)
   if not invalid_handle(value.desktop) then U.CloseDesktop(value.desktop) end
 end
 
+-- A private desktop gives GUI-aware libraries a valid windowing namespace
+-- while the process remains headless. Access is limited to the logon identity
+-- and Windows administrative identities.
 local function private_desktop(logon_sid_string)
   local station = U.GetProcessWindowStation()
   if invalid_handle(station) then failure("window-station") end
@@ -2398,6 +2498,12 @@ local function private_desktop(logon_sid_string)
   }
 end
 
+-- Target execution -----------------------------------------------------------
+--
+-- Target output becomes ordered protocol events. stdin uses a delete-on-close
+-- disk file, which gives programs a seekable standard input handle. stdout and
+-- stderr use anonymous pipes that the runner drains while watching the process
+-- and its deadline.
 local function send_event(handle, event)
   local ok, err = write_frame(handle, event)
   if not ok then failure("protocol-write", err) end
@@ -2532,6 +2638,10 @@ local function drain_pipe(handle, stream, output)
   return true
 end
 
+-- The target starts with the restricted primary token, explicit environment
+-- and cwd, private desktop, standard handles, and target job already attached.
+-- The runner applies the deadline to the whole job, drains both output pipes,
+-- and reports one terminal status after descendants release their writers.
 local function spawn_target(spec, stdin, output_handle, token,
     logon_sid_string)
   local stdin_handle = stdin_file(spec.temp_root, stdin)
@@ -2652,6 +2762,9 @@ local function spawn_target(spec, stdin, output_handle, token,
   })
 end
 
+-- Built-in filesystem operations run inside the runner while impersonating the
+-- same restricted token used for target commands. This keeps their access
+-- checks identical without starting a separate command process.
 local function with_impersonation(token, callback)
   if A.ImpersonateLoggedOnUser(token) == 0 then
     failure("impersonate")
@@ -2805,6 +2918,9 @@ local function fs_operation(spec, stdin, output_handle, token)
   end
 end
 
+-- Probe mode checks observable sandbox behavior. Filesystem checks execute
+-- under the restricted token, and the offline account verifies that WFP rejects
+-- even a loopback connection attempt.
 local function network_is_blocked()
   local data = ffi.new("WSADATA")
   local code = W.WSAStartup(0x0202, data)
@@ -2874,6 +2990,11 @@ local function run_probe(spec, output_handle, token)
   })
 end
 
+-- Account runner -------------------------------------------------------------
+--
+-- The runner verifies its account SID and the named-pipe server PID, receives
+-- the complete request and stdin stream, builds the restricted token, and owns
+-- execution until one terminal event is sent.
 local function runner_main(arguments)
   if #arguments ~= 6 then failure("runner-arguments", 0) end
   local input_name, output_name = arguments[2], arguments[3]
@@ -2935,6 +3056,11 @@ local function runner_main(arguments)
   if not ok then os.exit(125) end
 end
 
+-- Host runtime ---------------------------------------------------------------
+--
+-- The host bridges Neoagent's stdio protocol to the account runner. Request
+-- data and stdin flow toward the runner; ready, output, and terminal events flow
+-- back unchanged.
 local function send_request(runner, spec, stdin)
   local ok, err = write_frame(runner.input, {
     v = RUNTIME.PROTOCOL_VERSION,
@@ -2988,6 +3114,9 @@ local function receive_events(runner)
   return terminal
 end
 
+-- The host holds the state mutex for the entire ACL lease. Its protected call
+-- records recovery, applies ACLs, launches the runner, and receives the result.
+-- Cleanup runs after success or failure before the terminal event is emitted.
 local function host_main(directory)
   local encoded = vim.uv.os_getenv(
     "NEOAGENT_SANDBOX_SPEC", 1024 * 1024 + 1)
@@ -3052,6 +3181,10 @@ local function default_state_directory()
     vim.fn.stdpath("state"), "neoagent", "windows-sandbox")
 end
 
+-- Entrypoint -----------------------------------------------------------------
+--
+-- Setup emits a small JSON result for the manual provisioning command. Host
+-- and runner modes use the framed runtime protocol described above.
 local arguments = {}
 for index = 1, #arg do arguments[index] = arg[index] end
 if arguments[1] == "--" then table.remove(arguments, 1) end
