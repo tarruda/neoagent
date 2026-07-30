@@ -139,6 +139,65 @@ bounded memory and streams overflow through the filesystem capability.
 execution-policy boundary. Core Models, the agent loop, Sessions, Controllers,
 tools, Window, and View contain no sandbox policy.
 
+```text
+Default Neo setup (`sandbox.enabled`)
+      │
+      ▼
+sandbox/composition.lua ─────► generic dialog source ─────► Window
+      │
+      ├── probe/status ──────► sandbox/platform.lua
+      │
+      └── decorates the Controller's `execute_tool()`
+                                   ▲
+agent.run() ── tool call ──────────┘
+                                   │
+                                   ▼
+                      dialog.wrap(): per-call ctx.dialog
+                                   │
+                                   ▼
+                         sandbox/escalation.lua
+                          ├── approved once
+                          │      └── configured executor
+                          │          + revocable host ctx.fs / ctx.process
+                          │                    │
+                          │                    ▼
+                          │               Tool.execute()
+                          │
+                          └── ordinary
+                                 │
+                                 ▼
+                           sandbox/enforce.lua
+                            ├── profile.lua / policy.lua
+                            ├── configured executor ──────► Tool.execute()
+                            └── per-call ctx.fs / ctx.process
+                                             │
+                                             ▼
+                              selected backend (`fs` / `exec`)
+                               │
+                               ├── Linux
+                               │    ├── lua/neoagent/sandbox/linux/
+                               │    │     check/fs/exec adapter, protocol,
+                               │    │     platform data
+                               │    └── scripts/sandbox_linux_runtime.lua
+                               │          standalone headless child:
+                               │          namespaces, mounts, seccomp,
+                               │          supervision, framed output
+                               │
+                               └── macOS
+                                    ├── lua/neoagent/sandbox/macos/
+                                    │     check/fs/exec adapter,
+                                    │     Seatbelt profile compiler
+                                    ├── /usr/bin/sandbox-exec
+                                    └── scripts/sandbox_macos_runtime.lua
+                                          filesystem and process supervision
+```
+
+The connections back into Neoagent are ordinary Lua extension points: default
+setup installs a decorated `execute_tool()` function, Window presents a generic
+dialog source, and the configured executor receives a copied context. The
+reusable core does not import sandbox modules. Bundled tools participate by
+calling the injected `ctx.fs` and `ctx.process` values.
+
 The default setup path asks `neoagent.sandbox.composition` to decorate Neo only
 when `sandbox.enabled` is true. The composition runs an active platform probe,
 then layers a restricted executor and one-shot escalation selector around the
