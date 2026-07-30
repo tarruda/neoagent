@@ -20,9 +20,9 @@ function M.create_temp(prefix)
   return path
 end
 
-function M.create_temp_directory(prefix)
+function M.create_temp_directory(prefix, directory)
   local template = M.join(
-    vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+    directory or vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
   return vim.uv.fs_mkdtemp(template)
 end
 

@@ -160,6 +160,11 @@ revalidate its identity and add an exact read grant to the native backend.
 Native filesystem operations accept regular files and run with a bounded
 timeout.
 
+The default profile grants write access to canonical `/tmp` and the active host
+temporary directory and points `TMPDIR`, `TMP`, and `TEMP` at the active
+directory. Linux and macOS expose those paths as ordinary host-backed profile
+roots, so temporary artifacts remain available across tool invocations.
+
 Escalation copies tool schemas and adds reserved request fields under
 `options`. A valid request publishes a sandbox-defined transcript dialog
 through `ctx.dialog`. Approval selects the configured host executor for one
@@ -183,10 +188,12 @@ restriction selects the inherited read-only host procfs and records the
 degraded stage and procfs isolation while preserving the other established
 boundaries. macOS compiles a parameterized Seatbelt profile for
 `/usr/bin/sandbox-exec` and uses a Neovim runtime for sandboxed filesystem
-operations and process-tree supervision. Linux staging roots and macOS private
-temporary directories are created atomically. Their device and inode identity
-is recorded and revalidated before use and cleanup; cleanup fails closed when
-the pathname is missing, linked, or substituted.
+operations and process-tree supervision. Linux staging roots are created
+atomically beneath `/run/user/<uid>` or `/dev/shm`; the namespace presents
+dedicated `/run`, `/dev`, and `/dev/shm` paths to the launched process. The
+staging root's device and inode identity is recorded and revalidated before use
+and cleanup. Profiles that expose every host staging directory and changed root
+identities fail closed.
 
 Activation failure preserves the configured host executor. Activation failure
 and degraded activation wrap the configured View factory with a sandbox-owned

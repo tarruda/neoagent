@@ -321,11 +321,14 @@ shows a one-time warning. Failures after successful activation fail closed as
 tool errors and never retry through the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
-a bounded Workspace root, keeps `<workspace>/.git` read-only, restricts
-networking, clears the environment to an explicit inherited set, and creates
-private temporary storage. Read-only access includes host files outside the
-Workspace; add deny entries for sensitive paths. Override the profile with a
-table merged over the default: >lua
+a bounded Workspace root and the shared host temporary roots, keeps
+`<workspace>/.git` read-only, restricts networking, and clears the environment
+to an explicit inherited set. It grants canonical `/tmp` and the active host
+temporary directory, then sets `TMPDIR`, `TMP`, and `TEMP` to the active
+directory. Files created there remain visible to later sandbox invocations and
+host processes until they are removed. Read-only access includes host files
+outside the Workspace; add deny entries for sensitive paths. Override the
+profile with a table merged over the default: >lua
 
   sandbox = {
     enabled = true,
@@ -352,9 +355,11 @@ rename, node, and Unix-socket operations. A path created concurrently by a
 host process keeps the same creation and removal protection and is never
 removed by sandbox cleanup.
 
-Linux staging roots and macOS private temporary directories are created
-atomically. Each backend verifies the directory identity before use and
-cleanup and fails closed if its pathname is missing, linked, or substituted.
+Linux staging roots are created atomically beneath a host runtime directory
+covered by the sandbox's private `/run` or `/dev`. Linux verifies each root's
+identity before use and cleanup and fails closed when a filesystem profile
+exposes every staging directory or a root pathname is missing, linked, or
+substituted.
 
 A callback can calculate the complete profile per tool call: >lua
 

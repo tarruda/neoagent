@@ -101,8 +101,8 @@ local function documentation()
       .. "Activation failure preserves the configured executor and warns "
       .. "when Neo is first displayed; runtime failures are fail-closed. "
       .. "Profiles can override canonical read, write, and deny paths, "
-      .. "network access, environment construction, and private temporary "
-      .. "storage.",
+      .. "network access, environment construction, and shared host "
+      .. "temporary access.",
     "Executors can create `require(\"neoagent.dialog\").new()`, inject its "
       .. "lifetime-scoped `ctx.dialog` capability with "
       .. "`neoagent.dialog.wrap`, and pass the source as the `dialogs` option "

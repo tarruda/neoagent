@@ -3,6 +3,10 @@ local util = require("neoagent.util")
 
 local M = { name = "linux" }
 local FS_TIMEOUT_MS = 30000
+local STAGING_DIRECTORIES = vim.uv.os_uname().sysname == "Linux" and {
+  "/run/user/" .. tostring(vim.uv.getuid()),
+  "/dev/shm",
+} or { vim.uv.os_tmpdir() }
 local PROCFS_STAGES = {
   ["unmount-proc"] = true,
   ["mount-proc"] = true,
@@ -64,15 +68,47 @@ local function same_inode(left, right)
   return left and right and left.dev == right.dev and left.ino == right.ino
 end
 
-local function temporary_root(fs)
-  local path, err = fs.create_temp_directory("neoagent-sandbox-")
-  if not path then return nil, err end
-  path = vim.uv.fs_realpath(path) or vim.fs.normalize(path)
-  local stat, stat_err = vim.uv.fs_lstat(path)
-  if not stat or stat.type ~= "directory" then
-    return nil, stat_err or "temporary root is not a directory"
+local function contains(root, path)
+  return root == "/" or path == root
+    or path:sub(1, #root + 1) == root .. "/"
+end
+
+local function temporary_root(fs, profile)
+  local problems = {}
+  for _, source in ipairs(STAGING_DIRECTORIES) do
+    local directory = vim.uv.fs_realpath(source)
+    local directory_stat = directory and vim.uv.fs_stat(directory)
+    if not directory_stat or directory_stat.type ~= "directory" then
+      problems[#problems + 1] = source .. " is unavailable"
+    else
+      local exposed = false
+      for _, entry in ipairs(
+          profile and profile.filesystem.entries or {}) do
+        if entry.access ~= "deny" and contains(entry.path, directory) then
+          exposed = true
+          break
+        end
+      end
+      if exposed then
+        problems[#problems + 1] =
+          "filesystem profile exposes " .. directory
+      else
+        local path, err = fs.create_temp_directory(
+          "neoagent-sandbox-", directory)
+        if path then
+          path = vim.uv.fs_realpath(path) or vim.fs.normalize(path)
+          local stat, stat_err = vim.uv.fs_lstat(path)
+          if not stat or stat.type ~= "directory" then
+            return nil, stat_err or "temporary root is not a directory"
+          end
+          return { path = path, stat = stat }
+        end
+        problems[#problems + 1] = directory .. ": " .. tostring(err)
+      end
+    end
   end
-  return { path = path, stat = stat }
+  return nil, "Linux sandbox staging directory is unavailable: "
+    .. table.concat(problems, "; ")
 end
 
 local function valid_root(root)
@@ -157,7 +193,7 @@ local function capabilities(procfs)
     seccomp = true,
     capability_drop = true,
     process_supervision = true,
-    private_tmp = true,
+    shared_tmp = true,
     protected_create = true,
     procfs = procfs,
     procfs_isolated = procfs == "fresh",
@@ -182,11 +218,6 @@ local function system_environment(spec)
   end
   table.sort(result)
   return result
-end
-
-local function contains(root, path)
-  return root == "/" or path == root
-    or path:sub(1, #root + 1) == root .. "/"
 end
 
 local function parent_access(profile, path)
@@ -227,7 +258,7 @@ local function process_request(request, services, mode)
     error(util.error("sandbox_unavailable",
       "Linux sandbox runtime was not found"), 0)
   end
-  local root, root_err = temporary_root(services.fs)
+  local root, root_err = temporary_root(services.fs, request.profile)
   if not root then
     error(util.error("sandbox_unavailable",
       "Could not create Linux sandbox root", root_err), 0)
@@ -410,7 +441,6 @@ function M.check(services)
     filesystem = { default = "read", entries = {} },
     network = "restricted",
     environment = { clear = true, inherit = {}, set = {} },
-    temporary = "private",
   }
   local spec = specification({
     mode = "probe",

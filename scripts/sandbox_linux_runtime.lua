@@ -637,10 +637,10 @@ local function target(path)
   return path == "/" and newroot or newroot .. path
 end
 
-for _, path in ipairs({ "/tmp", "/run" }) do
+for _, path in ipairs({ "/run" }) do
   if C.mount("tmpfs", target(path), "tmpfs",
       bit.bor(MS.NOSUID, MS.NODEV),
-      path == "/tmp" and "mode=1777" or "mode=0755") ~= 0 then
+      "mode=0755") ~= 0 then
     terminal_error("private-runtime")
   end
 end

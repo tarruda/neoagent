@@ -106,94 +106,34 @@ function M.check(services)
       network = true,
       process = true,
       process_supervision = true,
-      private_tmp = true,
+      shared_tmp = true,
       seatbelt = true,
     },
   }
 end
 
-local function temporary(fs)
-  local base, err = fs.create_temp_directory("neoagent-sandbox-")
-  if not base then return nil, err end
-  base = vim.uv.fs_realpath(base) or vim.fs.normalize(base)
-  local stat, stat_err = vim.uv.fs_lstat(base)
-  if not stat or stat.type ~= "directory" then
-    return nil, stat_err or "temporary directory is not a directory"
-  end
-  return { path = base, stat = stat }
-end
-
-local function valid_temporary(temp)
-  local stat = vim.uv.fs_lstat(temp.path)
-  return stat and stat.type == "directory"
-    and stat.dev == temp.stat.dev and stat.ino == temp.stat.ino
-end
-
-local function cleanup(temp)
-  if not valid_temporary(temp) then
-    return nil, "private temporary directory identity changed: " .. temp.path
-  end
-  if vim.fn.delete(temp.path, "rf") ~= 0 then
-    return nil, "recursive removal failed"
-  end
-  return true
-end
-
 local function execute(request, services, protected)
   local sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
-  local temp, temp_err = temporary(services.fs)
-  if not temp then
-    error(util.error("sandbox_unavailable",
-      "Could not create private sandbox temporary directory", temp_err), 0)
+  local internal = {}
+  for _, path in ipairs(protected or {}) do
+    internal[#internal + 1] = { path = path, access = "read" }
   end
-  local ok, value = pcall(function()
-    local internal = { { path = temp.path, access = "write" } }
-    for _, path in ipairs(protected or {}) do
-      internal[#internal + 1] = { path = path, access = "read" }
-    end
-    local effective_profile = util.copy(request.profile)
-    local temporary_root = vim.uv.os_tmpdir()
-    if temporary_root then
-      temporary_root = vim.uv.fs_realpath(temporary_root)
-        or vim.fs.normalize(temporary_root)
-    end
-    if temporary_root then
-      effective_profile.filesystem.entries[
-        #effective_profile.filesystem.entries + 1
-      ] = {
-        path = temporary_root,
-        access = "deny",
-      }
-    end
-    local policy, parameters =
-      profile_compiler.compile(effective_profile, internal)
-    local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
-    for _, argument in ipairs(request.argv) do
-      argv[#argv + 1] = argument
-    end
-    local env = util.copy(request.env or {})
-    env.TMPDIR, env.TMP, env.TEMP = temp.path, temp.path, temp.path
-    if not valid_temporary(temp) then
-      error(util.error("sandbox_unavailable",
-        "Private sandbox temporary directory identity changed"), 0)
-    end
-    return services.process(argv, {
-      cwd = request.cwd,
-      env = env,
-      clear_env = true,
-      stdin = request.stdin,
-      capture = request.capture,
-      timeout_ms = request.timeout_ms,
-      kill_grace_ms = request.kill_grace_ms,
-      on_output = request.on_output,
-    })
-  end)
-  local cleaned, cleanup_err = cleanup(temp)
-  if not cleaned then
-    error(util.error("sandbox_unavailable",
-      "Could not remove private sandbox temporary directory",
-      cleanup_err), 0)
+  local policy, parameters =
+    profile_compiler.compile(request.profile, internal)
+  local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
+  for _, argument in ipairs(request.argv) do
+    argv[#argv + 1] = argument
   end
+  local ok, value = pcall(services.process, argv, {
+    cwd = request.cwd,
+    env = util.copy(request.env or {}),
+    clear_env = true,
+    stdin = request.stdin,
+    capture = request.capture,
+    timeout_ms = request.timeout_ms,
+    kill_grace_ms = request.kill_grace_ms,
+    on_output = request.on_output,
+  })
   if not ok then
     local process_err = util.normalize_error(
       value, "sandbox_unavailable")

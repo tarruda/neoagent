@@ -19,11 +19,42 @@ local function workspace_root(ctx)
   return vim.fs.normalize(root)
 end
 
+local function canonical_directory(path)
+  if type(path) ~= "string" or path == "" then return end
+  local canonical = vim.uv.fs_realpath(path)
+  local stat = canonical and vim.uv.fs_stat(canonical)
+  if stat and stat.type == "directory" then
+    return vim.fs.normalize(canonical)
+  end
+end
+
+local function temporary_roots()
+  local active = canonical_directory(vim.uv.os_tmpdir())
+    or canonical_directory("/tmp")
+  if not active then
+    error(util.error("sandbox",
+      "Sandbox requires a host temporary directory"), 0)
+  end
+  local roots, seen = {}, {}
+  for _, source in ipairs({ "/tmp", active }) do
+    local path = canonical_directory(source)
+    if path and not seen[path] then
+      seen[path] = true
+      roots[#roots + 1] = path
+    end
+  end
+  return active, roots
+end
+
 function M.default_profile(ctx)
   local root = workspace_root(ctx)
+  local temporary, shared_roots = temporary_roots()
   local entries = {}
   if root ~= "/" then
     entries[#entries + 1] = { path = root, access = "write" }
+  end
+  for _, path in ipairs(shared_roots) do
+    entries[#entries + 1] = { path = path, access = "write" }
   end
   entries[#entries + 1] = {
     path = vim.fs.joinpath(root, ".git"),
@@ -39,9 +70,8 @@ function M.default_profile(ctx)
     environment = {
       clear = true,
       inherit = { "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER" },
-      set = { TMPDIR = "/tmp", TMP = "/tmp", TEMP = "/tmp" },
+      set = { TMPDIR = temporary, TMP = temporary, TEMP = temporary },
     },
-    temporary = "private",
   }
 end
 

@@ -134,7 +134,6 @@ function M.validate(source)
     filesystem = true,
     network = true,
     environment = true,
-    temporary = true,
   }, "profile")
   if type(source.id) ~= "string" or source.id == "" or #source.id > 128 then
     invalid("id must be a non-empty string of at most 128 bytes")
@@ -142,15 +141,11 @@ function M.validate(source)
   if not network[source.network] then
     invalid("network must be restricted or enabled")
   end
-  if source.temporary ~= "private" then
-    invalid("temporary must be private")
-  end
   local normalized = {
     id = source.id,
     filesystem = normalize_filesystem(source.filesystem),
     network = source.network,
     environment = normalize_environment(source.environment),
-    temporary = "private",
   }
   return util.copy(normalized), util.json_encode(normalized)
 end

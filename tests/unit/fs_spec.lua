@@ -62,6 +62,13 @@ describe("neoagent.fs", function()
     assert.are.equal("/tmp/neoagent-dir-owned",
       fs.create_temp_directory("neoagent-dir-"))
 
+    vim.uv.fs_mkdtemp = function(template)
+      assert.are.equal("/runtime/neoagent-dir-XXXXXX", template)
+      return "/runtime/neoagent-dir-owned"
+    end
+    assert.are.equal("/runtime/neoagent-dir-owned",
+      fs.create_temp_directory("neoagent-dir-", "/runtime"))
+
     vim.uv.fs_mkdtemp = function() return nil, "create failed" end
     local path, err = fs.create_temp_directory()
     assert.is_nil(path)

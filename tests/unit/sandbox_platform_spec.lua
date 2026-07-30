@@ -22,7 +22,6 @@ local function profile(root, extra)
       inherit = {},
       set = { PATH = "/bin:/usr/bin" },
     },
-    temporary = "private",
   }))
 end
 
@@ -281,6 +280,41 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.is_nil(failed)
     assert.are.equal("sandbox filesystem operation failed", reason)
+  end)
+
+  it("keeps Linux staging outside filesystem profile grants", function()
+    local root = temp()
+    local linux = require("neoagent.sandbox.linux")
+    local staging_grants
+    if vim.uv.os_uname().sysname == "Linux" then
+      staging_grants = {
+        { path = assert(vim.uv.fs_realpath("/run")), access = "read" },
+        { path = assert(vim.uv.fs_realpath("/dev/shm")), access = "read" },
+      }
+    else
+      staging_grants = {
+        {
+          path = assert(vim.uv.fs_realpath(vim.uv.os_tmpdir())),
+          access = "read",
+        },
+      }
+    end
+    local active_profile = profile(root, staging_grants)
+    local created = false
+    local err = caught(function()
+      linux.exec(request(root, active_profile), {
+        fs = {
+          create_temp_directory = function()
+            created = true
+            error("must not create")
+          end,
+        },
+        nvim = vim.env.NEOAGENT_NVIM,
+        process = function() error("must not run") end,
+      })
+    end)
+    assert.is_false(created)
+    assert.matches("filesystem profile exposes", err.detail)
   end)
 
   it("fails Linux launches closed across setup, process, and protocol errors",
@@ -618,6 +652,28 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.are.equal("nvim", missing_nvim.stage)
 
+    local original_realpath = vim.uv.fs_realpath
+    local staging_paths
+    if vim.uv.os_uname().sysname == "Linux" then
+      staging_paths = {
+        ["/run/user/" .. tostring(vim.uv.getuid())] = true,
+        ["/dev/shm"] = true,
+      }
+    else
+      staging_paths = { [vim.uv.os_tmpdir()] = true }
+    end
+    vim.uv.fs_realpath = function(path)
+      if staging_paths[path] then return nil end
+      return original_realpath(path)
+    end
+    local missing_staging = linux.check({
+      nvim = vim.env.NEOAGENT_NVIM,
+    })
+    vim.uv.fs_realpath = original_realpath
+    assert.are.equal("temporary-root", missing_staging.stage)
+    assert.matches("staging directory is unavailable",
+      missing_staging.message)
+
     local temporary_failure = linux.check({
       nvim = vim.env.NEOAGENT_NVIM,
       fs = {
@@ -734,17 +790,20 @@ describe("neoagent sandbox platform adapters", function()
         }
       end,
     }
+    local shared_tmp = vim.uv.fs_realpath(vim.uv.os_tmpdir())
     local value = macos.exec({
       argv = { "/bin/sh", "-c", "true" },
       cwd = root,
-      env = {},
+      env = { TMPDIR = shared_tmp, TMP = shared_tmp, TEMP = shared_tmp },
       profile = profile(root),
       capture = true,
       kill_grace_ms = 0,
     }, services)
     assert.are.equal(0, value.code)
     assert.are.equal(executable, calls[1].argv[1])
-    assert.is_string(calls[1].opts.env.TMPDIR)
+    assert.are.equal(shared_tmp, calls[1].opts.env.TMPDIR)
+    assert.are.equal(shared_tmp, calls[1].opts.env.TMP)
+    assert.are.equal(shared_tmp, calls[1].opts.env.TEMP)
     assert.are.equal("1", calls[1].opts.env.NEOAGENT_SANDBOX_EXEC)
     assert.are.equal(100, calls[1].opts.kill_grace_ms)
     local runtime = assert(vim.api.nvim_get_runtime_file(
@@ -754,7 +813,6 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.same({
       "--", "/bin/sh", "-c", "true",
     }, vim.list_slice(calls[1].argv, #calls[1].argv - 3))
-    assert.is_nil(vim.uv.fs_stat(calls[1].opts.env.TMPDIR))
 
     local data = assert(macos.fs({
       operation = "read",
@@ -766,118 +824,6 @@ describe("neoagent sandbox platform adapters", function()
     assert.matches("NEOAGENT_SANDBOX_FS",
       table.concat(vim.tbl_keys(calls[2].opts.env), " "))
   end)
-
-  it("leaves substituted macOS private temporary roots untouched", function()
-    local root = temp()
-    local executable = vim.fs.joinpath(root, "sandbox-exec")
-    assert(fs.write_all(executable, "#!/bin/sh\nexit 0\n"))
-    assert(vim.uv.fs_chmod(executable, 493))
-    local macos = require("neoagent.sandbox.macos")
-    for _, replacement in ipairs({ "directory", "symlink", "missing" }) do
-      local sandbox_path
-      local owned_path
-      local replacement_target
-      local err = caught(function()
-        macos.exec(request(root), {
-          sandbox_exec = executable,
-          nvim = vim.env.NEOAGENT_NVIM,
-          fs = fs,
-          process = function(_, opts)
-            sandbox_path = opts.env.TMPDIR
-            owned_path = sandbox_path .. ".owned"
-            assert(vim.uv.fs_rename(sandbox_path, owned_path))
-            if replacement == "directory" then
-              assert(vim.uv.fs_mkdir(sandbox_path, 448))
-            elseif replacement == "symlink" then
-              replacement_target = sandbox_path .. ".target"
-              assert(vim.uv.fs_mkdir(replacement_target, 448))
-              assert(fs.write_all(
-                vim.fs.joinpath(replacement_target, "preserve"), "data"))
-              assert(vim.uv.fs_symlink(replacement_target, sandbox_path))
-            end
-            return {
-              code = 0,
-              signal = 0,
-              stdout = "",
-              stderr = "",
-            }
-          end,
-        })
-      end)
-      assert.matches(
-        "Could not remove private sandbox temporary directory", err.message)
-      if replacement == "directory" then
-        assert.are.equal("directory",
-          assert(vim.uv.fs_lstat(sandbox_path)).type)
-      elseif replacement == "symlink" then
-        assert.are.equal("link",
-          assert(vim.uv.fs_lstat(sandbox_path)).type)
-        assert.are.equal("data", assert(fs.read(
-          vim.fs.joinpath(replacement_target, "preserve"))))
-        vim.fn.delete(sandbox_path)
-      else
-        assert.is_nil(vim.uv.fs_lstat(sandbox_path))
-      end
-      vim.fn.delete(owned_path, "rf")
-      if replacement == "directory" then
-        vim.fn.delete(sandbox_path, "rf")
-      end
-      if replacement_target then vim.fn.delete(replacement_target, "rf") end
-    end
-  end)
-
-  it("refuses a macOS private temporary root substituted before use",
-    function()
-      local root = temp()
-      local executable = vim.fs.joinpath(root, "sandbox-exec")
-      assert(fs.write_all(executable, "#!/bin/sh\nexit 0\n"))
-      assert(vim.uv.fs_chmod(executable, 493))
-      local macos = require("neoagent.sandbox.macos")
-      local sandbox_path
-      local owned_path
-      local replacement_path
-      local root_checks = 0
-      local original_lstat = vim.uv.fs_lstat
-      local filesystem = setmetatable({
-        create_temp_directory = function(prefix)
-          sandbox_path = assert(fs.create_temp_directory(prefix))
-          owned_path = sandbox_path .. ".owned"
-          replacement_path = vim.fs.joinpath(sandbox_path, "preserve")
-          return sandbox_path
-        end,
-      }, { __index = fs })
-      vim.uv.fs_lstat = function(path)
-        if path == sandbox_path then
-          root_checks = root_checks + 1
-          if root_checks == 2 then
-            assert(vim.uv.fs_rename(sandbox_path, owned_path))
-            assert(vim.uv.fs_mkdir(sandbox_path, 448))
-            assert(fs.write_all(replacement_path, "replacement"))
-          end
-        end
-        return original_lstat(path)
-      end
-      local launched = false
-      local ok, err = pcall(function()
-        macos.exec(request(root), {
-          sandbox_exec = executable,
-          nvim = vim.env.NEOAGENT_NVIM,
-          fs = filesystem,
-          process = function()
-            launched = true
-            error("must not run")
-          end,
-        })
-      end)
-      vim.uv.fs_lstat = original_lstat
-      assert.is_false(ok)
-      assert.is_false(launched)
-      assert.matches(
-        "Could not remove private sandbox temporary directory", err.message)
-      assert.are.equal("replacement", assert(fs.read(replacement_path)))
-      vim.fn.delete(owned_path, "rf")
-      vim.fn.delete(sandbox_path, "rf")
-    end)
 
   it("fails macOS requirements and execution closed", function()
     local root = temp()
@@ -969,51 +915,6 @@ describe("neoagent sandbox platform adapters", function()
         services(function() return {} end))
     end)
     assert.matches("invalid process result", err.message)
-
-    err = caught(function()
-      macos.exec(request(root, active_profile), services(function()
-        error("must not run")
-      end, {
-        create_temp_directory = function()
-          return nil, "no private temporary root"
-        end,
-      }))
-    end)
-    assert.matches("Could not create private sandbox", err.message)
-
-    err = caught(function()
-      macos.exec(request(root, active_profile), services(function()
-        error("must not run")
-      end, {
-        create_temp_directory = function()
-          return vim.fs.joinpath(root, "missing-temporary-root")
-        end,
-      }))
-    end)
-    assert.matches("Could not create private sandbox", err.message)
-
-    local original_delete = vim.fn.delete
-    local cleanup_root
-    vim.fn.delete = function(path)
-      cleanup_root = path
-      return 1
-    end
-    local cleanup_ok, cleanup_err = pcall(function()
-      macos.exec(request(root, active_profile),
-        services(function()
-          return {
-            code = 0,
-            signal = 0,
-            stdout = "",
-            stderr = "",
-          }
-        end))
-    end)
-    vim.fn.delete = original_delete
-    if cleanup_root then original_delete(cleanup_root, "rf") end
-    assert.is_false(cleanup_ok)
-    assert.matches("Could not remove private sandbox",
-      cleanup_err.message)
 
     local failed, reason = macos.fs({
       operation = "write_all",

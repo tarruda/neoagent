@@ -137,25 +137,25 @@ describe("neoagent shared sandbox contract", function()
 
   local function profile(default)
     default.id = "shared-integration"
-    default.filesystem.entries = {
-      { path = workspace, access = "write" },
-      { path = metadata, access = "read" },
+    vim.list_extend(default.filesystem.entries, {
       { path = denied, access = "deny" },
       {
         path = vim.fs.joinpath(workspace, "reserved"),
         access = "deny",
       },
       { path = outside, access = "deny" },
-    }
+    })
+    local temporary_root = vim.uv.fs_realpath(vim.uv.os_tmpdir())
+      or vim.fs.normalize(vim.uv.os_tmpdir())
     default.environment.clear = true
     default.environment.inherit = { "NEOAGENT_SANDBOX_TEST_INHERITED" }
     default.environment.set = {
       PATH = vim.env.PATH,
-      HOME = "/tmp",
+      HOME = temporary_root,
       SAFE = "visible",
-      TMPDIR = "/tmp",
-      TMP = "/tmp",
-      TEMP = "/tmp",
+      TMPDIR = temporary_root,
+      TMP = temporary_root,
+      TEMP = temporary_root,
     }
     return default
   end
@@ -290,7 +290,7 @@ describe("neoagent shared sandbox contract", function()
     end)
 
   sandbox_test(
-    "reads a shell overflow log later without granting its replacement",
+    "reads shell overflow logs and shared temporary replacements",
     function()
       local options = sandboxed_config(tools_module.all())
       local selected = {}
@@ -308,21 +308,22 @@ describe("neoagent shared sandbox contract", function()
         assert(vim.uv.fs_rename(output_path, moved_path))
         spill_paths[#spill_paths + 1] = moved_path
         assert(fs.write_all(output_path, "replacement\n"))
-        local replacement_ok, replacement_error = pcall(
+        local replacement_ok, replacement_result = pcall(
           options.execute_tool, selected.read_file,
           { path = output_path }, { context = context })
         return {
           read_ok = ok,
           read_result = read_result,
           replacement_ok = replacement_ok,
-          replacement_error = replacement_error,
+          replacement_result = replacement_result,
         }
       end), 60000)
       assert.is_true(value.read_ok, tostring(value.read_result))
       assert.is_nil(value.read_result.isError)
       assert.matches("x\nx", text(value.read_result), 1, true)
-      assert.is_false(value.replacement_ok)
-      assert.matches("Could not read file", tostring(value.replacement_error))
+      assert.is_true(value.replacement_ok,
+        tostring(value.replacement_result))
+      assert.matches("replacement", text(value.replacement_result), 1, true)
     end)
 
   sandbox_test("enforces tool filesystem, environment, network, and path boundaries",
@@ -913,13 +914,22 @@ describe("neoagent shared sandbox contract", function()
         return vim.uv.fs_stat(cancelled_marker) ~= nil
       end, 10)
       assert.is_nil(vim.uv.fs_stat(cancelled_marker))
+    end)
 
-      local marker = "neoagent-sandbox-private-" .. tostring(vim.uv.hrtime())
-      local host_marker = vim.fs.joinpath(vim.uv.os_tmpdir(), marker)
+  sandbox_test("shares host temporary files across process invocations",
+    function()
+      local sandbox = require("neoagent.sandbox")
+      local active_profile = profile(
+        composition.default_profile({ context = context }))
+      local marker = "neoagent-sandbox-shared-" .. tostring(vim.uv.hrtime())
+      local host_marker = vim.fs.joinpath(
+        active_profile.environment.set.TMPDIR, marker)
+      spill_paths[#spill_paths + 1] = host_marker
       assert.is_nil(vim.uv.fs_stat(host_marker))
-      value = wait(async.run(function()
+
+      local value = wait(async.run(function()
         return sandbox.sandbox_exec({
-          "sh", "-c", "printf private > \"$TMPDIR/" .. marker
+          "sh", "-c", "printf shared > \"$TMPDIR/" .. marker
             .. "\"; printf %s \"$TMPDIR/" .. marker .. "\"",
         }, {
           profile = active_profile,
@@ -928,8 +938,20 @@ describe("neoagent shared sandbox contract", function()
         })
       end), 30000)
       assert.is_true(value.code == 0, vim.inspect(value))
-      assert.is_nil(vim.uv.fs_stat(value.stdout))
-      assert.is_nil(vim.uv.fs_stat(host_marker))
+      assert.are.equal(host_marker, value.stdout)
+      assert.are.equal("shared", assert(fs.read(host_marker)))
+
+      value = wait(async.run(function()
+        return sandbox.sandbox_exec({
+          "sh", "-c", "cat \"$TMPDIR/" .. marker .. "\"",
+        }, {
+          profile = active_profile,
+          cwd = workspace,
+          env = active_profile.environment.set,
+        })
+      end), 30000)
+      assert.is_true(value.code == 0, vim.inspect(value))
+      assert.are.equal("shared", value.stdout)
     end)
 
   sandbox_test("allows networking when the profile enables it", function()
@@ -1017,7 +1039,7 @@ describe("neoagent shared sandbox contract", function()
     assert.is_true(options.sandbox.enabled)
     assert.is_true(options._sandbox_status.active)
     assert.is_true(options._sandbox_status.capabilities.filesystem)
-    assert.is_true(options._sandbox_status.capabilities.private_tmp)
+    assert.is_true(options._sandbox_status.capabilities.shared_tmp)
     local sandbox_status = neoagent.sandbox_info()
     assert.is_true(sandbox_status.active)
     local rendered = require("neoagent.sandbox").format_info(sandbox_status)

@@ -38,7 +38,6 @@ local function profile(root, entries)
       inherit = { "PATH" },
       set = { TEST_SANDBOX = "yes" },
     },
-    temporary = "private",
   }
 end
 
@@ -150,7 +149,7 @@ describe("neoagent sandbox composition", function()
       function(value) value.filesystem = { "not", "an", "object" } end,
       function(value) value.id = "" end,
       function(value) value.network = "sometimes" end,
-      function(value) value.temporary = "shared" end,
+      function(value) value.temporary = "private" end,
       function(value) value.filesystem.default = "write" end,
       function(value) value.filesystem.entries = {} value.filesystem.entries.bad = true end,
       function(value) value.filesystem.entries[1].access = "execute" end,
@@ -373,6 +372,27 @@ describe("neoagent sandbox composition", function()
       defaults.filesystem.entries[1].path)
     assert.are.equal("restricted", defaults.network)
     assert.is_true(defaults.environment.clear)
+    assert.are.equal(
+      vim.uv.fs_realpath(vim.uv.os_tmpdir()),
+      defaults.environment.set.TMPDIR)
+    local writable_temporary = {}
+    for _, entry in ipairs(defaults.filesystem.entries) do
+      if entry.access == "write" then
+        writable_temporary[entry.path] = true
+      end
+    end
+    assert.is_true(writable_temporary[
+      vim.uv.fs_realpath(vim.uv.os_tmpdir())])
+    assert.is_true(writable_temporary[vim.uv.fs_realpath("/tmp")])
+
+    local original_realpath = vim.uv.fs_realpath
+    vim.uv.fs_realpath = function() return nil end
+    local has_temporary, temporary_err = pcall(
+      composition.default_profile, context(root))
+    vim.uv.fs_realpath = original_realpath
+    assert.is_false(has_temporary)
+    assert.matches("requires a host temporary directory",
+      temporary_err.message)
 
     local seen
     local platform = {
@@ -452,7 +472,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal("requirements", failed._sandbox_status.stage)
   end)
 
-  it("keeps a root workspace usable without granting host writes", function()
+  it("keeps a root workspace bounded to shared temporary writes", function()
     local seen_profile
     local composed = require("neoagent.sandbox.composition").controller({
       name = "Root",
@@ -478,9 +498,15 @@ describe("neoagent sandbox composition", function()
       composed.tools[1], { path = "/etc/hosts" }, context("/"))
     assert.are.equal("root-readable", value.content[1].text)
     assert.are.equal("read", seen_profile.filesystem.default)
+    local allowed_writes = {
+      [vim.uv.fs_realpath(vim.uv.os_tmpdir())] = true,
+      [vim.uv.fs_realpath("/tmp")] = true,
+    }
     for _, entry in ipairs(seen_profile.filesystem.entries) do
       assert.are_not.equal("/", entry.path)
-      assert.are_not.equal("write", entry.access)
+      if entry.access == "write" then
+        assert.is_true(allowed_writes[entry.path])
+      end
     end
   end)
 
