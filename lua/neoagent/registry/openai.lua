@@ -31,21 +31,6 @@ local function add_thinking(models, ids, options)
   end
 end
 
-local function configure_reasoning(thinking, options)
-  for _, value in pairs(thinking or {}) do
-    local body = type(value) == "table" and value.body or nil
-    local reasoning = type(body) == "table" and body.reasoning or nil
-    if type(reasoning) == "table" then
-      if options.summary == false then
-        reasoning.summary = nil
-      elseif options.summary ~= nil then
-        reasoning.summary = options.summary
-      end
-      if options.context ~= nil then reasoning.context = options.context end
-    end
-  end
-end
-
 local openai_models = model_map({
   "gpt-4",
   "gpt-4-turbo",

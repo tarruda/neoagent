@@ -240,6 +240,16 @@ describe("neoagent generic dialog UI", function()
       assert.are.equal("cancel", two:result().action)
       assert.is_nil(window:_state().view.dialog)
 
+      local dismissed = dialogs:show(floating_dialog())
+      assert(vim.wait(1000, function()
+        return window:_state().view.dialog_win ~= nil
+      end, 5))
+      vim.api.nvim_win_close(window:_state().view.dialog_win, true)
+      assert(vim.wait(1000, function() return dismissed:is_done() end, 5))
+      assert.is_false(dismissed:result().ok)
+      assert.are.equal("dialog dismissed by user",
+        dismissed:result().error.message)
+
       local pending = dialogs:show(transcript_dialog())
       window:destroy()
       assert(vim.wait(1000, function() return pending:is_done() end, 5))

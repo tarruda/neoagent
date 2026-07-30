@@ -5,7 +5,8 @@ local Workspace = require("neoagent.workspace")
 local function fixture()
   local root = vim.fn.tempname()
   vim.fn.mkdir(root, "p")
-  return root, Workspace.new({ root = root, cwd = root })
+  local workspace = Workspace.new({ root = root, cwd = root })
+  return workspace.root, workspace
 end
 
 local function ctx(workspace, updates, capabilities)

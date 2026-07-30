@@ -303,6 +303,42 @@ describe("neoagent controller windows", function()
       replacement_window:input_history())
   end)
 
+  it("reports input history load and save failures through Window", function()
+    local directory = vim.fn.tempname()
+    paths = { directory }
+    local extra = { persistence = { enabled = true, directory = directory } }
+    local controller = neoagent.new(
+      options("history-errors", fake_model.new({}), extra))
+    controllers = { controller }
+
+    local store = require("neoagent.input_history").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    vim.fn.mkdir(store.directory, "p")
+    vim.fn.writefile({ "invalid" }, store.path)
+
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert(window:open())
+    assert.are.same({}, window:input_history())
+    local saved, err = window:add_input_history("question")
+    vim.notify = original_notify
+
+    assert.is_nil(saved)
+    assert.are.equal("history", err.kind)
+    assert.are.equal(2, #notifications)
+    assert.matches("Invalid input history", notifications[1][1])
+    assert.matches("input history was not saved", notifications[2][1])
+    assert.are.equal(vim.log.levels.WARN, notifications[1][2])
+    assert.are.equal(vim.log.levels.WARN, notifications[2][2])
+  end)
+
   it("routes the command-facing default through a replaceable Window", function()
     local old = neoagent.setup(options("old", fake_model.new({})))
     local old_window = neoagent.default_window()

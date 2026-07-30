@@ -4,14 +4,13 @@ local util = require("neoagent.util")
 local M = {}
 
 local function spawn_environment(env, clear)
-  if not clear or env == nil or vim.islist(env) then return env end
-  local names = vim.tbl_keys(env)
-  table.sort(names)
-  local result = {}
-  for _, name in ipairs(names) do
-    result[#result + 1] = name .. "=" .. tostring(env[name])
+  if clear and env ~= nil and vim.fn.has("nvim-0.12") == 0
+      and not vim.islist(env) then
+    return vim.tbl_map(function(name)
+      return name .. "=" .. tostring(env[name])
+    end, vim.tbl_keys(env))
   end
-  return result
+  return env
 end
 
 function M.run(command, opts)
