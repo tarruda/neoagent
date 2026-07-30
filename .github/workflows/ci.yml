@@ -16,6 +16,7 @@ jobs:
         neovim: [v0.10.2, stable, nightly]
     env:
       NVIM: nvim
+      NEOAGENT_REQUIRE_SANDBOX: "1"
       PLENARY_DIR: ${{ github.workspace }}/.deps/plenary.nvim
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +48,7 @@ jobs:
     runs-on: macos-14
     env:
       NVIM: nvim
+      NEOAGENT_REQUIRE_SANDBOX: "1"
       PLENARY_DIR: ${{ github.workspace }}/.deps/plenary.nvim
     steps:
       - uses: actions/checkout@v5

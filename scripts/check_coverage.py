@@ -5,22 +5,22 @@ from pathlib import Path
 
 
 report = sys.argv[1]
-threshold = float(sys.argv[2])
+plugin_threshold = float(sys.argv[2])
 with open(report, "r", encoding="utf-8") as source:
     text = source.read()
 
-matches = re.findall(r"^Total\s+\d+\s+\d+\s+([0-9.]+)%\s*$", text, re.MULTILINE)
-if not matches:
-    raise SystemExit(f"could not find total coverage in {report}")
-
-coverage = float(matches[-1])
 expected = {
     path.as_posix()
     for root in (Path("lua/neoagent"), Path("plugin"))
     for path in root.rglob("*.lua")
 }
-reported = set()
-for filename in re.findall(r"^(.*?)\s+\d+\s+\d+\s+[0-9.]+%\s*$", text, re.MULTILINE):
+reported = {}
+rows = re.findall(
+    r"^(.*?)\s+(\d+)\s+(\d+)\s+[0-9.]+%\s*$",
+    text,
+    re.MULTILINE,
+)
+for filename, hits, missed in rows:
     filename = filename.strip()
     if filename == "Total" or filename == "File":
         continue
@@ -29,13 +29,25 @@ for filename in re.findall(r"^(.*?)\s+\d+\s+\d+\s+[0-9.]+%\s*$", text, re.MULTIL
         filename = path.resolve().relative_to(Path.cwd().resolve()).as_posix()
     except ValueError:
         filename = path.as_posix()
-    reported.add(filename)
-missing = sorted(expected - reported)
+    reported[filename] = (int(hits), int(missed))
+missing = sorted(expected - reported.keys())
 if missing:
     print("Coverage report is missing shipped Lua files:", file=sys.stderr)
     for filename in missing:
         print(f"  {filename}", file=sys.stderr)
     raise SystemExit(1)
-print(f"Neoagent Lua line coverage: {coverage:.2f}% (required: > {threshold:.2f}%)")
-if coverage <= threshold:
+
+
+def coverage(paths):
+    hits = sum(reported[path][0] for path in paths)
+    missed = sum(reported[path][1] for path in paths)
+    return 100 * hits / (hits + missed)
+
+
+plugin_coverage = coverage(expected)
+print(
+    f"Neoagent Lua line coverage: {plugin_coverage:.2f}% "
+    f"(required: > {plugin_threshold:.2f}%)"
+)
+if plugin_coverage <= plugin_threshold:
     raise SystemExit(1)

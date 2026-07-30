@@ -34,7 +34,7 @@ test-ui:
 
 coverage:
 	rm -rf .coverage
-	NEOAGENT_COVERAGE=1 $(MAKE) test
+	NEOAGENT_COVERAGE=1 NEOAGENT_REQUIRE_SANDBOX=1 $(MAKE) test
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 

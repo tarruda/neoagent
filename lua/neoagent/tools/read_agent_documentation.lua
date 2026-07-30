@@ -95,6 +95,14 @@ local function documentation()
       .. "tool. The read-only preset remains read, grep, and find.",
     "Bundled tools resolve model-directed effects through optional `ctx.fs` and "
       .. "`ctx.process` capabilities. Direct Lua calls use host implementations.",
+    "The built-in Neo composition accepts `sandbox = { enabled = true }`. "
+      .. "A successful native Linux or macOS requirements check replaces "
+      .. "those capabilities with per-call sandbox implementations. "
+      .. "Activation failure preserves the configured executor and warns "
+      .. "when Neo is first displayed; runtime failures are fail-closed. "
+      .. "Profiles can override canonical read, write, and deny paths, "
+      .. "network access, environment construction, and private temporary "
+      .. "storage.",
     "Executors can create `require(\"neoagent.dialog\").new()`, inject its "
       .. "lifetime-scoped `ctx.dialog` capability with "
       .. "`neoagent.dialog.wrap`, and pass the source as the `dialogs` option "

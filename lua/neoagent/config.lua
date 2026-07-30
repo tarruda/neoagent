@@ -5,6 +5,9 @@ local M = {}
 
 local defaults = {
   default_registry = true,
+  sandbox = {
+    enabled = false,
+  },
   default_thinking_level = "medium",
   providers = {},
   apis = {},
@@ -96,6 +99,10 @@ local function validate(opts)
   assert(opts.name == nil or (type(opts.name) == "string" and opts.name ~= ""),
     "name must be a non-empty string")
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
+  assert(type(opts.sandbox) == "table" and not util.is_list(opts.sandbox),
+    "sandbox must be a table")
+  assert(type(opts.sandbox.enabled) == "boolean",
+    "sandbox.enabled must be boolean")
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
     "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
   if opts.default_model ~= nil then

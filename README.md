@@ -21,6 +21,7 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
   handling, and context compaction.
 - Use bundled coding tools for file operations, shell commands, and on-demand
   Neoagent documentation.
+- Optionally sandbox bundled tools with explicit one-call escalation dialogs.
 - Persist conversations with branches, linked forks, labels, model state, and
   context compaction.
 - Work from a floating Markdown UI with separate transcript and input windows.
@@ -60,12 +61,20 @@ require("neoagent").setup({
     provider = "openai",
     model = "gpt-5.4",
   },
+  sandbox = {
+    enabled = true,
+  },
 })
 
 vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>", {
   desc = "Open Neoagent",
 })
 ```
+
+Sandboxing defaults to disabled. Run `:NeoagentSandboxInfo` to inspect its
+status. It mediates bundled-tool file and process operations; custom tool Lua
+runs in Neovim and must use the injected capabilities to participate. See
+`:help neoagent-sandbox` for configuration and platform details.
 
 For Anthropic API-key billing, use `anthropic`; use `anthropic-plan` with
 Claude Pro/Max OAuth:

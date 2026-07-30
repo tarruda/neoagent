@@ -1,0 +1,267 @@
+local profile_compiler = require("neoagent.sandbox.macos.profile")
+local util = require("neoagent.util")
+
+local M = { name = "macos" }
+local FS_TIMEOUT_MS = 30000
+local SUPERVISOR_GRACE_MS = 100
+local SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+local function bounded(value)
+  value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
+  if #value > 1000 then value = value:sub(1, 997) .. "..." end
+  return value
+end
+
+local function runtime_file(path)
+  local matches = vim.api.nvim_get_runtime_file(path, false)
+  return matches[1] and vim.uv.fs_realpath(matches[1]) or matches[1]
+end
+
+local function executable(path)
+  local stat = vim.uv.fs_stat(path)
+  return stat and stat.type == "file" and vim.fn.executable(path) == 1
+end
+
+local function regular_file(path)
+  local stat = path and vim.uv.fs_stat(path)
+  return stat and stat.type == "file"
+end
+
+local function sandbox_runtime()
+  local path = runtime_file("scripts/sandbox_macos_runtime.lua")
+  return regular_file(path) and path or nil
+end
+
+local function runtime_argv(nvim, runtime, command)
+  local argv = {
+    nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
+    "-l", runtime, "--",
+  }
+  vim.list_extend(argv, command)
+  return argv
+end
+
+local function system(argv, opts, timeout)
+  local completed = vim.system(argv, opts):wait(timeout)
+  return completed or {
+    code = 124,
+    signal = 15,
+    stdout = "",
+    stderr = "probe timed out",
+  }
+end
+
+function M.check(services)
+  services = services or {}
+  local sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
+  local nvim = services.nvim or vim.v.progpath
+  if not executable(sandbox_exec) then
+    return {
+      ok = false,
+      platform = M.name,
+      stage = "sandbox-exec",
+      message = sandbox_exec .. " is missing or not executable",
+    }
+  end
+  if not executable(nvim) then
+    return {
+      ok = false,
+      platform = M.name,
+      stage = "nvim",
+      message = "current Neovim executable cannot be resolved",
+    }
+  end
+  if not sandbox_runtime() then
+    return {
+      ok = false,
+      platform = M.name,
+      stage = "runtime",
+      message = "macOS sandbox runtime was not found",
+    }
+  end
+  local policy, parameters = profile_compiler.compile({
+    filesystem = { default = "read", entries = {} },
+    network = "restricted",
+  }, { { path = nvim, access = "read" } })
+  local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
+  vim.list_extend(argv, {
+    nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n", "-c", "qa",
+  })
+  local completed = (services.system or system)(
+    argv, { text = true }, services.probe_timeout_ms or 5000)
+  if not completed or completed.code ~= 0 then
+    return {
+      ok = false,
+      platform = M.name,
+      stage = "sandbox-exec-probe",
+      message = bounded(completed and completed.stderr or "probe failed"),
+    }
+  end
+  return {
+    ok = true,
+    platform = M.name,
+    degraded = false,
+    capabilities = {
+      filesystem = true,
+      network = true,
+      process = true,
+      process_supervision = true,
+      private_tmp = true,
+      seatbelt = true,
+    },
+  }
+end
+
+local function temporary(fs)
+  local base, err = fs.create_temp_directory("neoagent-sandbox-")
+  if not base then return nil, err end
+  base = vim.uv.fs_realpath(base) or vim.fs.normalize(base)
+  local stat, stat_err = vim.uv.fs_lstat(base)
+  if not stat or stat.type ~= "directory" then
+    return nil, stat_err or "temporary directory is not a directory"
+  end
+  return { path = base, stat = stat }
+end
+
+local function valid_temporary(temp)
+  local stat = vim.uv.fs_lstat(temp.path)
+  return stat and stat.type == "directory"
+    and stat.dev == temp.stat.dev and stat.ino == temp.stat.ino
+end
+
+local function cleanup(temp)
+  if not valid_temporary(temp) then
+    return nil, "private temporary directory identity changed: " .. temp.path
+  end
+  if vim.fn.delete(temp.path, "rf") ~= 0 then
+    return nil, "recursive removal failed"
+  end
+  return true
+end
+
+local function execute(request, services, protected)
+  local sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
+  local temp, temp_err = temporary(services.fs)
+  if not temp then
+    error(util.error("sandbox_unavailable",
+      "Could not create private sandbox temporary directory", temp_err), 0)
+  end
+  local ok, value = pcall(function()
+    local internal = { { path = temp.path, access = "write" } }
+    for _, path in ipairs(protected or {}) do
+      internal[#internal + 1] = { path = path, access = "read" }
+    end
+    local effective_profile = util.copy(request.profile)
+    local temporary_root = vim.uv.os_tmpdir()
+    if temporary_root then
+      temporary_root = vim.uv.fs_realpath(temporary_root)
+        or vim.fs.normalize(temporary_root)
+    end
+    if temporary_root then
+      effective_profile.filesystem.entries[
+        #effective_profile.filesystem.entries + 1
+      ] = {
+        path = temporary_root,
+        access = "deny",
+      }
+    end
+    local policy, parameters =
+      profile_compiler.compile(effective_profile, internal)
+    local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
+    for _, argument in ipairs(request.argv) do
+      argv[#argv + 1] = argument
+    end
+    local env = util.copy(request.env or {})
+    env.TMPDIR, env.TMP, env.TEMP = temp.path, temp.path, temp.path
+    if not valid_temporary(temp) then
+      error(util.error("sandbox_unavailable",
+        "Private sandbox temporary directory identity changed"), 0)
+    end
+    return services.process(argv, {
+      cwd = request.cwd,
+      env = env,
+      clear_env = true,
+      stdin = request.stdin,
+      capture = request.capture,
+      timeout_ms = request.timeout_ms,
+      kill_grace_ms = request.kill_grace_ms,
+      on_output = request.on_output,
+    })
+  end)
+  local cleaned, cleanup_err = cleanup(temp)
+  if not cleaned then
+    error(util.error("sandbox_unavailable",
+      "Could not remove private sandbox temporary directory",
+      cleanup_err), 0)
+  end
+  if not ok then
+    local process_err = util.normalize_error(
+      value, "sandbox_unavailable")
+    if process_err.kind == "cancelled" then error(value, 0) end
+    error(util.error("sandbox_unavailable",
+      "macOS sandbox process failed to start",
+      bounded(process_err.message)), 0)
+  end
+  if type(value) ~= "table" or type(value.code) ~= "number"
+      or type(value.signal) ~= "number" then
+    error(util.error("sandbox_unavailable",
+      "macOS sandbox returned an invalid process result"), 0)
+  end
+  return value
+end
+
+function M.exec(request, services)
+  local runtime = sandbox_runtime()
+  if not runtime then
+    error(util.error("sandbox_unavailable",
+      "macOS sandbox runtime was not found"), 0)
+  end
+  local nvim = services.nvim or vim.v.progpath
+  local wrapped = util.copy(request)
+  wrapped.argv = runtime_argv(nvim, runtime, request.argv)
+  wrapped.env = util.copy(request.env or {})
+  wrapped.env.NEOAGENT_SANDBOX_EXEC = "1"
+  if wrapped.kill_grace_ms ~= nil
+      and wrapped.kill_grace_ms < SUPERVISOR_GRACE_MS then
+    wrapped.kill_grace_ms = SUPERVISOR_GRACE_MS
+  end
+  return execute(wrapped, services, { nvim, runtime })
+end
+
+function M.fs(request, services)
+  local runtime = sandbox_runtime()
+  if not runtime then
+    error(util.error("sandbox_unavailable",
+      "macOS sandbox runtime was not found"), 0)
+  end
+  local env = util.copy(request.profile.environment.set)
+  env.NEOAGENT_SANDBOX_FS = util.json_encode({
+    operation = request.operation,
+    path = request.path,
+    flags = request.flags,
+    mode = request.mode,
+  })
+  local nvim = services.nvim or vim.v.progpath
+  local process_request = {
+    argv = {
+      nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
+      "-l", runtime,
+    },
+    cwd = "/",
+    env = env,
+    clear_env = true,
+    stdin = request.data,
+    capture = true,
+    timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
+    profile = request.profile,
+  }
+  local value = execute(process_request, services, { nvim, runtime })
+  if value.code ~= 0 then
+    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr)
+      or "sandbox filesystem operation failed"
+  end
+  if request.operation == "read" then return value.stdout end
+  return true
+end
+
+return M

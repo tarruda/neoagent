@@ -5,12 +5,18 @@ describe("neoagent commands", function()
     for _, name in ipairs({
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
       "NeoagentModel", "NeoagentThinking", "NeoagentPosition", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
-      "NeoagentBranch", "NeoagentFork",
+      "NeoagentBranch", "NeoagentFork", "NeoagentSandboxInfo",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
     assert.are.equal("", vim.fn.maparg("<leader>a", "n"))
     assert.is_false(pcall(vim.cmd, "NeoagentModel invalid"))
+    local original_notify = vim.notify
+    local sandbox_message
+    vim.notify = function(message) sandbox_message = message end
+    vim.cmd("NeoagentSandboxInfo")
+    vim.notify = original_notify
+    assert.matches("enabled: no", sandbox_message)
 
     local model = { provider = "fake", id = "test", stream = function() end }
     require("neoagent").setup({
