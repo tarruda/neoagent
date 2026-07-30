@@ -2,6 +2,7 @@ local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local sandbox = require("neoagent.sandbox")
 local windows = require("neoagent.sandbox.windows")
+local Workspace = require("neoagent.workspace")
 
 local function wait(run, timeout)
   assert(vim.wait(timeout or 30000, function() return run:is_done() end, 10))
@@ -104,6 +105,98 @@ describe("neoagent Windows sandbox", function()
     assert.matches("stdout", value.stdout)
     assert.matches("stderr", value.stderr)
     assert.is_false(value.timed_out)
+  end)
+
+  it("classifies command failures by sandbox-denial evidence", function()
+    local active = profile()
+    active.environment.set = environment
+    local execute = sandbox.new({
+      platform = windows,
+      profile = active,
+      capabilities = status.capabilities,
+      nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath,
+    }):wrap()
+    local context = {
+      context = {
+        workspace = Workspace.new({ root = root, cwd = root }),
+        controller = "Windows sandbox",
+      },
+    }
+    local function command(argv)
+      return wait(async.run(function()
+        return execute({
+          execute = function(_, ctx)
+            local process_result = ctx.process(argv, { cwd = root })
+            local output = process_result.output
+            if output == "" then output = "(no output)" end
+            return {
+              content = { { type = "text", text = output } },
+              details = { exit_code = process_result.code },
+              isError = process_result.code ~= 0,
+            }
+          end,
+        }, {}, context)
+      end), 60000)
+    end
+    local function assert_ordinary(value)
+      assert.is_true(value.isError)
+      assert.is_nil(value.details.sandbox)
+      assert.is_nil(value.content[1].text:find(
+        "ran inside the sandbox", 1, true))
+    end
+    local function assert_restricted(value)
+      assert.is_true(value.isError)
+      assert.is_true(value.details.sandbox.ran_restricted)
+      assert.matches("ran inside the sandbox",
+        value.content[1].text, 1, true)
+    end
+
+    local search_path = vim.fs.joinpath(root, "no-match.txt")
+    assert(fs.write_all(search_path, "present\r\n"))
+    local findstr = vim.fs.joinpath(
+      vim.env.SystemRoot, "System32", "findstr.exe")
+    local no_match = command({
+      findstr, "/l", "/c:absent", search_path,
+    })
+    assert_ordinary(no_match)
+    assert.are.equal(1, no_match.details.exit_code)
+
+    local git = vim.fn.exepath("git")
+    assert.is_not.equal("", git)
+    local git_parent = vim.fs.dirname(vim.fs.dirname(git))
+    local bash
+    for _, candidate in ipairs({
+      vim.fs.joinpath(git_parent, "bin", "bash.exe"),
+      vim.fs.joinpath(vim.fs.dirname(git_parent), "bin", "bash.exe"),
+    }) do
+      if vim.uv.fs_stat(candidate) then bash = candidate break end
+    end
+    assert.is_string(bash)
+    local function bash_command(script)
+      return command({
+        bash, "--noprofile", "--norc", "-c", script,
+      })
+    end
+
+    local protected_write = bash_command(table.concat({
+      "/usr/bin/cat > .git/created.txt <<'EOF'",
+      "blocked",
+      "EOF",
+    }, "\n"))
+    assert_restricted(protected_write)
+    assert.is_nil(vim.uv.fs_stat(
+      vim.fs.joinpath(readonly, "created.txt")))
+
+    local missing_write = bash_command(table.concat({
+      "/usr/bin/cat > missing/created.txt <<'EOF'",
+      "blocked",
+      "EOF",
+    }, "\n"))
+    assert_ordinary(missing_write)
+    assert.is_nil(vim.uv.fs_stat(vim.fs.joinpath(root, "missing")))
+
+    assert_restricted(bash_command("/usr/bin/cat < secret/value"))
+    assert_ordinary(bash_command("/usr/bin/cat < absent.txt"))
   end)
 
   it("preserves Windows argv quoting at process creation", function()

@@ -440,6 +440,11 @@ A callback can calculate the complete profile per tool call: >lua
 Bundled file and subprocess operations use the selected backend and the
 same resolved profile. Tool Lua runs in Neovim, so custom tools participate in
 the sandbox only when they route effects through `ctx.fs` and `ctx.process`.
+Subprocess exit codes retain each tool's normal success or error semantics.
+Nonzero exits receive restricted-execution guidance when bounded output
+contains recognized sandbox-denial text, or when Linux reports `SIGSYS`.
+Explicit sandbox policy denials and backend failures receive sandbox-owned
+errors.
 
 Sandbox denials are ordinary `isError` tool results. They tell the agent to
 retry the exact call only when necessary by adding: >json

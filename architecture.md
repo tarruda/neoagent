@@ -226,7 +226,10 @@ Both capabilities expire at the end of the tool call. The shell overflow path
 uses a host temporary file recorded by path and inode. Later sandboxed reads
 revalidate its identity and add an exact read grant to the selected backend.
 Backend filesystem operations accept regular files and run with a bounded
-timeout.
+timeout. Process exit status passes through to the tool. Nonzero exits with
+recognized sandbox-denial text in bounded output, plus Linux `SIGSYS`, receive
+restricted-execution guidance. Explicit policy denials and backend failures
+produce sandbox-owned errors.
 
 The default profile grants a platform-selected shared temporary directory and
 points `TMPDIR`, `TMP`, and `TEMP` at it. POSIX systems use the active host

@@ -332,6 +332,60 @@ describe("neoagent shared sandbox contract", function()
       end
     end)
 
+  sandbox_test("classifies native command failures by sandbox-denial evidence",
+    function()
+      local selected = require("neoagent.tools.shell").new()
+      local options = sandboxed_config({ selected })
+      local function execute(command)
+        return wait(async.run(function()
+          return options.execute_tool(selected, {
+            command = command,
+          }, { context = context })
+        end), 30000)
+      end
+      local function assert_ordinary(value)
+        assert.is_true(value.isError)
+        assert.is_nil(value.details.sandbox)
+        assert.is_nil(text(value):find("ran inside the sandbox", 1, true))
+      end
+      local function assert_restricted(value)
+        assert.is_true(value.isError)
+        assert.is_true(value.details.sandbox.ran_restricted)
+        assert.matches("ran inside the sandbox", text(value), 1, true)
+      end
+
+      assert(fs.write_all(
+        vim.fs.joinpath(workspace, "no-match.txt"), "present\n"))
+      local no_match = execute(
+        "rg --quiet --fixed-strings absent no-match.txt")
+      assert_ordinary(no_match)
+      assert.are.equal(1, no_match.details.exit_code)
+      assert.are.equal(
+        "[Command exited with status 1]\n(no output)",
+        no_match.content[1].text)
+
+      local protected_write = execute(table.concat({
+        "cat > .git/created.txt <<'EOF'",
+        "blocked",
+        "EOF",
+      }, "\n"))
+      assert_restricted(protected_write)
+      assert.is_nil(vim.uv.fs_stat(
+        vim.fs.joinpath(metadata, "created.txt")))
+
+      local missing_write = execute(table.concat({
+        "cat > missing/created.txt <<'EOF'",
+        "blocked",
+        "EOF",
+      }, "\n"))
+      assert_ordinary(missing_write)
+      assert.is_nil(vim.uv.fs_stat(
+        vim.fs.joinpath(workspace, "missing")))
+
+      assert_restricted(execute("cat < denied/secret.txt"))
+      assert_ordinary(execute("cat < absent.txt"))
+    end)
+
   sandbox_test(
     "reads shell overflow logs and shared temporary replacements",
     function()
@@ -497,9 +551,8 @@ describe("neoagent shared sandbox contract", function()
       for _, id in ipairs({
         "grep-denied", "grep-link",
       }) do
-        assert.is_truthy(
-          text(results[id]):find("ran inside the sandbox", 1, true),
-          id .. ": " .. text(results[id]))
+        assert.is_true(results[id].details.sandbox.ran_restricted)
+        assert.matches("ran inside the sandbox", text(results[id]), 1, true)
       end
       for _, id in ipairs({ "find-denied", "find-link" }) do
         assert.is_truthy(
