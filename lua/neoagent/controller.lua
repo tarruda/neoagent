@@ -85,6 +85,7 @@ function M.from_config(options)
   local controller = { _neoagent_controller = true }
   local state = {
     session = nil,
+    session_id = nil,
     model = nil,
     model_selection = nil,
     thinking_level = nil,
@@ -107,6 +108,10 @@ function M.from_config(options)
     status = "idle",
     destroyed = false,
   }
+  local function activate_session(session)
+    state.session = session
+    state.session_id = {}
+  end
   local auth_manager = require("neoagent.auth").configured(options)
 
   local function notify(message, level)
@@ -263,7 +268,7 @@ function M.from_config(options)
     local cwd = vim.fn.getcwd()
     local session, err = make_session(cwd)
     if not session then error(err, 0) end
-    state.session = session
+    activate_session(session)
     return session
   end
 
@@ -596,6 +601,7 @@ function M.from_config(options)
         context = {
           workspace = state.workspace,
           controller = options.name,
+          session_id = state.session_id,
         },
         execute_tool = options.execute_tool,
         get_steering_messages = function()
@@ -820,7 +826,7 @@ function M.from_config(options)
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     local session, err = make_session(cwd)
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.session = session
+    activate_session(session)
     publish({ type = "messages", messages = {} })
     update_context()
     return session
@@ -860,7 +866,7 @@ function M.from_config(options)
     local session
     session, err = require("neoagent.session").new({ store = store })
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.session = session
+    activate_session(session)
     state.store, state.store_seeded = store, true
     state.live_usage, state.provider_status = nil, nil
     state.pending_events, state.steering, state.last_result = {}, {}, nil
@@ -948,7 +954,8 @@ function M.from_config(options)
     local session
     session, err = require("neoagent.session").new({ store = store })
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.store, state.store_seeded, state.session = store, true, session
+    state.store, state.store_seeded = store, true
+    activate_session(session)
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     state.live_usage, state.provider_status = nil, nil
     restore_session_preferences(store:state())

@@ -122,6 +122,10 @@ The important options are: >lua
     execute_tool = nil,
     interaction = nil,
     view = nil,                -- bundled Window's View constructor
+    sandbox = {
+      enabled = false,
+      profile = nil,           -- table or function(default, ctx)
+    },
     agents = {
       global_files = { stdpath("config") .. "/AGENTS.md" },
       project_filenames = { "AGENTS.md" },
@@ -285,6 +289,209 @@ Presenter loss cancels pending dialogs and sets
 `presenter_unavailable = true`. The injected capability expires with the tool
 call. Headless compositions can omit it.
 
+SANDBOXING                                                 *neoagent-sandbox*
+
+The command-facing Neo Controller can compose native sandbox enforcement
+around its tools: >lua
+
+  require("neoagent").setup({
+    sandbox = {
+      enabled = true,
+    },
+  })
+<
+Sandboxing is experimental and defaults to disabled. Linux and Windows use
+bundled standalone LuaJIT FFI runtimes to invoke native isolation APIs. Linux
+applies namespaces and seccomp; Windows applies restricted tokens, ACLs, Job
+Objects, and WFP; macOS delegates isolation to `/usr/bin/sandbox-exec`.
+
+Successful activation wraps only the built-in Neo Controller. Chat remains
+tool-free. `neoagent.new()` and direct Controller constructors do not interpret
+the setup flag; custom compositions can use `require("neoagent.sandbox")`
+directly.
+
+Run >
+
+  :NeoagentSandboxInfo
+<
+to inspect the active backend, isolation level, and available capabilities.
+Activation failures include their setup stage and reason.
+
+When activation requirements fail, Neo retains its configured host executor.
+A warning is shown once when Neo is first displayed. Successful activation
+reports full or degraded isolation through |:NeoagentSandboxInfo|. Failures
+after successful activation fail closed as tool errors and never retry through
+the host executor.
+
+The default profile provides a read-only host filesystem, grants writes within
+a bounded Workspace root and the shared host temporary roots, keeps
+`<workspace>/.git` read-only, restricts networking, and clears the environment
+to an explicit inherited set. POSIX systems grant the active host temporary
+directory and canonical `/tmp`. Windows uses the managed `shared-tmp`
+directory beneath its protected sandbox state. The profile points `TMPDIR`,
+`TMP`, and `TEMP` at the selected directory. Files created there remain
+visible to later sandbox invocations and host processes until they are
+removed. Read-only access includes host files outside the Workspace; add deny
+entries for sensitive paths. Override the profile with a table merged over
+the default: >lua
+
+  sandbox = {
+    enabled = true,
+    profile = {
+      filesystem = {
+        entries = {
+          { path = vim.uv.cwd(), access = "write" },
+          { path = vim.fs.joinpath(vim.uv.cwd(), ".git"), access = "read" },
+          { path = "/absolute/secret", access = "deny" },
+        },
+      },
+      network = "restricted",
+    },
+  }
+<
+Lists replace their defaults. Entry access is `read`, `write`, or `deny`;
+paths are canonical absolute paths and writable roots must exist. The
+filesystem default is `read`. `network` is `restricted` or `enabled`.
+
+Windows paths may use drive roots or UNC shares. Profile and policy comparison
+is case-insensitive, environment variable names share Windows casing
+semantics, and device paths, alternate data streams, reserved device names,
+and non-canonical paths are rejected. Windows sandboxing requires Neovim
+0.12 or newer.
+
+The default state directory is
+`<stdpath("state")>/neoagent/windows-sandbox`. Set
+`NEOAGENT_WINDOWS_SANDBOX_STATE` before starting Neovim to select another
+directory. From an elevated PowerShell in the plugin checkout, provision the
+directory once: >
+
+  nvim --headless -u NONE -i NONE -n \
+    -l scripts/sandbox_windows_runtime.lua -- --setup
+<
+Setup creates dedicated offline and online local accounts, stores random
+passwords with current-user DPAPI in an owner-only state directory, and
+installs persistent identity-scoped Windows Filtering Platform rules for the
+offline account. Each state directory owns random filter identifiers, so
+separate Neoagent installations do not replace one another's filters. Setup
+creates `<state-directory>/shared-tmp` as the only default Windows temporary
+write root. A state file is accepted only by the Windows identity that created
+it.
+
+Activation runs a live runtime probe. The probe verifies a fresh restricting
+SID, filesystem write and deny rules, account-authenticated runner launch,
+private-desktop process launch, Job Object supervision, shared
+temporary-directory writes, and blocked offline loopback networking. Any
+missing guarantee leaves the backend inactive.
+
+Each Windows operation compiles the resolved profile into writable ACL roots
+and read/write deny carveouts. Existing carveouts are opened without following
+their final reparse point and checked by filesystem identity. A missing read or
+deny child beneath a writable root is protected by a runtime-owned directory
+placeholder when its parent exists. The placeholder identity is journaled and
+only that exact object is removed after the call. A write entry below a deny
+entry cannot be represented and fails before execution. A nested write below
+a read entry becomes a separate writable ACL root. The runtime canonicalizes
+the plan again, rejects overlap with its protected state
+directory, creates an ephemeral restricting SID, and removes the account and
+restricting-SID ACEs when the operation ends. Parent write grants omit
+delete-child authority so a protected child cannot be removed through its
+parent. A state-directory-scoped Windows mutex serializes ACL leases. The
+owner-only state journals every transient ACL and placeholder before mutation,
+and the next operation reconciles the journal after interruption.
+
+`network = "restricted"` selects the WFP-blocked offline account.
+`network = "enabled"` selects the online account. The owner runtime launches an
+internal runner with `CreateProcessWithLogonW` over account-ACL-scoped named
+pipes and verifies both pipe peer process IDs.
+That runner creates a restricted primary token and starts the requested
+process with `CreateProcessAsUserW` on a fresh private desktop. The runner and
+target both start suspended and enter nested kill-on-close Job Objects before
+their first instruction. Cancelling or timing out the runtime terminates both
+stages and the complete process tree. Protocol handles are excluded from
+target inheritance. Direct file operations impersonate the restricted token
+and use the same framed, binary-safe protocol.
+
+On Linux, missing read-only and denied paths beneath a writable entry remain
+absent from the host filesystem. The namespace supervisor mediates creation
+and removal while a sandboxed process runs, including open, directory, link,
+rename, node, and Unix-socket operations. A path created concurrently by a
+host process keeps the same creation and removal protection and is never
+removed by sandbox cleanup.
+
+Linux staging roots are created atomically beneath a host runtime directory
+covered by the sandbox's private `/run` or `/dev`. Linux verifies each root's
+identity before use and cleanup and fails closed when a filesystem profile
+exposes every staging directory or a root pathname is missing, linked, or
+substituted.
+
+A callback can calculate the complete profile per tool call: >lua
+
+  sandbox = {
+    enabled = true,
+    profile = function(default, ctx)
+      default.filesystem.entries[#default.filesystem.entries + 1] = {
+        path = "/absolute/read-only/path",
+        access = "read",
+      }
+      return default
+    end,
+  }
+<
+Bundled file and subprocess operations use the selected backend and the
+same resolved profile. Tool Lua runs in Neovim, so custom tools participate in
+the sandbox only when they route effects through `ctx.fs` and `ctx.process`.
+
+Sandbox denials are ordinary `isError` tool results. They tell the agent to
+retry the exact call only when necessary by adding: >json
+
+  {
+    "options": {
+      "require_escalation": true,
+      "escalation_justification": "why unrestricted execution is necessary"
+    }
+  }
+<
+The sandbox then presents an approval dialog. Approval grants host filesystem
+and process capabilities for that one call. Denial returns an error without
+running the unrestricted call. Escalation is denied when no dialog presenter
+is available.
+
+Shell approvals for a single conservatively parsed command also offer
+`yes and don't ask again for commands starting with`. Selecting it opens a
+focused floating editor containing the current command. `<Enter>` accepts the
+edited prefix and `<C-c>` returns to the approval dialog. Accepted rules are
+argument-token prefixes bound to the active shell, scoped to the active
+Session, and held only in memory. They apply only to later shell calls that
+explicitly request escalation. Creating, resuming, or forking a Session clears
+the remembered rules.
+
+The option is available for POSIX shells, `cmd.exe`, and PowerShell when the
+command can be represented as one literal argument vector. Unquoted command
+operators, redirections, comments, substitutions, expansions, newlines,
+control characters, unterminated quoting, command interpreters, broad
+dispatchers, and broad single-command prefixes are rejected. A rejected edit
+remains in the floating editor with an explanation. Token matching preserves
+argument boundaries, so `git status` does not match `git status-danger`;
+quoted literal operator text remains an ordinary argument. Compound commands
+never match a remembered rule.
+
+The low-level platform-neutral API has the process-runner result shape: >lua
+
+  local result = require("neoagent.sandbox").sandbox_exec(argv, {
+    profile = profile,
+    cwd = cwd,
+    env = env,
+    stdin = input,
+    capture = true,
+    timeout_ms = 30000,
+    kill_grace_ms = 1000,
+    on_output = on_output,
+  })
+<
+It returns `code`, `signal`, `stdout`, `stderr`, `output`, and `timed_out`.
+Unsupported platforms and unavailable native requirements raise
+`sandbox_unavailable`.
+
 Controllers automatically replay assistant turns after transient transport and
 provider failures. The default retry delays are 2, 4, and 8 seconds. Set
 `retry.enabled = false`, or configure `retry.max_retries` and
@@ -440,6 +647,7 @@ The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
   :NeoagentNew                    Use a new empty UI Session.
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
+  :NeoagentSandboxInfo            Show recorded sandbox capabilities.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.
@@ -671,7 +879,8 @@ File tools operate on disk, never loaded buffers.
 ImageMagick transformations stream image bytes through stdin and stdout and
 create no temporary files.
 The shell tool retains a bounded output tail and streams overflow to a
-temporary log through `ctx.fs`.
+temporary log through `ctx.fs`. The returned path remains available to later
+sandboxed file reads.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.

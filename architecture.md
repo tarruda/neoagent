@@ -133,6 +133,186 @@ filesystem and `neoagent.process` runner. A decorated executor can copy the
 context and replace either capability for one invocation. Shell output uses
 bounded memory and streams overflow through the filesystem capability.
 
+## Sandbox composition
+
+`lua/neoagent/sandbox/` is an optional higher-level composition around the
+execution-policy boundary. Core Models, the agent loop, Sessions, Controllers,
+tools, Window, and View contain no sandbox policy.
+
+```text
+Default Neo setup (`sandbox.enabled`)
+      │
+      ▼
+sandbox/composition.lua ─────► generic dialog source ─────► Window
+      │
+      ├── probe/status ──────► sandbox/platform.lua
+      │
+      └── decorates the Controller's `execute_tool()`
+                                   ▲
+agent.run() ── tool call ──────────┘
+                                   │
+                                   ▼
+                      dialog.wrap(): per-call ctx.dialog
+                                   │
+                                   ▼
+                         sandbox/escalation.lua
+                          ├── approved once
+                          │      └── configured executor
+                          │          + revocable host ctx.fs / ctx.process
+                          │                    │
+                          │                    ▼
+                          │               Tool.execute()
+                          │
+                          └── ordinary
+                                 │
+                                 ▼
+                           sandbox/enforce.lua
+                            ├── profile.lua / policy.lua
+                            ├── configured executor ──────► Tool.execute()
+                            └── per-call ctx.fs / ctx.process
+                                             │
+                                             ▼
+                              selected backend (`fs` / `exec`)
+                               │
+                               ├── Linux
+                               │    ├── lua/neoagent/sandbox/linux/
+                               │    │     check/fs/exec adapter, protocol,
+                               │    │     platform data
+                               │    └── scripts/sandbox_linux_runtime.lua
+                               │          standalone headless child:
+                               │          namespaces, mounts, seccomp,
+                               │          supervision, framed output
+                               │
+                               ├── macOS
+                               │    ├── lua/neoagent/sandbox/macos/
+                               │    │     check/fs/exec adapter,
+                               │    │     Seatbelt profile compiler
+                               │    ├── /usr/bin/sandbox-exec
+                               │    └── scripts/sandbox_macos_runtime.lua
+                               │          filesystem and process supervision
+                               │
+                               └── Windows
+                                    ├── lua/neoagent/sandbox/windows/
+                                    │     check/fs/exec adapter,
+                                    │     ACL-plan compiler, framed protocol
+                                    └── scripts/sandbox_windows_runtime.lua
+                                          standalone headless child:
+                                          Win32 FFI, accounts, DPAPI, ACLs,
+                                          restricted tokens, WFP, Job Objects
+```
+
+The connections back into Neoagent are ordinary Lua extension points: default
+setup installs a decorated `execute_tool()` function, Window presents a generic
+dialog source, and the configured executor receives a copied context. The
+reusable core does not import sandbox modules. Bundled tools participate by
+calling the injected `ctx.fs` and `ctx.process` values.
+
+The default setup path asks `neoagent.sandbox.composition` to decorate Neo only
+when `sandbox.enabled` is true. The composition runs an active platform probe,
+then layers a restricted executor and one-shot escalation selector around the
+configured executor. It returns a generic dialog source for the default
+Window. The copied Controller configuration retains the probe result and
+established capabilities for `:NeoagentSandboxInfo`. Chat explicitly disables
+sandbox composition.
+
+Enforcement copies each tool context and injects:
+
+- a filesystem capability that evaluates lexical and canonical profile access
+  before performing direct file operations inside the selected backend; and
+- a process capability that resolves the profile, cwd, argv, environment,
+  streaming, timeout, and cancellation behavior for the selected backend.
+
+Both capabilities expire at the end of the tool call. The shell overflow path
+uses a host temporary file recorded by path and inode. Later sandboxed reads
+revalidate its identity and add an exact read grant to the selected backend.
+Backend filesystem operations accept regular files and run with a bounded
+timeout.
+
+The default profile grants a platform-selected shared temporary directory and
+points `TMPDIR`, `TMP`, and `TEMP` at it. POSIX systems use the active host
+temporary directory and also grant canonical `/tmp`. Windows uses the managed
+`shared-tmp` directory beneath the protected sandbox state. Temporary
+artifacts remain available across tool invocations.
+
+Escalation copies tool schemas and adds reserved request fields under
+`options`. A valid request publishes a sandbox-defined transcript dialog
+through `ctx.dialog`. Approval selects the configured host executor for one
+call through revocable host filesystem and process proxies. Denial and
+presenter failure return structured tool errors.
+Eligible shell approvals can retain an edited argument-token prefix in the
+escalation decorator. The Controller supplies an opaque Session identity, and
+the decorator discards its in-memory prefix set when that identity changes.
+Only later calls that explicitly request escalation consult the set.
+Conservative POSIX, cmd, and PowerShell tokenizers accept one literal command;
+operators, redirections, expansions, substitutions, and unsupported shell
+syntax suppress the option and cannot match an existing prefix.
+
+`neoagent.sandbox.platform` selects explicit Linux, macOS, and Windows modules.
+Shared path operations select POSIX or Windows semantics for roots,
+containment, canonical candidates, sorting, and environment keys. The Windows
+profile compiler projects longest-path policy into writable ACL roots and
+explicit read/write deny paths. A missing protected child of a writable root
+becomes a journaled, identity-checked placeholder when its parent exists. The
+compiler supports a nested writable root beneath a read rule and rejects
+writes reopened below a deny rule and policy shapes whose ACL projection would
+widen access.
+
+The Windows Lua adapter launches a standalone headless Neovim runtime and
+speaks a bounded, versioned, binary-safe framed protocol over its standard
+streams. Elevated setup provisions random dedicated offline and online local
+accounts, current-user DPAPI state, persistent account-scoped Windows
+Filtering Platform rules with per-state random filter identifiers, and a
+managed shared temporary directory inside the protected state tree. A live
+probe proves the required capabilities before activation. Each execution uses
+a freshly generated restricting SID, revalidates canonical profile paths and
+state-directory separation, and applies ACL grants and carveouts. Parent write
+grants omit delete-child authority. The owner runtime starts an internal
+runner under the selected sandbox account with `CreateProcessWithLogonW` over
+account-scoped named pipes whose peer process IDs are verified. The runner
+restricts its primary token and handles direct filesystem calls through
+impersonation.
+Process launch uses `CreateProcessAsUserW`, quoted Windows argv, executable
+resolution through the explicit `PATH` and `PATHEXT`, a case-insensitive
+explicit environment, and a fresh private desktop. The owner runtime and account
+runner each assign their suspended child atomically to a kill-on-close Job
+Object, so cancellation covers both stages and every descendant. Restricted
+network profiles use the offline account; enabled profiles use the online
+account. Capability ACL leases are serialized per state directory and revoked
+at completion.
+The owner-only state records dedicated account identities, each transient
+capability ACL lease, and owned placeholder identities. The next run
+reconciles the mutation journal after interruption. Stale capability SIDs
+carry no authority.
+
+The Linux runtime is a standalone headless Neovim script that uses LuaJIT FFI for
+user, mount, PID, IPC, and UTS namespaces, bind mounts, tmpfs, capability
+removal, seccomp, descendant supervision, and framed binary MessagePack output.
+Restricted-network profiles also use a network namespace and socket filters.
+Missing read and deny entries beneath writable grants become protected-create
+rules. Seccomp user notifications send pathname creation and removal syscalls
+to the namespace supervisor, which resolves their target paths and performs
+permitted operations while the calling thread remains blocked. Restricted
+paths remain absent from the host filesystem until an unrelated host process
+creates them, and host-created replacements retain creation and removal
+protection.
+The probe prefers a fresh procfs owned by the PID namespace. A procfs setup
+restriction selects the inherited read-only host procfs and records the
+degraded stage and procfs isolation while preserving the other established
+boundaries. macOS compiles a parameterized Seatbelt profile for
+`/usr/bin/sandbox-exec` and uses a Neovim runtime for sandboxed filesystem
+operations and process-tree supervision. Linux staging roots are created
+atomically beneath `/run/user/<uid>` or `/dev/shm`; the namespace presents
+dedicated `/run`, `/dev`, and `/dev/shm` paths to the launched process. The
+staging root's device and inode identity is recorded and revalidated before use
+and cleanup. Profiles that expose every host staging directory and changed root
+identities fail closed.
+
+Activation failure preserves the configured host executor and wraps the
+configured View factory with a sandbox-owned warning shown once when the
+requesting Controller first becomes visible. Successful activation records
+its full or degraded isolation status for `:NeoagentSandboxInfo`. Runtime
+failure after activation is fail-closed.
+
 ## Sessions and persistence
 
 `lua/neoagent/session.lua` owns conversation state. A bare `Session.new()` is
@@ -227,7 +407,8 @@ when its presenter detaches.
 
 `setup()` creates two Controllers in one default Window:
 
-- **Neo** uses the configured coding prompt, tools, AGENTS.md, and skills.
+- **Neo** uses the configured coding prompt, tools, AGENTS.md, skills, and
+  optional sandbox composition.
 - **Chat** uses an empty system prompt and tool list, with resource discovery
   disabled.
 

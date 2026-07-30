@@ -131,12 +131,37 @@ describe("neoagent bundled tools", function()
     assert.are.equal("No matches found", grep.content[1].text)
     assert.are.equal("found.lua", found.content[1].text)
     assert.are.equal("mkdirp", operations[2][1])
-    assert.are.same({
-      vim.o.shell, vim.o.shellcmdflag, "ignored",
-    }, commands[1].command)
+    local expected_shell = vim.fn.split(vim.o.shell)
+    vim.list_extend(expected_shell, vim.fn.split(vim.o.shellcmdflag))
+    expected_shell[#expected_shell + 1] = "ignored"
+    assert.are.same(expected_shell, commands[1].command)
     assert.are.equal("rg", commands[2].command[1])
     assert.are.equal("fd", commands[3].command[1])
   end)
+
+  it("passes each shell command flag as a separate process argument",
+    function()
+      local root, workspace = fixture()
+      roots[#roots + 1] = root
+      local command
+      local original = vim.o.shellcmdflag
+      vim.o.shellcmdflag = "/s /c"
+      local ok, value = pcall(execute,
+        require("neoagent.tools.shell"), {
+          command = "echo ok",
+        }, ctx(workspace, nil, {
+          process = function(argv, opts)
+            command = argv
+            opts.on_output("ok", false)
+            return { code = 0, signal = 0 }
+          end,
+        }))
+      vim.o.shellcmdflag = original
+      assert.is_true(ok, tostring(value))
+      assert.are.same({
+        vim.o.shell, "/s", "/c", "echo ok",
+      }, command)
+    end)
 
   it("streams every ImageMagick invocation through stdin and stdout", function()
     local root, workspace = fixture()

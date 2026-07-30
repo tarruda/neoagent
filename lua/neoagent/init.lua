@@ -11,9 +11,15 @@ local owned_controllers
 local function default_controllers(configured)
   local neo = util.copy(configured)
   neo.name = neo.name or "Neo"
+  local dialogs
+  if neo.sandbox.enabled then
+    neo, dialogs =
+      require("neoagent.sandbox.composition").controller(neo)
+  end
 
   local chat = util.copy(configured)
   chat.name = "Chat"
+  chat.sandbox.enabled = false
   chat.tools = {}
   chat._tools_supplied = true
   chat.system_prompt = ""
@@ -23,7 +29,7 @@ local function default_controllers(configured)
   return {
     Controller.from_config(neo),
     Controller.from_config(chat),
-  }
+  }, dialogs
 end
 
 local function any_owned_running()
@@ -63,8 +69,11 @@ end
 
 function M.default_window()
   if not default_window then
-    owned_controllers = default_controllers(config.get())
-    default_window = window_for(owned_controllers)
+    local dialogs
+    owned_controllers, dialogs = default_controllers(config.get())
+    default_window = window_for(owned_controllers, {
+      dialogs = dialogs,
+    })
   end
   return default_window
 end
@@ -78,8 +87,10 @@ function M.setup(opts)
     error("Cannot reconfigure neoagent while a run is active")
   end
   local configured = config.setup(opts or {})
-  local replacements = default_controllers(configured)
-  local replacement_window = window_for(replacements)
+  local replacements, dialogs = default_controllers(configured)
+  local replacement_window = window_for(replacements, {
+    dialogs = dialogs,
+  })
   if default_window then default_window:destroy() end
   destroy_owned()
   default_window = replacement_window
@@ -198,6 +209,28 @@ function M.select_fork()
       M.open()
     end
   end)
+end
+
+function M.sandbox_info()
+  local controllers = M.default_window():controllers()
+  local selected = M.default()
+  for _, controller in ipairs(controllers) do
+    local configured = controller:config()
+    if configured.sandbox and configured.sandbox.enabled then
+      selected = controller
+      break
+    end
+  end
+  return require("neoagent.sandbox").info(selected)
+end
+
+function M.show_sandbox_info()
+  local sandbox = require("neoagent.sandbox")
+  local status = M.sandbox_info()
+  vim.notify(sandbox.format_info(status),
+    status.enabled and not status.active
+      and vim.log.levels.WARN or vim.log.levels.INFO)
+  return status
 end
 
 return M

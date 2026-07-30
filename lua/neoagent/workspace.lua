@@ -6,7 +6,7 @@ Workspace.__index = Workspace
 
 function Workspace:resolve(path)
   assert(type(path) == "string" and path ~= "", "path must be a non-empty string")
-  if path:sub(1, 1) == "/" then
+  if fs.is_absolute(path) then
     return fs.normalize(path)
   end
   return fs.normalize(fs.join(self.cwd, path))

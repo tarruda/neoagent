@@ -4,12 +4,23 @@ function M.normalize(path)
   return vim.fs.normalize(path)
 end
 
+function M.is_absolute(path, os_name)
+  if type(path) ~= "string" or path == "" then return false end
+  os_name = os_name or jit.os
+  if os_name == "Windows" then
+    return path:match("^[A-Za-z]:[/\\]") ~= nil
+      or path:sub(1, 2) == "\\\\"
+  end
+  return path:sub(1, 1) == "/"
+end
+
 function M.join(...)
   return vim.fs.joinpath(...)
 end
 
-function M.create_temp(prefix)
-  local template = M.join(vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+function M.create_temp(prefix, directory)
+  local template = M.join(
+    directory or vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
   local fd, path = vim.uv.fs_mkstemp(template)
   if not fd then return nil, path end
   local ok, err = vim.uv.fs_close(fd)
@@ -20,9 +31,9 @@ function M.create_temp(prefix)
   return path
 end
 
-function M.create_temp_directory(prefix)
+function M.create_temp_directory(prefix, directory)
   local template = M.join(
-    vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+    directory or vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
   return vim.uv.fs_mkdtemp(template)
 end
 

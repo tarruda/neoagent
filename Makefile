@@ -7,7 +7,7 @@ TEST_ENV = NEOAGENT_NVIM=$(NVIM) PLENARY_DIR=$(PLENARY_DIR)
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps test test-unit test-integration test-ui coverage coverage-report coverage-check clean
+.PHONY: deps test test-unit test-integration test-ui test-windows coverage coverage-report coverage-check clean
 
 .deps/plenary.nvim/.git:
 	mkdir -p .deps
@@ -32,9 +32,14 @@ test-integration:
 test-ui:
 	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/ui { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
 
+# Fresh sandbox identities cold-start PowerShell on hosted Windows runners.
+# This timeout covers the complete spec file, including that startup.
+test-windows:
+	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 120000 }"
+
 coverage:
 	rm -rf .coverage
-	NEOAGENT_COVERAGE=1 $(MAKE) test
+	NEOAGENT_COVERAGE=1 NEOAGENT_REQUIRE_SANDBOX=1 $(MAKE) test
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 
