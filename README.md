@@ -21,8 +21,7 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
   handling, and context compaction.
 - Use bundled coding tools for file operations, shell commands, and on-demand
   Neoagent documentation.
-- Optionally sandbox bundled tools with one-call and session-prefix escalation
-  dialogs.
+- Experimental sandboxed tools (disabled by default).
 - Persist conversations with branches, linked forks, labels, model state, and
   context compaction.
 - Work from a floating Markdown UI with separate transcript and input windows.
@@ -62,23 +61,12 @@ require("neoagent").setup({
     provider = "openai",
     model = "gpt-5.4",
   },
-  sandbox = {
-    enabled = true,
-  },
 })
 
 vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>", {
   desc = "Open Neoagent",
 })
 ```
-
-Sandboxing defaults to disabled. Run `:NeoagentSandboxInfo` to inspect its
-status. It mediates bundled-tool file and process operations; custom tool Lua
-runs in Neovim and must use the injected capabilities to participate. See
-`:help neoagent-sandbox` for configuration and platform details.
-Windows sandboxing requires Neovim 0.12+ and uses the bundled
-LuaJIT/Win32-FFI runtime; run its elevated one-time setup command before
-enabling the sandbox.
 
 For Anthropic API-key billing, use `anthropic`; use `anthropic-plan` with
 Claude Pro/Max OAuth:
@@ -110,3 +98,23 @@ default_model = {
   model = "glm-5.2",
 }
 ```
+
+## OS-enforced sandbox
+
+Sandboxing is experimental and disabled by default. Enable it in `setup()`:
+
+```lua
+sandbox = {
+  enabled = true,
+}
+```
+
+Linux and Windows use a bundled LuaJIT FFI runtime to invoke native isolation
+APIs; macOS uses `/usr/bin/sandbox-exec`. The sandbox mediates bundled-tool
+file and process operations. Custom tool Lua runs in Neovim and must use the
+injected capabilities to participate.
+
+Run `:NeoagentSandboxInfo` to inspect the active backend, isolation level, and
+capabilities. See `:help neoagent-sandbox` for configuration and platform
+details. Windows sandboxing requires Neovim 0.12+ and an elevated one-time
+setup command before it is enabled.

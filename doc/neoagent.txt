@@ -300,9 +300,10 @@ around its tools: >lua
     },
   })
 <
-Sandboxing defaults to disabled. Linux uses namespaces and seccomp; macOS uses
-`/usr/bin/sandbox-exec`; Windows uses the bundled standalone LuaJIT/Win32-FFI
-runtime.
+Sandboxing is experimental and defaults to disabled. Linux and Windows use
+bundled standalone LuaJIT FFI runtimes to invoke native isolation APIs. Linux
+applies namespaces and seccomp; Windows applies restricted tokens, ACLs, Job
+Objects, and WFP; macOS delegates isolation to `/usr/bin/sandbox-exec`.
 
 Successful activation wraps only the built-in Neo Controller. Chat remains
 tool-free. `neoagent.new()` and direct Controller constructors do not interpret
