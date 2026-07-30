@@ -21,7 +21,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
   handling, and context compaction.
 - Use bundled coding tools for file operations, shell commands, and on-demand
   Neoagent documentation.
-- Optionally sandbox bundled tools with explicit one-call escalation dialogs.
+- Optionally sandbox bundled tools with one-call and session-prefix escalation
+  dialogs.
 - Persist conversations with branches, linked forks, labels, model state, and
   context compaction.
 - Work from a floating Markdown UI with separate transcript and input windows.

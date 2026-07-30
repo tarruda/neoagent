@@ -33,7 +33,7 @@ local function floating_dialog()
       multiline = false,
     },
     actions = {
-      { id = "save", label = "save", key = "<C-s>" },
+      { id = "save", label = "save", key = "<CR>" },
       { id = "cancel", label = "cancel", key = "<C-c>" },
     },
   }
@@ -166,11 +166,16 @@ describe("neoagent generic dialog UI", function()
       assert.are.equal("git status", buffer_text(buffer))
       assert.is_true(vim.bo[buffer].modifiable)
       vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "git diff" })
-      feed("<C-s>")
+      feed("<CR>")
       assert.are.same({ { "editable", "save", "git diff" } }, responses)
 
       view:set_dialog(nil)
       assert.is_false(vim.api.nvim_win_is_valid(window))
+      view:set_dialog(snapshot(floating_dialog(), "cancelled"))
+      feed("<C-c>")
+      assert.are.same(
+        { "cancelled", "cancel", "git status" }, responses[#responses])
+      view:set_dialog(nil)
       view:set_dialog(snapshot(floating_dialog(), "dismissed"))
       window = assert(view.dialog_win)
       vim.api.nvim_win_close(window, true)

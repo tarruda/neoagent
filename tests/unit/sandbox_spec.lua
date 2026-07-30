@@ -1083,6 +1083,456 @@ describe("neoagent sandbox execution", function()
       }, "\n"), request.body)
     end)
 
+  it("remembers only safe shell command prefixes for the current session",
+    function()
+      local root = temp()
+      local module = require("neoagent.sandbox.escalation")
+      local escalation = module.new({ shell = "/bin/sh" })
+      local shell = escalation:tools({
+        require("neoagent.tools.shell").new(),
+      })[1]
+      local elevated, restricted = {}, {}
+      local execute = escalation:wrap({
+        restricted = function(_, arguments)
+          restricted[#restricted + 1] = arguments.command
+          return { content = { { type = "text", text = "restricted" } } }
+        end,
+        elevated = function(_, arguments)
+          elevated[#elevated + 1] = arguments.command
+          return { content = { { type = "text", text = "elevated" } } }
+        end,
+      })
+      local function arguments(command, requested)
+        local value = { command = command }
+        if requested ~= false then
+          value.options = {
+            require_escalation = true,
+            escalation_justification = "required by the test",
+          }
+        end
+        return value
+      end
+      local function with_dialog(session_id, replies, seen)
+        local ctx = dialog_context(root, function(request)
+          seen[#seen + 1] = request
+          local reply = table.remove(replies, 1)
+          assert.is_not_nil(reply, "unexpected approval prompt")
+          return reply
+        end)
+        ctx.context.session_id = session_id
+        return ctx
+      end
+
+      local seen = {}
+      local value = execute(shell, arguments("git status --short"),
+        with_dialog("session-one", {
+          "approve_prefix",
+          {
+            ok = true,
+            action = "accept_prefix",
+            input = "git status",
+          },
+        }, seen))
+      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("transcript", seen[1].placement)
+      assert.are.same({
+        "approve", "approve_prefix", "deny", "deny_all",
+      }, vim.tbl_map(function(action) return action.id end,
+        seen[1].actions))
+      assert.are.equal("float", seen[2].placement)
+      assert.are.equal("git status --short", seen[2].input.value)
+      assert.are.same({
+        { id = "accept_prefix", label = "accept", key = "<CR>" },
+        { id = "cancel_prefix", label = "cancel", key = "<C-c>" },
+      }, seen[2].actions)
+
+      execute(shell, arguments("git status --porcelain"),
+        with_dialog("session-one", {}, {}))
+      assert.are.same({
+        "git status --short",
+        "git status --porcelain",
+      }, elevated)
+
+      local prompted = {}
+      value = execute(shell, arguments("git status-danger"),
+        with_dialog("session-one", { "deny" }, prompted))
+      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.are.equal(1, #prompted)
+
+      prompted = {}
+      for _, command in ipairs({
+        "git status && rm -rf /tmp/should-not-run",
+        "git status || rm -rf /tmp/should-not-run",
+        "git status; rm -rf /tmp/should-not-run",
+        "git status | sh",
+        "git status $(rm -rf /tmp/should-not-run)",
+        "git status > /tmp/should-not-run",
+      }) do
+        value = execute(shell, arguments(command),
+          with_dialog("session-one", { "deny" }, prompted))
+        assert.is_true(value.details.sandbox.denied_by_user)
+        assert.is_false(vim.tbl_contains(
+          vim.tbl_map(function(action) return action.id end,
+            prompted[#prompted].actions), "approve_prefix"))
+      end
+
+      execute(shell, arguments("git status '&&'"),
+        with_dialog("session-one", {}, {}))
+      assert.are.equal("git status '&&'", elevated[#elevated])
+
+      value = execute(shell, arguments("git status --porcelain"),
+        with_dialog("session-two", { "deny" }, {}))
+      assert.is_true(value.details.sandbox.denied_by_user)
+
+      value = execute(shell, arguments("git status --short", false),
+        with_dialog("session-one", {}, {}))
+      assert.are.equal("restricted", value.content[1].text)
+      assert.are.same({ "git status --short" }, restricted)
+    end)
+
+  it("rejects unsafe or unrelated remembered shell prefixes", function()
+    local root = temp()
+    local module = require("neoagent.sandbox.escalation")
+    local shell = module.new({ shell = "/bin/sh" }):tools({
+      require("neoagent.tools.shell").new(),
+    })[1]
+    local attacks = {
+      "git status && rm -rf /tmp/owned",
+      "git status || rm -rf /tmp/owned",
+      "git status; rm -rf /tmp/owned",
+      "git status | sh",
+      "git status & rm -rf /tmp/owned",
+      "git status\nrm -rf /tmp/owned",
+      "git status $(rm -rf /tmp/owned)",
+      "git status `rm -rf /tmp/owned`",
+      "git status ${IFS}rm",
+      [[git status "$HOME"]],
+      "git status > /tmp/owned",
+      "git status # ignored && rm -rf /tmp/owned",
+      "git status (rm -rf /tmp/owned)",
+      "git status { rm -rf /tmp/owned; }",
+      "git status 'unterminated",
+      [[git status "a\q"]],
+      [[git status "a\"b"]],
+      "git\\ status",
+      "git status \\",
+      "git status\1hidden",
+      string.rep("a", 16385),
+      "FOO=bar git status",
+      "! git status",
+      "coproc git status",
+      "git",
+      "npm run",
+      "env FOO=bar",
+      "cargo build",
+      "git status --short extra",
+    }
+    for index, prefix in ipairs(attacks) do
+      local escalation = module.new({ shell = "/bin/sh" })
+      shell = escalation:tools({
+        require("neoagent.tools.shell").new(),
+      })[1]
+      local elevated = false
+      local execute = escalation:wrap({
+        restricted = function() error("restricted") end,
+        elevated = function() elevated = true end,
+      })
+      local requests = {}
+      local replies = {
+        "approve_prefix",
+        {
+          ok = true,
+          action = "accept_prefix",
+          input = prefix,
+        },
+        "cancel_prefix",
+        "deny",
+      }
+      local ctx = dialog_context(root, function(request)
+        requests[#requests + 1] = request
+        return table.remove(replies, 1)
+      end)
+      ctx.context.session_id = "attack-" .. index
+      local value = execute(shell, {
+        command = "git status --short",
+        options = {
+          require_escalation = true,
+          escalation_justification = "test unsafe prefix",
+        },
+      }, ctx)
+      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_false(elevated)
+      assert.are.equal(4, #requests)
+      assert.matches("cannot be remembered", requests[3].body)
+    end
+
+    for _, command in ipairs({
+      "deno run task.ts",
+      "fish script.fish",
+      "julia script.jl",
+      "lua script.lua",
+      "node script.js",
+      "nodejs script.js",
+      "osascript script.scpt",
+      "php script.php",
+      "python3.12 script.py",
+      "Rscript script.R",
+    }) do
+      local request
+      local escalation = module.new({ shell = "/bin/sh" })
+      shell = escalation:tools({
+        require("neoagent.tools.shell").new(),
+      })[1]
+      local execute = escalation:wrap({
+        restricted = function() error("restricted") end,
+        elevated = function() error("must not elevate") end,
+      })
+      local value = execute(shell, {
+        command = command,
+        options = {
+          require_escalation = true,
+          escalation_justification = "test interpreter prefix",
+        },
+      }, dialog_context(root, function(candidate)
+        request = candidate
+        return "deny"
+      end))
+      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_false(vim.tbl_contains(
+        vim.tbl_map(function(action) return action.id end,
+          request.actions), "approve_prefix"), command)
+    end
+
+    local escalation = module.new({ shell = "/bin/sh" })
+    shell = escalation:tools({
+      require("neoagent.tools.shell").new(),
+    })[1]
+    local elevated = 0
+    local execute = escalation:wrap({
+      restricted = function() error("restricted") end,
+      elevated = function()
+        elevated = elevated + 1
+        return { content = { { type = "text", text = "ok" } } }
+      end,
+    })
+    local replies = {
+      "approve_prefix",
+      {
+        ok = true,
+        action = "accept_prefix",
+        input = [[printf "%s" "&&"]],
+      },
+    }
+    local ctx = dialog_context(root, function()
+      return table.remove(replies, 1)
+    end)
+    ctx.context.session_id = "quoted-operator"
+    execute(shell, {
+      command = [[printf "%s" "&&"]],
+      options = {
+        require_escalation = true,
+        escalation_justification = "test quoted operator",
+      },
+    }, ctx)
+    local remembered_ctx = dialog_context(root, function()
+      error("remembered quoted operator unexpectedly prompted")
+    end)
+    remembered_ctx.context.session_id = "quoted-operator"
+    execute(shell, {
+      command = [[printf "%s" "&&" ignored]],
+      options = {
+        require_escalation = true,
+        escalation_justification = "test quoted operator",
+      },
+    }, remembered_ctx)
+    assert.are.equal(2, elevated)
+  end)
+
+  it("parses cmd and PowerShell prefixes without accepting operators",
+    function()
+      local root = temp()
+      local module = require("neoagent.sandbox.escalation")
+      local shell_tool = require("neoagent.tools.shell").new()
+      local function action_ids(shell, command)
+        local escalation = module.new({ shell = shell })
+        local tool = escalation:tools({ shell_tool })[1]
+        local request
+        local execute = escalation:wrap({
+          restricted = function() error("restricted") end,
+          elevated = function() error("elevated") end,
+        })
+        local value = execute(tool, {
+          command = command,
+          options = {
+            require_escalation = true,
+            escalation_justification = "test shell parser",
+          },
+        }, dialog_context(root, function(candidate)
+          request = candidate
+          return "deny"
+        end))
+        assert.is_true(value.details.sandbox.denied_by_user)
+        return vim.tbl_map(function(action) return action.id end,
+          request.actions)
+      end
+      local function supports(shell, command)
+        return vim.tbl_contains(action_ids(shell, command),
+          "approve_prefix")
+      end
+
+      local cmd = [[C:\Windows\System32\cmd.exe]]
+      assert.is_true(supports(cmd, "git status --short"))
+      assert.is_true(supports(cmd, [[echo "&&"]]))
+      for _, command in ipairs({
+        "git status && whoami",
+        "git status || whoami",
+        "git status & whoami",
+        "git status > owned.txt",
+        "git status (whoami)",
+        "git status ^& whoami",
+        "git status %COMSPEC%",
+        "git status !COMSPEC!",
+        [[git status "a\"b"]],
+      }) do
+        assert.is_false(supports(cmd, command), command)
+      end
+
+      local powershell =
+        [[C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe]]
+      assert.is_true(supports(powershell, "git status --short"))
+      assert.is_true(supports(powershell, "Write-Output '&&'"))
+      assert.is_true(supports(powershell, [[Write-Output "literal"]]))
+      assert.is_true(supports(powershell, "Write-Output 'it''s'"))
+      for _, command in ipairs({
+        "git status; whoami",
+        "git status || whoami",
+        "git status | whoami",
+        "git status & whoami",
+        "git status > owned.txt",
+        "git status $(whoami)",
+        "git status $env:COMSPEC",
+        [[git status "$env:COMSPEC"]],
+        "git status `& whoami",
+        "git status { whoami }",
+      }) do
+        assert.is_false(supports(powershell, command), command)
+      end
+
+      assert.is_false(supports("/usr/bin/fish", "git status --short"))
+    end)
+
+  it("coalesces remembered prefixes across supported shell parsers", function()
+    local root = temp()
+    local module = require("neoagent.sandbox.escalation")
+    local active_shell = "/bin/sh"
+    local escalation = module.new({
+      shell = function() return active_shell end,
+    })
+    local shell = escalation:tools({
+      require("neoagent.tools.shell").new(),
+    })[1]
+    local elevated = {}
+    local execute = escalation:wrap({
+      restricted = function() error("restricted") end,
+      elevated = function(_, arguments)
+        elevated[#elevated + 1] = arguments.command
+        return { content = { { type = "text", text = "ok" } } }
+      end,
+    })
+    local function run(command, replies)
+      local ctx = dialog_context(root, function()
+        local reply = table.remove(replies, 1)
+        assert.is_not_nil(reply, "unexpected approval prompt")
+        return reply
+      end)
+      ctx.context.session_id = "coalesced"
+      local value = execute(shell, {
+        command = command,
+        options = {
+          require_escalation = true,
+          escalation_justification = "test rule coalescing",
+        },
+      }, ctx)
+      assert.are.equal("ok", value.content[1].text)
+      assert.are.equal(0, #replies)
+    end
+    local function remember(command, prefix)
+      run(command, {
+        "approve_prefix",
+        { ok = true, action = "accept_prefix", input = prefix },
+      })
+    end
+
+    remember("git status --short", "git status --short")
+    remember("git status --porcelain", "git status")
+    run("git status --branch", {})
+    remember("cargo test --lib", "cargo test")
+    run("cargo test --doc", {})
+
+    active_shell = "pwsh.exe"
+    remember("Write-Output literal", "Write-Output")
+    run("Write-Output other", {})
+    active_shell = "/bin/sh"
+    run("git status --short", {})
+    assert.are.equal(8, #elevated)
+  end)
+
+  it("fails closed when command-prefix editing cannot settle", function()
+    local root = temp()
+    local module = require("neoagent.sandbox.escalation")
+    local function attempt(replies)
+      local escalation = module.new({ shell = "/bin/sh" })
+      local shell = escalation:tools({
+        require("neoagent.tools.shell").new(),
+      })[1]
+      local execute = escalation:wrap({
+        restricted = function() error("restricted") end,
+        elevated = function() error("must not elevate") end,
+      })
+      local ctx = dialog_context(root, function()
+        local reply = table.remove(replies, 1)
+        assert.is_not_nil(reply, "unexpected approval prompt")
+        return reply
+      end)
+      ctx.context.session_id = "unsettled"
+      local value = execute(shell, {
+        command = "git status --short",
+        options = {
+          require_escalation = true,
+          escalation_justification = "test failed editor",
+        },
+      }, ctx)
+      assert.is_true(value.details.sandbox.approval_unavailable)
+      assert.are.equal(0, #replies)
+    end
+
+    attempt({
+      "approve_prefix",
+      {
+        ok = false,
+        presenter_unavailable = true,
+        error = { kind = "dialog", message = "editor disappeared" },
+      },
+    })
+
+    local invalid = { "approve_prefix" }
+    for _ = 1, 16 do
+      invalid[#invalid + 1] = {
+        ok = true,
+        action = "accept_prefix",
+        input = "git status && whoami",
+      }
+    end
+    attempt(invalid)
+
+    local cancelled = {}
+    for _ = 1, 16 do
+      cancelled[#cancelled + 1] = "approve_prefix"
+      cancelled[#cancelled + 1] = "cancel_prefix"
+    end
+    attempt(cancelled)
+  end)
+
   it("validates escalation schemas, requests, and presenter failures", function()
     local root = temp()
     local function tool(schema)

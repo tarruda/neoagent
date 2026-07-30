@@ -229,6 +229,13 @@ Escalation copies tool schemas and adds reserved request fields under
 through `ctx.dialog`. Approval selects the configured host executor for one
 call through revocable host filesystem and process proxies. Denial and
 presenter failure return structured tool errors.
+Eligible shell approvals can retain an edited argument-token prefix in the
+escalation decorator. The Controller supplies an opaque Session identity, and
+the decorator discards its in-memory prefix set when that identity changes.
+Only later calls that explicitly request escalation consult the set.
+Conservative POSIX, cmd, and PowerShell tokenizers accept one literal command;
+operators, redirections, expansions, substitutions, and unsupported shell
+syntax suppress the option and cannot match an existing prefix.
 
 `neoagent.sandbox.platform` selects explicit Linux and macOS modules. The
 Linux runtime is a standalone headless Neovim script that uses LuaJIT FFI for

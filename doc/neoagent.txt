@@ -393,6 +393,25 @@ and process capabilities for that one call. Denial returns an error without
 running the unrestricted call. Escalation is denied when no dialog presenter
 is available.
 
+Shell approvals for a single conservatively parsed command also offer
+`yes and don't ask again for commands starting with`. Selecting it opens a
+focused floating editor containing the current command. `<Enter>` accepts the
+edited prefix and `<C-c>` returns to the approval dialog. Accepted rules are
+argument-token prefixes bound to the active shell, scoped to the active
+Session, and held only in memory. They apply only to later shell calls that
+explicitly request escalation. Creating, resuming, or forking a Session clears
+the remembered rules.
+
+The option is available for POSIX shells, `cmd.exe`, and PowerShell when the
+command can be represented as one literal argument vector. Unquoted command
+operators, redirections, comments, substitutions, expansions, newlines,
+control characters, unterminated quoting, command interpreters, broad
+dispatchers, and broad single-command prefixes are rejected. A rejected edit
+remains in the floating editor with an explanation. Token matching preserves
+argument boundaries, so `git status` does not match `git status-danger`;
+quoted literal operator text remains an ordinary argument. Compound commands
+never match a remembered rule.
+
 The low-level platform-neutral API has the process-runner result shape: >lua
 
   local result = require("neoagent.sandbox").sandbox_exec(argv, {

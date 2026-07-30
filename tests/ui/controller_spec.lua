@@ -51,14 +51,18 @@ describe("neoagent default controller", function()
     assert.matches(" hello", lines)
   end)
 
-  it("identifies the Controller in executor context", function()
+  it("identifies the Controller and active Session in executor context", function()
     local model = fake_model.new({
       { result = fake_model.assistant({
         { type = "toolCall", id = "c1", name = "inspect", arguments = {} },
       }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "c2", name = "inspect", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
     })
-    local captured
+    local captured = {}
     local tool = {
       name = "inspect",
       description = "",
@@ -74,14 +78,21 @@ describe("neoagent default controller", function()
     setup_model(model, {
       tools = { tool },
       execute_tool = function(selected, arguments, ctx)
-        captured = ctx.context
+        captured[#captured + 1] = ctx.context
         return selected.execute(arguments, ctx)
       end,
     })
     local run = assert(neoagent.send("inspect"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.are.equal("Neo", captured.controller)
-    assert.are.equal(vim.fn.getcwd(), captured.workspace.cwd)
+    assert.are.equal("Neo", captured[1].controller)
+    assert.are.equal(vim.fn.getcwd(), captured[1].workspace.cwd)
+    assert.is_table(captured[1].session_id)
+
+    assert(neoagent.new_session())
+    run = assert(neoagent.send("inspect again"))
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.is_table(captured[2].session_id)
+    assert.are_not.equal(captured[1].session_id, captured[2].session_id)
   end)
 
   it("queues steering submissions one at a time during an active Run", function()
