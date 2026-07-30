@@ -5,7 +5,7 @@ local util = require("neoagent.util")
 local function temporary_directory()
   local path = vim.fn.tempname()
   assert.are.equal(1, vim.fn.mkdir(path, "p"))
-  return path
+  return assert(vim.uv.fs_realpath(path))
 end
 
 local function workspace(root)

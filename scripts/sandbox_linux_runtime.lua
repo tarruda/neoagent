@@ -394,8 +394,51 @@ local function threads()
   file:close()
 end
 
-local encoded = vim.env.NEOAGENT_SANDBOX_SPEC
-vim.env.NEOAGENT_SANDBOX_SPEC = nil
+local function wait_for_single_thread(timeout_ms)
+  local deadline = vim.uv.hrtime() + timeout_ms * 1000000
+  local count = threads()
+  while count ~= 1 and vim.uv.hrtime() < deadline do
+    vim.uv.sleep(1)
+    count = threads()
+  end
+  return count == 1, count
+end
+
+local function bootstrap_single_thread()
+  -- CLONE_NEWUSER accepts only a single-threaded caller. fork() retains the
+  -- calling thread in the child while hosted Neovim helper threads remain in
+  -- this parent. The runtime reaches this boundary before scheduling its own
+  -- asynchronous work, and the calling thread owns the active Lua state.
+  local parent_pid = C.getpid()
+  local child = C.fork()
+  if child < 0 then terminal_error("thread-bootstrap") end
+  if child == 0 then
+    -- Close the fork-to-parent-death race before continuing namespace setup.
+    if C.prctl(PR_SET_PDEATHSIG, SIG.KILL, 0, 0, 0) ~= 0
+        or C.getppid() ~= parent_pid then
+      terminal_error("thread-bootstrap-parent")
+    end
+    return
+  end
+
+  -- Retain the launched process lifetime and status while the single-threaded
+  -- child writes the sandbox protocol directly to the inherited descriptors.
+  local status = ffi.new("int[1]")
+  while C.waitpid(child, status, 0) < 0 do
+    if ffi.errno() ~= E.EINTR then
+      terminal_error("thread-bootstrap-wait")
+    end
+  end
+  -- waitpid stores a terminating signal in the low seven bits and a normal
+  -- exit code in bits 8-15.
+  local raw = tonumber(status[0])
+  local signal = bit.band(raw, 0x7f)
+  if signal ~= 0 then finish(128 + signal) end
+  finish(bit.band(bit.rshift(raw, 8), 0xff))
+end
+
+local encoded = vim.uv.os_getenv("NEOAGENT_SANDBOX_SPEC", 512 * 1024 + 1)
+vim.uv.os_unsetenv("NEOAGENT_SANDBOX_SPEC")
 if not abi then terminal_error("architecture", 0) end
 if type(encoded) ~= "string" then terminal_error("specification-environment", 0) end
 if #encoded > 512 * 1024 then terminal_error("specification-size", 0) end
@@ -467,7 +510,18 @@ for _, entry in ipairs(spec.protected_create) do
     terminal_error("specification-protected-create", 0)
   end
 end
-if threads() ~= 1 then terminal_error("threads", 0) end
+-- Transient startup helpers may quiesce naturally. A persistent helper uses
+-- the supervised fork boundary while namespace setup stays single-threaded.
+local single_threaded, thread_count = wait_for_single_thread(250)
+if not single_threaded and thread_count and thread_count > 1 then
+  bootstrap_single_thread()
+  single_threaded, thread_count = wait_for_single_thread(0)
+end
+-- Missing or malformed /proc thread data remains a hard failure; the fork
+-- path applies only when a real additional thread was observed.
+if not single_threaded then
+  terminal_error("threads", thread_count or 0)
+end
 
 local editor_pid = C.getppid()
 if C.prctl(PR_SET_PDEATHSIG, SIG.KILL, 0, 0, 0) ~= 0

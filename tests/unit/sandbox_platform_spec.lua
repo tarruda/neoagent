@@ -4,7 +4,19 @@ local protocol = require("neoagent.sandbox.linux.protocol")
 local function temporary_directory()
   local path = vim.fn.tempname()
   assert.are.equal(1, vim.fn.mkdir(path, "p"))
-  return path
+  return assert(vim.uv.fs_realpath(path))
+end
+
+local function executable_path(command)
+  local path = vim.fn.exepath(command)
+  if path == "" then path = command end
+  return assert(vim.uv.fs_realpath(path))
+end
+
+local function uses_low_level_lua()
+  -- These versions provide -ll before editor initialization; 0.13+ uses -l.
+  local version = vim.version()
+  return version.major == 0 and version.minor < 13
 end
 
 local function profile(root, extra)
@@ -59,6 +71,7 @@ end
 
 describe("neoagent sandbox platform adapters", function()
   local paths = {}
+  local linux_it = vim.uv.os_uname().sysname == "Linux" and it or pending
 
   after_each(function()
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
@@ -77,10 +90,12 @@ describe("neoagent sandbox platform adapters", function()
       fs = fs,
       nvim = vim.env.NEOAGENT_NVIM,
       system = function(argv, opts, timeout)
-        local encoded
-        for _, value in ipairs(opts.env) do
-          encoded = encoded
-            or value:match("^NEOAGENT_SANDBOX_SPEC=(.*)$")
+        local encoded = opts.env.NEOAGENT_SANDBOX_SPEC
+        if not encoded then
+          for _, value in ipairs(opts.env) do
+            encoded = encoded
+              or value:match("^NEOAGENT_SANDBOX_SPEC=(.*)$")
+          end
         end
         seen[#seen + 1] = {
           argv = argv,
@@ -126,9 +141,21 @@ describe("neoagent sandbox platform adapters", function()
     assert.matches("protected%-create%-probe$",
       seen[2].spec.protected_create[1].path)
     assert.are.equal(321, seen[2].timeout)
-    assert.are.equal(vim.env.NEOAGENT_NVIM, seen[2].argv[1])
-    assert.are.equal("-l", seen[2].argv[#seen[2].argv - 1])
-    assert.are.equal("string", type(seen[2].opts.env[1]))
+    assert.are.equal(executable_path(vim.env.NEOAGENT_NVIM),
+      seen[2].argv[1])
+    if uses_low_level_lua() then
+      assert.are.equal("-ll", seen[2].argv[#seen[2].argv - 1])
+    else
+      assert.is_true(vim.list_contains(seen[2].argv, "--headless"))
+      assert.are.equal("-l", seen[2].argv[#seen[2].argv - 1])
+    end
+    assert.is_true(seen[2].opts.clear_env)
+    if vim.version.lt(vim.version(), { 0, 11, 0 }) then
+      assert.are.equal("string", type(seen[2].opts.env[1]))
+    else
+      assert.are.equal("string",
+        type(seen[2].opts.env.NEOAGENT_SANDBOX_SPEC))
+    end
     assert.are.equal("host", seen[2].spec.procfs)
 
     local failed = require("neoagent.sandbox.linux").check({
@@ -150,6 +177,103 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.is_false(failed.ok)
     assert.matches("mount%-root failed", failed.message)
+  end)
+
+  linux_it("reads large Linux runtime specifications",
+    function()
+      local runtime = assert(vim.api.nvim_get_runtime_file(
+        "scripts/sandbox_linux_runtime.lua", false)[1])
+      local encoded = string.rep("x", 2048)
+      local environment = {
+        NEOAGENT_SANDBOX_SPEC = encoded,
+      }
+      if vim.version.lt(vim.version(), { 0, 11, 0 }) then
+        environment = { "NEOAGENT_SANDBOX_SPEC=" .. encoded }
+      end
+      local argv = { executable_path(vim.env.NEOAGENT_NVIM) }
+      if uses_low_level_lua() then
+        vim.list_extend(argv, { "-ll", runtime })
+      else
+        vim.list_extend(argv, {
+          "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", runtime,
+        })
+      end
+      local completed = vim.system(argv, {
+        clear_env = true,
+        env = environment,
+        text = false,
+      }):wait(5000)
+      local events, terminal = protocol.decode_all(completed.stdout)
+      assert.are.equal(125, completed.code)
+      assert.is_table(events)
+      assert.are.equal("error", terminal.type)
+      assert.are.equal("specification-json", terminal.stage)
+    end)
+
+  it("resolves a configured Linux Neovim command through PATH", function()
+    local command = vim.fs.basename(vim.fn.exepath("nvim"))
+    local expected = executable_path(command)
+    local argv
+    local status = require("neoagent.sandbox.linux").check({
+      fs = fs,
+      nvim = command,
+      system = function(value)
+        argv = value
+        return {
+          code = 0,
+          signal = 0,
+          stdout = protocol.encode({ v = 1, type = "ready" })
+            .. protocol.encode({
+              v = 1, type = "exit", code = 0, signal = 0,
+            }),
+          stderr = "",
+        }
+      end,
+    })
+    assert.is_true(status.ok)
+    assert.are.equal(expected, argv[1])
+  end)
+
+  it("resolves a reconstructed Linux Neovim command through PATH", function()
+    local original_open = vim.uv.fs_open
+    local original_read = vim.uv.fs_read
+    local original_close = vim.uv.fs_close
+    local proc = {}
+    vim.uv.fs_open = function(path, ...)
+      if path == "/proc/self/cmdline" then return proc end
+      return original_open(path, ...)
+    end
+    vim.uv.fs_read = function(fd, ...)
+      if fd == proc then return "nvim\0" .. vim.v.argv[1] .. "\0" end
+      return original_read(fd, ...)
+    end
+    vim.uv.fs_close = function(fd, ...)
+      if fd == proc then return true end
+      return original_close(fd, ...)
+    end
+    local argv
+    local checked, status = pcall(
+      require("neoagent.sandbox.linux").check, {
+        fs = fs,
+        system = function(value)
+          argv = value
+          return {
+            code = 0,
+            signal = 0,
+            stdout = protocol.encode({ v = 1, type = "ready" })
+              .. protocol.encode({
+                v = 1, type = "exit", code = 0, signal = 0,
+              }),
+            stderr = "",
+          }
+        end,
+      })
+    vim.uv.fs_open = original_open
+    vim.uv.fs_read = original_read
+    vim.uv.fs_close = original_close
+    assert.is_true(checked, tostring(status))
+    assert.is_true(status.ok)
+    assert.are.equal(executable_path("nvim"), argv[1])
   end)
 
   it("decodes Linux process output without host capture duplication", function()
@@ -551,10 +675,12 @@ describe("neoagent sandbox platform adapters", function()
     local owned_path
     local replacement_path
     local root_checks = 0
+    local root_identity
     local original_lstat = vim.uv.fs_lstat
     local filesystem = setmetatable({
       create_temp_directory = function(prefix)
         sandbox_path = assert(fs.create_temp_directory(prefix))
+        sandbox_path = assert(vim.uv.fs_realpath(sandbox_path))
         owned_path = sandbox_path .. ".owned"
         replacement_path = vim.fs.joinpath(sandbox_path, "preserve")
         return sandbox_path
@@ -569,7 +695,20 @@ describe("neoagent sandbox platform adapters", function()
           assert(fs.write_all(replacement_path, "replacement"))
         end
       end
-      return original_lstat(path)
+      local stat = original_lstat(path)
+      if path == sandbox_path and stat then
+        if root_checks == 1 then
+          root_identity = vim.deepcopy(stat)
+        elseif root_checks >= 2 then
+          stat.dev = root_identity.dev
+          stat.ino = root_identity.ino
+          stat.birthtime = {
+            sec = root_identity.birthtime.sec + 1,
+            nsec = root_identity.birthtime.nsec,
+          }
+        end
+      end
+      return stat
     end
     local launched = false
     local ok, err = pcall(function()
@@ -750,7 +889,7 @@ describe("neoagent sandbox platform adapters", function()
     local executable = vim.fs.joinpath(root, "sandbox-exec")
     assert(fs.write_all(executable, "#!/bin/sh\nexit 0\n"))
     assert(vim.uv.fs_chmod(executable, 493))
-    local nvim = vim.env.NEOAGENT_NVIM
+    local nvim = executable_path(vim.env.NEOAGENT_NVIM)
     local macos = require("neoagent.sandbox.macos")
     local checked
     local status = macos.check({
@@ -810,6 +949,12 @@ describe("neoagent sandbox platform adapters", function()
       "scripts/sandbox_macos_runtime.lua", false)[1])
     assert.is_true(vim.tbl_contains(calls[1].argv,
       vim.uv.fs_realpath(runtime)))
+    local cleanup_helper_granted = false
+    for _, argument in ipairs(calls[1].argv) do
+      cleanup_helper_granted = cleanup_helper_granted
+        or argument:match("^%-DPATH_%d+=/bin/sh$") ~= nil
+    end
+    assert.is_true(cleanup_helper_granted)
     assert.are.same({
       "--", "/bin/sh", "-c", "true",
     }, vim.list_slice(calls[1].argv, #calls[1].argv - 3))
@@ -941,6 +1086,30 @@ describe("neoagent sandbox platform adapters", function()
       return { code = 0, signal = 0, stdout = "", stderr = "" }
     end))
     assert.is_true(written)
+  end)
+
+  it("resolves a configured macOS Neovim command through PATH", function()
+    local root = temp()
+    local executable = vim.fs.joinpath(root, "sandbox-exec")
+    assert(fs.write_all(executable, "#!/bin/sh\nexit 0\n"))
+    assert(vim.uv.fs_chmod(executable, 493))
+    local command = vim.fs.basename(vim.fn.exepath("nvim"))
+    local expected = executable_path(command)
+    local argv
+    local status = require("neoagent.sandbox.macos").check({
+      sandbox_exec = executable,
+      nvim = command,
+      system = function(value)
+        argv = value
+        return { code = 0, signal = 0, stdout = "", stderr = "" }
+      end,
+    })
+    assert.is_true(status.ok)
+    local separator
+    for index, value in ipairs(argv) do
+      if value == "--" then separator = index break end
+    end
+    assert.are.equal(expected, argv[separator + 1])
   end)
 
   it("keeps the public sandbox_exec API platform-neutral", function()

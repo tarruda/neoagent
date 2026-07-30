@@ -31,6 +31,8 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           ln -s "$(command -v fdfind)" "$HOME/.local/bin/fd"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install ImageMagick on stable
         if: matrix.neovim == 'stable'
         run: sudo apt-get install -y imagemagick

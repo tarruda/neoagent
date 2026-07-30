@@ -17,7 +17,9 @@ local function filesystem_request(encoded)
 
   if request.operation == "read" then
     local stat, stat_err = vim.uv.fs_stat(request.path)
-    if not stat or stat.type ~= "file" then fail(stat_err or "not a file") end
+    if not stat or stat.type ~= "file" then
+      fail(stat_err or "not a regular file")
+    end
     local fd, open_err = vim.uv.fs_open(request.path, "r", 438)
     if not fd then fail(open_err) end
     local data, read_err = vim.uv.fs_read(fd, stat.size, 0)
@@ -69,6 +71,7 @@ if #command == 0 then fail("command is required") end
 
 local signal_watchers = {}
 local stopping = false
+local cleanup_started = false
 local function close_signal_watchers()
   for _, watcher in ipairs(signal_watchers) do
     if not watcher:is_closing() then
@@ -79,17 +82,36 @@ local function close_signal_watchers()
   signal_watchers = {}
 end
 
-local function kill_descendants(signal)
-  pcall(vim.uv.kill, -1, signal)
+local function schedule_descendant_cleanup()
+  if cleanup_started then return true end
+  -- The detached peer waits for this supervisor to exit before terminating
+  -- every process that remains in the Seatbelt sandbox.
+  local handle, err = vim.uv.spawn("/bin/sh", {
+    args = {
+      "-c",
+      "parent=$PPID; while kill -0 \"$parent\" 2>/dev/null; "
+        .. "do :; done; kill -KILL -1",
+    },
+    detached = true,
+    stdio = { nil, nil, nil },
+  }, function() end)
+  if not handle then return nil, err end
+  cleanup_started = true
+  handle:unref()
+  return true
 end
 
 local function stop(signal)
   if stopping then return end
   stopping = true
-  kill_descendants(15)
-  kill_descendants(9)
+  local cleanup_ok, cleanup_err = schedule_descendant_cleanup()
   close_signal_watchers()
-  vim.schedule(function() os.exit(128 + signal) end)
+  vim.schedule(function()
+    if not cleanup_ok then
+      fail("could not start descendant cleanup: " .. tostring(cleanup_err))
+    end
+    os.exit(128 + signal)
+  end)
 end
 
 for _, signal in ipairs({ 1, 2, 15 }) do
@@ -128,8 +150,11 @@ if stopping then
   while true do vim.wait(100, function() return false end, 10) end
 end
 
-kill_descendants(9)
+local cleanup_ok, cleanup_err = schedule_descendant_cleanup()
 close_signal_watchers()
+if not cleanup_ok then
+  fail("could not start descendant cleanup: " .. tostring(cleanup_err))
+end
 if completed.signal ~= 0 then
   pcall(vim.uv.kill, vim.fn.getpid(), completed.signal)
   os.exit(128 + completed.signal)

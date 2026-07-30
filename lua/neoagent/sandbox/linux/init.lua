@@ -29,8 +29,16 @@ local function runtime_file()
 end
 
 local function executable(path)
-  local stat = path and vim.uv.fs_stat(path)
-  return stat and stat.type == "file" and vim.fn.executable(path) == 1
+  if type(path) ~= "string" or path == "" then return nil end
+  local candidate = path
+  if not path:find("/", 1, true) then
+    candidate = vim.fn.exepath(path)
+  end
+  local resolved = candidate ~= "" and vim.uv.fs_realpath(candidate) or nil
+  local stat = resolved and vim.uv.fs_stat(resolved)
+  if stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
+    return vim.fs.normalize(resolved)
+  end
 end
 
 local function process_commandline()
@@ -44,12 +52,19 @@ local function process_commandline()
   return values
 end
 
+local function resolved_command(command)
+  command[1] = executable(command[1]) or command[1]
+  return command
+end
+
 local function nvim_command(configured)
-  if type(configured) == "string" then return { configured } end
+  local command
+  if type(configured) == "string" then command = { configured } end
   if type(configured) == "table" and util.is_list(configured)
       and #configured > 0 then
-    return util.copy(configured)
+    command = util.copy(configured)
   end
+  if command then return resolved_command(command) end
   local actual = vim.v.argv[1]
   local commandline = process_commandline()
   if type(actual) == "string" and commandline then
@@ -57,15 +72,21 @@ local function nvim_command(configured)
       if value == actual then
         local command = {}
         for part = 1, index do command[part] = commandline[part] end
-        return command
+        return resolved_command(command)
       end
     end
   end
-  return { vim.v.progpath }
+  return resolved_command({ vim.v.progpath })
 end
 
-local function same_inode(left, right)
+local function same_time(left, right)
+  return left and right
+    and left.sec == right.sec and left.nsec == right.nsec
+end
+
+local function same_identity(left, right)
   return left and right and left.dev == right.dev and left.ino == right.ino
+    and same_time(left.birthtime, right.birthtime)
 end
 
 local function contains(root, path)
@@ -114,7 +135,7 @@ end
 local function valid_root(root)
   local stat = vim.uv.fs_lstat(root.path)
   return stat and stat.type == "directory"
-    and same_inode(stat, root.stat)
+    and same_identity(stat, root.stat)
 end
 
 local function cleanup(root)
@@ -126,9 +147,16 @@ end
 
 local function runtime_argv(nvim, script, command)
   local argv = util.copy(nvim)
-  vim.list_extend(argv, {
-    "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", script,
-  })
+  local version = vim.version()
+  -- Neovim 0.10-0.12 expose -ll for Lua execution before editor
+  -- initialization. Neovim 0.13+ provides script mode through headless -l.
+  if version.major == 0 and version.minor < 13 then
+    vim.list_extend(argv, { "-ll", script })
+  else
+    vim.list_extend(argv, {
+      "--headless", "-u", "NONE", "-i", "NONE", "-n", "-l", script,
+    })
+  end
   if command then
     argv[#argv + 1] = "--"
     vim.list_extend(argv, command)
@@ -212,8 +240,12 @@ local function environment(spec)
 end
 
 local function system_environment(spec)
+  local variables = environment(spec)
+  if not vim.version.lt(vim.version(), { 0, 11, 0 }) then
+    return variables
+  end
   local result = {}
-  for name, value in pairs(environment(spec)) do
+  for name, value in pairs(variables) do
     result[#result + 1] = name .. "=" .. value
   end
   table.sort(result)

@@ -27,6 +27,11 @@ local required = vim.env.NEOAGENT_REQUIRE_SANDBOX == "1"
 local sandbox_test = active and it or pending
 local linux_sandbox_test =
   active and platform.name == "linux" and it or pending
+-- Only the hosted 0.10 runner demonstrated a persistent startup helper, so
+-- keep the regression on that reported path while the shared contract covers
+-- the other supported releases.
+local linux_v010_sandbox_test = active and platform.name == "linux"
+  and vim.version().major == 0 and vim.version().minor == 10 and it or pending
 
 local function diagnostic()
   if not status then return "no platform status" end
@@ -68,6 +73,12 @@ local function text(message)
     and message.content[1].text or ""
 end
 
+local function temporary_directory()
+  local path = vim.fn.tempname()
+  assert(fs.mkdirp(path))
+  return assert(vim.uv.fs_realpath(path))
+end
+
 describe("neoagent shared sandbox contract", function()
   local original_cwd
   local original_inherited
@@ -96,8 +107,8 @@ describe("neoagent shared sandbox contract", function()
     original_secret = vim.env.NEOAGENT_SANDBOX_TEST_SECRET
     roots = {}
     spill_paths = {}
-    workspace = vim.fn.tempname()
-    outside = vim.fn.tempname()
+    workspace = temporary_directory()
+    outside = temporary_directory()
     host_readonly = vim.fs.joinpath(
       original_cwd, ".test-data",
       "sandbox-readonly-" .. tostring(vim.uv.hrtime()))
@@ -134,6 +145,38 @@ describe("neoagent shared sandbox contract", function()
     for _, path in ipairs(spill_paths or {}) do vim.fn.delete(path) end
     for _, path in ipairs(roots or {}) do vim.fn.delete(path, "rf") end
   end)
+
+  linux_v010_sandbox_test(
+    "starts Linux isolation after a Neovim 0.10 helper thread",
+    function()
+      local wrapper = vim.fs.joinpath(workspace, "threaded-runtime.lua")
+      local checked = platform.check({
+        fs = fs,
+        nvim = vim.env.NEOAGENT_NVIM,
+        system = function(argv, opts, timeout)
+          local launch = vim.deepcopy(argv)
+          local runtime
+          for index, argument in ipairs(launch) do
+            if argument == "-ll" then
+              runtime = launch[index + 1]
+              launch[index + 1] = wrapper
+              break
+            end
+          end
+          assert.is_string(runtime)
+          -- Hold a real OS thread across script loading to reproduce the
+          -- hosted process state without depending on its unknown helper.
+          assert(fs.write_all(wrapper, table.concat({
+            "_G.neoagent_sandbox_test_thread = vim.uv.new_thread(",
+            "  function() require('luv').sleep(10000) end)",
+            "dofile(" .. string.format("%q", runtime) .. ")",
+            "",
+          }, "\n")))
+          return vim.system(launch, opts):wait(timeout)
+        end,
+      })
+      assert.is_true(checked.ok, checked.message)
+    end)
 
   local function profile(default)
     default.id = "shared-integration"

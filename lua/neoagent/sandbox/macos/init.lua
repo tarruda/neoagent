@@ -5,6 +5,7 @@ local M = { name = "macos" }
 local FS_TIMEOUT_MS = 30000
 local SUPERVISOR_GRACE_MS = 100
 local SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+local CLEANUP_HELPERS = { "/bin/sh" }
 
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
@@ -18,8 +19,16 @@ local function runtime_file(path)
 end
 
 local function executable(path)
-  local stat = vim.uv.fs_stat(path)
-  return stat and stat.type == "file" and vim.fn.executable(path) == 1
+  if type(path) ~= "string" or path == "" then return nil end
+  local candidate = path
+  if not path:find("/", 1, true) then
+    candidate = vim.fn.exepath(path)
+  end
+  local resolved = candidate ~= "" and vim.uv.fs_realpath(candidate) or nil
+  local stat = resolved and vim.uv.fs_stat(resolved)
+  if stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
+    return vim.fs.normalize(resolved)
+  end
 end
 
 local function regular_file(path)
@@ -53,17 +62,18 @@ end
 
 function M.check(services)
   services = services or {}
-  local sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
-  local nvim = services.nvim or vim.v.progpath
-  if not executable(sandbox_exec) then
+  local configured_sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
+  local sandbox_exec = executable(configured_sandbox_exec)
+  local nvim = executable(services.nvim or vim.v.progpath)
+  if not sandbox_exec then
     return {
       ok = false,
       platform = M.name,
       stage = "sandbox-exec",
-      message = sandbox_exec .. " is missing or not executable",
+      message = configured_sandbox_exec .. " is missing or not executable",
     }
   end
-  if not executable(nvim) then
+  if not nvim then
     return {
       ok = false,
       platform = M.name,
@@ -113,7 +123,8 @@ function M.check(services)
 end
 
 local function execute(request, services, protected)
-  local sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
+  local configured = services.sandbox_exec or SANDBOX_EXEC
+  local sandbox_exec = executable(configured) or configured
   local internal = {}
   for _, path in ipairs(protected or {}) do
     internal[#internal + 1] = { path = path, access = "read" }
@@ -156,7 +167,8 @@ function M.exec(request, services)
     error(util.error("sandbox_unavailable",
       "macOS sandbox runtime was not found"), 0)
   end
-  local nvim = services.nvim or vim.v.progpath
+  local configured = services.nvim or vim.v.progpath
+  local nvim = executable(configured) or configured
   local wrapped = util.copy(request)
   wrapped.argv = runtime_argv(nvim, runtime, request.argv)
   wrapped.env = util.copy(request.env or {})
@@ -165,7 +177,9 @@ function M.exec(request, services)
       and wrapped.kill_grace_ms < SUPERVISOR_GRACE_MS then
     wrapped.kill_grace_ms = SUPERVISOR_GRACE_MS
   end
-  return execute(wrapped, services, { nvim, runtime })
+  local protected = { nvim, runtime }
+  vim.list_extend(protected, CLEANUP_HELPERS)
+  return execute(wrapped, services, protected)
 end
 
 function M.fs(request, services)
@@ -181,7 +195,8 @@ function M.fs(request, services)
     flags = request.flags,
     mode = request.mode,
   })
-  local nvim = services.nvim or vim.v.progpath
+  local configured = services.nvim or vim.v.progpath
+  local nvim = executable(configured) or configured
   local process_request = {
     argv = {
       nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
