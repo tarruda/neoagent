@@ -784,12 +784,6 @@ describe("neoagent sandbox protocol and native profiles", function()
     assert.are.equal(199, arm.socketpair)
     assert.is_true(vim.list_contains(arm.network_deny, 203))
     assert.is_nil(seccomp.rules("mips", "restricted"))
-
-    local appended = require("neoagent.sandbox.result").append({
-      content = { { type = "image", data = "bytes" } },
-    }, "sandbox context", { ran_restricted = true })
-    assert.are.equal("sandbox context", appended.content[1].text)
-    assert.is_true(appended.details.sandbox.ran_restricted)
   end)
 
   it("compiles macOS policies with parameterized paths", function()
@@ -850,6 +844,225 @@ describe("neoagent sandbox execution", function()
     paths[#paths + 1] = path
     return path
   end
+
+  it("preserves ordinary nonzero command results", function()
+    local root = temp()
+    local box = require("neoagent.sandbox.enforce").new({
+      platform = {
+        name = "test",
+        fs = function() return true end,
+        exec = function()
+          return {
+            code = 1,
+            signal = 0,
+            stdout = "",
+            stderr = "",
+            output = "",
+            timed_out = false,
+          }
+        end,
+      },
+      profile = profile(root),
+    })
+    local value = box:wrap()(
+      require("neoagent.tools.shell").new(),
+      { command = "grep missing file.txt" },
+      context(root))
+
+    assert.is_true(value.isError)
+    assert.are.equal(1, value.details.exit_code)
+    assert.is_nil(value.details.sandbox)
+    assert.are.equal(
+      "[Command exited with status 1]\n(no output)",
+      value.content[1].text)
+
+    local expected = {
+      content = { { type = "image", data = "ordinary-error" } },
+      is_error = true,
+      details = { exit_code = 1, source = "command" },
+    }
+    local custom = box:wrap()({
+      execute = function(_, ctx)
+        local process_result =
+          ctx.process({ "grep" }, { cwd = root })
+        assert.are.equal(1, process_result.code)
+        return expected
+      end,
+    }, {}, context(root))
+    assert.are.same(expected, custom)
+
+    local no_matches = box:wrap()(
+      require("neoagent.tools.grep").new(),
+      { pattern = "missing" },
+      context(root))
+    assert.is_nil(no_matches.isError)
+    assert.are.equal("No matches found", no_matches.content[1].text)
+  end)
+
+  it("classifies likely sandbox denials from bounded process evidence",
+    function()
+      local root = temp()
+      local responses = {}
+      local streamed = {}
+      local box = require("neoagent.sandbox.enforce").new({
+        platform = {
+          name = "linux",
+          fs = function() return true end,
+          exec = function(request)
+            local response = assert(responses[request.argv[1]])
+            if response.stdout_stream then
+              request.on_output(response.stdout_stream, false)
+            end
+            if response.stream then
+              request.on_output(response.stream, true)
+              streamed[#streamed + 1] = response.stream
+            end
+            return {
+              code = response.code,
+              signal = response.signal or 0,
+              stdout = response.stdout or "",
+              stderr = response.stderr or "",
+              output = response.output or "",
+              timed_out = false,
+            }
+          end,
+        },
+        profile = profile(root),
+      })
+      local function execute(name, returned, throws)
+        return box:wrap()({
+          execute = function(_, ctx)
+            local process_result = ctx.process({ name }, {
+              cwd = root,
+              on_output = function(data)
+                assert.is_string(data)
+              end,
+            })
+            if throws then
+              error("tool rejected status " .. process_result.code)
+            end
+            return returned or {
+              content = { { type = "text", text = name } },
+              details = { exit_code = process_result.code },
+              isError = true,
+            }
+          end,
+        }, {}, context(root))
+      end
+      local function assert_restricted(value)
+        assert.is_true(value.isError or value.is_error)
+        assert.is_true(value.details.sandbox.ran_restricted)
+        assert.matches("ran inside the sandbox",
+          value.content[1].text, 1, true)
+      end
+      local cases = {
+        {
+          name = "operation",
+          stderr = "Operation not permitted",
+        },
+        {
+          name = "permission",
+          stream = "Permission denied",
+        },
+        {
+          name = "readonly",
+          stdout = "Read-only file system",
+        },
+        {
+          name = "seccomp",
+          output = "seccomp rejected the syscall",
+        },
+        {
+          name = "sandbox",
+          stderr = "sandbox policy rejected the operation",
+        },
+        {
+          name = "landlock",
+          stdout = "Landlock denied the path",
+        },
+        {
+          name = "write",
+          output = "failed to write file",
+        },
+      }
+      for _, item in ipairs(cases) do
+        item.code = 1
+        responses[item.name] = item
+        assert_restricted(execute(item.name))
+      end
+      assert.are.same({ "Permission denied" }, streamed)
+
+      responses.image = {
+        code = 127,
+        stderr = "Permission denied",
+      }
+      local image = execute("image", {
+        content = { { type = "image", data = "bytes" } },
+        details = { source = "custom" },
+        is_error = true,
+      })
+      assert_restricted(image)
+      assert.are.equal("custom", image.details.source)
+      assert.are.equal("image", image.content[2].type)
+
+      responses.thrown = {
+        code = 1,
+        stderr = "operation not permitted",
+      }
+      local thrown = execute("thrown", nil, true)
+      assert_restricted(thrown)
+      assert.matches("tool rejected status 1",
+        thrown.content[1].text, 1, true)
+
+      responses.cancelled = {
+        code = 1,
+        stderr = "operation not permitted",
+      }
+      local cancel_execute = box:wrap()
+      local completed, cancelled = pcall(cancel_execute, {
+        execute = function(_, ctx)
+          ctx.process({ "cancelled" }, { cwd = root })
+          error({ kind = "cancelled", message = "cancelled" }, 0)
+        end,
+      }, {}, context(root))
+      assert.is_false(completed)
+      assert.are.equal("cancelled", cancelled.kind)
+
+      for _, code in ipairs({ 2, 126, 127 }) do
+        local name = "ordinary-" .. code
+        responses[name] = { code = code, stderr = "command not found" }
+        local ordinary = execute(name)
+        assert.is_nil(ordinary.details.sandbox)
+        assert.are.equal(name, ordinary.content[1].text)
+      end
+
+      responses.success = {
+        code = 0,
+        stderr = "operation not permitted",
+      }
+      local success = execute("success")
+      assert.is_nil(success.details.sandbox)
+
+      responses.bounded = {
+        code = 1,
+        stream = string.rep("x", 1024 * 1024) .. "permission denied",
+      }
+      local bounded = execute("bounded")
+      assert.is_nil(bounded.details.sandbox)
+
+      responses.contention = {
+        code = 1,
+        stdout_stream = string.rep("x", 1024 * 1024),
+        stream = "permission denied",
+      }
+      assert_restricted(execute("contention"))
+
+      local sigsys = vim.uv.constants and vim.uv.constants.SIGSYS
+      if sigsys then
+        responses.sigsys = { code = 128 + sigsys, signal = sigsys }
+        assert_restricted(execute("sigsys"))
+      end
+    end)
 
   it("enforces filesystem, process, environment, and capability lifetime", function()
     local root = temp()
@@ -925,18 +1138,17 @@ describe("neoagent sandbox execution", function()
       end,
     }, {}, context(root))
     assert.are.same({ "chunk" }, updates)
-    assert.is_true(failed.details.sandbox.ran_restricted)
-    assert.matches("ran inside the sandbox", failed.content[1].text)
-    local thrown = execute({
-      execute = function(_, ctx)
-        local process_result = ctx.process({ "fail" }, { cwd = root })
-        error("native tool rejected status " .. process_result.code)
-      end,
-    }, {}, context(root))
-    assert.is_true(thrown.isError)
-    assert.matches("native tool rejected status 2", thrown.content[1].text)
-    assert.matches("ran inside the sandbox", thrown.content[1].text)
-    assert.is_true(thrown.details.sandbox.ran_restricted)
+    assert.is_true(failed.isError)
+    assert.are.equal("failed", failed.content[1].text)
+    assert.is_nil(failed.details)
+    assert.has_error(function()
+      execute({
+        execute = function(_, ctx)
+          local process_result = ctx.process({ "fail" }, { cwd = root })
+          error("native tool rejected status " .. process_result.code)
+        end,
+      }, {}, context(root))
+    end, "native tool rejected status 2")
     local process_request = calls[#calls]
     assert.are.same({ PATH = "/bin", TEST_SANDBOX = "yes" },
       process_request.env)
@@ -1214,7 +1426,7 @@ describe("neoagent sandbox execution", function()
       }, "\n"), request.body)
     end)
 
-  it("remembers only safe shell command prefixes for the current session",
+  it("remembers edited shell command prefixes for the current session",
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
@@ -1298,14 +1510,24 @@ describe("neoagent sandbox execution", function()
         "git status | sh",
         "git status $(rm -rf /tmp/should-not-run)",
         "git status > /tmp/should-not-run",
+        "git status 'unterminated",
+        "git status\nrm -rf /tmp/should-not-run",
       }) do
         value = execute(shell, arguments(command),
           with_dialog("session-one", { "deny" }, prompted))
         assert.is_true(value.details.sandbox.denied_by_user)
-        assert.is_false(vim.tbl_contains(
+        assert.is_true(vim.tbl_contains(
           vim.tbl_map(function(action) return action.id end,
-            prompted[#prompted].actions), "approve_prefix"))
+            prompted[#prompted].actions), "approve_prefix"), command)
       end
+
+      prompted = {}
+      value = execute(shell, arguments("$(whoami) --version"),
+        with_dialog("session-one", { "deny" }, prompted))
+      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_false(vim.tbl_contains(
+        vim.tbl_map(function(action) return action.id end,
+          prompted[#prompted].actions), "approve_prefix"))
 
       execute(shell, arguments("git status '&&'"),
         with_dialog("session-one", {}, {}))
@@ -1321,7 +1543,7 @@ describe("neoagent sandbox execution", function()
       assert.are.same({ "git status --short" }, restricted)
     end)
 
-  it("rejects unsafe or unrelated remembered shell prefixes", function()
+  it("rejects compound or unrelated remembered shell prefixes", function()
     local root = temp()
     local module = require("neoagent.sandbox.escalation")
     local shell = module.new({ shell = "/bin/sh" }):tools({
@@ -1352,7 +1574,6 @@ describe("neoagent sandbox execution", function()
       "FOO=bar git status",
       "! git status",
       "coproc git status",
-      "git",
       "npm run",
       "env FOO=bar",
       "cargo build",
@@ -1395,43 +1616,6 @@ describe("neoagent sandbox execution", function()
       assert.is_false(elevated)
       assert.are.equal(4, #requests)
       assert.matches("cannot be remembered", requests[3].body)
-    end
-
-    for _, command in ipairs({
-      "deno run task.ts",
-      "fish script.fish",
-      "julia script.jl",
-      "lua script.lua",
-      "node script.js",
-      "nodejs script.js",
-      "osascript script.scpt",
-      "php script.php",
-      "python3.12 script.py",
-      "Rscript script.R",
-    }) do
-      local request
-      local escalation = module.new({ shell = "/bin/sh" })
-      shell = escalation:tools({
-        require("neoagent.tools.shell").new(),
-      })[1]
-      local execute = escalation:wrap({
-        restricted = function() error("restricted") end,
-        elevated = function() error("must not elevate") end,
-      })
-      local value = execute(shell, {
-        command = command,
-        options = {
-          require_escalation = true,
-          escalation_justification = "test interpreter prefix",
-        },
-      }, dialog_context(root, function(candidate)
-        request = candidate
-        return "deny"
-      end))
-      assert.is_true(value.details.sandbox.denied_by_user)
-      assert.is_false(vim.tbl_contains(
-        vim.tbl_map(function(action) return action.id end,
-          request.actions), "approve_prefix"), command)
     end
 
     local escalation = module.new({ shell = "/bin/sh" })
@@ -1479,7 +1663,7 @@ describe("neoagent sandbox execution", function()
     assert.are.equal(2, elevated)
   end)
 
-  it("parses cmd and PowerShell prefixes without accepting operators",
+  it("offers cmd and PowerShell leading prefixes without operator tokens",
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
@@ -1524,9 +1708,11 @@ describe("neoagent sandbox execution", function()
         "git status %COMSPEC%",
         "git status !COMSPEC!",
         [[git status "a\"b"]],
+        [[git status "unterminated]],
       }) do
-        assert.is_false(supports(cmd, command), command)
+        assert.is_true(supports(cmd, command), command)
       end
+      assert.is_false(supports(cmd, "%COMSPEC% /c whoami"))
 
       local powershell =
         [[C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe]]
@@ -1545,9 +1731,11 @@ describe("neoagent sandbox execution", function()
         [[git status "$env:COMSPEC"]],
         "git status `& whoami",
         "git status { whoami }",
+        [[git status "unterminated]],
       }) do
-        assert.is_false(supports(powershell, command), command)
+        assert.is_true(supports(powershell, command), command)
       end
+      assert.is_false(supports(powershell, "$env:COMSPEC /c whoami"))
 
       assert.is_false(supports("/usr/bin/fish", "git status --short"))
     end)
@@ -1607,6 +1795,175 @@ describe("neoagent sandbox execution", function()
     run("git status --short", {})
     assert.are.equal(8, #elevated)
   end)
+
+  it("remembers any literal prefix while compound commands keep prompting",
+    function()
+      local root = temp()
+      local module = require("neoagent.sandbox.escalation")
+      local escalation = module.new({ shell = "/bin/sh" })
+      local shell = escalation:tools({
+        require("neoagent.tools.shell").new(),
+      })[1]
+      local elevated = {}
+      local execute = escalation:wrap({
+        restricted = function() error("restricted") end,
+        elevated = function(_, arguments)
+          elevated[#elevated + 1] = arguments.command
+          return { content = { { type = "text", text = "elevated" } } }
+        end,
+      })
+      local function run(command, replies, seen)
+        local ctx = dialog_context(root, function(request)
+          if seen then seen[#seen + 1] = request end
+          local reply = table.remove(replies, 1)
+          assert.is_not_nil(reply, "unexpected approval prompt for " .. command)
+          return reply
+        end)
+        ctx.context.session_id = "any-prefix"
+        local value = execute(shell, {
+          command = command,
+          options = {
+            require_escalation = true,
+            escalation_justification = "test user-chosen prefixes",
+          },
+        }, ctx)
+        assert.are.equal(0, #replies)
+        return value
+      end
+      local function offered(request)
+        return vim.tbl_contains(
+          vim.tbl_map(function(action) return action.id end, request.actions),
+          "approve_prefix")
+      end
+
+      local seen = {}
+      local value = run("python3 scripts/report.py --json", {
+        "approve_prefix",
+        { ok = true, action = "accept_prefix", input = "python3" },
+      }, seen)
+      assert.are.equal("elevated", value.content[1].text)
+      assert.is_true(offered(seen[1]))
+
+      value = run("python3 tools/cleanup.py", {})
+      assert.are.equal("elevated", value.content[1].text)
+
+      seen = {}
+      value = run("python3 tools/cleanup.py && rm -rf /tmp/owned",
+        { "deny" }, seen)
+      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(offered(seen[1]))
+
+      seen = {}
+      value = run("git status && git push", {
+        "approve_prefix",
+        { ok = true, action = "accept_prefix", input = "git" },
+      }, seen)
+      assert.are.equal("elevated", value.content[1].text)
+      assert.is_true(offered(seen[1]))
+      assert.are.equal("git status && git push", seen[2].input.value)
+
+      value = run("git", {})
+      assert.are.equal("elevated", value.content[1].text)
+
+      value = run("git status --short", {})
+      assert.are.equal("elevated", value.content[1].text)
+
+      value = run("git status; rm -rf /tmp/owned", { "deny" })
+      assert.is_true(value.details.sandbox.denied_by_user)
+
+      assert.are.same({
+        "python3 scripts/report.py --json",
+        "python3 tools/cleanup.py",
+        "git status && git push",
+        "git",
+        "git status --short",
+      }, elevated)
+    end)
+
+  it("keeps cmd and PowerShell rules and matches free of chaining syntax",
+    function()
+      local root = temp()
+      local module = require("neoagent.sandbox.escalation")
+      local function harness(shell_path, session)
+        local escalation = module.new({ shell = shell_path })
+        local tool = escalation:tools({
+          require("neoagent.tools.shell").new(),
+        })[1]
+        local elevated = {}
+        local execute = escalation:wrap({
+          restricted = function() error("restricted") end,
+          elevated = function(_, arguments)
+            elevated[#elevated + 1] = arguments.command
+            return { content = { { type = "text", text = "elevated" } } }
+          end,
+        })
+        local function run(command, replies, seen)
+          local ctx = dialog_context(root, function(request)
+            if seen then seen[#seen + 1] = request end
+            local reply = table.remove(replies, 1)
+            assert.is_not_nil(reply,
+              "unexpected approval prompt for " .. command)
+            return reply
+          end)
+          ctx.context.session_id = session
+          local value = execute(tool, {
+            command = command,
+            options = {
+              require_escalation = true,
+              escalation_justification = "test chaining boundaries",
+            },
+          }, ctx)
+          assert.are.equal(0, #replies, command)
+          return value
+        end
+        return run, elevated
+      end
+      local function check(shell_path, session, compound, chained_prefix)
+        local run, elevated = harness(shell_path, session)
+        local requests = {}
+        local value = run("git status --short", {
+          "approve_prefix",
+          { ok = true, action = "accept_prefix", input = chained_prefix },
+          "cancel_prefix",
+          "deny",
+        }, requests)
+        assert.is_true(value.details.sandbox.denied_by_user)
+        assert.matches("cannot be remembered", requests[3].body)
+        run("git status --short", {
+          "approve_prefix",
+          { ok = true, action = "accept_prefix", input = "git status" },
+        })
+        run("git status --porcelain", {})
+        for _, command in ipairs(compound) do
+          value = run(command, { "deny" })
+          assert.is_true(value.details.sandbox.denied_by_user, command)
+        end
+        assert.are.same({
+          "git status --short",
+          "git status --porcelain",
+        }, elevated)
+      end
+
+      check([[C:\Windows\System32\cmd.exe]], "cmd-chaining", {
+        "git status & whoami",
+        "git status && whoami",
+        "git status | more",
+        "git status > owned.txt",
+        "git status %COMSPEC%",
+        "git status !COMSPEC!",
+        "git status ^& whoami",
+        "git status\nwhoami",
+      }, "git status & whoami")
+
+      check("pwsh.exe", "pwsh-chaining", {
+        "git status; whoami",
+        "git status | whoami",
+        "git status & whoami",
+        "git status $(whoami)",
+        "git status `; whoami",
+        "git status\nwhoami",
+      }, "git status; whoami")
+    end)
 
   it("fails closed when command-prefix editing cannot settle", function()
     local root = temp()

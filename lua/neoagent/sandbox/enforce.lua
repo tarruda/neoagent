@@ -8,10 +8,65 @@ local M = {}
 local Enforcement = {}
 Enforcement.__index = Enforcement
 
+local DENIAL_EVIDENCE_MAX_BYTES = 1024 * 1024
+local DENIAL_KEYWORDS = {
+  "operation not permitted",
+  "permission denied",
+  "read-only file system",
+  "seccomp",
+  "sandbox",
+  "landlock",
+  "failed to write file",
+}
+local QUICK_REJECT_EXIT_CODES = {
+  [2] = true,
+  [126] = true,
+  [127] = true,
+}
+
 local function copy_context(ctx)
   local copied = {}
   for key, value in pairs(ctx or {}) do copied[key] = value end
   return copied
+end
+
+local function append_evidence(parts, size, value)
+  if type(value) ~= "string" or value == ""
+      or size >= DENIAL_EVIDENCE_MAX_BYTES then
+    return size
+  end
+  local part = value:sub(1, DENIAL_EVIDENCE_MAX_BYTES - size)
+  parts[#parts + 1] = part
+  return size + #part
+end
+
+local function contains_denial_keyword(value)
+  value = value:lower()
+  for _, keyword in ipairs(DENIAL_KEYWORDS) do
+    if value:find(keyword, 1, true) then return true end
+  end
+  return false
+end
+
+local function likely_sandbox_denied(
+    platform, value, streamed_stdout, streamed_stderr)
+  if value.code == 0 then return false end
+  local function section_denied(section)
+    return type(section) == "string"
+      and contains_denial_keyword(section:sub(
+        1, DENIAL_EVIDENCE_MAX_BYTES))
+  end
+  if section_denied(value.stderr) or section_denied(value.stdout)
+      or section_denied(value.output)
+      or section_denied(streamed_stderr)
+      or section_denied(streamed_stdout) then
+    return true
+  end
+  if QUICK_REJECT_EXIT_CODES[value.code] then return false end
+  local constants = vim.uv.constants
+  local sigsys = constants and constants.SIGSYS
+  return platform == "linux" and sigsys ~= nil
+    and value.code == 128 + sigsys
 end
 
 local function workspace(ctx)
@@ -225,6 +280,9 @@ function Enforcement:_guarded_process(
       error(denied("filesystem.read", lexical,
         profile, self._platform, granted), 0)
     end
+    local stdout_evidence, stdout_evidence_bytes = {}, 0
+    local stderr_evidence, stderr_evidence_bytes = {}, 0
+    local on_output = opts.on_output
     local request = {
       argv = validate_argv(argv),
       cwd = canonical,
@@ -234,7 +292,16 @@ function Enforcement:_guarded_process(
       capture = opts.capture,
       timeout_ms = opts.timeout_ms,
       kill_grace_ms = opts.kill_grace_ms,
-      on_output = opts.on_output,
+      on_output = function(data, is_stderr, ...)
+        if is_stderr then
+          stderr_evidence_bytes = append_evidence(
+            stderr_evidence, stderr_evidence_bytes, data)
+        else
+          stdout_evidence_bytes = append_evidence(
+            stdout_evidence, stdout_evidence_bytes, data)
+        end
+        if on_output then return on_output(data, is_stderr, ...) end
+      end,
       profile = profile,
     }
     local value = self._platform.exec(request, self._services)
@@ -242,7 +309,11 @@ function Enforcement:_guarded_process(
       error(util.error("sandbox_unavailable",
         "Sandbox platform returned an invalid process result"), 0)
     end
-    if value.code ~= 0 then observed.process_failed = true end
+    if likely_sandbox_denied(
+        self._platform.name, value,
+        table.concat(stdout_evidence), table.concat(stderr_evidence)) then
+      observed.sandbox_denied = true
+    end
     return value
   end
 end
@@ -264,7 +335,7 @@ function Enforcement:wrap(next_execute_tool)
         backend = self._platform.name,
       })
     end
-    local observed = { process_failed = false }
+    local observed = { sandbox_denied = false }
     local active = true
     local function require_active()
       if not active then
@@ -289,7 +360,7 @@ function Enforcement:wrap(next_execute_tool)
           kind = err.kind,
           backend = self._platform.name,
         })
-      elseif observed.process_failed then
+      elseif observed.sandbox_denied and err.kind ~= "cancelled" then
         return result.append(result.error(err.message),
           result.RESTRICTED_FAILURE, {
             ran_restricted = true,
@@ -299,7 +370,7 @@ function Enforcement:wrap(next_execute_tool)
       end
       error(value, 0)
     end
-    if observed.process_failed and type(value) == "table"
+    if observed.sandbox_denied and type(value) == "table"
         and (value.isError == true or value.is_error == true) then
       return result.append(value, result.RESTRICTED_FAILURE, {
         ran_restricted = true,

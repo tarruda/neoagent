@@ -54,9 +54,10 @@ local function append(buffer, character)
   buffer[#buffer + 1] = character
 end
 
-local function parse_posix(command)
+local function parse_posix(command, partial)
   local tokens, buffer = {}, {}
   local quote, started, index = nil, false, 1
+  local failure
   local function emit()
     if started then
       tokens[#tokens + 1] = table.concat(buffer)
@@ -72,11 +73,12 @@ local function parse_posix(command)
       if character == '"' then
         quote = nil
       elseif character == "$" or character == "`" then
-        return nil, "shell expansion is not supported"
+        failure = "shell expansion is not supported"
       elseif character == "\\" then
         local following = command:sub(index + 1, index + 1)
-        if following == "" then return nil, "trailing escape" end
-        if following == "$" or following == "`" or following == '"'
+        if following == "" then
+          failure = "trailing escape"
+        elseif following == "$" or following == "`" or following == '"'
             or following == "\\" then
           append(buffer, following)
           index = index + 1
@@ -94,28 +96,34 @@ local function parse_posix(command)
       quote, started = "double", true
     elseif character == "\\" then
       local following = command:sub(index + 1, index + 1)
-      if following == "" then return nil, "trailing escape" end
-      append(buffer, following)
-      started, index = true, index + 1
+      if following == "" then
+        failure = "trailing escape"
+      else
+        append(buffer, following)
+        started, index = true, index + 1
+      end
     elseif character == "$" or character == "`" then
-      return nil, "shell expansion is not supported"
+      failure = "shell expansion is not supported"
     elseif character:match("[&|;<>%(%){}]") or character == "#" then
-      return nil, "shell operators are not supported"
+      failure = "shell operators are not supported"
     else
       append(buffer, character)
       started = true
     end
+    if failure then break end
     index = index + 1
   end
-  if quote then return nil, "unterminated quote" end
+  if not failure and quote then failure = "unterminated quote" end
+  if failure and not partial then return nil, failure end
   emit()
-  if #tokens == 0 then return nil, "prefix is empty" end
+  if #tokens == 0 then return nil, failure or "prefix is empty" end
   return tokens
 end
 
-local function parse_cmd(command)
+local function parse_cmd(command, partial)
   local tokens, buffer = {}, {}
   local quoted, started = false, false
+  local failure
   local function emit()
     if started then
       tokens[#tokens + 1] = table.concat(buffer)
@@ -126,29 +134,34 @@ local function parse_cmd(command)
     local character = command:sub(index, index)
     if character == '"' then
       if index > 1 and command:sub(index - 1, index - 1) == "\\" then
-        return nil, "escaped quotes are not supported"
+        failure = "escaped quotes are not supported"
+        break
       end
       quoted, started = not quoted, true
     elseif character == "%" or character == "!" or character == "^" then
-      return nil, "cmd expansion is not supported"
+      failure = "cmd expansion is not supported"
+      break
     elseif not quoted and character:match("%s") then
       emit()
     elseif not quoted and character:match("[&|<>()]") then
-      return nil, "cmd operators are not supported"
+      failure = "cmd operators are not supported"
+      break
     else
       append(buffer, character)
       started = true
     end
   end
-  if quoted then return nil, "unterminated quote" end
+  if not failure and quoted then failure = "unterminated quote" end
+  if failure and not partial then return nil, failure end
   emit()
-  if #tokens == 0 then return nil, "prefix is empty" end
+  if #tokens == 0 then return nil, failure or "prefix is empty" end
   return tokens
 end
 
-local function parse_powershell(command)
+local function parse_powershell(command, partial)
   local tokens, buffer = {}, {}
   local quote, started, index = nil, false, 1
+  local failure
   local function emit()
     if started then
       tokens[#tokens + 1] = table.concat(buffer)
@@ -167,7 +180,7 @@ local function parse_powershell(command)
     elseif quote == "double" then
       if character == '"' then quote = nil
       elseif character == "$" or character == "`" then
-        return nil, "PowerShell expansion is not supported"
+        failure = "PowerShell expansion is not supported"
       else append(buffer, character) end
     elseif character:match("%s") then
       emit()
@@ -176,128 +189,41 @@ local function parse_powershell(command)
     elseif character == '"' then
       quote, started = "double", true
     elseif character == "$" or character == "`" then
-      return nil, "PowerShell expansion is not supported"
+      failure = "PowerShell expansion is not supported"
     elseif character:match("[&|;<>%(%){}@,]") then
-      return nil, "PowerShell operators are not supported"
+      failure = "PowerShell operators are not supported"
     else
       append(buffer, character)
       started = true
     end
+    if failure then break end
     index = index + 1
   end
-  if quote then return nil, "unterminated quote" end
+  if not failure and quote then failure = "unterminated quote" end
+  if failure and not partial then return nil, failure end
   emit()
-  if #tokens == 0 then return nil, "prefix is empty" end
+  if #tokens == 0 then return nil, failure or "prefix is empty" end
   return tokens
 end
 
-local function parse_command(command, kind)
+local function parse_command(command, kind, partial)
   if type(command) ~= "string" then return nil, "command must be a string" end
   if #command > 16384 then return nil, "command is too long" end
-  if command:find("[%z\1-\8\11\12\14-\31\127]") then
-    return nil, "control characters are not supported"
+  if partial then
+    local cut = command:find("[%z\1-\8\10-\31\127]")
+    if cut then command = command:sub(1, cut - 1) end
+  else
+    if command:find("[%z\1-\8\11\12\14-\31\127]") then
+      return nil, "control characters are not supported"
+    end
+    if command:find("[\r\n]") then
+      return nil, "multiple commands are not supported"
+    end
   end
-  if command:find("[\r\n]") then
-    return nil, "multiple commands are not supported"
-  end
-  if kind == "posix" then return parse_posix(command) end
-  if kind == "cmd" then return parse_cmd(command) end
-  if kind == "powershell" then return parse_powershell(command) end
+  if kind == "posix" then return parse_posix(command, partial) end
+  if kind == "cmd" then return parse_cmd(command, partial) end
+  if kind == "powershell" then return parse_powershell(command, partial) end
   return nil, "the configured shell is not supported"
-end
-
-local blocked_dispatchers = {
-  ["command"] = true,
-  ["cmd"] = true,
-  ["cmd.exe"] = true,
-  ["deno"] = true,
-  ["env"] = true,
-  ["eval"] = true,
-  ["exec"] = true,
-  ["fish"] = true,
-  ["julia"] = true,
-  ["lua"] = true,
-  ["node"] = true,
-  ["nodejs"] = true,
-  ["osascript"] = true,
-  ["perl"] = true,
-  ["php"] = true,
-  ["powershell"] = true,
-  ["powershell.exe"] = true,
-  ["pwsh"] = true,
-  ["pwsh.exe"] = true,
-  ["py"] = true,
-  ["pypy"] = true,
-  ["pypy3"] = true,
-  ["python"] = true,
-  ["python3"] = true,
-  ["pythonw"] = true,
-  ["pyw"] = true,
-  ["rscript"] = true,
-  ["ruby"] = true,
-  ["sh"] = true,
-  ["bash"] = true,
-  ["dash"] = true,
-  ["ksh"] = true,
-  ["zsh"] = true,
-  ["source"] = true,
-  ["sudo"] = true,
-  ["!"] = true,
-  ["coproc"] = true,
-  ["."] = true,
-}
-
-local broad_commands = {
-  git = true,
-  rm = true,
-  npm = true,
-  pnpm = true,
-  yarn = true,
-  bun = true,
-}
-
-local reserved_words = {
-  ["case"] = true,
-  ["do"] = true,
-  ["done"] = true,
-  ["elif"] = true,
-  ["else"] = true,
-  ["esac"] = true,
-  ["fi"] = true,
-  ["for"] = true,
-  ["function"] = true,
-  ["if"] = true,
-  ["in"] = true,
-  ["select"] = true,
-  ["then"] = true,
-  ["time"] = true,
-  ["until"] = true,
-  ["while"] = true,
-}
-
-local function command_name(token)
-  local name = token:gsub("\\", "/"):match("([^/]+)$") or token
-  return name:lower()
-end
-
-local function safe_prefix(tokens)
-  local first = tokens[1]
-  if first:match("^[A-Za-z_][A-Za-z0-9_]*=") then
-    return nil, "environment assignments are too broad"
-  end
-  local name = command_name(first)
-  if blocked_dispatchers[name] or reserved_words[name]
-      or name:match("^python%d[%d%.]*$") then
-    return nil, name .. " can dispatch arbitrary commands"
-  end
-  if #tokens == 1 and broad_commands[name] then
-    return nil, name .. " alone is too broad"
-  end
-  if (name == "npm" or name == "pnpm" or name == "yarn"
-      or name == "bun") and tokens[2] == "run" and #tokens == 2 then
-    return nil, name .. " run is too broad"
-  end
-  return true
 end
 
 local function starts_with(tokens, prefix)
@@ -408,8 +334,8 @@ function Escalation:_candidate(tool, arguments)
   if tool.name ~= "shell" or type(arguments.command) ~= "string" then return end
   local shell, kind = self:_configured_shell()
   if not kind then return end
-  local tokens = parse_command(arguments.command, kind)
-  if not tokens or not safe_prefix(tokens) then return end
+  local tokens = parse_command(arguments.command, kind, true)
+  if not tokens then return end
   return {
     command = arguments.command,
     kind = kind,
@@ -537,8 +463,6 @@ end
 function Escalation:_validate_prefix(value, candidate)
   local tokens, parse_err = parse_command(value, candidate.kind)
   if not tokens then return nil, parse_err end
-  local safe, safety_err = safe_prefix(tokens)
-  if not safe then return nil, safety_err end
   if not starts_with(candidate.tokens, tokens) then
     return nil, "the prefix must match the current command"
   end

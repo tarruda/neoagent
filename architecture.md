@@ -226,7 +226,10 @@ Both capabilities expire at the end of the tool call. The shell overflow path
 uses a host temporary file recorded by path and inode. Later sandboxed reads
 revalidate its identity and add an exact read grant to the selected backend.
 Backend filesystem operations accept regular files and run with a bounded
-timeout.
+timeout. Process exit status passes through to the tool. Nonzero exits with
+recognized sandbox-denial text in bounded output, plus Linux `SIGSYS`, receive
+restricted-execution guidance. Explicit policy denials and backend failures
+produce sandbox-owned errors.
 
 The default profile grants a platform-selected shared temporary directory and
 points `TMPDIR`, `TMP`, and `TEMP` at it. POSIX systems use the active host
@@ -239,13 +242,15 @@ Escalation copies tool schemas and adds reserved request fields under
 through `ctx.dialog`. Approval selects the configured host executor for one
 call through revocable host filesystem and process proxies. Denial and
 presenter failure return structured tool errors.
-Eligible shell approvals can retain an edited argument-token prefix in the
-escalation decorator. The Controller supplies an opaque Session identity, and
-the decorator discards its in-memory prefix set when that identity changes.
-Only later calls that explicitly request escalation consult the set.
-Conservative POSIX, cmd, and PowerShell tokenizers accept one literal command;
-operators, redirections, expansions, substitutions, and unsupported shell
-syntax suppress the option and cannot match an existing prefix.
+Shell approvals offer prefix retention when the command starts with at least
+one literal argument token, and the escalation decorator retains any edited
+argument-token prefix of that leading segment. The Controller supplies an
+opaque Session identity, and the decorator discards its in-memory prefix set
+when that identity changes. Only later calls that explicitly request
+escalation consult the set. Conservative POSIX, cmd, and PowerShell
+tokenizers end the offered prefix at the first operator, redirection,
+expansion, substitution, or unsupported shell syntax and match remembered
+rules only against one complete literal command.
 
 `neoagent.sandbox.platform` selects explicit Linux, macOS, and Windows modules.
 Shared path operations select POSIX or Windows semantics for roots,
