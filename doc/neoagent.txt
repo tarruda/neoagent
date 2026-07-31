@@ -461,24 +461,26 @@ and process capabilities for that one call. Denial returns an error without
 running the unrestricted call. Escalation is denied when no dialog presenter
 is available.
 
-Shell approvals for a single conservatively parsed command also offer
-`yes and don't ask again for commands starting with`. Selecting it opens a
-focused floating editor containing the current command. `<Enter>` accepts the
-edited prefix and `<C-c>` returns to the approval dialog. Accepted rules are
-argument-token prefixes bound to the active shell, scoped to the active
-Session, and held only in memory. They apply only to later shell calls that
-explicitly request escalation. Creating, resuming, or forking a Session clears
-the remembered rules.
+Shell approvals whose command starts with at least one literal argument token
+also offer `yes and don't ask again for commands starting with`. Selecting it
+opens a focused floating editor containing the current command. `<Enter>`
+accepts the edited prefix and `<C-c>` returns to the approval dialog.
+Accepted rules are argument-token prefixes bound to the active shell, scoped
+to the active Session, and held only in memory. They apply only to later
+shell calls that explicitly request escalation. Creating, resuming, or
+forking a Session clears the remembered rules.
 
-The option is available for POSIX shells, `cmd.exe`, and PowerShell when the
-command can be represented as one literal argument vector. Unquoted command
-operators, redirections, comments, substitutions, expansions, newlines,
-control characters, unterminated quoting, command interpreters, broad
-dispatchers, and broad single-command prefixes are rejected. A rejected edit
-remains in the floating editor with an explanation. Token matching preserves
-argument boundaries, so `git status` does not match `git status-danger`;
-quoted literal operator text remains an ordinary argument. Compound commands
-never match a remembered rule.
+The option supports POSIX shells, `cmd.exe`, and PowerShell. Any literal
+argument-token prefix of the current command can be remembered; the offered
+tokens end at the first unquoted operator, redirection, comment,
+substitution, expansion, newline, or control character. An edited prefix
+containing such syntax is rejected and remains in the floating editor with an
+explanation. A remembered rule only matches commands that form one literal
+argument vector, so a prefix is never followed by shell syntax that chains
+further commands: compound and dynamic commands always prompt. Token matching
+preserves argument boundaries, so `git status` does not match
+`git status-danger`; quoted literal operator text remains an ordinary
+argument.
 
 The low-level platform-neutral API has the process-runner result shape: >lua
 
