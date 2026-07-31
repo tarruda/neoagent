@@ -142,12 +142,12 @@ describe("neoagent Windows sandbox", function()
       assert.is_true(value.isError)
       assert.is_nil(value.details.sandbox)
       assert.is_nil(value.content[1].text:find(
-        "ran inside the sandbox", 1, true))
+        "blocked by the sandbox", 1, true))
     end
     local function assert_restricted(value)
       assert.is_true(value.isError)
       assert.is_true(value.details.sandbox.ran_restricted)
-      assert.matches("ran inside the sandbox",
+      assert.matches("blocked by the sandbox",
         value.content[1].text, 1, true)
     end
 

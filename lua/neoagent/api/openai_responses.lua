@@ -87,6 +87,7 @@ function M.new(opts)
     api = "openai-responses",
     provider = opts.provider,
     id = opts.model,
+    input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,

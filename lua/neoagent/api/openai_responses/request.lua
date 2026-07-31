@@ -1,3 +1,4 @@
+local messages = require("neoagent.api.messages")
 local request_opts = require("neoagent.api.request_opts")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
@@ -152,9 +153,10 @@ function M.build(self, call_opts)
 
   local codex = self._profile == "codex"
   local responses_lite = codex and self._responses_lite == true
+  local model_messages = messages.for_model(call_opts.messages, self)
   local body = {
     model = self.id,
-    input = encode_messages(call_opts.messages, call_opts.system_prompt, not codex),
+    input = encode_messages(model_messages, call_opts.system_prompt, not codex),
     stream = true,
     store = false,
   }

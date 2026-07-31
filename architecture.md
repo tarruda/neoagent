@@ -80,13 +80,15 @@ The built-in API adapters are:
 - OpenAI Codex Responses
 
 Each adapter translates Neoagent's normalized messages and events into the
-provider protocol. Request bodies and replayed JSON tool arguments use
+provider protocol. Models expose accepted message modalities through `input`.
+The adapters transform a request copy by replacing images with explicit text
+placeholders when `input` excludes `image`; Sessions retain the original
+multimodal messages. Request bodies and replayed JSON tool arguments use
 canonical key ordering so process restarts do not perturb otherwise unchanged
 prompt-cache prefixes for persisted Sessions. Provider, model, and per-call
 `request_opts` are recursively layered before sending the request. The Codex
-adapter
-classifies provider errors, retries transient requests that produced no output,
-and reports safe metadata through an injected diagnostic callback.
+adapter classifies provider errors, retries transient requests that produced no
+output, and reports safe metadata through an injected diagnostic callback.
 
 Authentication wraps a Model. Credentials are tagged API-key or OAuth values
 and are resolved at stream time, which keeps authentication independent from

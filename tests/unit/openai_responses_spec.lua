@@ -182,6 +182,29 @@ describe("neoagent.api.openai_responses", function()
     assert.are.same({ provider = true }, provider_opts.body.metadata)
   end)
 
+  it("downgrades images before encoding requests for text-only models", function()
+    local instance = model(fake_transport.new(), { input = { "text" } })
+    local request = instance:_request({
+      messages = {
+        { role = "user", content = {
+          { type = "image", mimeType = "image/png", data = "AAAA" },
+        } },
+        { role = "assistant", content = {
+          { type = "toolCall", id = "call-1", name = "read_file", arguments = {} },
+        } },
+        { role = "toolResult", toolCallId = "call-1", content = {
+          { type = "image", mimeType = "image/png", data = "BBBB" },
+        } },
+      },
+      tools = {},
+    })
+
+    assert.are.equal("(image omitted: model does not support images)",
+      request.body.input[1].content[1].text)
+    assert.are.equal("(tool image omitted: model does not support images)",
+      request.body.input[3].output)
+  end)
+
   it("accepts terminal-only incomplete output and generated text ids", function()
     local output = { {
       type = "message", id = "msg_final", role = "assistant", status = "completed",

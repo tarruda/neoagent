@@ -346,12 +346,12 @@ describe("neoagent shared sandbox contract", function()
       local function assert_ordinary(value)
         assert.is_true(value.isError)
         assert.is_nil(value.details.sandbox)
-        assert.is_nil(text(value):find("ran inside the sandbox", 1, true))
+        assert.is_nil(text(value):find("blocked by the sandbox", 1, true))
       end
       local function assert_restricted(value)
         assert.is_true(value.isError)
         assert.is_true(value.details.sandbox.ran_restricted)
-        assert.matches("ran inside the sandbox", text(value), 1, true)
+        assert.matches("blocked by the sandbox", text(value), 1, true)
       end
 
       assert(fs.write_all(
@@ -552,7 +552,7 @@ describe("neoagent shared sandbox contract", function()
         "grep-denied", "grep-link",
       }) do
         assert.is_true(results[id].details.sandbox.ran_restricted)
-        assert.matches("ran inside the sandbox", text(results[id]), 1, true)
+        assert.matches("blocked by the sandbox", text(results[id]), 1, true)
       end
       for _, id in ipairs({ "find-denied", "find-link" }) do
         assert.is_truthy(

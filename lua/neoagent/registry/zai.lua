@@ -35,6 +35,12 @@ local models = {
   ["glm-5v-turbo"] = { context_window = 200000, max_output_tokens = 131072 },
 }
 
+local vision_models = {
+  ["glm-4.5v"] = true,
+  ["glm-4.6v"] = true,
+  ["glm-5v-turbo"] = true,
+}
+
 local function tool_stream(context)
   if #context.tools == 0 then return {} end
   return { body = { tool_stream = true } }
@@ -48,6 +54,7 @@ local tool_stream_unsupported = {
 }
 
 for id, model in pairs(models) do
+  model.input = vision_models[id] and { "text", "image" } or { "text" }
   if id == "glm-5.2" then
     model.thinking = {
       off = thinking(false),

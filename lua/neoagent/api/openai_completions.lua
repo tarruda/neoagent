@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local messages = require("neoagent.api.messages")
 local request_opts = require("neoagent.api.request_opts")
 local tool_schema = require("neoagent.api.tool_schema")
 local curl = require("neoagent.transport.curl")
@@ -180,7 +181,8 @@ function Model:_request(call_opts)
   end
   local body = {
     model = self.id,
-    messages = encode_messages(call_opts.messages, call_opts.system_prompt, self._requires_reasoning_content),
+    messages = encode_messages(messages.for_model(call_opts.messages, self),
+      call_opts.system_prompt, self._requires_reasoning_content),
     stream = true,
     stream_options = { include_usage = true },
   }
@@ -404,6 +406,7 @@ function M.new(opts)
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
+    input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,

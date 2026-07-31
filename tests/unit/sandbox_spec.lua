@@ -952,7 +952,7 @@ describe("neoagent sandbox execution", function()
       local function assert_restricted(value)
         assert.is_true(value.isError or value.is_error)
         assert.is_true(value.details.sandbox.ran_restricted)
-        assert.matches("ran inside the sandbox",
+        assert.matches("blocked by the sandbox",
           value.content[1].text, 1, true)
       end
       local cases = {

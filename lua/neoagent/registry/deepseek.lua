@@ -9,6 +9,7 @@ local thinking = {
 local models = {}
 for _, id in ipairs({ "deepseek-v4-flash", "deepseek-v4-pro" }) do
   models[id] = {
+    input = { "text" },
     context_window = 1000000,
     max_output_tokens = 384000,
     thinking = util.copy(thinking),

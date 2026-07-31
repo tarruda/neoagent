@@ -204,6 +204,34 @@ describe("neoagent.api.anthropic_messages", function()
     assert.is_nil(oauth_request.headers["x-api-key"])
   end)
 
+  it("downgrades images before encoding requests for text-only models", function()
+    local model = anthropic.new({
+      provider = "local",
+      model = "text-only",
+      base_url = "http://localhost/v1",
+      input = { "text" },
+    })
+    local request = model:_request({
+      messages = {
+        { role = "user", content = {
+          { type = "image", mimeType = "image/png", data = "AAAA" },
+        } },
+        { role = "assistant", content = {
+          { type = "toolCall", id = "call-1", name = "read_file", arguments = {} },
+        } },
+        { role = "toolResult", toolCallId = "call-1", content = {
+          { type = "image", mimeType = "image/png", data = "BBBB" },
+        } },
+      },
+      tools = {},
+    })
+
+    assert.are.equal("(image omitted: model does not support images)",
+      request.body.messages[1].content)
+    assert.are.equal("(tool image omitted: model does not support images)",
+      request.body.messages[3].content[1].content)
+  end)
+
   it("returns malformed tool input as a protocol failure with partial output", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),

@@ -50,6 +50,7 @@ local function api_factory(module, resolved)
     model = resolved.model_id,
     base_url = resolved.provider.base_url,
     api_key = resolved.provider.api_key,
+    input = resolved.model.input,
     context_window = resolved.model.context_window,
     max_output_tokens = resolved.model.max_output_tokens,
     reasoning = resolved.model.reasoning,
@@ -109,6 +110,9 @@ function M.resolve(provider_id, model_id, configured, manager)
   local concrete = factory(resolved)
   assert(type(concrete) == "table" and type(concrete.stream) == "function", "API factory must return a Model")
   if concrete.context_window == nil then concrete.context_window = resolved.model.context_window end
+  if concrete.input == nil then
+    concrete.input = util.copy(resolved.model.input or { "text", "image" })
+  end
   if concrete.thinking == nil then concrete.thinking = util.copy(resolved.model.thinking) end
   if provider.auth then
     concrete = manager:wrap(concrete, provider.auth, { optional = provider.api_key ~= nil })

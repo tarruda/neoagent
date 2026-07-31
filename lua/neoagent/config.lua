@@ -153,6 +153,17 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      if model.input ~= nil then
+        assert(util.is_list(model.input) and #model.input > 0,
+          "model input must be a non-empty list")
+        local seen = {}
+        for _, input in ipairs(model.input) do
+          assert(input == "text" or input == "image",
+            "model input entries must be text or image")
+          assert(not seen[input], "model input entries must be unique")
+          seen[input] = true
+        end
+      end
       if model.context_window ~= nil then
         assert(type(model.context_window) == "number" and model.context_window > 0
           and model.context_window % 1 == 0, "model context_window must be a positive integer")
