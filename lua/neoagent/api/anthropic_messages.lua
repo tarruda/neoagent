@@ -304,6 +304,7 @@ function M.new(opts)
     api = "anthropic-messages",
     provider = opts.provider,
     id = opts.model,
+    input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
     thinking = util.copy(opts.thinking),
     _base_url = opts.base_url:gsub("/+$", ""),

@@ -42,6 +42,7 @@ describe("neoagent configuration and model resolution", function()
       context_window = 128000,
     })
     assert.are.equal("direct", model.id)
+    assert.are.same({ "text", "image" }, model.input)
     assert.are.equal(128000, model.context_window)
   end)
 
@@ -113,6 +114,7 @@ describe("neoagent configuration and model resolution", function()
     assert.is_function(model.stream)
     assert.are.equal(1, seen.model.value)
     assert.are.equal(4096, model.context_window)
+    assert.are.same({ "text", "image" }, model.input)
     assert.is_nil(model.thinking)
   end)
 
@@ -261,6 +263,41 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("", request.body.messages[1].reasoning_content)
   end)
 
+  it("downgrades images for DeepSeek text-only models", function()
+    vim.env.DEEPSEEK_API_KEY = "deepseek-key"
+    config.setup({})
+
+    local model = models.resolve("deepseek", "deepseek-v4-pro")
+    local request = model._model:_request({
+      messages = {
+        { role = "user", content = {
+          { type = "text", text = "Inspect this" },
+          { type = "image", mimeType = "image/png", data = "AAAA" },
+        } },
+        { role = "assistant", content = {
+          { type = "toolCall", id = "call-1", name = "read_file",
+            arguments = { path = "image.png" } },
+        } },
+        { role = "toolResult", toolCallId = "call-1", content = {
+          { type = "text", text = "Read image file [image/png]" },
+          { type = "image", mimeType = "image/png", data = "BBBB" },
+        } },
+      },
+      tools = {},
+    })
+
+    assert.are.same({
+      { type = "text", text = "Inspect this" },
+      { type = "text", text = "(image omitted: model does not support images)" },
+    }, request.body.messages[1].content)
+    assert.are.equal("tool", request.body.messages[3].role)
+    assert.are.equal("Read image file [image/png]\n"
+      .. "(tool image omitted: model does not support images)",
+      request.body.messages[3].content)
+    assert.are.equal(3, #request.body.messages)
+    assert.are.same({ "text" }, model.input)
+  end)
+
   it("resolves the built-in Z.AI API and Coding Plan catalogs", function()
     vim.env.ZAI_API_KEY = "zai-key"
     config.setup({})
@@ -287,6 +324,19 @@ describe("neoagent configuration and model resolution", function()
       assert.is_true(vim.tbl_contains(available, "zai-coding-plan/" .. id))
     end
     assert.is_false(vim.tbl_contains(available, "zai-coding-plan/glm-4.5"))
+
+    for _, id in ipairs({
+      "glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.6", "glm-4.7",
+      "glm-4.7-flash", "glm-4.7-flashx", "glm-5", "glm-5-turbo", "glm-5.1",
+      "glm-5.2",
+    }) do
+      assert.are.same({ "text" }, provider.models[id].input)
+    end
+    for _, id in ipairs({ "glm-4.5v", "glm-4.6v", "glm-5v-turbo" }) do
+      assert.are.same({ "text", "image" }, provider.models[id].input)
+    end
+    assert.are.same({ "text" }, plan.models["glm-5.2"].input)
+    assert.are.same({ "text", "image" }, plan.models["glm-5v-turbo"].input)
 
     local glm52 = models.resolve("zai-coding-plan", "glm-5.2")
     assert.are.same({ "off", "low", "medium", "high", "max" },
@@ -577,6 +627,9 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() invalid_model({ thinking = { high = "yes" } }) end)
     assert.has_error(function() invalid_model({ reasoning = true, thinking = { high = {} } }) end)
     assert.has_error(function() invalid_model({ context_window = 0 }) end)
+    assert.has_error(function() invalid_model({ input = {} }) end)
+    assert.has_error(function() invalid_model({ input = { "audio" } }) end)
+    assert.has_error(function() invalid_model({ input = { "text", "text" } }) end)
     assert.has_error(function()
       config.setup({ providers = { bad = {
         api = "openai-codex-responses", base_url = "http://localhost", models = {

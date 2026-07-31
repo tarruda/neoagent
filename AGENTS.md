@@ -33,6 +33,9 @@ changes.
   Sessions, storage, Workspace, bundled tools, the controller, or UI.
 - A Model is an explicit value with `model:stream(opts)`. It uses named
   `on_event` and `on_done` options and returns a cancellable Run.
+- A Model declares accepted message modalities through `input`. Built-in API
+  adapters replace unsupported image blocks in a request copy with explicit
+  text placeholders; Sessions retain the original blocks.
 - `agent.run(opts)` receives its Model, messages, exact tools, executor, and
   context explicitly. It does not mutate input messages or resolve defaults.
 - Steering enters the core through an explicit `get_steering_messages`

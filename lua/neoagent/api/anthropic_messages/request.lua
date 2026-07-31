@@ -1,3 +1,4 @@
+local messages = require("neoagent.api.messages")
 local request_opts = require("neoagent.api.request_opts")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
@@ -146,7 +147,7 @@ function M.build(model, call_opts)
 
   local body = {
     model = model.id,
-    messages = encode_messages(call_opts.messages),
+    messages = encode_messages(messages.for_model(call_opts.messages, model)),
     max_tokens = model._max_output_tokens,
     stream = true,
   }

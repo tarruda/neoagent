@@ -217,6 +217,7 @@ function Manager:wrap(model, id, opts)
     api = model.api,
     provider = model.provider,
     id = model.id,
+    input = util.copy(model.input),
     context_window = model.context_window,
     thinking = util.copy(model.thinking),
   }

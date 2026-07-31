@@ -34,7 +34,11 @@ Example for llama.cpp: >lua
         api = "openai-completions",
         base_url = "http://127.0.0.1:8080/v1",
         models = {
-          coder = { context_window = 131072, max_output_tokens = 8192 },
+          coder = {
+            input = { "text" },
+            context_window = 131072,
+            max_output_tokens = 8192,
+          },
         },
       },
     },
@@ -620,6 +624,13 @@ and `max`; values are `request_opts` tables or callbacks. Missing keys are
 unsupported and `false` removes an inherited level. The selected level supplies
 request options for Controller Model calls.
 
+Models expose accepted message modalities through `input`, a list containing
+`"text"`, `"image"`, or both. Built-in Model constructors default to
+`{ "text", "image" }`. The API adapters replace images with explicit text
+placeholders when `input` excludes `"image"`; the Session retains the original
+image blocks. DeepSeek models and Z.AI language models declare text input. Z.AI
+models with a `V` suffix declare text and image input.
+
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
 With persistence and `workspace_settings` enabled, model and thinking
@@ -749,6 +760,7 @@ The direct Model constructor requires no setup: >lua
     model = "coder",
     base_url = "http://127.0.0.1:8080/v1",
     api_key = nil,                 -- string or callback
+    input = { "text", "image" },  -- accepted message modalities
     context_window = nil,          -- enables bundled context usage display
     max_output_tokens = nil,
     request_opts = nil,
