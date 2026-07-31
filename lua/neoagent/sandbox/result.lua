@@ -2,29 +2,21 @@ local util = require("neoagent.util")
 
 local M = {}
 
-M.RETRY = table.concat({
-  "",
-  "To retry this exact tool call outside the sandbox, keep the same arguments",
-  "and merge these fields into `options`:",
-  '{"require_escalation":true,"escalation_justification":"why unrestricted execution is necessary"}',
-  "",
-  "Request elevated execution only when the task cannot be completed inside",
-  "the sandbox.",
-}, "\n")
-
 function M.denied(message)
-  return "Sandbox blocked this tool call.\n\n" .. message .. "\n" .. M.RETRY
+  return message .. "\n" .. M.SANDBOX_FAILURE
 end
 
-M.RESTRICTED_FAILURE = table.concat({
+M.SANDBOX_FAILURE = table.concat({
   "",
-  "This command ran inside the sandbox. If a sandbox restriction caused the",
-  "failure and no sandboxed approach is available, retry the same call with",
-  "options.require_escalation and a specific escalation_justification.",
+  "This tool call was blocked by the sandbox.",
+  "",
+  "To retry this exact tool call outside the sandbox, keep the same",
+  "arguments and merge these fields into `options`:",
+  '{"require_escalation":true,"escalation_justification":"(reason why you need to run this tool outside of the sandbox)"}',
 }, "\n")
 
 M.USER_DENIED = table.concat({
-  "Elevated execution was denied by the user. Continue within the sandbox or",
+  "Escalated execution was denied by the user. Continue within the sandbox or",
   "use a different approach. Do not repeat the same elevation request unless",
   "the user provides new instructions.",
 }, "\n")

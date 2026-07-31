@@ -362,7 +362,7 @@ function Enforcement:wrap(next_execute_tool)
         })
       elseif observed.sandbox_denied and err.kind ~= "cancelled" then
         return result.append(result.error(err.message),
-          result.RESTRICTED_FAILURE, {
+          result.SANDBOX_FAILURE, {
             ran_restricted = true,
             backend = self._platform.name,
             profile = profile.id,
@@ -372,7 +372,7 @@ function Enforcement:wrap(next_execute_tool)
     end
     if observed.sandbox_denied and type(value) == "table"
         and (value.isError == true or value.is_error == true) then
-      return result.append(value, result.RESTRICTED_FAILURE, {
+      return result.append(value, result.SANDBOX_FAILURE, {
         ran_restricted = true,
         backend = self._platform.name,
         profile = profile.id,
