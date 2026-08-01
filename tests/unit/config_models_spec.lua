@@ -499,6 +499,26 @@ describe("neoagent configuration and model resolution", function()
     vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 
+  it("exposes Claude Opus 5 with its adaptive thinking profile", function()
+    vim.env.ANTHROPIC_API_KEY = "anthropic-key"
+    config.setup({})
+
+    local available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "anthropic/claude-opus-5"))
+
+    local opus = models.resolve("anthropic", "claude-opus-5")
+    assert.are.equal(1000000, opus.context_window)
+    assert.are.same({ "low", "medium", "high", "xhigh", "max" },
+      require("neoagent.thinking").levels(opus))
+
+    local request = opus._model:_request({
+      messages = {}, tools = {}, request_opts = opus.thinking.xhigh,
+    })
+    assert.are.equal(128000, request.body.max_tokens)
+    assert.are.same({ type = "adaptive", display = "summarized" }, request.body.thinking)
+    assert.are.equal("xhigh", request.body.output_config.effort)
+  end)
+
   it("prefers stored API keys and resumes ambient keys after logout", function()
     local path = vim.fn.tempname() .. "/auth.json"
     local ambient_calls = 0

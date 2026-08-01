@@ -35,6 +35,11 @@ local function adaptive_profiles(efforts)
 end
 
 local model_specs = {
+  ["claude-opus-5"] = {
+    context_window = 1000000,
+    max_output_tokens = 128000,
+    efforts = { "low", "medium", "high", "xhigh", "max" },
+  },
   ["claude-opus-4-8"] = {
     context_window = 1000000,
     max_output_tokens = 128000,
