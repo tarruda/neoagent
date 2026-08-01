@@ -114,6 +114,17 @@ APIs; macOS uses `/usr/bin/sandbox-exec`. The sandbox mediates bundled-tool
 file and process operations. Custom tool Lua runs in Neovim and must use the
 injected capabilities to participate.
 
+Neoagent sandbox behavior follows Codex's bundled-tool sandboxing model, with
+platform-specific implementation notes:
+
+- Linux performs namespace setup and seccomp filtering directly in the bundled
+  LuaJIT FFI runtime, without a bubblewrap dependency.
+- Windows drains pipe output from the runner loop with `PeekNamedPipe`,
+  `WaitForSingleObject`, and bounded sleeps, while Codex uses blocking
+  `ReadFile` readers on separate Rust threads.
+- macOS follows Codex's backend shape by compiling a Seatbelt profile and
+  executing it through `/usr/bin/sandbox-exec`.
+
 Run `:NeoagentSandboxInfo` to inspect the active backend, isolation level, and
 capabilities. See `:help neoagent-sandbox` for configuration and platform
 details. Windows sandboxing requires Neovim 0.12+ and an elevated one-time
