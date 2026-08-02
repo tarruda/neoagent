@@ -532,6 +532,37 @@ describe("neoagent default controller", function()
     assert.are.equal("low", model.requests[1].request_opts.body.reasoning_effort)
   end)
 
+  it("resets thinking to the configured default when switching models", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local models = {
+      deep = fake_model.new({}),
+      gpt = fake_model.new({}),
+    }
+    setup_model(models.deep, {
+      persistence = { enabled = true, workspace_settings = true, directory = directory },
+      default_model = { provider = "fake", model = "deep" },
+      default_thinking_level = "medium",
+      providers = { fake = { api = "fake-api", models = {
+        deep = { thinking = { medium = {}, max = {} } },
+        gpt = { thinking = { medium = {}, xhigh = {} } },
+      } } },
+      apis = { ["fake-api"] = function(resolved) return models[resolved.model_id] end },
+    })
+    assert(neoagent.open())
+    assert(neoagent.new_session())
+    assert.are.equal("max", neoagent.set_thinking_level("max"))
+
+    assert(neoagent.set_model("fake", "gpt"))
+    assert.are.equal("medium", neoagent.get_thinking_level())
+    assert.are.equal("medium", neoagent.default():_state().store:state().thinking_level)
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert.are.equal("medium", assert(settings:load()).controllers.Neo.default_thinking_level)
+  end)
+
   it("composes the default Neo and Chat Controllers", function()
     local captured
     local model = fake_model.new({})

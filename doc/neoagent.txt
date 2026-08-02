@@ -622,7 +622,8 @@ Models expose optional request-time thinking controls through a `thinking`
 table. Keys use the order `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
 and `max`; values are `request_opts` tables or callbacks. Missing keys are
 unsupported and `false` removes an inherited level. The selected level supplies
-request options for Controller Model calls.
+request options for Controller Model calls. Selecting a model resets thinking
+to `default_thinking_level`, clamped to that model's supported profiles.
 
 Models expose accepted message modalities through `input`, a list containing
 `"text"`, `"image"`, or both. Built-in Model constructors default to

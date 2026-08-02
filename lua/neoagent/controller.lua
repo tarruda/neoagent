@@ -1029,11 +1029,11 @@ function M.from_config(options)
     if not state.workspace then activate_workspace(vim.fn.getcwd()) end
     local ok, model = pcall(require("neoagent.models").resolve, provider_id, model_id, options, auth_manager)
     if not ok then notify(tostring(model), vim.log.levels.ERROR) return nil, model end
-    local next_thinking = thinking_level(model, state.thinking_level)
+    local next_thinking = thinking_level(model, configured().default_thinking_level)
     if state.store then
       local recorded, record_err = state.store:append_model_change(provider_id, model_id)
       if not recorded then notify(record_err.message, vim.log.levels.ERROR) return nil, record_err end
-      if not state.store_seeded and next_thinking then
+      if next_thinking then
         recorded, record_err = state.store:append_thinking_level_change(next_thinking)
         if not recorded then notify(record_err.message, vim.log.levels.ERROR) return nil, record_err end
       end
@@ -1041,6 +1041,7 @@ function M.from_config(options)
     end
     local saved, save_err = save_workspace_settings({
       default_model = { provider = provider_id, model = model_id },
+      default_thinking_level = next_thinking,
     })
     if not saved and not state.store then
       notify(save_err.message, vim.log.levels.ERROR)
