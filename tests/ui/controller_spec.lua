@@ -25,6 +25,7 @@ describe("neoagent default controller", function()
 
   local function setup_model(model, extra)
     local options = {
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
@@ -495,6 +496,7 @@ describe("neoagent default controller", function()
     assert.matches("Nothing can be compacted", err.message)
 
     neoagent.setup({
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = false },
       providers = {},
@@ -567,6 +569,7 @@ describe("neoagent default controller", function()
     local captured
     local model = fake_model.new({})
     neoagent.setup({
+      workspace_trust = false,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake-api", models = { test = {} } } },
@@ -617,6 +620,7 @@ describe("neoagent default controller", function()
       require("neoagent.tools.shell").new(),
     }
     neoagent.setup({
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
@@ -953,6 +957,7 @@ describe("neoagent default controller", function()
       if id == "alpha" then models[id].responses[1].result.message.model = id end
     end
     local options = {
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = true, workspace_settings = true, directory = directory },
       default_model = { provider = "fake", model = "test" },
@@ -1475,7 +1480,8 @@ describe("neoagent default controller", function()
     assert.are.equal(model, neoagent.get_model())
     assert.is_false(current_view():is_open())
 
-    neoagent.setup({ default_registry = false, persistence = { enabled = false }, providers = {}, tools = {} })
+    neoagent.setup({ default_registry = false, workspace_trust = false,
+      persistence = { enabled = false }, providers = {}, tools = {} })
     assert.is_nil(neoagent.select_model())
   end)
 end)

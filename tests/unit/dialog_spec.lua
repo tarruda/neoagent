@@ -159,6 +159,8 @@ describe("neoagent dialog source", function()
     local source = require("neoagent.dialog").new()
     local invalid = {
       function(value) value.placement = "sidebar" end,
+      function(value) value.controller = "" end,
+      function(value) value.controller = {} end,
       function(value) value.title = "" end,
       function(value) value.body = "bad\0body" end,
       function(value) value.actions = {} end,
@@ -244,11 +246,14 @@ describe("neoagent dialog source", function()
         return ctx.dialog:show(dialog()):await()
       end)
     local run = async.run(function()
-      return execute({ name = "custom" }, {}, {})
+      return execute({ name = "custom" }, {}, {
+        context = { controller = "Review" },
+      })
     end)
     assert(vim.wait(1000, function()
       return source:snapshot().active ~= nil
     end, 5))
+    assert.are.equal("Review", source:snapshot().active.controller)
     assert(source:choose(source:snapshot().active.id, "proceed"))
     wait(run)
     assert.are.equal("proceed", run:result().action)

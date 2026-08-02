@@ -60,6 +60,13 @@ function M.new(opts)
     return state.controllers[state.active]
   end
 
+  local function visible_dialog()
+    if not state.dialog then return nil end
+    local owner = state.dialog.active.controller
+    if owner and owner ~= active():config().name then return nil end
+    return util.copy(state.dialog)
+  end
+
   local function history_store(root)
     local persistence = state.persistence
     if not persistence or not persistence.enabled then return nil end
@@ -163,6 +170,7 @@ function M.new(opts)
     if snapshot.result then state.view:finish(snapshot.result) end
     state.view:set_input(state.drafts[controller] or "")
     state.rendered_controller = controller
+    if opts.dialogs then state.view:set_dialog(visible_dialog()) end
     return true
   end
 
@@ -210,7 +218,7 @@ function M.new(opts)
     if opts.dialogs then
       assert(type(state.view.set_dialog) == "function",
         "View must implement set_dialog when Window dialogs are configured")
-      state.view:set_dialog(state.dialog)
+      state.view:set_dialog(visible_dialog())
     end
     return state.view
   end
@@ -239,6 +247,10 @@ function M.new(opts)
       state.drafts[active()] = state.view:get_input()
     end
     state.active = index
+    if state.view and not state.view.destroyed
+        and state.dialog and not visible_dialog() then
+      state.view:set_dialog(nil)
+    end
     subscribe()
     if state.view and not state.view.destroyed then
       local hydrated, err = hydrate()
@@ -367,7 +379,7 @@ function M.new(opts)
       opts.dialogs:subscribe(function(snapshot)
         state.dialog = snapshot.active and util.copy(snapshot) or nil
         if state.destroyed then return end
-        if snapshot.active then
+        if snapshot.active and visible_dialog() then
           local ok, opened = pcall(window.open, window)
           if not ok or not opened then
             opts.dialogs:cancel_pending(
@@ -378,7 +390,7 @@ function M.new(opts)
           end
           if state.view and not state.view.destroyed then
             local presented = pcall(
-              state.view.set_dialog, state.view, snapshot)
+              state.view.set_dialog, state.view, visible_dialog())
             if not presented then
               opts.dialogs:cancel_pending(
                 "dialog presenter unavailable", {

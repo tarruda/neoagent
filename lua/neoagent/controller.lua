@@ -77,8 +77,18 @@ local function retry_delay(milliseconds)
   end)
 end
 
-function M.from_config(options)
+function M.from_config(options, runtime)
   assert(type(options) == "table", "controller configuration is required")
+  runtime = runtime or {}
+  assert(type(runtime) == "table",
+    "controller runtime must be an object")
+  if runtime.workspace_trust ~= nil then
+    assert(type(runtime.workspace_trust) == "table"
+        and type(runtime.workspace_trust.is_trusted) == "function"
+        and type(runtime.workspace_trust.check) == "function",
+      "controller workspace trust policy is invalid")
+  end
+  local workspace_trust = runtime.workspace_trust
   options = util.copy(options)
   local settings_name = options.name or "default"
   next_id = next_id + 1
@@ -118,6 +128,17 @@ function M.from_config(options)
     state.session_id = {}
   end
   local auth_manager = require("neoagent.auth").configured(options)
+
+  local function trust_cwd()
+    return state.workspace and state.workspace.root or vim.fn.getcwd()
+  end
+
+  local function require_workspace_trust(cwd)
+    if not workspace_trust then return true end
+    local trusted, err = workspace_trust:check(cwd or trust_cwd())
+    if not trusted then error(err, 0) end
+    return true
+  end
 
   local function notify(message, level)
     vim.notify("neoagent: " .. message, level or vim.log.levels.INFO)
@@ -252,6 +273,7 @@ function M.from_config(options)
   end
 
   local function make_session(cwd)
+    require_workspace_trust(cwd)
     local Session = require("neoagent.session")
     activate_workspace(cwd)
     local options = configured().persistence
@@ -284,6 +306,7 @@ function M.from_config(options)
   end
 
   local function ensure_model()
+    require_workspace_trust()
     if state.model then
       local seeded, seed_err = seed_store()
       if not seeded then error(seed_err, 0) end
@@ -305,6 +328,7 @@ function M.from_config(options)
   end
 
   local function system_prompt(value, tools)
+    require_workspace_trust()
     local options = configured()
     local agents_result = options.agents and require("neoagent.agents").discover({
       cwd = state.workspace.root,
@@ -591,6 +615,7 @@ function M.from_config(options)
     if util.trim(prompt) == "" then return nil end
     if state.status ~= "idle" then notify("the agent is busy", vim.log.levels.WARN) return nil end
     local ok, result = pcall(function()
+      require_workspace_trust()
       ensure_session()
       ensure_model()
       local closed, close_err = close_unmatched_calls()
@@ -762,6 +787,13 @@ function M.from_config(options)
   function controller:prepare()
     local ok, err = pcall(function()
       if not state.workspace then activate_workspace(vim.fn.getcwd()) end
+      if workspace_trust then
+        local trusted = workspace_trust:is_trusted(state.workspace.root)
+        if not trusted then
+          update_context()
+          return
+        end
+      end
       if preferences().default_model then ensure_model() end
       update_context()
     end)
@@ -831,6 +863,12 @@ function M.from_config(options)
   function controller:new_session()
     if state.run then notify("cannot create a session while the agent is running", vim.log.levels.WARN) return nil end
     local cwd = vim.fn.getcwd()
+    local trusted, trust_err = pcall(require_workspace_trust, cwd)
+    if not trusted then
+      trust_err = util.normalize_error(trust_err, "workspace_trust")
+      notify(trust_err.message, vim.log.levels.ERROR)
+      return nil, trust_err
+    end
     local root = require("neoagent.fs").canonical(cwd)
     if state.workspace and state.workspace.root == root then
       state.model, state.model_selection, state.thinking_level = nil, nil, nil
@@ -875,6 +913,12 @@ function M.from_config(options)
     local store, err = require("neoagent.storage").open(path)
     if not store then notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR) return nil, err end
     local cwd = store:metadata().cwd
+    local trusted, trust_err = pcall(require_workspace_trust, cwd)
+    if not trusted then
+      trust_err = util.normalize_error(trust_err, "workspace_trust")
+      notify(trust_err.message, vim.log.levels.ERROR)
+      return nil, trust_err
+    end
     activate_workspace(cwd)
     local session
     session, err = require("neoagent.session").new({ store = store })
@@ -1019,6 +1063,12 @@ function M.from_config(options)
   end
 
   function controller:select_model(on_selected)
+    local trusted, trust_err = pcall(require_workspace_trust)
+    if not trusted then
+      trust_err = util.normalize_error(trust_err, "workspace_trust")
+      notify(trust_err.message, vim.log.levels.ERROR)
+      return nil, trust_err
+    end
     if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local choices, err = require("neoagent.models").available(options, auth_manager)
     if not choices then
@@ -1039,6 +1089,12 @@ function M.from_config(options)
 
   function controller:set_model(provider_id, model_id)
     if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
+    local trusted, trust_err = pcall(require_workspace_trust)
+    if not trusted then
+      trust_err = util.normalize_error(trust_err, "workspace_trust")
+      notify(trust_err.message, vim.log.levels.ERROR)
+      return nil, trust_err
+    end
     if not state.workspace then activate_workspace(vim.fn.getcwd()) end
     local ok, model = pcall(require("neoagent.models").resolve, provider_id, model_id, options, auth_manager)
     if not ok then notify(tostring(model), vim.log.levels.ERROR) return nil, model end
@@ -1334,8 +1390,8 @@ function M.from_config(options)
   return controller
 end
 
-function M.new(opts)
-  return M.from_config(config.resolve(opts))
+function M.new(opts, runtime)
+  return M.from_config(config.resolve(opts), runtime)
 end
 
 return M

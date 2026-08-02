@@ -130,6 +130,9 @@ The important options are: >lua
       enabled = false,        -- initial editor state
       profile = nil,           -- table or function(default, ctx)
     },
+    workspace_trust = {
+      path = stdpath("state") .. "/neoagent/trust.json",
+    },
     agents = {
       global_files = { stdpath("config") .. "/AGENTS.md" },
       project_filenames = { "AGENTS.md" },
@@ -170,8 +173,10 @@ their shared default Window, and returns `Neo`. `Neo` uses the configured
 system prompt, resources, and tools. `Chat` shares the model and provider
 configuration while using an empty system prompt and tool list; AGENTS.md and
 skill discovery are disabled for it. Commands and top-level convenience
-functions target the active Controller in that Window. `new(opts)` constructs
-an independent Controller:
+functions target the active Controller in that Window. `new(opts[, runtime])`
+constructs an independent Controller. The optional runtime object explicitly
+injects higher-level policies such as `workspace_trust`; it is separate from
+the reusable Controller configuration:
 >lua
 
   local neoagent = require("neoagent")
@@ -293,13 +298,117 @@ source to a Window:
 <
 `show()` returns a cancellable Run whose successful result contains the
 caller-defined `action`. Dialogs use FIFO order. Each action supplies its own
-key and label. `placement = "transcript"` presents the body and actions in the
-transcript surface. `placement = "float"` opens a focused floating surface;
+key and label. An optional `controller = "Review"` scopes presentation to the
+matching Controller in a Window. Dialog capabilities created by `wrap()` use
+the calling agent context's Controller name when the request omits one. A
+scoped dialog stays unresolved and hidden while another Controller is active,
+then returns when its owner is selected.
+`placement = "transcript"` presents the body and actions in the transcript
+surface. `placement = "float"` opens a focused floating surface;
 an optional `input = { label, value, multiline }` adds editable text and the
 result includes `input`. A request fails when no presenter is attached.
 Presenter loss cancels pending dialogs and sets
 `presenter_unavailable = true`. The injected capability expires with the tool
 call. Headless compositions can omit it.
+
+WORKSPACE TRUST                                  *neoagent-workspace-trust*
+
+The built-in `setup()` composition protects Neo with a workspace trust check
+when Neo has tools, project AGENTS.md discovery, or project skill discovery.
+Chat is tool-free with project discovery disabled and never requests trust.
+`neoagent.new()`, direct Models, `agent.run()`, Sessions, custom Controllers,
+and custom Windows receive only the policies explicitly composed by their
+caller.
+
+The trust target is the canonical root of the current Git worktree when a
+`.git` marker is present in the workspace or an ancestor. Outside Git it is
+the canonical workspace cwd. Decisions match that exact target. Symlink aliases
+for one target share a decision, moved checkouts receive a fresh prompt, and
+Windows matching is case-insensitive.
+
+Neo requests trust when its Controller first becomes active and visible. Chat
+can be opened without a prompt; selecting Neo requests trust at that point.
+Every new Session workspace and resumed Session workspace is checked again.
+Direct sends while the Window is closed also fail closed and open the prompt;
+a hidden Neo Controller is selected before its prompt appears. Selecting Chat
+hides an unresolved trust prompt without resolving it, and selecting Neo
+restores the same prompt.
+
+The transcript prompt shows the canonical target, warns that repository content
+may contain prompt injection, lists project resources and tool capabilities,
+and reports whether tools use the native sandbox, use the host because
+sandboxing is disabled, or use the host because activation failed. Its actions
+are:
+
+  t  Trust workspace. Persist the decision.
+  s  Trust until Neovim exits. Keep the decision in process memory.
+  q  Cancel. Close the Neoagent Window and preserve its draft.
+
+Enter has no trust action. Closing the Neoagent Window leaves the decision
+unresolved and writes no decision. Accepting trust leaves a blocked draft for
+explicit submission; it does not start a Run.
+
+The Controller enforces trust before it creates a Session, selects a Model,
+discovers project AGENTS.md or skills, or starts a Run. A blocked operation
+returns a bounded `workspace_trust` error. Read, validation, lock, and write
+failures leave the target unresolved and report a local error.
+
+Custom compositions use the same policy and View composition as built-in Neo:
+>lua
+
+  local neoagent = require("neoagent")
+  local dialogs = require("neoagent.dialog").new()
+  local opts = neoagent.default():config()
+  opts.name = "Review"
+
+  local trust_view, policy =
+    require("neoagent.workspace_trust").compose(opts, {
+      dialogs = dialogs,
+      -- Pass the status returned by sandbox composition when applicable.
+      sandbox_status = { enabled = false, active = false },
+    })
+  local controller = neoagent.new(opts, { workspace_trust = policy })
+  local window = neoagent.new_window({
+    controllers = { controller },
+    dialogs = dialogs,
+    view = trust_view,
+  })
+  policy:attach_window(window, controller)
+<
+`compose()` reads the trust path from `opts.workspace_trust.path`, returns a
+View factory and policy, and leaves `opts` unchanged. The same dialog source is
+passed to the composition and Window. `attach_window()` binds prompt activation
+and cancellation behavior to the protected Controller. A caller can pass an
+explicit `path`, `sandbox_status`, `notify`, `store`, or process `session` table
+to `compose()`. `workspace_trust.new()` and `workspace_trust.view()` remain
+available for lower-level compositions.
+
+Persistent decisions default to
+`stdpath("state") .. "/neoagent/trust.json"`. Configure the location or disable
+the built-in policy explicitly with: >lua
+
+  workspace_trust = { path = "/private/path/trust.json" }
+  -- workspace_trust = false
+<
+The store is a deterministic versioned JSON document containing only positive
+canonical targets: >json
+
+  {
+    "trusted": ["/canonical/path/to/repository"],
+    "version": 1
+  }
+<
+Reads create no file or directory. Updates are serialized across Neovim
+processes, merge while holding a same-directory lock, and atomically rename a
+private temporary file. Directories created by the store use mode `0700`; files
+use mode `0600`. Process-lifetime decisions are shared by built-in Controllers
+and `setup()` replacements until Neovim exits. To revoke trust, remove a target
+from the inspectable JSON file or remove the file.
+
+Workspace trust records informed consent for repository content to influence
+Neo. Repository files, command output, and model output remain untrusted
+content. Native sandboxing and `execute_tool` decorators provide separate
+runtime controls.
 
 SANDBOXING                                                 *neoagent-sandbox*
 
@@ -354,11 +463,13 @@ Attach `dialogs` to the custom Window to present escalation requests. The
 returned status reports activation requirements and capabilities.
 
 Activation failures include their setup stage and reason. When activation
-requirements fail, Neo retains its configured host toolset. A warning is shown
-once when an initially enabled Neo is first displayed, or immediately after a
-runtime activation request. Successful activation reports full or degraded
-isolation through |:NeoagentSandboxInfo|. Failures after successful activation
-fail closed as tool errors and never retry through the host executor.
+requirements fail, Neo retains its configured host toolset. The workspace trust
+prompt includes the failure and effective host execution status. With
+`workspace_trust = false`, a warning is shown once when an initially enabled
+Neo is first displayed. Runtime activation requests report failures
+immediately. Successful activation reports full or degraded isolation through
+|:NeoagentSandboxInfo|. Failures after successful activation fail closed as
+tool errors and never retry through the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps

@@ -1122,6 +1122,7 @@ describe("neoagent shared sandbox contract", function()
     package.loaded["neoagent"] = nil
     local neoagent = require("neoagent")
     local controller = neoagent.setup({
+      workspace_trust = false,
       sandbox = { enabled = true, profile = profile },
       persistence = {
         enabled = false,
@@ -1165,6 +1166,7 @@ describe("neoagent shared sandbox contract", function()
     assert.are.equal("Chat", controllers[2]:config().name)
     assert.is_false(controllers[2]:config().sandbox.enabled)
     controller = neoagent.setup({
+      workspace_trust = false,
       sandbox = { enabled = false, profile = profile },
       persistence = {
         enabled = false,

@@ -37,6 +37,7 @@ describe("neoagent commands", function()
 
     local model = { provider = "fake", id = "test", stream = function() end }
     require("neoagent").setup({
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = false },
       providers = { fake = { api = "fake", models = { test = { thinking = {
@@ -92,6 +93,7 @@ describe("neoagent commands", function()
     local store = require("neoagent.storage").new({ directory = directory, cwd = vim.fn.getcwd() })
     assert(store:append({ role = "user", content = "stored", timestamp = 1 }))
     require("neoagent").setup({
+      workspace_trust = false,
       default_registry = false,
       persistence = { enabled = true, directory = directory },
       default_model = { provider = "fake", model = "test" },
@@ -162,6 +164,7 @@ describe("neoagent commands", function()
       request_opts = function() return {} end,
     }
     require("neoagent").setup({
+      workspace_trust = false,
       persistence = { enabled = false },
       auth = { path = auth_path, methods = {
         ["openai-codex"] = login_method,

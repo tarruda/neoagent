@@ -262,6 +262,60 @@ describe("neoagent generic dialog UI", function()
       assert.is_true(pending:result().presenter_unavailable)
     end)
 
+  it("shows Controller-scoped dialogs only with their owning Controller",
+    function()
+      local dialogs = require("neoagent.dialog").new()
+      local first = require("neoagent.controller").new({
+        name = "first",
+        persistence = {
+          enabled = false,
+          workspace_settings = false,
+          directory = vim.fn.tempname(),
+        },
+        tools = {},
+      })
+      local second = require("neoagent.controller").new({
+        name = "second",
+        persistence = {
+          enabled = false,
+          workspace_settings = false,
+          directory = vim.fn.tempname(),
+        },
+        tools = {},
+      })
+      controllers = { first, second }
+      local window = require("neoagent.window").new({
+        controllers = controllers,
+        config = config.resolve({}).ui,
+        dialogs = dialogs,
+      })
+      windows[#windows + 1] = window
+
+      local request = transcript_dialog()
+      request.controller = "first"
+      local pending = dialogs:show(request)
+      local id = dialogs:snapshot().active.id
+      assert(vim.wait(1000, function()
+        local view = window:_state().view
+        return view and view.dialog_buf ~= nil
+          and view.dialog.active.id == id
+      end, 5))
+
+      assert(window:select(second))
+      local view = window:_state().view
+      assert.is_nil(view.dialog)
+      assert.is_nil(view.dialog_buf)
+      assert.are.equal(id, dialogs:snapshot().active.id)
+
+      assert(window:select(first))
+      assert(vim.wait(1000, function()
+        return view.dialog_buf ~= nil and view.dialog.active.id == id
+      end, 5))
+      feed("y")
+      assert(vim.wait(1000, function() return pending:is_done() end, 5))
+      assert.are.equal("run", pending:result().action)
+    end)
+
   it("fails a dialog when a custom View cannot present it", function()
     local dialogs = require("neoagent.dialog").new()
     local controller = require("neoagent.controller").new({

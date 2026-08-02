@@ -34,7 +34,7 @@ local function documentation()
       .. "thinking preferences per cwd. Sessions remain shared across Controllers.",
     "- Bundled Windows persist accepted input in a workspace JSONL history shared by "
       .. "their Controllers.",
-    "- `neoagent.new(opts)` creates an independent Controller with its own configuration, "
+    "- `neoagent.new(opts[, runtime])` creates an independent Controller with its own configuration, "
       .. "model selection, Session, Workspace, and Run.",
     "- `neoagent.new_window(opts)` attaches uniquely named Controllers to one passive View. "
       .. "Selection restores per-Controller messages and input drafts while Runs remain "
@@ -111,8 +111,35 @@ local function documentation()
       .. "lifetime-scoped `ctx.dialog` capability with "
       .. "`neoagent.dialog.wrap`, and pass the source as the `dialogs` option "
       .. "to `neoagent.new_window()`. Callers define transcript or floating "
-      .. "placement, action IDs, labels, keys, and optional editable input. "
+      .. "placement, action IDs, labels, keys, optional Controller ownership, "
+      .. "and optional editable input. Controller-scoped dialogs remain pending "
+      .. "and hidden while another Controller is active. "
       .. "The source fails when no presenter is attached.",
+    "",
+    "## Custom workspace trust",
+    "",
+    "Workspace trust is an explicit Controller runtime policy. Compose its View "
+      .. "separately so the Controller configuration remains reusable.",
+    "",
+    "```lua",
+    "local neoagent = require(\"neoagent\")",
+    "local dialogs = require(\"neoagent.dialog\").new()",
+    "local opts = neoagent.default():config()",
+    "opts.name = \"Review\"",
+    "local trust_view, policy =",
+    "  require(\"neoagent.workspace_trust\").compose(opts, { dialogs = dialogs })",
+    "local controller = neoagent.new(opts, { workspace_trust = policy })",
+    "local window = neoagent.new_window({",
+    "  controllers = { controller },",
+    "  dialogs = dialogs,",
+    "  view = trust_view,",
+    "})",
+    "policy:attach_window(window, controller)",
+    "```",
+    "",
+    "The composition reads `opts.workspace_trust.path`. Pass an explicit `path` "
+      .. "to override it and pass sandbox composition status as `sandbox_status` "
+      .. "when the protected toolset is sandboxed.",
     "",
     "## Custom View",
     "",

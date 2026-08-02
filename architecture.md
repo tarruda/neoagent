@@ -135,6 +135,52 @@ filesystem and `neoagent.process` runner. A decorated executor can copy the
 context and replace either capability for one invocation. Shell output uses
 bounded memory and streams overflow through the filesystem capability.
 
+## Workspace trust composition
+
+`lua/neoagent/workspace_trust.lua` is an optional higher-level policy used by
+the built-in `setup()` composition and available to custom compositions. It
+resolves canonical trust targets, reads and updates the versioned trust store,
+owns process-lifetime decisions, defines the transcript trust dialog, and
+returns a visibility-aware View factory alongside the policy.
+
+```text
+Controller config ──► workspace_trust.compose() ──► View factory + policy
+       │                                                │          │
+       └──► Controller + explicit runtime policy ◄──────┘          │
+                    │                                              │
+                    └── unresolved ──► scoped dialog source ──► Window
+```
+
+The default composition injects one policy into Neo when tools or project
+resource discovery make it trust-protected. Custom compositions use the same
+`compose()` result, pass the policy through the explicit `neoagent.new()`
+runtime object, pass the View factory and dialog source to their Window, and
+attach that Window to the policy. Controller construction configuration stays
+reusable across compositions. Chat and direct Controller construction receive
+only policies supplied by their caller. The Controller invokes an injected
+check before Session creation, Model selection, project discovery, and Run
+startup. Its preparation path can publish the workspace context while
+unresolved, which allows the View decorator to wait for an active visible
+Controller before scheduling the dialog. Programmatic sends invoke the same
+check and activate the protected Controller before dialog publication.
+
+The policy uses the canonical Git worktree root or canonical cwd as an exact
+target and uses case-insensitive keys on Windows. Session decisions live in a
+module-owned process table. Persistent positive decisions use a deterministic
+JSON document. Updates create private state paths, acquire a bounded
+same-directory process lock, merge the current document, write a private
+temporary file, and atomically rename it.
+
+Dialog acceptance records either process or persistent trust. Trust dialogs
+carry the protected Controller name. The Window presents a scoped dialog only
+while that Controller is active, retaining the unresolved request across
+Controller selection. The Cancel action closes the Window through an attached
+callback, while the Window retains its Controller draft. Closing the Window
+leaves the decision unresolved. The policy receives current sandbox status
+from the composition, including runtime sandbox toggles, so the prompt
+describes the effective execution mode. Store and presenter failures leave the
+target unresolved.
+
 ## Sandbox composition
 
 `lua/neoagent/sandbox/` is an optional higher-level composition around the
@@ -316,12 +362,13 @@ staging root's device and inode identity is recorded and revalidated before use
 and cleanup. Profiles that expose every host staging directory and changed root
 identities fail closed.
 
-Activation failure preserves the configured host toolset. An initial failure
-wraps the configured View factory with a sandbox-owned warning shown once when
-the requesting Controller first becomes visible; a runtime request reports the
-failure immediately. Successful activation records its full or degraded
-isolation status for `:NeoagentSandboxInfo`. Runtime failure after activation
-is fail-closed.
+Activation failure preserves the configured host toolset. The workspace trust
+prompt reports the failure when the built-in trust policy is active. With
+workspace trust disabled, an initial failure wraps the configured View factory
+with a sandbox-owned warning shown once when the requesting Controller first
+becomes visible; a runtime request reports the failure immediately. Successful
+activation records its full or degraded isolation status for
+`:NeoagentSandboxInfo`. Runtime failure after activation is fail-closed.
 
 ## Sessions and persistence
 
@@ -410,19 +457,24 @@ from the model and agent loop.
 An optional dialog source lets an executor inject a lifetime-scoped
 `ctx.dialog` capability and publish bounded asynchronous requests to a Window.
 Requests select transcript or floating placement, provide their own actions,
-and may collect editable text. The Window owns presenter attachment and
+and may collect editable text. An optional Controller name scopes presentation
+to that Controller; `dialog.wrap()` derives this scope from an agent execution
+context when the request omits it. The Window retains the unresolved request
+while another Controller is active. The Window owns presenter attachment and
 teardown, while the bundled View renders requests without interpreting action
 IDs. The source resolves requests in FIFO order and cancels pending requests
 when its presenter detaches.
 
 ## Public composition
 
-`lua/neoagent/init.lua` provides the public facade.
+`lua/neoagent/init.lua` provides the public facade. `new(opts, runtime)` keeps
+Controller configuration and explicitly injected runtime policies as separate
+values.
 
 `setup()` creates two Controllers in one default Window:
 
-- **Neo** uses the configured coding prompt, tools, AGENTS.md, skills, and a
-  runtime-selectable optional sandbox toolset.
+- **Neo** uses the configured coding prompt, tools, AGENTS.md, skills, a
+  workspace trust guard, and a runtime-selectable optional sandbox toolset.
 - **Chat** uses an empty system prompt and tool list, with resource discovery
   disabled.
 
@@ -437,7 +489,8 @@ Controller owned by `setup()`.
 
 1. The View submits text to the Window.
 2. The Window calls the active Controller.
-3. The Controller resolves its Workspace, Session, Model, tools, and prompt.
+3. The Controller checks an injected workspace trust policy, then resolves its
+   Workspace, Session, Model, tools, and prompt.
 4. `chat.run()` records the user message and invokes `agent.run()`.
 5. The agent streams from the Model.
 6. API events flow back through Controller publications to the View.

@@ -17,23 +17,46 @@ local function configured_toolset(configured)
   }
 end
 
+local function trust_protected(configured, toolset)
+  return #toolset.tools > 0
+    or configured.agents ~= false
+      and #configured.agents.project_filenames > 0
+    or configured.skills ~= false
+      and #configured.skills.project_dirs > 0
+end
+
 local function default_controllers(configured)
   local neo = util.copy(configured)
   neo.name = neo.name or "Neo"
   local host_toolset = configured_toolset(neo)
   local dialogs = require("neoagent.dialog").new()
   local sandbox_toolset
+  local sandbox_warning
   local status = { enabled = false, active = false }
   if neo.sandbox.enabled then
     local composition = require("neoagent.sandbox.composition")
     sandbox_toolset, status = composition.compose(
       host_toolset, neo.sandbox, { dialogs = dialogs })
     if not sandbox_toolset then
-      neo.view = require("neoagent.sandbox.view").warn_once(
-        neo.view, composition.warning(neo.name, status), neo.name)
+      sandbox_warning = composition.warning(neo.name, status)
     end
   end
-  local neo_controller = Controller.from_config(neo)
+  local trust_policy
+  local view = neo.view
+  if configured.workspace_trust
+      and trust_protected(neo, host_toolset) then
+    view, trust_policy = require("neoagent.workspace_trust").compose(neo, {
+      path = configured.workspace_trust.path,
+      dialogs = dialogs,
+      sandbox_status = status,
+    })
+  elseif sandbox_warning then
+    view = require("neoagent.sandbox.view").warn_once(
+      view, sandbox_warning, neo.name)
+  end
+  local neo_controller = Controller.from_config(neo, {
+    workspace_trust = trust_policy,
+  })
   if sandbox_toolset then
     assert(neo_controller:set_toolset(sandbox_toolset))
   end
@@ -45,6 +68,7 @@ local function default_controllers(configured)
     sandbox_toolset = sandbox_toolset,
     status = util.copy(status),
     dialogs = dialogs,
+    trust = trust_policy,
   }
 
   local chat = util.copy(configured)
@@ -59,7 +83,11 @@ local function default_controllers(configured)
   return {
     neo_controller,
     Controller.from_config(chat),
-  }, dialogs, sandbox_state
+  }, dialogs, sandbox_state, trust_policy, view
+end
+
+local function attach_trust(policy, window, controller)
+  if policy then policy:attach_window(window, controller) end
 end
 
 local function any_owned_running()
@@ -86,8 +114,8 @@ local function window_for(controllers, opts)
   })
 end
 
-function M.new(opts)
-  return Controller.new(opts or {})
+function M.new(opts, runtime)
+  return Controller.new(opts or {}, runtime)
 end
 
 function M.new_window(opts)
@@ -99,12 +127,14 @@ end
 
 function M.default_window()
   if not default_window then
-    local dialogs
-    owned_controllers, dialogs, default_sandbox =
+    local dialogs, trust_policy, view
+    owned_controllers, dialogs, default_sandbox, trust_policy, view =
       default_controllers(config.get())
     default_window = window_for(owned_controllers, {
       dialogs = dialogs,
+      view = view,
     })
+    attach_trust(trust_policy, default_window, owned_controllers[1])
   end
   return default_window
 end
@@ -118,11 +148,13 @@ function M.setup(opts)
     error("Cannot reconfigure neoagent while a run is active")
   end
   local configured = config.setup(opts or {})
-  local replacements, dialogs, sandbox_state =
+  local replacements, dialogs, sandbox_state, trust_policy, view =
     default_controllers(configured)
   local replacement_window = window_for(replacements, {
     dialogs = dialogs,
+    view = view,
   })
+  attach_trust(trust_policy, replacement_window, replacements[1])
   if default_window then default_window:destroy() end
   destroy_owned()
   default_window = replacement_window
@@ -269,6 +301,7 @@ function M.set_sandbox_enabled(enabled)
     state.enabled = false
     state.status.enabled = false
     state.status.active = false
+    if state.trust then state.trust:set_sandbox_status(state.status) end
     vim.notify("neoagent: sandbox disabled; tools execute on the host",
       vim.log.levels.INFO)
     return util.copy(state.status)
@@ -296,6 +329,7 @@ function M.set_sandbox_enabled(enabled)
 
   state.enabled = true
   state.status = util.copy(status)
+  if state.trust then state.trust:set_sandbox_status(state.status) end
   if not toolset then
     vim.notify(require("neoagent.sandbox.composition").warning(
       state.controller:config().name, status), vim.log.levels.WARN)

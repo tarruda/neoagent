@@ -55,6 +55,8 @@ local function validate_dialog(dialog)
     "dialog must be an object")
   assert(dialog.placement == "transcript" or dialog.placement == "float",
     "dialog placement must be transcript or float")
+  assert(dialog.controller == nil or valid_text(dialog.controller, 512),
+    "dialog controller must be a non-empty string")
   assert(valid_text(dialog.title, 512), "dialog title is invalid")
   assert(valid_text(dialog.body, 16 * 1024, true),
     "dialog body is invalid")
@@ -291,6 +293,14 @@ function M.wrap(dialogs, next_execute_tool)
     decorated.dialog = {
       show = function(_, request)
         require_active()
+        local controller = type(decorated.context) == "table"
+            and decorated.context.controller
+          or nil
+        if type(request) == "table" and request.controller == nil
+            and type(controller) == "string" and controller ~= "" then
+          request = util.copy(request)
+          request.controller = controller
+        end
         return dialogs:show(request)
       end,
       choose_pending = function(_, action_id, reason)

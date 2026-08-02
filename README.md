@@ -99,6 +99,18 @@ default_model = {
 }
 ```
 
+## Workspace trust
+
+The built-in **Neo** composition asks for explicit workspace trust before it
+loads project instructions or starts a tool-capable agent. Review the canonical
+workspace path and effective sandbox status, then choose persistent trust,
+trust until Neovim exits, or cancel. **Chat** and direct Lua compositions keep
+their explicit caller-defined policy; custom Controllers can compose the same
+trust policy through `workspace_trust.compose()` and `neoagent.new()` runtime
+injection. Workspace trust does not make repository content, commands, or model
+output safe; native sandboxing and executor policy control runtime effects. See
+`:help neoagent-workspace-trust` for complete behavior and configuration.
+
 ## OS-enforced sandbox
 
 Codex ported sandboxing is experimental and disabled by default. The setup flag

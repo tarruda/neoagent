@@ -8,6 +8,9 @@ local defaults = {
   sandbox = {
     enabled = false,
   },
+  workspace_trust = {
+    path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
+  },
   default_thinking_level = "medium",
   providers = {},
   apis = {},
@@ -103,6 +106,19 @@ local function validate(opts)
     "sandbox must be a table")
   assert(type(opts.sandbox.enabled) == "boolean",
     "sandbox.enabled must be boolean")
+  assert(opts.workspace_trust == false
+      or (type(opts.workspace_trust) == "table"
+        and not util.is_list(opts.workspace_trust)),
+    "workspace_trust must be false or a table")
+  if opts.workspace_trust then
+    for key in pairs(opts.workspace_trust) do
+      assert(key == "path",
+        "unsupported workspace_trust setting: " .. tostring(key))
+    end
+    assert(type(opts.workspace_trust.path) == "string"
+        and opts.workspace_trust.path ~= "",
+      "workspace_trust.path is required")
+  end
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
     "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
   if opts.default_model ~= nil then
