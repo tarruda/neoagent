@@ -146,21 +146,29 @@ local function base_executor(tool, arguments, ctx)
   return tool.execute(arguments, ctx)
 end
 
-function M.controller(configured, opts)
-  assert(type(configured) == "table",
-    "sandbox Controller configuration is required")
-  opts = opts or {}
-  local copied = util.copy(configured)
-  local settings = copied.sandbox or { enabled = false }
+local function copy_toolset(toolset)
+  assert(type(toolset) == "table" and not util.is_list(toolset),
+    "sandbox toolset must be an object")
+  assert(type(toolset.tools) == "table" and util.is_list(toolset.tools),
+    "sandbox toolset tools must be a list")
+  assert(toolset.execute_tool == nil
+      or type(toolset.execute_tool) == "function",
+    "sandbox toolset executor must be a function")
+  return {
+    tools = util.copy(toolset.tools),
+    execute_tool = toolset.execute_tool,
+  }
+end
+
+function M.compose(toolset, settings, opts)
+  toolset = copy_toolset(toolset)
+  settings = util.copy(settings or { enabled = false })
   validate_settings(settings)
   if not settings.enabled then
-    copied._sandbox_status = {
-      enabled = false,
-      active = false,
-    }
-    return copied
+    return nil, { enabled = false, active = false }
   end
 
+  opts = opts or {}
   local dispatch = require("neoagent.sandbox.platform")
   local selected, status = opts.platform, opts.status
   if selected == nil and status == nil then
@@ -185,24 +193,17 @@ function M.controller(configured, opts)
       message = util.normalize_error(value, "sandbox_unavailable").message,
     }
   end
-  if not selected or type(status) ~= "table" or not status.ok then
-    copied._sandbox_status = util.copy(status or {
-      ok = false,
-      stage = "platform",
-      message = "sandbox platform is unavailable",
-    })
-    copied._sandbox_status.enabled = true
-    copied._sandbox_status.active = false
-    copied.view = require("neoagent.sandbox.view").warn_once(
-      copied.view, M.warning(copied.name or "Neo", status),
-      copied.name or "Neo")
-    return copied
-  end
-  copied._sandbox_status = util.copy(status)
-  copied._sandbox_status.enabled = true
-  copied._sandbox_status.active = true
 
-  local dialogs = require("neoagent.dialog").new()
+  local recorded = util.copy(status or {
+    ok = false,
+    stage = "platform",
+    message = "sandbox platform is unavailable",
+  })
+  recorded.enabled = true
+  recorded.active = selected ~= nil and recorded.ok == true
+  if not recorded.active then return nil, recorded end
+
+  local dialogs = opts.dialogs or require("neoagent.dialog").new()
   local paths = opts.paths or selected.paths or path_module.posix
   local temporary_root = type(selected.temporary_root) == "function"
       and selected.temporary_root(services) or nil
@@ -215,22 +216,46 @@ function M.controller(configured, opts)
     process = process,
     environ = opts.environ,
     nvim = opts.nvim,
-    capabilities = status.capabilities,
+    capabilities = recorded.capabilities,
   })
   local escalation = require("neoagent.sandbox.escalation").new({
     fs = fs,
     process = process,
   })
+  local base = toolset.execute_tool or base_executor
+  return {
+    tools = escalation:tools(toolset.tools),
+    execute_tool = require("neoagent.dialog").wrap(
+      dialogs, escalation:wrap({
+        restricted = enforcement:wrap(base),
+        elevated = base,
+      })),
+  }, recorded, dialogs
+end
+
+function M.controller(configured, opts)
+  assert(type(configured) == "table",
+    "sandbox Controller configuration is required")
+  opts = opts or {}
+  local copied = util.copy(configured)
+  local settings = copied.sandbox or { enabled = false }
   local selected_tools = copied._tools_supplied and copied.tools
     or require("neoagent.tools").coding()
-  local base = copied.execute_tool or base_executor
-  copied.tools = escalation:tools(selected_tools)
+  local toolset, status, dialogs = M.compose({
+    tools = selected_tools,
+    execute_tool = copied.execute_tool,
+  }, settings, opts)
+  copied._sandbox_status = status
+  if not settings.enabled then return copied end
+  if not toolset then
+    copied.view = require("neoagent.sandbox.view").warn_once(
+      copied.view, M.warning(copied.name or "Neo", status),
+      copied.name or "Neo")
+    return copied
+  end
+  copied.tools = toolset.tools
   copied._tools_supplied = true
-  copied.execute_tool = require("neoagent.dialog").wrap(
-    dialogs, escalation:wrap({
-      restricted = enforcement:wrap(base),
-      elevated = base,
-    }))
+  copied.execute_tool = toolset.execute_tool
   return copied, dialogs
 end
 

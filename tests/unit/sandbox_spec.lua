@@ -405,9 +405,22 @@ describe("neoagent sandbox composition", function()
       end,
       fs = function() return true end,
     }
+    local composition = require("neoagent.sandbox.composition")
+    local dialog_source = require("neoagent.dialog").new()
+    local toolset, toolset_status, returned_dialogs = composition.compose({
+      tools = original.tools,
+    }, original.sandbox, {
+      platform = platform,
+      status = { ok = true, platform = "test" },
+      dialogs = dialog_source,
+    })
+    assert.is_true(toolset_status.active)
+    assert.are.equal(dialog_source, returned_dialogs)
+    assert.is_table(toolset.tools[1].input_schema.properties.options)
+    assert.is_nil(original.tools[1].input_schema.properties.options)
+
     local composed, dialogs =
-      require("neoagent.sandbox.composition").controller(
-        original, { platform = platform })
+      composition.controller(original, { platform = platform })
     assert.are.equal(1, checked)
     assert.is_table(dialogs)
     assert.are.equal("custom", composed.tools[1].name)

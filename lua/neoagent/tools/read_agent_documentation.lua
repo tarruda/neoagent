@@ -93,16 +93,20 @@ local function documentation()
     "Passing `tools` selects exactly those tools. The bundled coding preset contains read, "
       .. "write, edit, shell, and this documentation "
       .. "tool. The read-only preset remains read, grep, and find.",
+    "`controller:get_toolset()` returns the active tools and executor. "
+      .. "`controller:set_toolset(toolset)` atomically replaces that pair between Runs "
+      .. "while `controller:config()` retains construction defaults.",
     "Bundled tools resolve model-directed effects through optional `ctx.fs` and "
       .. "`ctx.process` capabilities. Direct Lua calls use host implementations.",
-    "The built-in Neo composition accepts `sandbox = { enabled = true }`. "
-      .. "A successful native Linux or macOS requirements check replaces "
-      .. "those capabilities with per-call sandbox implementations. "
-      .. "Activation failure preserves the configured executor and warns "
-      .. "when Neo is first displayed; runtime failures are fail-closed. "
-      .. "Profiles can override canonical read, write, and deny paths, "
-      .. "network access, environment construction, and shared host "
-      .. "temporary access.",
+    "The built-in Neo composition accepts `sandbox = { enabled = true }` as its "
+      .. "initial editor state. `:NeoagentToggleSandbox` switches Neo between "
+      .. "its configured host toolset and the composed sandbox toolset without "
+      .. "changing configuration; `:NeoagentSandboxInfo` reports runtime status. "
+      .. "A successful native requirements check replaces those capabilities "
+      .. "with per-call sandbox implementations. Activation failure preserves "
+      .. "the configured executor, and runtime failures are fail-closed. Profiles "
+      .. "can override canonical read, write, and deny paths, network access, "
+      .. "environment construction, and shared host temporary access.",
     "Executors can create `require(\"neoagent.dialog\").new()`, inject its "
       .. "lifetime-scoped `ctx.dialog` capability with "
       .. "`neoagent.dialog.wrap`, and pass the source as the `dialogs` option "

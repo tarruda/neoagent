@@ -640,6 +640,180 @@ describe("neoagent default controller", function()
     assert.is_true(neoagent.stop())
   end)
 
+  it("replaces the active toolset atomically between Runs", function()
+    local calls = {}
+    local host_execute = function() end
+    local sandbox_execute = function() end
+    local host = {
+      name = "host_tool",
+      description = "Host tool",
+      input_schema = { type = "object", properties = {} },
+    }
+    local sandboxed = {
+      name = "sandbox_tool",
+      description = "Sandbox tool",
+      input_schema = { type = "object", properties = {} },
+    }
+    setup_model(fake_model.new({}), {
+      tools = { host },
+      execute_tool = host_execute,
+      interaction = function(options)
+        calls[#calls + 1] = options
+        return { cancel = function()
+          options.on_done({
+            ok = false,
+            error = { kind = "cancelled", message = "cancelled" },
+          })
+        end }
+      end,
+    })
+    local controller = neoagent.default()
+    local initial = controller:get_toolset()
+    initial.tools[1].name = "changed copy"
+    assert.are.equal("host_tool", controller:get_toolset().tools[1].name)
+
+    local previous = controller:set_toolset({
+      tools = { sandboxed },
+      execute_tool = sandbox_execute,
+    })
+    assert.are.equal("host_tool", previous.tools[1].name)
+    assert.are.equal(host_execute, previous.execute_tool)
+    assert.are.equal("host_tool", controller:config().tools[1].name)
+    assert.are.equal(host_execute, controller:config().execute_tool)
+
+    assert(neoagent.send("use sandbox tools"))
+    assert.are.equal("sandbox_tool", calls[1].tools[1].name)
+    assert.are.equal(sandbox_execute, calls[1].execute_tool)
+    local changed, err = controller:set_toolset(previous)
+    assert.is_nil(changed)
+    assert.are.equal("controller", err.kind)
+    assert.are.equal("sandbox_tool", controller:get_toolset().tools[1].name)
+    assert.is_true(neoagent.stop())
+
+    assert(controller:set_toolset(previous))
+    assert(neoagent.send("use host tools"))
+    assert.are.equal("host_tool", calls[2].tools[1].name)
+    assert.are.equal(host_execute, calls[2].execute_tool)
+    assert.is_true(neoagent.stop())
+    assert.has_error(function() controller:set_toolset({ tools = "invalid" }) end,
+      "toolset.tools must be a list")
+  end)
+
+  it("toggles the built-in Neo sandbox toolset while Chat is selected", function()
+    local tool = {
+      name = "inspect",
+      description = "Inspect the workspace",
+      input_schema = {
+        type = "object",
+        properties = {},
+        additionalProperties = false,
+      },
+      execute = function()
+        return { content = { { type = "text", text = "done" } } }
+      end,
+    }
+    local host_execute = function(selected, arguments, ctx)
+      return selected.execute(arguments, ctx)
+    end
+    setup_model(fake_model.new({}), {
+      tools = { tool },
+      execute_tool = host_execute,
+      interaction = function(options)
+        return { cancel = function()
+          options.on_done({
+            ok = false,
+            error = { kind = "cancelled", message = "cancelled" },
+          })
+        end }
+      end,
+    })
+    local dispatch = require("neoagent.sandbox.platform")
+    local original_select = dispatch.select
+    dispatch.select = function()
+      return {
+        name = "test",
+        exec = function() error("must not execute") end,
+        fs = function() error("must not access files") end,
+      }, {
+        ok = true,
+        platform = "test",
+        capabilities = {},
+      }
+    end
+    local ok, err = pcall(function()
+      local window = neoagent.default_window()
+      local neo = window:controllers()[1]
+      assert.are.equal("Chat", neoagent.cycle_agent():config().name)
+      local status = assert(neoagent.toggle_sandbox())
+      assert.is_true(status.active)
+      assert.are.equal("Chat", window:active():config().name)
+      assert.is_false(neo:config().sandbox.enabled)
+      local active = neo:get_toolset()
+      assert.is_table(active.tools[1].input_schema.properties.options)
+      assert.are_not.equal(host_execute, active.execute_tool)
+      assert.are.same({}, window:controllers()[2]:get_toolset().tools)
+
+      status = assert(neoagent.toggle_sandbox())
+      assert.is_false(status.enabled)
+      local restored = neo:get_toolset()
+      assert.is_nil(restored.tools[1].input_schema.properties.options)
+      assert.are.equal(host_execute, restored.execute_tool)
+
+      assert.are.equal("Neo", neoagent.cycle_agent():config().name)
+      assert(neoagent.send("keep the host tools stable"))
+      local changed, busy_err = neoagent.toggle_sandbox()
+      assert.is_nil(changed)
+      assert.are.equal("sandbox", busy_err.kind)
+      assert.are.equal(host_execute, neo:get_toolset().execute_tool)
+      assert.is_true(neoagent.stop())
+    end)
+    dispatch.select = original_select
+    assert(ok, err)
+  end)
+
+  it("keeps host tools when runtime sandbox activation is unavailable", function()
+    local tool = {
+      name = "inspect",
+      description = "Inspect",
+      input_schema = {
+        type = "object",
+        properties = {},
+        additionalProperties = false,
+      },
+    }
+    setup_model(fake_model.new({}), { tools = { tool } })
+    local dispatch = require("neoagent.sandbox.platform")
+    local original_select = dispatch.select
+    dispatch.select = function()
+      return nil, {
+        ok = false,
+        stage = "probe",
+        message = "native isolation unavailable",
+      }
+    end
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local ok, err = pcall(function()
+      local status = assert(neoagent.toggle_sandbox())
+      assert.is_true(status.enabled)
+      assert.is_false(status.active)
+      assert.are.equal("inspect",
+        neoagent.default():get_toolset().tools[1].name)
+      assert.matches("tools will run without a sandbox",
+        notifications[#notifications][1])
+      assert.are.equal(vim.log.levels.WARN,
+        notifications[#notifications][2])
+      status = assert(neoagent.toggle_sandbox())
+      assert.is_false(status.enabled)
+    end)
+    vim.notify = original_notify
+    dispatch.select = original_select
+    assert(ok, err)
+  end)
+
   it("composes AGENTS.md and skill metadata into the controller prompt", function()
     local root = vim.fn.tempname()
     local skill_root = root .. "/skills"

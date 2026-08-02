@@ -6,6 +6,7 @@ describe("neoagent commands", function()
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
       "NeoagentModel", "NeoagentThinking", "NeoagentPosition", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
       "NeoagentBranch", "NeoagentFork", "NeoagentSandboxInfo",
+      "NeoagentToggleSandbox",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
@@ -15,8 +16,24 @@ describe("neoagent commands", function()
     local sandbox_message
     vim.notify = function(message) sandbox_message = message end
     vim.cmd("NeoagentSandboxInfo")
-    vim.notify = original_notify
     assert.matches("enabled: no", sandbox_message)
+    local dispatch = require("neoagent.sandbox.platform")
+    local original_dispatch = dispatch.select
+    dispatch.select = function()
+      return {
+        name = "test",
+        exec = function() error("must not execute") end,
+        fs = function() error("must not access files") end,
+      }, { ok = true, platform = "test", capabilities = {} }
+    end
+    vim.cmd("NeoagentToggleSandbox")
+    assert.matches("sandbox enabled", sandbox_message)
+    assert.is_true(require("neoagent").sandbox_info().active)
+    vim.cmd("NeoagentToggleSandbox")
+    assert.matches("sandbox disabled", sandbox_message)
+    assert.is_false(require("neoagent").sandbox_info().enabled)
+    dispatch.select = original_dispatch
+    vim.notify = original_notify
 
     local model = { provider = "fake", id = "test", stream = function() end }
     require("neoagent").setup({

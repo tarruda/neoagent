@@ -7,15 +7,45 @@ local M = {}
 local positions = { "auto", "left", "right", "top", "bottom", "center" }
 local default_window
 local owned_controllers
+local default_sandbox
+
+local function configured_toolset(configured)
+  return {
+    tools = configured._tools_supplied and util.copy(configured.tools)
+      or require("neoagent.tools").coding(),
+    execute_tool = configured.execute_tool,
+  }
+end
 
 local function default_controllers(configured)
   local neo = util.copy(configured)
   neo.name = neo.name or "Neo"
-  local dialogs
+  local host_toolset = configured_toolset(neo)
+  local dialogs = require("neoagent.dialog").new()
+  local sandbox_toolset
+  local status = { enabled = false, active = false }
   if neo.sandbox.enabled then
-    neo, dialogs =
-      require("neoagent.sandbox.composition").controller(neo)
+    local composition = require("neoagent.sandbox.composition")
+    sandbox_toolset, status = composition.compose(
+      host_toolset, neo.sandbox, { dialogs = dialogs })
+    if not sandbox_toolset then
+      neo.view = require("neoagent.sandbox.view").warn_once(
+        neo.view, composition.warning(neo.name, status), neo.name)
+    end
   end
+  local neo_controller = Controller.from_config(neo)
+  if sandbox_toolset then
+    assert(neo_controller:set_toolset(sandbox_toolset))
+  end
+  local sandbox_state = {
+    controller = neo_controller,
+    configured = util.copy(configured.sandbox),
+    enabled = configured.sandbox.enabled,
+    host_toolset = host_toolset,
+    sandbox_toolset = sandbox_toolset,
+    status = util.copy(status),
+    dialogs = dialogs,
+  }
 
   local chat = util.copy(configured)
   chat.name = "Chat"
@@ -27,9 +57,9 @@ local function default_controllers(configured)
   chat.skills = false
 
   return {
-    Controller.from_config(neo),
+    neo_controller,
     Controller.from_config(chat),
-  }, dialogs
+  }, dialogs, sandbox_state
 end
 
 local function any_owned_running()
@@ -70,7 +100,8 @@ end
 function M.default_window()
   if not default_window then
     local dialogs
-    owned_controllers, dialogs = default_controllers(config.get())
+    owned_controllers, dialogs, default_sandbox =
+      default_controllers(config.get())
     default_window = window_for(owned_controllers, {
       dialogs = dialogs,
     })
@@ -87,7 +118,8 @@ function M.setup(opts)
     error("Cannot reconfigure neoagent while a run is active")
   end
   local configured = config.setup(opts or {})
-  local replacements, dialogs = default_controllers(configured)
+  local replacements, dialogs, sandbox_state =
+    default_controllers(configured)
   local replacement_window = window_for(replacements, {
     dialogs = dialogs,
   })
@@ -95,6 +127,7 @@ function M.setup(opts)
   destroy_owned()
   default_window = replacement_window
   owned_controllers = replacements
+  default_sandbox = sandbox_state
   return replacements[1]
 end
 
@@ -107,6 +140,7 @@ function M.set_default(controller)
   if default_window then default_window:destroy() end
   default_window = replacement
   owned_controllers = nil
+  default_sandbox = nil
   config._set(controller:config())
   return previous
 end
@@ -117,6 +151,7 @@ function M.set_default_window(window)
   local previous = default_window
   default_window = window
   owned_controllers = nil
+  default_sandbox = nil
   config._set(window:active():config())
   return previous
 end
@@ -211,17 +246,78 @@ function M.select_fork()
   end)
 end
 
-function M.sandbox_info()
-  local controllers = M.default_window():controllers()
-  local selected = M.default()
-  for _, controller in ipairs(controllers) do
-    local configured = controller:config()
-    if configured.sandbox and configured.sandbox.enabled then
-      selected = controller
-      break
-    end
+function M.set_sandbox_enabled(enabled)
+  assert(type(enabled) == "boolean", "sandbox state must be boolean")
+  M.default_window()
+  local state = default_sandbox
+  if not state then
+    local err = util.error("sandbox",
+      "Sandbox toggling is available only for the built-in Neo composition")
+    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    return nil, err
   end
-  return require("neoagent.sandbox").info(selected)
+  if state.controller:is_running() then
+    local err = util.error("sandbox",
+      "Cannot change sandbox while Neo is running")
+    vim.notify("neoagent: " .. err.message, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  if not enabled then
+    local changed, err = state.controller:set_toolset(state.host_toolset)
+    if not changed then return nil, err end
+    state.enabled = false
+    state.status.enabled = false
+    state.status.active = false
+    vim.notify("neoagent: sandbox disabled; tools execute on the host",
+      vim.log.levels.INFO)
+    return util.copy(state.status)
+  end
+
+  local toolset = state.sandbox_toolset
+  local status
+  if toolset then
+    status = util.copy(state.status)
+    status.enabled = true
+    status.active = true
+  else
+    local settings = util.copy(state.configured)
+    settings.enabled = true
+    local ok, composed, recorded = pcall(
+      require("neoagent.sandbox.composition").compose,
+      state.host_toolset, settings, { dialogs = state.dialogs })
+    if not ok then
+      local err = util.normalize_error(composed, "sandbox")
+      vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+      return nil, err
+    end
+    toolset, status = composed, recorded
+  end
+
+  state.enabled = true
+  state.status = util.copy(status)
+  if not toolset then
+    vim.notify(require("neoagent.sandbox.composition").warning(
+      state.controller:config().name, status), vim.log.levels.WARN)
+    return util.copy(state.status)
+  end
+  local changed, err = state.controller:set_toolset(toolset)
+  if not changed then return nil, err end
+  state.sandbox_toolset = toolset
+  vim.notify("neoagent: sandbox enabled", vim.log.levels.INFO)
+  return util.copy(state.status)
+end
+
+function M.toggle_sandbox()
+  M.default_window()
+  if not default_sandbox then return M.set_sandbox_enabled(true) end
+  return M.set_sandbox_enabled(not default_sandbox.enabled)
+end
+
+function M.sandbox_info()
+  M.default_window()
+  if default_sandbox then return util.copy(default_sandbox.status) end
+  return require("neoagent.sandbox").info(M.default())
 end
 
 function M.show_sandbox_info()

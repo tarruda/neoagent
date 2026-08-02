@@ -127,7 +127,7 @@ The important options are: >lua
     interaction = nil,
     view = nil,                -- bundled Window's View constructor
     sandbox = {
-      enabled = false,
+      enabled = false,        -- initial editor state
       profile = nil,           -- table or function(default, ctx)
     },
     agents = {
@@ -216,13 +216,21 @@ Controller methods are: >lua
   controller:snapshot()
   controller:get_session()
   controller:get_model()
+  controller:get_toolset()
+  controller:set_toolset(toolset)
   controller:config()
   controller:is_running()
   controller:destroy()
 <
 `send` starts an interaction while idle and queues steering while working.
-Controllers have independent Sessions, model selections, steering queues, and
-Runs. Controllers using the same persistence directory share workspace data.
+Controllers have independent Sessions, model selections, active toolsets,
+steering queues, and Runs. A toolset is a plain `{ tools = {...},
+execute_tool = function(...) ... end }` table whose executor may be omitted to
+call each tool directly. `set_toolset()` atomically replaces both values
+between Runs and returns the previous toolset; `get_toolset()` returns a copy.
+The Controller snapshots the selected toolset
+when a Run begins, and its construction configuration remains unchanged.
+Controllers using the same persistence directory share workspace data.
 
 Window Controllers require unique, non-empty names. A Controller name is its
 View label and workspace-settings scope. Renaming it selects a fresh scope;
@@ -304,28 +312,53 @@ around its tools: >lua
     },
   })
 <
-Sandboxing is experimental and defaults to disabled. Linux and Windows use
-bundled standalone LuaJIT FFI runtimes to invoke native isolation APIs. Linux
-applies namespaces and seccomp; Windows applies restricted tokens, ACLs, Job
-Objects, and WFP; macOS delegates isolation to `/usr/bin/sandbox-exec`.
+Sandboxing is experimental and defaults to disabled. `sandbox.enabled`
+selects the initial editor state of the built-in Neo composition. Runtime
+changes are editor-local and leave configuration unchanged:
 
-Successful activation wraps only the built-in Neo Controller. Chat remains
-tool-free. `neoagent.new()` and direct Controller constructors do not interpret
-the setup flag; custom compositions can use `require("neoagent.sandbox")`
-directly.
+>lua
+  require("neoagent").set_sandbox_enabled(true)
+  require("neoagent").toggle_sandbox()
+<
+Use >
 
-Run >
-
+  :NeoagentToggleSandbox
   :NeoagentSandboxInfo
 <
-to inspect the active backend, isolation level, and available capabilities.
-Activation failures include their setup stage and reason.
+to switch Neo's complete toolset and inspect the active backend, isolation
+level, and available capabilities. Switching is rejected while Neo has an
+active Run. The command targets the built-in Neo Controller when Chat is
+selected. Calling `setup()` applies the configured initial state again. The
+command-facing Window owns a generic dialog source in either state, so a custom
+`view` used by `setup()` implements the documented `set_dialog(snapshot)`
+method.
 
-When activation requirements fail, Neo retains its configured host executor.
-A warning is shown once when Neo is first displayed. Successful activation
-reports full or degraded isolation through |:NeoagentSandboxInfo|. Failures
-after successful activation fail closed as tool errors and never retry through
-the host executor.
+Successful activation wraps only the built-in Neo Controller. Chat remains
+tool-free. Linux and Windows use bundled standalone LuaJIT FFI runtimes to
+invoke native isolation APIs. Linux applies namespaces and seccomp; Windows
+applies restricted tokens, ACLs, Job Objects, and WFP; macOS delegates
+isolation to `/usr/bin/sandbox-exec`. `neoagent.new()` and direct Controller
+constructors do not interpret the setup flag; custom compositions can pass a
+plain toolset through `require("neoagent.sandbox.composition").compose()` and
+install the result with `controller:set_toolset()`:
+>lua
+  local dialogs = require("neoagent.dialog").new()
+  local sandboxed, status =
+    require("neoagent.sandbox.composition").compose(
+      controller:get_toolset(),
+      { enabled = true },
+      { dialogs = dialogs })
+  if sandboxed then controller:set_toolset(sandboxed) end
+<
+Attach `dialogs` to the custom Window to present escalation requests. The
+returned status reports activation requirements and capabilities.
+
+Activation failures include their setup stage and reason. When activation
+requirements fail, Neo retains its configured host toolset. A warning is shown
+once when an initially enabled Neo is first displayed, or immediately after a
+runtime activation request. Successful activation reports full or degraded
+isolation through |:NeoagentSandboxInfo|. Failures after successful activation
+fail closed as tool errors and never retry through the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps
@@ -666,7 +699,8 @@ The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
   :NeoagentNew                    Use a new empty UI Session.
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
-  :NeoagentSandboxInfo            Show recorded sandbox capabilities.
+  :NeoagentSandboxInfo            Show current sandbox capabilities.
+  :NeoagentToggleSandbox          Switch Neo between host and sandbox tools.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.

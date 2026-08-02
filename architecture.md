@@ -142,14 +142,14 @@ execution-policy boundary. Core Models, the agent loop, Sessions, Controllers,
 tools, Window, and View contain no sandbox policy.
 
 ```text
-Default Neo setup (`sandbox.enabled`)
+Default Neo toolset (`sandbox.enabled` selects the initial state)
       │
       ▼
 sandbox/composition.lua ─────► generic dialog source ─────► Window
       │
       ├── probe/status ──────► sandbox/platform.lua
       │
-      └── decorates the Controller's `execute_tool()`
+      └── composes the Controller's tools and `execute_tool()`
                                    ▲
 agent.run() ── tool call ──────────┘
                                    │
@@ -203,19 +203,21 @@ agent.run() ── tool call ──────────┘
                                           restricted tokens, WFP, Job Objects
 ```
 
-The connections back into Neoagent are ordinary Lua extension points: default
-setup installs a decorated `execute_tool()` function, Window presents a generic
-dialog source, and the configured executor receives a copied context. The
-reusable core does not import sandbox modules. Bundled tools participate by
-calling the injected `ctx.fs` and `ctx.process` values.
+The connections back into Neoagent are ordinary Lua extension points. Sandbox
+composition consumes a plain `{ tools, execute_tool }` toolset and produces a
+decorated toolset, Window presents a generic dialog source, and the configured
+executor receives a copied context. The reusable core does not import sandbox
+modules. Bundled tools participate by calling the injected `ctx.fs` and
+`ctx.process` values.
 
-The default setup path asks `neoagent.sandbox.composition` to decorate Neo only
-when `sandbox.enabled` is true. The composition runs an active platform probe,
-then layers a restricted executor and one-shot escalation selector around the
-configured executor. It returns a generic dialog source for the default
-Window. The copied Controller configuration retains the probe result and
-established capabilities for `:NeoagentSandboxInfo`. Chat explicitly disables
-sandbox composition.
+The built-in Neo composition retains its configured host toolset and owns the
+editor-local sandbox selection. `sandbox.enabled` selects the initial state.
+Enabling asks `neoagent.sandbox.composition` to run an active platform probe
+and layer a restricted executor and one-shot escalation selector around the
+host executor. The Controller atomically installs the returned tools and
+executor between Runs. Disabling restores the host pair. Runtime status owns
+the probe result and established capabilities for
+`:NeoagentSandboxInfo`. Chat remains tool-free.
 
 Enforcement copies each tool context and injects:
 
@@ -314,11 +316,12 @@ staging root's device and inode identity is recorded and revalidated before use
 and cleanup. Profiles that expose every host staging directory and changed root
 identities fail closed.
 
-Activation failure preserves the configured host executor and wraps the
-configured View factory with a sandbox-owned warning shown once when the
-requesting Controller first becomes visible. Successful activation records
-its full or degraded isolation status for `:NeoagentSandboxInfo`. Runtime
-failure after activation is fail-closed.
+Activation failure preserves the configured host toolset. An initial failure
+wraps the configured View factory with a sandbox-owned warning shown once when
+the requesting Controller first becomes visible; a runtime request reports the
+failure immediately. Successful activation records its full or degraded
+isolation status for `:NeoagentSandboxInfo`. Runtime failure after activation
+is fail-closed.
 
 ## Sessions and persistence
 
@@ -353,6 +356,7 @@ Each Controller owns:
 - Complete configuration
 - Workspace
 - Model selection and thinking level
+- Active toolset
 - Session and persistent store
 - Current cancellable Run
 - Steering queue
@@ -363,14 +367,17 @@ Each Controller owns:
 
 The Controller starts `chat.run()`, handles storage, classifies transient
 transport and provider failures, and replays eligible turns under the configured
-retry budget. Provider retry metadata can declare eligibility, delay, and a
-stricter attempt cap. It retries context overflows after compaction, refreshes
-unmodified buffers after file edits, and publishes updates. Focused internal
-modules calculate context usage and format session choices; the Controller owns
-the mutable run and session state. Message updates and snapshots project the
-latest compaction checkpoint with its retained suffix, while the Session tree
-retains the complete active path. A replay removes a failed partial assistant
-message from the active branch before continuing the interaction:
+retry budget. Its active toolset is a plain tools-and-executor pair that can be
+atomically replaced while idle. Each Run snapshots that pair, so retries,
+continuations, and tool calls share one selection. Provider retry metadata can
+declare eligibility, delay, and a stricter attempt cap. It retries context
+overflows after compaction, refreshes unmodified buffers after file edits, and
+publishes updates. Focused internal modules calculate context usage and format
+session choices; the Controller owns the mutable run and session state. Message
+updates and snapshots project the latest compaction checkpoint with its
+retained suffix, while the Session tree retains the complete active path. A
+replay removes a failed partial assistant message from the active branch before
+continuing the interaction:
 
 ```lua
 { type = "messages", ... }
@@ -414,13 +421,14 @@ when its presenter detaches.
 
 `setup()` creates two Controllers in one default Window:
 
-- **Neo** uses the configured coding prompt, tools, AGENTS.md, skills, and
-  optional sandbox composition.
+- **Neo** uses the configured coding prompt, tools, AGENTS.md, skills, and a
+  runtime-selectable optional sandbox toolset.
 - **Chat** uses an empty system prompt and tool list, with resource discovery
   disabled.
 
-Top-level functions and commands target the Controller currently selected by
-the default Window.
+Top-level conversation functions and commands target the Controller currently
+selected by the default Window. Sandbox controls target the built-in Neo
+Controller owned by `setup()`.
 
 `plugin/neoagent.lua` defines commands such as `:Neoagent`,
 `:NeoagentModel`, and `:NeoagentResume`, then delegates to the public API.

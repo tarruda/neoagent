@@ -107,6 +107,11 @@ function M.from_config(options)
     run_id = 0,
     status = "idle",
     destroyed = false,
+    toolset = {
+      tools = options._tools_supplied and util.copy(options.tools)
+        or require("neoagent.tools").coding(),
+      execute_tool = options.execute_tool,
+    },
   }
   local function activate_session(session)
     state.session = session
@@ -333,10 +338,17 @@ function M.from_config(options)
     return require("neoagent.system_prompt").compose(prompt, context)
   end
 
-  local function tool_array()
-    local options = configured()
-    if options._tools_supplied then return options.tools end
-    return require("neoagent.tools").coding()
+  local function copy_toolset(value)
+    assert(type(value) == "table" and not util.is_list(value),
+      "toolset must be an object")
+    assert(type(value.tools) == "table" and util.is_list(value.tools),
+      "toolset.tools must be a list")
+    assert(value.execute_tool == nil or type(value.execute_tool) == "function",
+      "toolset.execute_tool must be a function")
+    return {
+      tools = util.copy(value.tools),
+      execute_tool = value.execute_tool,
+    }
   end
 
   local function refresh_buffer(path)
@@ -584,7 +596,8 @@ function M.from_config(options)
       local closed, close_err = close_unmatched_calls()
       if not closed then error(close_err, 0) end
       local options = configured()
-      local tools = tool_array()
+      local toolset = copy_toolset(state.toolset)
+      local tools = toolset.tools
       local run_id = state.run_id + 1
       state.run_id = run_id
       state.pending_events = {}
@@ -603,7 +616,7 @@ function M.from_config(options)
           controller = options.name,
           session_id = state.session_id,
         },
-        execute_tool = options.execute_tool,
+        execute_tool = toolset.execute_tool,
         get_steering_messages = function()
           if #state.steering == 0 then return {} end
           local message = table.remove(state.steering, 1)
@@ -1274,6 +1287,24 @@ function M.from_config(options)
 
   function controller:get_session() return state.session end
   function controller:get_model() return state.model end
+
+  function controller:get_toolset()
+    return copy_toolset(state.toolset)
+  end
+
+  function controller:set_toolset(value)
+    if state.run then
+      local err = util.error("controller",
+        "Cannot change tools while the agent is running")
+      notify(err.message, vim.log.levels.WARN)
+      return nil, err
+    end
+    local selected = copy_toolset(value)
+    local previous = copy_toolset(state.toolset)
+    state.toolset = selected
+    return previous
+  end
+
   function controller:config() return util.copy(options) end
   function controller:is_running() return state.run ~= nil end
   function controller:_state() return state end

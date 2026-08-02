@@ -101,13 +101,18 @@ default_model = {
 
 ## OS-enforced sandbox
 
-Sandboxing is experimental and disabled by default. Enable it in `setup()`:
+Codex ported sandboxing is experimental and disabled by default. The setup flag
+selects its initial editor state:
 
 ```lua
 sandbox = {
   enabled = true,
 }
 ```
+
+Use `:NeoagentToggleSandbox` to switch the built-in Neo toolset at runtime and
+`:NeoagentSandboxInfo` to inspect the active backend, isolation level, and
+capabilities. Runtime changes are editor-local and do not modify configuration.
 
 Linux and Windows use a bundled LuaJIT FFI runtime to invoke native isolation
 APIs; macOS uses `/usr/bin/sandbox-exec`. The sandbox mediates bundled-tool
@@ -125,7 +130,6 @@ platform-specific implementation notes:
 - macOS follows Codex's backend shape by compiling a Seatbelt profile and
   executing it through `/usr/bin/sandbox-exec`.
 
-Run `:NeoagentSandboxInfo` to inspect the active backend, isolation level, and
-capabilities. See `:help neoagent-sandbox` for configuration and platform
-details. Windows sandboxing requires Neovim 0.12+ and an elevated one-time
-setup command before it is enabled.
+See `:help neoagent-sandbox` for configuration and platform details. Windows
+sandboxing requires Neovim 0.12+ and an elevated one-time setup command before
+it is enabled.

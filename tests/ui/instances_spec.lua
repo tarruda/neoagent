@@ -359,6 +359,14 @@ describe("neoagent controller windows", function()
     assert.are.equal(replacement, neoagent.set_default(old))
     windows[#windows + 1] = neoagent.default_window()
     assert.are.equal(old, neoagent.default())
+    local original_notify = vim.notify
+    local notification
+    vim.notify = function(message) notification = message end
+    local toggled, toggle_err = neoagent.toggle_sandbox()
+    vim.notify = original_notify
+    assert.is_nil(toggled)
+    assert.are.equal("sandbox", toggle_err.kind)
+    assert.matches("built%-in Neo composition", notification)
     assert.has_error(function() neoagent.set_default({}) end)
     assert.has_error(function() neoagent.set_default_window({}) end)
   end)

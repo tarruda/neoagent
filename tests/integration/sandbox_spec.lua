@@ -1133,39 +1133,39 @@ describe("neoagent shared sandbox contract", function()
     })
     local options = controller:config()
     assert.is_true(options.sandbox.enabled)
-    assert.is_true(options._sandbox_status.active)
-    assert.is_true(options._sandbox_status.capabilities.filesystem)
-    assert.is_true(options._sandbox_status.capabilities.shared_tmp)
+    assert.is_nil(options._sandbox_status)
     local sandbox_status = neoagent.sandbox_info()
     assert.is_true(sandbox_status.active)
+    assert.is_true(sandbox_status.capabilities.filesystem)
+    assert.is_true(sandbox_status.capabilities.shared_tmp)
     local rendered = require("neoagent.sandbox").format_info(sandbox_status)
     if platform.name == "linux" then
       assert.is_true(
-        options._sandbox_status.capabilities.process_supervision)
-      assert.is_true(options._sandbox_status.capabilities.procfs == "fresh"
-        or options._sandbox_status.capabilities.procfs == "host")
+        sandbox_status.capabilities.process_supervision)
+      assert.is_true(sandbox_status.capabilities.procfs == "fresh"
+        or sandbox_status.capabilities.procfs == "host")
       assert.are.equal(
-        options._sandbox_status.capabilities.procfs == "fresh",
-        options._sandbox_status.capabilities.procfs_isolated)
+        sandbox_status.capabilities.procfs == "fresh",
+        sandbox_status.capabilities.procfs_isolated)
       assert.matches(
-        "capability.procfs: " .. options._sandbox_status.capabilities.procfs,
+        "capability.procfs: " .. sandbox_status.capabilities.procfs,
         rendered, 1, true)
     else
       assert.are.equal("macos", platform.name)
-      assert.is_true(options._sandbox_status.capabilities.process)
+      assert.is_true(sandbox_status.capabilities.process)
       assert.is_true(
-        options._sandbox_status.capabilities.process_supervision)
-      assert.is_true(options._sandbox_status.capabilities.seatbelt)
+        sandbox_status.capabilities.process_supervision)
+      assert.is_true(sandbox_status.capabilities.seatbelt)
       assert.matches("capability.seatbelt: yes", rendered, 1, true)
     end
-    assert.is_table(options.tools[1].input_schema.properties.options
-      .properties.require_escalation)
+    assert.is_table(controller:get_toolset().tools[1]
+      .input_schema.properties.options.properties.require_escalation)
     local controllers = neoagent.default_window():controllers()
     assert.are.equal("Neo", controllers[1]:config().name)
     assert.are.equal("Chat", controllers[2]:config().name)
     assert.is_false(controllers[2]:config().sandbox.enabled)
-    neoagent.setup({
-      sandbox = { enabled = false },
+    controller = neoagent.setup({
+      sandbox = { enabled = false, profile = profile },
       persistence = {
         enabled = false,
         workspace_settings = false,
@@ -1174,5 +1174,18 @@ describe("neoagent shared sandbox contract", function()
       skills = false,
       compaction = false,
     })
+    assert.is_false(controller:config().sandbox.enabled)
+    assert.is_false(neoagent.sandbox_info().enabled)
+    assert.is_nil(controller:get_toolset().tools[1]
+      .input_schema.properties.options)
+    sandbox_status = assert(neoagent.toggle_sandbox())
+    assert.is_true(sandbox_status.active)
+    assert.is_false(controller:config().sandbox.enabled)
+    assert.is_table(controller:get_toolset().tools[1]
+      .input_schema.properties.options)
+    sandbox_status = assert(neoagent.toggle_sandbox())
+    assert.is_false(sandbox_status.enabled)
+    assert.is_nil(controller:get_toolset().tools[1]
+      .input_schema.properties.options)
   end)
 end)
