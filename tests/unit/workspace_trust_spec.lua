@@ -392,6 +392,30 @@ describe("neoagent workspace trust", function()
     unsubscribe()
     assert.is_false(persistence:is_trusted(root))
     assert.are.equal("write failed", notices[4].message)
+
+    local dismissals = require("neoagent.dialog").new()
+    local cancellation_settled = false
+    local detach = dismissals:subscribe(function(snapshot)
+      if snapshot.active then
+        vim.schedule(function()
+          dismissals:cancel(snapshot.active.id, "dialog dismissed by user")
+          vim.schedule(function() cancellation_settled = true end)
+        end)
+      end
+    end)
+    local dismissed = trust.new({
+      path = directory .. "/dismissed.json",
+      dialogs = dismissals,
+      notify = function(err) notices[#notices + 1] = err end,
+      session = {},
+    })
+    assert.is_false(dismissed:request(root))
+    assert(vim.wait(1000, function()
+      return dismissals:snapshot().active == nil and cancellation_settled
+    end, 5))
+    detach()
+    assert.are.equal(4, #notices)
+    assert.is_false(dismissed:is_trusted(root))
   end)
 
   it("shares process-lifetime decisions and normalizes Windows keys", function()

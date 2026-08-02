@@ -1,5 +1,6 @@
 local config = require("neoagent.config")
 local Controller = require("neoagent.controller")
+local sandbox_composition = require("neoagent.sandbox.composition")
 local util = require("neoagent.util")
 local Window = require("neoagent.window")
 
@@ -8,6 +9,7 @@ describe("neoagent sandbox activation warning", function()
   local notifications
   local windows
   local controllers
+  local original_compose
 
   before_each(function()
     config._reset()
@@ -15,6 +17,7 @@ describe("neoagent sandbox activation warning", function()
     notifications = {}
     windows = {}
     controllers = {}
+    original_compose = sandbox_composition.compose
     vim.notify = function(message, level)
       notifications[#notifications + 1] = { message, level }
     end
@@ -23,6 +26,7 @@ describe("neoagent sandbox activation warning", function()
   after_each(function()
     for _, window in ipairs(windows) do window:destroy() end
     for _, controller in ipairs(controllers) do controller:destroy() end
+    sandbox_composition.compose = original_compose
     vim.notify = original_notify
     config._reset()
     vim.cmd("silent! only")
@@ -115,5 +119,35 @@ describe("neoagent sandbox activation warning", function()
     window:toggle()
     assert.is_true(window:toggle())
     assert.are.equal(0, #notifications)
+  end)
+
+  it("uses the built-in warning when workspace trust is disabled", function()
+    sandbox_composition.compose = function()
+      return nil, {
+        ok = false,
+        stage = "requirements",
+        message = "native isolation unavailable",
+      }
+    end
+    package.loaded["neoagent"] = nil
+    local neoagent = require("neoagent")
+    local controller = neoagent.setup({
+      workspace_trust = false,
+      sandbox = { enabled = true },
+      tools = {},
+      persistence = {
+        enabled = false,
+        workspace_settings = false,
+        directory = vim.fn.tempname(),
+      },
+    })
+    local window = neoagent.default_window()
+    windows[#windows + 1] = window
+    controllers = window:controllers()
+
+    assert(window:open())
+    assert.are.equal(1, #notifications)
+    assert.matches("tools will run without a sandbox", notifications[1][1])
+    assert.are.equal(controller, window:active())
   end)
 end)

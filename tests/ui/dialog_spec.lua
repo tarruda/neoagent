@@ -328,6 +328,7 @@ describe("neoagent generic dialog UI", function()
       tools = {},
     })
     controllers = { controller }
+    local set_dialog_calls = 0
     local view = {
       destroyed = false,
       open = function() return true end,
@@ -341,7 +342,10 @@ describe("neoagent generic dialog UI", function()
       apply = function() end,
       finish = function() end,
       set_dialog = function(_, value)
-        if value then error("presentation failed") end
+        if value then
+          set_dialog_calls = set_dialog_calls + 1
+          if set_dialog_calls > 1 then error("presentation failed") end
+        end
       end,
     }
     local window = require("neoagent.window").new({
@@ -353,6 +357,7 @@ describe("neoagent generic dialog UI", function()
     windows[#windows + 1] = window
     local pending = dialogs:show(transcript_dialog())
     assert(vim.wait(1000, function() return pending:is_done() end, 5))
+    assert.are.equal(2, set_dialog_calls)
     assert.is_false(pending:result().ok)
     assert.is_true(pending:result().presenter_unavailable)
   end)

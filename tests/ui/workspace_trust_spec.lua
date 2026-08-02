@@ -286,7 +286,8 @@ describe("neoagent workspace trust UI", function()
       vim.wait(50)
       assert(controller:resume(store:metadata().path))
       assert.are.equal("saved", controller:get_session():messages()[1].content)
-      assert.are.equal(third, controller:_state().workspace.root)
+      assert.are.equal(require("neoagent.fs").canonical(third),
+        controller:_state().workspace.root)
       assert.is_true(window:is_open())
     end)
 
@@ -364,6 +365,91 @@ describe("neoagent workspace trust UI", function()
     end, 5))
     assert.are.equal("custom draft", active_view:get_input())
     assert(controller:new_session())
+  end)
+
+  it("reports a custom trust Controller activation failure", function()
+    neoagent = nil
+    local api = require("neoagent")
+    local dialogs = require("neoagent.dialog").new()
+    local path = vim.fn.tempname() .. "/trust.json"
+    paths[#paths + 1] = vim.fs.dirname(path)
+    local base = {
+      persistence = {
+        enabled = false,
+        workspace_settings = false,
+        directory = vim.fn.tempname(),
+      },
+      tools = {},
+      agents = false,
+      skills = false,
+    }
+    local first_opts = vim.tbl_extend("force", vim.deepcopy(base), {
+      name = "First",
+    })
+    local protected_opts = vim.tbl_extend("force", vim.deepcopy(base), {
+      name = "Protected",
+      workspace_trust = { path = path },
+    })
+    local notices = {}
+    local trust_view, policy =
+      require("neoagent.workspace_trust").compose(protected_opts, {
+        dialogs = dialogs,
+        notify = function(err) notices[#notices + 1] = err end,
+        session = {},
+      })
+    local first = api.new(first_opts)
+    local protected = api.new(protected_opts, {
+      workspace_trust = policy,
+    })
+    custom_controllers = { first, protected }
+    local window = api.new_window({
+      controllers = custom_controllers,
+      dialogs = dialogs,
+      view = trust_view,
+    })
+    custom_windows[#custom_windows + 1] = window
+    policy:attach_window(window, protected)
+    assert(window:open())
+    protected.prepare = function()
+      return nil, { kind = "ui", message = "selection failed" }
+    end
+
+    assert.is_false(policy:request(vim.fn.getcwd()))
+    assert(vim.wait(1000, function() return #notices == 1 end, 5))
+    assert.are.equal("Failed to activate workspace trust prompt",
+      notices[1].message)
+    assert.are.equal("selection failed", notices[1].detail)
+    assert.is_nil(dialogs:snapshot().active)
+  end)
+
+  it("protects project instruction discovery without tools", function()
+    local discoveries = 0
+    require("neoagent.agents").discover = function()
+      discoveries = discoveries + 1
+      return { files = {}, diagnostics = {} }
+    end
+    local controller = setup({
+      tools = {},
+      agents = {
+        global_files = {},
+        project_filenames = { "AGENTS.md" },
+      },
+      skills = false,
+    })
+    local run, err = controller:send("blocked")
+    assert.is_nil(run)
+    assert.are.equal("workspace_trust", err.kind)
+    assert.are.equal(0, discoveries)
+
+    local active_view = wait_for_dialog()
+    feed("s")
+    assert(vim.wait(1000, function()
+      return active_view.dialog_buf == nil
+    end, 5))
+    vim.wait(50)
+    run = assert(controller:send("allowed"))
+    assert(vim.wait(1000, function() return run:is_done() end, 5))
+    assert.are.equal(1, discoveries)
   end)
 
   it("keeps project instruction and skill discovery behind trust",
