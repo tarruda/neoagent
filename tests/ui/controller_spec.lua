@@ -573,6 +573,7 @@ describe("neoagent default controller", function()
     local model = fake_model.new({})
     neoagent.setup({
       workspace_trust = false,
+      shell_timeout = 42,
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake-api", models = { test = {} } } },
@@ -591,6 +592,10 @@ describe("neoagent default controller", function()
     assert(neoagent.send("inspect"))
     assert.are.same({ "read_file", "write_file", "edit_file", "shell", "read_agent_documentation" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
+    local shell = assert(vim.iter(captured.tools):find(function(tool)
+      return tool.name == "shell"
+    end))
+    assert.matches("Defaults to 42", shell.input_schema.properties.timeout.description)
     assert.matches("Available tools:", captured.system_prompt)
     for _, name in ipairs({ "read_file", "write_file", "edit_file", "shell" }) do
       assert.is_truthy(captured.system_prompt:find("- " .. name .. ":", 1, true))

@@ -5,6 +5,7 @@ local M = {}
 
 local defaults = {
   default_registry = true,
+  shell_timeout = 300,
   sandbox = {
     enabled = false,
   },
@@ -102,6 +103,10 @@ local function validate(opts)
   assert(opts.name == nil or (type(opts.name) == "string" and opts.name ~= ""),
     "name must be a non-empty string")
   assert(type(opts.default_registry) == "boolean", "default_registry must be boolean")
+  assert(opts.shell_timeout == false
+      or type(opts.shell_timeout) == "number"
+        and opts.shell_timeout > 0 and opts.shell_timeout < math.huge,
+    "shell_timeout must be false or a positive finite number")
   assert(type(opts.sandbox) == "table" and not util.is_list(opts.sandbox),
     "sandbox must be a table")
   assert(type(opts.sandbox.enabled) == "boolean",

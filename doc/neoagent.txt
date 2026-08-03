@@ -123,6 +123,7 @@ The important options are: >lua
     },
     system_prompt = nil,       -- nil uses the built-in coding prompt
     tools = nil,               -- nil uses the coding preset
+    shell_timeout = 300,       -- seconds; false disables the default
     execute_tool = nil,
     interaction = nil,
     view = nil,                -- bundled Window's View constructor
@@ -1051,7 +1052,10 @@ temporary log through `ctx.fs`. The returned path remains available to later
 sandboxed file reads. Shell updates and final results preserve valid UTF-8
 text, tabs, and newlines; they display invalid byte sequences and other C0/C1
 controls as `\xNN` and identify the output as escaped. Overflow logs retain the
-original bytes.
+original bytes. Shell commands time out after `shell_timeout` seconds, which
+defaults to 300. A tool call may supply a positive finite `timeout` in seconds
+to override the configured default. Set `shell_timeout = false` to leave calls
+without an explicit tool timeout unbounded.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.

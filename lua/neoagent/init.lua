@@ -12,7 +12,9 @@ local default_sandbox
 local function configured_toolset(configured)
   return {
     tools = configured._tools_supplied and util.copy(configured.tools)
-      or require("neoagent.tools").coding(),
+      or require("neoagent.tools").coding({
+        shell_timeout = configured.shell_timeout,
+      }),
     execute_tool = configured.execute_tool,
   }
 end

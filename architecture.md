@@ -134,8 +134,9 @@ Bundled tools resolve model-directed disk and subprocess work through optional
 filesystem and `neoagent.process` runner. A decorated executor can copy the
 context and replace either capability for one invocation. Shell output uses
 bounded memory, represents non-text bytes explicitly in tool results, and
-streams original overflow through the filesystem capability. The agent tool
-boundary accepts text blocks with valid UTF-8 strings.
+streams original overflow through the filesystem capability. Its process
+runtime uses the configured default timeout unless the tool call supplies one.
+The agent tool boundary accepts text blocks with valid UTF-8 strings.
 
 ## Workspace trust composition
 

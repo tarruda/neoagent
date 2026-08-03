@@ -10,30 +10,35 @@ local modules = {
   read_agent_documentation = "neoagent.tools.read_agent_documentation",
 }
 
-local function tools(names)
+local function tools(names, options)
+  options = options or {}
+  assert(type(options) == "table", "tool options must be a table")
   local result = {}
   for _, name in ipairs(names) do
-    result[#result + 1] = require(modules[name]).new()
+    local module = require(modules[name])
+    result[#result + 1] = name == "shell"
+        and module.new({ default_timeout = options.shell_timeout })
+      or module.new()
   end
   return result
 end
 
-function M.coding()
+function M.coding(options)
   return tools({
     "read_file", "write_file", "edit_file", "shell",
     "read_agent_documentation",
-  })
+  }, options)
 end
 
 function M.read_only()
   return tools({ "read_file", "grep", "find" })
 end
 
-function M.all()
+function M.all(options)
   return tools({
     "read_file", "write_file", "edit_file", "shell", "grep", "find",
     "read_agent_documentation",
-  })
+  }, options)
 end
 
 return M

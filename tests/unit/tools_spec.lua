@@ -410,6 +410,24 @@ describe("neoagent bundled tools", function()
     assert.is_true(#updates >= 1)
   end)
 
+  it("defaults shell commands to five minutes and accepts an override", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local timeouts = {}
+    local context = ctx(workspace, nil, {
+      process = function(_, opts)
+        timeouts[#timeouts + 1] = opts.timeout_ms
+        return { code = 0, signal = 0 }
+      end,
+    })
+    local shell = require("neoagent.tools.shell")
+
+    execute(shell, { command = "default" }, context)
+    execute(shell, { command = "override", timeout = 2.5 }, context)
+
+    assert.are.same({ 300000, 2500 }, timeouts)
+  end)
+
   it("escapes non-text shell bytes in updates and the final result", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
@@ -475,6 +493,11 @@ describe("neoagent bundled tools", function()
     vim.fn.delete(result.details.output_path)
     assert.has_error(function()
       execute(require("neoagent.tools.shell"), { command = "true", timeout = 0 }, ctx(workspace))
+    end)
+    assert.has_error(function()
+      execute(require("neoagent.tools.shell"), {
+        command = "true", timeout = math.huge,
+      }, ctx(workspace))
     end)
   end)
 

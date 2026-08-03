@@ -119,7 +119,9 @@ function M.from_config(options, runtime)
     destroyed = false,
     toolset = {
       tools = options._tools_supplied and util.copy(options.tools)
-        or require("neoagent.tools").coding(),
+        or require("neoagent.tools").coding({
+          shell_timeout = options.shell_timeout,
+        }),
       execute_tool = options.execute_tool,
     },
   }

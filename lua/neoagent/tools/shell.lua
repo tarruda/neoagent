@@ -2,6 +2,8 @@ local common = require("neoagent.tools.common")
 local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
+local DEFAULT_TIMEOUT_SECONDS = 300
+
 local function shell_argv(command)
   local argv = vim.fn.split(vim.o.shell)
   vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
@@ -111,7 +113,20 @@ local function display(snapshot)
   return text
 end
 
-local function new()
+local function valid_timeout(value)
+  return type(value) == "number" and value > 0 and value < math.huge
+end
+
+local function new(options)
+  options = options or {}
+  assert(type(options) == "table", "shell options must be a table")
+  local default_timeout = options.default_timeout
+  if default_timeout == nil then default_timeout = DEFAULT_TIMEOUT_SECONDS end
+  assert(default_timeout == false or valid_timeout(default_timeout),
+    "shell default_timeout must be false or a positive finite number")
+  local timeout_description = default_timeout == false
+      and "Optional positive timeout in seconds"
+    or "Positive timeout in seconds. Defaults to " .. default_timeout
   return {
     name = "shell",
     description = "Run a shell command in the workspace cwd. Returns combined text output, escaping non-text bytes and keeping the most recent 2,000 lines or 50 KiB.",
@@ -119,7 +134,7 @@ local function new()
       type = "object",
       properties = {
         command = { type = "string", description = "Shell command to run" },
-        timeout = { type = "number", description = "Optional positive timeout in seconds" },
+        timeout = { type = "number", description = timeout_description },
       },
       required = { "command" },
       additionalProperties = false,
@@ -127,9 +142,10 @@ local function new()
     execute = function(arguments, ctx)
       local command = common.require_string(arguments, "command")
       local timeout = arguments.timeout
-      if timeout ~= nil and (type(timeout) ~= "number" or timeout <= 0) then
-        error("timeout must be a positive number")
+      if timeout ~= nil and not valid_timeout(timeout) then
+        error("timeout must be a positive finite number")
       end
+      if timeout == nil then timeout = default_timeout end
       local capture = output_capture(common.fs(ctx))
       local last_update = 0
       local result = common.process(ctx, shell_argv(command), {

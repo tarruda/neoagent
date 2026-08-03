@@ -240,7 +240,9 @@ function M.controller(configured, opts)
   local copied = util.copy(configured)
   local settings = copied.sandbox or { enabled = false }
   local selected_tools = copied._tools_supplied and copied.tools
-    or require("neoagent.tools").coding()
+    or require("neoagent.tools").coding({
+      shell_timeout = copied.shell_timeout,
+    })
   local toolset, status, dialogs = M.compose({
     tools = selected_tools,
     execute_tool = copied.execute_tool,
