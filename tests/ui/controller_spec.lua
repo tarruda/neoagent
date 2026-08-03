@@ -2,9 +2,11 @@ local fake_model = require("tests.helpers.fake_model")
 
 describe("neoagent default controller", function()
   local neoagent
+  local original_cwd
   local paths = {}
 
   before_each(function()
+    original_cwd = vim.fn.getcwd()
     package.loaded["neoagent"] = nil
     neoagent = require("neoagent")
   end)
@@ -15,6 +17,7 @@ describe("neoagent default controller", function()
     local window = neoagent.default_window()
     for _, controller in ipairs(window:controllers()) do controller:destroy() end
     window:destroy()
+    vim.cmd("cd " .. vim.fn.fnameescape(original_cwd))
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
   end)
@@ -946,6 +949,47 @@ describe("neoagent default controller", function()
     assert(neoagent.new_session())
     assert.is_nil(vim.uv.fs_stat(directory))
     assert.is_nil(neoagent.fork())
+  end)
+
+  it("resolves the configured model immediately for a new session", function()
+    local model = fake_model.new({})
+    setup_model(model)
+    assert(neoagent.open())
+
+    assert(neoagent.new_session())
+    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal("fake/test", current_view().context.model)
+  end)
+
+  it("restores a workspace model immediately when starting a session there", function()
+    local directory = vim.fn.tempname()
+    local workspace = vim.fn.tempname()
+    paths[#paths + 1], paths[#paths + 2] = directory, workspace
+    vim.fn.mkdir(workspace, "p")
+    local models = {
+      test = fake_model.new({}),
+      selected = fake_model.new({}),
+    }
+    setup_model(models.test, {
+      persistence = { enabled = true, workspace_settings = true, directory = directory },
+      providers = { fake = { api = "fake-api", models = {
+        test = {},
+        selected = {},
+      } } },
+      apis = { ["fake-api"] = function(resolved) return models[resolved.model_id] end },
+    })
+    assert(neoagent.open())
+
+    vim.cmd("cd " .. vim.fn.fnameescape(workspace))
+    assert(neoagent.new_session())
+    assert(neoagent.set_model("fake", "selected"))
+    vim.cmd("cd " .. vim.fn.fnameescape(original_cwd))
+    assert(neoagent.new_session())
+    vim.cmd("cd " .. vim.fn.fnameescape(workspace))
+
+    assert(neoagent.new_session())
+    assert.are.equal(models.selected, neoagent.get_model())
+    assert.are.equal("fake/selected", current_view().context.model)
   end)
 
   it("persists workspace preferences and restores session-local model state", function()

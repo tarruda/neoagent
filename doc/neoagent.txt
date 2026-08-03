@@ -781,6 +781,7 @@ WORKSPACE SETTINGS                                  *neoagent-workspace-settings
 With persistence and `workspace_settings` enabled, model and thinking
 preferences are scoped by Controller name and UI position is shared by the
 workspace. An unnamed standalone Controller uses the `default` scope. A
+new Session resolves its Controller's workspace preferences before display. A
 resumed Session's recorded model and thinking values take precedence for that
 Session.
 

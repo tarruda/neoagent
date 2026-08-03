@@ -877,6 +877,14 @@ function M.from_config(options, runtime)
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     local session, err = make_session(cwd)
     if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    if preferences().default_model then
+      local resolved, model_err = pcall(ensure_model)
+      if not resolved then
+        model_err = util.normalize_error(model_err, "model")
+        notify(model_err.message, vim.log.levels.ERROR)
+        return nil, model_err
+      end
+    end
     activate_session(session)
     publish({ type = "messages", messages = {} })
     update_context()
