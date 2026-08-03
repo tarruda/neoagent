@@ -450,7 +450,7 @@ describe("neoagent.ui", function()
     assert.matches("failed", text(result))
   end)
 
-  it("collapses read output and expands all returned lines", function()
+  it("keeps read output compact while details show every returned line", function()
     local result = view({ position = "center" })
     local lines = {}
     for index = 1, 15 do lines[index] = "line " .. index end
@@ -466,14 +466,21 @@ describe("neoagent.ui", function()
     local collapsed = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
     assert.is_true(vim.tbl_contains(collapsed, " line 10 "))
     assert.is_false(vim.tbl_contains(collapsed, " line 11 "))
-    result:toggle_tools()
-    assert(vim.wait(1000, function()
-      return vim.tbl_contains(vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), " line 15 ")
-    end))
-    assert.not_matches("more lines", text(result))
+    result:focus_transcript()
+    local title_row
+    for row, line in ipairs(collapsed) do
+      if line:find("read README.md", 1, true) then title_row = row break end
+    end
+    assert.is_not_nil(title_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { title_row, 0 })
+    assert.is_true(result:show_card_details())
+    assert.is_true(vim.tbl_contains(
+      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "line 15"))
+    assert.matches("5 more lines", text(result))
+    result:_close_card_details(true)
   end)
 
-  it("renders compaction summaries as expandable cards", function()
+  it("renders full compaction summaries in card details", function()
     local result = view({ position = "center" })
     result:set_messages({ {
       role = "compactionSummary",
@@ -485,18 +492,127 @@ describe("neoagent.ui", function()
     } })
     assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("Compacted from 12,345 tokens (<C-o> to expand)", 1, true) ~= nil
+      return text(result):find("Compacted from 12,345 tokens (<C-o> for details)", 1, true) ~= nil
     end))
     assert.matches("%[compaction%]", text(result))
     assert.not_matches("Keep the summary visible", text(result))
     assert.matches("retained suffix", text(result))
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
 
-    result:toggle_tools()
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("[compaction]", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    assert.is_true(result:show_card_details())
+    local details = table.concat(
+      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
+    assert.matches("Keep the summary visible", details)
+    assert.not_matches("Keep the summary visible", text(result))
+    result:_close_card_details(true)
+  end)
+
+  it("outlines only the card beneath the focused transcript cursor", function()
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "user", content = "outlined card" },
+      { role = "assistant", content = { { type = "text", text = "plain prose" } } },
+    })
+    assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("Keep the summary visible", 1, true) ~= nil
+      return text(result):find("plain prose", 1, true) ~= nil
     end))
-    assert.not_matches("to expand", text(result))
+    result:focus_transcript()
+    local card_row, prose_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("outlined card", 1, true) then card_row = row end
+      if line:find("plain prose", 1, true) then prose_row = row end
+    end
+    assert.is_not_nil(card_row)
+    assert.is_not_nil(prose_row)
+    local function outline()
+      local parts = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      )) do
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          parts[#parts + 1] = chunk[1]
+        end
+      end
+      return table.concat(parts, "\n")
+    end
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    assert.matches("╭", outline())
+    assert.matches("│", outline())
+    assert.matches("╯", outline())
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    assert.are.equal("", outline())
+    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    result:focus_input()
+    assert(vim.wait(1000, function() return outline() == "" end))
+  end)
+
+  it("refreshes streaming card details and cleans up an externally closed float", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = { {
+      type = "toolCall", id = "streaming-shell", name = "shell",
+      arguments = { command = "long-running-command" },
+    } } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("$ long-running-command", 1, true) ~= nil
+    end))
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("$ long-running-command", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    assert.is_true(result:show_card_details())
+    local window, buffer = result.details_win, result.details_buf
+    local output = {}
+    for index = 1, 15 do output[index] = "streamed line " .. index end
+    result:apply({
+      type = "tool_update",
+      call = { id = "streaming-shell", name = "shell" },
+      result = { content = { { type = "text", text = table.concat(output, "\n") } } },
+    })
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+        :find("streamed line 15", 1, true) ~= nil
+    end))
+    assert.is_true(vim.api.nvim_win_get_height(window) > 1)
+    assert.are.equal(window, result.details_win)
+    assert.are.equal(buffer, result.details_buf)
+    vim.api.nvim_win_set_cursor(window, { 8, 0 })
+    output[#output + 1] = "streamed line 16"
+    result:apply({
+      type = "tool_update",
+      call = { id = "streaming-shell", name = "shell" },
+      result = { content = { { type = "text", text = table.concat(output, "\n") } } },
+    })
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+        :find("streamed line 16", 1, true) ~= nil
+    end))
+    assert.are.equal(8, vim.api.nvim_win_get_cursor(window)[1])
+
+    vim.api.nvim_win_close(window, true)
+    assert(vim.wait(1000, function()
+      return result.details_win == nil and result.details_buf == nil
+        and not vim.api.nvim_buf_is_valid(buffer)
+    end))
   end)
 
   it("centers idle status before context information is available", function()

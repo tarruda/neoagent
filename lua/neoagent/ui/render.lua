@@ -100,6 +100,7 @@ end
 local highlight_links = {
   NeoagentWindowTitle = "NeoagentMuted",
   NeoagentAccent = "Identifier",
+  NeoagentCardFocus = "NeoagentAccent",
   NeoagentDialogBackground = "NeoagentUserBackground",
   NeoagentThinking = "Comment",
   NeoagentToolOutput = "Comment",
@@ -263,6 +264,7 @@ local function card(content, background)
   end
   add_line(result, "", nil, background)
   add_line(result, "")
+  result.card = { first = 0, last = #result.lines - 2 }
   return result
 end
 
@@ -355,20 +357,20 @@ local tool_labels = {
   read_agent_documentation = "neoagent docs",
 }
 
-local function summary_value(value)
+local function summary_value(value, full)
   if value == vim.NIL then return "null" end
   if type(value) == "string" then
     value = value:gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("\n", "\\n")
-    return #value > 80 and value:sub(1, 77) .. "..." or value
+    return not full and #value > 80 and value:sub(1, 77) .. "..." or value
   end
   if type(value) ~= "table" then return tostring(value) end
   if util.is_list(value) then return "[" .. #value .. " items]" end
   return "{…}"
 end
 
-local function argument_text(value, fallback)
+local function argument_text(value, fallback, full)
   if value == nil then return fallback end
-  return summary_value(value)
+  return summary_value(value, full)
 end
 
 local function numeric_argument(value)
@@ -390,30 +392,30 @@ local function read_range(args)
   return " (" .. table.concat(fields, " ") .. ")"
 end
 
-local function tool_title(name, args)
+local function tool_title(name, args, full)
   name = type(name) == "string" and name or "<tool>"
   local label = tool_labels[name] or name
   if name == "shell" then
-    return segments({ { text = "$ " .. argument_text(args.command, "…"), group = "NeoagentMarkdownBold" } })
+    return segments({ { text = "$ " .. argument_text(args.command, "…", full), group = "NeoagentMarkdownBold" } })
   end
   local parts = { { text = label, group = "NeoagentMarkdownBold" } }
   if name == "read" or name == "read_file" or name == "write" or name == "write_file"
       or name == "edit" or name == "edit_file" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.path or args.file_path, "…"), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " " .. argument_text(args.path or args.file_path, "…", full), group = "NeoagentAccent" }
     if (name == "read" or name == "read_file") and (args.offset or args.limit) then
       parts[#parts + 1] = { text = read_range(args), group = "DiagnosticWarn" }
     end
   elseif name == "grep" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…"), group = "NeoagentAccent" }
-    parts[#parts + 1] = { text = " in " .. argument_text(args.path, "."), group = "NeoagentToolOutput" }
-    if args.glob then parts[#parts + 1] = { text = " (" .. argument_text(args.glob, "?") .. ")", group = "NeoagentToolOutput" } end
+    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…", full), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in " .. argument_text(args.path, ".", full), group = "NeoagentToolOutput" }
+    if args.glob then parts[#parts + 1] = { text = " (" .. argument_text(args.glob, "?", full) .. ")", group = "NeoagentToolOutput" } end
   elseif name == "find" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…"), group = "NeoagentAccent" }
-    parts[#parts + 1] = { text = " in " .. argument_text(args.path, "."), group = "NeoagentToolOutput" }
+    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…", full), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in " .. argument_text(args.path, ".", full), group = "NeoagentToolOutput" }
   else
     local values = {}
     for key, value in pairs(args) do
-      if key ~= "content" and value ~= nil then values[#values + 1] = tostring(key) .. "=" .. summary_value(value) end
+      if key ~= "content" and value ~= nil then values[#values + 1] = tostring(key) .. "=" .. summary_value(value, full) end
     end
     table.sort(values)
     if #values > 0 then parts[#parts + 1] = { text = " " .. table.concat(values, " "), group = "NeoagentToolOutput" } end
@@ -606,21 +608,21 @@ local function output_lines(text, maximum, tail, group, hint, ansi)
     add_line(result, line, line_spans)
   end
   if omitted > 0 then
-    local message = string.format("... (%d more lines%s)", omitted, hint and ", " .. hint .. " to expand" or "")
+    local message = string.format("... (%d more lines%s)", omitted, hint and ", " .. hint .. " for details" or "")
     add_line(result, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
   end
   return result
 end
 
-local function tool_output(self, block, args)
+local function tool_output(self, block, args, full)
   local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
   local message = block.message
   local update = block.update
   local value = message and content_text(message.content) or update and content_text(update.content) or nil
-  local hint = (self.config.mappings or {}).expand_tools
+  local hint = not full and (self.config.mappings or {}).card_details or nil
   hint = type(hint) == "string" and hint or nil
   local maximum
-  if not self.tools_expanded then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
+  if not full then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
 
   if name == "write" or name == "write_file" then
     return output_lines(args.content, maximum, false, "NeoagentToolOutput", hint)
@@ -652,54 +654,69 @@ local function format_token_count(value)
   return digits .. " tokens"
 end
 
-local function compaction(self, block)
+local function compaction_content(self, block, full, width)
   local content = rendered()
   local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
   add_line(content, label, label_spans)
   add_line(content, "")
   local token_count = format_token_count(block.tokens_before)
-  if self.tools_expanded then
+  if full then
     local body = "**Compacted from " .. token_count .. "**"
     if block.summary ~= "" then body = body .. "\n\n" .. block.summary end
-    append_rendered(content, markdown.render(body, { width = self:_content_width() }))
+    append_rendered(content, markdown.render(body, { width = width }))
   else
-    local hint = (self.config.mappings or {}).expand_tools
-    local suffix = type(hint) == "string" and " (" .. hint .. " to expand)" or ""
+    local hint = (self.config.mappings or {}).card_details
+    local suffix = type(hint) == "string" and " (" .. hint .. " for details)" or ""
     local message = "Compacted from " .. token_count .. suffix
     add_line(content, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
   end
-  return card(content, "NeoagentUserBackground")
+  return content
 end
 
-function M.block(self, block)
+local function card_content(self, block, options)
+  options = options or {}
+  local width = options.width or self:_content_width()
   if block.kind == "user" then
-    local content = markdown.render(block.text, { width = self:_content_width(), preserve_markers = true })
+    local content = markdown.render(block.text, { width = width, preserve_markers = true })
     for _, note in ipairs(block.extra or {}) do
       add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
     end
-    return card(content, "NeoagentUserBackground")
-  elseif block.kind == "assistant" then
-    return prose(markdown.render(block.text, { width = self:_content_width() }))
-  elseif block.kind == "thinking" then
-    return prose(markdown.render(block.text, { width = self:_content_width() }), "NeoagentThinking", true)
+    return content, "NeoagentUserBackground"
   elseif block.kind == "compaction" then
-    return compaction(self, block)
-  elseif block.kind == "notice" then
-    return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
+    return compaction_content(self, block, options.full, width), "NeoagentUserBackground"
+  elseif block.kind ~= "tool" then
+    return nil
   end
 
   local args = block.call and block.call.arguments or partial_arguments(block.raw)
   if type(args) ~= "table" then args = {} end
   local content = rendered()
-  local title, spans = tool_title(block.name or (block.call and block.call.name), args)
+  local title, spans = tool_title(
+    block.name or (block.call and block.call.name), args, options.full)
   add_line(content, title, spans)
-  append_rendered(content, tool_output(self, block, args), true)
+  append_rendered(content, tool_output(self, block, args, options.full), true)
   for _, note in ipairs(block.message and image_notes(block.message.content) or {}) do
     add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
   end
   local background = block.state == "error" and "NeoagentToolErrorBackground"
     or block.state == "success" and "NeoagentToolSuccessBackground" or "NeoagentToolPendingBackground"
-  return card(content, background)
+  return content, background
+end
+
+function M.block(self, block)
+  local content, background = card_content(self, block)
+  if content then return card(content, background) end
+  if block.kind == "assistant" then
+    return prose(markdown.render(block.text, { width = self:_content_width() }))
+  elseif block.kind == "thinking" then
+    return prose(markdown.render(block.text, { width = self:_content_width() }), "NeoagentThinking", true)
+  end
+  return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
+end
+
+function M.details(self, block, options)
+  options = vim.tbl_extend("force", options or {}, { full = true })
+  return card_content(self, block, options)
 end
 
 M.define_highlights = define_highlights

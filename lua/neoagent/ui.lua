@@ -1,6 +1,7 @@
 local input = require("neoagent.ui.input")
 local layout = require("neoagent.ui.layout")
 local dialog = require("neoagent.ui.dialog")
+local cards = require("neoagent.ui.cards")
 local render = require("neoagent.ui.render")
 local transcript = require("neoagent.ui.transcript")
 local util = require("neoagent.util")
@@ -56,8 +57,14 @@ function View:_ensure_buffers()
       group = self.augroup,
       buffer = self.transcript_buf,
       callback = function()
+        self:_clear_card_outline()
         if self.config.scroll_on_transcript_leave then self:_scroll_transcript_to_bottom() end
       end,
+    })
+    vim.api.nvim_create_autocmd({ "CursorMoved", "WinEnter" }, {
+      group = self.augroup,
+      buffer = self.transcript_buf,
+      callback = function() self:_update_card_outline() end,
     })
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
@@ -314,6 +321,7 @@ function View:open(origin)
 end
 
 function View:close()
+  self:_close_card_details(false)
   self:_hide_dialog_surface()
   self:_stop_spinner()
   local transcript_win, input_win = self.transcript_win, self.input_win
@@ -422,16 +430,11 @@ function View:set_position(position)
   return true
 end
 
-function View:toggle_tools()
-  self.tools_expanded = not self.tools_expanded
-  self.full_dirty = true
-  self:_schedule_flush()
-end
-
 function View:focus_transcript()
   if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
     vim.cmd("stopinsert")
     vim.api.nvim_set_current_win(self.transcript_win)
+    self:_update_card_outline()
   end
 end
 
@@ -485,6 +488,14 @@ View._browse_input_history = input._browse_input_history
 View._move_input_history = input._move_input_history
 View.set_input = input.set_input
 
+View._card_at_cursor = cards._card_at_cursor
+View._clear_card_outline = cards._clear_card_outline
+View._update_card_outline = cards._update_card_outline
+View._refresh_card_details = cards._refresh_card_details
+View._close_card_details = cards._close_card_details
+View._card_details_closed = cards._card_details_closed
+View.show_card_details = cards.show_card_details
+
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
@@ -503,10 +514,11 @@ function M.new(opts)
     on_dialog_action = opts.on_dialog_action or function() end,
     on_dialog_dismiss = opts.on_dialog_dismiss or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
+    card_namespace = vim.api.nvim_create_namespace(
+      "neoagent-card-outline-" .. tostring(vim.uv.hrtime())),
     blocks = {}, messages = {}, calls = {}, pending_calls = {}, response = 1,
     context = { state = "idle" },
     position = opts.config.position or "auto",
-    tools_expanded = false,
     spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
     spinner_frame = 1,
     history_index = 0,
@@ -518,6 +530,7 @@ function M.new(opts)
     callback = function(event)
       if event.event == "WinClosed" then
         local closed = tonumber(event.match)
+        if view:_card_details_closed(closed) then return end
         if closed == view.dialog_win and not view.hiding_dialog then
           local id = view.dialog and view.dialog.active.id
           view.dialog_win = nil

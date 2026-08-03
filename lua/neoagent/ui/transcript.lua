@@ -106,6 +106,7 @@ function M:_mark_block(block, start, finish, content)
     right_gravity = false,
     end_right_gravity = true,
   })
+  block.card = content.card
   for row, group in pairs(content.line_groups) do
     vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + row, 0, {
       line_hl_group = group,
@@ -236,6 +237,8 @@ function M:_flush()
   self:_render_status()
   vim.bo[self.transcript_buf].modifiable = false
   self:_restore_view(saved)
+  self:_refresh_card_details()
+  self:_update_card_outline()
 end
 
 function M:_schedule_flush()
@@ -301,6 +304,7 @@ function M:_message(message)
 end
 
 function M:set_messages(messages)
+  self:_close_card_details(false)
   self.messages = util.copy(messages or {})
   self.blocks, self.calls, self.pending_calls = {}, {}, {}
   self.response = self.response + 1

@@ -2,6 +2,68 @@ local config = require("neoagent.config")
 local ui = require("neoagent.ui")
 
 describe("neoagent UI mappings", function()
+  it("opens full details for the transcript card under the cursor", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    local command = "printf " .. string.rep("x", 90) .. " command-end"
+    local output = {}
+    for index = 1, 15 do output[index] = "shell line " .. index end
+    local shell_output = table.concat(output, "\n")
+    result:set_messages({
+      { role = "assistant", content = { { type = "text", text = "outside card" }, {
+        type = "toolCall", id = "shell", name = "shell", arguments = { command = command },
+      } } },
+      { role = "toolResult", toolCallId = "shell", toolName = "shell", isError = false,
+        content = { { type = "text", text = shell_output } },
+        details = { ansi = shell_output } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+      return vim.iter(lines):any(function(line) return line:find("5 more lines", 1, true) ~= nil end)
+    end))
+    result:focus_transcript()
+
+    local transcript = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local prose_row, shell_row
+    for row, line in ipairs(transcript) do
+      if line:find("outside card", 1, true) then prose_row = row end
+      if line:find("$ printf", 1, true) then shell_row = row end
+    end
+    assert.is_not_nil(prose_row)
+    assert.is_not_nil(shell_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    assert.is_nil(result.details_win)
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { shell_row, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    assert.are.equal(result.details_win, vim.api.nvim_get_current_win())
+    assert.is_false(vim.bo[result.details_buf].modifiable)
+    assert.is_true(vim.bo[result.details_buf].readonly)
+    local details = table.concat(
+      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
+    assert.is_not_nil(details:find(command, 1, true))
+    assert.is_not_nil(details:find("shell line 1", 1, true))
+    assert.is_not_nil(details:find("shell line 15", 1, true))
+    local unchanged = table.concat(
+      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), "\n")
+    assert.is_not_nil(unchanged:find("5 more lines", 1, true))
+    assert.is_nil(unchanged:find("command-end", 1, true))
+    assert.is_nil(unchanged:find("shell line 1\n", 1, true))
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result.details_win == nil
+        and vim.api.nvim_get_current_win() == result.transcript_win
+    end))
+    result:destroy()
+  end)
+
   it("uses real encoded input for submit, cancellation, focus, and close", function()
     local submitted
     local thinking_cycles = 0
@@ -78,22 +140,6 @@ describe("neoagent UI mappings", function()
     assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w><C-w>", true, false, true), "x", false)
     assert(vim.wait(1000, input_focused))
-    local output = {}
-    for index = 1, 11 do output[index] = "result " .. index end
-    result:set_messages({
-      { role = "assistant", content = { {
-        type = "toolCall", id = "read", name = "read_file", arguments = { path = "file.txt" },
-      } } },
-      { role = "toolResult", toolCallId = "read", toolName = "read_file", isError = false,
-        content = { { type = "text", text = table.concat(output, "\n") } } },
-    })
-    assert(vim.wait(1000, function()
-      return table.concat(vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), "\n"):match("1 more lines") ~= nil
-    end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
-    assert(vim.wait(1000, function()
-      return table.concat(vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false), "\n"):match("result 11") ~= nil
-    end))
     result:focus_input()
     result:set_input("discard")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)

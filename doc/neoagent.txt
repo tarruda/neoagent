@@ -838,8 +838,11 @@ and yank. Set `ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
 
 Assistant text renders Markdown, and thinking uses a muted italic style. The
 footer displays context usage when the selected Model declares a
-`context_window`. Tool output and compaction summaries can be expanded with
-the configured `expand_tools` mapping.
+`context_window`. A Unicode outline follows the card beneath the cursor while
+the transcript is focused. The configured `card_details` mapping opens that
+card's complete content in a scrollable, read-only floating window. Shell
+details include the complete command and all output retained by the tool
+result. Ctrl-C closes the details window and returns to the transcript.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -874,7 +877,7 @@ Default mappings:
               Visual mode.
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
-  <C-o>       Expand or collapse tool output and compaction summaries.
+  <C-o>       Open full details for the transcript card under the cursor.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
@@ -1112,8 +1115,8 @@ CONTEXT COMPACTION                                  *neoagent-compaction*
 Automatic compaction runs at the configured context threshold and after a
 provider context-overflow error. Subsequent Model requests use the summary and
 retained recent messages; the complete Session tree remains available for
-navigation. The bundled View expands compaction summaries with the configured
-`expand_tools` mapping.
+navigation. The bundled View presents complete compaction summaries through
+the configured `card_details` mapping.
 
 The threshold is `context_window - reserve_tokens`, and recent retention uses
 `keep_recent_tokens`. Set `compaction = false` to disable Controller compaction
