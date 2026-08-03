@@ -128,6 +128,20 @@ describe("neoagent.storage", function()
     assert.is_nil(vim.uv.fs_stat(store:metadata().path))
   end)
 
+  it("rejects invalid UTF-8 before persisting a Session message", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local session = assert(Session.new({ store = store }))
+    local ok, err = session:append({ role = "user", content = "bad\255text" })
+
+    assert.is_nil(ok)
+    assert.are.equal("storage", err.kind)
+    assert.matches("valid UTF%-8", err.detail)
+    assert.are.equal(0, #session:messages())
+    assert.is_nil(vim.uv.fs_stat(store:metadata().path))
+  end)
+
   it("reports malformed headers, entries, and messages precisely", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory

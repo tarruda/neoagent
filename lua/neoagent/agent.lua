@@ -46,6 +46,12 @@ local function validate_tool_result(result)
     if type(block) ~= "table" or (block.type ~= "text" and block.type ~= "image") then
       error(util.error("tool", "Tool returned an unsupported content block"), 0)
     end
+    if block.type == "text" and type(block.text) ~= "string" then
+      error(util.error("tool", "Tool returned text without a string value"), 0)
+    end
+    if block.type == "text" and not util.is_valid_utf8(block.text) then
+      error(util.error("tool", "Tool returned text that is not valid UTF-8"), 0)
+    end
   end
   return result
 end

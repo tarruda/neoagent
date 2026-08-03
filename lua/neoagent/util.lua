@@ -46,6 +46,93 @@ function M.json_encode(value)
   return encode_json(value, {})
 end
 
+local function utf8_sequence_length(value, index)
+  local first = value:byte(index)
+  if not first then return nil end
+  if first < 0x80 then return 1 end
+  local second = value:byte(index + 1)
+  if first >= 0xC2 and first <= 0xDF then
+    return second and second >= 0x80 and second <= 0xBF and 2 or nil
+  end
+  local third = value:byte(index + 2)
+  if first == 0xE0 then
+    return second and second >= 0xA0 and second <= 0xBF
+      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+  end
+  if (first >= 0xE1 and first <= 0xEC) or (first >= 0xEE and first <= 0xEF) then
+    return second and second >= 0x80 and second <= 0xBF
+      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+  end
+  if first == 0xED then
+    return second and second >= 0x80 and second <= 0x9F
+      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+  end
+  local fourth = value:byte(index + 3)
+  if first == 0xF0 then
+    return second and second >= 0x90 and second <= 0xBF
+      and third and third >= 0x80 and third <= 0xBF
+      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+  end
+  if first >= 0xF1 and first <= 0xF3 then
+    return second and second >= 0x80 and second <= 0xBF
+      and third and third >= 0x80 and third <= 0xBF
+      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+  end
+  if first == 0xF4 then
+    return second and second >= 0x80 and second <= 0x8F
+      and third and third >= 0x80 and third <= 0xBF
+      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+  end
+end
+
+local non_ascii_pattern = "[\128-\255]"
+
+function M.is_valid_utf8(value)
+  if type(value) ~= "string" then return false end
+  if not value:find(non_ascii_pattern) then return true end
+  local index = 1
+  while index <= #value do
+    local length = utf8_sequence_length(value, index)
+    if not length then return false end
+    index = index + length
+  end
+  return true
+end
+
+local function escaped_byte(value)
+  return string.format("\\x%02X", value)
+end
+
+local unsafe_text_byte_pattern = "[^\t\n -~]"
+
+function M.text_from_bytes(value)
+  assert(type(value) == "string", "value must be a string")
+  if not value:find(unsafe_text_byte_pattern) then return value, 0 end
+  local parts = {}
+  local escaped = 0
+  local index = 1
+  while index <= #value do
+    local first = value:byte(index)
+    local length = utf8_sequence_length(value, index)
+    local ascii_control = length == 1 and first ~= 0x09 and first ~= 0x0A
+      and (first < 0x20 or first == 0x7F)
+    local c1_control = length == 2 and first == 0xC2
+      and value:byte(index + 1) <= 0x9F
+    if not length or ascii_control or c1_control then
+      local count = length or 1
+      for offset = 0, count - 1 do
+        parts[#parts + 1] = escaped_byte(value:byte(index + offset))
+      end
+      escaped = escaped + count
+      index = index + count
+    else
+      parts[#parts + 1] = value:sub(index, index + length - 1)
+      index = index + length
+    end
+  end
+  return table.concat(parts), escaped
+end
+
 function M.copy(value, seen)
   if type(value) ~= "table" then
     return value

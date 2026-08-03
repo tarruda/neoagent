@@ -1,5 +1,6 @@
 local common = require("neoagent.tools.common")
 local truncate = require("neoagent.tools.truncate")
+local util = require("neoagent.util")
 
 local function shell_argv(command)
   local argv = vim.fn.split(vim.o.shell)
@@ -62,10 +63,8 @@ local function output_capture(filesystem)
   end
 
   local function trim_tail()
-    tail = truncate.tail(tail, {
-      max_lines = truncate.MAX_LINES * 2,
-      max_bytes = truncate.MAX_BYTES * 2,
-    }).content
+    local max_bytes = truncate.MAX_BYTES * 2
+    if #tail > max_bytes then tail = tail:sub(#tail - max_bytes + 1) end
   end
 
   local function append(data)
@@ -83,14 +82,17 @@ local function output_capture(filesystem)
   end
 
   local function snapshot(options)
-    local result = truncate.tail(tail, options)
+    local text, escaped = util.text_from_bytes(tail)
+    local result = truncate.tail(text, options)
+    result.escapedBytes = escaped
     if not options then
       result.totalBytes = total_bytes
       result.totalLines = total_lines()
-      result.truncated = is_truncated()
+      result.truncated = is_truncated() or result.truncated
       if result.truncated and result.truncatedBy == nil then
         result.truncatedBy = total_bytes > truncate.MAX_BYTES and "bytes" or "lines"
       end
+      if result.truncated and not output_path and not spill_error then spill(tail) end
     end
     return result
   end
@@ -103,10 +105,16 @@ local function output_capture(filesystem)
   }
 end
 
+local function display(snapshot)
+  local text = snapshot.content
+  if snapshot.escapedBytes > 0 then text = "[Non-text output escaped]\n" .. text end
+  return text
+end
+
 local function new()
   return {
     name = "shell",
-    description = "Run a shell command in the workspace cwd. Returns combined output, keeping the most recent 2,000 lines or 50 KiB.",
+    description = "Run a shell command in the workspace cwd. Returns combined text output, escaping non-text bytes and keeping the most recent 2,000 lines or 50 KiB.",
     input_schema = {
       type = "object",
       properties = {
@@ -134,12 +142,12 @@ local function new()
           if ctx.on_update and now - last_update >= 100 * 1000 * 1000 then
             last_update = now
             local snapshot = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
-            ctx.on_update({ content = { { type = "text", text = snapshot.content } } })
+            ctx.on_update({ content = { { type = "text", text = display(snapshot) } } })
           end
         end,
       })
       local shortened = capture.snapshot()
-      local text = shortened.content == "" and "(no output)" or shortened.content
+      local text = shortened.content == "" and "(no output)" or display(shortened)
       local details = { exit_code = result.code, signal = result.signal, truncation = shortened }
       if shortened.truncated then
         local path = capture.output_path()

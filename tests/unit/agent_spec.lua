@@ -93,6 +93,40 @@ describe("neoagent.agent", function()
     assert.matches("Unknown tool", result.new_messages[2].content[1].text)
   end)
 
+  it("turns invalid UTF-8 tool text into an error before the next model turn", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "c1", name = "binary", arguments = {} },
+        { type = "toolCall", id = "c2", name = "invalid_value", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local result = wait(agent.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "binary",
+        description = "binary",
+        input_schema = { type = "object" },
+        execute = function() return { content = { { type = "text", text = "bad\255text" } } } end,
+      }, {
+        name = "invalid_value",
+        description = "invalid value",
+        input_schema = { type = "object" },
+        execute = function() return { content = { { type = "text", text = 42 } } } end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.is_true(result.new_messages[2].isError)
+    assert.matches("valid UTF%-8", result.new_messages[2].content[1].text)
+    assert.is_true(result.new_messages[3].isError)
+    assert.matches("string value", result.new_messages[3].content[1].text)
+    assert.is_true(require("neoagent.util").is_valid_utf8(
+      model.requests[2].messages[2].content[1].text))
+    assert.are.equal("recovered", result.text)
+  end)
+
   it("forwards model events and preserves partial failed responses", function()
     local partial = fake_model.assistant({ { type = "text", text = "partial" } }).message
     local model = fake_model.new({ {

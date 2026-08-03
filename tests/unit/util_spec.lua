@@ -44,6 +44,37 @@ describe("neoagent.util", function()
       "JSON object keys must be strings")
   end)
 
+  it("validates UTF-8 and escapes bytes that are unsafe as text", function()
+    assert.is_true(util.is_valid_utf8("plain\0\té😀"))
+    for _, value in ipairs({
+      "\224\160\128",
+      "\226\130\172",
+      "\237\159\191",
+      "\238\128\128",
+      "\240\159\152\128",
+      "\241\128\128\128",
+      "\244\143\191\191",
+    }) do
+      assert.is_true(util.is_valid_utf8(value))
+    end
+    assert.is_false(util.is_valid_utf8({}))
+    for _, value in ipairs({
+      "\128",
+      "\192\175",
+      "\224\128\128",
+      "\237\160\128",
+      "\240\128\128\128",
+      "\244\144\128\128",
+      "\245\128\128\128",
+      "\195(",
+    }) do
+      assert.is_false(util.is_valid_utf8(value))
+    end
+    assert.are.same({ "plain\\x00\t\n\\x1B\\xC2\\x85\\xFF\\xC3(é", 6 }, {
+      util.text_from_bytes("plain\0\t\n\27\194\133\255\195(é"),
+    })
+  end)
+
   it("normalizes list and message content values", function()
     assert.is_false(util.is_list("not a table"))
     assert.is_true(util.is_list(util.list()))

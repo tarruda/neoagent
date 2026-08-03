@@ -21,6 +21,15 @@ local function storage_error(message, detail)
   return util.error("storage", message, detail)
 end
 
+local function encode_session_value(value, label)
+  local ok, encoded = pcall(vim.json.encode, value)
+  if not ok then return nil, storage_error("Failed to encode " .. label, encoded) end
+  if not util.is_valid_utf8(encoded) then
+    return nil, storage_error("Failed to encode " .. label, "strings must contain valid UTF-8")
+  end
+  return encoded
+end
+
 local function is_null(value)
   return value == nil or value == vim.NIL
 end
@@ -170,6 +179,8 @@ function Store:_append(entry_type, values, persist)
   end
   local valid, validation_err = tree.validate_entry(entry)
   if not valid then return nil, storage_error("Invalid " .. entry_type, validation_err) end
+  local encoded_entry, encode_err = encode_session_value(entry, entry_type)
+  if not encoded_entry then return nil, encode_err end
 
   if entry.type == "leaf" and not is_null(entry.targetId) and not self._by_id[entry.targetId] then
     return nil, storage_error("Invalid leaf", "leaf target does not exist")
@@ -191,13 +202,7 @@ function Store:_append(entry_type, values, persist)
     return true, nil, util.copy(entry)
   end
 
-  local encoded_entry = vim.json.encode(entry) .. "\n"
-
   if not self._persisted then
-    local ok, err = fs.mkdirp(vim.fs.dirname(self._path))
-    if not ok then
-      return nil, storage_error("Failed to create session directory", err)
-    end
     local header = {
       type = "session",
       version = 3,
@@ -207,12 +212,20 @@ function Store:_append(entry_type, values, persist)
     }
     if self._parent_session then header.parentSession = self._parent_session end
     if self._metadata then header.metadata = copy_metadata(self._metadata) end
-    local contents = { vim.json.encode(header), "\n" }
+    local encoded_header, header_err = encode_session_value(header, "session header")
+    if not encoded_header then return nil, header_err end
+    local contents = { encoded_header, "\n" }
     for _, pending in ipairs(self._pending) do
-      contents[#contents + 1] = vim.json.encode(pending)
+      local encoded_pending, pending_err = encode_session_value(pending, pending.type)
+      if not encoded_pending then return nil, pending_err end
+      contents[#contents + 1] = encoded_pending
       contents[#contents + 1] = "\n"
     end
-    contents[#contents + 1] = encoded_entry
+    contents[#contents + 1] = encoded_entry .. "\n"
+    local ok, err = fs.mkdirp(vim.fs.dirname(self._path))
+    if not ok then
+      return nil, storage_error("Failed to create session directory", err)
+    end
     ok, err = fs.write_all(self._path, table.concat(contents), "wx", 384)
     if not ok then
       return nil, storage_error("Failed to create session file", err)
@@ -220,7 +233,7 @@ function Store:_append(entry_type, values, persist)
     self._persisted = true
     self._pending = {}
   else
-    local ok, err = fs.write_all(self._path, encoded_entry, "a", 384)
+    local ok, err = fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
     if not ok then
       return nil, storage_error("Failed to append session entry", err)
     end
@@ -387,8 +400,6 @@ function M.fork(source, opts)
     parent_session = source_metadata.path,
     metadata = opts.metadata or source_metadata.data,
   })
-  local ok, err = fs.mkdirp(vim.fs.dirname(store._path))
-  if not ok then return nil, storage_error("Failed to create session directory", err) end
   local header = {
     type = "session",
     version = 3,
@@ -398,11 +409,17 @@ function M.fork(source, opts)
     parentSession = source_metadata.path,
   }
   if store._metadata then header.metadata = copy_metadata(store._metadata) end
-  local contents = { vim.json.encode(header), "\n" }
+  local encoded_header, header_err = encode_session_value(header, "session header")
+  if not encoded_header then return nil, header_err end
+  local contents = { encoded_header, "\n" }
   for _, entry in ipairs(entries) do
-    contents[#contents + 1] = vim.json.encode(entry)
+    local encoded_entry, entry_err = encode_session_value(entry, entry.type)
+    if not encoded_entry then return nil, entry_err end
+    contents[#contents + 1] = encoded_entry
     contents[#contents + 1] = "\n"
   end
+  local ok, err = fs.mkdirp(vim.fs.dirname(store._path))
+  if not ok then return nil, storage_error("Failed to create session directory", err) end
   ok, err = fs.write_all(store._path, table.concat(contents), "wx", 384)
   if not ok then return nil, storage_error("Failed to create forked session", err) end
   store._persisted = true

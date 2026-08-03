@@ -1019,8 +1019,10 @@ To bridge a callback API inside a tool or executor: >lua
 
 A tool is `{ name, description, input_schema, execute }`. `execute(arguments,
 ctx)` returns `{ content = { ... }, isError?, details? }`; content blocks are
-text or base64 images. Replace or decorate `execute_tool(tool, arguments, ctx)`
-to add approval, logging, a native sandbox, or subagent behavior.
+text or base64 images. Text blocks contain valid UTF-8 strings. The agent turns
+malformed tool results into error tool results. Replace or decorate
+`execute_tool(tool, arguments, ctx)` to add approval, logging, a native
+sandbox, or subagent behavior.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.
@@ -1046,7 +1048,10 @@ ImageMagick transformations stream image bytes through stdin and stdout and
 create no temporary files.
 The shell tool retains a bounded output tail and streams overflow to a
 temporary log through `ctx.fs`. The returned path remains available to later
-sandboxed file reads.
+sandboxed file reads. Shell updates and final results preserve valid UTF-8
+text, tabs, and newlines; they display invalid byte sequences and other C0/C1
+controls as `\xNN` and identify the output as escaped. Overflow logs retain the
+original bytes.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.
@@ -1058,8 +1063,9 @@ The default JSONL Store is created with: >lua
   })
 <
 `directory` is the workspaces root. The Store uses the Pi v3 append-only JSONL
-format and creates no file until the first accepted message. Use
-`require("neoagent.storage").open(path)` to open an existing Store.
+format, accepts values that encode as valid UTF-8 JSON, and creates no file
+until the first accepted message. Use `require("neoagent.storage").open(path)`
+to open an existing Store.
 
 Tree-aware Session methods are: >lua
 

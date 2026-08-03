@@ -410,6 +410,58 @@ describe("neoagent bundled tools", function()
     assert.is_true(#updates >= 1)
   end)
 
+  it("escapes non-text shell bytes in updates and the final result", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local updates = {}
+    local result = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, updates, {
+      process = function(_, opts)
+        opts.on_output("plain\0\27\255\195(tail\n", false)
+        return { code = 0, signal = 0 }
+      end,
+    }))
+
+    assert.is_false(result.isError)
+    assert.matches("Non%-text output escaped", result.content[1].text)
+    assert.matches("plain\\x00\\x1B\\xFF\\xC3%(tail", result.content[1].text)
+    assert.is_true(require("neoagent.util").is_valid_utf8(result.content[1].text))
+    assert.is_nil(result.content[1].text:find("\0", 1, true))
+    assert.is_true(#updates >= 1)
+    for _, update in ipairs(updates) do
+      assert.is_true(require("neoagent.util").is_valid_utf8(update.content[1].text))
+      assert.is_nil(update.content[1].text:find("\0", 1, true))
+    end
+  end)
+
+  it("bounds expanded non-text output and saves the original bytes", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local truncate = require("neoagent.tools.truncate")
+    local max_bytes = truncate.MAX_BYTES
+    truncate.MAX_BYTES = 50
+    local original = string.rep("\0", 20)
+    local ok, result = pcall(execute, require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, nil, {
+      process = function(_, opts)
+        opts.on_output(original, false)
+        return { code = 0, signal = 0 }
+      end,
+    }))
+    truncate.MAX_BYTES = max_bytes
+
+    assert.is_true(ok, tostring(result))
+    assert.is_false(result.isError)
+    assert.is_true(result.details.truncation.truncated)
+    assert.are.equal("bytes", result.details.truncation.truncatedBy)
+    assert.is_not_nil(result.details.output_path)
+    assert.are.equal(original, assert(fs.read(result.details.output_path)))
+    assert.is_true(#result.content[1].text < 200)
+    vim.fn.delete(result.details.output_path)
+  end)
+
   it("keeps bounded shell output and saves the complete result", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root

@@ -133,7 +133,9 @@ Bundled tools resolve model-directed disk and subprocess work through optional
 `ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
 filesystem and `neoagent.process` runner. A decorated executor can copy the
 context and replace either capability for one invocation. Shell output uses
-bounded memory and streams overflow through the filesystem capability.
+bounded memory, represents non-text bytes explicitly in tool results, and
+streams original overflow through the filesystem capability. The agent tool
+boundary accepts text blocks with valid UTF-8 strings.
 
 ## Workspace trust composition
 
@@ -386,7 +388,8 @@ session is a tree that supports:
 - Context compaction entries
 
 Only the active path is projected into model context. Empty sessions create no
-files; persistence begins when the first message is accepted.
+files; persistence begins when the first message is accepted. Stores validate
+JSON encoding and UTF-8 before mutating the tree or creating a file.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.
