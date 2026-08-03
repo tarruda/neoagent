@@ -62,6 +62,10 @@ function M:_map_buffers()
   end)
   self:_map(self.transcript_buf, "n", mappings.card_details,
     function() self:show_card_details() end)
+  self:_map(self.transcript_buf, "n", mappings.card_previous,
+    function() self:_move_card(-1, vim.v.count1) end)
+  self:_map(self.transcript_buf, "n", mappings.card_next,
+    function() self:_move_card(1, vim.v.count1) end)
   self:_map(self.input_buf, { "n", "i" }, mappings.cycle_thinking, self.on_cycle_thinking)
   self:_map(self.transcript_buf, "n", mappings.cycle_thinking, self.on_cycle_thinking)
   self:_map(self.input_buf, { "n", "i" }, mappings.cycle_agent, self.on_cycle_agent)

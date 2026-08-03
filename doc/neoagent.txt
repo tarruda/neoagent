@@ -875,7 +875,7 @@ active draft.
 Default mappings:
 
   <CR>        Accept popup completion, or send from input in Normal or Insert
-              mode.
+              mode; open full details for the transcript card under the cursor.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
   <C-c>       Interrupt the active Run and restore queued steering; clear the
@@ -885,7 +885,8 @@ Default mappings:
               Visual mode.
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
-  <C-o>       Open full details for the transcript card under the cursor.
+  [c / ]c     Jump to the previous or next transcript card; counts are
+              supported.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
@@ -898,7 +899,7 @@ Default mappings:
   q           Hide the UI from the transcript.
 
 Set a value in `ui.mappings` to an lhs string or list of strings, or to `false`
-to disable it.
+to disable it. Card actions use `card_details`, `card_previous`, and `card_next`.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
 saved when workspace settings are enabled. `ui.width` and `ui.height` accept a

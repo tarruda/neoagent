@@ -580,7 +580,7 @@ describe("neoagent.ui", function()
     } })
     assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("Compacted from 12,345 tokens (<C-o> for details)", 1, true) ~= nil
+      return text(result):find("Compacted from 12,345 tokens (<CR> for details)", 1, true) ~= nil
     end))
     assert.matches("%[compaction%]", text(result))
     assert.not_matches("Keep the summary visible", text(result))

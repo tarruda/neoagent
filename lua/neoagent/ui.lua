@@ -489,6 +489,7 @@ View._move_input_history = input._move_input_history
 View.set_input = input.set_input
 
 View._card_at_cursor = cards._card_at_cursor
+View._move_card = cards._move_card
 View._clear_card_outline = cards._clear_card_outline
 View._update_card_outline = cards._update_card_outline
 View._refresh_card_details = cards._refresh_card_details

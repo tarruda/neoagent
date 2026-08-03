@@ -34,11 +34,11 @@ describe("neoagent UI mappings", function()
     assert.is_not_nil(prose_row)
     assert.is_not_nil(shell_row)
     vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
     assert.is_nil(result.details_win)
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { shell_row, 0 })
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
     assert(vim.wait(1000, function()
       return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
     end))
@@ -61,6 +61,59 @@ describe("neoagent UI mappings", function()
       return result.details_win == nil
         and vim.api.nvim_get_current_win() == result.transcript_win
     end))
+    result:destroy()
+  end)
+
+  it("navigates transcript cards with bracket motions", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({
+      { role = "user", content = "first card" },
+      { role = "assistant", content = { { type = "text", text = "between cards" } } },
+      { role = "user", content = "second card" },
+      { role = "user", content = "third card" },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return vim.iter(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)):any(function(line)
+          return line:find("third card", 1, true) ~= nil
+        end)
+    end))
+    result:focus_transcript()
+
+    local rows = {}
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      for _, label in ipairs({ "first card", "between cards", "second card", "third card" }) do
+        if line:find(label, 1, true) then rows[label] = row end
+      end
+    end
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    local function cursor_row()
+      return vim.api.nvim_win_get_cursor(result.transcript_win)[1]
+    end
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
+    feed("]c")
+    assert.are.equal(rows["second card"], cursor_row())
+    feed("[c")
+    assert.are.equal(rows["first card"], cursor_row())
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
+    feed("2]c")
+    assert.are.equal(rows["third card"], cursor_row())
+    feed("2[c")
+    assert.are.equal(rows["first card"], cursor_row())
+    feed("[c")
+    assert.are.equal(rows["first card"], cursor_row())
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows["third card"], 0 })
+    feed("]c")
+    assert.are.equal(rows["third card"], cursor_row())
     result:destroy()
   end)
 

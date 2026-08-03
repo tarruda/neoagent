@@ -464,8 +464,9 @@ cards and full card content from the same block values. Transcript cards clip
 lines at the current visible width by default and rebuild after layout changes;
 configured card wrapping presents their complete lines. The View can omit
 thinking blocks while the Controller and Session retain complete messages. The
-View resolves the card beneath the focused transcript cursor, draws its outline
-in a presentation namespace, and owns the read-only floating details buffer and
+View resolves the card beneath the focused transcript cursor, provides
+count-aware previous and next card motions, draws the card outline in a
+presentation namespace, and owns the read-only floating details buffer and
 window.
 
 An optional dialog source lets an executor inject a lifetime-scoped
