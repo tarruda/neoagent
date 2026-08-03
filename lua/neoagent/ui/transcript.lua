@@ -117,7 +117,7 @@ function M:_mark_block(block, start, finish, content)
       end_row = start + span.row,
       end_col = span.end_col,
       hl_group = span.group,
-      priority = 100,
+      priority = span.priority or 100,
     })
   end
   block.dirty = false

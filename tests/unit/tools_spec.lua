@@ -425,7 +425,17 @@ describe("neoagent bundled tools", function()
     execute(shell, { command = "default" }, context)
     execute(shell, { command = "override", timeout = 2.5 }, context)
 
+    local unbounded = "unset"
+    execute(shell.new({ default_timeout = false }), { command = "unbounded" },
+      ctx(workspace, nil, {
+        process = function(_, opts)
+          unbounded = opts.timeout_ms
+          return { code = 0, signal = 0 }
+        end,
+      }))
+
     assert.are.same({ 300000, 2500 }, timeouts)
+    assert.is_nil(unbounded)
   end)
 
   it("escapes non-text shell bytes in updates and the final result", function()
@@ -451,6 +461,27 @@ describe("neoagent bundled tools", function()
       assert.is_true(require("neoagent.util").is_valid_utf8(update.content[1].text))
       assert.is_nil(update.content[1].text:find("\0", 1, true))
     end
+  end)
+
+  it("preserves a safe ANSI display copy for shell renderers", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local updates = {}
+    local ansi = "plain \27[1;31mred\27[0m \27]0;title\7tail\n"
+    local result = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, updates, {
+      process = function(_, opts)
+        opts.on_output(ansi, false)
+        return { code = 0, signal = 0 }
+      end,
+    }))
+
+    assert.matches("plain \\x1B%[1;31mred\\x1B%[0m", result.content[1].text)
+    assert.are.equal("plain \27[1;31mred\27[0m \27]0;title\\x07tail\n",
+      result.details.ansi)
+    assert.is_true(#updates >= 1)
+    assert.are.equal(result.details.ansi, updates[#updates].details.ansi)
   end)
 
   it("bounds expanded non-text output and saves the original bytes", function()

@@ -3,12 +3,32 @@ local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
 local DEFAULT_TIMEOUT_SECONDS = 300
+local ESCAPE = "\27"
 
 local function shell_argv(command)
   local argv = vim.fn.split(vim.o.shell)
   vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
   argv[#argv + 1] = command
   return argv
+end
+
+local function text_preserving_escape(value)
+  local parts = {}
+  local escaped = 0
+  local start = 1
+  while start <= #value do
+    local position = value:find(ESCAPE, start, true)
+    local finish = position and position - 1 or #value
+    if finish >= start then
+      local text, count = util.text_from_bytes(value:sub(start, finish))
+      parts[#parts + 1] = text
+      escaped = escaped + count
+    end
+    if not position then break end
+    parts[#parts + 1] = ESCAPE
+    start = position + 1
+  end
+  return table.concat(parts), escaped
 end
 
 local function output_capture(filesystem)
@@ -87,6 +107,12 @@ local function output_capture(filesystem)
     local text, escaped = util.text_from_bytes(tail)
     local result = truncate.tail(text, options)
     result.escapedBytes = escaped
+    local ansi
+    if tail:find(ESCAPE, 1, true) then
+      local display_text, display_escaped = text_preserving_escape(tail)
+      ansi = truncate.tail(display_text, options)
+      ansi.escapedBytes = display_escaped
+    end
     if not options then
       result.totalBytes = total_bytes
       result.totalLines = total_lines()
@@ -96,7 +122,7 @@ local function output_capture(filesystem)
       end
       if result.truncated and not output_path and not spill_error then spill(tail) end
     end
-    return result
+    return result, ansi
   end
 
   return {
@@ -111,6 +137,10 @@ local function display(snapshot)
   local text = snapshot.content
   if snapshot.escapedBytes > 0 then text = "[Non-text output escaped]\n" .. text end
   return text
+end
+
+local function prefixed(prefix, text)
+  return prefix .. "\n" .. text
 end
 
 local function valid_timeout(value)
@@ -157,28 +187,47 @@ local function new(options)
           local now = vim.uv.hrtime()
           if ctx.on_update and now - last_update >= 100 * 1000 * 1000 then
             last_update = now
-            local snapshot = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
-            ctx.on_update({ content = { { type = "text", text = display(snapshot) } } })
+            local snapshot, ansi = capture.snapshot({ max_lines = 12, max_bytes = 8 * 1024 })
+            local update = { content = { { type = "text", text = display(snapshot) } } }
+            if ansi then update.details = { ansi = ansi.content } end
+            ctx.on_update(update)
           end
         end,
       })
-      local shortened = capture.snapshot()
+      local shortened, ansi = capture.snapshot()
       local text = shortened.content == "" and "(no output)" or display(shortened)
+      local ansi_text = ansi and ansi.content or nil
       local details = { exit_code = result.code, signal = result.signal, truncation = shortened }
       if shortened.truncated then
         local path = capture.output_path()
         if path then
           details.output_path = path
-          text = string.format("[Output truncated; full output: %s]\n%s", path, text)
+          local prefix = string.format("[Output truncated; full output: %s]", path)
+          text = prefixed(prefix, text)
+          if ansi_text then ansi_text = prefixed(prefix, ansi_text) end
         else
-          text = string.format("[Output truncated; could not save full output: %s]\n%s",
-            tostring(capture.spill_error()), text)
+          local prefix = string.format("[Output truncated; could not save full output: %s]",
+            tostring(capture.spill_error()))
+          text = prefixed(prefix, text)
+          if ansi_text then ansi_text = prefixed(prefix, ansi_text) end
         end
       end
       local is_error = result.timed_out or result.code ~= 0
-      if result.timed_out then text = "[Command timed out]\n" .. text end
-      if result.code ~= 0 and not result.timed_out then text = "[Command exited with status " .. result.code .. "]\n" .. text end
-      if ctx.on_update then ctx.on_update({ content = { { type = "text", text = text } } }) end
+      if result.timed_out then
+        text = prefixed("[Command timed out]", text)
+        if ansi_text then ansi_text = prefixed("[Command timed out]", ansi_text) end
+      end
+      if result.code ~= 0 and not result.timed_out then
+        local prefix = "[Command exited with status " .. result.code .. "]"
+        text = prefixed(prefix, text)
+        if ansi_text then ansi_text = prefixed(prefix, ansi_text) end
+      end
+      if ansi_text then details.ansi = ansi_text end
+      if ctx.on_update then
+        local update = { content = { { type = "text", text = text } } }
+        if ansi_text then update.details = { ansi = ansi_text } end
+        ctx.on_update(update)
+      end
       return { content = { { type = "text", text = text } }, details = details, isError = is_error }
     end,
   }

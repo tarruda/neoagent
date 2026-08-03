@@ -2,6 +2,100 @@ local markdown = require("neoagent.markdown")
 local util = require("neoagent.util")
 
 local M = {}
+local MAX_ANSI_SPANS = 512
+local MAX_ANSI_HIGHLIGHTS = 256
+
+local ansi_palette = {
+  0x000000, 0xcd0000, 0x00cd00, 0xcdcd00,
+  0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+  0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00,
+  0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+}
+local ansi_highlights = {}
+local ansi_highlight_names = {}
+
+local function palette_rgb(index)
+  local configured = index < 16 and vim.g["terminal_color_" .. index] or nil
+  if type(configured) == "string" and configured ~= "" then
+    local value = vim.api.nvim_get_color_by_name(configured)
+    if value >= 0 then return value end
+  end
+  if index < 16 then return ansi_palette[index + 1] end
+  if index < 232 then
+    local value = index - 16
+    local levels = { 0, 95, 135, 175, 215, 255 }
+    local red = levels[math.floor(value / 36) + 1]
+    local green = levels[math.floor(value / 6) % 6 + 1]
+    local blue = levels[value % 6 + 1]
+    return red * 0x10000 + green * 0x100 + blue
+  end
+  local level = 8 + (index - 232) * 10
+  return level * 0x10000 + level * 0x100 + level
+end
+
+local function rgb_cterm(value)
+  local red = math.floor(value / 0x10000) % 0x100
+  local green = math.floor(value / 0x100) % 0x100
+  local blue = value % 0x100
+  return 16 + math.floor(red * 5 / 255 + 0.5) * 36
+    + math.floor(green * 5 / 255 + 0.5) * 6
+    + math.floor(blue * 5 / 255 + 0.5)
+end
+
+local function style_color(value)
+  if value == nil then return nil, nil end
+  if type(value) == "number" then return palette_rgb(value), value end
+  if type(value) ~= "string" then return nil, nil end
+  local red, green, blue = value:match("^#(%x%x)(%x%x)(%x%x)$")
+  if not red then return nil, nil end
+  local rgb = tonumber(red .. green .. blue, 16)
+  return rgb, rgb_cterm(rgb)
+end
+
+local function style_key(style)
+  return table.concat({
+    tostring(style.fg or ""), tostring(style.bg or ""),
+    style.bold and "1" or "", style.italic and "1" or "",
+    style.underline and "1" or "", style.strikethrough and "1" or "",
+    style.reverse and "1" or "",
+  }, ":")
+end
+
+local function define_ansi_highlight(name, definition)
+  local attributes = vim.api.nvim_get_hl(0, {
+    name = definition.base,
+    link = false,
+  })
+  local foreground, foreground_cterm = style_color(definition.style.fg)
+  local background, background_cterm = style_color(definition.style.bg)
+  if foreground then
+    attributes.fg = foreground
+    attributes.ctermfg = foreground_cterm
+  end
+  if background then
+    attributes.bg = background
+    attributes.ctermbg = background_cterm
+  end
+  for _, attribute in ipairs({
+    "bold", "italic", "underline", "strikethrough", "reverse",
+  }) do
+    if definition.style[attribute] then attributes[attribute] = true end
+  end
+  vim.api.nvim_set_hl(0, name, attributes)
+end
+
+local function ansi_highlight(style, base)
+  local key = base .. ":" .. style_key(style)
+  local name = ansi_highlight_names[key]
+  if name then return name end
+  if vim.tbl_count(ansi_highlight_names) >= MAX_ANSI_HIGHLIGHTS then return base end
+  name = "NeoagentAnsi" .. tostring(vim.tbl_count(ansi_highlight_names) + 1)
+  local definition = { base = base, style = util.copy(style) }
+  ansi_highlight_names[key] = name
+  ansi_highlights[name] = definition
+  define_ansi_highlight(name, definition)
+  return name
+end
 
 local highlight_links = {
   NeoagentWindowTitle = "NeoagentMuted",
@@ -61,6 +155,9 @@ local function define_highlights()
   }) do
     vim.api.nvim_set_hl(0, name, { bg = background, default = true })
   end
+  for name, definition in pairs(ansi_highlights) do
+    define_ansi_highlight(name, definition)
+  end
 end
 
 local function split_text(text)
@@ -102,6 +199,7 @@ local function add_line(result, text, spans, line_group)
         col = span.col,
         end_col = span.end_col,
         group = span.group,
+        priority = span.priority,
       }
     end
   end
@@ -119,6 +217,7 @@ local function append_rendered(target, source, gap)
       col = span.col,
       end_col = span.end_col,
       group = span.group,
+      priority = span.priority,
     }
   end
 end
@@ -156,6 +255,7 @@ local function card(content, background)
           col = span.col + 1,
           end_col = span.end_col + 1,
           group = span.group,
+          priority = span.priority,
         }
       end
     end
@@ -180,6 +280,7 @@ local function prose(content, default_group, italic)
           col = span.col + 1,
           end_col = span.end_col + 1,
           group = span.group,
+          priority = span.priority,
         }
       end
     end
@@ -323,23 +424,186 @@ end
 local function limited(text, maximum, tail)
   local lines = split_text(text)
   while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
-  if maximum == nil or #lines <= maximum then return lines, 0 end
+  if maximum == nil or #lines <= maximum then return lines, 0, 0 end
   local omitted = #lines - maximum
-  if tail then return vim.list_slice(lines, omitted + 1, #lines), omitted end
-  return vim.list_slice(lines, 1, maximum), omitted
+  if tail then return vim.list_slice(lines, omitted + 1, #lines), omitted, omitted end
+  return vim.list_slice(lines, 1, maximum), omitted, 0
 end
 
-local function output_lines(text, maximum, tail, group, hint)
+local function sgr_params(value)
+  if value == "" then return { 0 } end
+  local result = {}
+  for field in (value .. ";"):gmatch("([^;]*);") do
+    result[#result + 1] = field == "" and 0 or tonumber(field)
+  end
+  return result
+end
+
+local function reset_style(style)
+  for key in pairs(style) do style[key] = nil end
+end
+
+local function apply_sgr(style, params)
+  local index = 1
+  while index <= #params do
+    local code = params[index]
+    if code == 0 then
+      reset_style(style)
+    elseif code == 1 then
+      style.bold = true
+    elseif code == 3 then
+      style.italic = true
+    elseif code == 4 then
+      style.underline = true
+    elseif code == 7 then
+      style.reverse = true
+    elseif code == 9 then
+      style.strikethrough = true
+    elseif code == 22 then
+      style.bold = nil
+    elseif code == 23 then
+      style.italic = nil
+    elseif code == 24 then
+      style.underline = nil
+    elseif code == 27 then
+      style.reverse = nil
+    elseif code == 29 then
+      style.strikethrough = nil
+    elseif code and code >= 30 and code <= 37 then
+      style.fg = code - 30
+    elseif code == 39 then
+      style.fg = nil
+    elseif code and code >= 40 and code <= 47 then
+      style.bg = code - 40
+    elseif code == 49 then
+      style.bg = nil
+    elseif code and code >= 90 and code <= 97 then
+      style.fg = code - 90 + 8
+    elseif code and code >= 100 and code <= 107 then
+      style.bg = code - 100 + 8
+    elseif code == 38 or code == 48 then
+      local field = code == 38 and "fg" or "bg"
+      if params[index + 1] == 5 and type(params[index + 2]) == "number"
+          and params[index + 2] >= 0 and params[index + 2] <= 255 then
+        style[field] = math.floor(params[index + 2])
+        index = index + 2
+      elseif params[index + 1] == 2
+          and type(params[index + 2]) == "number"
+          and type(params[index + 3]) == "number"
+          and type(params[index + 4]) == "number" then
+        local red, green, blue = params[index + 2], params[index + 3], params[index + 4]
+        if red >= 0 and red <= 255 and green >= 0 and green <= 255
+            and blue >= 0 and blue <= 255 then
+          style[field] = string.format("#%02x%02x%02x", red, green, blue)
+        end
+        index = index + 4
+      end
+    end
+    index = index + 1
+  end
+end
+
+local function ansi_sequence(value, start)
+  if value:sub(start + 1, start + 1) ~= "[" then return nil end
+  local finish = start + 2
+  while finish <= #value do
+    local byte = value:byte(finish)
+    if (byte >= 48 and byte <= 57) or byte == 59 then
+      finish = finish + 1
+    elseif byte == 109 then
+      return finish, value:sub(start + 2, finish - 1)
+    else
+      return nil
+    end
+  end
+end
+
+local function parse_ansi(value)
+  local output = {}
+  local spans = {}
+  local style = {}
+  local row, col = 0, 0
+
+  local function append(value_part)
+    if value_part == "" then return end
+    local safe = util.text_from_bytes(value_part)
+    output[#output + 1] = safe
+    local start = 1
+    while start <= #safe do
+      local newline = safe:find("\n", start, true)
+      local finish = newline and newline - 1 or #safe
+      if finish >= start and next(style) and #spans < MAX_ANSI_SPANS then
+        local length = finish - start + 1
+        local key = style_key(style)
+        local previous = spans[#spans]
+        if previous and previous.row == row and previous.end_col == col
+            and previous.key == key then
+          previous.end_col = previous.end_col + length
+        else
+          spans[#spans + 1] = {
+            row = row,
+            col = col,
+            end_col = col + length,
+            key = key,
+            style = util.copy(style),
+          }
+        end
+        col = col + length
+      else
+        col = col + math.max(0, finish - start + 1)
+      end
+      if not newline then break end
+      row, col = row + 1, 0
+      start = newline + 1
+    end
+  end
+
+  local start = 1
+  while start <= #value do
+    local escape = value:find("\27", start, true)
+    if not escape then
+      append(value:sub(start))
+      break
+    end
+    append(value:sub(start, escape - 1))
+    local finish, params = ansi_sequence(value, escape)
+    if finish then
+      apply_sgr(style, sgr_params(params))
+      start = finish + 1
+    else
+      append("\\x1B")
+      start = escape + 1
+    end
+  end
+  return table.concat(output), spans
+end
+
+local function output_lines(text, maximum, tail, group, hint, ansi)
   local result = rendered()
   if text == nil or text == "" then return result end
-  local lines, omitted = limited(text, maximum, tail)
-  for _, line in ipairs(lines) do
+  local ansi_spans = {}
+  if type(ansi) == "string" then text, ansi_spans = parse_ansi(ansi) end
+  local lines, omitted, first_row = limited(text, maximum, tail)
+  for index, line in ipairs(lines) do
     local line_group = group
     if group == "diff" then
       line_group = line:sub(1, 1) == "+" and "NeoagentDiffAdded"
         or line:sub(1, 1) == "-" and "NeoagentDiffRemoved" or "NeoagentDiffContext"
     end
-    add_line(result, line, #line > 0 and { { col = 0, end_col = #line, group = line_group } } or nil)
+    local line_spans = #line > 0
+        and { { col = 0, end_col = #line, group = line_group } } or {}
+    local source_row = first_row + index - 1
+    for _, span in ipairs(ansi_spans) do
+      if span.row == source_row and span.col < #line then
+        line_spans[#line_spans + 1] = {
+          col = span.col,
+          end_col = math.min(span.end_col, #line),
+          group = ansi_highlight(span.style, line_group),
+          priority = 110,
+        }
+      end
+    end
+    add_line(result, line, line_spans)
   end
   if omitted > 0 then
     local message = string.format("... (%d more lines%s)", omitted, hint and ", " .. hint .. " to expand" or "")
@@ -368,7 +632,11 @@ local function tool_output(self, block, args)
   elseif name == "read" or name == "read_file" then
     return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
   elseif name == "shell" then
-    return output_lines(value, maximum, true, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+    local active = message or update
+    local ansi = active and active.details and active.details.ansi
+    return output_lines(value, maximum, true,
+      message and message.isError and "NeoagentError" or "NeoagentToolOutput",
+      hint, ansi)
   elseif name == "grep" or name == "find" then
     return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
   elseif message and message.isError then

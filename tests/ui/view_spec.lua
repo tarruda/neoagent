@@ -200,9 +200,12 @@ describe("neoagent.ui", function()
     result:apply({ type = "tool_call_delta", index = 2, id = "c1", name = "write_file", arguments_delta = '.txt"}' })
     result:apply({ type = "message_end", message = {
       role = "assistant",
-      content = { { type = "thinking", thinking = "considering" }, { type = "text", text = "I'll edit." }, {
-        type = "toolCall", id = "c1", name = "write_file", arguments = { path = "a.txt" },
-      } },
+      content = {
+        { type = "thinking", thinking = "considering" },
+        { type = "thinking", index = 1, thinking = "unstreamed reasoning" },
+        { type = "text", text = "I'll edit." },
+        { type = "toolCall", id = "c1", name = "write_file", arguments = { path = "a.txt" } },
+      },
     } })
     result:apply({ type = "tool_start", call = { id = "c1", name = "write_file", arguments = { path = "a.txt" } } })
     result:apply({ type = "tool_update", call = { id = "c1", name = "write_file" }, result = { content = { { type = "text", text = "working" } } } })
@@ -221,6 +224,7 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function() return text(result):match("write a.txt") ~= nil end))
     local transcript = text(result)
     assert.matches("considering", transcript)
+    assert.matches("unstreamed reasoning", transcript)
     assert.matches("I'll edit", transcript)
     assert.not_matches("written", transcript)
     assert.are.equal(1, select(2, transcript:gsub("write a.txt", "")))
@@ -330,6 +334,66 @@ describe("neoagent.ui", function()
       if lines[row + 1] == "" and not line_has_background(result, row) then separators = separators + 1 end
     end
     assert.are.equal(1, separators)
+  end)
+
+  it("renders shell ANSI colors and leaves other escapes visible", function()
+    local terminal_red = vim.g.terminal_color_1
+    vim.g.terminal_color_1 = "#123456"
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "shell-ansi", name = "shell",
+          arguments = { command = "printf colors" } },
+      } },
+      { role = "toolResult", toolCallId = "shell-ansi", toolName = "shell",
+        isError = false,
+        content = { { type = "text", text =
+          "[Non-text output escaped]\nplain \\x1B[1;31mred\\x1B[0m \\x1B]0;title\\x07tail" } },
+        details = { ansi = table.concat({
+          "plain \27[1;31mred\27[0m \27]0;title\\x07tail\n",
+          "\27[1;3;4;7;9;31;44mattributes\ncontinued",
+          "\27[22;23;24;27;29;39;49m plain\n",
+          "\27[91;104mbright\27[0m ",
+          "\27[38;5;196;48;5;244mindexed\27[0m ",
+          "\27[38;2;1;2;3;48;2;4;5;6mtruecolor\27[m ",
+          "\27[?25l \27[31ma\27]ignoredb\27[0m",
+        }) },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("plain red", 1, true) ~= nil
+    end))
+
+    local transcript = text(result)
+    assert.not_matches("Non%-text output escaped", transcript)
+    assert.not_matches("\\x1B%[1;31m", transcript)
+    assert.matches("plain red \\x1B%]0;title\\x07tail", transcript)
+    assert.matches("attributes", transcript)
+    assert.matches("continued plain", transcript)
+    assert.matches("bright indexed truecolor \\x1B%[%?25l", transcript)
+    assert.matches("a\\x1B%]ignoredb", transcript)
+
+    local colored
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.namespace, 0, -1,
+      { details = true, hl_name = true }
+    )) do
+      if mark[4].hl_group and tostring(mark[4].hl_group):match("^NeoagentAnsi") then
+        colored = mark
+        break
+      end
+    end
+    assert.is_not_nil(colored)
+    assert.are.equal(7, colored[3])
+    assert.are.equal(10, colored[4].end_col)
+    local highlight = vim.api.nvim_get_hl(0, {
+      name = colored[4].hl_group,
+      link = false,
+    })
+    vim.g.terminal_color_1 = terminal_red
+    assert.is_true(highlight.bold)
+    assert.are.equal(0x123456, highlight.fg)
   end)
 
   it("shows escaped partial arguments before tool execution starts", function()
@@ -515,6 +579,10 @@ describe("neoagent.ui", function()
     assert.are.equal(24, vim.fn.strdisplaywidth(narrow_text))
     assert.matches("^…", narrow_text)
     assert.matches("…$", narrow_text)
+    local near_footer = result:_transcript_footer(32)
+    local near_text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, near_footer))
+    assert.are.equal(32, vim.fn.strdisplaywidth(near_text))
+    assert.matches("Compacting%.%.%.", near_text)
     local tiny_footer = result:_transcript_footer(1)
     assert.are.equal("…", table.concat(vim.tbl_map(function(chunk) return chunk[1] end, tiny_footer)))
     assert.matches("Compacting%.%.%.", transcript_footer())

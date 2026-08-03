@@ -97,6 +97,7 @@ describe("neoagent generic dialog UI", function()
       content = "Existing transcript",
     } })
     assert.is_true(view:open())
+    view:set_context({ steering = { "first queued message" } })
     local value = snapshot(transcript_dialog(), "first", 1)
     view:set_dialog(value)
     local buffer = assert(view.dialog_buf)
@@ -125,6 +126,20 @@ describe("neoagent generic dialog UI", function()
     end
     assert.matches("Waiting for response", footer(view.transcript_win))
     assert.is_nil(view.spinner_timer)
+    local function status_text()
+      local parts = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        buffer, view.namespace, 0, -1, { details = true }
+      )) do
+        for _, line in ipairs(mark[4].virt_lines or {}) do
+          parts[#parts + 1] = table.concat(vim.tbl_map(function(chunk)
+            return chunk[1]
+          end, line))
+        end
+      end
+      return table.concat(parts, "\n")
+    end
+    assert.matches("Steering: first queued message", status_text())
 
     view:set_dialog(value)
     view:_show_dialog()

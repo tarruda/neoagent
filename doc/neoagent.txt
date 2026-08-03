@@ -1051,11 +1051,15 @@ The shell tool retains a bounded output tail and streams overflow to a
 temporary log through `ctx.fs`. The returned path remains available to later
 sandboxed file reads. Shell updates and final results preserve valid UTF-8
 text, tabs, and newlines; they display invalid byte sequences and other C0/C1
-controls as `\xNN` and identify the output as escaped. Overflow logs retain the
-original bytes. Shell commands time out after `shell_timeout` seconds, which
-defaults to 300. A tool call may supply a positive finite `timeout` in seconds
-to override the configured default. Set `shell_timeout = false` to leave calls
-without an explicit tool timeout unbounded.
+controls as `\xNN` and identify the output as escaped. Output containing escape
+bytes also carries a bounded, valid UTF-8 `details.ansi` display copy. The
+bundled View interprets SGR colors and text attributes from that copy when it
+renders shell cards. Non-SGR escape sequences remain visible as `\x1B`.
+Overflow logs retain the original bytes. Shell commands time out after
+`shell_timeout` seconds, which defaults to 300. A tool call may supply a
+positive finite `timeout` in seconds to override the configured default. Set
+`shell_timeout = false` to leave calls without an explicit tool timeout
+unbounded.
 
 `require("neoagent.session").new()` is an in-memory, tool-free message owner.
 It may receive `{ store = store }` or `{ messages = messages }`, but not both.
