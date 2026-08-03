@@ -155,6 +155,32 @@ describe("neoagent.ui", function()
     assert.matches("first summary\n\n second summary", text(result))
   end)
 
+  it("can hide historical and streaming thinking from the transcript", function()
+    local result = view({ position = "center", show_thinking = false })
+    result:set_messages({ {
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "historical private trace" },
+        { type = "text", text = "historical visible answer" },
+      },
+    } })
+    assert(result:open())
+    result:apply({ type = "thinking_delta", text = "streaming private trace" })
+    result:apply({ type = "message_end", message = {
+      role = "assistant",
+      content = { { type = "thinking", thinking = "final private trace" } },
+    } })
+
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    local transcript = text(result)
+    assert.matches("historical visible answer", transcript)
+    assert.not_matches("historical private trace", transcript)
+    assert.not_matches("streaming private trace", transcript)
+    assert.not_matches("final private trace", transcript)
+    assert.are.equal("final private trace",
+      result.messages[2].content[1].thinking)
+  end)
+
   it("uses structural spacing for provider prose ending in linefeeds", function()
     local result = view({ position = "center" })
     assert(result:open())
@@ -448,6 +474,68 @@ describe("neoagent.ui", function()
     assert.not_matches("hidden checkpoint", text(result))
     assert.matches("%$ make test", text(result))
     assert.matches("failed", text(result))
+  end)
+
+  it("truncates card lines by default and recomputes them after resize", function()
+    local result = view({ position = "center" })
+    local long = "card content " .. string.rep("segment-", 30) .. "界"
+    result:set_messages({ { role = "user", content = long } })
+    assert(result:open())
+
+    local function card_line()
+      for _, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find("card content", 1, true) then return line end
+      end
+    end
+
+    assert(vim.wait(1000, function()
+      local line = card_line()
+      return line and line:find("... ", 1, true) ~= nil
+    end))
+    local initial_line = card_line()
+    local initial_width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.are.equal(initial_width, vim.fn.strdisplaywidth(initial_line))
+    assert.matches("%.%.%. $", initial_line)
+
+    vim.o.columns = 90
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_win_get_width(result.transcript_win) ~= initial_width
+        and card_line() ~= initial_line
+    end))
+    local resized_line = card_line()
+    local resized_width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.is_true(resized_width < initial_width)
+    assert.are.equal(resized_width, vim.fn.strdisplaywidth(resized_line))
+    assert.matches("%.%.%. $", resized_line)
+
+    result:focus_transcript()
+    local card_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line == resized_line then card_row = row break end
+    end
+    assert.is_not_nil(card_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
+    assert.is_true(result:show_card_details())
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false), long))
+    result:_close_card_details(true)
+  end)
+
+  it("allows configured card wrapping", function()
+    local result = view({ position = "center", wrap_cards = true })
+    local long = "wrapped card " .. string.rep("content-", 30)
+    result:set_messages({ { role = "user", content = long } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return vim.tbl_contains(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false), " " .. long .. " ")
+    end))
+    assert.is_true(vim.fn.strdisplaywidth(" " .. long .. " ")
+      > vim.api.nvim_win_get_width(result.transcript_win))
+    assert.is_true(vim.wo[result.transcript_win].wrap)
   end)
 
   it("keeps read output compact while details show every returned line", function()

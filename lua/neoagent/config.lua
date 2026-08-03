@@ -64,6 +64,8 @@ local defaults = {
     scroll_on_submit = true,
     scroll_on_transcript_leave = true,
     scroll_on_reopen = true,
+    wrap_cards = false,
+    show_thinking = true,
     completion = {
       sources = { "files" },
     },
@@ -282,6 +284,8 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_transcript_leave) == "boolean",
     "ui.scroll_on_transcript_leave must be boolean")
   assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
+  assert(type(opts.ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
+  assert(type(opts.ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
   assert(opts.ui.completion == false or type(opts.ui.completion) == "table",
     "ui.completion must be false or a table")
   if opts.ui.completion then

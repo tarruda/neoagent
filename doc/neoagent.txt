@@ -159,6 +159,8 @@ The important options are: >lua
       scroll_on_submit = true,
       scroll_on_transcript_leave = true,
       scroll_on_reopen = true,
+      wrap_cards = false,
+      show_thinking = true,
       completion = {
         sources = { "files" },
       },
@@ -836,13 +838,19 @@ mode, and the transcript supports normal search, motions, Visual selection,
 and yank. Set `ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
 `ui.scroll_on_reopen` to control automatic scrolling.
 
-Assistant text renders Markdown, and thinking uses a muted italic style. The
-footer displays context usage when the selected Model declares a
-`context_window`. A Unicode outline follows the card beneath the cursor while
-the transcript is focused. The configured `card_details` mapping opens that
-card's complete content in a scrollable, read-only floating window. Shell
-details include the complete command and all output retained by the tool
-result. Ctrl-C closes the details window and returns to the transcript.
+Assistant text renders Markdown, and thinking uses a muted italic style. Set
+`ui.show_thinking = false` to omit thinking traces from the transcript while
+retaining them in the Session and model context. The footer displays context
+usage when the selected Model declares a `context_window`.
+
+Card lines are clipped to the visible transcript width with `...` by default
+and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
+show complete card lines with soft wrapping. A Unicode outline follows the card
+beneath the cursor while the transcript is focused. The configured
+`card_details` mapping opens that card's complete content in a scrollable,
+read-only floating window. Shell details include the complete command and all
+output retained by the tool result. Ctrl-C closes the details window and returns
+to the transcript.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response

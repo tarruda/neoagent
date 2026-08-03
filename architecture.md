@@ -460,9 +460,13 @@ The Window:
 The passive View consumes Controller snapshots and updates and invokes callbacks
 supplied by the Window. Its replaceable interface keeps presentation independent
 from the model and agent loop. The bundled renderer produces compact transcript
-cards and full card content from the same block values. The View resolves the
-card beneath the focused transcript cursor, draws its outline in a presentation
-namespace, and owns the read-only floating details buffer and window.
+cards and full card content from the same block values. Transcript cards clip
+lines at the current visible width by default and rebuild after layout changes;
+configured card wrapping presents their complete lines. The View can omit
+thinking blocks while the Controller and Session retain complete messages. The
+View resolves the card beneath the focused transcript cursor, draws its outline
+in a presentation namespace, and owns the read-only floating details buffer and
+window.
 
 An optional dialog source lets an executor inject a lifetime-scoped
 `ctx.dialog` capability and publish bounded asynchronous requests to a Window.

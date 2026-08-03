@@ -262,7 +262,9 @@ function M:_message(message)
   elseif message.role == "assistant" then
     for _, content in ipairs(message.content or {}) do
       if content.type == "thinking" then
-        self:_add_block({ kind = "thinking", text = content.thinking or "" })
+        if self.config.show_thinking ~= false then
+          self:_add_block({ kind = "thinking", text = content.thinking or "" })
+        end
       elseif content.type == "text" then
         self:_add_block({ kind = "assistant", text = content.text or "" })
       elseif content.type == "toolCall" then
@@ -328,16 +330,18 @@ function M:apply(event)
     block.text = block.text .. (event.text or "")
     block.dirty = true
   elseif event.type == "thinking_delta" then
-    self.live_thinkings = self.live_thinkings or {}
-    local key = event.index ~= nil and tostring(event.index) or "default"
-    local block = self.live_thinkings[key]
-    if not block then
-      block = self:_add_block({ kind = "thinking", text = "" })
-      self.live_thinkings[key] = block
-      if key == "default" then self.live_thinking = block end
+    if self.config.show_thinking ~= false then
+      self.live_thinkings = self.live_thinkings or {}
+      local key = event.index ~= nil and tostring(event.index) or "default"
+      local block = self.live_thinkings[key]
+      if not block then
+        block = self:_add_block({ kind = "thinking", text = "" })
+        self.live_thinkings[key] = block
+        if key == "default" then self.live_thinking = block end
+      end
+      block.text = block.text .. (event.text or "")
+      block.dirty = true
     end
-    block.text = block.text .. (event.text or "")
-    block.dirty = true
   elseif event.type == "tool_call_delta" then
     local key = self.response .. ":" .. tostring(event.index)
     local block = self.pending_calls[key]
@@ -369,7 +373,7 @@ function M:apply(event)
             self.live_texts[key] = block
             if key == "default" then self.live_text = block end
           end
-        elseif content.type == "thinking" then
+        elseif content.type == "thinking" and self.config.show_thinking ~= false then
           self.live_thinkings = self.live_thinkings or {}
           local key = content.index ~= nil and tostring(content.index) or "default"
           local block = self.live_thinkings[key]

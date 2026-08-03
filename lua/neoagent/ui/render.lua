@@ -245,7 +245,69 @@ local function segments(parts)
   return text, spans
 end
 
-local function card(content, background)
+local function fit_card_line(text, width)
+  local available = width + 2
+  if vim.fn.strdisplaywidth(" " .. text .. " ") <= available then return text end
+  local ellipsis = string.rep(".", math.min(3, width))
+  local characters = vim.fn.strchars(text)
+  local low, high = 0, characters
+  while low < high do
+    local count = math.floor((low + high + 1) / 2)
+    local prefix = vim.fn.strcharpart(text, 0, count)
+    if vim.fn.strdisplaywidth(" " .. prefix .. ellipsis .. " ") <= available then
+      low = count
+    else
+      high = count - 1
+    end
+  end
+  local prefix = vim.fn.strcharpart(text, 0, low)
+  return prefix .. ellipsis, #prefix
+end
+
+local function truncate_card_lines(content, width)
+  width = math.max(1, width)
+  local truncated = {}
+  for row, line in ipairs(content.lines) do
+    local fitted, prefix_length = fit_card_line(line, width)
+    if prefix_length then
+      content.lines[row] = fitted
+      truncated[row - 1] = {
+        prefix_length = prefix_length,
+        end_col = #fitted,
+      }
+    end
+  end
+  if not next(truncated) then return end
+
+  local highlights = {}
+  for _, span in ipairs(content.highlights) do
+    local truncation = truncated[span.row]
+    if not truncation then
+      highlights[#highlights + 1] = span
+    elseif span.col < truncation.prefix_length then
+      highlights[#highlights + 1] = {
+        row = span.row,
+        col = span.col,
+        end_col = math.min(span.end_col, truncation.prefix_length),
+        group = span.group,
+        priority = span.priority,
+      }
+    end
+  end
+  for row, truncation in pairs(truncated) do
+    highlights[#highlights + 1] = {
+      row = row,
+      col = truncation.prefix_length,
+      end_col = truncation.end_col,
+      group = "NeoagentMuted",
+      priority = 120,
+    }
+  end
+  content.highlights = highlights
+end
+
+local function card(content, background, width)
+  if width then truncate_card_lines(content, width) end
   local result = rendered()
   add_line(result, "", nil, background)
   for row, line in ipairs(content.lines) do
@@ -705,7 +767,11 @@ end
 
 function M.block(self, block)
   local content, background = card_content(self, block)
-  if content then return card(content, background) end
+  if content then
+    local width
+    if self.config.wrap_cards ~= true then width = self:_content_width() end
+    return card(content, background, width)
+  end
   if block.kind == "assistant" then
     return prose(markdown.render(block.text, { width = self:_content_width() }))
   elseif block.kind == "thinking" then
