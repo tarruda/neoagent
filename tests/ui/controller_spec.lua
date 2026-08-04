@@ -1286,6 +1286,53 @@ describe("neoagent default controller", function()
     assert.is_true(vim.bo[buffer].modified)
   end)
 
+  it("rebuilds tool state from a resumed Session conversation", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({
+      directory = directory,
+      cwd = vim.fn.getcwd(),
+    })
+    local plan = { explanation = "Restored from history", plan = {
+      { step = "Resume the plan", status = "in_progress" },
+    } }
+    assert(store:append({ role = "user", content = "continue", timestamp = 1 }))
+    assert(store:append({
+      role = "assistant",
+      content = { {
+        type = "toolCall", id = "plan", name = "update_plan",
+        arguments = plan,
+      } },
+      timestamp = 2,
+    }))
+    assert(store:append({
+      role = "toolResult", toolCallId = "plan", toolName = "update_plan",
+      content = { { type = "text", text = "Plan updated" } },
+      details = plan, timestamp = 3,
+    }))
+
+    local tool = require("neoagent.tools.update_plan").new()
+    setup_model(fake_model.new({}), {
+      persistence = { enabled = true, directory = directory },
+      tools = { tool },
+    })
+    assert(neoagent.resume(store:metadata().path))
+    local resumed_id = neoagent._state().session_id
+    assert.are.same(plan, tool.current({ session_id = resumed_id }))
+    assert(neoagent.open())
+    assert(vim.wait(1000, function()
+      local lines = vim.api.nvim_buf_get_lines(
+        current_view().transcript_buf, 0, -1, false)
+      return table.concat(lines, "\n"):find("Updated Plan", 1, true) ~= nil
+    end))
+
+    assert(neoagent.new_session())
+    local fresh_id = neoagent._state().session_id
+    assert.are_not.equal(resumed_id, fresh_id)
+    assert.is_nil(tool.current({ session_id = fresh_id }))
+    assert.are.same(plan, tool.current({ session_id = resumed_id }))
+  end)
+
   it("resumes sessions, closes interrupted tool calls, and controls an active interaction", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory

@@ -407,6 +407,60 @@ describe("neoagent.ui", function()
     assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
   end)
 
+  it("renders successful update_plan calls like Codex todo lists", function()
+    local result = view(
+      { position = "center", width = 44 },
+      { require("neoagent.tools.update_plan").new() })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "plan", name = "update_plan", arguments = {
+          explanation = "Implement in three focused phases.",
+          plan = {
+            { step = "Inspect Codex behavior", status = "completed" },
+            { step = "Add the optional tool", status = "in_progress" },
+            { step = "Verify the UI", status = "pending" },
+          },
+        },
+      } } },
+      { role = "toolResult", toolCallId = "plan", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Updated Plan", 1, true) ~= nil
+    end))
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    assert.are.same({
+      " • Updated Plan",
+      "   └ Implement in three focused phases.",
+      "     ✔ Inspect Codex behavior",
+      "     □ Add the optional tool",
+      "     □ Verify the UI",
+      "",
+    }, lines)
+    assert.not_matches("Plan updated", text(result))
+    assert.not_matches("update_plan", text(result))
+    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
+
+    local function groups(row)
+      local found = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace, { row, 0 }, { row, -1 },
+        { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then found[mark[4].hl_group] = true end
+      end
+      return found
+    end
+    assert.is_true(groups(0).NeoagentMarkdownBold)
+    assert.is_true(groups(2).NeoagentMarkdownStrike)
+    assert.is_true(groups(3).NeoagentAccent)
+    assert.is_true(groups(3).NeoagentMarkdownBold)
+    assert.is_true(groups(4).NeoagentMuted)
+  end)
+
   it("renders shell ANSI colors and leaves other escapes visible", function()
     local terminal_red = vim.g.terminal_color_1
     vim.g.terminal_color_1 = "#123456"

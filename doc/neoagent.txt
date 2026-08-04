@@ -731,6 +731,25 @@ Custom compositions can add the documentation tool directly with: >lua
   require("neoagent.tools.read_agent_documentation").new()
 <
 
+The Codex-compatible `update_plan` tool is opt-in. Add it to the coding preset
+with: >lua
+
+  local tools = require("neoagent.tools").coding()
+  tools[#tools + 1] = require("neoagent.tools").update_plan()
+  require("neoagent").setup({ tools = tools })
+<
+
+`update_plan` accepts an optional explanation and a complete list of
+`{ step, status }` items, where status is `pending`, `in_progress`, or
+`completed`. It returns `Plan updated` and renders successful calls as a Codex
+checklist. Each tool instance tracks current plans by an opaque Session ID and
+reconstructs them from the latest successful call on the active conversation
+path. `tool.current({ session_id = id })` returns a copy for integrations that
+receive the ID through execution or `on_messages`. Session persistence carries
+the call and result, so resumed sessions and branch changes restore the derived
+plan. `require("neoagent.tools").all()` includes the tool; the default coding
+preset excludes it.
+
 Neoagent integrations are ordinary Lua modules loaded explicitly by Neovim
 configuration. They can construct independent Controllers with `new()`, attach
 them to a shared Window with `new_window()`, and install that Window with
@@ -1069,9 +1088,10 @@ timed-out or cancelled processes from TERM to KILL, and returns `code`,
 
 Bundled presets: >lua
 
-  require("neoagent.tools").coding()    -- read/write/edit/shell/Neoagent docs
-  require("neoagent.tools").read_only() -- read/grep/find
-  require("neoagent.tools").all()
+  require("neoagent.tools").coding()     -- read/write/edit/shell/Neoagent docs
+  require("neoagent.tools").read_only()  -- read/grep/find
+  require("neoagent.tools").update_plan() -- Codex-compatible plan tool
+  require("neoagent.tools").all()        -- every bundled tool
 <
 File tools operate on disk, never loaded buffers.
 ImageMagick transformations stream image bytes through stdin and stdout and

@@ -271,6 +271,12 @@ describe("neoagent shared sandbox contract", function()
           path = "nested",
           limit = 20,
         }),
+        tool_call("plan", "update_plan", {
+          explanation = "Sandboxed tool execution",
+          plan = {
+            { step = "Run every bundled tool", status = "completed" },
+          },
+        }),
         tool_call("documentation", "read_agent_documentation", {}),
         tool_call("image", "read_file", { path = "image.png" }),
       }
@@ -298,6 +304,7 @@ describe("neoagent shared sandbox contract", function()
         shell = true,
         grep = true,
         find = true,
+        plan = true,
         documentation = true,
         image = true,
       }) do
@@ -310,6 +317,7 @@ describe("neoagent shared sandbox contract", function()
       assert.matches("beta", text(results.read))
       assert.matches("search.txt", text(results.grep), 1, true)
       assert.matches("found.txt", text(results.find), 1, true)
+      assert.are.equal("Plan updated", text(results.plan))
       assert.matches("# Neoagent configuration", text(results.documentation))
       assert.are.equal(image,
         vim.base64.decode(results.image.content[2].data))

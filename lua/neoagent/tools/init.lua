@@ -8,6 +8,7 @@ local modules = {
   grep = "neoagent.tools.grep",
   find = "neoagent.tools.find",
   read_agent_documentation = "neoagent.tools.read_agent_documentation",
+  update_plan = "neoagent.tools.update_plan",
 }
 
 local function tools(names, options)
@@ -34,10 +35,14 @@ function M.read_only()
   return tools({ "read_file", "grep", "find" })
 end
 
+function M.update_plan()
+  return tools({ "update_plan" })[1]
+end
+
 function M.all(options)
   return tools({
     "read_file", "write_file", "edit_file", "shell", "grep", "find",
-    "read_agent_documentation",
+    "read_agent_documentation", "update_plan",
   }, options)
 end
 

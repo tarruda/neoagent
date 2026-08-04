@@ -44,9 +44,128 @@ describe("neoagent bundled tools", function()
     }, vim.tbl_map(function(t) return t.name end, coding))
     assert.are.same({ "read_file", "grep", "find" }, vim.tbl_map(function(t) return t.name end, read_only))
     assert.are.same({
-      "read_file", "write_file", "edit_file", "shell", "grep", "find", "read_agent_documentation",
+      "read_file", "write_file", "edit_file", "shell", "grep", "find",
+      "read_agent_documentation", "update_plan",
     }, vim.tbl_map(function(t) return t.name end, tools.all()))
     assert.are_not.equal(coding[1], tools.coding()[1])
+  end)
+
+  it("exposes update_plan without adding it to the default coding preset", function()
+    local tools = require("neoagent.tools")
+    assert.is_false(vim.tbl_contains(
+      vim.tbl_map(function(tool) return tool.name end, tools.coding()),
+      "update_plan"))
+    assert.are.equal("update_plan", tools.update_plan().name)
+    assert.are_not.equal(tools.update_plan(), tools.update_plan())
+    assert.is_true(vim.tbl_contains(
+      vim.tbl_map(function(tool) return tool.name end, tools.all()),
+      "update_plan"))
+  end)
+
+  it("matches Codex update_plan payloads and results", function()
+    local tool = require("neoagent.tools.update_plan")
+    assert.matches("Updates the task plan", tool.description)
+    assert.are.same({ "plan" }, tool.input_schema.required)
+    assert.are.same({ "step", "status" },
+      tool.input_schema.properties.plan.items.required)
+    assert.are.same({ "pending", "in_progress", "completed" },
+      tool.input_schema.properties.plan.items.properties.status.enum)
+    assert.is_false(tool.input_schema.additionalProperties)
+    assert.is_false(tool.input_schema.properties.plan.items.additionalProperties)
+
+    local arguments = {
+      explanation = "Implementation is underway.",
+      plan = {
+        { step = "Inspect Codex behavior", status = "completed" },
+        { step = "Add the optional tool", status = "in_progress" },
+        { step = "Verify the UI", status = "pending" },
+      },
+    }
+    local result = tool.execute(arguments)
+    assert.are.equal("Plan updated", result.content[1].text)
+    assert.are.same(arguments, result.details)
+    assert.are_not.equal(arguments, result.details)
+    arguments.plan[1].step = "mutated"
+    assert.are.equal("Inspect Codex behavior", result.details.plan[1].step)
+
+    assert.are.same({}, tool.execute({ plan = {} }).details.plan)
+    assert.has_no_error(function()
+      tool.execute({ plan = {
+        { step = "one", status = "in_progress" },
+        { step = "two", status = "in_progress" },
+      } })
+    end)
+  end)
+
+  it("derives independent current plans from Session conversations", function()
+    local tool = require("neoagent.tools.update_plan").new()
+    local first_session, second_session = {}, {}
+    local first = { plan = {
+      { step = "First session", status = "in_progress" },
+    } }
+    local second = { explanation = "Restored", plan = {
+      { step = "Old state", status = "completed" },
+      { step = "Latest state", status = "pending" },
+    } }
+
+    tool.on_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "first", name = "update_plan",
+        arguments = first,
+      } } },
+      { role = "toolResult", toolCallId = "first", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } } },
+    }, { session_id = first_session })
+    assert.are.same(first, tool.current({ session_id = first_session }))
+    assert.is_nil(tool.current({ session_id = second_session }))
+
+    tool.on_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "old", name = "update_plan",
+        arguments = first,
+      } } },
+      { role = "toolResult", toolCallId = "old", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } } },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "failed", name = "update_plan",
+        arguments = { plan = { { step = "Ignored", status = "pending" } } },
+      } } },
+      { role = "toolResult", toolCallId = "failed", toolName = "update_plan",
+        isError = true, content = { { type = "text", text = "denied" } } },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "latest", name = "update_plan",
+        arguments = second,
+      } } },
+      { role = "toolResult", toolCallId = "latest", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } },
+        details = second },
+    }, { session_id = second_session })
+
+    assert.are.same(first, tool.current({ session_id = first_session }))
+    assert.are.same(second, tool.current({ session_id = second_session }))
+    local copy = tool.current({ session_id = second_session })
+    copy.plan[2].step = "mutated"
+    assert.are.equal("Latest state",
+      tool.current({ session_id = second_session }).plan[2].step)
+
+    tool.on_messages({}, { session_id = second_session })
+    assert.is_nil(tool.current({ session_id = second_session }))
+  end)
+
+  it("rejects update_plan payloads that Codex cannot deserialize", function()
+    local tool = require("neoagent.tools.update_plan")
+    for _, arguments in ipairs({
+      {},
+      { plan = "pending" },
+      { plan = {}, explanation = 1 },
+      { plan = {}, unknown = true },
+      { plan = { { status = "pending" } } },
+      { plan = { { step = "missing status" } } },
+      { plan = { { step = "invalid", status = "cancelled" } } },
+      { plan = { { step = "extra", status = "pending", unknown = true } } },
+    }) do
+      assert.has_error(function() tool.execute(arguments) end)
+    end
   end)
 
   it("uses injected filesystem and process operations", function()
@@ -231,6 +350,8 @@ describe("neoagent bundled tools", function()
     assert.matches("Choose the smallest useful layer", text)
     assert.matches("Independent Controller example", text)
     assert.matches("Custom tool and execution policy", text)
+    assert.matches("update_plan", text)
+    assert.matches("resolve_tool", text)
     assert.matches("Custom View", text)
     assert.is_truthy(text:find("Active Neovim configuration: " .. init, 1, true))
     local root = text:match("Plugin root: ([^\n]+)")

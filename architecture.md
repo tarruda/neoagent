@@ -123,6 +123,11 @@ The default coding tools live under `lua/neoagent/tools/`:
 - `shell`
 - `read_agent_documentation`
 
+The Codex-compatible `update_plan` tool is an opt-in bundled composition. It
+stores successful snapshots in tool results, indexes derived current state by
+an opaque per-Session identity, and reconstructs that state by scanning the
+active conversation path after resume or branch navigation.
+
 Tools may define `on_messages(messages, ctx)` for Controller compositions. The
 Controller supplies complete active-conversation copies and the same opaque
 `ctx.session_id` that execution exposes as `ctx.context.session_id`. This hook

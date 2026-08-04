@@ -93,6 +93,10 @@ local function documentation()
     "Passing `tools` selects exactly those tools. The bundled coding preset contains read, "
       .. "write, edit, shell, and this documentation "
       .. "tool. The read-only preset remains read, grep, and find.",
+    "The Codex-compatible `update_plan` tool is opt-in. Append "
+      .. "`require(\"neoagent.tools\").update_plan()` to a coding tool list. "
+      .. "It derives current state per Session from the latest successful call in "
+      .. "the conversation and supplies its own bundled-View presentation callback.",
     "Tools may define `on_messages(messages, { session_id = ... })` to derive "
       .. "per-Session state from complete active-conversation copies. The opaque ID "
       .. "also appears at `ctx.context.session_id` during execution.",
