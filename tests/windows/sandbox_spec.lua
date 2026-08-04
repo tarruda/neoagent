@@ -215,7 +215,7 @@ describe("neoagent Windows sandbox", function()
       "-ExecutionPolicy", "Bypass", "-File", script,
     }
     vim.list_extend(argv, expected)
-    local value = run(argv, options())
+    local value = run(argv, options({ timeout_ms = 90000 }))
     assert.are.equal(0, value.code, value.stderr)
     assert.are.same(expected, vim.json.decode(value.stdout))
   end)

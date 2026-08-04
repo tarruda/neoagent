@@ -95,6 +95,24 @@ describe("neoagent bundled tools", function()
         { step = "two", status = "in_progress" },
       } })
     end)
+
+    local presentation = assert(tool.render({
+      state = "success",
+      arguments = {
+        explanation = "Implementation is underway.",
+        plan = {},
+      },
+      width = 20,
+    }))
+    assert.is_false(presentation.card)
+    assert.are.same({
+      " • Updated Plan",
+      "   └ Implementation",
+      "     is underway.",
+      "     (no steps provided)",
+    }, vim.tbl_map(function(line)
+      return table.concat(vim.tbl_map(function(segment) return segment.text end, line))
+    end, presentation.lines))
   end)
 
   it("derives independent current plans from Session conversations", function()
@@ -154,11 +172,14 @@ describe("neoagent bundled tools", function()
 
   it("rejects update_plan payloads that Codex cannot deserialize", function()
     local tool = require("neoagent.tools.update_plan")
+    assert.has_error(function() tool.execute(nil) end)
     for _, arguments in ipairs({
+      { "array" },
       {},
       { plan = "pending" },
       { plan = {}, explanation = 1 },
       { plan = {}, unknown = true },
+      { plan = { { "array item" } } },
       { plan = { { status = "pending" } } },
       { plan = { { step = "missing status" } } },
       { plan = { { step = "invalid", status = "cancelled" } } },

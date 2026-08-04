@@ -407,6 +407,63 @@ describe("neoagent.ui", function()
     assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
   end)
 
+  it("falls back safely from malformed semantic presentations", function()
+    local specifications = {
+      { name = "invalid-lines", render = function()
+        return { lines = "invalid" }
+      end },
+      { name = "invalid-line", render = function()
+        return { lines = { "invalid" } }
+      end },
+      { name = "invalid-segment", render = function()
+        return { lines = { { "invalid" } } }
+      end },
+      { name = "invalid-style", render = function()
+        return { lines = { { { text = "invalid", style = 1 } } } }
+      end },
+      { name = "unknown-style", render = function()
+        return { lines = { { { text = "invalid", style = "unknown" } } } }
+      end },
+      { name = "unstyled", render = function()
+        return { card = false, lines = { { { text = "unstyled presentation" } } } }
+      end },
+    }
+    local tools, calls, messages = {}, {}, {}
+    for _, specification in ipairs(specifications) do
+      tools[#tools + 1] = specification
+      calls[#calls + 1] = {
+        type = "toolCall",
+        id = specification.name,
+        name = specification.name,
+        arguments = {},
+      }
+      messages[#messages + 1] = {
+        role = "toolResult",
+        toolCallId = specification.name,
+        toolName = specification.name,
+        isError = false,
+        content = { { type = "text", text = "fallback " .. specification.name } },
+      }
+    end
+    table.insert(messages, 1, { role = "assistant", content = calls })
+
+    local result = view({ position = "center" }, tools)
+    result:set_messages(messages)
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("fallback unknown-style", 1, true) ~= nil
+    end))
+    local transcript = text(result)
+    for _, specification in ipairs(specifications) do
+      if specification.name ~= "unstyled" then
+        assert.is_not_nil(transcript:find(
+          "fallback " .. specification.name, 1, true))
+      end
+    end
+    assert.matches("unstyled presentation", transcript)
+    assert.not_matches("fallback unstyled", transcript)
+  end)
+
   it("renders successful update_plan calls like Codex todo lists", function()
     local result = view(
       { position = "center", width = 44 },
@@ -545,6 +602,15 @@ describe("neoagent.ui", function()
       arguments_delta = [=[{"command":"printf 'one\ntwo'"}]=],
     })
     assert(vim.wait(1000, function() return text(result):find("$ printf 'one\\ntwo'", 1, true) ~= nil end))
+
+    local invalid = [=[$ bad\q1234567]=]
+    result:apply({
+      type = "tool_call_delta", index = 3, name = "shell",
+      arguments_delta = [=[{"command":"bad\q1234567]=],
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find(invalid, 1, true) ~= nil
+    end))
   end)
 
   it("reconstructs history, reports failures, and docks in place", function()

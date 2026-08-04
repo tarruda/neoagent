@@ -105,6 +105,36 @@ describe("neoagent default controller", function()
     assert.are.equal(4, synced[captured[2].session_id])
   end)
 
+  it("isolates tool session hook failures", function()
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message = message, level = level }
+    end
+    setup_model(fake_model.new({}), { tools = { {
+      name = "broken_sync",
+      description = "",
+      input_schema = {
+        type = "object",
+        properties = {},
+        additionalProperties = false,
+      },
+      execute = function()
+        return { content = { { type = "text", text = "unused" } } }
+      end,
+      on_messages = function() error("cannot sync") end,
+    } } })
+    local ok, session = pcall(neoagent.new_session)
+    vim.notify = original_notify
+
+    assert.is_true(ok)
+    assert.is_table(session)
+    assert.is_true(#notifications > 0)
+    assert.matches("tool broken_sync failed to read the session: .*cannot sync",
+      notifications[1].message)
+    assert.are.equal(vim.log.levels.ERROR, notifications[1].level)
+  end)
+
   it("queues steering submissions one at a time during an active Run", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "first" } }) },
