@@ -268,8 +268,11 @@ attached consumer.
 
 The `view` option is a factory receiving `config`, `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
-`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`, and
-`on_resume_session`, `on_dialog_action`, and `on_dialog_dismiss`. A View used
+`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
+`on_resume_session`, `resolve_tool`, `on_dialog_action`, and
+`on_dialog_dismiss`. `resolve_tool(name)` returns the active Controller's tool
+with that name, allowing a custom View to consume optional tool presentation
+callbacks. A View used
 by a Window with a dialog source implements `set_dialog(snapshot)`. The
 factory returns a passive View with `open`, `close`,
 `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
@@ -723,7 +726,7 @@ without the documentation tool: >lua
 
 Use `tools = {}` for a tool-free chat composition.
 
-Custom compositions can add the tool directly with: >lua
+Custom compositions can add the documentation tool directly with: >lua
 
   require("neoagent.tools.read_agent_documentation").new()
 <
@@ -1036,6 +1039,20 @@ text or base64 images. Text blocks contain valid UTF-8 strings. The agent turns
 malformed tool results into error tool results. Replace or decorate
 `execute_tool(tool, arguments, ctx)` to add approval, logging, a native
 sandbox, or subagent behavior.
+
+A tool may define `on_messages(messages, ctx)`. Controllers call it with a
+copy of the complete active conversation after Session activation and message
+changes. `ctx.session_id` is the same opaque per-Session table available at
+`execute()` time as `ctx.context.session_id`. Tools can key weak in-memory
+state by that value and derive it entirely from conversation messages. Direct
+`agent.run()` remains Session-independent and does not call this hook.
+
+A tool may also define a bundled-View `render(opts)` callback. `opts` contains
+`arguments`, the current `result`, `state`, visible `width`, and `full`.
+Return `{ card?, lines = {...} }`, where each line is a list of
+`{ text, style? }` segments. `style` is one or more of `accent`, `bold`,
+`error`, `italic`, `muted`, and `strike`; `card` defaults to true. Callback
+errors and malformed presentations use the ordinary tool card.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.

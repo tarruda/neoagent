@@ -307,6 +307,28 @@ function M.from_config(options, runtime)
     return session_tree.messages(path, true)
   end
 
+  local function sync_tools()
+    if not state.session_id then return end
+    local messages = state.session and state.session:messages() or {}
+    local hook_context = { session_id = state.session_id }
+    for _, tool in ipairs(state.toolset.tools) do
+      if type(tool.on_messages) == "function" then
+        local ok, err = pcall(
+          tool.on_messages, util.copy(messages), hook_context)
+        if not ok then
+          notify("tool " .. tostring(tool.name)
+            .. " failed to read the session: " .. tostring(err),
+            vim.log.levels.ERROR)
+        end
+      end
+    end
+  end
+
+  local function publish_messages(messages)
+    sync_tools()
+    publish({ type = "messages", messages = messages })
+  end
+
   local function ensure_model()
     require_workspace_trust()
     if state.model then
@@ -570,7 +592,7 @@ function M.from_config(options, runtime)
         if result.ok then
           local projected = assert(state.session:context_messages())
           result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
-          publish({ type = "messages", messages = transcript_messages(state.session) })
+          publish_messages(transcript_messages(state.session))
         end
         state.run = nil
         state.status = "idle"
@@ -671,6 +693,7 @@ function M.from_config(options, runtime)
           state.provider_status = type(event.text) == "string" and event.text or nil
           update_context()
         elseif event.type == "message_end" then
+          sync_tools()
           update_context()
         end
         if event.type == "message_end" then
@@ -694,7 +717,7 @@ function M.from_config(options, runtime)
           local parent = last.parentId == vim.NIL and nil or last.parentId
           local moved, move_err = state.session:move_to(parent)
           if not moved then error(move_err, 0) end
-          publish({ type = "messages", messages = transcript_messages(state.session) })
+          publish_messages(transcript_messages(state.session))
         end
       end
 
@@ -767,7 +790,7 @@ function M.from_config(options, runtime)
         state.run = run
         state.status = "running"
         state.pending_events = {}
-        publish({ type = "messages", messages = transcript_messages(state.session) })
+        publish_messages(transcript_messages(state.session))
         update_context()
         return run
       end
@@ -888,7 +911,7 @@ function M.from_config(options, runtime)
       end
     end
     activate_session(session)
-    publish({ type = "messages", messages = {} })
+    publish_messages({})
     update_context()
     return session
   end
@@ -938,7 +961,7 @@ function M.from_config(options, runtime)
     state.live_usage, state.provider_status = nil, nil
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     restore_session_preferences(store:state())
-    publish({ type = "messages", messages = transcript_messages(session) })
+    publish_messages(transcript_messages(session))
     update_context()
     return session
   end
@@ -968,7 +991,7 @@ function M.from_config(options, runtime)
     local stored = assert(state.session:state())
     restore_session_preferences(stored)
     state.store_seeded = stored.model ~= nil
-    publish({ type = "messages", messages = transcript_messages(state.session) })
+    publish_messages(transcript_messages(state.session))
     update_context()
     return true
   end
@@ -1026,7 +1049,7 @@ function M.from_config(options, runtime)
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     state.live_usage, state.provider_status = nil, nil
     restore_session_preferences(store:state())
-    publish({ type = "messages", messages = transcript_messages(session) })
+    publish_messages(transcript_messages(session))
     update_context()
     return session, selected_text
   end
@@ -1343,6 +1366,7 @@ function M.from_config(options, runtime)
 
   function controller:snapshot()
     local messages = state.session and transcript_messages(state.session) or {}
+    sync_tools()
     return {
       messages = messages,
       context = context(),
@@ -1368,6 +1392,9 @@ function M.from_config(options, runtime)
     local selected = copy_toolset(value)
     local previous = copy_toolset(state.toolset)
     state.toolset = selected
+    if state.session then
+      publish_messages(transcript_messages(state.session))
+    end
     return previous
   end
 

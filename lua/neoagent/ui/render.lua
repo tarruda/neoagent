@@ -409,6 +409,75 @@ local function partial_arguments(raw)
   return result
 end
 
+local presentation_styles = {
+  accent = "NeoagentAccent",
+  bold = "NeoagentMarkdownBold",
+  error = "NeoagentError",
+  italic = "NeoagentMarkdownItalic",
+  muted = "NeoagentMuted",
+  strike = "NeoagentMarkdownStrike",
+}
+
+local function custom_tool_content(self, block, args, options)
+  if type(self.resolve_tool) ~= "function" then return nil end
+  local name = block.name or (block.call and block.call.name)
+    or (block.message and block.message.toolName)
+  local resolved, tool = pcall(self.resolve_tool, name)
+  if not resolved or type(tool) ~= "table"
+      or type(tool.render) ~= "function" then return nil end
+  local ok, presentation = pcall(tool.render, {
+    arguments = util.copy(args),
+    result = util.copy(block.message or block.update),
+    state = block.state,
+    width = options.width or self:_content_width(),
+    full = options.full == true,
+  })
+  if not ok or type(presentation) ~= "table"
+      or not util.is_list(presentation.lines) then
+    return nil
+  end
+
+  local content = rendered()
+  for _, segments_value in ipairs(presentation.lines) do
+    if type(segments_value) ~= "table" or not util.is_list(segments_value) then
+      return nil
+    end
+    local line, spans = "", {}
+    for _, segment in ipairs(segments_value) do
+      if type(segment) ~= "table" or type(segment.text) ~= "string" then
+        return nil
+      end
+      local start = #line
+      line = line .. segment.text
+      local styles
+      if segment.style == nil then
+        styles = {}
+      elseif type(segment.style) == "string" then
+        styles = { segment.style }
+      elseif type(segment.style) == "table" and util.is_list(segment.style) then
+        styles = segment.style
+      else
+        return nil
+      end
+      for index, style in ipairs(styles) do
+        local group = presentation_styles[style]
+        if not group then return nil end
+        spans[#spans + 1] = {
+          col = start,
+          end_col = #line,
+          group = group,
+          priority = 100 + index,
+        }
+      end
+    end
+    add_line(content, line, spans)
+  end
+  local background = block.state == "error" and "NeoagentToolErrorBackground"
+    or block.state == "success" and "NeoagentToolSuccessBackground"
+    or "NeoagentToolPendingBackground"
+  return content, background, presentation.card ~= false
+end
+
 local tool_labels = {
   read = "read",
   read_file = "read",
@@ -752,6 +821,9 @@ local function card_content(self, block, options)
 
   local args = block.call and block.call.arguments or partial_arguments(block.raw)
   if type(args) ~= "table" then args = {} end
+  local custom, custom_background, custom_card =
+    custom_tool_content(self, block, args, options)
+  if custom then return custom, custom_background, custom_card end
   local content = rendered()
   local title, spans = tool_title(
     block.name or (block.call and block.call.name), args, options.full)
@@ -766,8 +838,12 @@ local function card_content(self, block, options)
 end
 
 function M.block(self, block)
-  local content, background = card_content(self, block)
+  local content, background, as_card = card_content(self, block)
   if content then
+    if as_card == false then
+      add_line(content, "")
+      return content
+    end
     local width
     if self.config.wrap_cards ~= true then width = self:_content_width() end
     return card(content, background, width)

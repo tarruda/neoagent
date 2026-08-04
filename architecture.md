@@ -123,6 +123,18 @@ The default coding tools live under `lua/neoagent/tools/`:
 - `shell`
 - `read_agent_documentation`
 
+Tools may define `on_messages(messages, ctx)` for Controller compositions. The
+Controller supplies complete active-conversation copies and the same opaque
+`ctx.session_id` that execution exposes as `ctx.context.session_id`. This hook
+keeps Session ownership above the reusable agent loop: direct `agent.run()`
+neither imports a Session nor interprets tool state.
+
+Tools may also carry a bundled-View `render(opts)` callback. The Window resolves
+the active tool by name, and the View converts its line-and-segment
+presentation into transcript text and highlights. Tool-specific rendering
+therefore stays on the tool value while the View owns Neovim drawing and a
+malformed callback falls back to the generic card.
+
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
 composition can add dialogs, sandboxing, logging, or post-edit checks
 there without changing the tool or core agent loop. The context includes the
@@ -427,7 +439,9 @@ continuations, and tool calls share one selection. Provider retry metadata can
 declare eligibility, delay, and a stricter attempt cap. It retries context
 overflows after compaction, refreshes unmodified buffers after file edits, and
 publishes updates. Focused internal modules calculate context usage and format
-session choices; the Controller owns the mutable run and session state. Message
+session choices; the Controller owns the mutable run and session state. It
+feeds complete active-conversation copies to optional tool state hooks after
+activation, message changes, resume, forks, and branch changes. Message
 updates and snapshots project the latest compaction checkpoint with its
 retained suffix, while the Session tree retains the complete active path. A
 replay removes a failed partial assistant message from the active branch before
@@ -462,7 +476,9 @@ supplied by the Window. Its replaceable interface keeps presentation independent
 from the model and agent loop. The bundled renderer produces compact transcript
 cards and full card content from the same block values. Transcript cards clip
 lines at the current visible width by default and rebuild after layout changes;
-configured card wrapping presents their complete lines. The View can omit
+configured card wrapping presents their complete lines. The Window supplies a
+tool resolver, so the bundled View can consume an optional semantic renderer
+carried by the active tool without recognizing tool names. The View can omit
 thinking blocks while the Controller and Session retain complete messages. The
 View resolves the card beneath the focused transcript cursor, provides
 count-aware previous and next card motions, draws the card outline in a

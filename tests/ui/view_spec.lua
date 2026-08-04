@@ -42,9 +42,14 @@ describe("neoagent.ui", function()
     vim.cmd("silent! only")
   end)
 
-  local function view(overrides)
+  local function view(overrides, tools)
     local ui_config = config.setup({ ui = overrides or {} }).ui
-    local result = ui.new({ config = ui_config })
+    local lookup = {}
+    for _, tool in ipairs(tools or {}) do lookup[tool.name] = tool end
+    local result = ui.new({
+      config = ui_config,
+      resolve_tool = function(name) return lookup[name] end,
+    })
     views[#views + 1] = result
     return result
   end
@@ -360,6 +365,46 @@ describe("neoagent.ui", function()
       if lines[row + 1] == "" and not line_has_background(result, row) then separators = separators + 1 end
     end
     assert.are.equal(1, separators)
+  end)
+
+  it("renders semantic presentations supplied by active tools", function()
+    local tool = {
+      name = "present",
+      render = function(opts)
+        assert.are.equal("value", opts.arguments.label)
+        assert.are.equal("success", opts.state)
+        assert.is_false(opts.full)
+        return {
+          card = false,
+          lines = {
+            {
+              { text = " • ", style = "muted" },
+              { text = "Custom presentation", style = "bold" },
+            },
+            {
+              { text = "   └ ", style = "muted" },
+              { text = "complete", style = { "accent", "italic" } },
+            },
+          },
+        }
+      end,
+    }
+    local result = view({ position = "center" }, { tool })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "present", name = "present",
+        arguments = { label = "value" },
+      } } },
+      { role = "toolResult", toolCallId = "present", toolName = "present",
+        isError = false, content = { { type = "text", text = "hidden" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Custom presentation", 1, true) ~= nil
+    end))
+    assert.not_matches("hidden", text(result))
+    assert.not_matches("label=value", text(result))
+    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
   end)
 
   it("renders shell ANSI colors and leaves other escapes visible", function()

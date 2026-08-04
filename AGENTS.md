@@ -49,6 +49,11 @@ changes.
 - Controllers compose configuration, model selection, Session, Workspace, and
   Run. They publish transcript snapshots and updates while the Session retains
   the complete active branch.
+- Optional Tool `on_messages` hooks derive state from complete active
+  conversation copies keyed by an opaque per-Session identity; the reusable
+  agent loop remains Session-independent. Optional Tool renderers flow
+  through the Window's active-tool resolver, and the bundled View interprets
+  their semantic presentations without matching tool names.
 - Controller Runs remain independent when a shared Window selects another
   Controller. The command-facing default Window is replaceable; custom
   Controllers and Windows must not mutate or depend on it.

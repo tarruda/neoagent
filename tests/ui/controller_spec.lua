@@ -67,6 +67,7 @@ describe("neoagent default controller", function()
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
     })
     local captured = {}
+    local synced = {}
     local tool = {
       name = "inspect",
       description = "",
@@ -77,6 +78,9 @@ describe("neoagent default controller", function()
       },
       execute = function()
         return { content = { { type = "text", text = "inspected" } } }
+      end,
+      on_messages = function(messages, ctx)
+        synced[ctx.session_id] = #messages
       end,
     }
     setup_model(model, {
@@ -91,12 +95,14 @@ describe("neoagent default controller", function()
     assert.are.equal("Neo", captured[1].controller)
     assert.are.equal(vim.fn.getcwd(), captured[1].workspace.cwd)
     assert.is_table(captured[1].session_id)
+    assert.are.equal(4, synced[captured[1].session_id])
 
     assert(neoagent.new_session())
     run = assert(neoagent.send("inspect again"))
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.is_table(captured[2].session_id)
     assert.are_not.equal(captured[1].session_id, captured[2].session_id)
+    assert.are.equal(4, synced[captured[2].session_id])
   end)
 
   it("queues steering submissions one at a time during an active Run", function()

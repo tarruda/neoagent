@@ -514,6 +514,7 @@ function M.new(opts)
     on_resume_session = opts.on_resume_session or function() end,
     on_dialog_action = opts.on_dialog_action or function() end,
     on_dialog_dismiss = opts.on_dialog_dismiss or function() end,
+    resolve_tool = opts.resolve_tool or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     card_namespace = vim.api.nvim_create_namespace(
       "neoagent-card-outline-" .. tostring(vim.uv.hrtime())),

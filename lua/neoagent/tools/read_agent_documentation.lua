@@ -93,6 +93,9 @@ local function documentation()
     "Passing `tools` selects exactly those tools. The bundled coding preset contains read, "
       .. "write, edit, shell, and this documentation "
       .. "tool. The read-only preset remains read, grep, and find.",
+    "Tools may define `on_messages(messages, { session_id = ... })` to derive "
+      .. "per-Session state from complete active-conversation copies. The opaque ID "
+      .. "also appears at `ctx.context.session_id` during execution.",
     "`controller:get_toolset()` returns the active tools and executor. "
       .. "`controller:set_toolset(toolset)` atomically replaces that pair between Runs "
       .. "while `controller:config()` retains construction defaults.",
@@ -146,8 +149,9 @@ local function documentation()
     "Set `view = function(opts) return my_view end`. The factory receives `config`, "
       .. "`window`, `on_submit`, `on_stop`, `on_dequeue_steering`, "
       .. "`on_input_history`, `on_select_history`, `on_cycle_thinking`, "
-      .. "`on_cycle_agent`, `on_select_model`, `on_resume_session`, and "
-      .. "`on_dialog_action` and `on_dialog_dismiss`. A passive "
+      .. "`on_cycle_agent`, `on_select_model`, `on_resume_session`, `resolve_tool`, "
+      .. "`on_dialog_action`, and `on_dialog_dismiss`. `resolve_tool(name)` "
+      .. "exposes optional active-tool rendering callbacks. A passive "
       .. "View implements `open`, `close`, `is_open`, "
       .. "`destroy`, `get_input`, `set_input`, `set_messages`, `set_context`, `apply`, and "
       .. "`finish`; Views used with a dialog source also implement "

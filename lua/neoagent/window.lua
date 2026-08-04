@@ -198,6 +198,11 @@ function M.new(opts)
       on_cycle_agent = function() return window:cycle() end,
       on_select_model = function() return active():select_model() end,
       on_resume_session = function() return active():resume() end,
+      resolve_tool = function(name)
+        for _, tool in ipairs(active():get_toolset().tools) do
+          if tool.name == name then return tool end
+        end
+      end,
       on_dialog_action = function(id, action, input)
         if not opts.dialogs then return nil end
         return opts.dialogs:choose(id, action, input)
