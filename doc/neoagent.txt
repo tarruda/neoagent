@@ -352,7 +352,9 @@ are:
 
 Enter has no trust action. Closing the Neoagent Window leaves the decision
 unresolved and writes no decision. Accepting trust leaves a blocked draft for
-explicit submission; it does not start a Run.
+explicit submission; it does not start a Run. Acceptance immediately re-runs
+the protected Controller's preparation, resolving the configured default model
+so the displayed model matches the configuration before the first send.
 
 The Controller enforces trust before it creates a Session, selects a Model,
 discovers project AGENTS.md or skills, or starts a Run. A blocked operation
@@ -383,11 +385,12 @@ Custom compositions use the same policy and View composition as built-in Neo:
 <
 `compose()` reads the trust path from `opts.workspace_trust.path`, returns a
 View factory and policy, and leaves `opts` unchanged. The same dialog source is
-passed to the composition and Window. `attach_window()` binds prompt activation
-and cancellation behavior to the protected Controller. A caller can pass an
-explicit `path`, `sandbox_status`, `notify`, `store`, or process `session` table
-to `compose()`. `workspace_trust.new()` and `workspace_trust.view()` remain
-available for lower-level compositions.
+passed to the composition and Window. `attach_window()` binds prompt activation,
+cancellation behavior, and post-acceptance Controller preparation to the
+protected Controller. A caller can pass an explicit `path`, `sandbox_status`,
+`notify`, `store`, or process `session` table to `compose()`.
+`workspace_trust.new()` and `workspace_trust.view()` remain available for
+lower-level compositions.
 
 Persistent decisions default to
 `stdpath("state") .. "/neoagent/trust.json"`. Configure the location or disable

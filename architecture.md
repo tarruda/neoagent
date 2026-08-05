@@ -194,8 +194,10 @@ JSON document. Updates create private state paths, acquire a bounded
 same-directory process lock, merge the current document, write a private
 temporary file, and atomically rename it.
 
-Dialog acceptance records either process or persistent trust. Trust dialogs
-carry the protected Controller name. The Window presents a scoped dialog only
+Dialog acceptance records either process or persistent trust and then re-runs
+the protected Controller's preparation so its configured model resolves and the
+published context reflects it immediately. Trust dialogs carry the protected
+Controller name. The Window presents a scoped dialog only
 while that Controller is active, retaining the unresolved request across
 Controller selection. The Cancel action closes the Window through an attached
 callback, while the Window retains its Controller draft. Closing the Window
