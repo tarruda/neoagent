@@ -155,6 +155,30 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal("error", result.message.stopReason)
   end)
 
+  it("reports truncated tool arguments as invalid JSON with the decode error", function()
+    local fake = fake_transport.new({ { chunks = {
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit\",\"arguments\":\"{\\\"path\\\":\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    } } })
+    local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("not valid JSON", result.error.message)
+    assert.is_truthy(result.error.detail)
+  end)
+
+  it("reports array tool arguments as not being a JSON object", function()
+    local fake = fake_transport.new({ { chunks = {
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit\",\"arguments\":\"[]\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    } } })
+    local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("not a JSON object", result.error.message)
+    assert.are.equal("edit", result.error.detail)
+  end)
+
   it("rejects unsupported request option fields", function()
     local model = openai.new({
       provider = "p",
