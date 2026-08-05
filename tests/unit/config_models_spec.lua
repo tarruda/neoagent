@@ -311,12 +311,12 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("novita", provider.auth)
     assert.are.equal("https://api.novita.ai/openai", provider.base_url)
     local available = assert(models.available())
-    assert.is_true(vim.tbl_contains(available, "novita/deepseek/deepseek-v3.2-exp"))
-    assert.is_true(vim.tbl_contains(available, "novita/zai-org/glm-4.6"))
-    assert.are.equal(163840, provider.models["deepseek/deepseek-v3.2-exp"].context_window)
-    assert.are.equal(131072, provider.models["zai-org/glm-4.6"].max_output_tokens)
+    assert.is_true(vim.tbl_contains(available, "novita/moonshotai/kimi-k3"))
+    assert.is_true(vim.tbl_contains(available, "novita/zai-org/glm-5.2"))
+    assert.are.equal(1048576, provider.models["moonshotai/kimi-k3"].context_window)
+    assert.are.equal(131072, provider.models["zai-org/glm-5.2"].max_output_tokens)
 
-    local model = models.resolve("novita", "deepseek/deepseek-v3.2-exp")
+    local model = models.resolve("novita", "zai-org/glm-5.2")
     local request = model._model:_request({
       messages = { { role = "user", content = { { type = "text", text = "hi" } } } },
       tools = {},

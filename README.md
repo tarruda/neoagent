@@ -96,7 +96,7 @@ To use Novita by default, replace `default_model` with:
 ```lua
 default_model = {
   provider = "novita",
-  model = "deepseek/deepseek-v3.2-exp",
+  model = "moonshotai/kimi-k3",
 }
 ```
 
