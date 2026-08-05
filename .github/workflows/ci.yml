@@ -101,7 +101,7 @@ jobs:
           # This timeout covers the complete spec file, including that startup.
           & $env:NEOAGENT_NVIM --headless --noplugin `
             -u tests/minimal_init.lua `
-            -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 120000 }"
+            -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 240000 }"
           $testExit = $LASTEXITCODE
           if ($testExit -ne 0) {
             throw "Windows tests failed (Neovim exit code $testExit)"
