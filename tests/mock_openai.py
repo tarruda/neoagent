@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json
-import signal
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -105,12 +104,6 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 record({"type": "ready", "port": server.server_address[1]})
 
-
-def stop(_signum, _frame):
-    server.shutdown()
-
-
-signal.signal(signal.SIGTERM, stop)
 try:
     server.serve_forever()
 finally:
