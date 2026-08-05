@@ -35,7 +35,7 @@ test-ui:
 # Fresh sandbox identities cold-start PowerShell on hosted Windows runners.
 # This timeout covers the complete spec file, including that startup.
 test-windows:
-	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 120000 }"
+	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/windows { minimal_init = './tests/minimal_init.lua', sequential = true, timeout = 240000 }"
 
 coverage:
 	rm -rf .coverage

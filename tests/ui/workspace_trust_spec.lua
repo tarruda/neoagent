@@ -138,6 +138,26 @@ describe("neoagent workspace trust UI", function()
       assert.are.equal(1, #model.requests)
     end)
 
+  it("selects the configured model once trust is approved", function()
+    local controller = setup()
+    local window = neoagent.default_window()
+    assert(neoagent.open())
+    local active_view = wait_for_dialog()
+    assert.is_nil(controller:get_model())
+    assert.matches("no model", active_view.context.model)
+
+    feed("s")
+    assert(vim.wait(1000, function()
+      return active_view.dialog_buf == nil
+    end, 5))
+    assert(vim.wait(1000, function()
+      return controller:get_model() ~= nil
+    end, 5))
+    assert.is_true(window:is_open())
+    assert.is_not_nil(controller:get_model())
+    assert.are.equal("fake/test", active_view.context.model)
+  end)
+
   it("routes trust action keys through the transcript prompt",
     function()
       setup()

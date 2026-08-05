@@ -109,6 +109,47 @@ describe("neoagent.api.openai_responses", function()
     assert.is_false(request.tools[1].strict)
   end)
 
+  it("reports truncated function call arguments as invalid JSON with the decode error", function()
+    local call = {
+      type = "function_call", id = "fc_1", call_id = "call_1", name = "edit",
+      arguments = "{\"path\":",
+    }
+    local chunks = {
+      event({ type = "response.created", response = { id = "resp_1" } }),
+      event({ type = "response.output_item.added", output_index = 0,
+        item = { type = "function_call", id = "fc_1", call_id = "call_1", name = "edit", arguments = "" } }),
+      event({ type = "response.output_item.done", output_index = 0, item = call }),
+      event({ type = "response.completed", response = { id = "resp_1", status = "completed", output = { call } } }),
+      "data: [DONE]\n\n",
+    }
+    local fake = fake_transport.new({ { chunks = chunks } })
+    local result = wait(model(fake):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("not valid JSON", result.error.message)
+    assert.is_truthy(result.error.detail)
+  end)
+
+  it("reports array function call arguments as not being a JSON object", function()
+    local call = {
+      type = "function_call", id = "fc_1", call_id = "call_1", name = "edit", arguments = "[]",
+    }
+    local chunks = {
+      event({ type = "response.created", response = { id = "resp_1" } }),
+      event({ type = "response.output_item.added", output_index = 0,
+        item = { type = "function_call", id = "fc_1", call_id = "call_1", name = "edit", arguments = "" } }),
+      event({ type = "response.output_item.done", output_index = 0, item = call }),
+      event({ type = "response.completed", response = { id = "resp_1", status = "completed", output = { call } } }),
+      "data: [DONE]\n\n",
+    }
+    local fake = fake_transport.new({ { chunks = chunks } })
+    local result = wait(model(fake):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("not a JSON object", result.error.message)
+    assert.are.equal("edit", result.error.detail)
+  end)
+
   it("encodes stateless multimodal history and merges request options", function()
     local key_calls = 0
     local provider_opts = {
@@ -406,7 +447,7 @@ describe("neoagent.api.openai_responses", function()
         item = { type = "function_call", id = "fc", call_id = "call", name = "bad", arguments = "" } }),
         event({ type = "response.output_item.done", output_index = 0,
           item = { type = "function_call", id = "fc", call_id = "call", name = "bad", arguments = "{" } }) },
-        kind = "protocol", message = "JSON object", partial = true },
+        kind = "protocol", message = "not valid JSON", partial = true },
     }
     for _, case in ipairs(cases) do
       local result = wait(model(fake_transport.new({ { chunks = case.chunks } })):stream({ messages = {} }))

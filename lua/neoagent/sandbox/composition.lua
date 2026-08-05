@@ -3,6 +3,13 @@ local path_module = require("neoagent.sandbox.path")
 
 local M = {}
 
+local sandbox_guidance_template = [[Sandboxed execution:
+- Tool calls run inside a native {platform} sandbox with restricted filesystem, network, and process authority.
+- Some operations the sandbox blocks fail with an explicit sandbox error. Networking command failures might fail with a different error, so always request escalation to run those.
+- To run one tool call with full user authority, keep the same arguments and merge `require_escalation` and `escalation_justification` to the tool params.
+- The user approves or denies each request. After a denial, continue inside the sandbox or use a different approach; do not repeat the same request.
+]]
+
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
   if value == "" then value = "requirements check failed" end
@@ -142,6 +149,12 @@ function M.warning(name, status)
     bounded(name or "Neo"), bounded(reason))
 end
 
+local function sandbox_guidance(status)
+  local platform = type(status.platform) == "string" and status.platform ~= ""
+    and status.platform or "workspace"
+  return sandbox_guidance_template:gsub("{platform}", platform)
+end
+
 local function base_executor(tool, arguments, ctx)
   return tool.execute(arguments, ctx)
 end
@@ -230,6 +243,7 @@ function M.compose(toolset, settings, opts)
         restricted = enforcement:wrap(base),
         elevated = base,
       })),
+    system_prompt = sandbox_guidance(recorded),
   }, recorded, dialogs
 end
 
@@ -258,6 +272,7 @@ function M.controller(configured, opts)
   copied.tools = toolset.tools
   copied._tools_supplied = true
   copied.execute_tool = toolset.execute_tool
+  copied._sandbox_system_prompt = toolset.system_prompt
   return copied, dialogs
 end
 

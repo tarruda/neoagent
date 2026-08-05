@@ -194,8 +194,10 @@ JSON document. Updates create private state paths, acquire a bounded
 same-directory process lock, merge the current document, write a private
 temporary file, and atomically rename it.
 
-Dialog acceptance records either process or persistent trust. Trust dialogs
-carry the protected Controller name. The Window presents a scoped dialog only
+Dialog acceptance records either process or persistent trust and then re-runs
+the protected Controller's preparation so its configured model resolves and the
+published context reflects it immediately. Trust dialogs carry the protected
+Controller name. The Window presents a scoped dialog only
 while that Controller is active, retaining the unresolved request across
 Controller selection. The Cancel action closes the Window through an attached
 callback, while the Window retains its Controller draft. Closing the Window
@@ -274,10 +276,13 @@ agent.run() ── tool call ──────────┘
 
 The connections back into Neoagent are ordinary Lua extension points. Sandbox
 composition consumes a plain `{ tools, execute_tool }` toolset and produces a
-decorated toolset, Window presents a generic dialog source, and the configured
-executor receives a copied context. The reusable core does not import sandbox
-modules. Bundled tools participate by calling the injected `ctx.fs` and
-`ctx.process` values.
+decorated toolset with an optional `system_prompt` guidance string, Window
+presents a generic dialog source, and the configured executor receives a copied
+context. The Controller appends the guidance after the composed agents and
+skills sections while the toolset is installed, so the agent learns about the
+restricted execution model and escalation options before the first denial.
+The reusable core does not import sandbox modules. Bundled tools participate
+by calling the injected `ctx.fs` and `ctx.process` values.
 
 The built-in Neo composition retains its configured host toolset and owns the
 editor-local sandbox selection. `sandbox.enabled` selects the initial state.

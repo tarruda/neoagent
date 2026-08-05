@@ -398,6 +398,10 @@ function Policy:request(cwd)
       error_kind = "workspace_trust",
       on_done = function(result)
         if self.pending[key] == run then self.pending[key] = nil end
+        if result.ok and self.on_trusted then
+          local ok, err = pcall(self.on_trusted, result.target)
+          if not ok and err then self:_notify(util.normalize_error(err, "workspace_trust")) end
+        end
         if not result.ok and not result.presenter_unavailable and result.error.kind ~= "cancelled"
             and result.error.message ~= "Workspace trust was cancelled"
             and not (result.error.kind == "dialog"
@@ -431,8 +435,11 @@ function Policy:attach(opts)
     "workspace trust activate callback must be a function")
   assert(opts.close == nil or type(opts.close) == "function",
     "workspace trust close callback must be a function")
+  assert(opts.on_trusted == nil or type(opts.on_trusted) == "function",
+    "workspace trust on_trusted callback must be a function")
   self.activate = opts.activate
   self.close = opts.close
+  self.on_trusted = opts.on_trusted
   return self
 end
 
@@ -444,7 +451,8 @@ function Policy:attach_window(window, controller)
       and type(window.close) == "function",
     "workspace trust Window is invalid")
   assert(type(controller) == "table" and controller._neoagent_controller
-      and type(controller.config) == "function",
+      and type(controller.config) == "function"
+      and type(controller.prepare) == "function",
     "workspace trust Controller is invalid")
   local attached = false
   for _, candidate in ipairs(window:controllers()) do
@@ -465,6 +473,12 @@ function Policy:attach_window(window, controller)
       end
     end,
     close = function() window:close() end,
+    on_trusted = function()
+      local prepared, prepare_err = controller:prepare()
+      if not prepared and prepare_err then
+        self:_notify(prepare_err)
+      end
+    end,
   })
 end
 

@@ -822,6 +822,45 @@ describe("neoagent default controller", function()
     assert(ok, err)
   end)
 
+  it("tells the agent about sandboxed execution in the system prompt", function()
+    local captured
+    setup_model(fake_model.new({}), {
+      interaction = function(options)
+        captured = options
+        return { cancel = function()
+          options.on_done({
+            ok = false,
+            error = { kind = "cancelled", message = "cancelled" },
+          })
+        end }
+      end,
+    })
+    local dispatch = require("neoagent.sandbox.platform")
+    local original_select = dispatch.select
+    dispatch.select = function()
+      return {
+        name = "test",
+        exec = function() error("must not execute") end,
+        fs = function() error("must not access files") end,
+      }, { ok = true, platform = "test", capabilities = {} }
+    end
+    local ok, err = pcall(function()
+      assert(neoagent.toggle_sandbox())
+      assert(neoagent.send("inspect"))
+      assert.matches("Sandboxed execution", captured.system_prompt)
+      assert.matches("require_escalation", captured.system_prompt)
+      assert.is_true(neoagent.stop())
+
+      assert(neoagent.toggle_sandbox())
+      assert(neoagent.send("inspect"))
+      assert.is_nil(captured.system_prompt:find(
+        "Sandboxed execution", 1, true))
+      assert.is_true(neoagent.stop())
+    end)
+    dispatch.select = original_select
+    assert(ok, err)
+  end)
+
   it("keeps host tools when runtime sandbox activation is unavailable", function()
     local tool = {
       name = "inspect",
