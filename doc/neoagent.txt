@@ -618,6 +618,16 @@ and process capabilities for that one call. Denial returns an error without
 running the unrestricted call. Escalation is denied when no dialog presenter
 is available.
 
+While the sandbox is active, the composed toolset appends a sandbox guidance
+section to Neo's system prompt. It describes the restricted filesystem,
+network, and process authority, explains that blocked operations return an
+explicit sandbox error, and tells the agent to request escalation with
+`options.require_escalation = true` and an `options.escalation_justification`
+before the first denial. The section names the active backend platform.
+Toggling the sandbox off removes the section together with the toolset; a
+custom `system_prompt` string or callback receives it appended after the
+composed agents and skills sections.
+
 Shell approvals whose command starts with at least one literal argument token
 also offer `yes and don't ask again for commands starting with`. Selecting it
 opens a focused floating editor containing the current command. `<Enter>`

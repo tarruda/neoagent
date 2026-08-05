@@ -455,6 +455,67 @@ describe("neoagent sandbox composition", function()
     assert.is_function(selected_value.execute_tool)
   end)
 
+  it("carries sandbox guidance in the composed toolset prompt", function()
+    local original = {
+      sandbox = { enabled = true },
+      tools = { {
+        name = "custom",
+        description = "Custom tool",
+        input_schema = {
+          type = "object",
+          properties = {},
+          additionalProperties = false,
+        },
+        execute = function(_, ctx)
+          return {
+            content = { {
+              type = "text",
+              text = ctx.process and "restricted" or "host",
+            } },
+          }
+        end,
+      } },
+      _tools_supplied = true,
+    }
+    local platform = {
+      name = "test",
+      check = function() return { ok = true, platform = "test" } end,
+      exec = function()
+        return {
+          code = 0, signal = 0, stdout = "", stderr = "",
+          output = "", timed_out = false,
+        }
+      end,
+      fs = function() return true end,
+    }
+    local composition = require("neoagent.sandbox.composition")
+    local toolset, status = composition.compose({
+      tools = original.tools,
+    }, original.sandbox, {
+      platform = platform,
+      status = { ok = true, platform = "test" },
+      dialogs = require("neoagent.dialog").new(),
+    })
+    assert.is_true(status.active)
+    assert.is_string(toolset.system_prompt)
+    assert.matches("Sandboxed execution", toolset.system_prompt)
+    assert.matches("native test sandbox", toolset.system_prompt)
+    assert.matches("require_escalation", toolset.system_prompt)
+    assert.matches("denial", toolset.system_prompt)
+
+    local composed = composition.controller(original, {
+      platform = platform,
+    })
+    assert.are.equal(toolset.system_prompt,
+      composed._sandbox_system_prompt)
+
+    local disabled = util.copy(original)
+    disabled.sandbox.enabled = false
+    local untouched =
+      composition.controller(disabled, { platform = platform })
+    assert.is_nil(untouched._sandbox_system_prompt)
+  end)
+
   it("defers a failed activation warning to the requesting View", function()
     local notifications = {}
     local saved_notify = vim.notify

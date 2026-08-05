@@ -276,10 +276,13 @@ agent.run() ── tool call ──────────┘
 
 The connections back into Neoagent are ordinary Lua extension points. Sandbox
 composition consumes a plain `{ tools, execute_tool }` toolset and produces a
-decorated toolset, Window presents a generic dialog source, and the configured
-executor receives a copied context. The reusable core does not import sandbox
-modules. Bundled tools participate by calling the injected `ctx.fs` and
-`ctx.process` values.
+decorated toolset with an optional `system_prompt` guidance string, Window
+presents a generic dialog source, and the configured executor receives a copied
+context. The Controller appends the guidance after the composed agents and
+skills sections while the toolset is installed, so the agent learns about the
+restricted execution model and escalation options before the first denial.
+The reusable core does not import sandbox modules. Bundled tools participate
+by calling the injected `ctx.fs` and `ctx.process` values.
 
 The built-in Neo composition retains its configured host toolset and owns the
 editor-local sandbox selection. `sandbox.enabled` selects the initial state.

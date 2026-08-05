@@ -123,6 +123,7 @@ function M.from_config(options, runtime)
           shell_timeout = options.shell_timeout,
         }),
       execute_tool = options.execute_tool,
+      system_prompt = options._sandbox_system_prompt,
     },
   }
   local function activate_session(session)
@@ -383,7 +384,12 @@ function M.from_config(options, runtime)
     elseif prompt == nil then
       prompt = require("neoagent.system_prompt").default(context)
     end
-    return require("neoagent.system_prompt").compose(prompt, context)
+    local composed = require("neoagent.system_prompt").compose(prompt, context)
+    local guidance = state.toolset.system_prompt
+    if type(guidance) == "string" and guidance ~= "" then
+      composed = composed .. "\n\n" .. guidance
+    end
+    return composed
   end
 
   local function copy_toolset(value)
@@ -393,9 +399,12 @@ function M.from_config(options, runtime)
       "toolset.tools must be a list")
     assert(value.execute_tool == nil or type(value.execute_tool) == "function",
       "toolset.execute_tool must be a function")
+    assert(value.system_prompt == nil or type(value.system_prompt) == "string",
+      "toolset.system_prompt must be a string")
     return {
       tools = util.copy(value.tools),
       execute_tool = value.execute_tool,
+      system_prompt = value.system_prompt,
     }
   end
 
