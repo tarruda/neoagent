@@ -33,8 +33,13 @@ function M.start(fixture)
   assert.is_nil(state.exit, state.stderr)
   state.port = state.records[1].port
   function state:stop()
-    if not self.exit then self.process:kill(15) end
-    vim.wait(2000, function() return self.exit ~= nil end)
+    if self.exit then return true end
+    self.process:kill(15)
+    if vim.wait(2000, function() return self.exit ~= nil end) then
+      return true
+    end
+    self.process:kill(9)
+    return vim.wait(2000, function() return self.exit ~= nil end)
   end
   return state
 end
