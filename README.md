@@ -40,6 +40,8 @@ Choose a provider:
   or provide an existing `ANTHROPIC_OAUTH_TOKEN`.
 - Run `:NeoagentLogin deepseek` to store a DeepSeek API key, or set
   `DEEPSEEK_API_KEY` before starting Neovim.
+- Run `:NeoagentLogin novita` to store a Novita API key, or set
+  `NOVITA_API_KEY` before starting Neovim.
 - Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
   before starting Neovim. The credential enables both the metered API and
   global Coding Plan catalogs.
@@ -86,6 +88,15 @@ To use DeepSeek by default, replace `default_model` with:
 default_model = {
   provider = "deepseek",
   model = "deepseek-v4-flash",
+}
+```
+
+To use Novita by default, replace `default_model` with:
+
+```lua
+default_model = {
+  provider = "novita",
+  model = "deepseek/deepseek-v3.2-exp",
 }
 ```
 

@@ -9,6 +9,7 @@ end
 describe("neoagent configuration and model resolution", function()
   local original_openai_key
   local original_deepseek_key
+  local original_novita_key
   local original_zai_key
   local original_anthropic_key
   local original_anthropic_oauth_token
@@ -17,11 +18,13 @@ describe("neoagent configuration and model resolution", function()
     config._reset()
     original_openai_key = vim.env.OPENAI_API_KEY
     original_deepseek_key = vim.env.DEEPSEEK_API_KEY
+    original_novita_key = vim.env.NOVITA_API_KEY
     original_zai_key = vim.env.ZAI_API_KEY
     original_anthropic_key = vim.env.ANTHROPIC_API_KEY
     original_anthropic_oauth_token = vim.env.ANTHROPIC_OAUTH_TOKEN
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
+    vim.env.NOVITA_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
     vim.env.ANTHROPIC_API_KEY = nil
     vim.env.ANTHROPIC_OAUTH_TOKEN = nil
@@ -31,6 +34,7 @@ describe("neoagent configuration and model resolution", function()
     config._reset()
     vim.env.OPENAI_API_KEY = original_openai_key
     vim.env.DEEPSEEK_API_KEY = original_deepseek_key
+    vim.env.NOVITA_API_KEY = original_novita_key
     vim.env.ZAI_API_KEY = original_zai_key
     vim.env.ANTHROPIC_API_KEY = original_anthropic_key
     vim.env.ANTHROPIC_OAUTH_TOKEN = original_anthropic_oauth_token
@@ -295,6 +299,30 @@ describe("neoagent configuration and model resolution", function()
       .. "(tool image omitted: model does not support images)",
       request.body.messages[3].content)
     assert.are.equal(3, #request.body.messages)
+    assert.are.same({ "text" }, model.input)
+  end)
+
+  it("resolves the built-in Novita catalog and request profile", function()
+    vim.env.NOVITA_API_KEY = "novita-key"
+    config.setup({})
+
+    local provider = config.get().providers.novita
+    assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("novita", provider.auth)
+    assert.are.equal("https://api.novita.ai/openai", provider.base_url)
+    local available = assert(models.available())
+    assert.is_true(vim.tbl_contains(available, "novita/deepseek/deepseek-v3.2-exp"))
+    assert.is_true(vim.tbl_contains(available, "novita/zai-org/glm-4.6"))
+    assert.are.equal(163840, provider.models["deepseek/deepseek-v3.2-exp"].context_window)
+    assert.are.equal(131072, provider.models["zai-org/glm-4.6"].max_output_tokens)
+
+    local model = models.resolve("novita", "deepseek/deepseek-v3.2-exp")
+    local request = model._model:_request({
+      messages = { { role = "user", content = { { type = "text", text = "hi" } } } },
+      tools = {},
+    })
+    assert.are.equal("https://api.novita.ai/openai/chat/completions", request.url)
+    assert.are.equal("Bearer novita-key", request.headers.Authorization)
     assert.are.same({ "text" }, model.input)
   end)
 

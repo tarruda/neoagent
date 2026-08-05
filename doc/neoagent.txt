@@ -76,6 +76,8 @@ The default registry contains these provider IDs:
                      `ANTHROPIC_OAUTH_TOKEN`.
   deepseek           DeepSeek API; `:NeoagentLogin deepseek` or
                      `DEEPSEEK_API_KEY`.
+  novita             Novita API; `:NeoagentLogin novita` or
+                     `NOVITA_API_KEY`.
   zai                Z.AI API and Coding Plan; `:NeoagentLogin zai` or
                      `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Coding Plan models using the same `zai` credential.

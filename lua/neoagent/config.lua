@@ -20,6 +20,7 @@ local defaults = {
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
+      novita = api_key.new({ name = "Novita API key" }),
       zai = api_key.new({ name = "Z.AI API key" }),
       anthropic = api_key.new({
         name = "Anthropic API key",
