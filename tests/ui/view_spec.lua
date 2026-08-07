@@ -379,7 +379,7 @@ describe("neoagent.ui", function()
     assert.matches("╯$", bottom)
   end)
 
-  it("clips highlighted assistant content keeping span alignment", function()
+  it("keeps highlighted assistant content across the complete card", function()
     local result = view({ position = "center" })
     local response = {}
     for index = 1, 105 do response[index] = "line " .. index end
@@ -391,7 +391,7 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function()
       local transcript = text(result)
       return transcript:find("bold end", 1, true) ~= nil
-        and transcript:find(" line 1 ", 1, true) == nil
+        and transcript:find(" line 1 ", 1, true) ~= nil
     end))
   end)
 
@@ -413,7 +413,7 @@ describe("neoagent.ui", function()
     result:_close_card_details(true)
   end)
 
-  it("badges clipped text cards with word counts on hover", function()
+  it("badges complete text cards with word counts on hover", function()
     local result = view({ position = "center" })
     local response = {}
     for index = 1, 60 do response[index] = "response line " .. index end
@@ -433,12 +433,11 @@ describe("neoagent.ui", function()
         if chunk[1]:find("[text:", 1, true) then badge_text = chunk[1] end
       end
     end
-    local omitted = 60 - (vim.api.nvim_win_get_height(result.transcript_win) - 5)
     assert.are.equal(
-      "[text: 180 words, " .. omitted .. " lines above..., <CR> to expand]", badge_text)
+      "[text: 180 words, <CR> to expand]", badge_text)
   end)
 
-  it("clips assistant cards to the latest lines and reveals full responses", function()
+  it("shows complete assistant cards and expands to unpadded text", function()
     local result = view({ position = "center" })
     local response = {}
     for index = 1, 105 do response[index] = "response line " .. index end
@@ -449,11 +448,11 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function()
       local transcript = text(result)
       return transcript:find(" response line 105 ", 1, true) ~= nil
-        and transcript:find(" response line 1 ", 1, true) == nil
+        and transcript:find(" response line 1 ", 1, true) ~= nil
     end))
     local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
     assert.is_true(vim.tbl_contains(lines, " response line 105 "))
-    assert.is_false(vim.tbl_contains(lines, " response line 1 "))
+    assert.is_true(vim.tbl_contains(lines, " response line 1 "))
     result:focus_transcript()
     local row
     for index, line in ipairs(lines) do
@@ -462,12 +461,13 @@ describe("neoagent.ui", function()
     assert.is_not_nil(row)
     vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
     assert.is_true(result:show_card_details())
-    assert.is_true(vim.tbl_contains(
-      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "response line 1"))
+    local details = vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(details, "response line 1"))
+    assert.is_false(vim.tbl_contains(details, " response line 1 "))
     result:_close_card_details(true)
   end)
 
-  it("recomputes the assistant line limit after a height change", function()
+  it("keeps complete assistant cards after a height change", function()
     local result = view({ position = "center" })
     local response = {}
     for index = 1, 60 do response[index] = "response line " .. index end
@@ -475,23 +475,18 @@ describe("neoagent.ui", function()
       { type = "text", text = table.concat(response, "\n") },
     } } })
     assert(result:open())
-    local function omitted()
-      return #response - (vim.api.nvim_win_get_height(result.transcript_win) - 5)
-    end
     assert(vim.wait(1000, function()
       local transcript = text(result)
-      local current = omitted()
-      return transcript:find(" response line " .. (current + 1) .. " ", 1, true) ~= nil
-        and transcript:find(" response line " .. current .. " ", 1, true) == nil
+      return transcript:find(" response line 1 ", 1, true) ~= nil
+        and transcript:find(" response line 60 ", 1, true) ~= nil
     end))
     vim.o.lines = 60
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(vim.wait(1000, function()
       local transcript = text(result)
-      local current = omitted()
       return vim.api.nvim_win_get_height(result.transcript_win) > 40
-        and transcript:find(" response line " .. (current + 1) .. " ", 1, true) ~= nil
-        and transcript:find(" response line " .. current .. " ", 1, true) == nil
+        and transcript:find(" response line 1 ", 1, true) ~= nil
+        and transcript:find(" response line 60 ", 1, true) ~= nil
     end))
   end)
 

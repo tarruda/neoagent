@@ -877,12 +877,11 @@ in Normal mode. Set `ui.scroll_on_submit`,
 automatic scrolling.
 
 User and assistant text renders Markdown in borderless cards whose long
-lines soft-wrap at word boundaries; assistant cards are clipped to five
-lines below the transcript height, and while hovered a
-right-aligned badge such as
-`[text: 42 words, 8 lines above..., <CR> to expand]` reports the word count
-and clipped lines. The `card_details` mapping reveals the
-complete response. Thinking appears in
+lines soft-wrap at word boundaries. Assistant cards show the complete
+response without a line limit, and while hovered a right-aligned badge such
+as `[text: 42 words, <CR> to expand]` reports the word count and expand key.
+The `card_details` mapping opens the response without card padding for
+copying. Thinking appears in
 borderless cards with a muted italic style, clipped to the most recent
 lines. While a thinking card is hovered, a right-aligned badge such
 as `[thinking: 42 words, 8 lines above..., <CR> to expand]` reports the

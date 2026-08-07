@@ -802,14 +802,6 @@ end
 
 local THINKING_MAX_LINES = 10
 
-local function assistant_max_lines(self)
-  local height = 0
-  if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
-    height = vim.api.nvim_win_get_height(self.transcript_win)
-  end
-  return math.max(1, height - 5)
-end
-
 local function trim_trailing_lines(content)
   while #content.lines > 0 and content.lines[#content.lines] == "" do
     table.remove(content.lines)
@@ -853,9 +845,8 @@ local function assistant_content(self, block, full, width)
   local content = markdown.render(block.text or "", { width = width })
   trim_trailing_lines(content)
   if not full then
-    local omitted = clip_tail(content, assistant_max_lines(self))
     block.header = response_header(
-      self, "text", block.text, omitted, true)
+      self, "text", block.text, 0, true)
   end
   return content
 end
