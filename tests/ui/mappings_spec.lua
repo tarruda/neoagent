@@ -35,7 +35,12 @@ describe("neoagent UI mappings", function()
     assert.is_not_nil(shell_row)
     vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
-    assert.is_nil(result.details_win)
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    assert.matches("Text", vim.api.nvim_win_get_config(result.details_win).title[1][1])
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result.details_win == nil end))
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { shell_row, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
@@ -102,12 +107,14 @@ describe("neoagent UI mappings", function()
     feed("]c")
     assert.are.equal(rows["second card"], cursor_row())
     feed("[c")
+    assert.are.equal(rows["between cards"], cursor_row())
+    feed("[c")
     assert.are.equal(rows["first card"], cursor_row())
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
     feed("2]c")
     assert.are.equal(rows["third card"], cursor_row())
-    feed("2[c")
+    feed("3[c")
     assert.are.equal(rows["first card"], cursor_row())
     feed("[c")
     assert.are.equal(rows["first card"], cursor_row())
@@ -205,6 +212,30 @@ describe("neoagent UI mappings", function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
     end))
+    result:destroy()
+  end)
+
+  it("replays the selected list-valued close-empty mapping", function()
+    local result = ui.new({
+      config = config.setup({ ui = {
+        position = "center",
+        mappings = { close_empty = { "<C-d>", "<BS>" } },
+      } }).ui,
+    })
+    assert(result:open())
+    result:set_input("draft")
+    result:focus_input()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<BS>", true, false, true),
+      "x", false)
+    assert.are.equal("draf", result:get_input())
+    assert.is_true(result:is_open())
+    result:set_input("")
+    result:focus_input()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-d>", true, false, true),
+      "x", false)
+    assert(vim.wait(1000, function() return not result:is_open() end))
     result:destroy()
   end)
 

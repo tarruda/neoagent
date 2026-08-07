@@ -112,6 +112,16 @@ function M:_dialog_input()
     self.dialog_buf, 0, -1, false), "\n")
 end
 
+local function input_has_text(view)
+  if not view.input_buf or not vim.api.nvim_buf_is_valid(view.input_buf) then
+    return false
+  end
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(view.input_buf, 0, -1, false)) do
+    if line:find("%S") then return true end
+  end
+  return false
+end
+
 function M:_respond_to_dialog(action_id)
   return self.on_dialog_action(
     self.dialog.active.id, action_id, self:_dialog_input())
@@ -176,11 +186,18 @@ function M:_show_transcript_dialog()
   end
   vim.bo[buffer].modifiable = false
   self:_map_dialog_actions(buffer, "n")
+  vim.api.nvim_create_autocmd("InsertEnter", {
+    group = self.augroup,
+    buffer = buffer,
+    callback = function() vim.cmd("stopinsert") end,
+  })
   self.dialog_buf = buffer
   self:_render_dialog_status()
   vim.api.nvim_win_set_buf(self.transcript_win, buffer)
-  vim.cmd("stopinsert")
-  vim.api.nvim_set_current_win(self.transcript_win)
+  if not input_has_text(self) then
+    vim.cmd("stopinsert")
+    vim.api.nvim_set_current_win(self.transcript_win)
+  end
   vim.api.nvim_win_set_cursor(
     self.transcript_win, { #lines, math.max(0, #lines[#lines] - 1) })
 end
@@ -236,7 +253,8 @@ function M:_show_float_dialog()
   })
   local height = math.max(3, math.min(vim.o.lines - 4,
     #virtual + #input_lines))
-  local window = vim.api.nvim_open_win(buffer, true, {
+  local keep_focus = not dialog.input and input_has_text(self)
+  local window = vim.api.nvim_open_win(buffer, not keep_focus, {
     relative = "editor",
     row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
     col = math.max(0, math.floor((vim.o.columns - width) / 2)),
@@ -257,7 +275,7 @@ function M:_show_float_dialog()
       #input_lines, #input_lines[#input_lines],
     })
     vim.cmd("startinsert!")
-  else
+  elseif not keep_focus then
     vim.cmd("stopinsert")
   end
 end
@@ -267,11 +285,15 @@ function M:_show_dialog()
   if self.dialog_buf and vim.api.nvim_buf_is_valid(self.dialog_buf) then
     local window = self.dialog_win
     if window and vim.api.nvim_win_is_valid(window) then
-      vim.api.nvim_set_current_win(window)
+      if not input_has_text(self) then
+        vim.api.nvim_set_current_win(window)
+      end
     else
       vim.api.nvim_win_set_buf(self.transcript_win, self.dialog_buf)
-      vim.cmd("stopinsert")
-      vim.api.nvim_set_current_win(self.transcript_win)
+      if not input_has_text(self) then
+        vim.cmd("stopinsert")
+        vim.api.nvim_set_current_win(self.transcript_win)
+      end
     end
     return
   end

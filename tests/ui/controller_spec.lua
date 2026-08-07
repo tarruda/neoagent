@@ -52,7 +52,7 @@ describe("neoagent default controller", function()
     assert.are.equal(2, #neoagent.get_session():messages())
     local lines = table.concat(vim.api.nvim_buf_get_lines(current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches(" hi ", lines)
-    assert.matches(" hello", lines)
+    assert.matches(" hello ", lines)
   end)
 
   it("identifies the Controller and active Session in executor context", function()

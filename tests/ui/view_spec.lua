@@ -157,7 +157,10 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function()
       return text(result):find("second summary", 1, true) ~= nil
     end))
-    assert.matches("first summary\n\n second summary", text(result))
+    local transcript = text(result)
+    assert.matches("first summary", transcript)
+    assert.matches("second summary", transcript)
+    assert.matches("first summary.-" .. "\n" .. ".-second summary", transcript)
   end)
 
   it("can hide historical and streaming thinking from the transcript", function()
@@ -198,7 +201,7 @@ describe("neoagent.ui", function()
     } })
 
     assert(vim.wait(1000, function() return not result.flush_pending end))
-    assert.are.same({ " considering", "", " done", "" },
+    assert.are.same({ " considering ", "", " done ", "" },
       vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
   end)
 
@@ -215,8 +218,542 @@ describe("neoagent.ui", function()
     } })
 
     assert(vim.wait(1000, function() return not result.flush_pending end))
-    assert.are.same({ " considering", "", "", " read x ", "", "" },
+    assert.are.same({ " considering ", "", "", "", " read x ", "", "" },
       vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+  end)
+
+  it("clips thinking cards to the latest lines and reveals full traces", function()
+    local result = view({ position = "center" })
+    local trace = {}
+    for index = 1, 14 do trace[index] = "trace " .. index end
+    result:set_messages({ {
+      role = "assistant",
+      content = { { type = "thinking", thinking = table.concat(trace, "\n") } },
+    } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find(" trace 14 ", 1, true) ~= nil
+        and transcript:find(" trace 1 ", 1, true) == nil
+    end))
+    local collapsed = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(collapsed, " trace 14 "))
+    assert.is_false(vim.tbl_contains(collapsed, " trace 1 "))
+    assert.is_false(has_line_group(result, "NeoagentUserBackground"))
+    assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
+
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(collapsed) do
+      if line:find("trace 14", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 28 words, 4 lines above..., <CR> to expand]", badge)
+    assert.is_true(result:show_card_details())
+    local details = vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(details, "trace 1"))
+    assert.is_true(vim.tbl_contains(details, "trace 14"))
+    result:_close_card_details(true)
+  end)
+
+  it("shows the thinking badge only while hovered", function()
+    local result = view({ position = "center" })
+    local trace = {}
+    for index = 1, 14 do trace[index] = "trace " .. index end
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = table.concat(trace, "\n") },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    local function buffer_text()
+      return table.concat(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false), "\n")
+    end
+    assert.is_nil(buffer_text():find("thinking:", 1, true))
+    result:focus_transcript()
+    local row
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    for index, line in ipairs(lines) do
+      if line:find("trace 14", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge, badge_col
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then
+          badge = chunk[1]
+          badge_col = mark[4].virt_text_win_col
+        end
+      end
+    end
+    assert.are.equal("[thinking: 28 words, 4 lines above..., <CR> to expand]", badge)
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.are.equal(width - 1 - #badge, badge_col)
+    assert.is_nil(buffer_text():find("thinking:", 1, true))
+    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        assert.is_nil(chunk[1]:find("[thinking:", 1, true))
+      end
+    end
+  end)
+
+  it("scrolls thinking cards to the latest streamed lines", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    for index = 1, 25 do
+      result:apply({ type = "thinking_delta", text = "line " .. index .. "\n" })
+    end
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find("line 25", 1, true) ~= nil
+        and transcript:find("line 15", 1, true) == nil
+    end))
+  end)
+
+  it("keeps long text card lines intact for soft wrapping", function()
+    local result = view({ position = "center" })
+    local long = "soft wrap " .. string.rep("segment ", 30)
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = long },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("segment segment segment", 1, true) ~= nil
+    end))
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(lines, " " .. long .. " "))
+    assert.is_true(vim.wo[result.transcript_win].wrap)
+  end)
+
+  it("soft-wraps long user card lines", function()
+    local result = view({ position = "center" })
+    local long = "user wrap " .. string.rep("segment ", 30)
+    result:set_messages({ { role = "user", content = long } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("segment segment segment", 1, true) ~= nil
+    end))
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(lines, " " .. long .. " "))
+  end)
+
+  it("places the bottom rule below a wrapped text card last line", function()
+    local result = view({ position = "center" })
+    local long = "ending " .. string.rep("word ", 60)
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "short\n" .. long },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local bottom
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("╰", 1, true) then bottom = chunk[1] end
+      end
+    end
+    assert.is_not_nil(bottom)
+    assert.matches("╯$", bottom)
+  end)
+
+  it("clips highlighted assistant content keeping span alignment", function()
+    local result = view({ position = "center" })
+    local response = {}
+    for index = 1, 105 do response[index] = "line " .. index end
+    response[#response + 1] = "**bold end**"
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = table.concat(response, "\n") },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find("bold end", 1, true) ~= nil
+        and transcript:find(" line 1 ", 1, true) == nil
+    end))
+  end)
+
+  it("never enters insert mode in the transcript or card details", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "content" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_feedkeys("i", "x", false)
+    assert.are.equal("n", vim.api.nvim_get_mode().mode)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    assert.is_true(result:show_card_details())
+    assert.are.equal(result.details_win, vim.api.nvim_get_current_win())
+    vim.api.nvim_feedkeys("i", "x", false)
+    assert.are.equal("n", vim.api.nvim_get_mode().mode)
+    result:_close_card_details(true)
+  end)
+
+  it("badges clipped text cards with word counts on hover", function()
+    local result = view({ position = "center" })
+    local response = {}
+    for index = 1, 60 do response[index] = "response line " .. index end
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = table.concat(response, "\n") },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge_text
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[text:", 1, true) then badge_text = chunk[1] end
+      end
+    end
+    local omitted = 60 - (vim.api.nvim_win_get_height(result.transcript_win) - 5)
+    assert.are.equal(
+      "[text: 180 words, " .. omitted .. " lines above..., <CR> to expand]", badge_text)
+  end)
+
+  it("clips assistant cards to the latest lines and reveals full responses", function()
+    local result = view({ position = "center" })
+    local response = {}
+    for index = 1, 105 do response[index] = "response line " .. index end
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = table.concat(response, "\n") },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find(" response line 105 ", 1, true) ~= nil
+        and transcript:find(" response line 1 ", 1, true) == nil
+    end))
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(lines, " response line 105 "))
+    assert.is_false(vim.tbl_contains(lines, " response line 1 "))
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(lines) do
+      if line:find("response line 105", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    assert.is_true(result:show_card_details())
+    assert.is_true(vim.tbl_contains(
+      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "response line 1"))
+    result:_close_card_details(true)
+  end)
+
+  it("recomputes the assistant line limit after a height change", function()
+    local result = view({ position = "center" })
+    local response = {}
+    for index = 1, 60 do response[index] = "response line " .. index end
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = table.concat(response, "\n") },
+    } } })
+    assert(result:open())
+    local function omitted()
+      return #response - (vim.api.nvim_win_get_height(result.transcript_win) - 5)
+    end
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      local current = omitted()
+      return transcript:find(" response line " .. (current + 1) .. " ", 1, true) ~= nil
+        and transcript:find(" response line " .. current .. " ", 1, true) == nil
+    end))
+    vim.o.lines = 60
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      local current = omitted()
+      return vim.api.nvim_win_get_height(result.transcript_win) > 40
+        and transcript:find(" response line " .. (current + 1) .. " ", 1, true) ~= nil
+        and transcript:find(" response line " .. current .. " ", 1, true) == nil
+    end))
+  end)
+
+  it("uses singular labels for a single clipped thinking or tool line", function()
+    local result = view({ position = "center" })
+    local lines = {}
+    for index = 1, 11 do lines[index] = "trace " .. index end
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "thinking", thinking = table.concat(lines, "\n") },
+        { type = "toolCall", id = "w", name = "write_file",
+          arguments = { path = "x", content = table.concat(lines, "\n") } },
+      } },
+      { role = "toolResult", toolCallId = "w", toolName = "write_file",
+        isError = false, content = { { type = "text", text = "ok" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find("[... 1 more line]", 1, true) ~= nil
+        and transcript:find("trace 2", 1, true) ~= nil
+    end))
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("trace 2", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 22 words, 1 line above..., <CR> to expand]", badge)
+  end)
+
+  it("rests a borderless overflow banner on width-clipped thinking cards", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = string.rep("x", 300) .. "\nshort" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    local function buffer_text()
+      return table.concat(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false), "\n")
+    end
+    local function outline_marks()
+      return vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+    end
+    assert.is_true(buffer_text():find("short", 1, true) ~= nil)
+    assert.is_nil(buffer_text():find("thinking:", 1, true))
+    local badge, ellipsis, badge_col, ellipsis_col
+    for _, mark in ipairs(outline_marks()) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then
+          badge = chunk[1]
+          badge_col = mark[4].virt_text_win_col or 0
+        elseif chunk[1] == "..." then
+          ellipsis = chunk[1]
+          ellipsis_col = mark[4].virt_text_win_col or 0
+        end
+      end
+      assert.is_nil(mark[4].virt_lines)
+    end
+    assert.are.equal("[thinking: 2 words]", badge)
+    assert.are.equal("...", ellipsis)
+    assert.are.equal(badge_col, ellipsis_col)
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.are.equal(width - 1 - #badge, badge_col + 3)
+    local borders = table.concat(vim.tbl_map(function(mark)
+      return table.concat(vim.tbl_map(function(chunk) return chunk[1] end,
+        mark[4].virt_text or {}))
+    end, outline_marks()))
+    assert.is_nil(borders:find("╭", 1, true))
+    assert.is_nil(borders:find("╰", 1, true))
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local hover_badge, hover_border
+    for _, mark in ipairs(outline_marks()) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then hover_badge = chunk[1] end
+        if chunk[1]:find("╭", 1, true) then hover_border = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 2 words, <CR> to expand]", hover_badge)
+    assert.are.equal("╭", hover_border)
+    result:focus_input()
+    local resting_badge, resting_border
+    for _, mark in ipairs(outline_marks()) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then resting_badge = chunk[1] end
+        if chunk[1]:find("╭", 1, true) then resting_border = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 2 words]", resting_badge)
+    assert.is_nil(resting_border)
+  end)
+
+  it("keeps clipped thinking badges hover-only when every line fits", function()
+    local result = view({ position = "center" })
+    local trace = {}
+    for index = 1, 14 do trace[index] = "trace " .. index end
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = table.concat(trace, "\n") },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    local marks = vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+    assert.are.same({}, marks)
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("trace 14", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 28 words, 4 lines above..., <CR> to expand]", badge)
+  end)
+
+  it("badges long thinking traces on hover", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = string.rep("x", 300) .. "\nshort" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      local transcript = text(result)
+      return transcript:find("short", 1, true) ~= nil
+        and transcript:find("thinking:", 1, true) == nil
+    end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local badge, ellipsis
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
+        if chunk[1] == "..." then ellipsis = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 2 words, <CR> to expand]", badge)
+    assert.are.equal("...", ellipsis)
+  end)
+
+  it("truncates long traces for the right-aligned thinking badge on hover", function()
+    local result = view({ position = "center" })
+    local trace = "Let me read the README and key source files to understand the project"
+      .. " structure and how they fit"
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = trace .. "\nline two" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    local function buffer_lines()
+      return vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    end
+    local function outline_marks()
+      return vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+    end
+    result:focus_transcript()
+    local first_row
+    local lines = buffer_lines()
+    for row, line in ipairs(lines) do
+      if line:find("Let me read", 1, true) then first_row = row - 1 break end
+    end
+    assert.is_not_nil(first_row)
+    for _, line in ipairs(buffer_lines()) do
+      assert.is_nil(line:find("thinking:", 1, true))
+    end
+    vim.api.nvim_win_set_cursor(result.transcript_win, { first_row + 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local header, header_col, ellipsis, ellipsis_col
+    for _, mark in ipairs(outline_marks()) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then
+          header = chunk[1]
+          header_col = mark[4].virt_text_win_col or 0
+        elseif chunk[1] == "..." then
+          ellipsis = chunk[1]
+          ellipsis_col = mark[4].virt_text_win_col or 0
+        end
+      end
+    end
+    assert.are.equal("[thinking: 20 words, <CR> to expand]", header)
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    assert.are.equal(width - 1 - #header, header_col)
+    assert.are.equal("...", ellipsis)
+    assert.are.equal(header_col - 3, ellipsis_col)
+    local borders = table.concat(vim.tbl_map(function(mark)
+      return table.concat(vim.tbl_map(function(chunk) return chunk[1] end,
+        mark[4].virt_text or {}))
+    end, outline_marks()))
+    for _, mark in ipairs(outline_marks()) do
+      assert.is_nil(mark[4].virt_lines)
+    end
+    assert.matches("╭", borders)
+    assert.matches("╰", borders)
+    assert.is_nil(borders:find("│", 1, true))
+    for _, line in ipairs(buffer_lines()) do
+      assert.is_nil(line:find("thinking:", 1, true))
+    end
+    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    for _, mark in ipairs(outline_marks()) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        assert.is_nil(chunk[1]:find("thinking:", 1, true))
+      end
+    end
+  end)
+
+  it("keeps short traces intact with the thinking badge on hover", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "thinking", thinking = "line one\nline two" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    local first_row
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    for row, line in ipairs(lines) do
+      if line:find("line one", 1, true) then first_row = row - 1 break end
+    end
+    assert.is_not_nil(first_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { first_row + 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local header, ellipsis
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("[thinking:", 1, true) then header = chunk[1] end
+        if chunk[1] == "..." then ellipsis = chunk[1] end
+      end
+    end
+    assert.are.equal("[thinking: 4 words, <CR> to expand]", header)
+    assert.is_nil(ellipsis)
   end)
 
   it("reconciles provider-indexed partial tools without duplicate execution cards", function()
@@ -644,7 +1181,14 @@ describe("neoagent.ui", function()
   it("truncates card lines by default and recomputes them after resize", function()
     local result = view({ position = "center" })
     local long = "card content " .. string.rep("segment-", 30) .. "界"
-    result:set_messages({ { role = "user", content = long } })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "w", name = "write_file",
+          arguments = { path = "x", content = long } },
+      } },
+      { role = "toolResult", toolCallId = "w", toolName = "write_file",
+        isError = false, content = { { type = "text", text = "ok" } } },
+    })
     assert(result:open())
 
     local function card_line()
@@ -745,7 +1289,7 @@ describe("neoagent.ui", function()
     } })
     assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("Compacted from 12,345 tokens (<CR> for details)", 1, true) ~= nil
+      return text(result):find("Compacted from 12,345 tokens", 1, true) ~= nil
     end))
     assert.matches("%[compaction%]", text(result))
     assert.not_matches("Keep the summary visible", text(result))
@@ -772,7 +1316,8 @@ describe("neoagent.ui", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "outlined card" },
-      { role = "assistant", content = { { type = "text", text = "plain prose" } } },
+      { role = "assistant", content = { { type = "text", text =
+        "plain prose\nsecond line\nthird line" } } },
     })
     assert(result:open())
     assert(vim.wait(1000, function()
@@ -802,16 +1347,283 @@ describe("neoagent.ui", function()
     vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
     assert.matches("╭", outline())
-    assert.matches("│", outline())
     assert.matches("╯", outline())
+    assert.is_nil(outline():find("│", 1, true))
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    assert.matches("╭", outline())
+    assert.matches("╯", outline())
+    assert.is_nil(outline():find("│", 1, true))
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row + 3, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
     assert.are.equal("", outline())
     vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
     result:focus_input()
     assert(vim.wait(1000, function() return outline() == "" end))
+  end)
+
+  it("shows the expand hint in the tool bottom border while hovered", function()
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "c1", name = "read_file", arguments = { path = "x" } },
+      } },
+      { role = "toolResult", toolCallId = "c1", toolName = "read_file", isError = false,
+        content = { { type = "text", text = "content" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("read x", 1, true) then row = index break end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local function expand_hints()
+      local found = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      )) do
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          if chunk[1]:find("<CR> to expand", 1, true) then
+            found[#found + 1] = chunk[1]
+          end
+        end
+      end
+      return found
+    end
+    local bottom = expand_hints()
+    assert.are.equal(1, #bottom)
+    assert.matches("^╰", bottom[1])
+    assert.matches("╯$", bottom[1])
+    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    assert.are.equal(0, #expand_hints())
+  end)
+
+  it("omits expand hints when card details are disabled", function()
+    local result = view({
+      position = "center",
+      mappings = { card_details = false },
+    })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "response" },
+      { type = "toolCall", id = "c1", name = "read_file",
+        arguments = { path = "x" } },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    local function overlay_text()
+      local chunks = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1,
+        { details = true }
+      )) do
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          chunks[#chunks + 1] = chunk[1]
+        end
+      end
+      return table.concat(chunks, "\n")
+    end
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    assert.is_nil(overlay_text():find("to expand", 1, true))
+    local tool_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false
+    )) do
+      if line:find("read x", 1, true) then tool_row = row break end
+    end
+    assert.is_not_nil(tool_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { tool_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    assert.is_nil(overlay_text():find("to expand", 1, true))
+  end)
+
+  it("shows the first configured card-details mapping in expand hints", function()
+    local result = view({
+      position = "center",
+      mappings = { card_details = { "g?", "<CR>" } },
+    })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "response" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    local overlay = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1,
+      { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        overlay[#overlay + 1] = chunk[1]
+      end
+    end
+    local value = table.concat(overlay, "\n")
+    assert.is_not_nil(value:find("g? to expand", 1, true))
+    assert.is_nil(value:find("<CR> to expand", 1, true))
+  end)
+
+  it("uses singular word labels in response badges", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "response" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    local overlay = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1,
+      { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        overlay[#overlay + 1] = chunk[1]
+      end
+    end
+    assert.is_not_nil(table.concat(overlay, "\n"):find(
+      "[text: 1 word, <CR> to expand]", 1, true))
+  end)
+
+  it("keeps response badges visible in narrow transcript windows", function()
+    local result = view({ position = "center", width = 24 })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = "response" },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    local badge
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1,
+      { details = true }
+    )) do
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("expand]", 1, true) then badge = chunk[1] end
+      end
+    end
+    assert.is_not_nil(badge)
+    assert.is_true(vim.fn.strdisplaywidth(badge)
+      <= vim.api.nvim_win_get_width(result.transcript_win) - 1)
+    assert.matches("to expand%]$", badge)
+  end)
+
+  it("titles expanded cards by kind and wraps their content", function()
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "thinking", thinking = "trace" },
+        { type = "toolCall", id = "c1", name = "read_file", arguments = { path = "x" } },
+      } },
+      { role = "toolResult", toolCallId = "c1", toolName = "read_file", isError = false,
+        content = { { type = "text", text = "content" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    local function open_details(row)
+      vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+      assert.is_true(result:show_card_details())
+      return result.details_win
+    end
+    local function window_title(win)
+      local chunks = vim.api.nvim_win_get_config(win).title or {}
+      return table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
+    end
+    local thinking_row, tool_row
+    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    for index, line in ipairs(lines) do
+      if line:find("trace", 1, true) then thinking_row = index end
+      if line:find("read x", 1, true) then tool_row = index end
+    end
+    assert.is_not_nil(thinking_row)
+    assert.is_not_nil(tool_row)
+    local thinking_win = open_details(thinking_row)
+    assert.matches("Thinking", window_title(thinking_win))
+    assert.is_true(vim.wo[thinking_win].wrap)
+    result:_close_card_details(true)
+    local tool_win = open_details(tool_row)
+    assert.matches("Tool call", window_title(tool_win))
+    assert.is_true(vim.wo[tool_win].wrap)
+    result:_close_card_details(true)
+  end)
+
+  it("sizes card details to wrapped screen lines", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = string.rep("wrapped content ", 40) },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    assert.is_true(result:show_card_details())
+    local text_height = vim.api.nvim_win_text_height(
+      result.details_win, {}).all
+    local available = math.max(1,
+      vim.o.lines - vim.o.cmdheight - 4)
+    assert.is_true(text_height > 1)
+    assert.are.equal(math.min(available, text_height),
+      vim.api.nvim_win_get_height(result.details_win))
+    result:_close_card_details(true)
+  end)
+
+  it("reflows open card details after an editor resize", function()
+    local result = view({ position = "center" })
+    result:set_messages({ { role = "assistant", content = {
+      { type = "text", text = string.rep("resized content ", 40) },
+    } } })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    assert.is_true(result:show_card_details())
+    local initial_width = vim.api.nvim_win_get_width(result.details_win)
+    vim.o.columns = 70
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(vim.wait(1000, function()
+      if not result.details_win
+          or not vim.api.nvim_win_is_valid(result.details_win) then
+        return false
+      end
+      local current = vim.api.nvim_win_get_config(result.details_win)
+      return current.width < initial_width
+        and current.col == math.max(0,
+          math.floor((vim.o.columns - current.width) / 2))
+    end))
+    local config = vim.api.nvim_win_get_config(result.details_win)
+    assert.are.equal(math.max(0,
+      math.floor((vim.o.columns - config.width) / 2)), config.col)
+    local text_height = vim.api.nvim_win_text_height(
+      result.details_win, {}).all
+    assert.are.equal(math.min(
+      vim.o.lines - vim.o.cmdheight - 4, text_height), config.height)
+    result:_close_card_details(true)
   end)
 
   it("refreshes streaming card details and cleans up an externally closed float", function()
@@ -1025,7 +1837,7 @@ describe("neoagent.ui", function()
       } })
       assert(result:open())
       assert(vim.wait(1000, function()
-        return vim.api.nvim_buf_line_count(result.transcript_buf) >= 40
+        return text(result):find("line 40", 1, true) ~= nil
       end))
       return result, function() return submissions end
     end
@@ -1078,7 +1890,7 @@ describe("neoagent.ui", function()
       result:set_messages(messages)
       assert(result:open())
       assert(vim.wait(1000, function()
-        return vim.api.nvim_buf_line_count(result.transcript_buf) >= 40
+        return text(result):find("line 40", 1, true) ~= nil
       end))
       vim.api.nvim_win_set_cursor(result.transcript_win, { line, 0 })
       result:close()
@@ -1120,7 +1932,7 @@ describe("neoagent.ui", function()
       },
     } })
     assert(vim.wait(1000, function()
-      return text(result):find(" checking\n\n done", 1, true) ~= nil
+      return text(result):find(" checking \n\n done ", 1, true) ~= nil
     end))
   end)
 

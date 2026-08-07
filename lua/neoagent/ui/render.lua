@@ -271,6 +271,7 @@ local function truncate_card_lines(content, width)
     local fitted, prefix_length = fit_card_line(line, width)
     if prefix_length then
       content.lines[row] = fitted
+      content.truncated = true
       truncated[row - 1] = {
         prefix_length = prefix_length,
         end_col = #fitted,
@@ -309,7 +310,7 @@ end
 local function card(content, background, width)
   if width then truncate_card_lines(content, width) end
   local result = rendered()
-  add_line(result, "", nil, background)
+  if background then add_line(result, "", nil, background) end
   for row, line in ipairs(content.lines) do
     local spans = {}
     for _, span in ipairs(content.highlights) do
@@ -324,13 +325,13 @@ local function card(content, background, width)
     end
     add_line(result, " " .. line .. " ", spans, background)
   end
-  add_line(result, "", nil, background)
+  if background then add_line(result, "", nil, background) end
   add_line(result, "")
   result.card = { first = 0, last = #result.lines - 2 }
   return result
 end
 
-local function prose(content, default_group, italic)
+local function prose(content)
   local result = rendered()
   local finish = #content.lines
   while finish > 0 and not content.lines[finish]:find("%S") do finish = finish - 1 end
@@ -347,12 +348,6 @@ local function prose(content, default_group, italic)
           priority = span.priority,
         }
       end
-    end
-    if #line > 0 and default_group then
-      spans[#spans + 1] = { col = 1, end_col = #line + 1, group = default_group }
-    end
-    if #line > 0 and italic then
-      spans[#spans + 1] = { col = 1, end_col = #line + 1, group = "NeoagentMarkdownItalic" }
     end
     add_line(result, " " .. line, spans)
   end
@@ -711,7 +706,7 @@ local function parse_ansi(value)
   return table.concat(output), spans
 end
 
-local function output_lines(text, maximum, tail, group, hint, ansi)
+local function output_lines(text, maximum, tail, group, ansi)
   local result = rendered()
   if text == nil or text == "" then return result end
   local ansi_spans = {}
@@ -739,7 +734,7 @@ local function output_lines(text, maximum, tail, group, hint, ansi)
     add_line(result, line, line_spans)
   end
   if omitted > 0 then
-    local message = string.format("... (%d more lines%s)", omitted, hint and ", " .. hint .. " for details" or "")
+    local message = string.format("[... %d more line%s]", omitted, omitted == 1 and "" or "s")
     add_line(result, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
   end
   return result
@@ -750,32 +745,29 @@ local function tool_output(self, block, args, full)
   local message = block.message
   local update = block.update
   local value = message and content_text(message.content) or update and content_text(update.content) or nil
-  local hint = not full and (self.config.mappings or {}).card_details or nil
-  hint = type(hint) == "string" and hint or nil
   local maximum
   if not full then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
 
   if name == "write" or name == "write_file" then
-    return output_lines(args.content, maximum, false, "NeoagentToolOutput", hint)
+    return output_lines(args.content, maximum, false, "NeoagentToolOutput")
   elseif name == "edit" or name == "edit_file" then
     local diff = message and message.details and message.details.diff
-    if diff and diff ~= "" then return output_lines(diff, maximum, false, "diff", hint) end
-    if message and message.isError then return output_lines(value, maximum, false, "NeoagentError", hint) end
+    if diff and diff ~= "" then return output_lines(diff, maximum, false, "diff") end
+    if message and message.isError then return output_lines(value, maximum, false, "NeoagentError") end
     return rendered()
   elseif name == "read" or name == "read_file" then
-    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput")
   elseif name == "shell" then
     local active = message or update
     local ansi = active and active.details and active.details.ansi
     return output_lines(value, maximum, true,
-      message and message.isError and "NeoagentError" or "NeoagentToolOutput",
-      hint, ansi)
+      message and message.isError and "NeoagentError" or "NeoagentToolOutput", ansi)
   elseif name == "grep" or name == "find" then
-    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput", hint)
+    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput")
   elseif message and message.isError then
-    return output_lines(value, maximum, false, "NeoagentError", hint)
+    return output_lines(value, maximum, false, "NeoagentError")
   end
-  return output_lines(value, maximum, false, "NeoagentToolOutput", hint)
+  return output_lines(value, maximum, false, "NeoagentToolOutput")
 end
 
 local function format_token_count(value)
@@ -796,10 +788,98 @@ local function compaction_content(self, block, full, width)
     if block.summary ~= "" then body = body .. "\n\n" .. block.summary end
     append_rendered(content, markdown.render(body, { width = width }))
   else
-    local hint = (self.config.mappings or {}).card_details
-    local suffix = type(hint) == "string" and " (" .. hint .. " for details)" or ""
-    local message = "Compacted from " .. token_count .. suffix
+    local message = "Compacted from " .. token_count
     add_line(content, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
+  end
+  return content
+end
+
+local function expand_hint(self)
+  local key = (self.config.mappings or {}).card_details
+  if type(key) == "string" then return key end
+  if type(key) == "table" then return key[1] end
+end
+
+local THINKING_MAX_LINES = 10
+
+local function assistant_max_lines(self)
+  local height = 0
+  if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
+    height = vim.api.nvim_win_get_height(self.transcript_win)
+  end
+  return math.max(1, height - 5)
+end
+
+local function trim_trailing_lines(content)
+  while #content.lines > 0 and content.lines[#content.lines] == "" do
+    table.remove(content.lines)
+  end
+end
+
+local function clip_tail(content, maximum)
+  local omitted = math.max(0, #content.lines - maximum)
+  if omitted == 0 then return 0 end
+  local highlights = {}
+  for _, span in ipairs(content.highlights) do
+    if span.row >= omitted then
+      highlights[#highlights + 1] = {
+        row = span.row - omitted,
+        col = span.col,
+        end_col = span.end_col,
+        group = span.group,
+        priority = span.priority,
+      }
+    end
+  end
+  content.lines = vim.list_slice(content.lines, omitted + 1, #content.lines)
+  content.highlights = highlights
+  return omitted
+end
+
+local function response_header(self, kind, text, omitted, expandable)
+  local words = select(2, (text or ""):gsub("%S+", ""))
+  local message = string.format("[%s: %d word%s",
+    kind, words, words == 1 and "" or "s")
+  if omitted > 0 then
+    local unit = omitted == 1 and "line" or "lines"
+    message = message .. string.format(", %d %s above...", omitted, unit)
+  end
+  local hint = expandable and expand_hint(self) or nil
+  if hint then message = message .. ", " .. hint .. " to expand" end
+  return message .. "]"
+end
+
+local function assistant_content(self, block, full, width)
+  local content = markdown.render(block.text or "", { width = width })
+  trim_trailing_lines(content)
+  if not full then
+    local omitted = clip_tail(content, assistant_max_lines(self))
+    block.header = response_header(
+      self, "text", block.text, omitted, true)
+  end
+  return content
+end
+
+local function thinking_content(self, block, full, width)
+  local content = markdown.render(block.text or "", { width = width })
+  trim_trailing_lines(content)
+  for row = 1, #content.lines do
+    local length = #content.lines[row]
+    if length > 0 then
+      content.highlights[#content.highlights + 1] = {
+        row = row - 1, col = 0, end_col = length, group = "NeoagentThinking",
+      }
+      content.highlights[#content.highlights + 1] = {
+        row = row - 1, col = 0, end_col = length, group = "NeoagentMarkdownItalic",
+      }
+    end
+  end
+  if not full then
+    local omitted = clip_tail(content, THINKING_MAX_LINES)
+    block.header = response_header(
+      self, "thinking", block.text, omitted, true)
+    block.resting_header = response_header(
+      self, "thinking", block.text, omitted, false)
   end
   return content
 end
@@ -815,6 +895,10 @@ local function card_content(self, block, options)
     return content, "NeoagentUserBackground"
   elseif block.kind == "compaction" then
     return compaction_content(self, block, options.full, width), "NeoagentUserBackground"
+  elseif block.kind == "thinking" then
+    return thinking_content(self, block, options.full, width)
+  elseif block.kind == "assistant" then
+    return assistant_content(self, block, options.full, width)
   elseif block.kind ~= "tool" then
     return nil
   end
@@ -845,13 +929,15 @@ function M.block(self, block)
       return content
     end
     local width
-    if self.config.wrap_cards ~= true then width = self:_content_width() end
-    return card(content, background, width)
-  end
-  if block.kind == "assistant" then
-    return prose(markdown.render(block.text, { width = self:_content_width() }))
-  elseif block.kind == "thinking" then
-    return prose(markdown.render(block.text, { width = self:_content_width() }), "NeoagentThinking", true)
+    if self.config.wrap_cards ~= true and block.kind ~= "assistant"
+        and block.kind ~= "user" then
+      width = self:_content_width()
+    end
+    local result = card(content, background, width)
+    if block.kind == "thinking" then
+      block.overflow = content.truncated == true
+    end
+    return result
   end
   return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
 end
@@ -862,6 +948,7 @@ function M.details(self, block, options)
 end
 
 M.define_highlights = define_highlights
+M.expand_hint = expand_hint
 M.image_notes = image_notes
 
 return M

@@ -870,22 +870,45 @@ Fork selection restores the selected user message to the input buffer.
 
 The input and transcript are focusable Neovim buffers. Input opens in Insert
 mode, and the transcript supports normal search, motions, Visual selection,
-and yank. Set `ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
-`ui.scroll_on_reopen` to control automatic scrolling.
+and yank. Dialogs render without stealing focus while the input draft
+contains text, and the transcript, dialog, and card-details buffers remain
+in Normal mode. Set `ui.scroll_on_submit`,
+`ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
+automatic scrolling.
 
-Assistant text renders Markdown, and thinking uses a muted italic style. Set
-`ui.show_thinking = false` to omit thinking traces from the transcript while
-retaining them in the Session and model context. The footer displays context
-usage when the selected Model declares a `context_window`.
+User and assistant text renders Markdown in borderless cards whose long
+lines soft-wrap at word boundaries; assistant cards are clipped to five
+lines below the transcript height, and while hovered a
+right-aligned badge such as
+`[text: 42 words, 8 lines above..., <CR> to expand]` reports the word count
+and clipped lines. The `card_details` mapping reveals the
+complete response. Thinking appears in
+borderless cards with a muted italic style, clipped to the most recent
+lines. While a thinking card is hovered, a right-aligned badge such
+as `[thinking: 42 words, 8 lines above..., <CR> to expand]` reports the
+running word count, clipped lines, and expand key; the first line is
+truncated with `...` when it reaches the badge. When a thinking card has
+lines clipped to the visible width, a borderless `...[thinking: ...]` banner
+rests at the card's top right while the card is not hovered, keeping the
+hidden content visible; the expand key appears only while hovered. The
+`card_details` mapping reveals the complete reasoning trace.
+Set `ui.show_thinking = false` to omit thinking traces from
+the transcript while retaining them in the Session and model context. The
+footer displays context usage when the selected Model declares a
+`context_window`.
 
 Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
 show complete card lines with soft wrapping. A Unicode outline follows the card
-beneath the cursor while the transcript is focused. The configured
-`card_details` mapping opens that card's complete content in a scrollable,
-read-only floating window. Shell details include the complete command and all
-output retained by the tool result. Ctrl-C closes the details window and returns
-to the transcript.
+beneath the cursor while the transcript is focused, and tool card outlines
+carry an `<CR> to expand` hint in the bottom border while hovered. The
+configured `card_details` mapping opens that card's complete content in a
+scrollable, read-only floating window that soft-wraps long lines and is
+titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
+Shell
+details include the complete command and all output retained by the tool
+result, and thinking details reveal the full reasoning trace. Ctrl-C closes
+the details window and returns to the transcript.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -933,8 +956,9 @@ Default mappings:
   <A-Up>      Restore queued steering messages to the input.
   q           Hide the UI from the transcript.
 
-Set a value in `ui.mappings` to an lhs string or list of strings, or to `false`
-to disable it. Card actions use `card_details`, `card_previous`, and `card_next`.
+Set a value in `ui.mappings` to a non-empty lhs string or non-empty list of
+strings, or to `false` to disable it. Card actions use `card_details`,
+`card_previous`, and `card_next`.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
 saved when workspace settings are enabled. `ui.width` and `ui.height` accept a

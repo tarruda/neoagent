@@ -52,14 +52,22 @@ function M:_map_buffers()
   self:_map(self.transcript_buf, { "n", "x", "s" }, mappings.toggle_focus,
     function() self:focus_input() end)
   self:_map(self.input_buf, "n", mappings.close_input, function() self:close() end)
-  self:_map(self.input_buf, { "n", "i" }, mappings.close_empty, function()
-    if self:get_input() == "" then
-      self:close()
-      return
-    end
-    local keys = vim.api.nvim_replace_termcodes(mappings.close_empty, true, false, true)
-    vim.api.nvim_feedkeys(keys, "n", false)
-  end)
+  local close_empty = mappings.close_empty
+  local function map_close_empty(key)
+    self:_map(self.input_buf, { "n", "i" }, key, function()
+      if self:get_input() == "" then
+        self:close()
+        return
+      end
+      local keys = vim.api.nvim_replace_termcodes(key, true, false, true)
+      vim.api.nvim_feedkeys(keys, "n", false)
+    end)
+  end
+  if type(close_empty) == "table" then
+    for _, key in ipairs(close_empty) do map_close_empty(key) end
+  else
+    map_close_empty(close_empty)
+  end
   self:_map(self.transcript_buf, "n", mappings.card_details,
     function() self:show_card_details() end)
   self:_map(self.transcript_buf, "n", mappings.card_previous,

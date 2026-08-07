@@ -57,7 +57,7 @@ function View:_ensure_buffers()
       group = self.augroup,
       buffer = self.transcript_buf,
       callback = function()
-        self:_clear_card_outline()
+        self:_update_overflow_badges()
         if self.config.scroll_on_transcript_leave then self:_scroll_transcript_to_bottom() end
       end,
     })
@@ -65,6 +65,11 @@ function View:_ensure_buffers()
       group = self.augroup,
       buffer = self.transcript_buf,
       callback = function() self:_update_card_outline() end,
+    })
+    vim.api.nvim_create_autocmd("InsertEnter", {
+      group = self.augroup,
+      buffer = self.transcript_buf,
+      callback = function() vim.cmd("stopinsert") end,
     })
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
@@ -491,6 +496,7 @@ View.set_input = input.set_input
 View._card_at_cursor = cards._card_at_cursor
 View._move_card = cards._move_card
 View._clear_card_outline = cards._clear_card_outline
+View._update_overflow_badges = cards._update_overflow_badges
 View._update_card_outline = cards._update_card_outline
 View._refresh_card_details = cards._refresh_card_details
 View._close_card_details = cards._close_card_details
