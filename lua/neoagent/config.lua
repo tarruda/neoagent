@@ -78,6 +78,7 @@ local defaults = {
       close_input = "<Esc><Esc>",
       close_empty = "<C-d>",
       card_details = "<CR>",
+      card_raw = "r",
       card_previous = "[c",
       card_next = "]c",
       cycle_thinking = "<S-Tab>",

@@ -907,7 +907,9 @@ titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
 Shell
 details include the complete command and all output retained by the tool
 result, and thinking details reveal the full reasoning trace. Ctrl-C closes
-the details window and returns to the transcript.
+the details window and returns to the transcript. Text and Thinking details
+render Markdown by default. Press `r`, configured by `card_raw`, to toggle the
+original raw Markdown. The title shows the mapping and the view it will open.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -944,6 +946,7 @@ Default mappings:
   <C-d>       Hide the UI when the input is empty.
   [c / ]c     Jump to the previous or next transcript card; counts are
               supported.
+  r           Toggle rendered and raw Markdown in Text or Thinking details.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
@@ -957,7 +960,7 @@ Default mappings:
 
 Set a value in `ui.mappings` to a non-empty lhs string or non-empty list of
 strings, or to `false` to disable it. Card actions use `card_details`,
-`card_previous`, and `card_next`.
+`card_raw`, `card_previous`, and `card_next`.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
 saved when workspace settings are enabled. `ui.width` and `ui.height` accept a

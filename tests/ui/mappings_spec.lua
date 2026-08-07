@@ -69,6 +69,81 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("toggles raw Markdown for text and thinking details only", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    local thinking = "# Trace\n\n*reason*"
+    local response = "**Answer**\n\n- item"
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "thinking", thinking = thinking },
+        { type = "text", text = response },
+        { type = "toolCall", id = "read", name = "read_file",
+          arguments = { path = "notes.md" } },
+      } },
+      { role = "toolResult", toolCallId = "read", toolName = "read_file",
+        isError = false, content = { { type = "text", text = "contents" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+
+    local rows = {}
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("Trace", 1, true) then rows.thinking = row end
+      if line:find("Answer", 1, true) then rows.text = row end
+      if line:find("read notes.md", 1, true) then rows.tool = row end
+    end
+    assert.is_not_nil(rows.thinking)
+    assert.is_not_nil(rows.text)
+    assert.is_not_nil(rows.tool)
+
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    local function details()
+      return table.concat(
+        vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
+    end
+    local function title()
+      local chunks = vim.api.nvim_win_get_config(result.details_win).title or {}
+      return table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
+    end
+    local function check_toggle(row, raw)
+      vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+      feed("<CR>")
+      assert(vim.wait(1000, function()
+        return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+      end))
+      assert.are_not.equal(raw, details())
+      assert.matches("r raw", title())
+      feed("r")
+      assert(vim.wait(1000, function() return details() == raw end))
+      assert.matches("r rendered", title())
+      feed("r")
+      assert(vim.wait(1000, function() return details() ~= raw end))
+      feed("<C-c>")
+      assert(vim.wait(1000, function() return result.details_win == nil end))
+    end
+    check_toggle(rows.thinking, thinking)
+    check_toggle(rows.text, response)
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.tool, 0 })
+    feed("<CR>")
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    vim.api.nvim_buf_call(result.details_buf, function()
+      assert.are.equal("", vim.fn.maparg("r", "n"))
+    end)
+    assert.is_nil(title():find("r raw", 1, true))
+    result:_close_card_details(true)
+    result:destroy()
+  end)
+
   it("navigates transcript cards with bracket motions", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

@@ -18,6 +18,55 @@ local function detail_width()
     math.max(20, math.floor(vim.o.columns * 0.8)))
 end
 
+local function mapping_hint(mapping)
+  if type(mapping) == "string" then return mapping end
+  if type(mapping) == "table" then return mapping[1] end
+end
+
+local function supports_raw_details(block)
+  return block and (block.kind == "thinking" or block.kind == "assistant")
+end
+
+local function raw_detail_content(block)
+  return {
+    lines = vim.split(block.text or "", "\n", { plain = true }),
+    highlights = {},
+    line_groups = {},
+  }
+end
+
+local function detail_content(view, block, width)
+  if view.details_raw and supports_raw_details(block) then
+    return raw_detail_content(block)
+  end
+  return render.details(view, block, { width = width })
+end
+
+local function detail_title(view, block)
+  local label = "Card details"
+  if block.kind == "tool" then
+    label = "Tool call"
+  elseif block.kind == "thinking" then
+    label = "Thinking"
+  elseif block.kind == "assistant" then
+    label = "Text"
+  end
+  if supports_raw_details(block) then
+    local key = mapping_hint((view.config.mappings or {}).card_raw)
+    if key then
+      label = label .. " · " .. key .. " "
+        .. (view.details_raw and "rendered" or "raw")
+    end
+  end
+  return " " .. label .. " "
+end
+
+local function update_detail_title(view)
+  local config = vim.api.nvim_win_get_config(view.details_win)
+  config.title = detail_title(view, view.details_block)
+  vim.api.nvim_win_set_config(view.details_win, config)
+end
+
 local function prepare_detail_window(window)
   local width = detail_width()
   local available = math.max(1, vim.o.lines - vim.o.cmdheight - 4)
@@ -287,9 +336,8 @@ function M:_refresh_card_details()
   local saved = vim.api.nvim_win_call(
     self.details_win, function() return vim.fn.winsaveview() end)
   local width = prepare_detail_window(self.details_win)
-  local content, background = render.details(self, self.details_block, {
-    width = width,
-  })
+  local content, background = detail_content(
+    self, self.details_block, width)
   apply_rendered(self, self.details_buf, content, background)
   fit_detail_height(self.details_win)
   vim.api.nvim_win_call(self.details_win, function()
@@ -301,6 +349,7 @@ end
 function M:_close_card_details(focus_transcript)
   local window = self.details_win
   self.details_win, self.details_buf, self.details_block = nil, nil, nil
+  self.details_raw = nil
   if window and vim.api.nvim_win_is_valid(window) then
     vim.api.nvim_win_close(window, true)
   end
@@ -313,6 +362,16 @@ end
 function M:_card_details_closed(window)
   if window ~= self.details_win then return false end
   self.details_win, self.details_buf, self.details_block = nil, nil, nil
+  self.details_raw = nil
+  return true
+end
+
+function M:_toggle_card_details_raw()
+  if not self.details_win or not vim.api.nvim_win_is_valid(self.details_win)
+      or not supports_raw_details(self.details_block) then return false end
+  self.details_raw = not self.details_raw
+  if not self:_refresh_card_details() then return false end
+  update_detail_title(self)
   return true
 end
 
@@ -320,8 +379,9 @@ function M:show_card_details()
   local block = self:_card_at_cursor()
   if not block then return false end
   self:_close_card_details(false)
+  self.details_raw = false
   local width = detail_width()
-  local content, background = render.details(self, block, { width = width })
+  local content, background = detail_content(self, block, width)
   if not content then return false end
   local buffer = vim.api.nvim_create_buf(false, true)
   self.details_counter = (self.details_counter or 0) + 1
@@ -337,14 +397,6 @@ function M:show_card_details()
   vim.bo[buffer].readonly = true
 
   local height = detail_height(lines)
-  local title = " Card details "
-  if block.kind == "tool" then
-    title = " Tool call "
-  elseif block.kind == "thinking" then
-    title = " Thinking "
-  elseif block.kind == "assistant" then
-    title = " Text "
-  end
   local window = vim.api.nvim_open_win(buffer, true, {
     relative = "editor",
     row = detail_row(height),
@@ -353,7 +405,7 @@ function M:show_card_details()
     height = height,
     style = "minimal",
     border = self.config.border,
-    title = title,
+    title = detail_title(self, block),
     title_pos = "center",
     zindex = 70,
   })
@@ -375,6 +427,10 @@ function M:show_card_details()
   vim.keymap.set("n", "<C-c>", function()
     self:_close_card_details(true)
   end, { buffer = buffer, silent = true, nowait = true })
+  if supports_raw_details(block) then
+    self:_map(buffer, "n", (self.config.mappings or {}).card_raw,
+      function() self:_toggle_card_details_raw() end)
+  end
   return true
 end
 

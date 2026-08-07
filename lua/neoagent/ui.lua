@@ -501,6 +501,7 @@ View._update_card_outline = cards._update_card_outline
 View._refresh_card_details = cards._refresh_card_details
 View._close_card_details = cards._close_card_details
 View._card_details_closed = cards._card_details_closed
+View._toggle_card_details_raw = cards._toggle_card_details_raw
 View.show_card_details = cards.show_card_details
 
 function M.new(opts)
