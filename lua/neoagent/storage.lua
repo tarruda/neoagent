@@ -40,11 +40,33 @@ local function copy_metadata(value)
 end
 
 local function rebuild(store)
-  local path, err = tree.path(store._entries, store._leaf_id == nil and vim.NIL or store._leaf_id)
+  local path, err = tree.indexed_path(store._by_id, store._leaf_id == nil and vim.NIL or store._leaf_id)
   if not path then return nil, err end
   store._messages = tree.messages(path, false)
   store._state = tree.state(path)
   return true
+end
+
+local function project_append(store, entry)
+  local messages = tree.entry_messages(entry)
+  vim.list_extend(store._messages, messages)
+  store._state = tree.apply_state(store._state, entry)
+  return messages
+end
+
+local function commit_entry(store, entry)
+  local stored = util.copy(entry)
+  store._entries[#store._entries + 1] = stored
+  store._by_id[stored.id] = stored
+  if stored.type == "leaf" then
+    store._leaf_id = is_null(stored.targetId) and nil or stored.targetId
+    local rebuilt, err = rebuild(store)
+    if not rebuilt then return nil, err end
+    return true, { type = "replace", messages = util.copy(store._messages) }
+  end
+  store._leaf_id = stored.id
+  local messages = project_append(store, stored)
+  return true, { type = "append", messages = util.copy(messages) }
 end
 
 function Store:load()
@@ -72,7 +94,7 @@ end
 function Store:path(...)
   local requested = select("#", ...) > 0 and select(1, ...) or self._leaf_id
   if requested == nil then requested = vim.NIL end
-  local path, err = tree.path(self._entries, requested)
+  local path, err = tree.indexed_path(self._by_id, requested)
   if not path then return nil, storage_error("Failed to build session path", err) end
   return path
 end
@@ -179,6 +201,9 @@ function Store:_append(entry_type, values, persist)
   end
   local valid, validation_err = tree.validate_entry(entry)
   if not valid then return nil, storage_error("Invalid " .. entry_type, validation_err) end
+  if self._by_id[entry.id] then
+    return nil, storage_error("Invalid " .. entry_type, "duplicate entry id")
+  end
   local encoded_entry, encode_err = encode_session_value(entry, entry_type)
   if not encoded_entry then return nil, encode_err end
 
@@ -194,12 +219,9 @@ function Store:_append(entry_type, values, persist)
 
   if not self._persisted and not persist then
     self._pending[#self._pending + 1] = entry
-    self._entries[#self._entries + 1] = util.copy(entry)
-    self._by_id[entry.id] = self._entries[#self._entries]
-    self._leaf_id = entry.type == "leaf" and (is_null(entry.targetId) and nil or entry.targetId) or entry.id
-    local rebuilt, rebuild_err = rebuild(self)
-    if not rebuilt then return nil, storage_error("Failed to update session", rebuild_err) end
-    return true, nil, util.copy(entry)
+    local committed, projection = commit_entry(self, entry)
+    if not committed then return nil, storage_error("Failed to update session", projection) end
+    return true, nil, util.copy(entry), projection
   end
 
   if not self._persisted then
@@ -238,12 +260,9 @@ function Store:_append(entry_type, values, persist)
       return nil, storage_error("Failed to append session entry", err)
     end
   end
-  self._entries[#self._entries + 1] = util.copy(entry)
-  self._by_id[entry.id] = self._entries[#self._entries]
-  self._leaf_id = entry.type == "leaf" and (is_null(entry.targetId) and nil or entry.targetId) or entry.id
-  local rebuilt, rebuild_err = rebuild(self)
-  if not rebuilt then return nil, storage_error("Failed to update session", rebuild_err) end
-  return true, nil, util.copy(entry)
+  local committed, projection = commit_entry(self, entry)
+  if not committed then return nil, storage_error("Failed to update session", projection) end
+  return true, nil, util.copy(entry), projection
 end
 
 function Store:append(message)

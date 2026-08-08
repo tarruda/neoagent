@@ -26,7 +26,10 @@ local function new()
       if not ok then
         error("Could not write file " .. path .. ": " .. tostring(err))
       end
-      return { content = { { type = "text", text = "Successfully wrote " .. #content .. " bytes to " .. path } } }
+      return {
+        content = { { type = "text", text = "Successfully wrote " .. #content .. " bytes to " .. path } },
+        details = { changed_paths = { path } },
+      }
     end,
   }
 end

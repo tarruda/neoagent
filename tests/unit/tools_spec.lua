@@ -47,6 +47,7 @@ describe("neoagent bundled tools", function()
       "read_file", "write_file", "edit_file", "shell", "grep", "find",
       "read_agent_documentation", "update_plan",
     }, vim.tbl_map(function(t) return t.name end, tools.all()))
+    assert.is_true(coding[1].capabilities.read_files)
     assert.are_not.equal(coding[1], tools.coding()[1])
   end)
 

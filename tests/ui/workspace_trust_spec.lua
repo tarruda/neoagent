@@ -65,7 +65,7 @@ describe("neoagent workspace trust UI", function()
   end
 
   local function view()
-    return neoagent.default_window():_state().view
+    return neoagent.default_window():view()
   end
 
   local function wait_for_dialog()
@@ -211,7 +211,7 @@ describe("neoagent workspace trust UI", function()
       active_view:focus_transcript()
       feed("q")
       assert(vim.wait(1000, function() return not window:is_open() end, 5))
-      assert.are.equal("keep me", window:_state().drafts[controller])
+      assert.are.equal("keep me", window:get_input())
       assert.is_nil(vim.uv.fs_stat(trust_path))
       assert.is_nil(controller:get_session())
 
@@ -310,7 +310,7 @@ describe("neoagent workspace trust UI", function()
       assert(controller:resume(store:metadata().path))
       assert.are.equal("saved", controller:get_session():messages()[1].content)
       assert.are.equal(require("neoagent.fs").canonical(third),
-        controller:_state().workspace.root)
+        controller:get_workspace().root)
       assert.is_true(window:is_open())
     end)
 
@@ -368,10 +368,10 @@ describe("neoagent workspace trust UI", function()
     window:set_input("custom draft")
     assert(window:open())
     assert(vim.wait(1000, function()
-      local active_view = window:_state().view
+      local active_view = window:view()
       return active_view and active_view.dialog_buf ~= nil
     end, 5))
-    local active_view = window:_state().view
+    local active_view = window:view()
     assert.are.equal("Review", active_view.dialog.active.controller)
     assert.is_not_nil(active_view.dialog.active.body:find(
       "Review can load AGENTS.md", 1, true))
@@ -489,6 +489,7 @@ describe("neoagent workspace trust UI", function()
       end
       local read = {
         name = "read_file",
+        capabilities = { read_files = true },
         description = "Read a file",
         input_schema = {
           type = "object",

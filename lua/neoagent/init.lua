@@ -218,7 +218,6 @@ for _, method in ipairs({
   "logout",
   "get_session",
   "get_model",
-  "_state",
 }) do
   M[method] = function(...)
     local controller = M.default()

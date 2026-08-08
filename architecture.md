@@ -421,7 +421,13 @@ session is a tree that supports:
 
 Only the active path is projected into model context. Empty sessions create no
 files; persistence begins when the first message is accepted. Stores validate
-JSON encoding and UTF-8 before mutating the tree or creating a file.
+JSON encoding and UTF-8 before mutating the tree or creating a file. A Store
+validates complete trees when opening them, maintains an entry index, and
+updates messages and model state incrementally for linear appends. Branch
+selection rebuilds the active projection from the maintained index. Default
+Store mutations return copied append or replacement projection updates for
+the Session cache. Custom Stores may omit these updates; Sessions then reload
+the projection and return structured storage errors when that reload fails.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.
@@ -447,21 +453,25 @@ Each Controller owns:
 - Context compaction
 - AGENTS.md and skill discovery
 
-The Controller starts `chat.run()`, handles storage, classifies transient
-transport and provider failures, and replays eligible turns under the configured
-retry budget. Its active toolset is a plain tools-and-executor pair that can be
-atomically replaced while idle. Each Run snapshots that pair, so retries,
-continuations, and tool calls share one selection. Provider retry metadata can
-declare eligibility, delay, and a stricter attempt cap. It retries context
-overflows after compaction, refreshes unmodified buffers after file edits, and
-publishes updates. Focused internal modules calculate context usage and format
-session choices; the Controller owns the mutable run and session state. It
-feeds complete active-conversation copies to optional tool state hooks after
-activation, message changes, resume, forks, and branch changes. Message
-updates and snapshots project the latest compaction checkpoint with its
-retained suffix, while the Session tree retains the complete active path. A
-replay removes a failed partial assistant message from the active branch before
-continuing the interaction:
+The Controller owns shared mutable state and composes focused internal modules.
+The session lifecycle module creates, activates, resumes, branches, and forks
+Sessions. The run lifecycle module launches interactions, consumes steering,
+classifies transient failures, retries eligible turns, compacts context, and
+finishes or cancels Runs. Context metrics and session choices remain focused
+calculations.
+
+Its active toolset is a plain tools-and-executor pair that can be atomically
+replaced while idle. Each Run snapshots that pair, so retries, continuations,
+and tool calls share one selection. Provider retry metadata can declare
+eligibility, delay, and a stricter attempt cap. Successful tool results carry
+changed paths for unmodified-buffer refresh, and read-capable tools declare
+skill-discovery metadata. The Controller publishes updates and feeds complete
+active-conversation copies to optional tool state hooks after activation,
+message changes, resume, forks, and branch changes. Message updates and
+snapshots project the latest compaction checkpoint with its retained suffix,
+while the Session tree retains the complete active path. A replay removes a
+failed partial assistant message from the active branch before continuing the
+interaction:
 
 ```lua
 { type = "messages", ... }
@@ -483,6 +493,8 @@ The Window:
 - Selects the active Controller
 - Subscribes the View to that Controller
 - Restores its transcript and transient events
+- Keeps the current selection and presentation when visible target
+  preparation fails
 - Keeps a separate input draft per Controller
 - Shares workspace input history
 - Leaves inactive Controllers running independently

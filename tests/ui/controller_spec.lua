@@ -12,8 +12,6 @@ describe("neoagent default controller", function()
   end)
 
   after_each(function()
-    local state = neoagent._state()
-    if state.run then state.run:cancel() end
     local window = neoagent.default_window()
     for _, controller in ipairs(window:controllers()) do controller:destroy() end
     window:destroy()
@@ -23,7 +21,15 @@ describe("neoagent default controller", function()
   end)
 
   local function current_view()
-    return neoagent.default_window():_state().view
+    return neoagent.default_window():view()
+  end
+
+  local function snapshot()
+    return neoagent.default():snapshot()
+  end
+
+  local function is_idle()
+    return snapshot().context.state == "idle"
   end
 
   local function setup_model(model, extra)
@@ -48,7 +54,7 @@ describe("neoagent default controller", function()
     setup_model(model)
     assert(neoagent.open())
     local run = assert(neoagent.send("hi"))
-    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
     assert.are.equal(2, #neoagent.get_session():messages())
     local lines = table.concat(vim.api.nvim_buf_get_lines(current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches(" hi ", lines)
@@ -171,7 +177,7 @@ describe("neoagent default controller", function()
     setup_model(model)
     assert(neoagent.open())
     local run = assert(neoagent.send("measure"))
-    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
     assert.are.same({ used = 250, total = 1000, percent = 25 },
       current_view().context.context_usage)
     assert.are.equal("quota 70% left", current_view().context.provider_status)
@@ -185,7 +191,7 @@ describe("neoagent default controller", function()
     setup_model(model)
     assert(neoagent.open())
     local run = assert(neoagent.send("measure"))
-    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
 
     local messages = assert(neoagent.get_session():context_messages())
     local estimated = 0
@@ -213,7 +219,7 @@ describe("neoagent default controller", function()
     assert(neoagent.open())
     local run = assert(neoagent.send("perform the large task"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
     local entries = neoagent.get_session():entries()
     assert.are.equal("compaction", entries[#entries].type)
@@ -259,7 +265,7 @@ describe("neoagent default controller", function()
     assert(neoagent.resume(store:metadata().path))
     local run = assert(neoagent.send("new question"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
     assert.matches("context summarization assistant", model.requests[1].system_prompt)
     assert.are.equal("new question", model.requests[2].messages[#model.requests[2].messages].content)
@@ -296,7 +302,7 @@ describe("neoagent default controller", function()
     assert(neoagent.resume(store:metadata().path))
     local run = assert(neoagent.send("continue"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 3
+      return run:is_done() and is_idle() and #model.requests == 3
     end))
     local messages = neoagent.get_session():messages()
     assert.are.equal("recovered", messages[#messages].content[1].text)
@@ -324,15 +330,15 @@ describe("neoagent default controller", function()
     assert(neoagent.open())
     local run = assert(neoagent.send("retry this"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
 
     local messages = neoagent.get_session():messages()
     assert.are.equal(2, #messages)
     assert.are.equal("retry this", messages[1].content)
     assert.are.equal("recovered", messages[2].content[1].text)
-    assert.is_true(neoagent._state().last_result.ok)
-    assert.is_nil(neoagent._state().provider_status)
+    assert.is_true(snapshot().result.ok)
+    assert.is_false(snapshot().context.provider_status)
   end)
 
   it("retries interrupted transports without provider-specific error metadata", function()
@@ -353,14 +359,14 @@ describe("neoagent default controller", function()
     assert(neoagent.open())
     local run = assert(neoagent.send("retry this"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
 
     local messages = neoagent.get_session():messages()
     assert.are.equal(2, #messages)
     assert.are.equal("retry this", messages[1].content)
     assert.are.equal("recovered", messages[2].content[1].text)
-    assert.is_true(neoagent._state().last_result.ok)
+    assert.is_true(snapshot().result.ok)
   end)
 
   it("retries premature protocol stream endings", function()
@@ -379,10 +385,10 @@ describe("neoagent default controller", function()
     })
     local run = assert(neoagent.send("retry truncated stream"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
 
-    assert.is_true(neoagent._state().last_result.ok)
+    assert.is_true(snapshot().result.ok)
   end)
 
   it("bounds automatic retries with the configured retry budget", function()
@@ -402,11 +408,11 @@ describe("neoagent default controller", function()
     })
     local run = assert(neoagent.send("bounded retry"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle" and #model.requests == 2
+      return run:is_done() and is_idle() and #model.requests == 2
     end))
 
     assert.are.equal(2, #model.requests)
-    assert.is_false(neoagent._state().last_result.ok)
+    assert.is_false(snapshot().result.ok)
   end)
 
   it("does not retry terminal HTTP transport failures", function()
@@ -426,11 +432,11 @@ describe("neoagent default controller", function()
     })
     local run = assert(neoagent.send("do not retry"))
     assert(vim.wait(1000, function()
-      return run:is_done() and neoagent._state().status == "idle"
+      return run:is_done() and is_idle()
     end))
 
     assert.are.equal(1, #model.requests)
-    assert.is_false(neoagent._state().last_result.ok)
+    assert.is_false(snapshot().result.ok)
   end)
 
   it("cancels a pending retry without launching another turn", function()
@@ -447,14 +453,14 @@ describe("neoagent default controller", function()
     setup_model(model)
     assert(neoagent.send("stop retrying"))
     assert(vim.wait(1000, function()
-      return neoagent._state().provider_status == "Reconnecting… 1/3"
+      return snapshot().context.provider_status == "Reconnecting… 1/3"
     end))
     assert.is_true(neoagent.stop())
-    assert(vim.wait(1000, function() return neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return is_idle() end))
 
     assert.are.equal(1, #model.requests)
-    assert.are.equal("cancelled", neoagent._state().last_result.error.kind)
-    assert.is_nil(neoagent._state().provider_status)
+    assert.are.equal("cancelled", snapshot().result.error.kind)
+    assert.is_false(snapshot().context.provider_status)
   end)
 
   it("runs a replaceable manual compactor with custom instructions", function()
@@ -485,9 +491,9 @@ describe("neoagent default controller", function()
     assert(neoagent.open())
     assert.is_nil(neoagent.compact())
     local interaction = assert(neoagent.send("manual compact"))
-    assert(vim.wait(1000, function() return interaction:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return interaction:is_done() and is_idle() end))
     local run = assert(neoagent.compact("focus on tests"))
-    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
     assert.are.equal("focus on tests", captured.instructions)
     local entries = neoagent.get_session():entries()
     local checkpoint = entries[#entries]
@@ -517,9 +523,9 @@ describe("neoagent default controller", function()
     })
     assert(neoagent.open())
     local interaction = assert(neoagent.send("manual compact"))
-    assert(vim.wait(1000, function() return interaction:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return interaction:is_done() and is_idle() end))
     local run = assert(neoagent.compact())
-    assert(vim.wait(1000, function() return run:is_done() and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
     local transcript = table.concat(vim.api.nvim_buf_get_lines(current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches("summary failed", transcript)
 
@@ -596,7 +602,7 @@ describe("neoagent default controller", function()
 
     assert(neoagent.set_model("fake", "gpt"))
     assert.are.equal("medium", neoagent.get_thinking_level())
-    assert.are.equal("medium", neoagent.default():_state().store:state().thinking_level)
+    assert.are.equal("medium", neoagent.get_session():state().thinking_level)
     local settings = require("neoagent.workspace_settings").new({
       directory = directory,
       root = vim.fn.getcwd(),
@@ -951,9 +957,10 @@ describe("neoagent default controller", function()
       agents = { global_files = { agents_path }, project_filenames = {} },
       skills = { global_dirs = { skill_root }, project_dirs = {} },
       tools = { {
-        name = "read_file",
+        name = "inspect_files",
         description = "Read a file",
         input_schema = { type = "object", properties = {} },
+        capabilities = { read_files = true },
       } },
       system_prompt = function(context)
         assert.are.equal(1, #context.agents)
@@ -1043,7 +1050,7 @@ describe("neoagent default controller", function()
     assert.is_true(neoagent.send("queued"))
     calls[1].on_done({ ok = true })
     assert(vim.wait(1000, function()
-      return #calls == 2 and neoagent._state().status == "idle"
+      return #calls == 2 and is_idle()
         and vim.deep_equal(neoagent.default():snapshot().context.steering, { "queued" })
     end))
     assert.are.equal(2, #calls)
@@ -1060,6 +1067,35 @@ describe("neoagent default controller", function()
     assert(neoagent.new_session())
     assert.is_nil(vim.uv.fs_stat(directory))
     assert.is_nil(neoagent.fork())
+  end)
+
+  it("keeps the active session intact when creating its replacement fails", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local model = fake_model.new({})
+    local resolutions = 0
+    setup_model(model, {
+      persistence = { enabled = true, directory = directory },
+      providers = { fake = { api = "fake-api", models = { test = {}, other = {} } } },
+      apis = { ["fake-api"] = function()
+        resolutions = resolutions + 1
+        if resolutions > 1 then error("model resolution failed") end
+        return model
+      end },
+    })
+    local first = assert(neoagent.new_session())
+    local first_snapshot = neoagent.default():snapshot()
+
+    local replacement, err = neoagent.new_session()
+
+    assert.is_nil(replacement)
+    assert.matches("model resolution failed", err.message)
+    assert.are.equal(first, neoagent.get_session())
+    assert.are.equal(model, neoagent.get_model())
+    assert.are.same(first_snapshot, neoagent.default():snapshot())
+    resolutions = 0
+    assert(neoagent.set_model("fake", "other"))
+    assert.are.same({ provider = "fake", model = "other" }, first:state().model)
   end)
 
   it("resolves the configured model immediately for a new session", function()
@@ -1211,82 +1247,115 @@ describe("neoagent default controller", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
     local model = fake_model.new({})
-    setup_model(model, {
-      persistence = { enabled = true, workspace_settings = true, directory = directory },
-      default_thinking_level = "low",
-      providers = { fake = { api = "fake-api", models = { test = { thinking = {
-        off = {}, low = {}, high = {},
-      } } } } },
+    local save_error = { kind = "storage", message = "settings unavailable" }
+    local journal_error = { kind = "storage", message = "journal unavailable" }
+    local workspace_settings = require("neoagent.workspace_settings")
+    local storage = require("neoagent.storage")
+    local original_settings_new = workspace_settings.new
+    local original_storage_new = storage.new
+    local captured_store
+    workspace_settings.new = function(opts)
+      local settings = original_settings_new(opts)
+      settings.update = function() return nil, save_error end
+      return settings
+    end
+    storage.new = function(opts)
+      captured_store = original_storage_new(opts)
+      return captured_store
+    end
+
+    local ok, test_err = pcall(function()
+      local extra = {
+        persistence = { enabled = true, workspace_settings = true, directory = directory },
+        default_thinking_level = "low",
+        providers = { fake = { api = "fake-api", models = { test = { thinking = {
+          off = {}, low = {}, high = {},
+        } } } } },
+      }
+      setup_model(model, extra)
+      local controller = neoagent.default()
+      assert(controller:prepare())
+
+      local selected, err = controller:set_model("fake", "test")
+      assert.is_nil(selected)
+      assert.are.equal(save_error, err)
+
+      assert(controller:new_session())
+      local append_model_change = captured_store.append_model_change
+      local append_thinking_level_change = captured_store.append_thinking_level_change
+      captured_store.append_model_change = function() return nil, journal_error end
+      selected, err = controller:set_model("fake", "test")
+      assert.is_nil(selected)
+      assert.are.equal(journal_error, err)
+
+      captured_store.append_model_change = append_model_change
+      captured_store.append_thinking_level_change = function() return nil, journal_error end
+      selected, err = controller:set_model("fake", "test")
+      assert.is_nil(selected)
+      assert.are.equal(journal_error, err)
+
+      captured_store.append_thinking_level_change = append_thinking_level_change
+      assert.are.equal(model, controller:set_model("fake", "test"))
+      assert.are.same({ provider = "fake", model = "test" },
+        controller:get_session():state().model)
+
+      captured_store.append_thinking_level_change = function() return nil, journal_error end
+      local level
+      level, err = controller:set_thinking_level("high")
+      assert.is_nil(level)
+      assert.are.equal(journal_error, err)
+
+      setup_model(model, extra)
+      controller = neoagent.default()
+      assert(controller:prepare())
+      level, err = controller:set_thinking_level("high")
+      assert.is_nil(level)
+      assert.are.equal(save_error, err)
+      assert.are.equal("low", controller:get_thinking_level())
+
+      assert(controller:new_session())
+      assert.are.equal("high", controller:set_thinking_level("high"))
+      assert.are.equal("high", controller:get_thinking_level())
+    end)
+    workspace_settings.new = original_settings_new
+    storage.new = original_storage_new
+    assert(ok, test_err)
+  end)
+  it("cancels active interaction and authentication Runs when destroyed", function()
+    local async = require("neoagent.async")
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local cancelled = {}
+    local waiting_method = {
+      name = "Waiting login",
+      type = "api_key",
+      request_opts = function() return {} end,
+      login = function()
+        return async.run(function()
+          async.await(function()
+            return function() cancelled.login = true end
+          end)
+        end)
+      end,
+    }
+    setup_model(fake_model.new({}), {
+      auth = { path = directory .. "/auth.json", methods = { waiting = waiting_method } },
+      interaction = function()
+        return { cancel = function() cancelled.run = true end }
+      end,
     })
     local controller = neoagent.default()
-    assert(controller:prepare())
-    local state = controller:_state()
-    local save_error = { kind = "storage", message = "settings unavailable" }
-    state.workspace_settings = { update = function() return nil, save_error end }
-
-    state.store = nil
-    local selected, err = controller:set_model("fake", "test")
-    assert.is_nil(selected)
-    assert.are.equal(save_error, err)
-
-    local journal_error = { kind = "storage", message = "journal unavailable" }
-    state.store = {
-      append_model_change = function() return nil, journal_error end,
-    }
-    selected, err = controller:set_model("fake", "test")
-    assert.is_nil(selected)
-    assert.are.equal(journal_error, err)
-
-    state.store_seeded = false
-    state.store = {
-      append_model_change = function() return true end,
-      append_thinking_level_change = function() return nil, journal_error end,
-    }
-    selected, err = controller:set_model("fake", "test")
-    assert.is_nil(selected)
-    assert.are.equal(journal_error, err)
-
-    state.store = {
-      append_model_change = function() return true end,
-      append_thinking_level_change = function() return true end,
-    }
-    selected = assert(controller:set_model("fake", "test"))
-    assert.are.equal(model, selected)
-    assert.is_true(state.store_seeded)
-
-    state.store.append_thinking_level_change = function() return nil, journal_error end
-    local level
-    level, err = controller:set_thinking_level("high")
-    assert.is_nil(level)
-    assert.are.equal(journal_error, err)
-
-    state.store = nil
-    level, err = controller:set_thinking_level("high")
-    assert.is_nil(level)
-    assert.are.equal(save_error, err)
-    assert.are.equal("low", controller:get_thinking_level())
-
-    state.store = { append_thinking_level_change = function() return true end }
-    assert.are.equal("high", controller:set_thinking_level("high"))
-    assert.are.equal("high", controller:get_thinking_level())
-  end)
-
-  it("cancels interaction and authentication Runs when destroyed", function()
-    setup_model(fake_model.new({}))
-    local controller = neoagent.default()
-    local cancelled = {}
-    local state = controller:_state()
-    state.run = { cancel = function() cancelled.run = true end }
-    state.login_run = { cancel = function() cancelled.login = true end }
-    state.logout_run = { cancel = function() cancelled.logout = true end }
+    assert(controller:send("wait"))
+    assert(controller:login("waiting"))
+    assert.is_true(controller:is_running())
+    assert.is_true(controller:is_authenticating())
 
     controller:destroy()
-    assert.are.same({ run = true, login = true, logout = true }, cancelled)
-    assert.is_nil(state.run)
-    assert.is_nil(state.login_run)
-    assert.is_nil(state.logout_run)
-  end)
 
+    assert.are.same({ run = true, login = true }, cancelled)
+    assert.is_false(controller:is_running())
+    assert.is_false(controller:is_authenticating())
+  end)
   it("falls back from invalid workspace and session preferences", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -1362,6 +1431,43 @@ describe("neoagent default controller", function()
     assert(vim.wait(1000, function() return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "new" end))
   end)
 
+  it("refreshes buffers from semantic custom tool results", function()
+    local root = vim.fn.tempname()
+    paths[#paths + 1] = root
+    vim.fn.mkdir(root, "p")
+    local path = root .. "/file.txt"
+    vim.fn.writefile({ "old" }, path)
+    vim.cmd("edit " .. vim.fn.fnameescape(path))
+    local buffer = vim.api.nvim_get_current_buf()
+    local tool = {
+      name = "replace_disk_file",
+      description = "Replace a file on disk",
+      input_schema = { type = "object", properties = {}, additionalProperties = false },
+      execute = function()
+        vim.fn.writefile({ "new" }, path)
+        return {
+          content = { { type = "text", text = "replaced" } },
+          details = { changed_paths = { path } },
+        }
+      end,
+    }
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "replace", name = tool.name, arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    setup_model(model, { tools = { tool } })
+    assert(neoagent.open())
+
+    local run = assert(neoagent.send("change it"))
+
+    assert(vim.wait(1500, function() return run:is_done() end))
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1] == "new"
+    end))
+  end)
+
   it("never discards a modified buffer after an agent disk edit", function()
     local root = vim.fn.tempname()
     paths[#paths + 1] = root
@@ -1412,12 +1518,18 @@ describe("neoagent default controller", function()
     }))
 
     local tool = require("neoagent.tools.update_plan").new()
+    local session_ids = {}
+    local on_messages = tool.on_messages
+    tool.on_messages = function(messages, ctx)
+      session_ids[#session_ids + 1] = ctx.session_id
+      return on_messages(messages, ctx)
+    end
     setup_model(fake_model.new({}), {
       persistence = { enabled = true, directory = directory },
       tools = { tool },
     })
     assert(neoagent.resume(store:metadata().path))
-    local resumed_id = neoagent._state().session_id
+    local resumed_id = session_ids[#session_ids]
     assert.are.same(plan, tool.current({ session_id = resumed_id }))
     assert(neoagent.open())
     assert(vim.wait(1000, function()
@@ -1427,7 +1539,7 @@ describe("neoagent default controller", function()
     end))
 
     assert(neoagent.new_session())
-    local fresh_id = neoagent._state().session_id
+    local fresh_id = session_ids[#session_ids]
     assert.are_not.equal(resumed_id, fresh_id)
     assert.is_nil(tool.current({ session_id = fresh_id }))
     assert.are.same(plan, tool.current({ session_id = resumed_id }))
@@ -1499,14 +1611,14 @@ describe("neoagent default controller", function()
     assert.are.equal("", view:get_input())
     assert.is_true(neoagent.steer("second steer"))
     assert.are.same({ "steer from the window", "second steer" },
-      vim.tbl_map(function(message) return message.text end, neoagent._state().steering))
+      snapshot().context.steering)
     view:set_input("current draft")
     view:focus_input()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return cancelled and neoagent._state().status == "idle" end))
+    assert(vim.wait(1000, function() return cancelled and is_idle() end))
     assert.are.equal("steer from the window\n\nsecond steer\n\ncurrent draft", view:get_input())
     assert.is_true(cancelled)
-    assert.are.equal("idle", neoagent._state().status)
+    assert.are.equal("idle", snapshot().context.state)
     assert.is_false(neoagent.stop())
   end)
 
@@ -1570,7 +1682,7 @@ describe("neoagent default controller", function()
     paths[#paths + 1] = empty
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = empty } })
     assert.is_nil(neoagent.resume())
-    assert.is_nil(neoagent.default_window():_state().view)
+    assert.is_nil(neoagent.default_window():view())
   end)
 
   it("navigates Pi session branches and creates linked forks", function()

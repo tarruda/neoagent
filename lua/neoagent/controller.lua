@@ -1,81 +1,12 @@
 local config = require("neoagent.config")
 local context_metrics = require("neoagent.controller.context")
+local session_lifecycle = require("neoagent.controller.session_lifecycle")
 local session_choices = require("neoagent.controller.session_choices")
-local session_tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 
 local M = {}
 local next_id = 0
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
-
-local non_retryable_error_patterns = {
-  "insufficient_quota", "quota exceeded", "usage limit", "usage_limit",
-  "available balance", "out of budget", "billing",
-}
-
-local retryable_error_patterns = {
-  "overloaded", "rate limit", "rate_limit", "too many requests",
-  "service unavailable", "server error", "internal error", "provider returned error",
-  "network error", "connection error", "connection refused", "connection lost",
-  "connection reset", "other side closed", "fetch failed", "getaddrinfo",
-  "enotfound", "eai_again", "upstream connect", "reset before headers",
-  "socket hang up", "socket connection was closed", "timed out", "timeout",
-  "terminated", "websocket closed", "websocket error", "transfer closed",
-  "empty reply from server", "broken pipe", "failure when receiving data",
-  "unexpected eof", "premature close", "ended without", "stream ended before",
-  "request did not get a response", "you can retry your request",
-  "try your request again", "please retry your request", "resourceexhausted",
-}
-
-local retryable_status = {
-  [408] = true, [409] = true, [429] = true, [500] = true, [502] = true,
-  [503] = true, [504] = true, [524] = true,
-}
-
-local function error_text(err)
-  local parts = { type(err.message) == "string" and err.message or "" }
-  if err.detail ~= nil then
-    local ok, encoded = pcall(vim.json.encode, err.detail)
-    parts[#parts + 1] = ok and encoded or tostring(err.detail)
-  end
-  return table.concat(parts, " "):lower()
-end
-
-local function has_pattern(text, patterns)
-  for _, pattern in ipairs(patterns) do
-    if text:find(pattern, 1, true) then return true end
-  end
-  return false
-end
-
-local function is_retryable_error(err)
-  if type(err) ~= "table" or err.kind == "cancelled" then return false end
-  if type(err.retryable) == "boolean" then return err.retryable end
-
-  local text = error_text(err)
-  if has_pattern(text, non_retryable_error_patterns) then return false end
-  local response = type(err.response) == "table" and err.response or {}
-  local status = tonumber(err.status) or tonumber(response.status)
-    or tonumber(text:match("http%s+(%d%d%d)"))
-  if status and status >= 400 then return retryable_status[status] == true end
-  if err.kind == "transport" then return true end
-  return has_pattern(text, retryable_error_patterns)
-end
-
-local function retry_delay(milliseconds)
-  return require("neoagent.async").await(function(done)
-    local timer = vim.uv.new_timer()
-    timer:start(math.max(1, milliseconds), 0, function()
-      timer:stop()
-      if not timer:is_closing() then timer:close() end
-      done.resolve(true)
-    end)
-    return function()
-      timer:stop()
-      if not timer:is_closing() then timer:close() end
-    end
-  end)
-end
 
 function M.from_config(options, runtime)
   assert(type(options) == "table", "controller configuration is required")
@@ -275,37 +206,18 @@ function M.from_config(options, runtime)
     return true
   end
 
-  local function make_session(cwd)
-    require_workspace_trust(cwd)
-    local Session = require("neoagent.session")
-    activate_workspace(cwd)
-    local options = configured().persistence
-    if options.enabled then
-      state.store = require("neoagent.storage").new({ directory = options.directory, cwd = state.workspace.root })
-      state.store_seeded = false
-      local session, err = Session.new({ store = state.store })
-      if not session then return nil, err end
-      local seeded, seed_err = seed_store()
-      if not seeded then return nil, seed_err end
-      return session
-    end
-    state.store, state.store_seeded = nil, false
-    return Session.new()
-  end
-
+  local sessions
   local function ensure_session()
     if state.session then return state.session end
     local cwd = vim.fn.getcwd()
-    local session, err = make_session(cwd)
+    local session, err = sessions.make(cwd)
     if not session then error(err, 0) end
     activate_session(session)
     return session
   end
 
   local function transcript_messages(session)
-    local path, err = session:path()
-    if not path then error(err, 0) end
-    return session_tree.messages(path, true)
+    return session_lifecycle.transcript_messages(session)
   end
 
   local function sync_tools()
@@ -360,7 +272,13 @@ function M.from_config(options, runtime)
       global_files = options.agents.global_files,
       project_filenames = options.agents.project_filenames,
     }) or { files = {}, diagnostics = {} }
-    local has_read = vim.tbl_contains(vim.tbl_map(function(tool) return tool.name end, tools), "read_file")
+    local has_read = false
+    for _, tool in ipairs(tools) do
+      if type(tool.capabilities) == "table" and tool.capabilities.read_files == true then
+        has_read = true
+        break
+      end
+    end
     local skills_result = options.skills and has_read and require("neoagent.skills").discover({
       cwd = state.workspace.root,
       global_dirs = options.skills.global_dirs,
@@ -426,96 +344,6 @@ function M.from_config(options, runtime)
     end
   end
 
-  local function close_unmatched_calls()
-    local messages = state.session:messages()
-    local pending = {}
-    local order = {}
-    for _, message in ipairs(messages) do
-      if message.role == "assistant" then
-        for _, block in ipairs(message.content or {}) do
-          if block.type == "toolCall" then
-            pending[block.id] = block
-            order[#order + 1] = block.id
-          end
-        end
-      elseif message.role == "toolResult" then
-        pending[message.toolCallId] = nil
-      end
-    end
-    for _, id in ipairs(order) do
-      local call = pending[id]
-      if call then
-        local ok, err = state.session:append({
-          role = "toolResult",
-          toolCallId = call.id,
-          toolName = call.name,
-          content = { { type = "text", text = "Tool execution was interrupted; side effects may already have occurred." } },
-          isError = true,
-          timestamp = util.now_ms(),
-        })
-        if not ok then return nil, err end
-      end
-    end
-    return true
-  end
-
-  local function interaction(options)
-    return require("neoagent.chat").run(options.session, options.prompt, {
-      model = options.model,
-      system_prompt = options.system_prompt,
-      tools = options.tools,
-      context = options.context,
-      execute_tool = options.execute_tool,
-      get_steering_messages = options.get_steering_messages,
-      model_options = options.model_options,
-      on_event = options.on_event,
-      on_done = options.on_done,
-    })
-  end
-
-  local function continuation(options)
-    return require("neoagent.chat").continue(options.session, {
-      model = options.model,
-      system_prompt = options.system_prompt,
-      tools = options.tools,
-      context = options.context,
-      execute_tool = options.execute_tool,
-      get_steering_messages = options.get_steering_messages,
-      model_options = options.model_options,
-      on_event = options.on_event,
-      on_done = options.on_done,
-    })
-  end
-
-  local function is_context_overflow(result)
-    if not result or result.ok or not result.error then return false end
-    local parts = { result.error.message or "" }
-    if result.error.detail ~= nil then
-      local ok, encoded = pcall(vim.json.encode, result.error.detail)
-      parts[#parts + 1] = ok and encoded or tostring(result.error.detail)
-    end
-    local text = table.concat(parts, " "):lower()
-    for _, pattern in ipairs({ "rate limit", "too many requests" }) do
-      if text:find(pattern, 1, true) then return false end
-    end
-    for _, pattern in ipairs({
-      "context_length_exceeded", "model_context_window_exceeded",
-      "request_too_large", "prompt is too long", "prompt too long",
-      "input is too long for requested model", "exceeds the context window",
-      "maximum context length", "maximum prompt length",
-      "reduce the length of the messages", "maximum allowed input length",
-      "longer than the model's context length",
-      "exceeds the available context size", "greater than the context length",
-      "context window exceeds limit", "exceeded model token limit",
-      "token limit exceeded", "too many tokens", "too large for model",
-      "configured context size", "range of input length should be",
-      "request too large",
-    }) do
-      if text:find(pattern, 1, true) then return true end
-    end
-    return false
-  end
-
   local function context()
     return {
       name = options.name or false,
@@ -534,289 +362,38 @@ function M.from_config(options, runtime)
     publish({ type = "context", context = context() })
   end
 
-  local function compaction_settings()
-    local selected = configured().compaction
-    if selected == false or not state.model then return nil end
-    return require("neoagent.compaction").settings(selected, state.model.context_window)
-  end
+  sessions = session_lifecycle.new({
+    state = state,
+    config = options,
+    auth_manager = auth_manager,
+    notify = notify,
+    publish_messages = publish_messages,
+    update_context = update_context,
+    require_workspace_trust = require_workspace_trust,
+    activate_workspace = activate_workspace,
+    activate_session = activate_session,
+    seed_store = seed_store,
+    ensure_model = ensure_model,
+    preferences = preferences,
+    thinking_level = thinking_level,
+  })
 
-  local function needs_compaction()
-    local settings = compaction_settings()
-    if not settings or not settings.auto or not state.session then return false end
-    local messages = state.session:context_messages()
-    if not messages then return false end
-    local estimate = require("neoagent.compaction").estimate_context(messages)
-    return require("neoagent.compaction").should_compact(
-      estimate.tokens, state.model.context_window or 0, settings)
-  end
-
-  local submit
-  local schedule_steering
-
-  local function start_compaction(reason, instructions, run_id, after)
-    local settings = compaction_settings()
-    if not settings or not state.session then return nil end
-    local path, path_err = state.session:path()
-    if not path then return nil, path_err end
-    local preparation, prepare_err = require("neoagent.compaction").prepare(path, settings)
-    if not preparation then return nil, prepare_err end
-
-    local selected = configured().compaction.run or require("neoagent.compaction").run
-    state.status = "compacting"
-    state.pending_events = {}
-    publish({ type = "event", event = { type = "compaction_start", reason = reason } })
-    update_context()
-    local run
-    run = selected({
-      preparation = preparation,
-      model = state.model,
-      model_options = {
-        request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),
-      },
-      instructions = instructions,
-      reason = reason,
-      session = state.session,
-      on_event = function(event)
-        if run_id ~= state.run_id then return end
-        if event.type == "provider_status" then
-          state.provider_status = type(event.text) == "string" and event.text or nil
-          update_context()
-        end
-        publish({ type = "event", event = event })
-      end,
-      on_done = function(done)
-        if run_id ~= state.run_id then return end
-        local result = util.copy(done)
-        if done.ok then
-          local ok, err = state.session:append_entry("compaction", {
-            summary = done.summary,
-            firstKeptEntryId = done.first_kept_entry_id,
-            tokensBefore = done.tokens_before,
-            usage = done.usage,
-            details = done.details,
-            fromHook = selected ~= require("neoagent.compaction").run or nil,
-          })
-          if not ok then result = { ok = false, error = err } end
-        end
-        if result.ok then
-          local projected = assert(state.session:context_messages())
-          result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
-          publish_messages(transcript_messages(state.session))
-        end
-        state.run = nil
-        state.status = "idle"
-        state.live_usage = nil
-        update_context()
-        publish({ type = "event", event = {
-          type = "compaction_end", reason = reason, result = result,
-        } })
-        if after then after(result) end
-        if result.ok then schedule_steering() end
-      end,
-    })
-    assert(type(run) == "table" and type(run.cancel) == "function", "compaction.run must return a Run")
-    state.run = run
-    return run
-  end
-
-  schedule_steering = function()
-    if state.destroyed or state.status ~= "idle" or #state.steering == 0 then return end
-    local message = state.steering[1]
-    vim.schedule(function()
-      if state.destroyed or state.status ~= "idle" or state.steering[1] ~= message then return end
-      table.remove(state.steering, 1)
-      update_context()
-      local run = submit(message.text)
-      if not run then
-        table.insert(state.steering, 1, message)
-        update_context()
-      end
-    end)
-  end
-
-  local function finish_interaction(done)
-    state.run = nil
-    state.status = "idle"
-    state.live_usage = nil
-    state.last_result = util.copy(done)
-    update_context()
-    publish({ type = "finish", result = done })
-    if done.ok then schedule_steering() end
-  end
-
-  submit = function(prompt)
-    if util.trim(prompt) == "" then return nil end
-    if state.status ~= "idle" then notify("the agent is busy", vim.log.levels.WARN) return nil end
-    local ok, result = pcall(function()
-      require_workspace_trust()
-      ensure_session()
-      ensure_model()
-      local closed, close_err = close_unmatched_calls()
-      if not closed then error(close_err, 0) end
-      local options = configured()
-      local toolset = copy_toolset(state.toolset)
-      local tools = toolset.tools
-      local run_id = state.run_id + 1
-      state.run_id = run_id
-      state.pending_events = {}
-      state.last_result = nil
-      local overflow_retried = false
-      local stream_retries = 0
-      local base = {
-        session = state.session,
-        prompt = prompt,
-        model = state.model,
-        system_prompt = system_prompt(prompt, tools),
-        tools = tools,
-        workspace = state.workspace,
-        context = {
-          workspace = state.workspace,
-          controller = options.name,
-          session_id = state.session_id,
-        },
-        execute_tool = toolset.execute_tool,
-        get_steering_messages = function()
-          if #state.steering == 0 then return {} end
-          local message = table.remove(state.steering, 1)
-          update_context()
-          return { {
-            role = "user",
-            content = message.text,
-            timestamp = message.timestamp,
-          } }
-        end,
-        thinking_level = state.thinking_level,
-        model_options = {
-          request_opts = require("neoagent.thinking").request_opts(state.model, state.thinking_level),
-        },
-      }
-      local function on_event(event)
-        if run_id ~= state.run_id then return end
-        if event.type == "usage" then
-          state.live_usage = {
-            tokens = context_metrics.usage_tokens(event.usage) or 0,
-            message_count = #assert(state.session:context_messages()) + 1,
-          }
-          update_context()
-        elseif event.type == "provider_status" then
-          state.provider_status = type(event.text) == "string" and event.text or nil
-          update_context()
-        elseif event.type == "message_end" then
-          sync_tools()
-          update_context()
-        end
-        if event.type == "message_end" then
-          state.pending_events = {}
-        elseif event.type ~= "usage" and event.type ~= "provider_status" then
-          state.pending_events[#state.pending_events + 1] = util.copy(event)
-        end
-        publish({ type = "event", event = event })
-        if event.type == "tool_end" and not event.message.isError
-            and (event.call.name == "write_file" or event.call.name == "edit_file") then
-          refresh_buffer(event.call.arguments.path)
-        end
-      end
-
-      local launch
-      local function abandon_failed_message()
-        local path = assert(state.session:path())
-        local last = path[#path]
-        if last and last.type == "message" and last.message.role == "assistant"
-            and last.message.stopReason == "error" then
-          local parent = last.parentId == vim.NIL and nil or last.parentId
-          local moved, move_err = state.session:move_to(parent)
-          if not moved then error(move_err, 0) end
-          publish_messages(transcript_messages(state.session))
-        end
-      end
-
-      local function on_done(done)
-        if run_id ~= state.run_id then return end
-        local can_continue = options.continuation ~= nil or options.interaction == nil
-        if not overflow_retried and can_continue and is_context_overflow(done) then
-          overflow_retried = true
-          abandon_failed_message()
-          local compacted = start_compaction("overflow", nil, run_id, function(result)
-            if result.ok then launch(true) else finish_interaction(done) end
-          end)
-          if compacted then return end
-        end
-        local retry_settings = options.retry
-        local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0
-        local provider_limit = done.error and tonumber(done.error.stream_max_retries)
-        if provider_limit then retry_limit = math.min(retry_limit, provider_limit) end
-        if can_continue and done.error and is_retryable_error(done.error)
-            and stream_retries < retry_limit then
-          stream_retries = stream_retries + 1
-          abandon_failed_message()
-          state.pending_events = {}
-          state.live_usage = nil
-          local wait = tonumber(done.error.retry_after_ms)
-            or retry_settings.base_delay_ms * (2 ^ (stream_retries - 1))
-          wait = math.max(0, math.min(60000, wait))
-          state.provider_status = string.format("Reconnecting… %d/%d", stream_retries, retry_limit)
-          update_context()
-          local waiting
-          waiting = require("neoagent.async").run(function()
-            retry_delay(wait)
-            return { ok = true }
-          end, {
-            on_done = function(result)
-              if run_id ~= state.run_id then return end
-              state.provider_status = nil
-              if not result.ok then
-                finish_interaction(result)
-                return
-              end
-              local launched, launch_err = pcall(launch, true)
-              if not launched then
-                finish_interaction({ ok = false, error = util.normalize_error(launch_err, "controller") })
-              end
-            end,
-            error_kind = "controller",
-          })
-          state.run = waiting
-          return
-        end
-        if needs_compaction() then
-          local compacted = start_compaction("threshold", nil, run_id, function()
-            finish_interaction(done)
-          end)
-          if compacted then return end
-        end
-        finish_interaction(done)
-      end
-
-      launch = function(continuing)
-        local call = vim.tbl_extend("force", {}, base)
-        call.model_options = util.copy(base.model_options)
-        call.model_options.retry_attempt = stream_retries
-        call.on_event, call.on_done = on_event, on_done
-        local selected = continuing and (options.continuation or continuation)
-          or (options.interaction or interaction)
-        local run = selected(call)
-        assert(type(run) == "table" and type(run.cancel) == "function", "interaction must return a Run")
-        state.run = run
-        state.status = "running"
-        state.pending_events = {}
-        publish_messages(transcript_messages(state.session))
-        update_context()
-        return run
-      end
-
-      if needs_compaction() then
-        local compacted = start_compaction("threshold", nil, run_id, function() launch(false) end)
-        if compacted then return compacted end
-      end
-      return launch(false)
-    end)
-    if not ok then
-      local err = util.normalize_error(result, "session")
-      notify(err.message, vim.log.levels.ERROR)
-      return nil, err
-    end
-    return result
-  end
+  local runs = require("neoagent.controller.run_lifecycle").new({
+    state = state,
+    config = options,
+    notify = notify,
+    publish = publish,
+    publish_messages = publish_messages,
+    update_context = update_context,
+    sync_tools = sync_tools,
+    transcript_messages = transcript_messages,
+    require_workspace_trust = require_workspace_trust,
+    ensure_session = ensure_session,
+    ensure_model = ensure_model,
+    copy_toolset = copy_toolset,
+    system_prompt = system_prompt,
+    refresh_buffer = refresh_buffer,
+  })
 
   function controller:prepare()
     local ok, err = pcall(function()
@@ -840,171 +417,32 @@ function M.from_config(options, runtime)
   end
 
   function controller:send(text)
-    if state.status == "running" or state.status == "compacting" then
-      return controller:steer(text)
-    end
-    return submit(text)
+    return runs.send(text)
   end
 
   function controller:steer(text)
-    if util.trim(text) == "" then return nil end
-    if state.status ~= "running" and state.status ~= "compacting" then
-      notify("cannot steer while the agent is idle", vim.log.levels.WARN)
-      return nil
-    end
-    state.steering[#state.steering + 1] = { text = text, timestamp = util.now_ms() }
-    update_context()
-    return true
+    return runs.steer(text)
   end
 
   function controller:dequeue_steering()
-    local messages = vim.tbl_map(function(message) return message.text end, state.steering)
-    state.steering = {}
-    update_context()
-    return messages
+    return runs.dequeue_steering()
   end
 
   function controller:compact(instructions)
-    if state.run then notify("cannot compact while the agent is running", vim.log.levels.WARN) return nil end
-    if configured().compaction == false then notify("compaction is disabled") return nil end
-    if not state.session then notify("no active session") return nil end
-    local ok, err = pcall(ensure_model)
-    if not ok then
-      err = util.normalize_error(err, "compaction")
-      notify(err.message, vim.log.levels.ERROR)
-      return nil, err
-    end
-    local run_id = state.run_id + 1
-    state.run_id = run_id
-    state.last_result = nil
-    local run, compact_err = start_compaction("manual", instructions, run_id)
-    if not run then
-      compact_err = compact_err or util.error("compaction", "Nothing to compact")
-      notify(compact_err.message, vim.log.levels.WARN)
-      return nil, compact_err
-    end
-    return run
+    return runs.compact(instructions)
   end
 
   function controller:stop()
-    if not state.run then return false end
-    state.status = "stopping"
-    update_context()
-    state.run:cancel()
-    return true
+    return runs.stop()
   end
 
   function controller:new_session()
-    if state.run then notify("cannot create a session while the agent is running", vim.log.levels.WARN) return nil end
-    local cwd = vim.fn.getcwd()
-    local trusted, trust_err = pcall(require_workspace_trust, cwd)
-    if not trusted then
-      trust_err = util.normalize_error(trust_err, "workspace_trust")
-      notify(trust_err.message, vim.log.levels.ERROR)
-      return nil, trust_err
-    end
-    local root = require("neoagent.fs").canonical(cwd)
-    if state.workspace and state.workspace.root == root then
-      state.model, state.model_selection, state.thinking_level = nil, nil, nil
-    end
-    state.live_usage, state.provider_status = nil, nil
-    state.pending_events, state.steering, state.last_result = {}, {}, nil
-    local session, err = make_session(cwd)
-    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    if preferences().default_model then
-      local resolved, model_err = pcall(ensure_model)
-      if not resolved then
-        model_err = util.normalize_error(model_err, "model")
-        notify(model_err.message, vim.log.levels.ERROR)
-        return nil, model_err
-      end
-    end
-    activate_session(session)
-    publish_messages({})
-    update_context()
-    return session
-  end
-
-  local function restore_session_preferences(stored)
-    state.model, state.model_selection, state.thinking_level = nil, nil, nil
-    local workspace_default = preferences().default_model
-    local candidates = {}
-    if stored.model then candidates[#candidates + 1] = stored.model end
-    if workspace_default and (not stored.model or workspace_default.provider ~= stored.model.provider
-        or workspace_default.model ~= stored.model.model) then
-      candidates[#candidates + 1] = workspace_default
-    end
-    for _, selected in ipairs(candidates) do
-      local ok, model = pcall(require("neoagent.models").resolve, selected.provider, selected.model,
-        options, auth_manager)
-      if ok then
-        state.model = model
-        state.model_selection = util.copy(selected)
-        break
-      else
-        notify("could not restore model " .. tostring(selected.provider) .. "/" .. tostring(selected.model)
-          .. ": " .. tostring(model), vim.log.levels.WARN)
-      end
-    end
-    if state.model then
-      state.thinking_level = thinking_level(state.model, stored.thinking_level)
-    end
-  end
-
-  local function resume_path(path)
-    local store, err = require("neoagent.storage").open(path)
-    if not store then notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR) return nil, err end
-    local cwd = store:metadata().cwd
-    local trusted, trust_err = pcall(require_workspace_trust, cwd)
-    if not trusted then
-      trust_err = util.normalize_error(trust_err, "workspace_trust")
-      notify(trust_err.message, vim.log.levels.ERROR)
-      return nil, trust_err
-    end
-    activate_workspace(cwd)
-    local session
-    session, err = require("neoagent.session").new({ store = store })
-    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    activate_session(session)
-    state.store, state.store_seeded = store, true
-    state.live_usage, state.provider_status = nil, nil
-    state.pending_events, state.steering, state.last_result = {}, {}, nil
-    restore_session_preferences(store:state())
-    publish_messages(transcript_messages(session))
-    update_context()
-    return session
-  end
-
-  local function entry_label(entry, current)
-    local label = entry.type .. " · " .. entry.id:sub(1, 8)
-    if entry.type == "message" then
-      local ok, value = pcall(util.text_content, entry.message.content)
-      value = ok and util.trim(value:gsub("[%c%s]+", " ")) or ""
-      if value ~= "" then
-        if vim.fn.strchars(value) > 70 then value = vim.fn.strcharpart(value, 0, 70) .. "…" end
-        label = entry.message.role .. " · " .. value
-      else
-        label = entry.message.role .. " · " .. entry.id:sub(1, 8)
-      end
-    end
-    return entry.id == current and "● " .. label or label
+    return sessions.new_session()
   end
 
   function controller:branch(entry_id, summary)
-    if state.run then notify("cannot change branches while the agent is running", vim.log.levels.WARN) return nil end
-    if not state.session then notify("no active session") return nil end
-    local ok, err = state.session:move_to(entry_id, summary)
-    if not ok then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.pending_events, state.steering, state.last_result = {}, {}, nil
-    state.live_usage, state.provider_status = nil, nil
-    local stored = assert(state.session:state())
-    restore_session_preferences(stored)
-    state.store_seeded = stored.model ~= nil
-    publish_messages(transcript_messages(state.session))
-    update_context()
-    return true
+    return sessions.branch(entry_id, summary)
   end
-
   function controller:select_branch(on_selected)
     if not state.session then notify("no active session") return nil end
     local entries = state.session:entries()
@@ -1013,7 +451,10 @@ function M.from_config(options, runtime)
     for _, entry in ipairs(entries) do
       if entry.type == "message" or entry.type == "custom_message"
           or entry.type == "branch_summary" or entry.type == "compaction" then
-        choices[#choices + 1] = { id = entry.id, label = entry_label(entry, current) }
+        choices[#choices + 1] = {
+          id = entry.id,
+          label = session_lifecycle.entry_label(entry, current),
+        }
       end
     end
     if #choices == 0 then notify("the active session has no entries") return nil end
@@ -1029,46 +470,17 @@ function M.from_config(options, runtime)
   end
 
   function controller:fork(entry_id, position)
-    if state.run then notify("cannot fork while the agent is running", vim.log.levels.WARN) return nil end
-    if not state.store or not state.store:metadata().persisted then
-      notify("the active session is not persisted")
-      return nil
-    end
-    local selected_text
-    if entry_id and (position == nil or position == "before") then
-      local target = state.session:entry(entry_id)
-      if target and target.type == "message" and target.message.role == "user" then
-        local text_ok, text = pcall(util.text_content, target.message.content)
-        if text_ok then selected_text = text end
-      end
-    end
-    local persistence = configured().persistence
-    local store, err = require("neoagent.storage").fork(state.store, {
-      directory = persistence.directory,
-      cwd = state.workspace.root,
-      entry_id = entry_id,
-      position = position,
-    })
-    if not store then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    local session
-    session, err = require("neoagent.session").new({ store = store })
-    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
-    state.store, state.store_seeded = store, true
-    activate_session(session)
-    state.pending_events, state.steering, state.last_result = {}, {}, nil
-    state.live_usage, state.provider_status = nil, nil
-    restore_session_preferences(store:state())
-    publish_messages(transcript_messages(session))
-    update_context()
-    return session, selected_text
+    return sessions.fork(entry_id, position)
   end
-
   function controller:select_fork(on_selected)
     if not state.session then notify("no active session") return nil end
     local choices = {}
     for _, entry in ipairs(state.session:entries()) do
       if entry.type == "message" and entry.message.role == "user" then
-        choices[#choices + 1] = { id = entry.id, label = entry_label(entry) }
+        choices[#choices + 1] = {
+          id = entry.id,
+          label = session_lifecycle.entry_label(entry),
+        }
       end
     end
     if #choices == 0 then notify("the active session has no user messages") return nil end
@@ -1085,7 +497,7 @@ function M.from_config(options, runtime)
 
   function controller:resume(path, on_resumed)
     if state.run then notify("cannot resume while the agent is running", vim.log.levels.WARN) return nil end
-    if path and path ~= "" then return resume_path(vim.fn.fnamemodify(path, ":p")) end
+    if path and path ~= "" then return sessions.resume(vim.fn.fnamemodify(path, ":p")) end
     local options = configured().persistence
     local sessions = require("neoagent.storage").list_sessions(options.directory, vim.fn.getcwd())
     if #sessions == 0 then notify("no sessions found for the current directory") return nil end
@@ -1386,6 +798,10 @@ function M.from_config(options, runtime)
 
   function controller:get_session() return state.session end
   function controller:get_model() return state.model end
+  function controller:get_workspace() return state.workspace end
+  function controller:is_authenticating()
+    return state.login_run ~= nil or state.logout_run ~= nil
+  end
 
   function controller:get_toolset()
     return copy_toolset(state.toolset)
@@ -1409,7 +825,6 @@ function M.from_config(options, runtime)
 
   function controller:config() return util.copy(options) end
   function controller:is_running() return state.run ~= nil end
-  function controller:_state() return state end
 
   function controller:destroy()
     if state.destroyed then return end

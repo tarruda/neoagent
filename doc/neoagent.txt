@@ -224,10 +224,12 @@ Controller methods are: >lua
   controller:snapshot()
   controller:get_session()
   controller:get_model()
+  controller:get_workspace()
   controller:get_toolset()
   controller:set_toolset(toolset)
   controller:config()
   controller:is_running()
+  controller:is_authenticating()
   controller:destroy()
 <
 `send` starts an interaction while idle and queues steering while working.
@@ -246,11 +248,15 @@ matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, `set_position`, `set_input`, `input_history`, `add_input_history`,
+`cycle`, `set_position`, `set_input`, `get_input`, `view`,
+`rendered_controller`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
-and shares workspace input history. Selection restores the active transcript
-and draft while inactive Controller Runs continue. A Controller's initial
-Session is created on its first send.
+and shares workspace input history. `view()` returns the owned View after its
+creation, and `rendered_controller()` identifies the Controller currently
+presented by that View. Selection restores the active transcript and draft
+while inactive Controller Runs continue. When preparation of a visible target
+fails, the current Controller, subscription, transcript, and draft remain
+active. A Controller's initial Session is created on its first send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.
@@ -1121,6 +1127,13 @@ malformed tool results into error tool results. Replace or decorate
 `execute_tool(tool, arguments, ctx)` to add approval, logging, a native
 sandbox, or subagent behavior.
 
+A tool that can read workspace files may declare
+`capabilities = { read_files = true }`. The Controller discovers configured
+skills when the active toolset carries that capability. A successful disk
+mutation may return `details.changed_paths` as a list of paths. The built-in
+Neo Controller checks matching unmodified buffers after those results, so
+custom file tools receive the same refresh behavior as bundled file tools.
+
 A tool may define `on_messages(messages, ctx)`. Controllers call it with a
 copy of the complete active conversation after Session activation and message
 changes. `ctx.session_id` is the same opaque per-Session table available at
@@ -1201,8 +1214,19 @@ Tree-aware Session methods are: >lua
   session:name()
 <
 `move_to()` changes the active leaf; the next append creates a branch child.
-The optional summary creates a Pi `branch_summary` entry. Fork a linked child
-session with: >lua
+The optional summary creates a Pi `branch_summary` entry. Store `append`,
+`append_entry`, and `set_leaf` methods may return a fourth projection-update
+result after the usual success, error, and entry values: >lua
+
+  { type = "append", messages = { ... } }
+  { type = "replace", messages = { ... } }
+<
+A Session copies a recognized update into its message cache. When a custom
+Store omits the update, the Session reloads through `store:load()`. Reload
+failures return a structured storage error and leave the cached projection
+unchanged. The default JSONL Store returns projection updates, so linear
+Session appends update the cache incrementally.
+Fork a linked child session with: >lua
 
   local child = require("neoagent.storage").fork(store_or_path, {
     directory = directory,
