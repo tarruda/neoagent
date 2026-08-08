@@ -48,8 +48,10 @@ local function rebuild(store)
 end
 
 local function project_append(store, entry)
-  vim.list_extend(store._messages, tree.entry_messages(entry))
+  local messages = tree.entry_messages(entry)
+  vim.list_extend(store._messages, messages)
   store._state = tree.apply_state(store._state, entry)
+  return messages
 end
 
 local function commit_entry(store, entry)
@@ -58,11 +60,13 @@ local function commit_entry(store, entry)
   store._by_id[stored.id] = stored
   if stored.type == "leaf" then
     store._leaf_id = is_null(stored.targetId) and nil or stored.targetId
-    return rebuild(store)
+    local rebuilt, err = rebuild(store)
+    if not rebuilt then return nil, err end
+    return true, { type = "replace", messages = util.copy(store._messages) }
   end
   store._leaf_id = stored.id
-  project_append(store, stored)
-  return true
+  local messages = project_append(store, stored)
+  return true, { type = "append", messages = util.copy(messages) }
 end
 
 function Store:load()
@@ -215,9 +219,9 @@ function Store:_append(entry_type, values, persist)
 
   if not self._persisted and not persist then
     self._pending[#self._pending + 1] = entry
-    local committed, commit_err = commit_entry(self, entry)
-    if not committed then return nil, storage_error("Failed to update session", commit_err) end
-    return true, nil, util.copy(entry)
+    local committed, projection = commit_entry(self, entry)
+    if not committed then return nil, storage_error("Failed to update session", projection) end
+    return true, nil, util.copy(entry), projection
   end
 
   if not self._persisted then
@@ -256,9 +260,9 @@ function Store:_append(entry_type, values, persist)
       return nil, storage_error("Failed to append session entry", err)
     end
   end
-  local committed, commit_err = commit_entry(self, entry)
-  if not committed then return nil, storage_error("Failed to update session", commit_err) end
-  return true, nil, util.copy(entry)
+  local committed, projection = commit_entry(self, entry)
+  if not committed then return nil, storage_error("Failed to update session", projection) end
+  return true, nil, util.copy(entry), projection
 end
 
 function Store:append(message)

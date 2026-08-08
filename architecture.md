@@ -424,9 +424,10 @@ files; persistence begins when the first message is accepted. Stores validate
 JSON encoding and UTF-8 before mutating the tree or creating a file. A Store
 validates complete trees when opening them, maintains an entry index, and
 updates messages and model state incrementally for linear appends. Branch
-selection rebuilds the active projection from the maintained index. Sessions
-refresh their cached message projection after Store mutations and return
-structured storage errors when that refresh fails.
+selection rebuilds the active projection from the maintained index. Default
+Store mutations return copied append or replacement projection updates for
+the Session cache. Custom Stores may omit these updates; Sessions then reload
+the projection and return structured storage errors when that reload fails.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.

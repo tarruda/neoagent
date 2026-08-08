@@ -26,6 +26,9 @@ local function memory_append(self, entry_type, values)
   for key, value in pairs(values or {}) do entry[key] = util.copy(value) end
   local valid, err = tree.validate_entry(entry)
   if not valid then return nil, util.error("session", "Invalid " .. tostring(entry_type), err) end
+  if self._by_id[entry.id] then
+    return nil, util.error("session", "Invalid " .. tostring(entry_type), "duplicate entry id")
+  end
   if entry.type == "leaf" and entry.targetId ~= nil and entry.targetId ~= vim.NIL
       and not self._by_id[entry.targetId] then
     return nil, util.error("session", "Invalid leaf", "entry not found: " .. tostring(entry.targetId))
@@ -38,10 +41,15 @@ local function memory_append(self, entry_type, values)
   end
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
-  self._leaf_id = entry.type == "leaf"
-      and ((entry.targetId == nil or entry.targetId == vim.NIL) and nil or entry.targetId) or entry.id
-  local path = assert(tree.path(self._entries, self._leaf_id == nil and vim.NIL or self._leaf_id))
-  self._messages = tree.messages(path, false)
+  if entry.type == "leaf" then
+    self._leaf_id = (entry.targetId == nil or entry.targetId == vim.NIL) and nil or entry.targetId
+    local path = assert(tree.indexed_path(self._by_id,
+      self._leaf_id == nil and vim.NIL or self._leaf_id))
+    self._messages = tree.messages(path, false)
+  else
+    self._leaf_id = entry.id
+    vim.list_extend(self._messages, tree.entry_messages(entry))
+  end
   return true, nil, util.copy(entry)
 end
 
@@ -52,15 +60,33 @@ local function reload_store(self)
   return true
 end
 
+local function apply_store_projection(self, projection)
+  if type(projection) ~= "table" or type(projection.messages) ~= "table"
+      or not util.is_list(projection.messages) then
+    return reload_store(self)
+  end
+  if projection.type == "append" then
+    vim.list_extend(self._messages, util.copy(projection.messages))
+    return true
+  end
+  if projection.type == "replace" then
+    self._messages = util.copy(projection.messages)
+    return true
+  end
+  return reload_store(self)
+end
+
 function Session:append(message)
   assert(type(message) == "table", "message must be a table")
   local copy = util.copy(message)
   if self._store then
-    local ok, err = self._store:append(copy)
+    local ok, err, entry, projection = self._store:append(copy)
     if not ok then
       return nil, util.normalize_error(err, "storage")
     end
-    return reload_store(self)
+    local projected, projection_err = apply_store_projection(self, projection)
+    if not projected then return nil, projection_err end
+    return true, nil, entry
   end
   return memory_append(self, "message", { message = copy })
 end
@@ -102,7 +128,7 @@ function Session:path(...)
   if self._store and type(self._store.path) == "function" then return self._store:path(...) end
   local requested = select("#", ...) > 0 and select(1, ...) or self._leaf_id
   if requested == nil then requested = vim.NIL end
-  local path, err = tree.path(self._entries, requested)
+  local path, err = tree.indexed_path(self._by_id, requested)
   if not path then return nil, util.error("session", "Failed to build session path", err) end
   return path
 end
@@ -142,10 +168,10 @@ function Session:append_entry(entry_type, values)
     if type(self._store.append_entry) ~= "function" then
       return nil, util.error("session", "Store does not support session entries")
     end
-    local ok, err, entry = self._store:append_entry(entry_type, values)
+    local ok, err, entry, projection = self._store:append_entry(entry_type, values)
     if not ok then return nil, util.normalize_error(err, "storage") end
-    local reloaded, reload_err = reload_store(self)
-    if not reloaded then return nil, reload_err end
+    local projected, projection_err = apply_store_projection(self, projection)
+    if not projected then return nil, projection_err end
     return true, nil, entry
   end
   return memory_append(self, entry_type, values)
@@ -159,10 +185,10 @@ function Session:move_to(entry_id, summary)
     if type(self._store.set_leaf) ~= "function" then
       return nil, util.error("session", "Store does not support branching")
     end
-    local ok, err = self._store:set_leaf(entry_id)
+    local ok, err, _, projection = self._store:set_leaf(entry_id)
     if not ok then return nil, util.normalize_error(err, "storage") end
-    local reloaded, reload_err = reload_store(self)
-    if not reloaded then return nil, reload_err end
+    local projected, projection_err = apply_store_projection(self, projection)
+    if not projected then return nil, projection_err end
   else
     local ok, err = memory_append(self, "leaf", { targetId = entry_id or vim.NIL })
     if not ok then return nil, err end

@@ -14,6 +14,21 @@ describe("neoagent.session", function()
     assert.matches("Invalid compaction", err.message)
   end)
 
+  it("rejects colliding in-memory entry ids", function()
+    local random = vim.uv.random
+    vim.uv.random = function() return string.rep("x", 8) end
+    local call_ok, append_ok, append_err = pcall(function()
+      local session = assert(Session.new())
+      assert(session:append({ role = "user", content = "first" }))
+      return session:append({ role = "user", content = "second" })
+    end)
+    vim.uv.random = random
+
+    assert(call_ok, append_ok)
+    assert.is_nil(append_ok)
+    assert.matches("duplicate entry id", append_err.detail)
+  end)
+
   it("is a no-argument tool-free in-memory message sequence", function()
     local session = assert(Session.new())
     assert.is_nil(session:metadata())
@@ -21,6 +36,18 @@ describe("neoagent.session", function()
     local messages = session:messages()
     messages[1].content = "changed"
     assert.are.equal("hello", session:messages()[1].content)
+  end)
+
+  it("keeps long in-memory append projection bounded", function()
+    local session = assert(Session.new())
+    local started = vim.uv.hrtime()
+    for index = 1, 2000 do
+      assert(session:append({ role = "user", content = "message " .. index, timestamp = index }))
+    end
+    local elapsed_ms = (vim.uv.hrtime() - started) / 1000000
+
+    assert.is_true(elapsed_ms < 2000, string.format("linear appends took %.0f ms", elapsed_ms))
+    assert.are.equal(2000, #session:messages())
   end)
 
   it("loads and appends through an injected store", function()
@@ -35,6 +62,31 @@ describe("neoagent.session", function()
     assert(session:append({ role = "assistant", content = {} }))
     assert.are.equal("assistant", appended.role)
     assert.are.same({ id = "store" }, session:metadata())
+  end)
+
+  it("applies copied projection updates from an injected store", function()
+    local loads = 0
+    local projection = {
+      type = "append",
+      messages = { { role = "assistant", content = "accepted" } },
+    }
+    local store = {
+      load = function()
+        loads = loads + 1
+        return {}
+      end,
+      append = function()
+        return true, nil, { id = "entry" }, projection
+      end,
+    }
+    local session = assert(Session.new({ store = store }))
+    local ok, _, entry = session:append({ role = "assistant", content = "requested" })
+
+    assert(ok)
+    assert.are.equal("entry", entry.id)
+    assert.are.equal(1, loads)
+    projection.messages[1].content = "changed"
+    assert.are.equal("accepted", session:messages()[1].content)
   end)
 
   it("does not add a message when storage rejects it", function()
