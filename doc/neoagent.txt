@@ -924,9 +924,12 @@ footer displays context usage when the selected Model declares a
 
 Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
-show complete card lines with soft wrapping. A Unicode outline follows the card
-beneath the cursor while the transcript is focused, and tool card outlines
-carry an `<CR> to expand` hint in the bottom border while hovered. The
+show complete card lines with soft wrapping. Compaction cards present their
+summary in at most 20 visible card lines and keep each preview line clipped;
+their details view contains the complete soft-wrapped summary. A Unicode
+outline follows the card beneath the cursor while the transcript is focused,
+and tool card outlines carry an `<CR> to expand` hint in the bottom border
+while hovered. The
 configured `card_details` mapping opens that card's complete content in a
 scrollable, read-only floating window that soft-wraps long lines and is
 titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
