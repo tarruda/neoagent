@@ -144,20 +144,20 @@ function M:_card_at_cursor()
   end
 end
 
-function M:_move_card(direction, count)
+local function card_target(view, direction, count)
   if direction ~= -1 and direction ~= 1 then return false end
-  if not self.transcript_win or not vim.api.nvim_win_is_valid(self.transcript_win)
-      or vim.api.nvim_win_get_buf(self.transcript_win) ~= self.transcript_buf then
-    return false
+  if not view.transcript_win or not vim.api.nvim_win_is_valid(view.transcript_win)
+      or vim.api.nvim_win_get_buf(view.transcript_win) ~= view.transcript_buf then
+    return nil
   end
   count = math.max(1, math.floor(tonumber(count) or 1))
-  local row = vim.api.nvim_win_get_cursor(self.transcript_win)[1] - 1
+  local row = vim.api.nvim_win_get_cursor(view.transcript_win)[1] - 1
   local target
   local moved = 0
-  local first_index = direction > 0 and 1 or #self.blocks
-  local last_index = direction > 0 and #self.blocks or 1
+  local first_index = direction > 0 and 1 or #view.blocks
+  local last_index = direction > 0 and #view.blocks or 1
   for index = first_index, last_index, direction do
-    local first, last = card_range(self, self.blocks[index])
+    local first, last = card_range(view, view.blocks[index])
     local follows = direction > 0 and first and first > row
       or direction < 0 and last and last < row
     if follows then
@@ -166,9 +166,19 @@ function M:_move_card(direction, count)
       if moved == count then break end
     end
   end
+  return target
+end
+
+function M:_has_card(direction)
+  return card_target(self, direction, 1) ~= nil
+end
+
+function M:_move_card(direction, count)
+  local target = card_target(self, direction, count)
   if not target then return false end
   vim.api.nvim_win_set_cursor(self.transcript_win, { target + 1, 0 })
   self:_update_card_outline()
+  self:_refresh_input_footer()
   return true
 end
 

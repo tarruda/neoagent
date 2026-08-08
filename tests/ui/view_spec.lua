@@ -102,6 +102,75 @@ describe("neoagent.ui", function()
     end
   end)
 
+  it("builds a bounded input footer from configured mappings", function()
+    local result = view({ mappings = {
+      submit = { "<C-s>", "<CR>" },
+      newline = false,
+      card_previous = "g[",
+      interrupt = false,
+    } })
+    assert.are.equal(" <C-s> send ",
+      result:_input_footer(80))
+    local narrow = result:_input_footer(18)
+    assert.is_true(vim.fn.strdisplaywidth(narrow) <= 18)
+    assert.matches("^ <C%-s>", narrow)
+    assert.is_not_nil(narrow:find("<C%-s> send"))
+    assert.is_nil(narrow:find("transcript", 1, true))
+  end)
+
+  it("updates input mapping hints for focus, mode, and card position", function()
+    local result = view({ position = "center" })
+    result:set_messages({
+      { role = "user", content = "first" },
+      { role = "assistant", content = {
+        { type = "text", text = "latest" },
+      } },
+    })
+    assert(result:open())
+    local function footer()
+      local value = vim.api.nvim_win_get_config(result.input_win).footer
+      if type(value) == "table" then
+        value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
+      end
+      return value
+    end
+    assert(vim.wait(1000, function()
+      return footer()
+        == " <CR> send · <C-j> newline · <C-c> cancel "
+    end))
+
+    vim.cmd("stopinsert")
+    vim.api.nvim_exec_autocmds("InsertLeave", { buffer = result.input_buf })
+    assert(vim.wait(1000, function()
+      return footer() == " <CR> send · [c transcript · <C-c> cancel "
+    end))
+
+    result:focus_transcript()
+    local rows = {}
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("first", 1, true) then rows.first = row end
+      if line:find("latest", 1, true) then rows.latest = row end
+    end
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.first, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    assert(vim.wait(1000, function()
+      return footer()
+        == " <CR> details · [c previous · ]c next · <C-c> cancel "
+    end))
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.latest, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", {
+      buffer = result.transcript_buf,
+    })
+    assert(vim.wait(1000, function()
+      return footer()
+        == " <CR> details · [c previous · ]c input · <C-c> cancel "
+    end))
+  end)
+
   it("opens ordinary focusable buffers and preserves the draft across close", function()
     local origin = vim.api.nvim_get_current_win()
     local result = view({ position = "center" })
@@ -1771,7 +1840,9 @@ describe("neoagent.ui", function()
     local input_config = vim.api.nvim_win_get_config(result.input_win)
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
-    assert.are.equal(" Input · <CR> send ", input_footer())
+    assert.are.equal(
+      " <CR> send · <C-j> newline · <C-c> cancel ",
+      input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
         and text(result):find("<A-Up> to edit queued messages", 1, true) ~= nil
@@ -1787,7 +1858,9 @@ describe("neoagent.ui", function()
         and text(result):find("Steering:", 1, true) == nil
     end))
     result:set_context({ provider_status = false })
-    assert.are.equal(" Input · <CR> send ", input_footer())
+    assert.are.equal(
+      " <CR> send · <C-j> newline · <C-c> cancel ",
+      input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))
     assert.matches("Compacting%.%.%.", transcript_footer())

@@ -239,6 +239,7 @@ function M:_flush()
   self:_restore_view(saved)
   self:_refresh_card_details()
   self:_update_card_outline()
+  self:_refresh_input_footer()
 end
 
 function M:_schedule_flush()

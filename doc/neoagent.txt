@@ -874,7 +874,9 @@ and yank. Dialogs render without stealing focus while the input draft
 contains text, and the transcript, dialog, and card-details buffers remain
 in Normal mode. Set `ui.scroll_on_submit`,
 `ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
-automatic scrolling.
+automatic scrolling. The input footer lists the highest-priority configured
+mappings for the focused surface and mode that fit its current width. Card
+navigation labels identify whether the next destination is a card or input.
 
 User and assistant text renders Markdown in borderless cards whose long
 lines soft-wrap at word boundaries. Assistant cards show the complete
@@ -919,13 +921,13 @@ clears the draft.
 
 Insert-mode Tab opens Neovim's popup menu with filename matches relative to the
 current working directory and advances through them. Enter accepts the selected
-match without submitting the prompt. Up, Down, Ctrl-K, and Ctrl-J navigate an
-open completion menu. Set `ui.completion` to false, use an empty
+match without submitting the prompt. Up, Down, and Ctrl-K navigate an open
+completion menu. Set `ui.completion` to false, use an empty
 `ui.completion.sources` list, or change `ui.mappings.complete` to configure the
 behavior. `files` is the supported completion source.
 
-Accepted input is shared by every Controller in the workspace. Insert-mode Up
-and Down or Ctrl-K and Ctrl-J browse the most recent 100 entries. Multiline
+Accepted input is shared by every Controller in the workspace. Insert-mode Up,
+Down, and Ctrl-K browse the most recent 100 entries. Multiline
 cursor movement takes precedence until the cursor reaches the first or last
 line, and returning past the newest entry restores the previous draft. Ctrl-R
 opens a searchable history selector and places the selected entry in the
@@ -935,6 +937,7 @@ Default mappings:
 
   <CR>        Accept popup completion, or send from input in Normal or Insert
               mode; open full details for the transcript card under the cursor.
+  <C-j>       Insert a newline from input Insert mode.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
   <C-c>       Interrupt the active Run and restore queued steering; clear the
@@ -945,14 +948,16 @@ Default mappings:
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
   [c / ]c     Jump to the previous or next transcript card; counts are
-              supported.
+              supported. From input Normal mode, [c focuses the newest card.
+              From the newest card, ]c focuses the input in Insert mode.
   r           Toggle rendered and raw Markdown in Text or Thinking details.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
   <A-r>       Resume a session (input Normal/Insert; transcript Normal).
-  <Up>/<Down> or <C-k>/<C-j>
-              Browse workspace input history from Insert mode.
+  <Up>/<Down> or <C-k>
+              Browse workspace input history from Insert mode; Ctrl-K moves
+              toward older entries.
   <C-r>       Select workspace input history (input Normal/Insert; transcript
               Normal).
   <A-Up>      Restore queued steering messages to the input.

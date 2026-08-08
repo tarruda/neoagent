@@ -195,7 +195,43 @@ describe("neoagent UI mappings", function()
     assert.are.equal(rows["first card"], cursor_row())
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["third card"], 0 })
     feed("]c")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end))
+    vim.cmd("stopinsert")
+    feed("[c")
+    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
     assert.are.equal(rows["third card"], cursor_row())
+    feed("]c")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end))
+    vim.cmd("stopinsert")
+    feed("2[c")
+    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
+    assert.are.equal(rows["second card"], cursor_row())
+    result:destroy()
+  end)
+
+  it("inserts a newline with Ctrl-J without submitting", function()
+    local submissions = {}
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_submit = function(value)
+        submissions[#submissions + 1] = value
+        return true
+      end,
+    })
+    assert(result:open())
+    result:set_input("first")
+    result:focus_input()
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
+      "A<C-j>second", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result:get_input() == "first\nsecond"
+    end))
+    assert.are.same({}, submissions)
     result:destroy()
   end)
 
@@ -586,7 +622,7 @@ describe("neoagent UI mappings", function()
     result:set_input("")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-k>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "newest\ncontinued" end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-j>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "" end))
 
     result:set_input("first\nsecond")
