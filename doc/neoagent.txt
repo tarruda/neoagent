@@ -1255,6 +1255,8 @@ The threshold is `context_window - reserve_tokens`, and recent retention uses
 or `compaction.auto = false` to retain manual and overflow compaction. A custom
 `compaction.run(opts)` returns a cancellable Run with `summary`,
 `first_kept_entry_id`, `tokens_before`, and optional `usage` and `details`.
+Runner startup is transactional: exceptions and invalid Run values produce a
+structured compaction error while preserving Controller lifecycle state.
 The `neoagent.compaction` module exposes `settings`, `estimate_context`,
 `should_compact`, `prepare`, `serialize`, and `run` for direct composition.
 

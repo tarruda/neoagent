@@ -502,6 +502,76 @@ describe("neoagent default controller", function()
     assert.are.same({ format = "custom" }, checkpoint.details)
   end)
 
+  it("recovers when a custom compaction runner cannot start", function()
+    local assistant = fake_model.assistant({ {
+      type = "text", text = string.rep("answer ", 20),
+    } })
+    assistant.message.usage.totalTokens = 90
+    local attempts = 0
+    local failed_options
+    local model = fake_model.new({ { result = assistant } })
+    model.context_window = 100
+    setup_model(model, {
+      compaction = {
+        auto = true,
+        reserve_tokens = 20,
+        keep_recent_tokens = 5,
+        run = function(options)
+          attempts = attempts + 1
+          if attempts == 1 then
+            failed_options = options
+            options.on_event({ type = "provider_status", text = "discarded" })
+            options.on_done({
+              ok = true,
+              summary = "discarded summary",
+              first_kept_entry_id = options.preparation.first_kept_entry_id,
+              tokens_before = options.preparation.tokens_before,
+            })
+            error("compactor exploded")
+          elseif attempts == 2 then
+            return {}
+          end
+          local run = { cancel = function() end }
+          options.on_event({ type = "provider_status", text = "synchronous" })
+          options.on_done({
+            ok = true,
+            summary = "synchronous summary",
+            first_kept_entry_id = options.preparation.first_kept_entry_id,
+            tokens_before = options.preparation.tokens_before,
+          })
+          return run
+        end,
+      },
+    })
+
+    local interaction = assert(neoagent.send("trigger compaction"))
+    assert(vim.wait(1000, function()
+      return interaction:is_done() and is_idle()
+    end))
+    assert.are.equal(1, attempts)
+    assert.are.equal(0, #vim.tbl_filter(function(entry)
+      return entry.type == "compaction"
+    end, neoagent.get_session():entries()))
+    failed_options.on_event({ type = "provider_status", text = "late" })
+    failed_options.on_done({ ok = false, error = {
+      kind = "compaction", message = "late failure",
+    } })
+
+    local run, err = neoagent.compact()
+    assert.is_nil(run)
+    assert.are.equal("compaction", err.kind)
+    assert.matches("compaction.run must return a Run", err.message)
+    assert.is_true(is_idle())
+    assert.are.equal(2, attempts)
+
+    assert(neoagent.compact())
+    assert.is_true(is_idle())
+    assert.are.equal(3, attempts)
+    local entries = neoagent.get_session():entries()
+    assert.are.equal("compaction", entries[#entries].type)
+    assert.are.equal("synchronous summary", entries[#entries].summary)
+  end)
+
   it("reports manual compaction preconditions and failed summaries", function()
     setup_model(fake_model.new({}), { compaction = false })
     assert.is_nil(neoagent.compact())

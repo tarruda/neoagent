@@ -195,12 +195,66 @@ function M.new(opts)
     if not preparation then return nil, prepare_err end
 
     local selected = config.compaction.run or require("neoagent.compaction").run
+    local previous_status = state.status
+    local previous_run = state.run
+    local previous_events = state.pending_events
     state.status = "compacting"
     state.pending_events = {}
     opts.publish({ type = "event", event = { type = "compaction_start", reason = reason } })
     opts.update_context()
-    local run
-    run = selected({
+
+    local callbacks = {}
+    local active = false
+    local discarded = false
+    local function on_event(event)
+      if discarded then return end
+      if not active then
+        callbacks[#callbacks + 1] = { kind = "event", value = event }
+        return
+      end
+      if run_id ~= state.run_id then return end
+      if event.type == "provider_status" then
+        state.provider_status = type(event.text) == "string" and event.text or nil
+        opts.update_context()
+      end
+      opts.publish({ type = "event", event = event })
+    end
+    local function on_done(done)
+      if discarded then return end
+      if not active then
+        callbacks[#callbacks + 1] = { kind = "done", value = done }
+        return
+      end
+      if run_id ~= state.run_id then return end
+      local result = util.copy(done)
+      if done.ok then
+        local ok, err = state.session:append_entry("compaction", {
+          summary = done.summary,
+          firstKeptEntryId = done.first_kept_entry_id,
+          tokensBefore = done.tokens_before,
+          usage = done.usage,
+          details = done.details,
+          fromHook = selected ~= require("neoagent.compaction").run or nil,
+        })
+        if not ok then result = { ok = false, error = err } end
+      end
+      if result.ok then
+        local projected = assert(state.session:context_messages())
+        result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
+        opts.publish_messages(opts.transcript_messages(state.session))
+      end
+      state.run = nil
+      state.status = "idle"
+      state.live_usage = nil
+      opts.update_context()
+      opts.publish({ type = "event", event = {
+        type = "compaction_end", reason = reason, result = result,
+      } })
+      if after then after(result) end
+      if result.ok then schedule_steering() end
+    end
+
+    local started, run = pcall(selected, {
       preparation = preparation,
       model = state.model,
       model_options = {
@@ -209,46 +263,36 @@ function M.new(opts)
       instructions = instructions,
       reason = reason,
       session = state.session,
-      on_event = function(event)
-        if run_id ~= state.run_id then return end
-        if event.type == "provider_status" then
-          state.provider_status = type(event.text) == "string" and event.text or nil
-          opts.update_context()
-        end
-        opts.publish({ type = "event", event = event })
-      end,
-      on_done = function(done)
-        if run_id ~= state.run_id then return end
-        local result = util.copy(done)
-        if done.ok then
-          local ok, err = state.session:append_entry("compaction", {
-            summary = done.summary,
-            firstKeptEntryId = done.first_kept_entry_id,
-            tokensBefore = done.tokens_before,
-            usage = done.usage,
-            details = done.details,
-            fromHook = selected ~= require("neoagent.compaction").run or nil,
-          })
-          if not ok then result = { ok = false, error = err } end
-        end
-        if result.ok then
-          local projected = assert(state.session:context_messages())
-          result.estimated_tokens_after = context_metrics.tokens(state.session, projected)
-          opts.publish_messages(opts.transcript_messages(state.session))
-        end
-        state.run = nil
-        state.status = "idle"
-        state.live_usage = nil
-        opts.update_context()
-        opts.publish({ type = "event", event = {
-          type = "compaction_end", reason = reason, result = result,
-        } })
-        if after then after(result) end
-        if result.ok then schedule_steering() end
-      end,
+      on_event = on_event,
+      on_done = on_done,
     })
-    assert(type(run) == "table" and type(run.cancel) == "function", "compaction.run must return a Run")
+    local start_err
+    if not started then
+      start_err = util.normalize_error(run, "compaction")
+    elseif type(run) ~= "table" or type(run.cancel) ~= "function" then
+      start_err = util.error("compaction", "compaction.run must return a Run")
+    end
+    if start_err then
+      discarded = true
+      callbacks = {}
+      state.status = previous_status
+      state.run = previous_run
+      state.pending_events = previous_events
+      opts.update_context()
+      opts.publish({ type = "event", event = {
+        type = "compaction_end", reason = reason,
+        result = { ok = false, error = start_err },
+      } })
+      return nil, start_err
+    end
+
     state.run = run
+    active = true
+    local queued_callbacks = callbacks
+    callbacks = {}
+    for _, callback in ipairs(queued_callbacks) do
+      if callback.kind == "event" then on_event(callback.value) else on_done(callback.value) end
+    end
     return run
   end
 
