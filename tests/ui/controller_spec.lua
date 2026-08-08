@@ -52,7 +52,7 @@ describe("neoagent default controller", function()
     assert.are.equal(2, #neoagent.get_session():messages())
     local lines = table.concat(vim.api.nvim_buf_get_lines(current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches(" hi ", lines)
-    assert.matches(" hello", lines)
+    assert.matches(" hello ", lines)
   end)
 
   it("identifies the Controller and active Session in executor context", function()
@@ -725,7 +725,7 @@ describe("neoagent default controller", function()
       execute_tool = sandbox_execute,
     })
     assert.are.equal("host_tool", previous.tools[1].name)
-    assert.are.equal(host_execute, previous.execute_tool)
+    assert.are.equal(initial.execute_tool, previous.execute_tool)
     assert.are.equal("host_tool", controller:config().tools[1].name)
     assert.are.equal(host_execute, controller:config().execute_tool)
 
@@ -741,13 +741,14 @@ describe("neoagent default controller", function()
     assert(controller:set_toolset(previous))
     assert(neoagent.send("use host tools"))
     assert.are.equal("host_tool", calls[2].tools[1].name)
-    assert.are.equal(host_execute, calls[2].execute_tool)
+    assert.are.equal(initial.execute_tool, calls[2].execute_tool)
     assert.is_true(neoagent.stop())
     assert.has_error(function() controller:set_toolset({ tools = "invalid" }) end,
       "toolset.tools must be a list")
   end)
 
-  it("toggles the built-in Neo sandbox toolset while Chat is selected", function()
+  it("toggles built-in sandbox execution while Chat or Neo is active", function()
+    local interactions = {}
     local tool = {
       name = "inspect",
       description = "Inspect the workspace",
@@ -756,8 +757,11 @@ describe("neoagent default controller", function()
         properties = {},
         additionalProperties = false,
       },
-      execute = function()
-        return { content = { { type = "text", text = "done" } } }
+      execute = function(_, ctx)
+        return { content = { {
+          type = "text",
+          text = ctx.process and "sandbox" or "host",
+        } } }
       end,
     }
     local host_execute = function(selected, arguments, ctx)
@@ -767,6 +771,7 @@ describe("neoagent default controller", function()
       tools = { tool },
       execute_tool = host_execute,
       interaction = function(options)
+        interactions[#interactions + 1] = options
         return { cancel = function()
           options.on_done({
             ok = false,
@@ -791,6 +796,8 @@ describe("neoagent default controller", function()
     local ok, err = pcall(function()
       local window = neoagent.default_window()
       local neo = window:controllers()[1]
+      local stable = neo:get_toolset()
+      assert.is_table(stable.tools[1].input_schema.properties.options)
       assert.are.equal("Chat", neoagent.cycle_agent():config().name)
       local status = assert(neoagent.toggle_sandbox())
       assert.is_true(status.active)
@@ -800,31 +807,52 @@ describe("neoagent default controller", function()
       assert.are.equal("Chat", window:active():config().name)
       assert.is_false(neo:config().sandbox.enabled)
       local active = neo:get_toolset()
-      assert.is_table(active.tools[1].input_schema.properties.options)
-      assert.are_not.equal(host_execute, active.execute_tool)
+      assert.are.same(stable.tools, active.tools)
+      assert.are.equal(stable.execute_tool, active.execute_tool)
       assert.are.same({}, window:controllers()[2]:get_toolset().tools)
 
       status = assert(neoagent.toggle_sandbox())
       assert.is_false(status.enabled)
       local restored = neo:get_toolset()
-      assert.is_nil(restored.tools[1].input_schema.properties.options)
-      assert.are.equal(host_execute, restored.execute_tool)
+      assert.are.same(stable.tools, restored.tools)
+      assert.are.equal(stable.execute_tool, restored.execute_tool)
 
       assert.are.equal("Neo", neoagent.cycle_agent():config().name)
-      assert(neoagent.send("keep the host tools stable"))
-      local changed, busy_err = neoagent.toggle_sandbox()
-      assert.is_nil(changed)
-      assert.are.equal("sandbox", busy_err.kind)
-      assert.are.equal(host_execute, neo:get_toolset().execute_tool)
+      assert(neoagent.send("switch execution without changing tools"))
+      local running = interactions[1]
+      local ctx = { context = running.context }
+      local function execute()
+        local value = running.execute_tool(running.tools[1], {}, ctx)
+        return value.content[1].text
+      end
+      assert.are.equal("host", execute())
+      status = assert(neoagent.toggle_sandbox())
+      assert.is_true(status.active)
+      assert.are.equal("sandbox", execute())
+      status = assert(neoagent.toggle_sandbox())
+      assert.is_false(status.enabled)
+      assert.are.equal("host", execute())
+      assert.are.same(stable.tools, neo:get_toolset().tools)
+      assert.are.equal(stable.execute_tool,
+        neo:get_toolset().execute_tool)
       assert.is_true(neoagent.stop())
     end)
     dispatch.select = original_select
     assert(ok, err)
   end)
 
-  it("tells the agent about sandboxed execution in the system prompt", function()
+  it("keeps sandbox guidance stable across runtime toggles", function()
     local captured
     setup_model(fake_model.new({}), {
+      tools = { {
+        name = "inspect",
+        description = "Inspect",
+        input_schema = {
+          type = "object",
+          properties = {},
+          additionalProperties = false,
+        },
+      } },
       interaction = function(options)
         captured = options
         return { cancel = function()
@@ -845,16 +873,15 @@ describe("neoagent default controller", function()
       }, { ok = true, platform = "test", capabilities = {} }
     end
     local ok, err = pcall(function()
-      assert(neoagent.toggle_sandbox())
       assert(neoagent.send("inspect"))
-      assert.matches("Sandboxed execution", captured.system_prompt)
+      local stable_prompt = captured.system_prompt
+      assert.matches("Sandbox controls", stable_prompt)
       assert.matches("require_escalation", captured.system_prompt)
       assert.is_true(neoagent.stop())
 
       assert(neoagent.toggle_sandbox())
       assert(neoagent.send("inspect"))
-      assert.is_nil(captured.system_prompt:find(
-        "Sandboxed execution", 1, true))
+      assert.are.equal(stable_prompt, captured.system_prompt)
       assert.is_true(neoagent.stop())
     end)
     dispatch.select = original_select
@@ -923,7 +950,11 @@ describe("neoagent default controller", function()
     setup_model(fake_model.new({}), {
       agents = { global_files = { agents_path }, project_filenames = {} },
       skills = { global_dirs = { skill_root }, project_dirs = {} },
-      tools = { { name = "read_file", description = "Read a file" } },
+      tools = { {
+        name = "read_file",
+        description = "Read a file",
+        input_schema = { type = "object", properties = {} },
+      } },
       system_prompt = function(context)
         assert.are.equal(1, #context.agents)
         assert.are.equal(1, #context.skills)

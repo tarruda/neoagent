@@ -1186,16 +1186,18 @@ describe("neoagent shared sandbox contract", function()
     })
     assert.is_false(controller:config().sandbox.enabled)
     assert.is_false(neoagent.sandbox_info().enabled)
-    assert.is_nil(controller:get_toolset().tools[1]
-      .input_schema.properties.options)
+    local stable = controller:get_toolset()
+    assert.is_table(stable.tools[1].input_schema.properties.options)
     sandbox_status = assert(neoagent.toggle_sandbox())
     assert.is_true(sandbox_status.active)
     assert.is_false(controller:config().sandbox.enabled)
-    assert.is_table(controller:get_toolset().tools[1]
-      .input_schema.properties.options)
+    assert.are.same(stable.tools, controller:get_toolset().tools)
+    assert.are.equal(stable.execute_tool,
+      controller:get_toolset().execute_tool)
     sandbox_status = assert(neoagent.toggle_sandbox())
     assert.is_false(sandbox_status.enabled)
-    assert.is_nil(controller:get_toolset().tools[1]
-      .input_schema.properties.options)
+    assert.are.same(stable.tools, controller:get_toolset().tools)
+    assert.are.equal(stable.execute_tool,
+      controller:get_toolset().execute_tool)
   end)
 end)

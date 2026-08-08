@@ -35,7 +35,12 @@ describe("neoagent UI mappings", function()
     assert.is_not_nil(shell_row)
     vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
-    assert.is_nil(result.details_win)
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    assert.matches("Text", vim.api.nvim_win_get_config(result.details_win).title[1][1])
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function() return result.details_win == nil end))
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { shell_row, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
@@ -61,6 +66,81 @@ describe("neoagent UI mappings", function()
       return result.details_win == nil
         and vim.api.nvim_get_current_win() == result.transcript_win
     end))
+    result:destroy()
+  end)
+
+  it("toggles raw Markdown for text and thinking details only", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    local thinking = "# Trace\n\n*reason*"
+    local response = "**Answer**\n\n- item"
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "thinking", thinking = thinking },
+        { type = "text", text = response },
+        { type = "toolCall", id = "read", name = "read_file",
+          arguments = { path = "notes.md" } },
+      } },
+      { role = "toolResult", toolCallId = "read", toolName = "read_file",
+        isError = false, content = { { type = "text", text = "contents" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result:focus_transcript()
+
+    local rows = {}
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("Trace", 1, true) then rows.thinking = row end
+      if line:find("Answer", 1, true) then rows.text = row end
+      if line:find("read notes.md", 1, true) then rows.tool = row end
+    end
+    assert.is_not_nil(rows.thinking)
+    assert.is_not_nil(rows.text)
+    assert.is_not_nil(rows.tool)
+
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    local function details()
+      return table.concat(
+        vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
+    end
+    local function title()
+      local chunks = vim.api.nvim_win_get_config(result.details_win).title or {}
+      return table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
+    end
+    local function check_toggle(row, raw)
+      vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+      feed("<CR>")
+      assert(vim.wait(1000, function()
+        return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+      end))
+      assert.are_not.equal(raw, details())
+      assert.matches("r raw", title())
+      feed("r")
+      assert(vim.wait(1000, function() return details() == raw end))
+      assert.matches("r rendered", title())
+      feed("r")
+      assert(vim.wait(1000, function() return details() ~= raw end))
+      feed("<C-c>")
+      assert(vim.wait(1000, function() return result.details_win == nil end))
+    end
+    check_toggle(rows.thinking, thinking)
+    check_toggle(rows.text, response)
+
+    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.tool, 0 })
+    feed("<CR>")
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    vim.api.nvim_buf_call(result.details_buf, function()
+      assert.are.equal("", vim.fn.maparg("r", "n"))
+    end)
+    assert.is_nil(title():find("r raw", 1, true))
+    result:_close_card_details(true)
     result:destroy()
   end)
 
@@ -102,18 +182,56 @@ describe("neoagent UI mappings", function()
     feed("]c")
     assert.are.equal(rows["second card"], cursor_row())
     feed("[c")
+    assert.are.equal(rows["between cards"], cursor_row())
+    feed("[c")
     assert.are.equal(rows["first card"], cursor_row())
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
     feed("2]c")
     assert.are.equal(rows["third card"], cursor_row())
-    feed("2[c")
+    feed("3[c")
     assert.are.equal(rows["first card"], cursor_row())
     feed("[c")
     assert.are.equal(rows["first card"], cursor_row())
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["third card"], 0 })
     feed("]c")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end))
+    vim.cmd("stopinsert")
+    feed("[c")
+    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
     assert.are.equal(rows["third card"], cursor_row())
+    feed("]c")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end))
+    vim.cmd("stopinsert")
+    feed("2[c")
+    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
+    assert.are.equal(rows["second card"], cursor_row())
+    result:destroy()
+  end)
+
+  it("inserts a newline with Ctrl-J without submitting", function()
+    local submissions = {}
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_submit = function(value)
+        submissions[#submissions + 1] = value
+        return true
+      end,
+    })
+    assert(result:open())
+    result:set_input("first")
+    result:focus_input()
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
+      "A<C-j>second", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result:get_input() == "first\nsecond"
+    end))
+    assert.are.same({}, submissions)
     result:destroy()
   end)
 
@@ -205,6 +323,30 @@ describe("neoagent UI mappings", function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
     end))
+    result:destroy()
+  end)
+
+  it("replays the selected list-valued close-empty mapping", function()
+    local result = ui.new({
+      config = config.setup({ ui = {
+        position = "center",
+        mappings = { close_empty = { "<C-d>", "<BS>" } },
+      } }).ui,
+    })
+    assert(result:open())
+    result:set_input("draft")
+    result:focus_input()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<BS>", true, false, true),
+      "x", false)
+    assert.are.equal("draf", result:get_input())
+    assert.is_true(result:is_open())
+    result:set_input("")
+    result:focus_input()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-d>", true, false, true),
+      "x", false)
+    assert(vim.wait(1000, function() return not result:is_open() end))
     result:destroy()
   end)
 
@@ -480,7 +622,7 @@ describe("neoagent UI mappings", function()
     result:set_input("")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-k>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "newest\ncontinued" end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-j>", true, false, true), "x", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "" end))
 
     result:set_input("first\nsecond")

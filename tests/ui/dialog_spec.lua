@@ -39,6 +39,18 @@ local function floating_dialog()
   }
 end
 
+local function floating_confirm_dialog()
+  return {
+    placement = "float",
+    title = "Approve operation",
+    body = "Allow this operation?",
+    actions = {
+      { id = "allow", label = "allow", key = "y" },
+      { id = "deny", label = "deny", key = "n" },
+    },
+  }
+end
+
 local function snapshot(value, id, queued)
   value = vim.deepcopy(value)
   value.id = id
@@ -81,6 +93,42 @@ describe("neoagent generic dialog UI", function()
     for _, controller in ipairs(controllers) do controller:destroy() end
     views, windows, controllers = {}, {}, {}
     vim.cmd("silent! only")
+  end)
+
+  it("keeps input focus for dialogs while the draft has text", function()
+    local view = require("neoagent.ui").new({
+      config = config.resolve({}).ui,
+      on_dialog_action = function() end,
+    })
+    views[#views + 1] = view
+    assert.is_true(view:open())
+    view:set_input("half-typed prompt")
+    assert.are.equal(view.input_win, vim.api.nvim_get_current_win())
+
+    view:set_dialog(snapshot(transcript_dialog(), "first"))
+    assert.are.equal(view.input_win, vim.api.nvim_get_current_win())
+    assert.is_not_nil(view.dialog_buf)
+
+    view:set_dialog(snapshot(floating_confirm_dialog(), "second"))
+    assert.are.equal(view.input_win, vim.api.nvim_get_current_win())
+    assert.is_not_nil(view.dialog_win)
+
+    view:set_input("")
+    view:set_dialog(snapshot(transcript_dialog(), "third"))
+    assert.are.equal(view.transcript_win, vim.api.nvim_get_current_win())
+  end)
+
+  it("keeps transcript dialogs in normal mode", function()
+    local view = require("neoagent.ui").new({
+      config = config.resolve({}).ui,
+      on_dialog_action = function() end,
+    })
+    views[#views + 1] = view
+    assert.is_true(view:open())
+    view:set_dialog(snapshot(transcript_dialog(), "normal"))
+    assert.are.equal(view.transcript_win, vim.api.nvim_get_current_win())
+    vim.api.nvim_feedkeys("i", "x", false)
+    assert.are.equal("n", vim.api.nvim_get_mode().mode)
   end)
 
   it("renders arbitrary transcript actions supplied by the caller", function()

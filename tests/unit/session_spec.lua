@@ -1,6 +1,19 @@
 local Session = require("neoagent.session")
 
 describe("neoagent.session", function()
+  it("rejects leaves and compactions targeting unknown entries", function()
+    local session = assert(Session.new())
+    local ok, err = session:append_entry("leaf", { targetId = "missing" })
+    assert.is_nil(ok)
+    assert.matches("Invalid leaf", err.message)
+    ok, err = session:append_entry("compaction", {
+      firstKeptEntryId = "missing",
+      summary = "compacted",
+    })
+    assert.is_nil(ok)
+    assert.matches("Invalid compaction", err.message)
+  end)
+
   it("is a no-argument tool-free in-memory message sequence", function()
     local session = assert(Session.new())
     assert.is_nil(session:metadata())

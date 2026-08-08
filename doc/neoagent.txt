@@ -443,13 +443,16 @@ Use >
   :NeoagentToggleSandbox
   :NeoagentSandboxInfo
 <
-to switch Neo's complete toolset and inspect the active backend, isolation
-level, and available capabilities. Switching is rejected while Neo has an
-active Run. The command targets the built-in Neo Controller when Chat is
-selected. Calling `setup()` applies the configured initial state again. The
-command-facing Window owns a generic dialog source in either state, so a custom
-`view` used by `setup()` implements the documented `set_dialog(snapshot)`
-method.
+to switch Neo's executor between host and sandbox execution and inspect the
+active backend, isolation level, and available capabilities. The command can
+run while Neo has an active Run. Each tool call reads the current state when it
+starts; an in-flight call retains its selected execution mode until it ends.
+The tool list, schemas, executor identity, and sandbox guidance remain stable
+across runtime changes. The command targets the built-in Neo Controller when
+Chat is selected. Calling `setup()` applies the configured initial state again.
+The command-facing Window owns a generic dialog source in either state, so a
+custom `view` used by `setup()` implements the documented
+`set_dialog(snapshot)` method.
 
 Successful activation wraps only the built-in Neo Controller. Chat remains
 tool-free. Linux and Windows use bundled standalone LuaJIT FFI runtimes to
@@ -471,14 +474,28 @@ install the result with `controller:set_toolset()`:
 Attach `dialogs` to the custom Window to present escalation requests. The
 returned status reports activation requirements and capabilities.
 
+Custom compositions that require runtime switching can install one stable
+toolset and retain its runtime control: >lua
+
+  local toolset, status, dialogs, sandbox =
+    require("neoagent.sandbox.composition").switchable(
+      controller:get_toolset(),
+      { enabled = false })
+  controller:set_toolset(toolset)
+  sandbox:set_enabled(true)
+<
+`set_enabled()` returns the current status and can run while the Controller is
+working. A disabled switchable composition delays its platform probe until the
+first activation request.
+
 Activation failures include their setup stage and reason. When activation
-requirements fail, Neo retains its configured host toolset. The workspace trust
-prompt includes the failure and effective host execution status. With
-`workspace_trust = false`, a warning is shown once when an initially enabled
-Neo is first displayed. Runtime activation requests report failures
-immediately. Successful activation reports full or degraded isolation through
-|:NeoagentSandboxInfo|. Failures after successful activation fail closed as
-tool errors and never retry through the host executor.
+requirements fail, Neo's stable executor uses the configured host path. The
+workspace trust prompt includes the failure and effective host execution
+status. With `workspace_trust = false`, a warning is shown once when an
+initially enabled Neo is first displayed. Runtime activation requests report
+failures immediately. Successful activation reports full or degraded isolation
+through |:NeoagentSandboxInfo|. Failures after successful activation fail
+closed as tool errors and never retry through the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps
@@ -618,15 +635,16 @@ and process capabilities for that one call. Denial returns an error without
 running the unrestricted call. Escalation is denied when no dialog presenter
 is available.
 
-While the sandbox is active, the composed toolset appends a sandbox guidance
-section to Neo's system prompt. It describes the restricted filesystem,
-network, and process authority, explains that blocked operations return an
-explicit sandbox error, and tells the agent to request escalation with
-`options.require_escalation = true` and an `options.escalation_justification`
-before the first denial. The section names the active backend platform.
-Toggling the sandbox off removes the section together with the toolset; a
-custom `system_prompt` string or callback receives it appended after the
-composed agents and skills sections.
+The built-in switchable toolset appends a stable sandbox-controls section to
+Neo's system prompt whenever Neo has tools. It explains that the editor selects
+restricted or host execution per call and tells the agent to request escalation
+with `options.require_escalation = true` and an
+`options.escalation_justification` when restricted execution blocks required
+work. The stable tool schemas always include those fields. Host execution
+strips them and calls the configured executor directly. A custom
+`system_prompt` string or callback receives the section appended after the
+composed agents and skills sections. Static `composition.compose()` toolsets
+append platform-specific guidance for their active backend.
 
 Shell approvals whose command starts with at least one literal argument token
 also offer `yes and don't ask again for commands starting with`. Selecting it
@@ -850,7 +868,7 @@ The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
   :NeoagentSandboxInfo            Show current sandbox capabilities.
-  :NeoagentToggleSandbox          Switch Neo between host and sandbox tools.
+  :NeoagentToggleSandbox          Switch Neo between host and sandbox execution.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.
@@ -870,22 +888,48 @@ Fork selection restores the selected user message to the input buffer.
 
 The input and transcript are focusable Neovim buffers. Input opens in Insert
 mode, and the transcript supports normal search, motions, Visual selection,
-and yank. Set `ui.scroll_on_submit`, `ui.scroll_on_transcript_leave`, or
-`ui.scroll_on_reopen` to control automatic scrolling.
+and yank. Dialogs render without stealing focus while the input draft
+contains text, and the transcript, dialog, and card-details buffers remain
+in Normal mode. Set `ui.scroll_on_submit`,
+`ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
+automatic scrolling. The input footer lists the highest-priority configured
+mappings for the focused surface and mode that fit its current width. Card
+navigation labels identify whether the next destination is a card or input.
 
-Assistant text renders Markdown, and thinking uses a muted italic style. Set
-`ui.show_thinking = false` to omit thinking traces from the transcript while
-retaining them in the Session and model context. The footer displays context
-usage when the selected Model declares a `context_window`.
+User and assistant text renders Markdown in borderless cards whose long
+lines soft-wrap at word boundaries. Assistant cards show the complete
+response without a line limit, and while hovered a right-aligned badge such
+as `[text: 42 words, <CR> to expand]` reports the word count and expand key.
+The `card_details` mapping opens the response without card padding for
+copying. Thinking appears in
+borderless cards with a muted italic style, clipped to the most recent
+lines. While a thinking card is hovered, a right-aligned badge such
+as `[thinking: 42 words, 8 lines above..., <CR> to expand]` reports the
+running word count, clipped lines, and expand key; the first line is
+truncated with `...` when it reaches the badge. When a thinking card has
+lines clipped to the visible width, a borderless `...[thinking: ...]` banner
+rests at the card's top right while the card is not hovered, keeping the
+hidden content visible; the expand key appears only while hovered. The
+`card_details` mapping reveals the complete reasoning trace.
+Set `ui.show_thinking = false` to omit thinking traces from
+the transcript while retaining them in the Session and model context. The
+footer displays context usage when the selected Model declares a
+`context_window`.
 
 Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
 show complete card lines with soft wrapping. A Unicode outline follows the card
-beneath the cursor while the transcript is focused. The configured
-`card_details` mapping opens that card's complete content in a scrollable,
-read-only floating window. Shell details include the complete command and all
-output retained by the tool result. Ctrl-C closes the details window and returns
-to the transcript.
+beneath the cursor while the transcript is focused, and tool card outlines
+carry an `<CR> to expand` hint in the bottom border while hovered. The
+configured `card_details` mapping opens that card's complete content in a
+scrollable, read-only floating window that soft-wraps long lines and is
+titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
+Shell
+details include the complete command and all output retained by the tool
+result, and thinking details reveal the full reasoning trace. Ctrl-C closes
+the details window and returns to the transcript. Text and Thinking details
+render Markdown by default. Press `r`, configured by `card_raw`, to toggle the
+original raw Markdown. The title shows the mapping and the view it will open.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -895,13 +939,13 @@ clears the draft.
 
 Insert-mode Tab opens Neovim's popup menu with filename matches relative to the
 current working directory and advances through them. Enter accepts the selected
-match without submitting the prompt. Up, Down, Ctrl-K, and Ctrl-J navigate an
-open completion menu. Set `ui.completion` to false, use an empty
+match without submitting the prompt. Up, Down, and Ctrl-K navigate an open
+completion menu. Set `ui.completion` to false, use an empty
 `ui.completion.sources` list, or change `ui.mappings.complete` to configure the
 behavior. `files` is the supported completion source.
 
-Accepted input is shared by every Controller in the workspace. Insert-mode Up
-and Down or Ctrl-K and Ctrl-J browse the most recent 100 entries. Multiline
+Accepted input is shared by every Controller in the workspace. Insert-mode Up,
+Down, and Ctrl-K browse the most recent 100 entries. Multiline
 cursor movement takes precedence until the cursor reaches the first or last
 line, and returning past the newest entry restores the previous draft. Ctrl-R
 opens a searchable history selector and places the selected entry in the
@@ -911,6 +955,7 @@ Default mappings:
 
   <CR>        Accept popup completion, or send from input in Normal or Insert
               mode; open full details for the transcript card under the cursor.
+  <C-j>       Insert a newline from input Insert mode.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
   <C-c>       Interrupt the active Run and restore queued steering; clear the
@@ -921,20 +966,24 @@ Default mappings:
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
   [c / ]c     Jump to the previous or next transcript card; counts are
-              supported.
+              supported. From input Normal mode, [c focuses the newest card.
+              From the newest card, ]c focuses the input in Insert mode.
+  r           Toggle rendered and raw Markdown in Text or Thinking details.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
   <A-m>       Select a model (input Normal/Insert; transcript Normal).
   <A-r>       Resume a session (input Normal/Insert; transcript Normal).
-  <Up>/<Down> or <C-k>/<C-j>
-              Browse workspace input history from Insert mode.
+  <Up>/<Down> or <C-k>
+              Browse workspace input history from Insert mode; Ctrl-K moves
+              toward older entries.
   <C-r>       Select workspace input history (input Normal/Insert; transcript
               Normal).
   <A-Up>      Restore queued steering messages to the input.
   q           Hide the UI from the transcript.
 
-Set a value in `ui.mappings` to an lhs string or list of strings, or to `false`
-to disable it. Card actions use `card_details`, `card_previous`, and `card_next`.
+Set a value in `ui.mappings` to a non-empty lhs string or non-empty list of
+strings, or to `false` to disable it. Card actions use `card_details`,
+`card_raw`, `card_previous`, and `card_next`.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
 saved when workspace settings are enabled. `ui.width` and `ui.height` accept a

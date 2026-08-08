@@ -72,12 +72,14 @@ local defaults = {
     border = "rounded",
     mappings = {
       submit = "<CR>",
+      newline = "<C-j>",
       complete = "<Tab>",
       interrupt = "<C-c>",
       toggle_focus = { "<C-w>w", "<C-w><C-w>" },
       close_input = "<Esc><Esc>",
       close_empty = "<C-d>",
       card_details = "<CR>",
+      card_raw = "r",
       card_previous = "[c",
       card_next = "]c",
       cycle_thinking = "<S-Tab>",
@@ -85,7 +87,7 @@ local defaults = {
       select_model = "<A-m>",
       resume_session = "<A-r>",
       history_previous = { "<Up>", "<C-k>" },
-      history_next = { "<Down>", "<C-j>" },
+      history_next = "<Down>",
       select_history = "<C-r>",
       dequeue_steering = "<A-Up>",
       close = "q",
@@ -300,9 +302,12 @@ local function validate(opts)
     assert(type(action) == "string", "UI mapping names must be strings")
     if type(mapping) == "table" then
       string_list(mapping, "ui.mappings." .. action)
+      assert(#mapping > 0,
+        "ui.mappings." .. action .. " must not be empty")
     else
-      assert(type(mapping) == "string" or mapping == false,
-        "UI mappings must be strings, lists of strings, or false")
+      assert(mapping == false
+          or type(mapping) == "string" and mapping ~= "",
+        "UI mappings must be non-empty strings, non-empty lists, or false")
     end
   end
   if opts.tools ~= nil then assert(type(opts.tools) == "table", "tools must be an array") end

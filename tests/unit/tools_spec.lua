@@ -189,6 +189,42 @@ describe("neoagent bundled tools", function()
     end
   end)
 
+  it("reports write_file parent and write failures", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert.error_matches(function()
+      execute(require("neoagent.tools.write_file"), {
+        path = "x.txt", content = "data",
+      }, ctx(workspace, nil, {
+        fs = { mkdirp = function() return false, "permission denied" end },
+      }))
+    end, "Could not create parent directory")
+    assert.error_matches(function()
+      execute(require("neoagent.tools.write_file"), {
+        path = "x.txt", content = "data",
+      }, ctx(workspace, nil, {
+        fs = {
+          mkdirp = function() return true end,
+          write_all = function() return false, "read-only" end,
+        },
+      }))
+    end, "Could not write file")
+  end)
+
+  it("reports fd failures for non-directory search paths", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    assert.error_matches(function()
+      execute(require("neoagent.tools.find"), {
+        pattern = "x",
+      }, ctx(workspace, nil, {
+        process = function()
+          return { code = 1, stdout = "", stderr = "not a directory" }
+        end,
+      }))
+    end, "find path is not a directory")
+  end)
+
   it("uses injected filesystem and process operations", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root

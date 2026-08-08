@@ -57,14 +57,22 @@ function View:_ensure_buffers()
       group = self.augroup,
       buffer = self.transcript_buf,
       callback = function()
-        self:_clear_card_outline()
+        self:_update_overflow_badges()
         if self.config.scroll_on_transcript_leave then self:_scroll_transcript_to_bottom() end
       end,
     })
     vim.api.nvim_create_autocmd({ "CursorMoved", "WinEnter" }, {
       group = self.augroup,
       buffer = self.transcript_buf,
-      callback = function() self:_update_card_outline() end,
+      callback = function()
+        self:_update_card_outline()
+        self:_refresh_input_footer()
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertEnter", {
+      group = self.augroup,
+      buffer = self.transcript_buf,
+      callback = function() vim.cmd("stopinsert") end,
     })
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
@@ -82,6 +90,30 @@ function View:_ensure_buffers()
       callback = function()
         local tick = vim.api.nvim_buf_get_changedtick(self.input_buf)
         if self.history_changedtick ~= tick then self:_reset_input_history() end
+      end,
+    })
+    vim.api.nvim_create_autocmd("WinEnter", {
+      group = self.augroup,
+      buffer = self.input_buf,
+      callback = function()
+        self.input_footer_context = "input_normal"
+        self:_refresh_input_footer()
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertEnter", {
+      group = self.augroup,
+      buffer = self.input_buf,
+      callback = function()
+        self.input_footer_context = "input_insert"
+        self:_refresh_input_footer()
+      end,
+    })
+    vim.api.nvim_create_autocmd("InsertLeave", {
+      group = self.augroup,
+      buffer = self.input_buf,
+      callback = function()
+        self.input_footer_context = "input_normal"
+        self:_refresh_input_footer()
       end,
     })
   end
@@ -170,6 +202,78 @@ local function truncate_right(text, max_width)
   if vim.fn.strdisplaywidth(text) <= max_width then return text end
   if max_width == 1 then return "…" end
   return slice_to_display_width(text, max_width - 1, false) .. "…"
+end
+
+local function mapping_hint(mapping)
+  if type(mapping) == "string" then return mapping end
+  if type(mapping) == "table" then return mapping[1] end
+end
+
+function View:_footer_context()
+  local current = vim.api.nvim_get_current_win()
+  if self.input_win and vim.api.nvim_win_is_valid(self.input_win)
+      and current == self.input_win
+      and self.input_footer_context ~= "input_insert"
+      and self.input_footer_context ~= "input_normal" then
+    self.input_footer_context = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
+      and "input_insert" or "input_normal"
+  elseif self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win)
+      and current == self.transcript_win then
+    self.input_footer_context = "transcript"
+  end
+  return self.input_footer_context or "input_insert"
+end
+
+function View:_input_footer(width)
+  width = math.max(1, width or 1)
+  local mappings = self.config.mappings or {}
+  local context = self:_footer_context()
+  local items
+  if context == "input_insert" then
+    items = {
+      { action = "submit", label = "send" },
+      { action = "newline", label = "newline" },
+      { action = "interrupt", label = "cancel" },
+    }
+  elseif context == "input_normal" then
+    items = {
+      { action = "submit", label = "send" },
+      { action = "card_previous", label = "transcript" },
+      { action = "interrupt", label = "cancel" },
+    }
+  else
+    items = {
+      { action = "card_details", label = "details" },
+      { action = "card_previous", label = "previous" },
+      { action = "card_next", label = self:_has_card(1) and "next" or "input" },
+      { action = "interrupt", label = "cancel" },
+    }
+  end
+  local text = ""
+  local count = 0
+  for _, item in ipairs(items) do
+    local key = mapping_hint(mappings[item.action])
+    if key then
+      local separator = count == 0 and " " or " · "
+      local candidate = text .. separator .. key .. " " .. item.label
+      if vim.fn.strdisplaywidth(candidate .. " ") <= width then
+        text = candidate
+        count = count + 1
+      end
+    end
+  end
+  return truncate_right(text .. " ", width)
+end
+
+function View:_refresh_input_footer()
+  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
+    return false
+  end
+  local config = vim.api.nvim_win_get_config(self.input_win)
+  config.footer = self:_input_footer(vim.api.nvim_win_get_width(self.input_win))
+  config.footer_pos = "center"
+  vim.api.nvim_win_set_config(self.input_win, config)
+  return true
 end
 
 local function fit_left_chunks(chunks, width, max_width)
@@ -269,7 +373,7 @@ function View:_decorate(configs)
   configs.transcript.title_pos = "center"
   configs.transcript.footer = self:_transcript_footer(configs.transcript.width)
   configs.transcript.footer_pos = "left"
-  configs.input.footer = " Input · " .. ((self.config.mappings or {}).submit or "send") .. " send "
+  configs.input.footer = self:_input_footer(configs.input.width)
   configs.input.footer_pos = "center"
 end
 
@@ -296,6 +400,7 @@ function View:open(origin)
   end
   local reopening = self.has_opened
   self:_ensure_buffers()
+  self.input_footer_context = "input_insert"
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
     self.origin_buf = vim.api.nvim_win_get_buf(self.origin_win)
@@ -435,12 +540,15 @@ function View:focus_transcript()
     vim.cmd("stopinsert")
     vim.api.nvim_set_current_win(self.transcript_win)
     self:_update_card_outline()
+    self:_refresh_input_footer()
   end
 end
 
 function View:focus_input()
   if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
     vim.api.nvim_set_current_win(self.input_win)
+    self.input_footer_context = "input_insert"
+    self:_refresh_input_footer()
     vim.cmd("startinsert!")
     vim.schedule(function()
       if not self.destroyed and self:is_open()
@@ -489,12 +597,15 @@ View._move_input_history = input._move_input_history
 View.set_input = input.set_input
 
 View._card_at_cursor = cards._card_at_cursor
+View._has_card = cards._has_card
 View._move_card = cards._move_card
 View._clear_card_outline = cards._clear_card_outline
+View._update_overflow_badges = cards._update_overflow_badges
 View._update_card_outline = cards._update_card_outline
 View._refresh_card_details = cards._refresh_card_details
 View._close_card_details = cards._close_card_details
 View._card_details_closed = cards._card_details_closed
+View._toggle_card_details_raw = cards._toggle_card_details_raw
 View.show_card_details = cards.show_card_details
 
 function M.new(opts)
