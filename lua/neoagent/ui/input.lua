@@ -51,10 +51,6 @@ function M:_map_buffers()
   end)
   self:_map(self.input_buf, { "n", "i" }, mappings.interrupt, function() self:_interrupt(true) end)
   self:_map(self.transcript_buf, "n", mappings.interrupt, function() self:_interrupt(false) end)
-  self:_map(self.input_buf, { "n", "i", "x", "s" }, mappings.toggle_focus,
-    function() self:focus_transcript() end)
-  self:_map(self.transcript_buf, { "n", "x", "s" }, mappings.toggle_focus,
-    function() self:focus_input() end)
   self:_map(self.input_buf, "n", mappings.close_input, function() self:close() end)
   local close_empty = mappings.close_empty
   local function map_close_empty(key)
@@ -80,7 +76,7 @@ function M:_map_buffers()
     function()
       if not self:_move_card(1, vim.v.count1) then self:focus_input() end
     end)
-  self:_map(self.input_buf, "n", mappings.card_previous, function()
+  self:_map(self.input_buf, { "n", "i" }, mappings.card_previous, function()
     local count = vim.v.count1
     self:focus_transcript()
     local line_count = vim.api.nvim_buf_line_count(self.transcript_buf)

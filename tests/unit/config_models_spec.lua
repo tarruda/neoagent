@@ -593,8 +593,11 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("<Down>", config.setup({}).ui.mappings.history_next)
     assert.are.equal("<CR>", config.setup({}).ui.mappings.card_details)
     assert.are.equal("r", config.setup({}).ui.mappings.card_raw)
-    assert.are.equal("[c", config.setup({}).ui.mappings.card_previous)
-    assert.are.equal("]c", config.setup({}).ui.mappings.card_next)
+    assert.are.same({ "<A-k>", "<C-Up>" },
+      config.setup({}).ui.mappings.card_previous)
+    assert.are.same({ "<A-j>", "<C-Down>" },
+      config.setup({}).ui.mappings.card_next)
+    assert.is_nil(config.setup({}).ui.mappings.toggle_focus)
     assert.is_false(config.setup({}).ui.wrap_cards)
     assert.is_true(config.setup({}).ui.show_thinking)
     assert.is_true(config.setup({ ui = { wrap_cards = true } }).ui.wrap_cards)

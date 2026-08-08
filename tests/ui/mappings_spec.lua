@@ -144,7 +144,7 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
-  it("navigates transcript cards with bracket motions", function()
+  it("navigates vertically between transcript cards and input", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
     })
@@ -179,37 +179,44 @@ describe("neoagent UI mappings", function()
     end
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
-    feed("]c")
+    feed("<A-j>")
     assert.are.equal(rows["second card"], cursor_row())
-    feed("[c")
+    feed("<A-k>")
     assert.are.equal(rows["between cards"], cursor_row())
-    feed("[c")
+    feed("<A-k>")
     assert.are.equal(rows["first card"], cursor_row())
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["between cards"], 0 })
-    feed("2]c")
+    feed("2<A-j>")
     assert.are.equal(rows["third card"], cursor_row())
-    feed("3[c")
+    feed("3<A-k>")
     assert.are.equal(rows["first card"], cursor_row())
-    feed("[c")
+    feed("<A-k>")
     assert.are.equal(rows["first card"], cursor_row())
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows["third card"], 0 })
-    feed("]c")
+    feed("<A-j>")
     assert(vim.wait(1000, function()
       return vim.api.nvim_get_current_win() == result.input_win
     end))
     vim.cmd("stopinsert")
-    feed("[c")
+    feed("i<C-Up>")
     assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
     assert.are.equal(rows["third card"], cursor_row())
-    feed("]c")
+    feed("<C-Down>")
     assert(vim.wait(1000, function()
       return vim.api.nvim_get_current_win() == result.input_win
     end))
     vim.cmd("stopinsert")
-    feed("2[c")
+    feed("<A-k>")
     assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
-    assert.are.equal(rows["second card"], cursor_row())
+    assert.are.equal(rows["third card"], cursor_row())
+
+    for _, buffer in ipairs({ result.input_buf, result.transcript_buf }) do
+      vim.api.nvim_buf_call(buffer, function()
+        assert.are.equal("", vim.fn.maparg("[c", "n"))
+        assert.are.equal("", vim.fn.maparg("]c", "n"))
+      end)
+    end
     result:destroy()
   end)
 
@@ -257,7 +264,6 @@ describe("neoagent UI mappings", function()
         return messages
       end,
     })
-    local function input_focused() return vim.api.nvim_get_current_win() == result.input_win end
     assert(result:open())
     result:set_input("send me")
     vim.cmd("stopinsert")
@@ -287,30 +293,11 @@ describe("neoagent UI mappings", function()
     assert.are.equal(1, thinking_cycles)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-n>", true, false, true), "x", false)
     assert.are.equal(1, agent_cycles)
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
+    result:focus_transcript()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-m>", true, false, true), "x", false)
     assert.are.equal(2, model_selections)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<A-r>", true, false, true), "x", false)
     assert.are.equal(2, session_selections)
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
-      "<C-w>wZ<C-\\><C-n>", true, false, true), "x", false)
-    assert(vim.wait(1000, function()
-      return input_focused() and result:get_input() == "send meZ"
-    end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<C-w>w", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w>w", true, false, true), "x", false)
-    assert(vim.wait(1000, input_focused))
-    vim.cmd("stopinsert")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("v<C-w>w", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("v<C-w>w", true, false, true), "x", false)
-    assert(vim.wait(1000, input_focused))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w><C-w>", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return vim.api.nvim_get_current_win() == result.transcript_win end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-w><C-w>", true, false, true), "x", false)
-    assert(vim.wait(1000, input_focused))
     result:focus_input()
     result:set_input("discard")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
@@ -323,6 +310,30 @@ describe("neoagent UI mappings", function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
     end))
+    result:destroy()
+  end)
+
+  it("leaves Ctrl-W input editing to Neovim", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    assert(result:open())
+    result:set_input("first second")
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("A<C-w>w", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+        and result:get_input() == "first w"
+    end))
+    for _, buffer in ipairs({ result.input_buf, result.transcript_buf }) do
+      vim.api.nvim_buf_call(buffer, function()
+        for _, mode in ipairs({ "n", "i", "x" }) do
+          assert.are.equal("", vim.fn.maparg("<C-w>w", mode))
+          assert.are.equal("", vim.fn.maparg("<C-w><C-w>", mode))
+        end
+      end)
+    end
     result:destroy()
   end)
 

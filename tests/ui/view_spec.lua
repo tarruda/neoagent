@@ -109,7 +109,7 @@ describe("neoagent.ui", function()
       card_previous = "g[",
       interrupt = false,
     } })
-    assert.are.equal(" <C-s> send ",
+    assert.are.equal(" <C-s> send · g[ transcript ",
       result:_input_footer(80))
     local narrow = result:_input_footer(18)
     assert.is_true(vim.fn.strdisplaywidth(narrow) <= 18)
@@ -136,13 +136,13 @@ describe("neoagent.ui", function()
     end
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> send · <C-j> newline · <C-c> cancel "
+        == " <CR> send · <C-j> newline · <A-k> transcript · <C-c> cancel "
     end))
 
     vim.cmd("stopinsert")
     vim.api.nvim_exec_autocmds("InsertLeave", { buffer = result.input_buf })
     assert(vim.wait(1000, function()
-      return footer() == " <CR> send · [c transcript · <C-c> cancel "
+      return footer() == " <CR> send · <A-k> transcript · <C-c> cancel "
     end))
 
     result:focus_transcript()
@@ -158,7 +158,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · [c previous · ]c next · <C-c> cancel "
+        == " <CR> details · <A-k> previous · <A-j> next · <C-c> cancel "
     end))
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows.latest, 0 })
@@ -167,7 +167,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · [c previous · ]c input · <C-c> cancel "
+        == " <CR> details · <A-k> previous · <A-j> input · <C-c> cancel "
     end))
   end)
 
@@ -1861,7 +1861,7 @@ describe("neoagent.ui", function()
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
     assert.are.equal(
-      " <CR> send · <C-j> newline · <C-c> cancel ",
+      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> cancel ",
       input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
@@ -1879,7 +1879,7 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.are.equal(
-      " <CR> send · <C-j> newline · <C-c> cancel ",
+      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> cancel ",
       input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))

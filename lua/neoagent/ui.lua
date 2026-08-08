@@ -233,6 +233,7 @@ function View:_input_footer(width)
     items = {
       { action = "submit", label = "send" },
       { action = "newline", label = "newline" },
+      { action = "card_previous", label = "transcript" },
       { action = "interrupt", label = "cancel" },
     }
   elseif context == "input_normal" then
