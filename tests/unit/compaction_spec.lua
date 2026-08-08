@@ -73,6 +73,42 @@ describe("neoagent.compaction", function()
     assert.are.equal("a2", repeated.first_kept_entry_id)
   end)
 
+  it("keeps metadata attached to the context selected for retention", function()
+    assert.are.same({ first_kept_index = 1, split_turn = false },
+      compaction.find_cut_point({
+        { type = "model_change" },
+        { type = "thinking_level_change" },
+      }, 1, 2, 10))
+
+    local path = {
+      entry("u1", nil, { role = "user", content = "old request" }),
+      entry("a1", "u1", {
+        role = "assistant", content = { { type = "text", text = "old response" } },
+      }),
+      { type = "model_change" },
+      entry("u2", "a1", { role = "user", content = string.rep("x", 40) }),
+      entry("a2", "u2", {
+        role = "assistant", content = { { type = "text", text = "done" } },
+      }),
+    }
+    assert.are.same({
+      first_kept_index = 3,
+      turn_start_index = 1,
+      split_turn = true,
+    }, compaction.find_cut_point(path, 1, #path, 10))
+  end)
+
+  it("adds messages after live provider usage to the context estimate", function()
+    local context = require("neoagent.controller.context")
+    local messages = {
+      { role = "assistant", content = { { type = "text", text = "answer" } } },
+      { role = "user", content = "follow-up" },
+    }
+    local encoded = vim.json.encode(messages[2])
+    assert.are.equal(50 + math.ceil(#encoded / 4),
+      context.tokens({}, messages, { tokens = 50, message_count = 1 }))
+  end)
+
   it("selects turn boundaries and carries previous summaries forward", function()
     local path = {
       entry("u1", nil, { role = "user", content = string.rep("a", 80) }),

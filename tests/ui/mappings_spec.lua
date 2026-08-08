@@ -71,7 +71,10 @@ describe("neoagent UI mappings", function()
 
   it("toggles raw Markdown for text and thinking details only", function()
     local result = ui.new({
-      config = config.setup({ ui = { position = "center" } }).ui,
+      config = config.setup({ ui = {
+        position = "center",
+        mappings = { card_raw = { "R", "r" } },
+      } }).ui,
     })
     local thinking = "# Trace\n\n*reason*"
     local response = "**Answer**\n\n- item"
@@ -119,11 +122,11 @@ describe("neoagent UI mappings", function()
         return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
       end))
       assert.are_not.equal(raw, details())
-      assert.matches("r raw", title())
-      feed("r")
+      assert.matches("R raw", title())
+      feed("R")
       assert(vim.wait(1000, function() return details() == raw end))
-      assert.matches("r rendered", title())
-      feed("r")
+      assert.matches("R rendered", title())
+      feed("R")
       assert(vim.wait(1000, function() return details() ~= raw end))
       feed("<C-c>")
       assert(vim.wait(1000, function() return result.details_win == nil end))
@@ -137,6 +140,7 @@ describe("neoagent UI mappings", function()
       return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
     end))
     vim.api.nvim_buf_call(result.details_buf, function()
+      assert.are.equal("", vim.fn.maparg("R", "n"))
       assert.are.equal("", vim.fn.maparg("r", "n"))
     end)
     assert.is_nil(title():find("r raw", 1, true))
@@ -352,6 +356,13 @@ describe("neoagent UI mappings", function()
     vim.api.nvim_feedkeys(
       vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
     assert.are.equal(2, stops)
+
+    result:set_context({ state = "idle", steering = {} })
+    result:set_input("")
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert.are.equal(2, stops)
+    assert.is_true(result:is_open())
     result:destroy()
   end)
 
@@ -653,10 +664,11 @@ describe("neoagent UI mappings", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "oldest" end))
     vim.cmd("stopinsert")
-    vim.api.nvim_feedkeys("A!", "x", false)
+    vim.api.nvim_buf_set_text(result.input_buf, 0, 6, 0, 6, { "!" })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = result.input_buf })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Down>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return result:get_input() == "oldest!" end))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Down>", true, false, true), "x", false)
-    assert(vim.wait(1000, function() return result:get_input() == "oldest!" end))
+    vim.cmd("stopinsert")
     result:set_input("draft")
     vim.api.nvim_win_set_cursor(result.input_win, { 1, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<Up><Up>", true, false, true), "x", false)

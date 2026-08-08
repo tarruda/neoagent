@@ -859,6 +859,9 @@ describe("neoagent bundled tools", function()
     assert.are.equal("No matches found", none.content[1].text)
     local found = execute(require("neoagent.tools.find"), { pattern = "*.lua" }, ctx(workspace))
     assert.matches("one.lua", found.content[1].text)
+    local no_files = execute(
+      require("neoagent.tools.find"), { pattern = "*.missing" }, ctx(workspace))
+    assert.are.equal("No files found", no_files.content[1].text)
   end)
 
   it("applies search options and reports bounded results", function()

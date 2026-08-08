@@ -375,7 +375,8 @@ describe("neoagent default controller", function()
     failed.ok = false
     failed.error = {
       kind = "protocol",
-      message = "Stream ended without finish_reason or [DONE]",
+      message = "Request failed",
+      detail = { reason = "stream ended before the terminal event" },
     }
     local model = fake_model.new({
       { result = failed },
@@ -1726,24 +1727,42 @@ describe("neoagent default controller", function()
     assert(other:append({
       role = "user", content = "Recent\nroot", timestamp = now - 130 * 60000,
     }))
+    local weekly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(weekly:append({
+      role = "user", content = "Weekly root", timestamp = now - 8 * 86400000,
+    }))
+    local monthly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(monthly:append({
+      role = "user", content = "Monthly root", timestamp = now - 60 * 86400000,
+    }))
+    local yearly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(yearly:append({
+      role = "user", content = "Yearly root", timestamp = now - 800 * 86400000,
+    }))
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = directory } })
     assert(neoagent.resume(parent:metadata().path))
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Resume Neoagent session:", options.prompt)
-      assert.are.equal(5, #items)
+      assert.are.equal(8, #items)
       assert.are.equal(parent:metadata().path, items[1].path)
       assert.are.equal(child:metadata().path, items[2].path)
       assert.are.equal(parent:metadata().path, items[2].parent_session)
       assert.are.equal(grandchild:metadata().path, items[3].path)
       assert.are.equal(sibling:metadata().path, items[4].path)
       assert.are.equal(other:metadata().path, items[5].path)
+      assert.are.equal(weekly:metadata().path, items[6].path)
+      assert.are.equal(monthly:metadata().path, items[7].path)
+      assert.are.equal(yearly:metadata().path, items[8].path)
       assert.matches("^● Parent%s+1%s+3d$", options.format_item(items[1]))
       assert.matches("^  ├─ Child%s+2%s+1h$", options.format_item(items[2]))
       assert.matches("^  │  └─ Grandchild%s+3%s+10m$", options.format_item(items[3]))
       assert.matches("^  └─ Sibling%s+2%s+30m$", options.format_item(items[4]))
       assert.matches("^  Recent root%s+1%s+2h$", options.format_item(items[5]))
+      assert.matches("^  Weekly root%s+1%s+1w$", options.format_item(items[6]))
+      assert.matches("^  Monthly root%s+1%s+2mo$", options.format_item(items[7]))
+      assert.matches("^  Yearly root%s+1%s+2y$", options.format_item(items[8]))
       callback(items[2])
     end
     local ok, err = pcall(neoagent.resume)
