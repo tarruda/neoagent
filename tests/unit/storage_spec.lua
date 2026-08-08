@@ -210,6 +210,23 @@ describe("neoagent.storage", function()
     assert.are.equal(1, #store:entries())
   end)
 
+  it("keeps long linear append projection bounded", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first", timestamp = 1 }))
+    fs.write_all = function() return true end
+
+    local started = vim.uv.hrtime()
+    for index = 2, 2001 do
+      assert(store:append({ role = "user", content = "message " .. index, timestamp = index }))
+    end
+    local elapsed_ms = (vim.uv.hrtime() - started) / 1000000
+
+    assert.is_true(elapsed_ms < 2000, string.format("linear appends took %.0f ms", elapsed_ms))
+    assert.are.equal(2001, #store:load())
+  end)
+
   it("round-trips every Pi v3 entry type and projects compacted context", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory

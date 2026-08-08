@@ -61,6 +61,27 @@ describe("neoagent.session_tree", function()
     assert.matches("entry not found", err)
   end)
 
+  it("builds copied paths from validated entries and maintained indexes", function()
+    local first = base("message", {
+      id = "first", message = { role = "user", content = "one" },
+    })
+    local second = base("message", {
+      id = "second", parentId = first.id, message = { role = "assistant", content = {} },
+    })
+    local validated = assert(tree.validate_entries({ first, second }))
+
+    local path = assert(tree.path({ first, second }))
+    local indexed = assert(tree.indexed_path(validated.by_id, second.id))
+    assert.are.same({ "first", "second" }, vim.tbl_map(function(entry) return entry.id end, path))
+    assert.are.same(path, indexed)
+    indexed[1].message.content = "changed"
+    assert.are.equal("one", first.message.content)
+    assert.are.same({}, assert(tree.indexed_path(validated.by_id, vim.NIL)))
+    local missing, err = tree.indexed_path(validated.by_id, "missing")
+    assert.is_nil(missing)
+    assert.matches("entry not found", err)
+  end)
+
   it("projects Pi execution and summary messages into LLM context", function()
     local context = tree.to_llm({
       { role = "bashExecution", command = "pwd", output = "", exitCode = 2, timestamp = 1 },

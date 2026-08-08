@@ -421,7 +421,10 @@ session is a tree that supports:
 
 Only the active path is projected into model context. Empty sessions create no
 files; persistence begins when the first message is accepted. Stores validate
-JSON encoding and UTF-8 before mutating the tree or creating a file. Sessions
+JSON encoding and UTF-8 before mutating the tree or creating a file. A Store
+validates complete trees when opening them, maintains an entry index, and
+updates messages and model state incrementally for linear appends. Branch
+selection rebuilds the active projection from the maintained index. Sessions
 refresh their cached message projection after Store mutations and return
 structured storage errors when that refresh fails.
 

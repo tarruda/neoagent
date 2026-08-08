@@ -132,20 +132,31 @@ function M.validate_entries(entries)
   return { by_id = by_id, leaf_id = leaf_id }
 end
 
+local function indexed_path(by_id, leaf_id)
+  if leaf_id == vim.NIL then return {} end
+  if not leaf_id then return {} end
+  local current = by_id[leaf_id]
+  if not current then return nil, "entry not found: " .. tostring(leaf_id) end
+  local reversed = {}
+  while current do
+    reversed[#reversed + 1] = current
+    current = is_null(current.parentId) and nil or by_id[current.parentId]
+  end
+  local result = {}
+  for index = #reversed, 1, -1 do
+    result[#result + 1] = util.copy(reversed[index])
+  end
+  return result
+end
+
+function M.indexed_path(by_id, leaf_id)
+  return indexed_path(by_id, leaf_id)
+end
+
 function M.path(entries, leaf_id)
   local validated, err, index = M.validate_entries(entries)
   if not validated then return nil, err, index end
-  if leaf_id == vim.NIL then return {} end
-  leaf_id = leaf_id or validated.leaf_id
-  if not leaf_id then return {} end
-  local current = validated.by_id[leaf_id]
-  if not current then return nil, "entry not found: " .. tostring(leaf_id) end
-  local result = {}
-  while current do
-    table.insert(result, 1, util.copy(current))
-    current = is_null(current.parentId) and nil or validated.by_id[current.parentId]
-  end
-  return result
+  return indexed_path(validated.by_id, leaf_id or validated.leaf_id)
 end
 
 local function timestamp_ms(value)
@@ -261,20 +272,28 @@ function M.to_llm(messages)
   return result
 end
 
+local function apply_state(result, entry)
+  if entry.type == "model_change" then
+    result.model = { provider = entry.provider, model = entry.modelId }
+  elseif entry.type == "thinking_level_change" then
+    result.thinking_level = entry.thinkingLevel
+  elseif entry.type == "active_tools_change" then
+    result.active_tools = util.copy(entry.activeToolNames)
+  elseif entry.type == "message" and entry.message.role == "assistant"
+      and nonempty_string(entry.message.provider) and nonempty_string(entry.message.model) then
+    result.model = { provider = entry.message.provider, model = entry.message.model }
+  end
+end
+
+function M.apply_state(state, entry)
+  local result = util.copy(state)
+  apply_state(result, entry)
+  return result
+end
+
 function M.state(path)
   local result = { model = nil, thinking_level = nil, active_tools = nil }
-  for _, entry in ipairs(path) do
-    if entry.type == "model_change" then
-      result.model = { provider = entry.provider, model = entry.modelId }
-    elseif entry.type == "thinking_level_change" then
-      result.thinking_level = entry.thinkingLevel
-    elseif entry.type == "active_tools_change" then
-      result.active_tools = util.copy(entry.activeToolNames)
-    elseif entry.type == "message" and entry.message.role == "assistant"
-        and nonempty_string(entry.message.provider) and nonempty_string(entry.message.model) then
-      result.model = { provider = entry.message.provider, model = entry.message.model }
-    end
-  end
+  for _, entry in ipairs(path) do apply_state(result, entry) end
   return result
 end
 
