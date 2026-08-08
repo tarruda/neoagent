@@ -45,6 +45,13 @@ local function memory_append(self, entry_type, values)
   return true, nil, util.copy(entry)
 end
 
+local function reload_store(self)
+  local loaded, err = self._store:load()
+  if not loaded then return nil, util.normalize_error(err, "storage") end
+  self._messages = util.copy(loaded)
+  return true
+end
+
 function Session:append(message)
   assert(type(message) == "table", "message must be a table")
   local copy = util.copy(message)
@@ -53,10 +60,7 @@ function Session:append(message)
     if not ok then
       return nil, util.normalize_error(err, "storage")
     end
-    local loaded, load_err = self._store:load()
-    if not loaded then return nil, util.normalize_error(load_err, "storage") end
-    self._messages = util.copy(loaded)
-    return true
+    return reload_store(self)
   end
   return memory_append(self, "message", { message = copy })
 end
@@ -140,7 +144,8 @@ function Session:append_entry(entry_type, values)
     end
     local ok, err, entry = self._store:append_entry(entry_type, values)
     if not ok then return nil, util.normalize_error(err, "storage") end
-    self._messages = util.copy(assert(self._store:load()))
+    local reloaded, reload_err = reload_store(self)
+    if not reloaded then return nil, reload_err end
     return true, nil, entry
   end
   return memory_append(self, entry_type, values)
@@ -156,7 +161,8 @@ function Session:move_to(entry_id, summary)
     end
     local ok, err = self._store:set_leaf(entry_id)
     if not ok then return nil, util.normalize_error(err, "storage") end
-    self._messages = util.copy(assert(self._store:load()))
+    local reloaded, reload_err = reload_store(self)
+    if not reloaded then return nil, reload_err end
   else
     local ok, err = memory_append(self, "leaf", { targetId = entry_id or vim.NIL })
     if not ok then return nil, err end

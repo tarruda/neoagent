@@ -421,7 +421,9 @@ session is a tree that supports:
 
 Only the active path is projected into model context. Empty sessions create no
 files; persistence begins when the first message is accepted. Stores validate
-JSON encoding and UTF-8 before mutating the tree or creating a file.
+JSON encoding and UTF-8 before mutating the tree or creating a file. Sessions
+refresh their cached message projection after Store mutations and return
+structured storage errors when that refresh fails.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.

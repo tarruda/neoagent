@@ -199,4 +199,46 @@ describe("neoagent.session", function()
     assert.is_nil(ok)
     assert.matches("does not support branching", err.message)
   end)
+
+  it("returns structured reload errors after optional tree store mutations", function()
+    local appended = false
+    local session = assert(Session.new({ store = {
+      load = function()
+        if appended then
+          return nil, { kind = "storage", message = "entry reload failed" }
+        end
+        return {}
+      end,
+      append = function() return true end,
+      append_entry = function()
+        appended = true
+        return true, nil, { id = "entry" }
+      end,
+    } }))
+    local ok, err = session:append_entry("custom", { customType = "x" })
+    assert.is_nil(ok)
+    assert.are.equal("storage", err.kind)
+    assert.are.equal("entry reload failed", err.message)
+    assert.are.same({}, session:messages())
+
+    local moved = false
+    session = assert(Session.new({ store = {
+      load = function()
+        if moved then
+          return nil, { kind = "storage", message = "leaf reload failed" }
+        end
+        return {}
+      end,
+      append = function() return true end,
+      set_leaf = function()
+        moved = true
+        return true
+      end,
+    } }))
+    ok, err = session:move_to(nil)
+    assert.is_nil(ok)
+    assert.are.equal("storage", err.kind)
+    assert.are.equal("leaf reload failed", err.message)
+    assert.are.same({}, session:messages())
+  end)
 end)

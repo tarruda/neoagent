@@ -1203,8 +1203,10 @@ Tree-aware Session methods are: >lua
   session:name()
 <
 `move_to()` changes the active leaf; the next append creates a branch child.
-The optional summary creates a Pi `branch_summary` entry. Fork a linked child
-session with: >lua
+The optional summary creates a Pi `branch_summary` entry. A Session reloads its
+cached message projection after each injected Store mutation. Reload failures
+return a structured storage error and leave the cached projection unchanged.
+Fork a linked child session with: >lua
 
   local child = require("neoagent.storage").fork(store_or_path, {
     directory = directory,
