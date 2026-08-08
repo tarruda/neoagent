@@ -443,13 +443,16 @@ Use >
   :NeoagentToggleSandbox
   :NeoagentSandboxInfo
 <
-to switch Neo's complete toolset and inspect the active backend, isolation
-level, and available capabilities. Switching is rejected while Neo has an
-active Run. The command targets the built-in Neo Controller when Chat is
-selected. Calling `setup()` applies the configured initial state again. The
-command-facing Window owns a generic dialog source in either state, so a custom
-`view` used by `setup()` implements the documented `set_dialog(snapshot)`
-method.
+to switch Neo's executor between host and sandbox execution and inspect the
+active backend, isolation level, and available capabilities. The command can
+run while Neo has an active Run. Each tool call reads the current state when it
+starts; an in-flight call retains its selected execution mode until it ends.
+The tool list, schemas, executor identity, and sandbox guidance remain stable
+across runtime changes. The command targets the built-in Neo Controller when
+Chat is selected. Calling `setup()` applies the configured initial state again.
+The command-facing Window owns a generic dialog source in either state, so a
+custom `view` used by `setup()` implements the documented
+`set_dialog(snapshot)` method.
 
 Successful activation wraps only the built-in Neo Controller. Chat remains
 tool-free. Linux and Windows use bundled standalone LuaJIT FFI runtimes to
@@ -471,14 +474,28 @@ install the result with `controller:set_toolset()`:
 Attach `dialogs` to the custom Window to present escalation requests. The
 returned status reports activation requirements and capabilities.
 
+Custom compositions that require runtime switching can install one stable
+toolset and retain its runtime control: >lua
+
+  local toolset, status, dialogs, sandbox =
+    require("neoagent.sandbox.composition").switchable(
+      controller:get_toolset(),
+      { enabled = false })
+  controller:set_toolset(toolset)
+  sandbox:set_enabled(true)
+<
+`set_enabled()` returns the current status and can run while the Controller is
+working. A disabled switchable composition delays its platform probe until the
+first activation request.
+
 Activation failures include their setup stage and reason. When activation
-requirements fail, Neo retains its configured host toolset. The workspace trust
-prompt includes the failure and effective host execution status. With
-`workspace_trust = false`, a warning is shown once when an initially enabled
-Neo is first displayed. Runtime activation requests report failures
-immediately. Successful activation reports full or degraded isolation through
-|:NeoagentSandboxInfo|. Failures after successful activation fail closed as
-tool errors and never retry through the host executor.
+requirements fail, Neo's stable executor uses the configured host path. The
+workspace trust prompt includes the failure and effective host execution
+status. With `workspace_trust = false`, a warning is shown once when an
+initially enabled Neo is first displayed. Runtime activation requests report
+failures immediately. Successful activation reports full or degraded isolation
+through |:NeoagentSandboxInfo|. Failures after successful activation fail
+closed as tool errors and never retry through the host executor.
 
 The default profile provides a read-only host filesystem, grants writes within
 a bounded Workspace root and the shared host temporary roots, keeps
@@ -618,15 +635,16 @@ and process capabilities for that one call. Denial returns an error without
 running the unrestricted call. Escalation is denied when no dialog presenter
 is available.
 
-While the sandbox is active, the composed toolset appends a sandbox guidance
-section to Neo's system prompt. It describes the restricted filesystem,
-network, and process authority, explains that blocked operations return an
-explicit sandbox error, and tells the agent to request escalation with
-`options.require_escalation = true` and an `options.escalation_justification`
-before the first denial. The section names the active backend platform.
-Toggling the sandbox off removes the section together with the toolset; a
-custom `system_prompt` string or callback receives it appended after the
-composed agents and skills sections.
+The built-in switchable toolset appends a stable sandbox-controls section to
+Neo's system prompt whenever Neo has tools. It explains that the editor selects
+restricted or host execution per call and tells the agent to request escalation
+with `options.require_escalation = true` and an
+`options.escalation_justification` when restricted execution blocks required
+work. The stable tool schemas always include those fields. Host execution
+strips them and calls the configured executor directly. A custom
+`system_prompt` string or callback receives the section appended after the
+composed agents and skills sections. Static `composition.compose()` toolsets
+append platform-specific guidance for their active backend.
 
 Shell approvals whose command starts with at least one literal argument token
 also offer `yes and don't ask again for commands starting with`. Selecting it
@@ -850,7 +868,7 @@ The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
   :NeoagentResume [path]          Resume a stored Session or select one.
   :NeoagentStop                   Cancel the active UI Run.
   :NeoagentSandboxInfo            Show current sandbox capabilities.
-  :NeoagentToggleSandbox          Switch Neo between host and sandbox tools.
+  :NeoagentToggleSandbox          Switch Neo between host and sandbox execution.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.

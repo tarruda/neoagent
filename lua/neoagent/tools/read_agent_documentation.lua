@@ -107,11 +107,12 @@ local function documentation()
       .. "`ctx.process` capabilities. Direct Lua calls use host implementations.",
     "The built-in Neo composition accepts `sandbox = { enabled = true }` as its "
       .. "initial editor state. `:NeoagentToggleSandbox` switches Neo between "
-      .. "its configured host toolset and the composed sandbox toolset without "
-      .. "changing configuration; `:NeoagentSandboxInfo` reports runtime status. "
-      .. "A successful native requirements check replaces those capabilities "
-      .. "with per-call sandbox implementations. Activation failure preserves "
-      .. "the configured executor, and runtime failures are fail-closed. Profiles "
+      .. "host and sandbox execution without changing its tools or configuration; "
+      .. "it can switch during a Run, and each call reads the current state. "
+      .. "`:NeoagentSandboxInfo` reports runtime status. A successful native "
+      .. "requirements check supplies per-call sandbox capabilities. Activation "
+      .. "failure uses the configured executor, and runtime failures are "
+      .. "fail-closed. Profiles "
       .. "can override canonical read, write, and deny paths, network access, "
       .. "environment construction, and shared host temporary access.",
     "Executors can create `require(\"neoagent.dialog\").new()`, inject its "

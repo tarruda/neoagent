@@ -647,6 +647,20 @@ function Escalation:wrap(executors)
   end
 end
 
+function Escalation:bypass(next_execute_tool)
+  assert(type(next_execute_tool) == "function",
+    "sandbox bypass executor must be a function")
+  return function(tool, arguments, ctx)
+    local stripped, strip_err = self:_extract(tool, arguments)
+    if not stripped then
+      return result.sandbox("Malformed sandbox options: " .. strip_err, {
+        invalid_escalation = true,
+      })
+    end
+    return next_execute_tool(tool, stripped, ctx)
+  end
+end
+
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "sandbox escalation options must be a table")

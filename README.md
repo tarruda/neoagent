@@ -122,9 +122,10 @@ sandbox = {
 }
 ```
 
-Use `:NeoagentToggleSandbox` to switch the built-in Neo toolset at runtime and
-`:NeoagentSandboxInfo` to inspect the active backend, isolation level, and
-capabilities. Runtime changes are editor-local and do not modify configuration.
+Use `:NeoagentToggleSandbox` to switch the built-in Neo executor between host
+and sandbox execution and `:NeoagentSandboxInfo` to inspect the active backend,
+isolation level, and capabilities. Runtime changes are editor-local, preserve
+the advertised tools, and can occur while Neo is working.
 
 Linux and Windows use a bundled LuaJIT FFI runtime to invoke native isolation
 APIs; macOS uses `/usr/bin/sandbox-exec`. The sandbox mediates bundled-tool

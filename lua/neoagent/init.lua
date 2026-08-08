@@ -32,16 +32,15 @@ local function default_controllers(configured)
   neo.name = neo.name or "Neo"
   local host_toolset = configured_toolset(neo)
   local dialogs = require("neoagent.dialog").new()
+  local sandbox_runtime
   local sandbox_toolset
   local sandbox_warning
-  local status = { enabled = false, active = false }
-  if neo.sandbox.enabled then
-    local composition = require("neoagent.sandbox.composition")
-    sandbox_toolset, status = composition.compose(
-      host_toolset, neo.sandbox, { dialogs = dialogs })
-    if not sandbox_toolset then
-      sandbox_warning = composition.warning(neo.name, status)
-    end
+  local composition = require("neoagent.sandbox.composition")
+  local status
+  sandbox_toolset, status, _, sandbox_runtime = composition.switchable(
+    host_toolset, neo.sandbox, { dialogs = dialogs })
+  if neo.sandbox.enabled and not status.active then
+    sandbox_warning = composition.warning(neo.name, status)
   end
   local trust_policy
   local view = neo.view
@@ -59,17 +58,12 @@ local function default_controllers(configured)
   local neo_controller = Controller.from_config(neo, {
     workspace_trust = trust_policy,
   })
-  if sandbox_toolset then
-    assert(neo_controller:set_toolset(sandbox_toolset))
-  end
+  assert(neo_controller:set_toolset(sandbox_toolset))
   local sandbox_state = {
     controller = neo_controller,
-    configured = util.copy(configured.sandbox),
     enabled = configured.sandbox.enabled,
-    host_toolset = host_toolset,
-    sandbox_toolset = sandbox_toolset,
+    runtime = sandbox_runtime,
     status = util.copy(status),
-    dialogs = dialogs,
     trust = trust_policy,
   }
 
@@ -290,57 +284,22 @@ function M.set_sandbox_enabled(enabled)
     vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
     return nil, err
   end
-  if state.controller:is_running() then
-    local err = util.error("sandbox",
-      "Cannot change sandbox while Neo is running")
-    vim.notify("neoagent: " .. err.message, vim.log.levels.WARN)
+  local status, err = state.runtime:set_enabled(enabled)
+  if not status then
+    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
     return nil, err
   end
-
-  if not enabled then
-    local changed, err = state.controller:set_toolset(state.host_toolset)
-    if not changed then return nil, err end
-    state.enabled = false
-    state.status.enabled = false
-    state.status.active = false
-    if state.trust then state.trust:set_sandbox_status(state.status) end
-    vim.notify("neoagent: sandbox disabled; tools execute on the host",
-      vim.log.levels.INFO)
-    return util.copy(state.status)
-  end
-
-  local toolset = state.sandbox_toolset
-  local status
-  if toolset then
-    status = util.copy(state.status)
-    status.enabled = true
-    status.active = true
-  else
-    local settings = util.copy(state.configured)
-    settings.enabled = true
-    local ok, composed, recorded = pcall(
-      require("neoagent.sandbox.composition").compose,
-      state.host_toolset, settings, { dialogs = state.dialogs })
-    if not ok then
-      local err = util.normalize_error(composed, "sandbox")
-      vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
-      return nil, err
-    end
-    toolset, status = composed, recorded
-  end
-
-  state.enabled = true
+  state.enabled = status.enabled
   state.status = util.copy(status)
   if state.trust then state.trust:set_sandbox_status(state.status) end
-  if not toolset then
+  if enabled and not status.active then
     vim.notify(require("neoagent.sandbox.composition").warning(
       state.controller:config().name, status), vim.log.levels.WARN)
     return util.copy(state.status)
   end
-  local changed, err = state.controller:set_toolset(toolset)
-  if not changed then return nil, err end
-  state.sandbox_toolset = toolset
-  vim.notify("neoagent: sandbox enabled", vim.log.levels.INFO)
+  vim.notify(enabled and "neoagent: sandbox enabled"
+      or "neoagent: sandbox disabled; tools execute on the host",
+    vim.log.levels.INFO)
   return util.copy(state.status)
 end
 

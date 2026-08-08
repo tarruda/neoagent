@@ -516,6 +516,64 @@ describe("neoagent sandbox composition", function()
     assert.is_nil(untouched._sandbox_system_prompt)
   end)
 
+  it("switches one stable toolset between host and sandbox execution", function()
+    local root = temp()
+    local checks = 0
+    local tool = {
+      name = "inspect",
+      description = "Inspect execution",
+      input_schema = {
+        type = "object",
+        properties = {},
+        additionalProperties = false,
+      },
+      execute = function(arguments, ctx)
+        assert.is_nil(arguments.options)
+        return { content = { {
+          type = "text",
+          text = ctx.process and "sandbox" or "host",
+        } } }
+      end,
+    }
+    local platform = {
+      name = "test",
+      check = function()
+        checks = checks + 1
+        return { ok = true, platform = "test" }
+      end,
+      exec = function() error("must not execute") end,
+      fs = function() error("must not access files") end,
+    }
+    local stable, status, _, runtime =
+      require("neoagent.sandbox.composition").switchable({
+        tools = { tool },
+      }, { enabled = false }, { platform = platform })
+    local original_tools = util.copy(stable.tools)
+    local execute = stable.execute_tool
+    assert.is_false(status.enabled)
+    assert.are.equal(0, checks)
+    local value = execute(stable.tools[1], { options = {
+      require_escalation = true,
+      escalation_justification = "inspect host execution",
+    } }, context(root))
+    assert.are.equal("host", value.content[1].text)
+
+    status = assert(runtime:set_enabled(true))
+    assert.is_true(status.active)
+    assert.are.equal(1, checks)
+    value = execute(stable.tools[1], {}, context(root))
+    assert.are.equal("sandbox", value.content[1].text)
+
+    status = assert(runtime:set_enabled(false))
+    assert.is_false(status.enabled)
+    value = execute(stable.tools[1], {}, context(root))
+    assert.are.equal("host", value.content[1].text)
+    assert(runtime:set_enabled(true))
+    assert.are.equal(1, checks)
+    assert.are.equal(execute, stable.execute_tool)
+    assert.are.same(original_tools, stable.tools)
+  end)
+
   it("defers a failed activation warning to the requesting View", function()
     local notifications = {}
     local saved_notify = vim.notify

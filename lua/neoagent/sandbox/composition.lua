@@ -10,6 +10,13 @@ local sandbox_guidance_template = [[Sandboxed execution:
 - The user approves or denies each request. After a denial, continue inside the sandbox or use a different approach; do not repeat the same request.
 ]]
 
+local switchable_guidance = [[Sandbox controls:
+- The editor's current sandbox toggle selects native restricted or host execution for each tool call.
+- Restricted operations can fail with an explicit sandbox error. Networking command failures can use a different error, so request escalation when the sandbox blocks required work.
+- To request one tool call with full user authority, keep the same arguments and merge `require_escalation` and `escalation_justification` into the tool params.
+- Escalation options apply only while restricted execution is active.
+]]
+
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
   if value == "" then value = "requirements check failed" end
@@ -245,6 +252,78 @@ function M.compose(toolset, settings, opts)
       })),
     system_prompt = sandbox_guidance(recorded),
   }, recorded, dialogs
+end
+
+function M.switchable(toolset, settings, opts)
+  toolset = copy_toolset(toolset)
+  settings = util.copy(settings or { enabled = false })
+  assert(type(settings) == "table" and not util.is_list(settings),
+    "sandbox must be a table")
+  assert(type(settings.enabled) == "boolean",
+    "sandbox.enabled must be boolean")
+  opts = opts or {}
+  local dialogs = opts.dialogs or require("neoagent.dialog").new()
+  local escalation = require("neoagent.sandbox.escalation").new({
+    fs = opts.fs,
+    process = opts.process,
+  })
+  local base = toolset.execute_tool or base_executor
+  local runtime = {
+    _active_execute = nil,
+    _enabled = false,
+    _host_execute = escalation:bypass(base),
+    _opts = opts,
+    _settings = settings,
+    _status = { enabled = false, active = false },
+    _toolset = toolset,
+  }
+
+  function runtime:status()
+    return util.copy(self._status)
+  end
+
+  function runtime:set_enabled(enabled)
+    assert(type(enabled) == "boolean", "sandbox state must be boolean")
+    if not enabled then
+      self._enabled = false
+      self._status.enabled = false
+      self._status.active = false
+      return self:status()
+    end
+    if not self._active_execute then
+      local requested = util.copy(self._settings)
+      requested.enabled = true
+      local compose_opts = util.copy(self._opts)
+      compose_opts.dialogs = dialogs
+      local ok, composed, status = pcall(
+        M.compose, self._toolset, requested, compose_opts)
+      if not ok then
+        return nil, util.normalize_error(composed, "sandbox")
+      end
+      self._status = util.copy(status)
+      if composed then self._active_execute = composed.execute_tool end
+    else
+      self._status.enabled = true
+      self._status.active = true
+    end
+    self._enabled = true
+    return self:status()
+  end
+
+  local stable = {
+    tools = escalation:tools(toolset.tools),
+    execute_tool = function(tool, arguments, ctx)
+      local execute = runtime._enabled and runtime._active_execute
+        or runtime._host_execute
+      return execute(tool, arguments, ctx)
+    end,
+    system_prompt = #toolset.tools > 0 and switchable_guidance or nil,
+  }
+  if settings.enabled then
+    local status, err = runtime:set_enabled(true)
+    if not status then error(err, 0) end
+  end
+  return stable, runtime:status(), dialogs, runtime
 end
 
 function M.controller(configured, opts)
