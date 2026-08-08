@@ -275,6 +275,44 @@ function M.from_config(options, runtime)
     return true
   end
 
+  local function session_activation_checkpoint()
+    return {
+      session = state.session,
+      session_id = state.session_id,
+      model = state.model,
+      model_selection = state.model_selection,
+      thinking_level = state.thinking_level,
+      workspace = state.workspace,
+      workspace_settings = state.workspace_settings,
+      workspace_overrides = state.workspace_overrides,
+      store = state.store,
+      store_seeded = state.store_seeded,
+      live_usage = state.live_usage,
+      provider_status = state.provider_status,
+      pending_events = state.pending_events,
+      steering = state.steering,
+      last_result = state.last_result,
+    }
+  end
+
+  local function restore_session_activation(checkpoint)
+    state.session = checkpoint.session
+    state.session_id = checkpoint.session_id
+    state.model = checkpoint.model
+    state.model_selection = checkpoint.model_selection
+    state.thinking_level = checkpoint.thinking_level
+    state.workspace = checkpoint.workspace
+    state.workspace_settings = checkpoint.workspace_settings
+    state.workspace_overrides = checkpoint.workspace_overrides
+    state.store = checkpoint.store
+    state.store_seeded = checkpoint.store_seeded
+    state.live_usage = checkpoint.live_usage
+    state.provider_status = checkpoint.provider_status
+    state.pending_events = checkpoint.pending_events
+    state.steering = checkpoint.steering
+    state.last_result = checkpoint.last_result
+  end
+
   local function make_session(cwd)
     require_workspace_trust(cwd)
     local Session = require("neoagent.session")
@@ -903,6 +941,7 @@ function M.from_config(options, runtime)
       notify(trust_err.message, vim.log.levels.ERROR)
       return nil, trust_err
     end
+    local checkpoint = session_activation_checkpoint()
     local root = require("neoagent.fs").canonical(cwd)
     if state.workspace and state.workspace.root == root then
       state.model, state.model_selection, state.thinking_level = nil, nil, nil
@@ -910,10 +949,15 @@ function M.from_config(options, runtime)
     state.live_usage, state.provider_status = nil, nil
     state.pending_events, state.steering, state.last_result = {}, {}, nil
     local session, err = make_session(cwd)
-    if not session then notify(err.message, vim.log.levels.ERROR) return nil, err end
+    if not session then
+      restore_session_activation(checkpoint)
+      notify(err.message, vim.log.levels.ERROR)
+      return nil, err
+    end
     if preferences().default_model then
       local resolved, model_err = pcall(ensure_model)
       if not resolved then
+        restore_session_activation(checkpoint)
         model_err = util.normalize_error(model_err, "model")
         notify(model_err.message, vim.log.levels.ERROR)
         return nil, model_err

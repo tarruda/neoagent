@@ -1062,6 +1062,33 @@ describe("neoagent default controller", function()
     assert.is_nil(neoagent.fork())
   end)
 
+  it("keeps the active session intact when creating its replacement fails", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local model = fake_model.new({})
+    local resolutions = 0
+    setup_model(model, {
+      persistence = { enabled = true, directory = directory },
+      apis = { ["fake-api"] = function()
+        resolutions = resolutions + 1
+        if resolutions > 1 then error("model resolution failed") end
+        return model
+      end },
+    })
+    local first = assert(neoagent.new_session())
+    local first_store = neoagent._state().store
+    local first_snapshot = neoagent.default():snapshot()
+
+    local replacement, err = neoagent.new_session()
+
+    assert.is_nil(replacement)
+    assert.matches("model resolution failed", err.message)
+    assert.are.equal(first, neoagent.get_session())
+    assert.are.equal(first_store, neoagent._state().store)
+    assert.are.equal(model, neoagent.get_model())
+    assert.are.same(first_snapshot, neoagent.default():snapshot())
+  end)
+
   it("resolves the configured model immediately for a new session", function()
     local model = fake_model.new({})
     setup_model(model)
