@@ -249,8 +249,10 @@ A Window owns one View and selects an attached Controller. Its operations are
 `cycle`, `set_position`, `set_input`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
 and shares workspace input history. Selection restores the active transcript
-and draft while inactive Controller Runs continue. A Controller's initial
-Session is created on its first send.
+and draft while inactive Controller Runs continue. When preparation of a
+visible target fails, the current Controller, subscription, transcript, and
+draft remain active. A Controller's initial Session is created on its first
+send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.

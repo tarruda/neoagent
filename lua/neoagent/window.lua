@@ -158,11 +158,23 @@ function M.new(opts)
     state.unsubscribe = active():subscribe(apply)
   end
 
-  local function hydrate()
-    local controller = active()
+  local function prepared_snapshot(controller)
     local prepared, err = controller:prepare()
     if not prepared then return nil, err end
-    local snapshot = controller:snapshot()
+    local ok, snapshot = pcall(controller.snapshot, controller)
+    if not ok then
+      return nil, util.normalize_error(snapshot, "controller")
+    end
+    return snapshot
+  end
+
+  local function hydrate(controller, snapshot)
+    controller = controller or active()
+    if not snapshot then
+      local err
+      snapshot, err = prepared_snapshot(controller)
+      if not snapshot then return nil, err end
+    end
     select_workspace(snapshot.context.workspace)
     state.view:set_messages(snapshot.messages)
     state.view:set_context(context(snapshot.context))
@@ -248,7 +260,12 @@ function M.new(opts)
     assert(type(index) == "number" and state.controllers[index],
       "Controller is not attached to this Window")
     if index == state.active then return active() end
+    local controller = state.controllers[index]
+    local snapshot
     if state.view and not state.view.destroyed then
+      local err
+      snapshot, err = prepared_snapshot(controller)
+      if not snapshot then return nil, err end
       state.drafts[active()] = state.view:get_input()
     end
     state.active = index
@@ -258,10 +275,10 @@ function M.new(opts)
     end
     subscribe()
     if state.view and not state.view.destroyed then
-      local hydrated, err = hydrate()
+      local hydrated, err = hydrate(controller, snapshot)
       if not hydrated then return nil, err end
     end
-    return active()
+    return controller
   end
 
   function window:cycle()

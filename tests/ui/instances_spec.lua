@@ -103,6 +103,41 @@ describe("neoagent controller windows", function()
     assert.are.equal("Window is destroyed", err.message)
   end)
 
+  it("keeps the active Controller rendered when selecting another one fails", function()
+    local models = {
+      alpha = fake_model.new({}),
+      updated = fake_model.new({}),
+    }
+    models.alpha.provider, models.alpha.id = "fake", "alpha"
+    models.updated.provider, models.updated.id = "fake", "updated"
+    local alpha = neoagent.new(options("alpha", models.alpha, {
+      providers = { fake = { api = "fake", models = {
+        alpha = {},
+        updated = {},
+      } } },
+      apis = { fake = function(resolved) return models[resolved.model_id] end },
+    }))
+    local beta = neoagent.new(options("beta", fake_model.new({}), {
+      default_model = { provider = "absent", model = "missing" },
+    }))
+    controllers = { alpha, beta }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert(window:open())
+    local view = window:_state().view
+    view:set_input("alpha draft")
+
+    local selected, err = window:select(beta)
+
+    assert.is_nil(selected)
+    assert.are.equal("controller", err.kind)
+    assert.are.equal(alpha, window:active())
+    assert.are.equal(alpha, window:_state().rendered_controller)
+    assert.are.equal("alpha draft", view:get_input())
+    assert(alpha:set_model("fake", "updated"))
+    assert.are.equal("fake/updated", view.context.model)
+  end)
+
   it("uses one View and restores each Controller draft", function()
     local alpha = neoagent.new(options("alpha", fake_model.new({})))
     local beta = neoagent.new(options("beta", fake_model.new({})))

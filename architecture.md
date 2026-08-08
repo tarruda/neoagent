@@ -483,6 +483,8 @@ The Window:
 - Selects the active Controller
 - Subscribes the View to that Controller
 - Restores its transcript and transient events
+- Keeps the current selection and presentation when visible target
+  preparation fails
 - Keeps a separate input draft per Controller
 - Shares workspace input history
 - Leaves inactive Controllers running independently
