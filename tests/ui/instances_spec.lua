@@ -124,7 +124,7 @@ describe("neoagent controller windows", function()
     local window = neoagent.new_window({ controllers = controllers })
     windows = { window }
     assert(window:open())
-    local view = window:_state().view
+    local view = window:view()
     view:set_input("alpha draft")
 
     local selected, err = window:select(beta)
@@ -132,7 +132,7 @@ describe("neoagent controller windows", function()
     assert.is_nil(selected)
     assert.are.equal("controller", err.kind)
     assert.are.equal(alpha, window:active())
-    assert.are.equal(alpha, window:_state().rendered_controller)
+    assert.are.equal(alpha, window:rendered_controller())
     assert.are.equal("alpha draft", view:get_input())
     assert(alpha:set_model("fake", "updated"))
     assert.are.equal("fake/updated", view.context.model)
@@ -146,7 +146,7 @@ describe("neoagent controller windows", function()
     windows = { window }
 
     assert(window:open())
-    local view = window:_state().view
+    local view = window:view()
     local transcript_buffer, input_buffer = view.transcript_buf, view.input_buf
     view:set_input("alpha draft")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<A-n>", true, false, true), "x", false)
@@ -223,7 +223,7 @@ describe("neoagent controller windows", function()
     local window = neoagent.new_window({ controllers = controllers })
     windows = { window }
     assert(window:open())
-    local view = window:_state().view
+    local view = window:view()
 
     view:set_input("for alpha")
     local alpha_run = assert(view.on_submit(view:get_input()))
@@ -296,7 +296,7 @@ describe("neoagent controller windows", function()
     local window = neoagent.new_window({ controllers = controllers })
     windows = { window }
     assert(window:open())
-    local view = window:_state().view
+    local view = window:view()
     local alpha_run = assert(view.on_submit("alpha\nquestion"))
     assert(vim.wait(1000, function() return alpha_run:is_done() end))
     assert.are.equal(beta, window:cycle())

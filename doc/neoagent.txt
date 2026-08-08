@@ -224,10 +224,12 @@ Controller methods are: >lua
   controller:snapshot()
   controller:get_session()
   controller:get_model()
+  controller:get_workspace()
   controller:get_toolset()
   controller:set_toolset(toolset)
   controller:config()
   controller:is_running()
+  controller:is_authenticating()
   controller:destroy()
 <
 `send` starts an interaction while idle and queues steering while working.
@@ -246,13 +248,15 @@ matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, `set_position`, `set_input`, `input_history`, `add_input_history`,
+`cycle`, `set_position`, `set_input`, `get_input`, `view`,
+`rendered_controller`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
-and shares workspace input history. Selection restores the active transcript
-and draft while inactive Controller Runs continue. When preparation of a
-visible target fails, the current Controller, subscription, transcript, and
-draft remain active. A Controller's initial Session is created on its first
-send.
+and shares workspace input history. `view()` returns the owned View after its
+creation, and `rendered_controller()` identifies the Controller currently
+presented by that View. Selection restores the active transcript and draft
+while inactive Controller Runs continue. When preparation of a visible target
+fails, the current Controller, subscription, transcript, and draft remain
+active. A Controller's initial Session is created on its first send.
 
 `set_default(controller)` points commands and top-level functions at an
 existing Controller and returns the previous active Controller.
@@ -1122,6 +1126,13 @@ text or base64 images. Text blocks contain valid UTF-8 strings. The agent turns
 malformed tool results into error tool results. Replace or decorate
 `execute_tool(tool, arguments, ctx)` to add approval, logging, a native
 sandbox, or subagent behavior.
+
+A tool that can read workspace files may declare
+`capabilities = { read_files = true }`. The Controller discovers configured
+skills when the active toolset carries that capability. A successful disk
+mutation may return `details.changed_paths` as a list of paths. The built-in
+Neo Controller checks matching unmodified buffers after those results, so
+custom file tools receive the same refresh behavior as bundled file tools.
 
 A tool may define `on_messages(messages, ctx)`. Controllers call it with a
 copy of the complete active conversation after Session activation and message

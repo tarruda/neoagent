@@ -316,6 +316,14 @@ function M.new(opts)
     return state.view ~= nil and state.view:is_open()
   end
 
+  function window:view()
+    return state.view
+  end
+
+  function window:rendered_controller()
+    return state.rendered_controller
+  end
+
   function window:set_position(position)
     if not ui_positions[position] then return nil, util.error("ui", "invalid window position") end
     state.position = position
@@ -338,6 +346,14 @@ function M.new(opts)
       state.view:set_input(value)
     end
     return value
+  end
+
+  function window:get_input()
+    if state.view and not state.view.destroyed
+        and state.rendered_controller == active() then
+      return state.view:get_input()
+    end
+    return state.drafts[active()] or ""
   end
 
   function window:input_history()
@@ -369,10 +385,6 @@ function M.new(opts)
       end
     end)
     return true
-  end
-
-  function window:_state()
-    return state
   end
 
   function window:destroy()

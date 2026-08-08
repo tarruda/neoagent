@@ -89,6 +89,7 @@ end
 local function new()
   return {
     name = "read_file",
+    capabilities = { read_files = true },
     description = "Read a text file or image from disk. Text is limited to 2,000 lines or 50 KiB; use offset and limit to continue.",
     input_schema = {
       type = "object",

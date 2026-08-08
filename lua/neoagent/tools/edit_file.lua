@@ -153,7 +153,12 @@ local function diff_details(path, old, new)
       display[#display + 1] = line
     end
   end
-  return { diff = table.concat(display, "\n"), patch = patch, firstChangedLine = first_changed(old, new) }
+  return {
+    diff = table.concat(display, "\n"),
+    patch = patch,
+    firstChangedLine = first_changed(old, new),
+    changed_paths = { path },
+  }
 end
 
 local function new()

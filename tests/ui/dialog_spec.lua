@@ -291,14 +291,14 @@ describe("neoagent generic dialog UI", function()
       local one_id = dialogs:snapshot().active.id
       local two = dialogs:show(transcript_dialog())
       assert(vim.wait(1000, function()
-        local view = window:_state().view
+        local view = window:view()
         return view and view.dialog
           and view.dialog.active.id == one_id
       end, 5))
       assert.are.equal(first, window:active())
       feed("y")
       assert(vim.wait(1000, function()
-        local view = window:_state().view
+        local view = window:view()
         return one:is_done() and view.dialog
           and view.dialog.active.id ~= one_id
       end, 5))
@@ -306,13 +306,13 @@ describe("neoagent generic dialog UI", function()
       feed("n")
       assert(vim.wait(1000, function() return two:is_done() end, 5))
       assert.are.equal("cancel", two:result().action)
-      assert.is_nil(window:_state().view.dialog)
+      assert.is_nil(window:view().dialog)
 
       local dismissed = dialogs:show(floating_dialog())
       assert(vim.wait(1000, function()
-        return window:_state().view.dialog_win ~= nil
+        return window:view().dialog_win ~= nil
       end, 5))
-      vim.api.nvim_win_close(window:_state().view.dialog_win, true)
+      vim.api.nvim_win_close(window:view().dialog_win, true)
       assert(vim.wait(1000, function() return dismissed:is_done() end, 5))
       assert.is_false(dismissed:result().ok)
       assert.are.equal("dialog dismissed by user",
@@ -359,13 +359,13 @@ describe("neoagent generic dialog UI", function()
       local pending = dialogs:show(request)
       local id = dialogs:snapshot().active.id
       assert(vim.wait(1000, function()
-        local view = window:_state().view
+        local view = window:view()
         return view and view.dialog_buf ~= nil
           and view.dialog.active.id == id
       end, 5))
 
       assert(window:select(second))
-      local view = window:_state().view
+      local view = window:view()
       assert.is_nil(view.dialog)
       assert.is_nil(view.dialog_buf)
       assert.are.equal(id, dialogs:snapshot().active.id)
