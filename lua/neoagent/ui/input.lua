@@ -49,8 +49,8 @@ function M:_map_buffers()
     if submitted and self.config.scroll_on_submit then self:_scroll_transcript_to_bottom() end
     return submitted, err
   end)
-  self:_map(self.input_buf, { "n", "i" }, mappings.interrupt, function() self:_interrupt(true) end)
-  self:_map(self.transcript_buf, "n", mappings.interrupt, function() self:_interrupt(false) end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.interrupt, function() self:_interrupt() end)
+  self:_map(self.transcript_buf, "n", mappings.interrupt, function() self:_interrupt() end)
   self:_map(self.input_buf, "n", mappings.close_input, function() self:close() end)
   local close_empty = mappings.close_empty
   local function map_close_empty(key)

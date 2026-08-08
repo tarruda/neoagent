@@ -967,8 +967,8 @@ Default mappings:
   <C-j>       Insert a newline from input Insert mode.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
-  <C-c>       Interrupt the active Run and restore queued steering; clear the
-              draft while idle.
+  <C-c>       Clear a nonempty draft without interrupting. With an empty draft,
+              interrupt the active Run and restore queued steering.
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
   <A-k>/<A-j> (aliases <C-Up>/<C-Down>)

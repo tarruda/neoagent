@@ -234,20 +234,20 @@ function View:_input_footer(width)
       { action = "submit", label = "send" },
       { action = "newline", label = "newline" },
       { action = "card_previous", label = "transcript" },
-      { action = "interrupt", label = "cancel" },
+      { action = "interrupt", label = "clear/cancel" },
     }
   elseif context == "input_normal" then
     items = {
       { action = "submit", label = "send" },
       { action = "card_previous", label = "transcript" },
-      { action = "interrupt", label = "cancel" },
+      { action = "interrupt", label = "clear/cancel" },
     }
   else
     items = {
       { action = "card_details", label = "details" },
       { action = "card_previous", label = "previous" },
       { action = "card_next", label = self:_has_card(1) and "next" or "input" },
-      { action = "interrupt", label = "cancel" },
+      { action = "interrupt", label = "clear/cancel" },
     }
   end
   local text = ""
@@ -455,15 +455,15 @@ function View:_restore_steering()
   return #messages
 end
 
-function View:_interrupt(clear_input)
-  local active = active_state(self.context)
-  if active then
+function View:_interrupt()
+  if self:get_input() ~= "" then
+    self:set_input("")
+    self:focus_input()
+    return false
+  end
+  if active_state(self.context) then
     self:_restore_steering()
     return self.on_stop()
-  end
-  if clear_input then
-    if self:get_input() ~= "" then self:set_input("") end
-    self:focus_input()
   end
   return false
 end

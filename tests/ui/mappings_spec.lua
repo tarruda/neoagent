@@ -281,12 +281,6 @@ describe("neoagent UI mappings", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i<A-Up>", true, false, true), "x", false)
     assert.are.equal("first steer\n\nsecond steer\n\ncurrent draft", result:get_input())
     assert.are.equal(0, stops)
-    result:set_input("current draft")
-    queued = { "pending steer" }
-    result:set_context({ steering = vim.deepcopy(queued) })
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
-    assert.are.equal("pending steer\n\ncurrent draft", result:get_input())
-    assert.are.equal(1, stops)
     result:set_context({ state = "idle", steering = {} })
     result:set_input("send me")
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "x", false)
@@ -310,6 +304,54 @@ describe("neoagent UI mappings", function()
       return not result:is_open() and vim.api.nvim_get_current_win() == origin
         and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
     end))
+    result:destroy()
+  end)
+
+  it("clears a nonempty draft before interrupting", function()
+    local stops = 0
+    local dequeues = 0
+    local queued = { "pending steer" }
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_stop = function() stops = stops + 1 return true end,
+      on_dequeue_steering = function()
+        dequeues = dequeues + 1
+        local messages = queued
+        queued = {}
+        return messages
+      end,
+    })
+    assert(result:open())
+    result:set_context({ state = "running", steering = vim.deepcopy(queued) })
+    result:set_input("current draft")
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("i<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result:get_input() == "" and vim.api.nvim_get_current_win() == result.input_win
+    end))
+    assert.are.equal(0, stops)
+    assert.are.equal(0, dequeues)
+    assert.are.same({ "pending steer" }, queued)
+
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert.are.equal(1, stops)
+    assert.are.equal(1, dequeues)
+    assert.are.equal("pending steer", result:get_input())
+
+    result:set_context({ state = "running", steering = {} })
+    result:set_input("transcript draft")
+    result:focus_transcript()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result:get_input() == "" and vim.api.nvim_get_current_win() == result.input_win
+    end))
+    assert.are.equal(1, stops)
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert.are.equal(2, stops)
     result:destroy()
   end)
 
