@@ -111,10 +111,25 @@ end
 
 function M.line(value, max_chars)
   max_chars = max_chars or M.GREP_LINE_LENGTH
-  if vim.fn.strchars(value) <= max_chars then
-    return value, false
+  local index = 1
+  for _ = 1, max_chars do
+    if index > #value then return value, false end
+    local byte = value:byte(index)
+    local width = byte >= 240 and byte <= 244 and 4
+      or byte >= 224 and byte <= 239 and 3
+      or byte >= 194 and byte <= 223 and 2
+      or 1
+    for continuation = 1, width - 1 do
+      local following = value:byte(index + continuation)
+      if not following or following < 128 or following > 191 then
+        width = 1
+        break
+      end
+    end
+    index = index + width
   end
-  return vim.fn.strcharpart(value, 0, max_chars) .. "... [truncated]", true
+  if index > #value then return value, false end
+  return value:sub(1, index - 1) .. "... [truncated]", true
 end
 
 function M.format_size(bytes)

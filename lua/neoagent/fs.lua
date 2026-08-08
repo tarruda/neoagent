@@ -37,7 +37,11 @@ function M.create_temp_directory(prefix, directory)
   return vim.uv.fs_mkdtemp(template)
 end
 
-function M.read(path)
+function M.read_chunks(path, on_chunk, chunk_size)
+  assert(type(on_chunk) == "function", "chunk callback is required")
+  chunk_size = chunk_size or 64 * 1024
+  assert(type(chunk_size) == "number" and chunk_size > 0 and chunk_size % 1 == 0,
+    "chunk size must be a positive integer")
   local stat, stat_err = vim.uv.fs_stat(path)
   if not stat then
     return nil, stat_err or "file does not exist"
@@ -49,12 +53,33 @@ function M.read(path)
   if not fd then
     return nil, open_err
   end
-  local data, read_err = vim.uv.fs_read(fd, stat.size, 0)
-  vim.uv.fs_close(fd)
-  if not data then
-    return nil, read_err
+  local offset = 0
+  local failure
+  while true do
+    local data, read_err = vim.uv.fs_read(fd, chunk_size, offset)
+    if not data then
+      failure = read_err
+      break
+    end
+    if data == "" then break end
+    local accepted, callback_err = pcall(on_chunk, data, offset)
+    if not accepted then
+      failure = callback_err
+      break
+    end
+    offset = offset + #data
   end
-  return data
+  local closed, close_err = vim.uv.fs_close(fd)
+  if failure then return nil, failure end
+  if not closed then return nil, close_err end
+  return true
+end
+
+function M.read(path)
+  local chunks = {}
+  local ok, err = M.read_chunks(path, function(data) chunks[#chunks + 1] = data end)
+  if not ok then return nil, err end
+  return table.concat(chunks)
 end
 
 function M.mkdirp(path)

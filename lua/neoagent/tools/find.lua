@@ -21,25 +21,31 @@ local function new()
       local limit = arguments.limit or 1000
       if type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0 then error("limit must be a positive integer") end
       local search = arguments.path and workspace:resolve(common.require_string(arguments, "path")) or workspace.cwd
-      local result = common.process(ctx, {
+      local result, captured, captured_stderr = common.capture_process(ctx, {
         "fd", "--hidden", "--glob", "--", pattern, ".",
-      }, { cwd = search })
+      }, {
+        process = { cwd = search },
+        stdout = {
+          max_lines = limit,
+          max_bytes = truncate.MAX_BYTES,
+          max_line_bytes = truncate.MAX_BYTES + 1,
+          transform = function(line)
+            return line:gsub("\\", "/"):gsub("^%./", "")
+          end,
+        },
+      })
       if result.code ~= 0 then
         error("find path is not a directory or fd exited with status "
-          .. result.code .. ": " .. result.stderr)
+          .. result.code .. ": " .. captured_stderr.content)
       end
-      local source = vim.split(result.stdout, "\n", { plain = true, trimempty = true })
-      if #source == 0 then return { content = { { type = "text", text = "No files found" } } } end
-      local output = {}
-      for index = 1, math.min(limit, #source) do
-        output[#output + 1] = source[index]:gsub("\\", "/"):gsub("^%./", "")
+      if captured.totalLines == 0 then
+        return { content = { { type = "text", text = "No files found" } } }
       end
-      local shortened = truncate.head(table.concat(output, "\n"), { max_lines = limit, max_bytes = truncate.MAX_BYTES })
-      local text = shortened.content
-      if #source > #output or shortened.truncated then
-        text = text .. string.format("\n\n[Results truncated: showing %d of at least %d entries]", shortened.outputLines, #source)
+      local text = captured.content
+      if captured.truncated then
+        text = text .. string.format("\n\n[Results truncated: showing %d of at least %d entries]", captured.outputLines, captured.totalLines)
       end
-      return { content = { { type = "text", text = text } }, details = { truncation = shortened } }
+      return { content = { { type = "text", text = text } }, details = { truncation = captured } }
     end,
   }
 end

@@ -101,6 +101,32 @@ describe("neoagent.fs", function()
     assert.is_true(closed)
   end)
 
+  it("streams file reads in bounded chunks and closes after callback failures", function()
+    vim.uv.fs_stat = function() return { type = "file", size = 4 } end
+    vim.uv.fs_open = function() return 7 end
+    local offsets = {}
+    vim.uv.fs_read = function(fd, size, offset)
+      assert.are.equal(7, fd)
+      assert.are.equal(2, size)
+      offsets[#offsets + 1] = offset
+      return ({ [0] = "ab", [2] = "cd", [4] = "" })[offset]
+    end
+    local closes = 0
+    vim.uv.fs_close = function() closes = closes + 1 return true end
+    local chunks = {}
+    assert(fs.read_chunks("file", function(data, offset)
+      chunks[#chunks + 1] = { data, offset }
+    end, 2))
+    assert.are.same({ 0, 2, 4 }, offsets)
+    assert.are.same({ { "ab", 0 }, { "cd", 2 } }, chunks)
+
+    local ok, err = fs.read_chunks("file", function() error("rejected chunk") end, 2)
+    assert.is_nil(ok)
+    assert.matches("rejected chunk", err)
+    assert.are.equal(2, closes)
+    assert.has_error(function() fs.read_chunks("file", function() end, 0) end)
+  end)
+
   it("reports directory creation failures", function()
     assert.is_true(fs.mkdirp(""))
     vim.fn.mkdir = function() error("mkdir failed") end

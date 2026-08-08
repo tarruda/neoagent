@@ -43,26 +43,31 @@ local function new()
       command[#command + 1] = "--"
       command[#command + 1] = pattern
       command[#command + 1] = arguments.path and workspace:resolve(common.require_string(arguments, "path")) or "."
-      local result = common.process(ctx, command, { cwd = workspace.cwd })
-      if result.code ~= 0 and result.code ~= 1 then error("rg exited with status " .. result.code .. ": " .. result.stderr) end
-      if result.code == 1 or result.stdout == "" then
+      local result, captured, captured_stderr = common.capture_process(ctx, command, {
+        process = { cwd = workspace.cwd },
+        stdout = {
+          max_lines = limit,
+          max_bytes = truncate.MAX_BYTES,
+          max_line_bytes = truncate.GREP_LINE_LENGTH * 4 + 1,
+          transform = function(line)
+            return truncate.line(line)
+          end,
+        },
+      })
+      if result.code ~= 0 and result.code ~= 1 then
+        error("rg exited with status " .. result.code .. ": " .. captured_stderr.content)
+      end
+      if result.code == 1 or captured.totalLines == 0 then
         return { content = { { type = "text", text = "No matches found" } } }
       end
-      local source = vim.split(result.stdout, "\n", { plain = true, trimempty = true })
-      local output = {}
-      local line_truncated = 0
-      for index = 1, math.min(limit, #source) do
-        local line, was_truncated = truncate.line(source[index])
-        output[#output + 1] = line
-        if was_truncated then line_truncated = line_truncated + 1 end
+      local text = captured.content
+      if captured.truncated then
+        text = text .. string.format("\n\n[Results truncated: showing %d of at least %d lines]", captured.outputLines, captured.totalLines)
       end
-      local text = table.concat(output, "\n")
-      local shortened = truncate.head(text, { max_lines = limit, max_bytes = truncate.MAX_BYTES })
-      text = shortened.content
-      if #source > #output or shortened.truncated then
-        text = text .. string.format("\n\n[Results truncated: showing %d of at least %d lines]", shortened.outputLines, #source)
-      end
-      return { content = { { type = "text", text = text } }, details = { truncation = shortened, lines_truncated = line_truncated } }
+      return { content = { { type = "text", text = text } }, details = {
+        truncation = captured,
+        lines_truncated = captured.linesTruncated,
+      } }
     end,
   }
 end
