@@ -256,12 +256,13 @@ describe("neoagent bundled tools", function()
       if command[1] == "rg" then
         return { code = 1, signal = 0, stdout = "", stderr = "", output = "" }
       elseif command[1] == "fd" then
+        opts.on_output("found.lua\n", false)
         return {
           code = 0,
           signal = 0,
-          stdout = "found.lua\n",
+          stdout = "",
           stderr = "",
-          output = "found.lua\n",
+          output = "",
         }
       end
       if opts.capture == false and opts.on_output then
@@ -458,6 +459,33 @@ describe("neoagent bundled tools", function()
     local long = execute(read, { path = "long.txt" }, ctx(workspace))
     assert.matches("Showing lines 1%-2000 of 2001", long.content[1].text)
     assert.matches("offset=2001", long.content[1].text)
+  end)
+
+  it("streams text reads without loading the complete file", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local chunks = { "zero\none", "\ntwo\nthree" }
+    local streamed = 0
+    local result = execute(require("neoagent.tools.read_file"), {
+      path = "streamed.txt", offset = 2, limit = 2,
+    }, ctx(workspace, nil, {
+      fs = {
+        read = function() error("complete file read was used") end,
+        read_chunks = function(path, on_chunk)
+          assert.are.equal(root .. "/streamed.txt", path)
+          for _, chunk in ipairs(chunks) do
+            streamed = streamed + 1
+            on_chunk(chunk)
+          end
+          return true
+        end,
+      },
+    }))
+
+    assert.are.equal(2, streamed)
+    assert.matches("^one\ntwo", result.content[1].text)
+    assert.matches("1 more lines in file", result.content[1].text)
+    assert.matches("offset=4", result.content[1].text)
   end)
 
   it("returns supported images as raw base64 when ImageMagick is absent", function()
@@ -831,6 +859,9 @@ describe("neoagent bundled tools", function()
     assert.are.equal("No matches found", none.content[1].text)
     local found = execute(require("neoagent.tools.find"), { pattern = "*.lua" }, ctx(workspace))
     assert.matches("one.lua", found.content[1].text)
+    local no_files = execute(
+      require("neoagent.tools.find"), { pattern = "*.missing" }, ctx(workspace))
+    assert.are.equal("No files found", no_files.content[1].text)
   end)
 
   it("applies search options and reports bounded results", function()
@@ -851,5 +882,35 @@ describe("neoagent bundled tools", function()
 
     local found = execute(require("neoagent.tools.find"), { pattern = "*.lua", limit = 1 }, ctx(workspace))
     assert.matches("Results truncated", found.content[1].text)
+  end)
+
+  it("bounds search output while the process is running", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local calls = 0
+    local process = function(command, opts)
+      calls = calls + 1
+      assert.is_false(opts.capture)
+      assert.is_function(opts.on_output)
+      local prefix = command[1] == "rg" and "file.lua:1:" or ""
+      for index = 1, 1000 do
+        opts.on_output(prefix .. "result-" .. index .. "\n", false)
+      end
+      return { code = 0, signal = 0, stdout = "", stderr = "", output = "" }
+    end
+    local context = ctx(workspace, nil, { process = process })
+
+    local grep = execute(require("neoagent.tools.grep"), {
+      pattern = "result", limit = 2,
+    }, context)
+    local found = execute(require("neoagent.tools.find"), {
+      pattern = "*", limit = 2,
+    }, context)
+
+    assert.are.equal(2, calls)
+    assert.matches("showing 2 of at least 1000 lines", grep.content[1].text)
+    assert.matches("showing 2 of at least 1000 entries", found.content[1].text)
+    assert.is_true(#grep.content[1].text < 1024)
+    assert.is_true(#found.content[1].text < 1024)
   end)
 end)

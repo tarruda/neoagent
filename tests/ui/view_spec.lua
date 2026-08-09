@@ -109,7 +109,7 @@ describe("neoagent.ui", function()
       card_previous = "g[",
       interrupt = false,
     } })
-    assert.are.equal(" <C-s> send ",
+    assert.are.equal(" <C-s> send · g[ transcript ",
       result:_input_footer(80))
     local narrow = result:_input_footer(18)
     assert.is_true(vim.fn.strdisplaywidth(narrow) <= 18)
@@ -136,13 +136,13 @@ describe("neoagent.ui", function()
     end
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> send · <C-j> newline · <C-c> cancel "
+        == " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel "
     end))
 
     vim.cmd("stopinsert")
     vim.api.nvim_exec_autocmds("InsertLeave", { buffer = result.input_buf })
     assert(vim.wait(1000, function()
-      return footer() == " <CR> send · [c transcript · <C-c> cancel "
+      return footer() == " <CR> send · <A-k> transcript · <C-c> clear/cancel "
     end))
 
     result:focus_transcript()
@@ -158,7 +158,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · [c previous · ]c next · <C-c> cancel "
+        == " <CR> details · <A-k> previous · <A-j> next · <C-c> clear/cancel "
     end))
 
     vim.api.nvim_win_set_cursor(result.transcript_win, { rows.latest, 0 })
@@ -167,7 +167,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · [c previous · ]c input · <C-c> cancel "
+        == " <CR> details · <A-k> previous · <A-j> input · <C-c> clear/cancel "
     end))
   end)
 
@@ -1341,11 +1341,16 @@ describe("neoagent.ui", function()
     result:_close_card_details(true)
   end)
 
-  it("renders full compaction summaries in card details", function()
-    local result = view({ position = "center" })
+  it("shows bounded no-wrap compaction summaries and expands full details", function()
+    local summary = {}
+    for index = 1, 24 do
+      summary[index] = "summary line " .. index
+    end
+    summary[1] = summary[1] .. " " .. string.rep("wide-content-", 30)
+    local result = view({ position = "center", wrap_cards = true })
     result:set_messages({ {
       role = "compactionSummary",
-      summary = "## Goal\nKeep the summary visible",
+      summary = table.concat(summary, "\n"),
       tokensBefore = 12345,
     }, {
       role = "assistant",
@@ -1353,26 +1358,41 @@ describe("neoagent.ui", function()
     } })
     assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("Compacted from 12,345 tokens", 1, true) ~= nil
+      local transcript = text(result)
+      return transcript:find("Compacted from 12,345 tokens", 1, true) ~= nil
+        and transcript:find("summary line 1", 1, true) ~= nil
     end))
     assert.matches("%[compaction%]", text(result))
-    assert.not_matches("Keep the summary visible", text(result))
+    assert.matches("%[%.%.%. %d+ more lines%]", text(result))
+    assert.not_matches("summary line 24", text(result))
     assert.matches("retained suffix", text(result))
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
 
-    result:focus_transcript()
-    local row
-    for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
-      if line:find("[compaction]", 1, true) then row = index break end
+    local block = assert(vim.tbl_filter(function(candidate)
+      return candidate.kind == "compaction"
+    end, result.blocks)[1])
+    local position = vim.api.nvim_buf_get_extmark_by_id(
+      result.transcript_buf, result.namespace, block.mark, { details = true })
+    local first = position[1] + block.card.first
+    local last = position[1] + block.card.last
+    assert.are.equal(20, last - first + 1)
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    for _, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, first, last + 1, false)) do
+      assert.is_true(vim.fn.strdisplaywidth(line) <= width)
     end
-    assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    assert.are.equal(20, vim.api.nvim_win_text_height(result.transcript_win, {
+      start_row = first, end_row = last,
+    }).all)
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
     assert.is_true(result:show_card_details())
     local details = table.concat(
       vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
-    assert.matches("Keep the summary visible", details)
-    assert.not_matches("Keep the summary visible", text(result))
+    assert.matches("summary line 1", details)
+    assert.matches("summary line 24", details)
+    assert.not_matches("summary line 24", text(result))
     result:_close_card_details(true)
   end)
 
@@ -1841,7 +1861,7 @@ describe("neoagent.ui", function()
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
     assert.are.equal(
-      " <CR> send · <C-j> newline · <C-c> cancel ",
+      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel ",
       input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
@@ -1859,7 +1879,7 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.are.equal(
-      " <CR> send · <C-j> newline · <C-c> cancel ",
+      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel ",
       input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))

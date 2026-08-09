@@ -777,27 +777,61 @@ local function format_token_count(value)
   return digits .. " tokens"
 end
 
+local function expand_hint(self)
+  local key = (self.config.mappings or {}).card_details
+  if type(key) == "string" then return key end
+  if type(key) == "table" then return key[1] end
+end
+
+local COMPACTION_CARD_MAX_LINES = 20
+local COMPACTION_CONTENT_MAX_LINES = COMPACTION_CARD_MAX_LINES - 2
+
+local function clip_head(content, maximum)
+  if #content.lines <= maximum then return 0 end
+  local kept = maximum - 1
+  local omitted = #content.lines - kept
+  content.lines = vim.list_slice(content.lines, 1, kept)
+  local highlights = {}
+  for _, span in ipairs(content.highlights) do
+    if span.row < kept then highlights[#highlights + 1] = span end
+  end
+  content.highlights = highlights
+  local line_groups = {}
+  for row, group in pairs(content.line_groups) do
+    if row < kept then line_groups[row] = group end
+  end
+  content.line_groups = line_groups
+  local message = string.format(
+    "[... %d more line%s]", omitted, omitted == 1 and "" or "s")
+  add_line(content, message, {
+    { col = 0, end_col = #message, group = "NeoagentMuted" },
+  })
+  return omitted
+end
+
 local function compaction_content(self, block, full, width)
   local content = rendered()
   local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
-  add_line(content, label, label_spans)
-  add_line(content, "")
   local token_count = format_token_count(block.tokens_before)
   if full then
+    add_line(content, label, label_spans)
+    add_line(content, "")
     local body = "**Compacted from " .. token_count .. "**"
     if block.summary ~= "" then body = body .. "\n\n" .. block.summary end
     append_rendered(content, markdown.render(body, { width = width }))
   else
     local message = "Compacted from " .. token_count
-    add_line(content, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
+    local title, spans = segments({
+      { text = label, group = "NeoagentMarkdownBold" },
+      { text = " " .. message, group = "NeoagentMuted" },
+    })
+    add_line(content, title, spans)
+    if block.summary ~= "" then
+      append_rendered(content, markdown.render(block.summary, { width = width }))
+    end
+    clip_head(content, COMPACTION_CONTENT_MAX_LINES)
   end
   return content
-end
-
-local function expand_hint(self)
-  local key = (self.config.mappings or {}).card_details
-  if type(key) == "string" then return key end
-  if type(key) == "table" then return key[1] end
 end
 
 local THINKING_MAX_LINES = 10
@@ -920,8 +954,9 @@ function M.block(self, block)
       return content
     end
     local width
-    if self.config.wrap_cards ~= true and block.kind ~= "assistant"
-        and block.kind ~= "user" then
+    if block.kind == "compaction" or (
+        self.config.wrap_cards ~= true and block.kind ~= "assistant"
+          and block.kind ~= "user") then
       width = self:_content_width()
     end
     local result = card(content, background, width)

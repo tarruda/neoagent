@@ -35,6 +35,16 @@ local function image_result(data, mime, note)
   }
 end
 
+local function stream(filesystem, path, on_chunk)
+  if type(filesystem.read_chunks) == "function" then
+    return filesystem.read_chunks(path, on_chunk)
+  end
+  local data, err = filesystem.read(path)
+  if not data then return nil, err end
+  on_chunk(data)
+  return true
+end
+
 local function run_magick(data, mime, ctx)
   local input_format = assert(MAGICK_FORMAT[mime])
   local input = input_format .. ":-[0]"
@@ -111,12 +121,48 @@ local function new()
       if limit ~= nil and (type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0) then
         error("limit must be a positive integer")
       end
-      local data, err = common.fs(ctx).read(common.workspace(ctx):resolve(path))
-      if not data then
+      local filesystem = common.fs(ctx)
+      local absolute = common.workspace(ctx):resolve(path)
+      local text = common.line_capture({
+        offset = offset,
+        select_lines = limit or math.huge,
+        max_lines = truncate.MAX_LINES,
+        max_bytes = truncate.MAX_BYTES,
+        max_line_bytes = truncate.MAX_BYTES + 1,
+      })
+      local undecided = ""
+      local mode
+      local mime
+      local image_chunks = {}
+      local function consume(data)
+        if not mode then
+          undecided = undecided .. data
+          if #undecided < 12 then return end
+          mime = detect(undecided)
+          mode = mime and "image" or "text"
+          data, undecided = undecided, ""
+        end
+        if mode == "image" then
+          image_chunks[#image_chunks + 1] = data
+        else
+          text.append(data)
+        end
+      end
+      local read, err = stream(filesystem, absolute, consume)
+      if not read then
         error("Could not read file " .. path .. ": " .. tostring(err))
       end
-      local mime = detect(data)
+      if not mode then
+        mime = detect(undecided)
+        mode = mime and "image" or "text"
+        if mode == "image" then
+          image_chunks[1] = undecided
+        else
+          text.append(undecided)
+        end
+      end
       if mime then
+        local data = table.concat(image_chunks)
         if vim.fn.executable("magick") == 1 and async.current() then
           local processed, process_err = run_magick(data, mime, ctx)
           if processed then return processed end
@@ -129,21 +175,20 @@ local function new()
         return image_result(data, mime, note)
       end
 
-      local all = vim.split(data, "\n", { plain = true })
-      if offset > #all then
-        error(string.format("Offset %d is beyond end of file (%d lines total)", offset, #all))
+      local shortened = text.finish(true)
+      if offset > shortened.totalLines then
+        error(string.format("Offset %d is beyond end of file (%d lines total)", offset, shortened.totalLines))
       end
-      local last = limit and math.min(#all, offset + limit - 1) or #all
-      local selected = table.concat(vim.list_slice(all, offset, last), "\n")
-      local shortened = truncate.head(selected)
+      local last = limit and math.min(shortened.totalLines, offset + limit - 1)
+        or shortened.totalLines
       local text
       if shortened.firstLineExceedsLimit then
-        text = string.format("[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]", offset, truncate.format_size(#all[offset]), truncate.format_size(truncate.MAX_BYTES))
+        text = string.format("[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]", offset, truncate.format_size(shortened.firstLineBytes), truncate.format_size(truncate.MAX_BYTES))
       elseif shortened.truncated then
         local ending = offset + shortened.outputLines - 1
-        text = shortened.content .. string.format("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", offset, ending, #all, ending + 1)
-      elseif limit and last < #all then
-        text = shortened.content .. string.format("\n\n[%d more lines in file. Use offset=%d to continue.]", #all - last, last + 1)
+        text = shortened.content .. string.format("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", offset, ending, shortened.totalLines, ending + 1)
+      elseif limit and last < shortened.totalLines then
+        text = shortened.content .. string.format("\n\n[%d more lines in file. Use offset=%d to continue.]", shortened.totalLines - last, last + 1)
       else
         text = shortened.content
       end

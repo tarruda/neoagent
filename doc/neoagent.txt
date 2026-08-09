@@ -924,9 +924,12 @@ footer displays context usage when the selected Model declares a
 
 Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
-show complete card lines with soft wrapping. A Unicode outline follows the card
-beneath the cursor while the transcript is focused, and tool card outlines
-carry an `<CR> to expand` hint in the bottom border while hovered. The
+show complete card lines with soft wrapping. Compaction cards present their
+summary in at most 20 visible card lines and keep each preview line clipped;
+their details view contains the complete soft-wrapped summary. A Unicode
+outline follows the card beneath the cursor while the transcript is focused,
+and tool card outlines carry an `<CR> to expand` hint in the bottom border
+while hovered. The
 configured `card_details` mapping opens that card's complete content in a
 scrollable, read-only floating window that soft-wraps long lines and is
 titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
@@ -964,16 +967,15 @@ Default mappings:
   <C-j>       Insert a newline from input Insert mode.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
-  <C-c>       Interrupt the active Run and restore queued steering; clear the
-              draft while idle.
-  <C-w>w or <C-w><C-w>
-              Alternate between input and transcript in Normal, Insert, or
-              Visual mode.
+  <C-c>       Clear a nonempty draft without interrupting. With an empty draft,
+              interrupt the active Run and restore queued steering.
   <Esc><Esc>   Hide the UI from input Normal mode.
   <C-d>       Hide the UI when the input is empty.
-  [c / ]c     Jump to the previous or next transcript card; counts are
-              supported. From input Normal mode, [c focuses the newest card.
-              From the newest card, ]c focuses the input in Insert mode.
+  <A-k>/<A-j> (aliases <C-Up>/<C-Down>)
+              Jump to the previous or next transcript card; counts are
+              supported in Normal mode. Alt-K or Ctrl-Up focuses the newest
+              card from input Normal or Insert mode. Alt-J or Ctrl-Down
+              focuses the input in Insert mode from the newest card.
   r           Toggle rendered and raw Markdown in Text or Thinking details.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
@@ -1255,6 +1257,8 @@ The threshold is `context_window - reserve_tokens`, and recent retention uses
 or `compaction.auto = false` to retain manual and overflow compaction. A custom
 `compaction.run(opts)` returns a cancellable Run with `summary`,
 `first_kept_entry_id`, `tokens_before`, and optional `usage` and `details`.
+Runner startup is transactional: exceptions and invalid Run values produce a
+structured compaction error while preserving Controller lifecycle state.
 The `neoagent.compaction` module exposes `settings`, `estimate_context`,
 `should_compact`, `prepare`, `serialize`, and `run` for direct composition.
 

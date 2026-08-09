@@ -237,6 +237,7 @@ describe("neoagent default controller", function()
     local transcript = table.concat(vim.api.nvim_buf_get_lines(
       current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
+    assert.matches("Continue the work", transcript)
     assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
     assert.not_matches("perform the large task", transcript)
     assert.are.equal("summary quota", current_view().context.provider_status)
@@ -374,7 +375,8 @@ describe("neoagent default controller", function()
     failed.ok = false
     failed.error = {
       kind = "protocol",
-      message = "Stream ended without finish_reason or [DONE]",
+      message = "Request failed",
+      detail = { reason = "stream ended before the terminal event" },
     }
     local model = fake_model.new({
       { result = failed },
@@ -500,6 +502,76 @@ describe("neoagent default controller", function()
     assert.are.equal("compaction", checkpoint.type)
     assert.is_true(checkpoint.fromHook)
     assert.are.same({ format = "custom" }, checkpoint.details)
+  end)
+
+  it("recovers when a custom compaction runner cannot start", function()
+    local assistant = fake_model.assistant({ {
+      type = "text", text = string.rep("answer ", 20),
+    } })
+    assistant.message.usage.totalTokens = 90
+    local attempts = 0
+    local failed_options
+    local model = fake_model.new({ { result = assistant } })
+    model.context_window = 100
+    setup_model(model, {
+      compaction = {
+        auto = true,
+        reserve_tokens = 20,
+        keep_recent_tokens = 5,
+        run = function(options)
+          attempts = attempts + 1
+          if attempts == 1 then
+            failed_options = options
+            options.on_event({ type = "provider_status", text = "discarded" })
+            options.on_done({
+              ok = true,
+              summary = "discarded summary",
+              first_kept_entry_id = options.preparation.first_kept_entry_id,
+              tokens_before = options.preparation.tokens_before,
+            })
+            error("compactor exploded")
+          elseif attempts == 2 then
+            return {}
+          end
+          local run = { cancel = function() end }
+          options.on_event({ type = "provider_status", text = "synchronous" })
+          options.on_done({
+            ok = true,
+            summary = "synchronous summary",
+            first_kept_entry_id = options.preparation.first_kept_entry_id,
+            tokens_before = options.preparation.tokens_before,
+          })
+          return run
+        end,
+      },
+    })
+
+    local interaction = assert(neoagent.send("trigger compaction"))
+    assert(vim.wait(1000, function()
+      return interaction:is_done() and is_idle()
+    end))
+    assert.are.equal(1, attempts)
+    assert.are.equal(0, #vim.tbl_filter(function(entry)
+      return entry.type == "compaction"
+    end, neoagent.get_session():entries()))
+    failed_options.on_event({ type = "provider_status", text = "late" })
+    failed_options.on_done({ ok = false, error = {
+      kind = "compaction", message = "late failure",
+    } })
+
+    local run, err = neoagent.compact()
+    assert.is_nil(run)
+    assert.are.equal("compaction", err.kind)
+    assert.matches("compaction.run must return a Run", err.message)
+    assert.is_true(is_idle())
+    assert.are.equal(2, attempts)
+
+    assert(neoagent.compact())
+    assert.is_true(is_idle())
+    assert.are.equal(3, attempts)
+    local entries = neoagent.get_session():entries()
+    assert.are.equal("compaction", entries[#entries].type)
+    assert.are.equal("synchronous summary", entries[#entries].summary)
   end)
 
   it("reports manual compaction preconditions and failed summaries", function()
@@ -1615,8 +1687,12 @@ describe("neoagent default controller", function()
     view:set_input("current draft")
     view:focus_input()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return view:get_input() == "" and not cancelled and not is_idle()
+    end))
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-c>", true, false, true), "x", false)
     assert(vim.wait(1000, function() return cancelled and is_idle() end))
-    assert.are.equal("steer from the window\n\nsecond steer\n\ncurrent draft", view:get_input())
+    assert.are.equal("steer from the window\n\nsecond steer", view:get_input())
     assert.is_true(cancelled)
     assert.are.equal("idle", snapshot().context.state)
     assert.is_false(neoagent.stop())
@@ -1651,24 +1727,42 @@ describe("neoagent default controller", function()
     assert(other:append({
       role = "user", content = "Recent\nroot", timestamp = now - 130 * 60000,
     }))
+    local weekly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(weekly:append({
+      role = "user", content = "Weekly root", timestamp = now - 8 * 86400000,
+    }))
+    local monthly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(monthly:append({
+      role = "user", content = "Monthly root", timestamp = now - 60 * 86400000,
+    }))
+    local yearly = storage.new({ directory = directory, cwd = vim.fn.getcwd() })
+    assert(yearly:append({
+      role = "user", content = "Yearly root", timestamp = now - 800 * 86400000,
+    }))
     setup_model(fake_model.new({}), { persistence = { enabled = true, directory = directory } })
     assert(neoagent.resume(parent:metadata().path))
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.equal("Resume Neoagent session:", options.prompt)
-      assert.are.equal(5, #items)
+      assert.are.equal(8, #items)
       assert.are.equal(parent:metadata().path, items[1].path)
       assert.are.equal(child:metadata().path, items[2].path)
       assert.are.equal(parent:metadata().path, items[2].parent_session)
       assert.are.equal(grandchild:metadata().path, items[3].path)
       assert.are.equal(sibling:metadata().path, items[4].path)
       assert.are.equal(other:metadata().path, items[5].path)
+      assert.are.equal(weekly:metadata().path, items[6].path)
+      assert.are.equal(monthly:metadata().path, items[7].path)
+      assert.are.equal(yearly:metadata().path, items[8].path)
       assert.matches("^● Parent%s+1%s+3d$", options.format_item(items[1]))
       assert.matches("^  ├─ Child%s+2%s+1h$", options.format_item(items[2]))
       assert.matches("^  │  └─ Grandchild%s+3%s+10m$", options.format_item(items[3]))
       assert.matches("^  └─ Sibling%s+2%s+30m$", options.format_item(items[4]))
       assert.matches("^  Recent root%s+1%s+2h$", options.format_item(items[5]))
+      assert.matches("^  Weekly root%s+1%s+1w$", options.format_item(items[6]))
+      assert.matches("^  Monthly root%s+1%s+2mo$", options.format_item(items[7]))
+      assert.matches("^  Yearly root%s+1%s+2y$", options.format_item(items[8]))
       callback(items[2])
     end
     local ok, err = pcall(neoagent.resume)

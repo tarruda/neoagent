@@ -138,6 +138,56 @@ describe("neoagent controller windows", function()
     assert.are.equal("fake/updated", view.context.model)
   end)
 
+  it("keeps the active Controller rendered when its replacement snapshot fails", function()
+    local alpha = neoagent.new(options("alpha", fake_model.new({})))
+    local beta = neoagent.new(options("beta", fake_model.new({})))
+    controllers = { alpha, beta }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert(window:open())
+    local view = window:view()
+    view:set_input("alpha draft")
+    beta.snapshot = function() error("snapshot failed") end
+
+    local selected, err = window:select(beta)
+
+    assert.is_nil(selected)
+    assert.are.equal("controller", err.kind)
+    assert.matches("snapshot failed", err.message)
+    assert.are.equal(alpha, window:active())
+    assert.are.equal(alpha, window:rendered_controller())
+    assert.are.equal("alpha draft", view:get_input())
+  end)
+
+  it("keeps local position and draft when workspace persistence fails", function()
+    local controller = neoagent.new(options("local-state", fake_model.new({})))
+    controllers = { controller }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert.are.equal("draft", window:set_input("draft"))
+    assert.are.equal("draft", window:get_input())
+    controller.set_ui_position = function()
+      return nil, require("neoagent.util").error("settings", "cannot save")
+    end
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+
+    local position, err = window:set_position("left")
+    vim.notify = original_notify
+
+    assert.are.equal("left", position)
+    assert.are.equal("settings", err.kind)
+    assert.are.equal(1, #notifications)
+    assert.matches("workspace settings were not saved", notifications[1][1])
+    assert.are.equal(vim.log.levels.WARN, notifications[1][2])
+    assert(window:open())
+    assert.are.equal("left", window:view().context.position)
+    assert.are.equal("draft", window:view():get_input())
+  end)
+
   it("uses one View and restores each Controller draft", function()
     local alpha = neoagent.new(options("alpha", fake_model.new({})))
     local beta = neoagent.new(options("beta", fake_model.new({})))
