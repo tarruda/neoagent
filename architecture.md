@@ -40,7 +40,8 @@ Controllers, and UI:
   abstraction.
 - `lua/neoagent/transport/` provides curl transport and SSE parsing. Curl
   executes one HTTP exchange and returns response status and headers on both
-  success and failure; failures also retain bounded process diagnostics.
+  success and failure; failures also retain bounded process diagnostics. SSE
+  parsing bounds both pending lines and complete multiline event payloads.
 - `lua/neoagent/api/` provides provider protocol encoders and streaming
   decoders. Protocol packages keep request construction and event decoding as
   focused internal modules while the public Model owns transport and

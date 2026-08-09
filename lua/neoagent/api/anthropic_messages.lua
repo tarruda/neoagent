@@ -252,7 +252,10 @@ function Model:stream(opts)
         end,
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
-      if transport_ok and transport_result.ok then parser:finish() end
+      if transport_ok and transport_result.ok then
+        local finished, finish_err = parser:finish()
+        if not finished then error(util.error("protocol", finish_err), 0) end
+      end
       if not transport_ok then error(transport_result, 0) end
       if not transport_result.ok then error(transport_result.error, 0) end
       if not message_start_seen then
