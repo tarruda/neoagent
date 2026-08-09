@@ -109,6 +109,33 @@ function M.validate_entry(entry)
   return validators[entry.type](entry)
 end
 
+function M.validate_references(entry, by_id)
+  if entry.type == "leaf" and not is_null(entry.targetId)
+      and not by_id[entry.targetId] then
+    return nil, "leaf target does not exist"
+  end
+  if entry.type == "label" and not by_id[entry.targetId] then
+    return nil, "label target does not exist"
+  end
+  if entry.type == "branch_summary" and entry.fromId ~= "root"
+      and not by_id[entry.fromId] then
+    return nil, "branch summary fromId does not exist"
+  end
+  if entry.type == "compaction" then
+    if not by_id[entry.firstKeptEntryId] then
+      return nil, "compaction first kept entry does not exist"
+    end
+    local current = is_null(entry.parentId) and nil or by_id[entry.parentId]
+    while current and current.id ~= entry.firstKeptEntryId do
+      current = is_null(current.parentId) and nil or by_id[current.parentId]
+    end
+    if not current then
+      return nil, "compaction first kept entry is not on the active path"
+    end
+  end
+  return true
+end
+
 function M.validate_entries(entries)
   local by_id = {}
   local leaf_id
@@ -119,10 +146,9 @@ function M.validate_entries(entries)
     if not is_null(entry.parentId) and not by_id[entry.parentId] then
       return nil, "parent entry does not precede child", index
     end
+    local references, reference_err = M.validate_references(entry, by_id)
+    if not references then return nil, reference_err, index end
     if entry.type == "leaf" then
-      if not is_null(entry.targetId) and not by_id[entry.targetId] then
-        return nil, "leaf target does not exist", index
-      end
       leaf_id = is_null(entry.targetId) and nil or entry.targetId
     else
       leaf_id = entry.id

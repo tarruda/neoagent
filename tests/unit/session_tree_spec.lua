@@ -55,6 +55,41 @@ describe("neoagent.session_tree", function()
     validated, err = tree.validate_entries({ message, leaf })
     assert.is_nil(validated)
     assert.matches("leaf target", err)
+
+    local label = base("label", { id = "label", parentId = message.id, targetId = "missing", label = "bad" })
+    validated, err = tree.validate_entries({ message, label })
+    assert.is_nil(validated)
+    assert.matches("label target", err)
+
+    local summary = base("branch_summary", {
+      id = "summary", parentId = message.id, fromId = "missing", summary = "bad",
+    })
+    validated, err = tree.validate_entries({ message, summary })
+    assert.is_nil(validated)
+    assert.matches("branch summary", err)
+
+    local compaction = base("compaction", {
+      id = "compaction", parentId = message.id,
+      firstKeptEntryId = "missing", summary = "bad", tokensBefore = 1,
+    })
+    validated, err = tree.validate_entries({ message, compaction })
+    assert.is_nil(validated)
+    assert.matches("first kept", err)
+
+    local left = base("message", {
+      id = "left", parentId = message.id,
+      message = { role = "assistant", content = {} },
+    })
+    local right = base("message", {
+      id = "right", parentId = message.id,
+      message = { role = "assistant", content = {} },
+    })
+    compaction.parentId = right.id
+    compaction.firstKeptEntryId = left.id
+    validated, err = tree.validate_entries({ message, left, right, compaction })
+    assert.is_nil(validated)
+    assert.matches("active path", err)
+
     local path
     path, err = tree.path({ message }, "missing")
     assert.is_nil(path)

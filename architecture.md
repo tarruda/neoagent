@@ -424,12 +424,14 @@ session is a tree that supports:
 Only the active path is projected into model context. Empty sessions create no
 files; persistence begins when the first message is accepted. Stores validate
 JSON encoding and UTF-8 before mutating the tree or creating a file. A Store
-validates complete trees when opening them, maintains an entry index, and
-updates messages and model state incrementally for linear appends. Branch
-selection rebuilds the active projection from the maintained index. Default
-Store mutations return copied append or replacement projection updates for
-the Session cache. Custom Stores may omit these updates; Sessions then reload
-the projection and return structured storage errors when that reload fails.
+validates complete trees when opening them, including leaf, label,
+branch-summary, and compaction references. Compaction retention starts on the
+active parent path. The Store maintains an entry index and updates messages and
+model state incrementally for linear appends. Branch selection rebuilds the
+active projection from the maintained index. Default Store mutations return
+copied append or replacement projection updates for the Session cache. Custom
+Stores may omit these updates; Sessions then reload the projection and return
+structured storage errors when that reload fails.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.

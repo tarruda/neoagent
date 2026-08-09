@@ -174,6 +174,15 @@ describe("neoagent.storage", function()
         vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
           message = { role = "user" } }),
       }, detail = "content is required" },
+      { lines = {
+        vim.json.encode(header),
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+          message = { role = "user", content = "one" } }),
+        vim.json.encode({
+          type = "compaction", id = "compact", parentId = "one", timestamp = "t",
+          summary = "bad", firstKeptEntryId = "missing", tokensBefore = 1,
+        }),
+      }, detail = "first kept entry" },
     }
     for _, case in ipairs(cases) do
       vim.fn.writefile(case.lines, path)

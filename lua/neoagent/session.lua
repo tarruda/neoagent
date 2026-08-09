@@ -29,15 +29,9 @@ local function memory_append(self, entry_type, values)
   if self._by_id[entry.id] then
     return nil, util.error("session", "Invalid " .. tostring(entry_type), "duplicate entry id")
   end
-  if entry.type == "leaf" and entry.targetId ~= nil and entry.targetId ~= vim.NIL
-      and not self._by_id[entry.targetId] then
-    return nil, util.error("session", "Invalid leaf", "entry not found: " .. tostring(entry.targetId))
-  end
-  if entry.type == "label" and not self._by_id[entry.targetId] then
-    return nil, util.error("session", "Invalid label", "entry not found: " .. tostring(entry.targetId))
-  end
-  if entry.type == "compaction" and not self._by_id[entry.firstKeptEntryId] then
-    return nil, util.error("session", "Invalid compaction", "entry not found: " .. tostring(entry.firstKeptEntryId))
+  local references, reference_err = tree.validate_references(entry, self._by_id)
+  if not references then
+    return nil, util.error("session", "Invalid " .. tostring(entry_type), reference_err)
   end
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
