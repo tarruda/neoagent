@@ -311,6 +311,16 @@ function M.new(opts)
     end)
   end
 
+  local function completion_failure(err, original)
+    local cause = util.normalize_error(err, "controller")
+    return {
+      ok = false,
+      error = util.error("controller", "Controller completion failed", cause.message),
+      new_messages = original and util.copy(original.new_messages) or nil,
+      message = original and util.copy(original.message) or nil,
+    }
+  end
+
   local function finish_interaction(done)
     state.run = nil
     state.status = "idle"
@@ -411,8 +421,7 @@ function M.new(opts)
         end
       end
 
-      local function on_done(done)
-        if run_id ~= state.run_id then return end
+      local function transition_done(done)
         local can_continue = config.continuation ~= nil or config.interaction == nil
         if not overflow_retried and can_continue and is_context_overflow(done) then
           overflow_retried = true
@@ -451,7 +460,10 @@ function M.new(opts)
               end
               local launched, launch_err = pcall(launch, true)
               if not launched then
-                finish_interaction({ ok = false, error = util.normalize_error(launch_err, "controller") })
+                finish_interaction({
+                  ok = false,
+                  error = util.normalize_error(launch_err, "controller"),
+                })
               end
             end,
             error_kind = "controller",
@@ -466,6 +478,14 @@ function M.new(opts)
           if compacted then return end
         end
         finish_interaction(done)
+      end
+
+      local function on_done(done)
+        if run_id ~= state.run_id then return end
+        local transitioned, transition_err = pcall(transition_done, done)
+        if not transitioned then
+          finish_interaction(completion_failure(transition_err, done))
+        end
       end
 
       launch = function(continuing)

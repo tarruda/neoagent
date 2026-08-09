@@ -698,7 +698,8 @@ normal interrupt action. Failed partial assistant output is removed from the
 active branch before replay, while the Session retains it as inactive history.
 HTTP authentication, invalid-request, quota, billing, and context-window
 failures fail immediately; context-window failures follow the compaction
-recovery path.
+recovery path. A completion-transition failure returns the Controller to idle
+and publishes a Controller error containing the transition failure message.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a

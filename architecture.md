@@ -479,7 +479,9 @@ message changes, resume, forks, and branch changes. Message updates and
 snapshots project the latest compaction checkpoint with its retained suffix,
 while the Session tree retains the complete active path. A replay removes a
 failed partial assistant message from the active branch before continuing the
-interaction:
+interaction. Completion transitions are guarded by one finalizer. An unexpected
+lifecycle error clears the active Run and publishes a structured Controller
+failure with the transition error:
 
 ```lua
 { type = "messages", ... }
