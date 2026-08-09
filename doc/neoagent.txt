@@ -1230,8 +1230,8 @@ validation requires parents and every leaf, label, branch-summary, and
 compaction reference to precede its entry; `branch_summary.fromId = "root"` is
 the root sentinel. A compaction's first retained entry must also belong to its
 active parent path. Store `append`, `append_entry`, and `set_leaf` methods may
-`set_leaf` methods may return a fourth projection-update result after the usual
-success, error, and entry values: >lua
+return a fourth projection-update result after the usual success, error, and
+entry values: >lua
 
   { type = "append", messages = { ... } }
   { type = "replace", messages = { ... } }
