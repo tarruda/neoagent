@@ -117,6 +117,33 @@ describe("neoagent.session_tree", function()
     assert.matches("entry not found", err)
   end)
 
+  it("orders compacted model context and transcripts independently", function()
+    local prefix = base("message", {
+      id = "prefix", message = { role = "user", content = "old" },
+    })
+    local kept = base("message", {
+      id = "kept", parentId = prefix.id,
+      message = { role = "assistant", content = {} },
+    })
+    local compaction = base("compaction", {
+      id = "compaction", parentId = kept.id, firstKeptEntryId = kept.id,
+      summary = "summary", tokensBefore = 100,
+    })
+    local after = base("message", {
+      id = "after", parentId = compaction.id,
+      message = { role = "assistant", content = {} },
+    })
+    local path = { prefix, kept, compaction, after }
+    local ids = function(entries)
+      return vim.tbl_map(function(entry) return entry.id end, entries)
+    end
+
+    assert.are.same({ "compaction", "kept", "after" },
+      ids(tree.context_entries(path)))
+    assert.are.same({ "kept", "compaction", "after" },
+      ids(tree.transcript_entries(path)))
+  end)
+
   it("projects Pi execution and summary messages into LLM context", function()
     local context = tree.to_llm({
       { role = "bashExecution", command = "pwd", output = "", exitCode = 2, timestamp = 1 },

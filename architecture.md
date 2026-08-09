@@ -477,13 +477,16 @@ eligibility, delay, and a stricter attempt cap. Successful tool results carry
 changed paths for unmodified-buffer refresh, and read-capable tools declare
 skill-discovery metadata. The Controller publishes updates and feeds complete
 active-conversation copies to optional tool state hooks after activation,
-message changes, resume, forks, and branch changes. Message updates and
-snapshots project the latest compaction checkpoint with its retained suffix,
-while the Session tree retains the complete active path. A replay removes a
-failed partial assistant message from the active branch before continuing the
-interaction. Completion transitions are guarded by one finalizer. An unexpected
-lifecycle error clears the active Run and publishes a structured Controller
-failure with the transition error:
+message changes, resume, forks, and branch changes. Model context projects the
+latest compaction checkpoint before its retained suffix. Transcript snapshots
+omit the compacted prefix while preserving active-path chronology: retained
+messages precede the compaction card, and later messages follow it. A replay
+removes a failed partial assistant message from the active branch before
+continuing the interaction. A successful assistant `length` stop continues
+once, compacting first when the context threshold is reached. Completion
+transitions are guarded by one finalizer. An unexpected lifecycle error clears
+the active Run and publishes a structured Controller failure with the
+transition error:
 
 ```lua
 { type = "messages", ... }

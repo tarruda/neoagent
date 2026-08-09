@@ -1266,10 +1266,15 @@ order.
 CONTEXT COMPACTION                                  *neoagent-compaction*
 
 Automatic compaction runs at the configured context threshold and after a
-provider context-overflow error. Subsequent Model requests use the summary and
-retained recent messages; the complete Session tree remains available for
-navigation. The bundled View presents complete compaction summaries through
-the configured `card_details` mapping.
+provider context-overflow error. A successful assistant message with
+`stopReason = "length"` is incomplete: the Controller continues it once and
+compacts first when the threshold is reached. A second `length` result finishes
+the interaction, bounding recovery. Subsequent Model requests use the summary
+before retained recent messages; the complete Session tree remains available
+for navigation. Transcript snapshots omit the compacted prefix while preserving
+append order, so retained messages precede the compaction card and messages
+created after compaction follow it. The bundled View presents complete
+compaction summaries through the configured `card_details` mapping.
 
 The threshold is `context_window - reserve_tokens`, and recent retention uses
 `keep_recent_tokens`. Set `compaction = false` to disable Controller compaction

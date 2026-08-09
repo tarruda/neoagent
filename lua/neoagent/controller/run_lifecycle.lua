@@ -101,6 +101,11 @@ local function is_context_overflow(result)
   return false
 end
 
+local function is_length_limited(result)
+  return result and result.ok and result.message
+    and result.message.stopReason == "length"
+end
+
 local function default_interaction(options)
   return require("neoagent.chat").run(options.session, options.prompt, {
     model = options.model,
@@ -347,6 +352,7 @@ function M.new(opts)
       state.pending_events = {}
       state.last_result = nil
       local overflow_retried = false
+      local length_continued = false
       local stream_retries = 0
       local base = {
         session = state.session,
@@ -430,6 +436,24 @@ function M.new(opts)
             if compacted_result.ok then launch(true) else finish_interaction(done) end
           end)
           if compacted then return end
+        end
+        if not length_continued and can_continue and is_length_limited(done) then
+          length_continued = true
+          if needs_compaction() then
+            local compacted = start_compaction("threshold", nil, run_id,
+              function(compacted_result)
+                if compacted_result.ok then
+                  launch(true)
+                else
+                  finish_interaction(done)
+                end
+              end)
+            if compacted then return end
+            finish_interaction(done)
+            return
+          end
+          launch(true)
+          return
         end
         local retry_settings = config.retry
         local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0

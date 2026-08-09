@@ -238,9 +238,86 @@ describe("neoagent default controller", function()
       current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
     assert.matches("Continue the work", transcript)
+    local retained = assert(transcript:find("work work work", 1, true))
+    local compaction_card = assert(transcript:find("Compacted from 900 tokens", 1, true))
+    assert.is_true(retained < compaction_card)
     assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
     assert.not_matches("perform the large task", transcript)
     assert.are.equal("summary quota", current_view().context.provider_status)
+  end)
+
+  it("continues a length-limited turn after automatic compaction", function()
+    local truncated = fake_model.assistant({ {
+      type = "thinking", thinking = "Updating review status for SSE progress",
+    } }, "length")
+    truncated.message.usage.totalTokens = 900
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = truncated },
+      { result = fake_model.assistant({ {
+        type = "text", text = "## Goal\nContinue the interrupted work",
+      } }) },
+      { result = fake_model.assistant({ {
+        type = "text", text = "Finished after compaction",
+      } }) },
+    })
+    model.context_window = 1000
+    setup_model(model, {
+      tools = { {
+        name = "inspect",
+        description = "Inspect state",
+        input_schema = {
+          type = "object", properties = {}, additionalProperties = false,
+        },
+        execute = function()
+          return { content = { { type = "text", text = "inspected" } } }
+        end,
+      } },
+      compaction = {
+        auto = true, reserve_tokens = 200, keep_recent_tokens = 10,
+      },
+    })
+
+    local run = assert(neoagent.send("perform the large task"))
+    assert(vim.wait(2000, function()
+      return run:is_done() and is_idle() and #model.requests == 4
+    end))
+    local messages = neoagent.get_session():messages()
+    local length_messages = vim.tbl_filter(function(message)
+      return message.role == "assistant" and message.stopReason == "length"
+    end, messages)
+    assert.are.equal(1, #length_messages)
+    assert.are.equal("Finished after compaction",
+      messages[#messages].content[1].text)
+    local entries = neoagent.get_session():entries()
+    assert.are.equal("compaction", entries[#entries - 1].type)
+    assert.matches("context summarization assistant",
+      model.requests[3].system_prompt)
+    assert.are.equal(1, vim.tbl_count(vim.tbl_filter(function(message)
+      return message.role == "user"
+    end, messages)))
+  end)
+
+  it("bounds length continuation to one attempt", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "text", text = "partial one",
+      } }, "length") },
+      { result = fake_model.assistant({ {
+        type = "text", text = "partial two",
+      } }, "length") },
+    })
+    setup_model(model, { compaction = false })
+
+    local run = assert(neoagent.send("write a long answer"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and is_idle() and #model.requests == 2
+    end))
+    assert.is_true(snapshot().result.ok)
+    assert.are.equal("length", snapshot().result.message.stopReason)
+    assert.are.equal(3, #neoagent.get_session():messages())
   end)
 
   it("compacts an already-large resumed context before sending the next prompt", function()

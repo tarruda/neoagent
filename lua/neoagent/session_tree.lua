@@ -229,21 +229,45 @@ function M.entry_messages(entry)
   return {}
 end
 
-function M.context_entries(path)
-  local compaction_index
+local function latest_compaction(path)
+  local selected
   for index, entry in ipairs(path) do
-    if entry.type == "compaction" then compaction_index = index end
+    if entry.type == "compaction" then selected = index end
   end
-  if not compaction_index then return util.copy(path) end
-  local compaction = path[compaction_index]
-  local result = { util.copy(compaction) }
+  return selected
+end
+
+local function retained_before(path, compaction_index)
+  local result = {}
   local keeping = false
+  local first_kept = path[compaction_index].firstKeptEntryId
   for index = 1, compaction_index - 1 do
-    if path[index].id == compaction.firstKeptEntryId then keeping = true end
+    if path[index].id == first_kept then keeping = true end
     if keeping then result[#result + 1] = util.copy(path[index]) end
   end
-  for index = compaction_index + 1, #path do result[#result + 1] = util.copy(path[index]) end
   return result
+end
+
+local function compacted_entries(path, summary_first)
+  local compaction_index = latest_compaction(path)
+  if not compaction_index then return util.copy(path) end
+  local compaction = util.copy(path[compaction_index])
+  local result = {}
+  if summary_first then result[#result + 1] = compaction end
+  vim.list_extend(result, retained_before(path, compaction_index))
+  if not summary_first then result[#result + 1] = compaction end
+  for index = compaction_index + 1, #path do
+    result[#result + 1] = util.copy(path[index])
+  end
+  return result
+end
+
+function M.context_entries(path)
+  return compacted_entries(path, true)
+end
+
+function M.transcript_entries(path)
+  return compacted_entries(path, false)
 end
 
 function M.messages(entries, context_only)
