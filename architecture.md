@@ -151,10 +151,13 @@ Bundled tools resolve model-directed disk and subprocess work through optional
 `ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
 filesystem and `neoagent.process` runner. The host runner owns one process tree
 per call through POSIX process groups or Windows Job Objects and closes that
-tree on completion, timeout, or cancellation. A decorated executor can copy the
-context and replace either capability for one invocation. Shell output uses
-bounded memory, represents non-text bytes explicitly in tool results, and
-streams original overflow through the filesystem capability. Results that
+tree on completion, timeout, or cancellation. Retained process capture may
+carry a combined byte limit. `read_file` bounds source image bytes, decoded
+pixels, encoded payloads, and every ImageMagick invocation; conversion receives
+explicit time, memory, map, disk, pixel, and capture limits. A decorated
+executor can copy the context and replace either capability for one invocation.
+Shell output uses bounded memory, represents non-text bytes explicitly in tool
+results, and streams original overflow through the filesystem capability. Results that
 contain escape bytes include a bounded, valid UTF-8 display copy in details.
 The bundled View interprets SGR sequences from that copy while rendering shell
 cards. Its process runtime uses the configured default timeout unless the tool

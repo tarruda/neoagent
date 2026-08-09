@@ -392,6 +392,13 @@ describe("neoagent bundled tools", function()
       assert.are.equal("magick", call.command[1])
       assert.is_truthy(call.command[#call.command]:find(":-", 1, true))
       assert.is_truthy(call.opts.stdin)
+      assert.are.equal(30000, call.opts.timeout_ms)
+      assert.is_not_nil(call.opts.max_capture_bytes)
+      local command = table.concat(call.command, " ")
+      assert.matches("%-limit memory 128MiB", command)
+      assert.matches("%-limit map 256MiB", command)
+      assert.matches("%-limit disk 0", command)
+      assert.matches("%-limit area 40000000", command)
     end
   end)
 
@@ -502,6 +509,108 @@ describe("neoagent bundled tools", function()
     assert.matches("unavailable", result.content[1].text)
   end)
 
+  it("bounds image input and fallback payloads", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local png = "\137PNG\r\n\26\n" .. string.rep("x", 16)
+    assert(fs.write_all(root .. "/image.png", png, "w"))
+    local read = require("neoagent.tools.read_file")
+
+    local ok, err = pcall(execute,
+      read.new({ max_image_input_bytes = 12 }),
+      { path = "image.png" }, ctx(workspace))
+    assert.is_false(ok)
+    assert.matches("image input exceeds 12 bytes", tostring(err))
+
+    local short_png = "\137PNG\r\n\26\nraw"
+    assert(fs.write_all(root .. "/short.png", short_png, "w"))
+    ok, err = pcall(execute,
+      read.new({ max_image_input_bytes = 10 }),
+      { path = "short.png" }, ctx(workspace))
+    assert.is_false(ok)
+    assert.matches("image input exceeds 10 bytes", tostring(err))
+
+    local old_path = vim.env.PATH
+    vim.env.PATH = root
+    ok, err = pcall(execute,
+      read.new({ max_image_payload_bytes = 16 }),
+      { path = "image.png" }, ctx(workspace))
+    assert.is_false(ok)
+    assert.matches("image payload exceeds 16 bytes", tostring(err))
+
+    local magick = root .. "/magick"
+    assert(fs.write_all(magick, "placeholder\n", "w"))
+    assert(vim.uv.fs_chmod(magick, 493))
+    ok, err = pcall(execute,
+      read.new({ max_image_payload_bytes = 16 }),
+      { path = "image.png" }, ctx(workspace, nil, {
+        process = function(argv)
+          if argv[2] == "identify" then
+            return { code = 0, stdout = "10 10", stderr = "" }
+          end
+          return { code = 2, stdout = "", stderr = "failed" }
+        end,
+      }))
+    vim.env.PATH = old_path
+    assert.is_false(ok)
+    assert.matches("image payload exceeds 16 bytes", tostring(err))
+  end)
+
+  it("rejects excessive image dimensions and converted payloads", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local png = "\137PNG\r\n\26\nraw"
+    assert(fs.write_all(root .. "/image.png", png, "w"))
+    local read = require("neoagent.tools.read_file")
+    local magick = root .. "/magick"
+    assert(fs.write_all(magick, "placeholder\n", "w"))
+    assert(vim.uv.fs_chmod(magick, 493))
+    local old_path = vim.env.PATH
+    vim.env.PATH = root .. ":" .. old_path
+    local seen_options
+    local identify_output = "100 100"
+    local identify_code = 0
+    local capability = {
+      process = function(argv, opts)
+        seen_options = opts
+        if argv[2] == "identify" then
+          return {
+            code = identify_code,
+            signal = 0,
+            stdout = identify_output,
+            stderr = identify_code == 0 and "" or "identify failed",
+          }
+        end
+        return { code = 0, signal = 0, stdout = string.rep("x", 20), stderr = "" }
+      end,
+    }
+
+    local pixel_ok, pixel_err = pcall(execute,
+      read.new({ max_image_pixels = 9999 }),
+      { path = "image.png" }, ctx(workspace, nil, capability))
+    local payload_ok, payload_err = pcall(execute,
+      read.new({ max_image_payload_bytes = 8 }),
+      { path = "image.png" }, ctx(workspace, nil, capability))
+    identify_output = "invalid"
+    local inspect_ok, inspect_err = pcall(execute, read,
+      { path = "image.png" }, ctx(workspace, nil, capability))
+    identify_code = 2
+    local identify_ok, identify_err = pcall(execute, read,
+      { path = "image.png" }, ctx(workspace, nil, capability))
+    vim.env.PATH = old_path
+
+    assert.is_false(pixel_ok)
+    assert.matches("image dimensions exceed 9999 pixels", tostring(pixel_err))
+    assert.are.equal(30000, seen_options.timeout_ms)
+    assert.is_not_nil(seen_options.max_capture_bytes)
+    assert.is_false(payload_ok)
+    assert.matches("image payload exceeds 8 bytes", tostring(payload_err))
+    assert.is_false(inspect_ok)
+    assert.matches("could not inspect image dimensions", tostring(inspect_err))
+    assert.is_false(identify_ok)
+    assert.matches("identify failed", tostring(identify_err))
+  end)
+
   it("resizes images with ImageMagick and falls back on conversion failure", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
@@ -525,8 +634,12 @@ describe("neoagent bundled tools", function()
     assert.matches("Resized from 3000x1000 to 2000x667", result.content[1].text)
     assert.are.equal("converted" .. png, vim.base64.decode(result.content[2].data))
 
-    assert(fs.write_all(magick,
-      "#!" .. vim.o.shell .. "\nprintf failure >&2\nexit 2\n", "w"))
+    assert(fs.write_all(magick, table.concat({
+      "#!" .. vim.o.shell,
+      "if [ \"$1\" = identify ]; then printf '3000 1000'; exit 0; fi",
+      "printf failure >&2",
+      "exit 2",
+    }, "\n"), "w"))
     assert(vim.uv.fs_chmod(magick, 493))
     result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path

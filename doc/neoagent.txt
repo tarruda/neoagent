@@ -1158,12 +1158,14 @@ then invoke the next executor. The filesystem capability implements
 `create_temp`, `read`, `mkdirp`, and `write_all`.
 
 Process options support `cwd`, `env`, `clear_env`, `stdin`, `capture`,
-`timeout_ms`, `kill_grace_ms`, and `on_output`. The host runner executes argv
-with `vim.system`, captures ordered output unless `capture` is false, and owns
-the command's complete process tree. POSIX commands run in a dedicated process
-group; Windows commands use a kill-on-close Job Object. Completion closes the
-tree, cancellation and timeout escalate it from TERM to KILL, and the result
-contains `code`, `signal`, `stdout`, `stderr`, `output`, and `timed_out`.
+`max_capture_bytes`, `timeout_ms`, `kill_grace_ms`, and `on_output`. The host
+runner executes argv with `vim.system`, captures ordered output unless
+`capture` is false, and owns the command's complete process tree. A configured
+`max_capture_bytes` limit applies to retained stdout and stderr together.
+POSIX commands run in a dedicated process group; Windows commands use a
+kill-on-close Job Object. Completion closes the tree, cancellation and timeout
+escalate it from TERM to KILL, and the result contains `code`, `signal`,
+`stdout`, `stderr`, `output`, and `timed_out`.
 
 Bundled presets: >lua
 
@@ -1172,9 +1174,14 @@ Bundled presets: >lua
   require("neoagent.tools").update_plan() -- Codex-compatible plan tool
   require("neoagent.tools").all()        -- every bundled tool
 <
-File tools operate on disk, never loaded buffers.
-ImageMagick transformations stream image bytes through stdin and stdout and
-create no temporary files.
+File tools operate on disk, never loaded buffers. The default `read_file`
+accepts image inputs up to 20 MiB, 40 million decoded pixels, and a 4.5 MiB
+base64 payload. Its ImageMagick operations have a 30-second timeout, bounded
+capture, 128 MiB memory and 256 MiB map limits, and no disk cache. Low-level
+compositions may customize the three input limits through
+`read_file.new({ max_image_input_bytes = ..., max_image_pixels = ...,
+max_image_payload_bytes = ... })`. Transformations stream image bytes through
+stdin and stdout and create no temporary files.
 The shell tool retains a bounded output tail and streams overflow to a
 temporary log through `ctx.fs`. The returned path remains available to later
 sandboxed file reads. Shell updates and final results preserve valid UTF-8

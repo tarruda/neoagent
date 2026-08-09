@@ -62,6 +62,18 @@ describe("neoagent process runner", function()
     assert.are.equal("err", streams.stderr)
   end)
 
+  it("bounds retained process output", function()
+    local completed = complete(function()
+      return process.run({
+        "sh", "-c", "printf 12; printf 345 >&2",
+      }, {
+        max_capture_bytes = 4,
+      })
+    end)
+    assert.is_false(completed.ok)
+    assert.matches("exceeded 4 bytes", completed.error.message)
+  end)
+
   it("escalates timed-out TERM-resistant processes to KILL", function()
     local completed = complete(function()
       return process.run({

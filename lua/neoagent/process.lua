@@ -17,8 +17,15 @@ end
 
 function M.run(command, opts)
   opts = opts or {}
+  if opts.max_capture_bytes ~= nil then
+    assert(type(opts.max_capture_bytes) == "number"
+      and opts.max_capture_bytes > 0
+      and opts.max_capture_bytes % 1 == 0,
+    "max_capture_bytes must be a positive integer")
+  end
   local stdout, stderr, output = "", "", ""
   local capture = opts.capture ~= false
+  local captured_bytes = 0
   local timed_out = false
   local result = async.await(function(done)
     local process
@@ -28,6 +35,7 @@ function M.run(command, opts)
     local timer_closed = false
     local kill_timer_closed = false
     local accepting_output = true
+    local termination_requested = false
     local function close_timer()
       if timer and not timer_closed then
         timer_closed = true
@@ -47,6 +55,7 @@ function M.run(command, opts)
       if not signalled and process then pcall(process.kill, process, value) end
     end
     local function terminate()
+      termination_requested = true
       if not process then return end
       signal(15)
       if opts.kill_grace_ms == 0 then
@@ -60,6 +69,21 @@ function M.run(command, opts)
           signal(9)
         end)
       end
+    end
+    local function retain(data, is_stderr)
+      if not capture then return true end
+      local next_bytes = captured_bytes + #data
+      if opts.max_capture_bytes and next_bytes > opts.max_capture_bytes then
+        accepting_output = false
+        done.reject(util.error("tool", "Process output exceeded "
+          .. opts.max_capture_bytes .. " bytes"))
+        terminate()
+        return nil
+      end
+      captured_bytes = next_bytes
+      if is_stderr then stderr = stderr .. data else stdout = stdout .. data end
+      output = output .. data
+      return true
     end
     local tree_err
     tree, tree_err = process_tree.new()
@@ -76,13 +100,11 @@ function M.run(command, opts)
       detach = process_tree.detach,
       stdout = function(err, data)
         if err then
+          accepting_output = false
           done.reject(util.error("tool", "Failed reading process stdout", err))
           terminate()
         elseif data and accepting_output then
-          if capture then
-            stdout = stdout .. data
-            output = output .. data
-          end
+          if not retain(data, false) then return end
           if opts.on_output then
             opts.on_output(data, false, stdout, stderr, output)
           end
@@ -90,13 +112,11 @@ function M.run(command, opts)
       end,
       stderr = function(err, data)
         if err then
+          accepting_output = false
           done.reject(util.error("tool", "Failed reading process stderr", err))
           terminate()
         elseif data and accepting_output then
-          if capture then
-            stderr = stderr .. data
-            output = output .. data
-          end
+          if not retain(data, true) then return end
           if opts.on_output then
             opts.on_output(data, true, stdout, stderr, output)
           end
@@ -128,6 +148,7 @@ function M.run(command, opts)
       done.reject(util.error("tool", "Failed to supervise process tree", attach_err))
       return
     end
+    if termination_requested then terminate() end
     if opts.timeout_ms then
       timer = vim.uv.new_timer()
       timer:start(opts.timeout_ms, 0, function()
