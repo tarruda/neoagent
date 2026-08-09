@@ -284,6 +284,73 @@ describe("neoagent provider authentication", function()
       wait(invalid_during_refresh:resolve("plan")).error.message)
   end)
 
+  it("bounds credential lock contention and reports filesystem errors", function()
+    local directory = vim.fn.tempname()
+    local path = directory .. "/auth.json"
+    local lock_path = path .. ".lock"
+    assert(require("neoagent.fs").mkdirp(directory))
+    assert(require("neoagent.fs").write_all(lock_path, "", "wx", 384))
+    local store = store_module.new(path, {
+      lock_timeout_ms = 30,
+      lock_poll_ms = 5,
+      lock_stale_ms = 120000,
+    })
+    local timed_out = wait(store:modify("plan", function()
+      return { type = "api_key", key = "unexpected" }
+    end))
+    assert.is_false(timed_out.ok)
+    assert.matches("Timed out acquiring credential lock", timed_out.error.message)
+
+    local original_open = vim.uv.fs_open
+    vim.uv.fs_open = function(candidate, ...)
+      if candidate == lock_path then return nil, "EACCES: permission denied" end
+      return original_open(candidate, ...)
+    end
+    local denied = wait(store:modify("plan", function()
+      return { type = "api_key", key = "unexpected" }
+    end))
+    vim.uv.fs_open = original_open
+    assert.is_false(denied.ok)
+    assert.matches("Failed to acquire credential lock", denied.error.message)
+    assert.matches("EACCES", denied.error.detail)
+    vim.fn.delete(directory, "rf")
+  end)
+
+  it("renews active credential locks during long mutations", function()
+    local directory = vim.fn.tempname()
+    local path = directory .. "/auth.json"
+    local lock_path = path .. ".lock"
+    local store = store_module.new(path, {
+      lock_timeout_ms = 500,
+      lock_poll_ms = 5,
+      lock_stale_ms = 50,
+    })
+    assert(store:write("count", { value = 0 }))
+    local first = store:modify("count", function(current)
+      async.await(function(done)
+        local timer = vim.defer_fn(function() done.resolve(true) end, 100)
+        return function() pcall(vim.fn.timer_stop, timer) end
+      end)
+      current.value = current.value + 1
+      return current
+    end)
+    assert(vim.wait(100, function() return vim.uv.fs_stat(lock_path) ~= nil end, 5))
+    local old = os.time() - 121
+    assert(vim.uv.fs_utime(lock_path, old, old))
+    assert(vim.wait(100, function()
+      local stat = vim.uv.fs_stat(lock_path)
+      return stat and stat.mtime.sec > old
+    end, 5))
+    local second = store:modify("count", function(current)
+      current.value = current.value + 1
+      return current
+    end)
+    assert.is_true(wait(first).ok)
+    assert.is_true(wait(second).ok)
+    assert.are.equal(2, store:read("count").value)
+    vim.fn.delete(directory, "rf")
+  end)
+
   it("stores credentials only when written and uses restrictive modes", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/nested/auth.json"

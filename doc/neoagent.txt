@@ -86,6 +86,11 @@ authenticated providers.
 Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
 credentials take precedence over environment variables. `:NeoagentLogout`
 removes a stored credential and restores any matching environment source.
+Credential mutations use a lock file with a 30-second acquisition timeout and
+two-minute stale recovery. Active mutations refresh the lock timestamp. Lock
+permission and filesystem failures return immediately. Low-level compositions
+may customize `lock_timeout_ms`, `lock_poll_ms`, and `lock_stale_ms` through
+`require("neoagent.auth.store").new(path, opts)`.
 
 Codex provider diagnostics default to
 `stdpath("state") .. "/neoagent/codex.log"`. Configure or disable them with: >lua
