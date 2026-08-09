@@ -1159,9 +1159,11 @@ then invoke the next executor. The filesystem capability implements
 
 Process options support `cwd`, `env`, `clear_env`, `stdin`, `capture`,
 `timeout_ms`, `kill_grace_ms`, and `on_output`. The host runner executes argv
-with `vim.system`, captures ordered output unless `capture` is false, escalates
-timed-out or cancelled processes from TERM to KILL, and returns `code`,
-`signal`, `stdout`, `stderr`, `output`, and `timed_out`.
+with `vim.system`, captures ordered output unless `capture` is false, and owns
+the command's complete process tree. POSIX commands run in a dedicated process
+group; Windows commands use a kill-on-close Job Object. Completion closes the
+tree, cancellation and timeout escalate it from TERM to KILL, and the result
+contains `code`, `signal`, `stdout`, `stderr`, `output`, and `timed_out`.
 
 Bundled presets: >lua
 

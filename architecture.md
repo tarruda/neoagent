@@ -148,7 +148,9 @@ current tool call.
 
 Bundled tools resolve model-directed disk and subprocess work through optional
 `ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
-filesystem and `neoagent.process` runner. A decorated executor can copy the
+filesystem and `neoagent.process` runner. The host runner owns one process tree
+per call through POSIX process groups or Windows Job Objects and closes that
+tree on completion, timeout, or cancellation. A decorated executor can copy the
 context and replace either capability for one invocation. Shell output uses
 bounded memory, represents non-text bytes explicitly in tool results, and
 streams original overflow through the filesystem capability. Results that

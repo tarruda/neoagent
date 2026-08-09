@@ -1,5 +1,7 @@
 local async = require("neoagent.async")
 local util = require("neoagent.util")
+local process_tree = require(jit.os == "Windows"
+  and "neoagent.process.windows" or "neoagent.process.posix")
 
 local M = {}
 
@@ -20,6 +22,7 @@ function M.run(command, opts)
   local timed_out = false
   local result = async.await(function(done)
     local process
+    local tree
     local timer
     local kill_timer
     local timer_closed = false
@@ -39,30 +42,42 @@ function M.run(command, opts)
         kill_timer:close()
       end
     end
+    local function signal(value)
+      local signalled = tree and tree:terminate(value)
+      if not signalled and process then pcall(process.kill, process, value) end
+    end
     local function terminate()
       if not process then return end
-      pcall(process.kill, process, 15)
+      signal(15)
       if opts.kill_grace_ms == 0 then
-        pcall(process.kill, process, 9)
+        signal(9)
         return
       end
       if not kill_timer then
         kill_timer = vim.uv.new_timer()
         kill_timer:start(opts.kill_grace_ms or 1000, 0, function()
           close_kill_timer()
-          if process then pcall(process.kill, process, 9) end
+          signal(9)
         end)
       end
     end
-    process = vim.system(command, {
+    local tree_err
+    tree, tree_err = process_tree.new()
+    if not tree then
+      done.reject(util.error("tool", "Failed to create process supervisor", tree_err))
+      return
+    end
+    local started, started_process = pcall(vim.system, command, {
       cwd = opts.cwd,
       env = spawn_environment(opts.env, opts.clear_env),
       clear_env = opts.clear_env,
       stdin = opts.stdin,
       text = false,
+      detach = process_tree.detach,
       stdout = function(err, data)
         if err then
           done.reject(util.error("tool", "Failed reading process stdout", err))
+          terminate()
         elseif data and accepting_output then
           if capture then
             stdout = stdout .. data
@@ -76,6 +91,7 @@ function M.run(command, opts)
       stderr = function(err, data)
         if err then
           done.reject(util.error("tool", "Failed reading process stderr", err))
+          terminate()
         elseif data and accepting_output then
           if capture then
             stderr = stderr .. data
@@ -89,6 +105,7 @@ function M.run(command, opts)
     }, function(completed)
       close_timer()
       close_kill_timer()
+      if tree then tree:close(true) end
       done.resolve({
         code = completed.signal ~= 0 and 128 + completed.signal or completed.code,
         signal = completed.signal,
@@ -98,6 +115,19 @@ function M.run(command, opts)
         timed_out = timed_out,
       })
     end)
+    if not started then
+      tree:close(true)
+      done.reject(util.error("tool", "Failed to start process", started_process))
+      return
+    end
+    process = started_process
+    local attached, attach_err = tree:attach(process.pid)
+    if not attached then
+      pcall(process.kill, process, 9)
+      tree:close(true)
+      done.reject(util.error("tool", "Failed to supervise process tree", attach_err))
+      return
+    end
     if opts.timeout_ms then
       timer = vim.uv.new_timer()
       timer:start(opts.timeout_ms, 0, function()
