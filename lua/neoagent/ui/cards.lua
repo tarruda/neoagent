@@ -169,10 +169,6 @@ local function card_target(view, direction, count)
   return target
 end
 
-function M:_has_card(direction)
-  return card_target(self, direction, 1) ~= nil
-end
-
 function M:_move_card(direction, count)
   local target = card_target(self, direction, count)
   if not target then return false end

@@ -905,8 +905,7 @@ contains text, and the transcript, dialog, and card-details buffers remain
 in Normal mode. Set `ui.scroll_on_submit`,
 `ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
 automatic scrolling. The input footer lists the highest-priority configured
-mappings for the focused surface and mode that fit its current width. Card
-navigation labels identify whether the next destination is a card or input.
+mappings for the focused surface and mode that fit its current width.
 
 User and assistant text renders Markdown in borderless cards whose long
 lines soft-wrap at word boundaries. Assistant cards show the complete
