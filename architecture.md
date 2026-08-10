@@ -480,8 +480,8 @@ skill-discovery metadata. The Controller publishes updates and feeds complete
 active-conversation copies to optional tool state hooks after activation,
 message changes, resume, forks, and branch changes. Model context projects the
 latest compaction checkpoint before its retained suffix. Transcript snapshots
-omit the compacted prefix while preserving active-path chronology: retained
-messages precede the compaction card, and later messages follow it. A replay
+use the same projection, placing the compaction card before retained and later
+messages while omitting the compacted prefix. A replay
 removes a failed partial assistant message from the active branch before
 continuing the interaction. A successful assistant `length` stop continues
 once, compacting first when the context threshold is reached. Completion
