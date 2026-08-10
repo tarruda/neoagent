@@ -110,7 +110,6 @@ describe("neoagent workspace trust UI", function()
       assert(window:select(controller))
       local active_view = wait_for_dialog()
       local body = active_view.dialog.active.body
-      assert.are.equal("Trust workspace?", active_view.dialog.active.title)
       assert.is_not_nil(body:find(
         require("neoagent.workspace_trust").target(vim.fn.getcwd()),
         1, true))

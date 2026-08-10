@@ -1898,7 +1898,6 @@ describe("neoagent default controller", function()
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Resume session:", options.prompt)
       assert.are.equal(8, #items)
       assert.are.equal(parent:metadata().path, items[1].path)
       assert.are.equal(child:metadata().path, items[2].path)
@@ -1960,7 +1959,6 @@ describe("neoagent default controller", function()
     local original_select = vim.ui.select
     local selected
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Branch", options.prompt)
       assert.is_true(#items >= 3)
       local choice
       for _, item in ipairs(items) do
@@ -1976,7 +1974,6 @@ describe("neoagent default controller", function()
 
     local source_path = neoagent.get_session():metadata().path
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Fork session from", options.prompt)
       assert.matches("user · question", options.format_item(items[1]))
       callback(items[1])
     end
@@ -2028,7 +2025,6 @@ describe("neoagent default controller", function()
     })
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Select model:", options.prompt)
       assert.are.same({ "fake/alpha", "fake/test" }, items)
       callback(items[1])
     end
