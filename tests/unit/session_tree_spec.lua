@@ -55,6 +55,41 @@ describe("neoagent.session_tree", function()
     validated, err = tree.validate_entries({ message, leaf })
     assert.is_nil(validated)
     assert.matches("leaf target", err)
+
+    local label = base("label", { id = "label", parentId = message.id, targetId = "missing", label = "bad" })
+    validated, err = tree.validate_entries({ message, label })
+    assert.is_nil(validated)
+    assert.matches("label target", err)
+
+    local summary = base("branch_summary", {
+      id = "summary", parentId = message.id, fromId = "missing", summary = "bad",
+    })
+    validated, err = tree.validate_entries({ message, summary })
+    assert.is_nil(validated)
+    assert.matches("branch summary", err)
+
+    local compaction = base("compaction", {
+      id = "compaction", parentId = message.id,
+      firstKeptEntryId = "missing", summary = "bad", tokensBefore = 1,
+    })
+    validated, err = tree.validate_entries({ message, compaction })
+    assert.is_nil(validated)
+    assert.matches("first kept", err)
+
+    local left = base("message", {
+      id = "left", parentId = message.id,
+      message = { role = "assistant", content = {} },
+    })
+    local right = base("message", {
+      id = "right", parentId = message.id,
+      message = { role = "assistant", content = {} },
+    })
+    compaction.parentId = right.id
+    compaction.firstKeptEntryId = left.id
+    validated, err = tree.validate_entries({ message, left, right, compaction })
+    assert.is_nil(validated)
+    assert.matches("active path", err)
+
     local path
     path, err = tree.path({ message }, "missing")
     assert.is_nil(path)
@@ -80,6 +115,33 @@ describe("neoagent.session_tree", function()
     local missing, err = tree.indexed_path(validated.by_id, "missing")
     assert.is_nil(missing)
     assert.matches("entry not found", err)
+  end)
+
+  it("orders compacted model context and transcripts independently", function()
+    local prefix = base("message", {
+      id = "prefix", message = { role = "user", content = "old" },
+    })
+    local kept = base("message", {
+      id = "kept", parentId = prefix.id,
+      message = { role = "assistant", content = {} },
+    })
+    local compaction = base("compaction", {
+      id = "compaction", parentId = kept.id, firstKeptEntryId = kept.id,
+      summary = "summary", tokensBefore = 100,
+    })
+    local after = base("message", {
+      id = "after", parentId = compaction.id,
+      message = { role = "assistant", content = {} },
+    })
+    local path = { prefix, kept, compaction, after }
+    local ids = function(entries)
+      return vim.tbl_map(function(entry) return entry.id end, entries)
+    end
+
+    assert.are.same({ "compaction", "kept", "after" },
+      ids(tree.context_entries(path)))
+    assert.are.same({ "kept", "compaction", "after" },
+      ids(tree.transcript_entries(path)))
   end)
 
   it("projects Pi execution and summary messages into LLM context", function()

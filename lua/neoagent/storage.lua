@@ -207,14 +207,9 @@ function Store:_append(entry_type, values, persist)
   local encoded_entry, encode_err = encode_session_value(entry, entry_type)
   if not encoded_entry then return nil, encode_err end
 
-  if entry.type == "leaf" and not is_null(entry.targetId) and not self._by_id[entry.targetId] then
-    return nil, storage_error("Invalid leaf", "leaf target does not exist")
-  end
-  if entry.type == "label" and not self._by_id[entry.targetId] then
-    return nil, storage_error("Invalid label", "label target does not exist")
-  end
-  if entry.type == "compaction" and not self._by_id[entry.firstKeptEntryId] then
-    return nil, storage_error("Invalid compaction", "first kept entry does not exist")
+  local references, reference_err = tree.validate_references(entry, self._by_id)
+  if not references then
+    return nil, storage_error("Invalid " .. entry_type, reference_err)
   end
 
   if not self._persisted and not persist then

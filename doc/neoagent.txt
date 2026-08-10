@@ -86,6 +86,11 @@ authenticated providers.
 Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
 credentials take precedence over environment variables. `:NeoagentLogout`
 removes a stored credential and restores any matching environment source.
+Credential mutations use a lock file with a 30-second acquisition timeout and
+two-minute stale recovery. Active mutations refresh the lock timestamp. Lock
+permission and filesystem failures return immediately. Low-level compositions
+may customize `lock_timeout_ms`, `lock_poll_ms`, and `lock_stale_ms` through
+`require("neoagent.auth.store").new(path, opts)`.
 
 Codex provider diagnostics default to
 `stdpath("state") .. "/neoagent/codex.log"`. Configure or disable them with: >lua
@@ -698,7 +703,8 @@ normal interrupt action. Failed partial assistant output is removed from the
 active branch before replay, while the Session retains it as inactive history.
 HTTP authentication, invalid-request, quota, billing, and context-window
 failures fail immediately; context-window failures follow the compaction
-recovery path.
+recovery path. A completion-transition failure returns the Controller to idle
+and publishes a Controller error containing the transition failure message.
 
 The final model registry composes the defaults with `providers`. Provider and
 model tables recursively override matching defaults. Use `false` to remove a
@@ -1158,10 +1164,14 @@ then invoke the next executor. The filesystem capability implements
 `create_temp`, `read`, `mkdirp`, and `write_all`.
 
 Process options support `cwd`, `env`, `clear_env`, `stdin`, `capture`,
-`timeout_ms`, `kill_grace_ms`, and `on_output`. The host runner executes argv
-with `vim.system`, captures ordered output unless `capture` is false, escalates
-timed-out or cancelled processes from TERM to KILL, and returns `code`,
-`signal`, `stdout`, `stderr`, `output`, and `timed_out`.
+`max_capture_bytes`, `timeout_ms`, `kill_grace_ms`, and `on_output`. The host
+runner executes argv with `vim.system`, captures ordered output unless
+`capture` is false, and owns the command's complete process tree. A configured
+`max_capture_bytes` limit applies to retained stdout and stderr together.
+POSIX commands run in a dedicated process group; Windows commands use a
+kill-on-close Job Object. Completion closes the tree, cancellation and timeout
+escalate it from TERM to KILL, and the result contains `code`, `signal`,
+`stdout`, `stderr`, `output`, and `timed_out`.
 
 Bundled presets: >lua
 
@@ -1170,9 +1180,14 @@ Bundled presets: >lua
   require("neoagent.tools").update_plan() -- Codex-compatible plan tool
   require("neoagent.tools").all()        -- every bundled tool
 <
-File tools operate on disk, never loaded buffers.
-ImageMagick transformations stream image bytes through stdin and stdout and
-create no temporary files.
+File tools operate on disk, never loaded buffers. The default `read_file`
+accepts image inputs up to 20 MiB, 40 million decoded pixels, and a 4.5 MiB
+base64 payload. Its ImageMagick operations have a 30-second timeout, bounded
+capture, 128 MiB memory and 256 MiB map limits, and no disk cache. Low-level
+compositions may customize the three input limits through
+`read_file.new({ max_image_input_bytes = ..., max_image_pixels = ...,
+max_image_payload_bytes = ... })`. Transformations stream image bytes through
+stdin and stdout and create no temporary files.
 The shell tool retains a bounded output tail and streams overflow to a
 temporary log through `ctx.fs`. The returned path remains available to later
 sandboxed file reads. Shell updates and final results preserve valid UTF-8
@@ -1216,9 +1231,13 @@ Tree-aware Session methods are: >lua
   session:name()
 <
 `move_to()` changes the active leaf; the next append creates a branch child.
-The optional summary creates a Pi `branch_summary` entry. Store `append`,
-`append_entry`, and `set_leaf` methods may return a fourth projection-update
-result after the usual success, error, and entry values: >lua
+The optional summary creates a Pi `branch_summary` entry. Complete-tree
+validation requires parents and every leaf, label, branch-summary, and
+compaction reference to precede its entry; `branch_summary.fromId = "root"` is
+the root sentinel. A compaction's first retained entry must also belong to its
+active parent path. Store `append`, `append_entry`, and `set_leaf` methods may
+return a fourth projection-update result after the usual success, error, and
+entry values: >lua
 
   { type = "append", messages = { ... } }
   { type = "replace", messages = { ... } }
@@ -1247,10 +1266,15 @@ order.
 CONTEXT COMPACTION                                  *neoagent-compaction*
 
 Automatic compaction runs at the configured context threshold and after a
-provider context-overflow error. Subsequent Model requests use the summary and
-retained recent messages; the complete Session tree remains available for
-navigation. The bundled View presents complete compaction summaries through
-the configured `card_details` mapping.
+provider context-overflow error. A successful assistant message with
+`stopReason = "length"` is incomplete: the Controller continues it once and
+compacts first when the threshold is reached. A second `length` result finishes
+the interaction, bounding recovery. Subsequent Model requests use the summary
+before retained recent messages; the complete Session tree remains available
+for navigation. Transcript snapshots omit the compacted prefix while preserving
+append order, so retained messages precede the compaction card and messages
+created after compaction follow it. The bundled View presents complete
+compaction summaries through the configured `card_details` mapping.
 
 The threshold is `context_window - reserve_tokens`, and recent retention uses
 `keep_recent_tokens`. Set `compaction = false` to disable Controller compaction

@@ -109,6 +109,33 @@ function M.validate_entry(entry)
   return validators[entry.type](entry)
 end
 
+function M.validate_references(entry, by_id)
+  if entry.type == "leaf" and not is_null(entry.targetId)
+      and not by_id[entry.targetId] then
+    return nil, "leaf target does not exist"
+  end
+  if entry.type == "label" and not by_id[entry.targetId] then
+    return nil, "label target does not exist"
+  end
+  if entry.type == "branch_summary" and entry.fromId ~= "root"
+      and not by_id[entry.fromId] then
+    return nil, "branch summary fromId does not exist"
+  end
+  if entry.type == "compaction" then
+    if not by_id[entry.firstKeptEntryId] then
+      return nil, "compaction first kept entry does not exist"
+    end
+    local current = is_null(entry.parentId) and nil or by_id[entry.parentId]
+    while current and current.id ~= entry.firstKeptEntryId do
+      current = is_null(current.parentId) and nil or by_id[current.parentId]
+    end
+    if not current then
+      return nil, "compaction first kept entry is not on the active path"
+    end
+  end
+  return true
+end
+
 function M.validate_entries(entries)
   local by_id = {}
   local leaf_id
@@ -119,10 +146,9 @@ function M.validate_entries(entries)
     if not is_null(entry.parentId) and not by_id[entry.parentId] then
       return nil, "parent entry does not precede child", index
     end
+    local references, reference_err = M.validate_references(entry, by_id)
+    if not references then return nil, reference_err, index end
     if entry.type == "leaf" then
-      if not is_null(entry.targetId) and not by_id[entry.targetId] then
-        return nil, "leaf target does not exist", index
-      end
       leaf_id = is_null(entry.targetId) and nil or entry.targetId
     else
       leaf_id = entry.id
@@ -203,21 +229,45 @@ function M.entry_messages(entry)
   return {}
 end
 
-function M.context_entries(path)
-  local compaction_index
+local function latest_compaction(path)
+  local selected
   for index, entry in ipairs(path) do
-    if entry.type == "compaction" then compaction_index = index end
+    if entry.type == "compaction" then selected = index end
   end
-  if not compaction_index then return util.copy(path) end
-  local compaction = path[compaction_index]
-  local result = { util.copy(compaction) }
+  return selected
+end
+
+local function retained_before(path, compaction_index)
+  local result = {}
   local keeping = false
+  local first_kept = path[compaction_index].firstKeptEntryId
   for index = 1, compaction_index - 1 do
-    if path[index].id == compaction.firstKeptEntryId then keeping = true end
+    if path[index].id == first_kept then keeping = true end
     if keeping then result[#result + 1] = util.copy(path[index]) end
   end
-  for index = compaction_index + 1, #path do result[#result + 1] = util.copy(path[index]) end
   return result
+end
+
+local function compacted_entries(path, summary_first)
+  local compaction_index = latest_compaction(path)
+  if not compaction_index then return util.copy(path) end
+  local compaction = util.copy(path[compaction_index])
+  local result = {}
+  if summary_first then result[#result + 1] = compaction end
+  vim.list_extend(result, retained_before(path, compaction_index))
+  if not summary_first then result[#result + 1] = compaction end
+  for index = compaction_index + 1, #path do
+    result[#result + 1] = util.copy(path[index])
+  end
+  return result
+end
+
+function M.context_entries(path)
+  return compacted_entries(path, true)
+end
+
+function M.transcript_entries(path)
+  return compacted_entries(path, false)
 end
 
 function M.messages(entries, context_only)

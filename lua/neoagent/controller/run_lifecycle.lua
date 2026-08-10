@@ -101,6 +101,11 @@ local function is_context_overflow(result)
   return false
 end
 
+local function is_length_limited(result)
+  return result and result.ok and result.message
+    and result.message.stopReason == "length"
+end
+
 local function default_interaction(options)
   return require("neoagent.chat").run(options.session, options.prompt, {
     model = options.model,
@@ -311,6 +316,16 @@ function M.new(opts)
     end)
   end
 
+  local function completion_failure(err, original)
+    local cause = util.normalize_error(err, "controller")
+    return {
+      ok = false,
+      error = util.error("controller", "Controller completion failed", cause.message),
+      new_messages = original and util.copy(original.new_messages) or nil,
+      message = original and util.copy(original.message) or nil,
+    }
+  end
+
   local function finish_interaction(done)
     state.run = nil
     state.status = "idle"
@@ -337,6 +352,7 @@ function M.new(opts)
       state.pending_events = {}
       state.last_result = nil
       local overflow_retried = false
+      local length_continued = false
       local stream_retries = 0
       local base = {
         session = state.session,
@@ -411,8 +427,7 @@ function M.new(opts)
         end
       end
 
-      local function on_done(done)
-        if run_id ~= state.run_id then return end
+      local function transition_done(done)
         local can_continue = config.continuation ~= nil or config.interaction == nil
         if not overflow_retried and can_continue and is_context_overflow(done) then
           overflow_retried = true
@@ -421,6 +436,24 @@ function M.new(opts)
             if compacted_result.ok then launch(true) else finish_interaction(done) end
           end)
           if compacted then return end
+        end
+        if not length_continued and can_continue and is_length_limited(done) then
+          length_continued = true
+          if needs_compaction() then
+            local compacted = start_compaction("threshold", nil, run_id,
+              function(compacted_result)
+                if compacted_result.ok then
+                  launch(true)
+                else
+                  finish_interaction(done)
+                end
+              end)
+            if compacted then return end
+            finish_interaction(done)
+            return
+          end
+          launch(true)
+          return
         end
         local retry_settings = config.retry
         local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0
@@ -451,7 +484,10 @@ function M.new(opts)
               end
               local launched, launch_err = pcall(launch, true)
               if not launched then
-                finish_interaction({ ok = false, error = util.normalize_error(launch_err, "controller") })
+                finish_interaction({
+                  ok = false,
+                  error = util.normalize_error(launch_err, "controller"),
+                })
               end
             end,
             error_kind = "controller",
@@ -466,6 +502,14 @@ function M.new(opts)
           if compacted then return end
         end
         finish_interaction(done)
+      end
+
+      local function on_done(done)
+        if run_id ~= state.run_id then return end
+        local transitioned, transition_err = pcall(transition_done, done)
+        if not transitioned then
+          finish_interaction(completion_failure(transition_err, done))
+        end
       end
 
       launch = function(continuing)

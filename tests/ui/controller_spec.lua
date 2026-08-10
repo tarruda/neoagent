@@ -238,9 +238,86 @@ describe("neoagent default controller", function()
       current_view().transcript_buf, 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
     assert.matches("Continue the work", transcript)
+    local retained = assert(transcript:find("work work work", 1, true))
+    local compaction_card = assert(transcript:find("Compacted from 900 tokens", 1, true))
+    assert.is_true(retained < compaction_card)
     assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
     assert.not_matches("perform the large task", transcript)
     assert.are.equal("summary quota", current_view().context.provider_status)
+  end)
+
+  it("continues a length-limited turn after automatic compaction", function()
+    local truncated = fake_model.assistant({ {
+      type = "thinking", thinking = "Updating review status for SSE progress",
+    } }, "length")
+    truncated.message.usage.totalTokens = 900
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "inspect-1", name = "inspect", arguments = {},
+      } }, "toolUse") },
+      { result = truncated },
+      { result = fake_model.assistant({ {
+        type = "text", text = "## Goal\nContinue the interrupted work",
+      } }) },
+      { result = fake_model.assistant({ {
+        type = "text", text = "Finished after compaction",
+      } }) },
+    })
+    model.context_window = 1000
+    setup_model(model, {
+      tools = { {
+        name = "inspect",
+        description = "Inspect state",
+        input_schema = {
+          type = "object", properties = {}, additionalProperties = false,
+        },
+        execute = function()
+          return { content = { { type = "text", text = "inspected" } } }
+        end,
+      } },
+      compaction = {
+        auto = true, reserve_tokens = 200, keep_recent_tokens = 10,
+      },
+    })
+
+    local run = assert(neoagent.send("perform the large task"))
+    assert(vim.wait(2000, function()
+      return run:is_done() and is_idle() and #model.requests == 4
+    end))
+    local messages = neoagent.get_session():messages()
+    local length_messages = vim.tbl_filter(function(message)
+      return message.role == "assistant" and message.stopReason == "length"
+    end, messages)
+    assert.are.equal(1, #length_messages)
+    assert.are.equal("Finished after compaction",
+      messages[#messages].content[1].text)
+    local entries = neoagent.get_session():entries()
+    assert.are.equal("compaction", entries[#entries - 1].type)
+    assert.matches("context summarization assistant",
+      model.requests[3].system_prompt)
+    assert.are.equal(1, vim.tbl_count(vim.tbl_filter(function(message)
+      return message.role == "user"
+    end, messages)))
+  end)
+
+  it("bounds length continuation to one attempt", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "text", text = "partial one",
+      } }, "length") },
+      { result = fake_model.assistant({ {
+        type = "text", text = "partial two",
+      } }, "length") },
+    })
+    setup_model(model, { compaction = false })
+
+    local run = assert(neoagent.send("write a long answer"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and is_idle() and #model.requests == 2
+    end))
+    assert.is_true(snapshot().result.ok)
+    assert.are.equal("length", snapshot().result.message.stopReason)
+    assert.are.equal(3, #neoagent.get_session():messages())
   end)
 
   it("compacts an already-large resumed context before sending the next prompt", function()
@@ -313,6 +390,49 @@ describe("neoagent default controller", function()
     assert.are.equal("compaction", neoagent.get_session():entries()[#neoagent.get_session():entries() - 1].type)
   end)
 
+  it("cleans up when overflow recovery cannot reset the failed branch", function()
+    local overflow = fake_model.assistant({ {
+      type = "thinking", thinking = "partial overflow",
+    } }, "error")
+    overflow.ok = false
+    overflow.error = {
+      kind = "model",
+      message = "request failed",
+      detail = { message = "the request exceeds the available context size" },
+    }
+    local model = fake_model.new({
+      { result = overflow },
+      { result = fake_model.assistant({ { type = "text", text = "next answer" } }) },
+    })
+    model.context_window = 100
+    setup_model(model, {
+      compaction = { auto = false, reserve_tokens = 20, keep_recent_tokens = 10 },
+    })
+    local session = assert(neoagent.new_session())
+    assert(session:append({ role = "user", content = string.rep("old ", 30) }))
+    assert(session:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      stopReason = "stop",
+    }))
+    session.move_to = function()
+      return nil, require("neoagent.util").error("storage", "leaf unavailable")
+    end
+
+    local run = assert(neoagent.send("overflow"))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+    local result = snapshot().result
+    assert.is_false(result.ok)
+    assert.are.equal("controller", result.error.kind)
+    assert.matches("completion", result.error.message)
+    assert.are.equal("leaf unavailable", result.error.detail)
+
+    local next_run = assert(neoagent.send("try a new turn"))
+    assert(vim.wait(1000, function() return next_run:is_done() and is_idle() end))
+    assert.are.equal("next answer",
+      neoagent.get_session():messages()[#neoagent.get_session():messages()].content[1].text)
+  end)
+
   it("replays retryable partial turns without retaining the failed branch", function()
     local failed = fake_model.assistant({ { type = "thinking", thinking = "partial" } }, "error")
     failed.ok = false
@@ -340,6 +460,40 @@ describe("neoagent default controller", function()
     assert.are.equal("recovered", messages[2].content[1].text)
     assert.is_true(snapshot().result.ok)
     assert.is_false(snapshot().context.provider_status)
+  end)
+
+  it("cleans up when retry replay cannot reset the failed branch", function()
+    local failed = fake_model.assistant({ {
+      type = "thinking", thinking = "partial retry",
+    } }, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "upstream disconnected",
+      retryable = true,
+      retry_after_ms = 1,
+    }
+    local model = fake_model.new({
+      { result = failed },
+      { result = fake_model.assistant({ { type = "text", text = "next answer" } }) },
+    })
+    setup_model(model)
+    local session = assert(neoagent.new_session())
+    session.move_to = function()
+      return nil, require("neoagent.util").error("storage", "journal unavailable")
+    end
+
+    local run = assert(neoagent.send("retry this"))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+    local result = snapshot().result
+    assert.is_false(result.ok)
+    assert.are.equal("controller", result.error.kind)
+    assert.are.equal("journal unavailable", result.error.detail)
+
+    local next_run = assert(neoagent.send("try a new turn"))
+    assert(vim.wait(1000, function() return next_run:is_done() and is_idle() end))
+    assert.are.equal("next answer",
+      neoagent.get_session():messages()[#neoagent.get_session():messages()].content[1].text)
   end)
 
   it("retries interrupted transports without provider-specific error metadata", function()

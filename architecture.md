@@ -40,7 +40,8 @@ Controllers, and UI:
   abstraction.
 - `lua/neoagent/transport/` provides curl transport and SSE parsing. Curl
   executes one HTTP exchange and returns response status and headers on both
-  success and failure; failures also retain bounded process diagnostics.
+  success and failure; failures also retain bounded process diagnostics. SSE
+  parsing bounds both pending lines and complete multiline event payloads.
 - `lua/neoagent/api/` provides provider protocol encoders and streaming
   decoders. Protocol packages keep request construction and event decoding as
   focused internal modules while the public Model owns transport and
@@ -95,9 +96,11 @@ and are resolved at stream time, which keeps authentication independent from
 the API and UI layers. A stored credential owns its provider; an ambient API
 key is consulted when storage has no credential, and deleting the stored value
 restores the ambient source. OAuth refresh, login writes, and deletion are
-serialized by the credential store. Enumeration exposes only credential IDs
-and types. Anthropic's plan composition uses cancellable PKCE callback or
-manual-code login and derives Claude Code identity headers at request time.
+serialized by a credential-store lock. Lock acquisition is bounded, retries only
+contention, and refreshes the lock timestamp while a mutation is active.
+Enumeration exposes only credential IDs and types. Anthropic's plan composition
+uses cancellable PKCE callback or manual-code login and derives Claude Code
+identity headers at request time.
 The configured Codex composition injects a private rotating JSONL
 diagnostic sink; direct Model construction remains independent from file
 logging.
@@ -148,10 +151,15 @@ current tool call.
 
 Bundled tools resolve model-directed disk and subprocess work through optional
 `ctx.fs` and `ctx.process` capabilities. Direct Lua calls use the host
-filesystem and `neoagent.process` runner. A decorated executor can copy the
-context and replace either capability for one invocation. Shell output uses
-bounded memory, represents non-text bytes explicitly in tool results, and
-streams original overflow through the filesystem capability. Results that
+filesystem and `neoagent.process` runner. The host runner owns one process tree
+per call through POSIX process groups or Windows Job Objects and closes that
+tree on completion, timeout, or cancellation. Retained process capture may
+carry a combined byte limit. `read_file` bounds source image bytes, decoded
+pixels, encoded payloads, and every ImageMagick invocation; conversion receives
+explicit time, memory, map, disk, pixel, and capture limits. A decorated
+executor can copy the context and replace either capability for one invocation.
+Shell output uses bounded memory, represents non-text bytes explicitly in tool
+results, and streams original overflow through the filesystem capability. Results that
 contain escape bytes include a bounded, valid UTF-8 display copy in details.
 The bundled View interprets SGR sequences from that copy while rendering shell
 cards. Its process runtime uses the configured default timeout unless the tool
@@ -422,12 +430,14 @@ session is a tree that supports:
 Only the active path is projected into model context. Empty sessions create no
 files; persistence begins when the first message is accepted. Stores validate
 JSON encoding and UTF-8 before mutating the tree or creating a file. A Store
-validates complete trees when opening them, maintains an entry index, and
-updates messages and model state incrementally for linear appends. Branch
-selection rebuilds the active projection from the maintained index. Default
-Store mutations return copied append or replacement projection updates for
-the Session cache. Custom Stores may omit these updates; Sessions then reload
-the projection and return structured storage errors when that reload fails.
+validates complete trees when opening them, including leaf, label,
+branch-summary, and compaction references. Compaction retention starts on the
+active parent path. The Store maintains an entry index and updates messages and
+model state incrementally for linear appends. Branch selection rebuilds the
+active projection from the maintained index. Default Store mutations return
+copied append or replacement projection updates for the Session cache. Custom
+Stores may omit these updates; Sessions then reload the projection and return
+structured storage errors when that reload fails.
 
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.
@@ -467,11 +477,16 @@ eligibility, delay, and a stricter attempt cap. Successful tool results carry
 changed paths for unmodified-buffer refresh, and read-capable tools declare
 skill-discovery metadata. The Controller publishes updates and feeds complete
 active-conversation copies to optional tool state hooks after activation,
-message changes, resume, forks, and branch changes. Message updates and
-snapshots project the latest compaction checkpoint with its retained suffix,
-while the Session tree retains the complete active path. A replay removes a
-failed partial assistant message from the active branch before continuing the
-interaction:
+message changes, resume, forks, and branch changes. Model context projects the
+latest compaction checkpoint before its retained suffix. Transcript snapshots
+omit the compacted prefix while preserving active-path chronology: retained
+messages precede the compaction card, and later messages follow it. A replay
+removes a failed partial assistant message from the active branch before
+continuing the interaction. A successful assistant `length` stop continues
+once, compacting first when the context threshold is reached. Completion
+transitions are guarded by one finalizer. An unexpected lifecycle error clears
+the active Run and publishes a structured Controller failure with the
+transition error:
 
 ```lua
 { type = "messages", ... }

@@ -30,6 +30,27 @@ describe("neoagent.transport.sse", function()
     assert.matches("exceeded", err)
   end)
 
+  it("bounds a complete multiline event", function()
+    local parser = sse.new({
+      on_event = function() error("oversized event was dispatched") end,
+      max_buffer = 1024,
+      max_event_bytes = 7,
+    })
+    local ok, err = parser:feed("data: 1234\ndata: 5678\n")
+    assert.is_nil(ok)
+    assert.matches("event exceeded", err)
+  end)
+
+  it("resets the event byte limit after dispatch", function()
+    local events = {}
+    local parser = sse.new({
+      on_event = function(value) events[#events + 1] = value end,
+      max_event_bytes = 4,
+    })
+    assert(parser:feed("data: 1234\n\ndata: 5678\n\n"))
+    assert.are.same({ "1234", "5678" }, events)
+  end)
+
   it("flushes an unterminated event once and then remains closed", function()
     local events = {}
     local parser = sse.new({ on_event = function(value) events[#events + 1] = value end })

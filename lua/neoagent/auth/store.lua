@@ -6,43 +6,114 @@ local M = {}
 local Store = {}
 Store.__index = Store
 local DELETE = {}
+local DEFAULT_LOCK_TIMEOUT_MS = 30000
+local DEFAULT_LOCK_POLL_MS = 50
+local DEFAULT_LOCK_STALE_MS = 120000
 
 local function failure(message, detail)
   return util.error("auth", message, detail)
 end
 
 local function close_handle(handle)
-  if handle and not handle:is_closing() then handle:close() end
+  if handle and not handle:is_closing() then
+    handle:stop()
+    handle:close()
+  end
+end
+
+local function error_code(err, code)
+  if type(code) == "string" and code ~= "" then return code end
+  return type(err) == "string" and err:match("^([A-Z][A-Z0-9_]+):") or nil
+end
+
+local function is_error(err, code, expected)
+  return error_code(err, code) == expected
+end
+
+local function mtime_ms(stat)
+  local mtime = stat and stat.mtime or {}
+  return (tonumber(mtime.sec) or 0) * 1000
+    + math.floor((tonumber(mtime.nsec) or 0) / 1000000)
 end
 
 function Store:_lock()
   local lock_path = self.path .. ".lock"
   return async.await(function(done)
     local timer = vim.uv.new_timer()
+    local heartbeat = vim.uv.new_timer()
+    local started_at = vim.uv.hrtime() / 1000000
+    local settled = false
     local acquired = false
-    local function attempt()
-      local fd = vim.uv.fs_open(lock_path, "wx", 384)
+
+    local function release()
+      if not acquired then return end
+      acquired = false
+      close_handle(heartbeat)
+      vim.uv.fs_unlink(lock_path)
+    end
+
+    local function reject(err)
+      if settled then return end
+      settled = true
+      close_handle(timer)
+      close_handle(heartbeat)
+      done.reject(err)
+    end
+
+    local attempt
+    local function retry()
+      local elapsed = vim.uv.hrtime() / 1000000 - started_at
+      if elapsed >= self.lock_timeout_ms then
+        reject(failure("Timed out acquiring credential lock"))
+        return
+      end
+      timer:start(math.min(self.lock_poll_ms,
+        math.max(1, self.lock_timeout_ms - elapsed)), 0, attempt)
+    end
+
+    attempt = function()
+      if settled then return end
+      local fd, open_err, open_code = vim.uv.fs_open(lock_path, "wx", 384)
       if fd then
         vim.uv.fs_close(fd)
         acquired = true
+        settled = true
         close_handle(timer)
-        done.resolve(function() vim.uv.fs_unlink(lock_path) end)
+        heartbeat:start(self.lock_refresh_ms, self.lock_refresh_ms, function()
+          if not acquired then return end
+          local now = util.now_ms() / 1000
+          vim.uv.fs_utime(lock_path, now, now)
+        end)
+        done.resolve(release)
         return
       end
-      local stat = vim.uv.fs_stat(lock_path)
-      if stat and util.now_ms() - stat.mtime.sec * 1000 > 120000 then
-        local removed = vim.uv.fs_unlink(lock_path)
-        if removed then
-          attempt()
-          return
-        end
+      if not is_error(open_err, open_code, "EEXIST") then
+        reject(failure("Failed to acquire credential lock", open_err))
+        return
       end
-      timer:start(50, 0, attempt)
+      local stat, stat_err, stat_code = vim.uv.fs_stat(lock_path)
+      if not stat then
+        if is_error(stat_err, stat_code, "ENOENT") then attempt() else
+          reject(failure("Failed to inspect credential lock", stat_err))
+        end
+        return
+      end
+      if util.now_ms() - mtime_ms(stat) > self.lock_stale_ms then
+        local removed, remove_err, remove_code = vim.uv.fs_unlink(lock_path)
+        if removed or is_error(remove_err, remove_code, "ENOENT") then
+          attempt()
+        else
+          reject(failure("Failed to recover stale credential lock", remove_err))
+        end
+        return
+      end
+      retry()
     end
+
     attempt()
     return function()
       close_handle(timer)
-      if acquired then vim.uv.fs_unlink(lock_path) end
+      release()
     end
   end)
 end
@@ -150,9 +221,28 @@ function Store:modify(id, fn)
   end, { error_kind = "auth" })
 end
 
-function M.new(path)
+local function positive_integer(value, name)
+  assert(type(value) == "number" and value > 0 and value % 1 == 0,
+    name .. " must be a positive integer")
+  return value
+end
+
+function M.new(path, opts)
   assert(type(path) == "string" and path ~= "", "credential path is required")
-  return setmetatable({ path = fs.normalize(path) }, Store)
+  opts = opts or {}
+  local lock_timeout_ms = positive_integer(
+    opts.lock_timeout_ms or DEFAULT_LOCK_TIMEOUT_MS, "lock_timeout_ms")
+  local lock_poll_ms = positive_integer(
+    opts.lock_poll_ms or DEFAULT_LOCK_POLL_MS, "lock_poll_ms")
+  local lock_stale_ms = positive_integer(
+    opts.lock_stale_ms or DEFAULT_LOCK_STALE_MS, "lock_stale_ms")
+  return setmetatable({
+    path = fs.normalize(path),
+    lock_timeout_ms = lock_timeout_ms,
+    lock_poll_ms = lock_poll_ms,
+    lock_stale_ms = lock_stale_ms,
+    lock_refresh_ms = math.max(1, math.floor(lock_stale_ms / 4)),
+  }, Store)
 end
 
 return M

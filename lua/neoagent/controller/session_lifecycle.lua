@@ -28,7 +28,7 @@ end
 function M.transcript_messages(session)
   local path, err = session:path()
   if not path then error(err, 0) end
-  return session_tree.messages(path, true)
+  return session_tree.messages(session_tree.transcript_entries(path))
 end
 
 function M.entry_label(entry, current)

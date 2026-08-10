@@ -339,7 +339,8 @@ function Model:stream(opts)
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
       if transport_ok and transport_result.ok then
-        parser:finish()
+        local finished, finish_err = parser:finish()
+        if not finished then error(util.error("protocol", finish_err), 0) end
       end
       for _, call in pairs(calls) do
         local decoded_ok, arguments = pcall(vim.json.decode, call._raw ~= "" and call._raw or "{}")
