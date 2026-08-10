@@ -233,7 +233,7 @@ function M.resume(path)
 end
 
 function M.select_position()
-  vim.ui.select(positions, { prompt = "Select Neoagent window position:" }, function(choice)
+  vim.ui.select(positions, { prompt = "Select window position:" }, function(choice)
     if choice then M.set_position(choice) end
   end)
   return true

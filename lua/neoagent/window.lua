@@ -369,7 +369,7 @@ function M.new(opts)
     local history = self:input_history()
     if #history == 0 then notify("no input history found for the current workspace") return nil end
     vim.ui.select(history, {
-      prompt = "Select Neoagent input history:",
+      prompt = "Select input history:",
       format_item = function(item)
         local label = util.trim(item:gsub("[%c%s]+", " "))
         if vim.fn.strchars(label) > 100 then

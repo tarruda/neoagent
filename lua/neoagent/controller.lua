@@ -459,7 +459,7 @@ function M.from_config(options, runtime)
     end
     if #choices == 0 then notify("the active session has no entries") return nil end
     vim.ui.select(choices, {
-      prompt = "Neoagent branch",
+      prompt = "Branch",
       format_item = function(item) return item.label end,
     }, function(choice)
       if not choice then return end
@@ -485,7 +485,7 @@ function M.from_config(options, runtime)
     end
     if #choices == 0 then notify("the active session has no user messages") return nil end
     vim.ui.select(choices, {
-      prompt = "Fork Neoagent session from",
+      prompt = "Fork session from",
       format_item = function(item) return item.label end,
     }, function(choice)
       if not choice then return end
@@ -505,7 +505,7 @@ function M.from_config(options, runtime)
     local current_path = metadata and metadata.path
     local choices = session_choices.build(sessions, current_path)
     vim.ui.select(choices, {
-      prompt = "Resume Neoagent session:",
+      prompt = "Resume session:",
       format_item = function(item) return item.label end,
     }, function(choice)
       if choice then
@@ -530,7 +530,7 @@ function M.from_config(options, runtime)
       return nil
     end
     if #choices == 0 then notify("no models configured") return nil end
-    vim.ui.select(choices, { prompt = "Select Neoagent model:" }, function(choice)
+    vim.ui.select(choices, { prompt = "Select model:" }, function(choice)
       if not choice then return end
       local provider_id, model_id = choice:match("^([^/]+)/(.+)$")
       if provider_id then
@@ -687,7 +687,7 @@ function M.from_config(options, runtime)
       table.sort(choices, function(a, b) return a.label < b.label end)
       if #choices == 0 then notify("no login methods configured") return nil end
       vim.ui.select(choices, {
-        prompt = "Select Neoagent login:",
+        prompt = "Select login:",
         format_item = function(item) return item.label end,
       }, function(choice) if choice then controller:login(choice.id) end end)
       return true
@@ -728,7 +728,7 @@ function M.from_config(options, runtime)
         return nil
       end
       vim.ui.select(credentials, {
-        prompt = "Select Neoagent credential to remove:",
+        prompt = "Select credential to remove:",
         format_item = function(item)
           local kind = item.type == "api_key" and "API key" or item.type == "oauth" and "OAuth" or "invalid"
           return item.name .. " (" .. kind .. ")"

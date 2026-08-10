@@ -365,7 +365,7 @@ describe("neoagent controller windows", function()
     local selected
     local original_select = vim.ui.select
     vim.ui.select = function(items, opts, callback)
-      assert.are.equal("Select Neoagent input history:", opts.prompt)
+      assert.are.equal("Select input history:", opts.prompt)
       assert.are.equal("alpha question", opts.format_item(items[2]))
       assert.are.equal(string.rep("x", 100) .. "…", opts.format_item(string.rep("x", 101)))
       selected = items[2]

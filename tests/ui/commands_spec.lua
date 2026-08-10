@@ -52,7 +52,7 @@ describe("neoagent commands", function()
     local position_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.same({ "auto", "left", "right", "top", "bottom", "center" }, items)
-      assert.are.equal("Select Neoagent window position:", options.prompt)
+      assert.are.equal("Select window position:", options.prompt)
       callback("bottom")
     end
     vim.cmd("NeoagentPosition")
@@ -73,7 +73,7 @@ describe("neoagent commands", function()
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
       assert.are.same({ "fake/test" }, items)
-      assert.are.equal("Select Neoagent model:", options.prompt)
+      assert.are.equal("Select model:", options.prompt)
       callback(items[1])
     end
     vim.cmd("NeoagentModel")
@@ -113,7 +113,7 @@ describe("neoagent commands", function()
     assert.are.equal("stored", require("neoagent").default_window():view():get_input())
     assert(require("neoagent").resume(parent_path))
     vim.ui.select = function(items, options, callback)
-      assert.is_true(options.prompt == "Neoagent branch" or options.prompt == "Fork Neoagent session from")
+      assert.is_true(options.prompt == "Branch" or options.prompt == "Fork session from")
       callback(items[1])
     end
     vim.cmd("NeoagentBranch")
@@ -186,7 +186,7 @@ describe("neoagent commands", function()
         callback(items[1])
         return
       end
-      assert.are.equal("Select Neoagent login:", options.prompt)
+      assert.are.equal("Select login:", options.prompt)
       for _, item in ipairs(items) do
         if item.id == "openai-codex" then
           assert.are.equal("Test subscription", options.format_item(item))
@@ -228,7 +228,7 @@ describe("neoagent commands", function()
     assert.are.equal(0, cancelled_secret_prompts)
     assert.is_nil(credential_store:read("openai"))
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Select Neoagent model:", options.prompt)
+      assert.are.equal("Select model:", options.prompt)
       assert.is_true(vim.tbl_contains(items, "openai-codex/gpt-5.5"))
       callback(nil)
     end
@@ -250,7 +250,7 @@ describe("neoagent commands", function()
     assert.is_true(vim.tbl_contains(completions, "anthropic"))
     assert.is_true(vim.tbl_contains(completions, "anthropic-plan"))
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Select Neoagent credential to remove:", options.prompt)
+      assert.are.equal("Select credential to remove:", options.prompt)
       for _, item in ipairs(items) do
         if item.id == "openai-codex" then
           assert.are.equal("Test subscription (OAuth)", options.format_item(item))
