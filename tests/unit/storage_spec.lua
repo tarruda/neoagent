@@ -243,7 +243,10 @@ describe("neoagent.storage", function()
     end
     local elapsed_ms = (vim.uv.hrtime() - started) / 1000000
 
-    assert.is_true(elapsed_ms < 2000, string.format("linear appends took %.0f ms", elapsed_ms))
+    -- The bound is a regression smoke check: per-append projection
+    -- rebuilds cost hundreds of seconds under coverage, while linear
+    -- appends stay below three seconds even on loaded CI runners.
+    assert.is_true(elapsed_ms < 3000, string.format("linear appends took %.0f ms", elapsed_ms))
     assert.are.equal(1, loads)
     assert.are.equal(2000, #session:messages())
     assert(session:move_to(first.id))
