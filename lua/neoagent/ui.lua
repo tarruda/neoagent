@@ -514,6 +514,14 @@ function View:_sync_spinner()
     if self.destroyed or self.spinner_timer ~= timer then return end
     self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
     self:_refresh_transcript_border()
+    local animated = false
+    for _, block in ipairs(self.blocks) do
+      if block.animated then
+        block.dirty = true
+        animated = true
+      end
+    end
+    if animated then self:_schedule_flush() end
   end))
   self:_schedule_flush()
 end

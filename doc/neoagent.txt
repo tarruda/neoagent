@@ -1150,11 +1150,14 @@ state by that value and derive it entirely from conversation messages. Direct
 `agent.run()` remains Session-independent and does not call this hook.
 
 A tool may also define a bundled-View `render(opts)` callback. `opts` contains
-`arguments`, the current `result`, `state`, visible `width`, and `full`.
-Return `{ card?, lines = {...} }`, where each line is a list of
-`{ text, style? }` segments. `style` is one or more of `accent`, `bold`,
-`error`, `italic`, `muted`, and `strike`; `card` defaults to true. Callback
-errors and malformed presentations use the ordinary tool card.
+`arguments`, the current `result`, `state`, visible `width`, `full`, and the
+current `spinner` frame. Return `{ card?, background?, animated?, lines =
+{...} }`, where each line is a list of `{ text, style? }` segments. `style` is
+one or more of `accent`, `bold`, `cyan`, `error`, `italic`, `muted`, and
+`strike`; `card` defaults to true. Set `background = false` for a transparent
+card. Set `animated = true` to refresh the presentation with new spinner
+frames while the View is active. Callback errors and malformed presentations
+use the ordinary tool card.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.

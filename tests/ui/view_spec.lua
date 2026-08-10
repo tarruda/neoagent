@@ -1065,6 +1065,59 @@ describe("neoagent.ui", function()
     assert.not_matches("fallback unstyled", transcript)
   end)
 
+  it("renders streamed update_plan calls as transparent spinner cards", function()
+    local result = view(
+      { position = "center", width = 44 },
+      { require("neoagent.tools.update_plan").new() })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    result:apply({
+      type = "tool_call_delta", index = 0, id = "plan",
+      name = "update_plan", arguments_delta = '{"plan":[',
+    })
+
+    local function updating_line()
+      for _, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find("Updating plan", 1, true) then return line end
+      end
+    end
+    assert(vim.wait(1000, function() return updating_line() ~= nil end))
+    local initial = updating_line()
+    assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
+    assert.is_table(result.blocks[1].card)
+    assert(vim.wait(1000, function()
+      local current = updating_line()
+      return current ~= nil and current ~= initial
+    end))
+
+    local arguments = {
+      plan = { { step = "Implement the UI", status = "in_progress" } },
+    }
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = { {
+        type = "toolCall", id = "plan", name = "update_plan",
+        arguments = arguments,
+      } },
+    } })
+    result:apply({ type = "tool_start", call = {
+      id = "plan", name = "update_plan", arguments = arguments,
+    } })
+    assert(vim.wait(1000, function() return updating_line() ~= nil end))
+    result:apply({
+      type = "tool_end",
+      call = { id = "plan", name = "update_plan", arguments = arguments },
+      message = {
+        role = "toolResult", toolCallId = "plan", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } },
+      },
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("Updated Plan", 1, true) ~= nil
+    end))
+    assert.is_nil(updating_line())
+  end)
+
   it("renders successful update_plan calls like Codex todo lists", function()
     local result = view(
       { position = "center", width = 44 },
@@ -1114,7 +1167,10 @@ describe("neoagent.ui", function()
     end
     assert.is_true(groups(0).NeoagentMarkdownBold)
     assert.is_true(groups(2).NeoagentMarkdownStrike)
-    assert.is_true(groups(3).NeoagentAccent)
+    assert.is_true(groups(3).NeoagentCyan)
+    assert.are.equal(6, vim.api.nvim_get_hl(0, {
+      name = "NeoagentCyan", link = false,
+    }).ctermfg)
     assert.is_true(groups(3).NeoagentMarkdownBold)
     assert.is_true(groups(4).NeoagentMuted)
   end)

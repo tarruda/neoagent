@@ -107,6 +107,7 @@ function M:_mark_block(block, start, finish, content)
     end_right_gravity = true,
   })
   block.card = content.card
+  block.animated = content.animated == true
   for row, group in pairs(content.line_groups) do
     vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + row, 0, {
       line_hl_group = group,
