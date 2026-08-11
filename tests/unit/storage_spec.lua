@@ -1,10 +1,13 @@
 local Session = require("neoagent.session")
 local storage = require("neoagent.storage")
 local fs = require("neoagent.fs")
+local tree = require("neoagent.session_tree")
 
 local original_mkdirp = fs.mkdirp
 local original_read = fs.read
 local original_write_all = fs.write_all
+local original_entry_messages = tree.entry_messages
+local original_tree_messages = tree.messages
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -24,6 +27,8 @@ describe("neoagent.storage", function()
     fs.mkdirp = original_mkdirp
     fs.read = original_read
     fs.write_all = original_write_all
+    tree.entry_messages = original_entry_messages
+    tree.messages = original_tree_messages
     for _, path in ipairs(dirs) do
       vim.fn.delete(path, "rf")
     end
@@ -226,7 +231,7 @@ describe("neoagent.storage", function()
     assert.are.equal(1, #store:entries())
   end)
 
-  it("keeps long Session append projection bounded without Store reloads", function()
+  it("projects Session appends incrementally without Store reloads", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local store = storage.new({ directory = directory, cwd = directory })
@@ -239,24 +244,32 @@ describe("neoagent.storage", function()
     local session = assert(Session.new({ store = store }))
     fs.write_all = function() return true end
 
-    local started = vim.uv.hrtime()
+    local append_projections = 0
+    tree.entry_messages = function(...)
+      append_projections = append_projections + 1
+      return original_entry_messages(...)
+    end
+    local rebuilds = 0
+    tree.messages = function(...)
+      rebuilds = rebuilds + 1
+      return original_tree_messages(...)
+    end
+
     local first
-    for index = 1, 2000 do
+    for index = 1, 100 do
       local ok, _, entry = session:append({
         role = "user", content = "message " .. index, timestamp = index,
       })
       assert(ok)
       first = first or entry
     end
-    local elapsed_ms = (vim.uv.hrtime() - started) / 1000000
 
-    -- The bound is a regression smoke check: per-append projection
-    -- rebuilds cost hundreds of seconds under coverage, while linear
-    -- appends stay below three seconds even on loaded CI runners.
-    assert.is_true(elapsed_ms < 3000, string.format("linear appends took %.0f ms", elapsed_ms))
+    assert.are.equal(100, append_projections)
+    assert.are.equal(0, rebuilds)
     assert.are.equal(1, loads)
-    assert.are.equal(2000, #session:messages())
+    assert.are.equal(100, #session:messages())
     assert(session:move_to(first.id))
+    assert.are.equal(1, rebuilds)
     assert.are.equal(1, loads)
     assert.are.equal(1, #session:messages())
   end)
