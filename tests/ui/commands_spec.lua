@@ -6,7 +6,7 @@ describe("neoagent commands", function()
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
       "NeoagentModel", "NeoagentThinking", "NeoagentPosition", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
       "NeoagentBranch", "NeoagentFork", "NeoagentSandboxInfo",
-      "NeoagentToggleSandbox",
+      "NeoagentToggleSandbox", "NeoagentTranscriptStyle",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end
@@ -48,6 +48,14 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentPosition left")
     assert.are.equal("left", require("neoagent").default_window():view().position)
     assert.is_true(require("neoagent").default_window():is_open())
+    vim.cmd("NeoagentTranscriptStyle codex")
+    assert.are.equal("codex",
+      require("neoagent").default_window():view().config.style)
+    assert.are.same({ "pi", "codex" },
+      vim.fn.getcompletion("NeoagentTranscriptStyle ", "cmdline"))
+    vim.cmd("NeoagentTranscriptStyle pi")
+    assert.are.equal("pi",
+      require("neoagent").default_window():view().config.style)
     require("neoagent").close()
     local position_select = vim.ui.select
     vim.ui.select = function(items, options, callback)

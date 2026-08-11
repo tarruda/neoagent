@@ -1,4 +1,5 @@
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 
 local function new()
@@ -47,6 +48,7 @@ local function new()
       end
       return { content = { { type = "text", text = text } }, details = { truncation = captured } }
     end,
+    render = presentation.find,
   }
 end
 

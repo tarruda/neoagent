@@ -598,6 +598,10 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ "<A-j>", "<C-Down>" },
       config.setup({}).ui.mappings.card_next)
     assert.is_nil(config.setup({}).ui.mappings.toggle_focus)
+    assert.are.equal("pi", config.setup({}).ui.style)
+    assert.are.equal("codex", config.setup({
+      ui = { style = "codex" },
+    }).ui.style)
     assert.is_false(config.setup({}).ui.wrap_cards)
     assert.is_true(config.setup({}).ui.show_thinking)
     assert.is_true(config.setup({ ui = { wrap_cards = true } }).ui.wrap_cards)
@@ -628,6 +632,7 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function()
       config.setup({ workspace_trust = { path = "/tmp/trust.json", extra = true } })
     end)
+    assert.has_error(function() config.setup({ ui = { style = "other" } }) end)
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function() config.setup({ ui = { scroll_on_submit = "yes" } }) end)
     assert.has_error(function() config.setup({ ui = { scroll_on_transcript_leave = "yes" } }) end)

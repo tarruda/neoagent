@@ -95,15 +95,16 @@ local function wrap_text(text, available)
 end
 
 local function presentation(opts)
-  if type(opts) ~= "table" then return nil end
+  if type(opts) ~= "table"
+      or opts.style ~= "pi" and opts.style ~= "codex" then return nil end
   if opts.state == "pending" or opts.state == "running" then
+    if opts.style == "pi" then return nil end
     return {
       animated = true,
-      background = false,
-      lines = { {
+      title = {
         { text = opts.spinner or "⠋", style = "cyan" },
         { text = " Updating plan", style = "muted" },
-      } },
+      },
     }
   end
   if opts.state ~= "success" then return nil end
@@ -113,12 +114,10 @@ local function presentation(opts)
   local arguments = accepted(details or opts.arguments)
   if not arguments then return nil end
 
-  local lines = { {
-    { text = " • ", style = "muted" },
-    { text = "Updated Plan", style = "bold" },
-  } }
+  local lines = {}
   local body = {}
-  local body_width = math.max(1, (opts.width or 80) - 4)
+  local codex = opts.style == "codex"
+  local body_width = math.max(1, (opts.width or 80) - (codex and 4 or 2))
   local explanation = type(arguments.explanation) == "string"
       and util.trim(arguments.explanation) or ""
   if explanation ~= "" then
@@ -133,25 +132,41 @@ local function presentation(opts)
     }
   else
     for _, item in ipairs(arguments.plan) do
-      local marker = item.status == "completed" and "✔ " or "□ "
+      local marker = codex
+          and (item.status == "completed" and "✔ " or "□ ")
+        or (item.status == "completed" and "[x] " or "[ ] ")
       local style = item.status == "completed" and { "muted", "strike" }
-        or item.status == "in_progress" and { "cyan", "bold" }
+        or item.status == "in_progress"
+          and (codex and { "cyan", "bold" } or "bold")
         or "muted"
-      for index, line in ipairs(wrap_text(item.step, body_width - 2)) do
+      local marker_width = codex and 2 or 4
+      for index, line in ipairs(
+          wrap_text(item.step, body_width - marker_width)) do
         body[#body + 1] = {
-          text = (index == 1 and marker or "  ") .. line,
+          text = (index == 1 and marker
+            or string.rep(" ", marker_width)) .. line,
           style = style,
         }
       end
     end
   end
-  for index, item in ipairs(body) do
-    lines[#lines + 1] = {
-      { text = index == 1 and "   └ " or "     ", style = "muted" },
-      { text = item.text, style = item.style },
-    }
+  if codex then
+    for index, item in ipairs(body) do
+      lines[#lines + 1] = {
+        { text = index == 1 and "   └ " or "     ", style = "muted" },
+        { text = item.text, style = item.style },
+      }
+    end
+  else
+    lines[1] = { { text = "" } }
+    for _, item in ipairs(body) do
+      lines[#lines + 1] = { { text = item.text, style = item.style } }
+    end
   end
-  return { card = false, lines = lines }
+  return {
+    title = codex and { { text = "Updated Plan", style = "bold" } } or true,
+    lines = lines,
+  }
 end
 
 local function new()

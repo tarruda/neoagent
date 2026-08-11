@@ -1,4 +1,5 @@
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
@@ -230,6 +231,7 @@ local function new(options)
       end
       return { content = { { type = "text", text = text } }, details = details, isError = is_error }
     end,
+    render = presentation.shell,
   }
 end
 

@@ -2,6 +2,7 @@ local input = require("neoagent.ui.input")
 local layout = require("neoagent.ui.layout")
 local dialog = require("neoagent.ui.dialog")
 local cards = require("neoagent.ui.cards")
+local flavors = require("neoagent.ui.flavors")
 local render = require("neoagent.ui.render")
 local transcript = require("neoagent.ui.transcript")
 local util = require("neoagent.util")
@@ -546,6 +547,19 @@ function View:set_position(position)
   return true
 end
 
+function View:set_style(style)
+  local flavor = flavors.get(style)
+  if not flavor then
+    return nil, util.error("ui", "transcript style must be pi or codex")
+  end
+  if self.flavor == flavor then return style end
+  self.config.style = style
+  self.flavor = flavor
+  self.full_dirty = true
+  self:_schedule_flush()
+  return style
+end
+
 function View:focus_transcript()
   if self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win) then
     vim.cmd("stopinsert")
@@ -622,8 +636,11 @@ function M.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
   render.define_highlights()
+  local flavor = flavors.get(opts.config.style)
+  assert(flavor, "UI transcript style must be pi or codex")
   local view = setmetatable({
     config = util.copy(opts.config),
+    flavor = flavor,
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
     on_dequeue_steering = opts.on_dequeue_steering or function() return {} end,

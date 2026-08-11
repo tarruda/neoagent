@@ -1,4 +1,5 @@
 local render = require("neoagent.ui.render")
+local source_syntax = require("neoagent.ui.source_syntax")
 local util = require("neoagent.util")
 
 local M = {}
@@ -144,6 +145,26 @@ function M:_mark_block(block, start, finish, content)
   block.dirty = false
 end
 
+local function apply_transcript_source_syntax(view)
+  local sources = {}
+  for _, block in ipairs(view.blocks) do
+    if block.source and block.mark then
+      local position = vim.api.nvim_buf_get_extmark_by_id(
+        view.transcript_buf, view.namespace, block.mark, {})
+      if #position > 0 then
+        sources[#sources + 1] = {
+          path = block.source.path,
+          first = position[1] + block.source.first,
+          last = position[1] + block.source.last,
+        }
+      end
+    end
+  end
+  local lines = vim.api.nvim_buf_get_lines(
+    view.transcript_buf, 0, -1, false)
+  source_syntax.apply(view.transcript_buf, sources, lines)
+end
+
 function M:_remove_status()
   if self.status_mark then
     pcall(vim.api.nvim_buf_del_extmark,
@@ -273,6 +294,7 @@ function M:_flush()
     end
   end
   self:_render_status()
+  apply_transcript_source_syntax(self)
   vim.bo[self.transcript_buf].modifiable = false
   self:_restore_view(saved)
   self:_refresh_card_details()
@@ -289,6 +311,11 @@ function M:_schedule_flush()
 end
 
 function M:_add_block(block)
+  local previous = self.blocks[#self.blocks]
+  if previous
+      and self.flavor.separator(previous, block) == "after_previous" then
+    previous.dirty = true
+  end
   block.dirty = true
   self.blocks[#self.blocks + 1] = block
   self:_schedule_flush()

@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 
 local MIME = {
@@ -271,6 +272,7 @@ local function new(options)
       end
       return { content = { { type = "text", text = text } }, details = { truncation = shortened } }
     end,
+    render = presentation.read,
   }
 end
 

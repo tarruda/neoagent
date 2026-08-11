@@ -98,6 +98,7 @@ describe("neoagent bundled tools", function()
     end)
 
     local presentation = assert(tool.render({
+      style = "codex",
       state = "success",
       arguments = {
         explanation = "Implementation is underway.",
@@ -105,15 +106,159 @@ describe("neoagent bundled tools", function()
       },
       width = 20,
     }))
-    assert.is_false(presentation.card)
+    assert.are.same({ { text = "Updated Plan", style = "bold" } },
+      presentation.title)
     assert.are.same({
-      " • Updated Plan",
       "   └ Implementation",
       "     is underway.",
       "     (no steps provided)",
     }, vim.tbl_map(function(line)
       return table.concat(vim.tbl_map(function(segment) return segment.text end, line))
     end, presentation.lines))
+    local pi_presentation = assert(tool.render({
+      style = "pi",
+      state = "success",
+      arguments = { plan = {} },
+    }))
+    assert.is_true(pi_presentation.title)
+    assert.are.same({ "", "(no steps provided)" },
+      vim.tbl_map(function(line)
+        return table.concat(vim.tbl_map(function(segment)
+          return segment.text
+        end, line))
+      end, pi_presentation.lines))
+  end)
+
+  it("provides Codex activity presentations for bundled tools", function()
+    local cases = {
+      { module = "read_file", arguments = { path = "file.lua" },
+        active = "Reading", complete = "Read", value = " file.lua",
+        compact = true },
+      { module = "write_file", arguments = { path = "file.lua" },
+        active = "Writing", complete = "Written", value = " file.lua" },
+      { module = "edit_file", arguments = { path = "file.lua" },
+        active = "Editing", complete = "Edited", value = " file.lua" },
+      { module = "grep",
+        arguments = { pattern = "needle", path = "lua", glob = "*.lua" },
+        active = "Searching", complete = "Searched",
+        value = " needle in lua (*.lua)", compact = true },
+      { module = "find", arguments = { pattern = "*.lua", path = "src" },
+        active = "Finding", complete = "Found",
+        value = " *.lua in src", compact = true },
+      { module = "shell", arguments = { command = "make test" },
+        active = "Running", complete = "Ran", value = " make test",
+        compact = true },
+    }
+    for _, case in ipairs(cases) do
+      local tool = require("neoagent.tools." .. case.module).new()
+      assert.is_nil(tool.render({
+        style = "pi", state = "running", arguments = case.arguments,
+      }))
+      local active = tool.render({
+        style = "codex", state = "running", arguments = case.arguments,
+      })
+      if case.module == "shell" then
+        assert.are.same({
+          { text = case.active, style = "bold" },
+        }, active.title)
+        assert.are.equal(case.arguments.command, active.command)
+      else
+        assert.are.same({
+          { text = case.active, style = "bold" },
+          { text = case.value },
+        }, active.title)
+        assert.is_nil(active.command)
+      end
+      assert.are.equal(case.compact == true, active.default == false)
+      assert.is_true(active.status)
+      local complete = tool.render({
+        style = "codex", state = "success", arguments = case.arguments,
+      })
+      assert.are.same(case.complete, complete.title[1].text)
+      if case.module == "shell" then
+        assert.are.equal(case.arguments.command, complete.command)
+      end
+      assert.is_true(complete.status)
+      local full = tool.render({
+        style = "codex", state = "success", arguments = case.arguments,
+        full = true,
+      })
+      assert.is_true(full.default)
+      assert.is_nil(full.command)
+      assert.are.equal(case.value, full.title[2].text)
+    end
+  end)
+
+  it("renders bounded numbered Codex edit patches", function()
+    local tool = require("neoagent.tools.edit_file").new()
+    local function segments_text(segments)
+      return table.concat(vim.tbl_map(function(segment)
+        return segment.text
+      end, segments))
+    end
+    local function line_texts(presentation)
+      return vim.tbl_map(segments_text, presentation.lines)
+    end
+
+    local legacy = assert(tool.render({
+      style = "codex", state = "success",
+      arguments = { path = "legacy.lua" }, width = 40,
+      result = { details = {
+        diff = " context\n-old\n+new", firstChangedLine = 7,
+      } },
+    }))
+    assert.are.equal("Edited legacy.lua (+1 -1)",
+      segments_text(legacy.title))
+    assert.are.equal("green", legacy.title[3].style)
+    assert.are.equal("red", legacy.title[5].style)
+    assert.is_true(legacy.status)
+    assert.are.same({
+      "   7  context",
+      "   8 -old",
+      "   8 +new",
+    }, line_texts(legacy))
+
+    local patch = table.concat({
+      "@@ -1,8 +1,8 @@",
+      " one", "-two", "+a long\tchanged line", " three", " four",
+      " five", " six", " seven", " eight has wrapped content",
+      "@@ -20 +20 @@",
+      "-old tail", "+new tail",
+    }, "\n")
+    local preview = assert(tool.render({
+      style = "codex", state = "success",
+      arguments = { path = "wrapped.lua" }, width = 18,
+      result = { details = { patch = patch } },
+    }))
+    assert.are.equal(11, #preview.lines)
+    assert.matches("more line",
+      table.concat(line_texts(preview), "\n"))
+
+    local full = assert(tool.render({
+      style = "codex", state = "success",
+      arguments = { path = "wrapped.lua" }, width = 18, full = true,
+      result = { details = { patch = patch } },
+    }))
+    local complete = table.concat(line_texts(full), "\n")
+    assert.matches("⋮", complete)
+    assert.matches("hanged line", complete)
+    assert.matches("old tail", complete)
+    assert.matches("new tail", complete)
+    assert.not_matches("more line", complete)
+    assert.is_nil(tool.render({
+      style = "pi", state = "success",
+      arguments = { path = "wrapped.lua" },
+      result = { details = { patch = patch } },
+    }))
+
+    local failed = assert(tool.render({
+      style = "codex", state = "error",
+      arguments = { path = "failed.lua" },
+      result = { details = { patch = patch } },
+    }))
+    assert.is_true(failed.default)
+    assert.is_nil(failed.lines)
+    assert.are.equal("Edited", failed.title[1].text)
   end)
 
   it("derives independent current plans from Session conversations", function()

@@ -1,4 +1,5 @@
 local render = require("neoagent.ui.render")
+local source_syntax = require("neoagent.ui.source_syntax")
 
 local M = {}
 
@@ -89,12 +90,33 @@ local function fit_detail_height(window)
   vim.api.nvim_win_set_config(window, config)
 end
 
-local function card_range(view, block)
-  if not block.card or not block.mark then return nil end
+local function block_start(view, block)
+  if not block.mark then return nil end
   local position = vim.api.nvim_buf_get_extmark_by_id(
     view.transcript_buf, view.namespace, block.mark, { details = true })
   if #position == 0 then return nil end
-  return position[1] + block.card.first, position[1] + block.card.last
+  return position[1]
+end
+
+local function card_range(view, block)
+  if not block.card then return nil end
+  local start = block_start(view, block)
+  if not start then return nil end
+  return start + block.card.first, start + block.card.last
+end
+
+local function card_row(view, block, name)
+  local row = block.card and block.card[name]
+  if type(row) ~= "number" then return nil end
+  local start = block_start(view, block)
+  return start and start + row or nil
+end
+
+local function separator_row(view, block, side)
+  local separator = block.separators and block.separators[side]
+  if type(separator) ~= "number" then return nil end
+  local start = block_start(view, block)
+  return start and start + separator or nil
 end
 
 local function apply_rendered(view, buffer, content, background)
@@ -250,9 +272,9 @@ function M:_update_card_outline()
   local width = card_width(self)
   local block, first, last = self:_card_at_cursor()
   overflow_badges(self, width, block)
-  local function outline(row, text, position)
+  local function outline(row, text, position, group)
     local options = {
-      virt_text = { { text, "NeoagentCardFocus" } },
+      virt_text = { { text, group or "NeoagentCardFocus" } },
       virt_text_pos = position or "overlay",
       priority = 200,
     }
@@ -304,6 +326,41 @@ function M:_update_card_outline()
       priority = 200,
     })
   end
+  local function inline_tool_badge(row, header)
+    header = fit_badge(header, width)
+    local start = math.max(0, width - 1 - vim.fn.strdisplaywidth(header))
+    local line = vim.api.nvim_buf_get_lines(
+      self.transcript_buf, row, row + 1, false)[1] or ""
+    if vim.fn.strdisplaywidth(line) > start and start >= 4 then
+      outline(row, " ...", start - 4, "NeoagentMuted")
+    end
+    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.card_namespace, row, 0, {
+      virt_text = { { header, "NeoagentMuted" } },
+      virt_text_pos = "overlay",
+      virt_text_win_col = start,
+      priority = 200,
+    })
+  end
+  local function inline_tool_top(row)
+    local line = vim.api.nvim_buf_get_lines(
+      self.transcript_buf, row, row + 1, false)[1] or ""
+    local start = math.min(vim.fn.strdisplaywidth(line), width - 1)
+    outline(row, string.rep("─", width - start - 1) .. "╮", start)
+  end
+  local function tool_bottom()
+    local value = "╰" .. string.rep("─", width - 2) .. "╯"
+    local key = render.expand_hint(self)
+    if key then
+      local hint = " " .. key .. " to expand "
+      local remaining = width - 2 - vim.fn.strdisplaywidth(hint)
+      if remaining >= 2 then
+        local left = math.floor(remaining / 2)
+        value = "╰" .. string.rep("─", left) .. hint
+          .. string.rep("─", remaining - left) .. "╯"
+      end
+    end
+    return value
+  end
   local function response_badge(kind)
     local hint = render.expand_hint(self)
     return string.format("[%s: 0 words%s]", kind,
@@ -315,22 +372,25 @@ function M:_update_card_outline()
   elseif block.kind == "assistant" then
     badge(first, block.header or response_badge("text"))
     if last > first then bottom(last) end
+  elseif block.kind == "tool" and last > first
+      and self.flavor.inline_multiline_tool_outline then
+    inline_tool_top(first)
+    local separator = separator_row(self, block, "after")
+    local after = separator or assert(card_row(self, block, "after"),
+      "card trailing row is missing")
+    outline(after, tool_bottom())
+  elseif block.kind == "tool" and first == last
+      and self.flavor.inline_single_line_tool_hint then
+    local key = render.expand_hint(self)
+    local line = vim.api.nvim_buf_get_lines(
+      self.transcript_buf, first, first + 1, false)[1] or ""
+    if key and vim.fn.strdisplaywidth(line) <= width then
+      inline_tool_badge(first, "[" .. key .. " to expand]")
+    end
   else
     outline(first, "╭" .. string.rep("─", width - 2) .. "╮")
-    local bottom = "╰" .. string.rep("─", width - 2) .. "╯"
-    if block.kind == "tool" then
-      local key = render.expand_hint(self)
-      if key then
-        local hint = " " .. key .. " to expand "
-        local remaining = width - 2 - vim.fn.strdisplaywidth(hint)
-        if remaining >= 2 then
-          local left = math.floor(remaining / 2)
-          bottom = "╰" .. string.rep("─", left) .. hint
-            .. string.rep("─", remaining - left) .. "╯"
-        end
-      end
-    end
-    outline(last, bottom)
+    outline(last, block.kind == "tool" and tool_bottom()
+      or "╰" .. string.rep("─", width - 2) .. "╯")
   end
   return true
 end
@@ -344,7 +404,9 @@ function M:_refresh_card_details()
   local width = prepare_detail_window(self.details_win)
   local content, background = detail_content(
     self, self.details_block, width)
-  apply_rendered(self, self.details_buf, content, background)
+  local lines = apply_rendered(
+    self, self.details_buf, content, background)
+  source_syntax.apply(self.details_buf, content.source, lines)
   fit_detail_height(self.details_win)
   vim.api.nvim_win_call(self.details_win, function()
     pcall(vim.fn.winrestview, saved)
@@ -400,6 +462,7 @@ function M:show_card_details()
   vim.bo[buffer].undofile = false
   vim.bo[buffer].filetype = "neoagent"
   local lines = apply_rendered(self, buffer, content, background)
+  source_syntax.apply(buffer, content.source, lines)
   vim.bo[buffer].readonly = true
 
   local height = detail_height(lines)
