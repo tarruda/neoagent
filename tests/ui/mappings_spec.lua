@@ -69,6 +69,50 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("preserves the transcript view while card details are open", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    local messages = {}
+    for index = 1, 30 do
+      messages[index] = { role = "user", content = "card " .. index }
+    end
+    result:set_messages(messages)
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return vim.iter(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)):any(function(line)
+          return line:find("card 30", 1, true) ~= nil
+        end)
+    end))
+    result:focus_transcript()
+
+    local target
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("card 8", 1, true) then target = row break end
+    end
+    assert.is_not_nil(target)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { target, 0 })
+    vim.api.nvim_win_call(result.transcript_win, function()
+      vim.cmd("normal! zt")
+    end)
+    local cursor = vim.api.nvim_win_get_cursor(result.transcript_win)
+    local view = vim.api.nvim_win_call(
+      result.transcript_win, function() return vim.fn.winsaveview() end)
+
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
+    assert(vim.wait(1000, function()
+      return result.details_win and vim.api.nvim_win_is_valid(result.details_win)
+    end))
+    local opened_view = vim.api.nvim_win_call(
+      result.transcript_win, function() return vim.fn.winsaveview() end)
+    assert.are.same(cursor, vim.api.nvim_win_get_cursor(result.transcript_win))
+    assert.are.equal(view.topline, opened_view.topline)
+    result:destroy()
+  end)
+
   it("toggles raw Markdown for text and thinking details only", function()
     local result = ui.new({
       config = config.setup({ ui = {
@@ -224,7 +268,95 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
-  it("inserts a newline with Ctrl-J without submitting", function()
+  it("moves directly between the transcript and input windows", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({ { role = "user", content = "transcript card" } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return vim.iter(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)):any(function(line)
+          return line:find("transcript card", 1, true) ~= nil
+        end)
+    end))
+    result:set_input("untouched draft")
+    result:focus_transcript()
+
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    feed("<C-w>j")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end))
+    feed("i<C-w>k")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.transcript_win
+        and vim.api.nvim_get_mode().mode:sub(1, 1) == "n"
+    end))
+    assert.are.equal("untouched draft", result:get_input())
+    result:destroy()
+  end)
+
+  it("navigates between cards while their details own focus", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({
+      { role = "user", content = "first card" },
+      { role = "user", content = "second card" },
+      { role = "user", content = "third card" },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return vim.iter(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)):any(function(line)
+          return line:find("third card", 1, true) ~= nil
+        end)
+    end))
+    result:focus_transcript()
+
+    local second_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("second card", 1, true) then second_row = row break end
+    end
+    assert.is_not_nil(second_row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { second_row, 0 })
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    local function details_contain(value)
+      if not result.details_buf or not vim.api.nvim_buf_is_valid(result.details_buf) then
+        return false
+      end
+      return table.concat(vim.api.nvim_buf_get_lines(
+        result.details_buf, 0, -1, false), "\n"):find(value, 1, true) ~= nil
+    end
+
+    feed("<CR>")
+    assert(vim.wait(1000, function() return details_contain("second card") end))
+    feed("<A-k>")
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_win() == result.details_win
+        and details_contain("first card")
+    end))
+    feed("<A-j>")
+    assert(vim.wait(1000, function() return details_contain("second card") end))
+    feed("<A-j>")
+    assert(vim.wait(1000, function() return details_contain("third card") end))
+    feed("<A-j>")
+    assert(vim.wait(1000, function()
+      return result.details_win == nil
+        and vim.api.nvim_get_current_win() == result.input_win
+    end))
+    result:destroy()
+  end)
+
+  it("uses native Ctrl-J for newlines without submitting", function()
     local submissions = {}
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,
@@ -234,6 +366,9 @@ describe("neoagent UI mappings", function()
       end,
     })
     assert(result:open())
+    vim.api.nvim_buf_call(result.input_buf, function()
+      assert.are.equal("", vim.fn.maparg("<C-j>", "i"))
+    end)
     result:set_input("first")
     result:focus_input()
     vim.cmd("stopinsert")

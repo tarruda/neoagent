@@ -35,10 +35,6 @@ function M:_map_buffers()
   if completion and #(completion.sources or {}) > 0 then
     self:_map(self.input_buf, "i", mappings.complete, function() self:_complete_input() end)
   end
-  self:_map(self.input_buf, "i", mappings.newline, function()
-    local key = vim.api.nvim_replace_termcodes("<CR>", true, false, true)
-    vim.api.nvim_feedkeys(key, "in", false)
-  end)
   self:_map(self.input_buf, { "n", "i" }, mappings.submit, function()
     if vim.fn.pumvisible() == 1 then
       local key = vim.api.nvim_replace_termcodes("<C-y>", true, false, true)
@@ -76,6 +72,10 @@ function M:_map_buffers()
     function()
       if not self:_move_card(1, vim.v.count1) then self:focus_input() end
     end)
+  self:_map(self.transcript_buf, "n", mappings.focus_input,
+    function() self:focus_input() end)
+  self:_map(self.input_buf, { "n", "i" }, mappings.focus_transcript,
+    function() self:focus_transcript() end)
   self:_map(self.input_buf, { "n", "i" }, mappings.card_previous, function()
     local count = vim.v.count1
     self:focus_transcript()

@@ -97,23 +97,7 @@ function View:_ensure_buffers()
       group = self.augroup,
       buffer = self.input_buf,
       callback = function()
-        self.input_footer_context = "input_normal"
-        self:_refresh_input_footer()
-      end,
-    })
-    vim.api.nvim_create_autocmd("InsertEnter", {
-      group = self.augroup,
-      buffer = self.input_buf,
-      callback = function()
-        self.input_footer_context = "input_insert"
-        self:_refresh_input_footer()
-      end,
-    })
-    vim.api.nvim_create_autocmd("InsertLeave", {
-      group = self.augroup,
-      buffer = self.input_buf,
-      callback = function()
-        self.input_footer_context = "input_normal"
+        self.input_footer_context = "input"
         self:_refresh_input_footer()
       end,
     })
@@ -214,15 +198,13 @@ function View:_footer_context()
   local current = vim.api.nvim_get_current_win()
   if self.input_win and vim.api.nvim_win_is_valid(self.input_win)
       and current == self.input_win
-      and self.input_footer_context ~= "input_insert"
-      and self.input_footer_context ~= "input_normal" then
-    self.input_footer_context = vim.api.nvim_get_mode().mode:sub(1, 1) == "i"
-      and "input_insert" or "input_normal"
+      and self.input_footer_context ~= "input" then
+    self.input_footer_context = "input"
   elseif self.transcript_win and vim.api.nvim_win_is_valid(self.transcript_win)
       and current == self.transcript_win then
     self.input_footer_context = "transcript"
   end
-  return self.input_footer_context or "input_insert"
+  return self.input_footer_context or "input"
 end
 
 function View:_input_footer(width)
@@ -230,15 +212,7 @@ function View:_input_footer(width)
   local mappings = self.config.mappings or {}
   local context = self:_footer_context()
   local items
-  if context == "input_insert" then
-    items = {
-      { action = "select_history", label = "history" },
-      { action = "newline", label = "newline" },
-      { action = "resume_session", label = "resume" },
-      { action = "select_model", label = "select model" },
-      { action = "interrupt", label = "clear/cancel" },
-    }
-  elseif context == "input_normal" then
+  if context == "input" then
     items = {
       { action = "select_history", label = "history" },
       { action = "resume_session", label = "resume" },
@@ -404,7 +378,7 @@ function View:open(origin)
   end
   local reopening = self.has_opened
   self:_ensure_buffers()
-  self.input_footer_context = "input_insert"
+  self.input_footer_context = "input"
   self.origin_win = origin or vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(self.origin_win) then
     self.origin_buf = vim.api.nvim_win_get_buf(self.origin_win)
@@ -572,7 +546,7 @@ end
 function View:focus_input()
   if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
     vim.api.nvim_set_current_win(self.input_win)
-    self.input_footer_context = "input_insert"
+    self.input_footer_context = "input"
     self:_refresh_input_footer()
     vim.cmd("startinsert!")
     vim.schedule(function()
@@ -623,6 +597,7 @@ View.set_input = input.set_input
 
 View._card_at_cursor = cards._card_at_cursor
 View._move_card = cards._move_card
+View._move_card_details = cards._move_card_details
 View._clear_card_outline = cards._clear_card_outline
 View._update_overflow_badges = cards._update_overflow_badges
 View._update_card_outline = cards._update_card_outline

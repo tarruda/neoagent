@@ -112,7 +112,6 @@ describe("neoagent.ui", function()
       select_history = { "<C-r>", "<C-s>" },
       resume_session = "<A-r>",
       select_model = "<A-m>",
-      newline = false,
       interrupt = false,
     } })
     assert.are.equal(" <C-r> history · <A-r> resume · <A-m> select model ",
@@ -124,7 +123,7 @@ describe("neoagent.ui", function()
     assert.is_nil(narrow:find("select model", 1, true))
   end)
 
-  it("updates input mapping hints for focus and mode", function()
+  it("updates input mapping hints for the focused surface", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "first" },
@@ -142,7 +141,7 @@ describe("neoagent.ui", function()
     end
     assert(vim.wait(1000, function()
       return footer()
-        == " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
+        == " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
     end))
 
     vim.cmd("stopinsert")
@@ -3539,7 +3538,7 @@ describe("neoagent.ui", function()
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
     assert.are.equal(
-      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
+      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
@@ -3557,7 +3556,7 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.are.equal(
-      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
+      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))

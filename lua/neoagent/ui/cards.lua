@@ -166,14 +166,14 @@ function M:_card_at_cursor()
   end
 end
 
-local function card_target(view, direction, count)
+local function card_target(view, direction, count, row)
   if direction ~= -1 and direction ~= 1 then return false end
   if not view.transcript_win or not vim.api.nvim_win_is_valid(view.transcript_win)
       or vim.api.nvim_win_get_buf(view.transcript_win) ~= view.transcript_buf then
     return nil
   end
   count = math.max(1, math.floor(tonumber(count) or 1))
-  local row = vim.api.nvim_win_get_cursor(view.transcript_win)[1] - 1
+  row = row or vim.api.nvim_win_get_cursor(view.transcript_win)[1] - 1
   local target
   local moved = 0
   local first_index = direction > 0 and 1 or #view.blocks
@@ -191,13 +191,38 @@ local function card_target(view, direction, count)
   return target
 end
 
-function M:_move_card(direction, count)
-  local target = card_target(self, direction, count)
+local function select_card(view, target)
   if not target then return false end
-  vim.api.nvim_win_set_cursor(self.transcript_win, { target + 1, 0 })
-  self:_update_card_outline()
-  self:_refresh_input_footer()
+  vim.api.nvim_win_set_cursor(view.transcript_win, { target + 1, 0 })
+  view:_update_card_outline()
+  view:_refresh_input_footer()
   return true
+end
+
+function M:_move_card(direction, count)
+  return select_card(self, card_target(self, direction, count))
+end
+
+function M:_move_card_details(direction, count)
+  if not self.details_win or not vim.api.nvim_win_is_valid(self.details_win)
+      or vim.api.nvim_get_current_win() ~= self.details_win then
+    return false
+  end
+  local first, last = card_range(self, self.details_block)
+  if not first then return false end
+  local target = card_target(
+    self, direction, count, direction > 0 and last or first)
+  if not target then
+    if direction > 0 then
+      self:_close_card_details(false)
+      self:focus_input()
+    end
+    return false
+  end
+  self:_close_card_details(false)
+  self:focus_transcript()
+  select_card(self, target)
+  return self:show_card_details()
 end
 
 function M:_clear_card_outline()
@@ -446,6 +471,7 @@ end
 function M:show_card_details()
   local block = self:_card_at_cursor()
   if not block then return false end
+  local transcript_view = self:_save_view()
   self:_close_card_details(false)
   self.details_raw = false
   local width = detail_width()
@@ -479,6 +505,7 @@ function M:show_card_details()
     zindex = 70,
   })
   self.details_buf, self.details_win, self.details_block = buffer, window, block
+  self:_restore_view(transcript_view)
   vim.wo[window].wrap = true
   vim.wo[window].linebreak = true
   vim.wo[window].breakindent = true
@@ -496,8 +523,13 @@ function M:show_card_details()
   vim.keymap.set("n", "<C-c>", function()
     self:_close_card_details(true)
   end, { buffer = buffer, silent = true, nowait = true })
+  local mappings = self.config.mappings or {}
+  self:_map(buffer, "n", mappings.card_previous,
+    function() self:_move_card_details(-1, vim.v.count1) end)
+  self:_map(buffer, "n", mappings.card_next,
+    function() self:_move_card_details(1, vim.v.count1) end)
   if supports_raw_details(block) then
-    self:_map(buffer, "n", (self.config.mappings or {}).card_raw,
+    self:_map(buffer, "n", mappings.card_raw,
       function() self:_toggle_card_details_raw() end)
   end
   return true
