@@ -1262,8 +1262,18 @@ Controller exposes `branch`, `select_branch`, `fork`, and `select_fork`.
 
 `store:info()` returns the path, ID, cwd, optional name and parent, creation
 timestamp, latest message activity, message count, and first user message.
-`storage.list_sessions(directory, cwd)` returns these values in recent-activity
-order.
+`storage.list_sessions(directory, cwd)` returns picker records containing the
+path, optional parent, bounded display text, and filesystem modification time
+in recent-activity order.
+
+Each workspace has a disposable `session-index.json` mapping session filenames
+to bounded display text and an optional parent path. Filesystem modification
+times provide recent-activity ordering. The index is written atomically when a
+session is first persisted, named, or forked. Concurrent Neovim processes
+merge changes under a bounded lock. Session JSONL remains authoritative:
+listing sessions rebuilds a missing or malformed index and repairs missing
+entries. Conversation appends update the session file mtime used for ordering
+without rewriting the index.
 
 CONTEXT COMPACTION                                  *neoagent-compaction*
 

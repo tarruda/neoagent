@@ -440,6 +440,14 @@ copied append or replacement projection updates for the Session cache. Custom
 Stores may omit these updates; Sessions then reload the projection and return
 structured storage errors when that reload fails.
 
+Each workspace has a disposable `session-index.json` containing the bounded
+picker text and optional parent path for every persisted session. Session file
+mtimes provide recent-activity ordering. First persistence, session naming,
+fork creation, and lazy repair merge index entries under a cross-process lock
+and replace the index atomically. Missing and malformed indexes are rebuilt
+from the authoritative Pi session files when sessions are listed. Ordinary
+conversation entries only append to their session files.
+
 Workspace-scoped settings, input history, and sessions are stored beneath a
 hash of the canonical working directory.
 
