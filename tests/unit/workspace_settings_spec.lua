@@ -34,6 +34,32 @@ describe("neoagent workspace settings", function()
     assert.are.equal(384, bit.band(vim.uv.fs_stat(metadata.settings_path).mode, 511))
   end)
 
+  it("merges updates serialized with a concurrent writer", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    local settings = settings_module.new({ directory = directory, root = root })
+    assert(settings:write({ first = true }))
+    local lock_path = settings.settings_path .. ".lock"
+    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+
+    local concurrent_done, concurrent_err
+    vim.defer_fn(function()
+      local written, write_err = require("neoagent.fs").write_all(
+        settings.settings_path, vim.json.encode({ first = true, concurrent = true }) .. "\n")
+      local removed, remove_err = vim.uv.fs_unlink(lock_path)
+      concurrent_err = write_err or remove_err
+      concurrent_done = written and removed
+    end, 20)
+
+    local updated = assert(settings:update({ local_update = true }))
+    assert(vim.wait(1000, function() return concurrent_done or concurrent_err ~= nil end, 5))
+    assert.is_nil(concurrent_err)
+    assert.are.same({ first = true, concurrent = true, local_update = true }, updated)
+    assert.are.same(updated, assert(settings:load()))
+  end)
+
   it("reports malformed and non-object settings", function()
     local root = vim.fn.tempname()
     local directory = vim.fn.tempname()
@@ -67,5 +93,18 @@ describe("neoagent workspace settings", function()
     value, err = settings:load()
     assert.is_nil(value)
     assert.matches("read", err.message)
+
+    vim.fn.delete(settings.settings_path, "rf")
+    local original_open = vim.uv.fs_open
+    vim.uv.fs_open = function(candidate, ...)
+      if candidate == settings.settings_path .. ".lock" then
+        return nil, "EACCES: denied"
+      end
+      return original_open(candidate, ...)
+    end
+    value, err = settings:update({ blocked = true })
+    vim.uv.fs_open = original_open
+    assert.is_nil(value)
+    assert.matches("acquire workspace settings lock", err.message)
   end)
 end)

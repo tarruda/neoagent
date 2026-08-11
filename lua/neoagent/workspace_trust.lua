@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
@@ -132,68 +133,33 @@ function Store:is_trusted(cwd)
   return false
 end
 
-local function close_handle(handle)
-  if handle and not handle:is_closing() then handle:close() end
+local function trust_lock_error(err, releasing)
+  err = util.normalize_error(err, "file_lock")
+  if err.kind == "cancelled" then return err end
+  if releasing then
+    return failure("Failed to release workspace trust lock", err.detail or err.message)
+  end
+  if err.code == "timeout" then
+    return failure("Timed out waiting for workspace trust lock", err.detail)
+  end
+  return failure("Failed to acquire workspace trust lock", err.detail or err.message)
 end
 
 function Store:_lock()
-  local lock_path = self.path .. ".lock"
-  return async.await(function(done)
-    local timer = vim.uv.new_timer()
-    local acquired = false
-    local started = util.now_ms()
-    local function settle_error(err)
-      close_handle(timer)
-      done.reject(err)
-    end
-    local function attempt()
-      local fd, open_err = vim.uv.fs_open(lock_path, "wx", FILE_MODE)
-      if fd then
-        local closed, close_err = vim.uv.fs_close(fd)
-        if not closed then
-          vim.uv.fs_unlink(lock_path)
-          settle_error(failure("Failed to create workspace trust lock", close_err))
-          return
-        end
-        acquired = true
-        close_handle(timer)
-        done.resolve(function()
-          if not acquired then return true end
-          acquired = false
-          local removed, remove_err = vim.uv.fs_unlink(lock_path)
-          if not removed and remove_err
-              and not tostring(remove_err):find("ENOENT", 1, true) then
-            return nil, failure("Failed to release workspace trust lock", remove_err)
-          end
-          return true
-        end)
-        return
-      end
-      if open_err and not tostring(open_err):find("EEXIST", 1, true) then
-        settle_error(failure("Failed to create workspace trust lock", open_err))
-        return
-      end
-      local stat = vim.uv.fs_stat(lock_path)
-      local modified = stat and stat.mtime
-        and (stat.mtime.sec * 1000 + math.floor((stat.mtime.nsec or 0) / 1000000))
-      if modified and util.now_ms() - modified > LOCK_STALE_MS then
-        local removed = vim.uv.fs_unlink(lock_path)
-        if removed then
-          attempt()
-          return
-        end
-      end
-      if util.now_ms() - started >= LOCK_TIMEOUT_MS then
-        settle_error(failure("Timed out waiting for workspace trust lock"))
-        return
-      end
-      timer:start(50, 0, attempt)
-    end
-    attempt()
-    return function()
-      close_handle(timer)
-    end
-  end)
+  local lock = file_lock.new({
+    path = self.path .. ".lock",
+    timeout_ms = LOCK_TIMEOUT_MS,
+    poll_ms = 50,
+    stale_ms = LOCK_STALE_MS,
+    mode = FILE_MODE,
+  })
+  local ok, lease = pcall(function() return lock:acquire_async() end)
+  if not ok then error(trust_lock_error(lease, false), 0) end
+  return function()
+    local released, release_err = lease:release()
+    if not released then return nil, trust_lock_error(release_err, true) end
+    return true
+  end
 end
 
 local function random_suffix()

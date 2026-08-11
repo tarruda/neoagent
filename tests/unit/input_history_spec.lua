@@ -30,10 +30,38 @@ describe("neoagent input history", function()
     local bit = require("bit")
     assert.are.equal(448, bit.band(vim.uv.fs_stat(history.directory).mode, 511))
     assert.are.equal(384, bit.band(vim.uv.fs_stat(history.path).mode, 511))
+    assert.are.same({ "direct" }, assert(history:write({ "direct" })))
+    assert.are.same({ "direct" }, assert(history:load()))
     assert.has_error(function() history:write({ false }) end)
     assert.has_error(function()
       history_module.new({ directory = directory, root = root, limit = 0 })
     end)
+  end)
+
+  it("merges additions serialized with a concurrent writer", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    local history = history_module.new({ directory = directory, root = root })
+    assert(history:add("first"))
+    local lock_path = history.path .. ".lock"
+    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+
+    local concurrent_done, concurrent_err
+    vim.defer_fn(function()
+      local written, write_err = require("neoagent.fs").write_all(
+        history.path, '"first"\n"concurrent"\n')
+      local removed, remove_err = vim.uv.fs_unlink(lock_path)
+      concurrent_err = write_err or remove_err
+      concurrent_done = written and removed
+    end, 20)
+
+    local updated = assert(history:add("local"))
+    assert(vim.wait(1000, function() return concurrent_done or concurrent_err ~= nil end, 5))
+    assert.is_nil(concurrent_err)
+    assert.are.same({ "local", "concurrent", "first" }, updated)
+    assert.are.same(updated, assert(history:load()))
   end)
 
   it("reports malformed files and atomic replacement failures", function()
@@ -62,5 +90,16 @@ describe("neoagent input history", function()
     value, err = history:load()
     assert.is_nil(value)
     assert.matches("read", err.message)
+
+    vim.fn.delete(history.path, "rf")
+    local original_open = vim.uv.fs_open
+    vim.uv.fs_open = function(candidate, ...)
+      if candidate == history.path .. ".lock" then return nil, "EACCES: denied" end
+      return original_open(candidate, ...)
+    end
+    value, err = history:write({ "blocked" })
+    vim.uv.fs_open = original_open
+    assert.is_nil(value)
+    assert.matches("acquire input history lock", err.message)
   end)
 end)

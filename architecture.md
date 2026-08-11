@@ -101,9 +101,9 @@ contention, and refreshes the lock timestamp while a mutation is active.
 Enumeration exposes only credential IDs and types. Anthropic's plan composition
 uses cancellable PKCE callback or manual-code login and derives Claude Code
 identity headers at request time.
-The configured Codex composition injects a private rotating JSONL
-diagnostic sink; direct Model construction remains independent from file
-logging.
+The configured Codex composition injects a private rotating JSONL diagnostic
+sink. Rotation and append share a cross-process lock for each path; direct
+Model construction remains independent from file logging.
 
 ## Tools and execution policy
 
@@ -375,8 +375,8 @@ explicit environment, and a fresh private desktop. The owner runtime and account
 runner each assign their suspended child atomically to a kill-on-close Job
 Object, so cancellation covers both stages and every descendant. Restricted
 network profiles use the offline account; enabled profiles use the online
-account. Capability ACL leases are serialized per state directory and revoked
-at completion.
+account. Elevated setup and capability ACL leases are serialized per state
+directory by one named OS mutex. Capability leases are revoked at completion.
 The owner-only state records dedicated account identities, each transient
 capability ACL lease, and owned placeholder identities. The next run
 reconciles the mutation journal after interruption. Stale capability SIDs
@@ -440,8 +440,28 @@ copied append or replacement projection updates for the Session cache. Custom
 Stores may omit these updates; Sessions then reload the projection and return
 structured storage errors when that reload fails.
 
+Each workspace has a disposable `session-index.json` containing the bounded
+picker text and optional parent path for every persisted session. Session file
+mtimes provide recent-activity ordering. First persistence, session naming,
+fork creation, and lazy repair merge index entries under a cross-process lock
+and replace the index atomically. Missing and malformed indexes are rebuilt
+from the authoritative Pi session files when sessions are listed. Ordinary
+conversation entries only append to their session files. Existing session
+reads and appends share a per-file lock so readers cannot observe a partial
+append.
+
 Workspace-scoped settings, input history, and sessions are stored beneath a
-hash of the canonical working directory.
+hash of the canonical working directory. Workspace-settings updates and
+input-history additions reload and merge under their file locks.
+
+`lua/neoagent/file_lock.lua` owns the reusable cross-process protocol for these
+persistence layers. It creates private token-bearing lock files exclusively,
+polls contention with bounded synchronous or cancellable asynchronous
+acquisition, recovers stale leases, optionally refreshes long leases, validates
+ownership on release, and runs protected callbacks with guaranteed cleanup.
+The default timeout is 15 seconds, the poll interval is 50 milliseconds, and
+the stale threshold is two minutes. Credential storage retains its public
+30-second acquisition default and composes the same primitive.
 
 `lua/neoagent/compaction.lua` is the stable compaction API. Its planning module
 owns token estimates, safe boundaries, and preparation; its summary module

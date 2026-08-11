@@ -103,7 +103,8 @@ Codex provider diagnostics default to
   }
 <
 Diagnostic records exclude credentials, request and response bodies, and
-conversation content.
+conversation content. Rotation and append operations are serialized when
+multiple Neovim processes use the same diagnostic path.
 
 The important options are: >lua
 
@@ -870,7 +871,9 @@ The workspace settings layer is also usable independently: >lua
   assert(settings:write(overrides))
 <
 The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
-`write(settings)`, and `update(patch)`.
+`write(settings)`, and `update(patch)`. Settings updates and input-history
+additions reload and merge their current file while holding a cross-process
+lock.
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
 
@@ -1262,8 +1265,44 @@ Controller exposes `branch`, `select_branch`, `fork`, and `select_fork`.
 
 `store:info()` returns the path, ID, cwd, optional name and parent, creation
 timestamp, latest message activity, message count, and first user message.
-`storage.list_sessions(directory, cwd)` returns these values in recent-activity
-order.
+`storage.list_sessions(directory, cwd)` returns picker records containing the
+path, optional parent, bounded display text, and filesystem modification time
+in recent-activity order.
+
+Each workspace has a disposable `session-index.json` mapping session filenames
+to bounded display text and an optional parent path. Filesystem modification
+times provide recent-activity ordering. The index is written atomically when a
+session is first persisted, named, or forked. Concurrent Neovim processes
+merge changes under a bounded lock. Session JSONL remains authoritative:
+listing sessions rebuilds a missing or malformed index and repairs missing
+entries. Conversation appends update the session file mtime used for ordering
+without rewriting the index. Reads and appends of an existing session are
+serialized by a per-session lock.
+
+Reusable file locks are available to custom persistence layers: >lua
+
+  local lock = require("neoagent.file_lock").new({
+    path = persistence_path .. ".lock",
+    timeout_ms = 15000,
+    poll_ms = 50,
+    stale_ms = 120000,
+    -- refresh_ms = 30000,
+  })
+
+  local result = assert(lock:with(function()
+    return read_modify_write()
+  end))
+
+  local lease = assert(lock:acquire())
+  local ok, err = lease:release()
+<
+The lock parent directory must exist. Lock files contain a random ownership
+token and use mode `0600` by default. Acquisition retries only contention,
+recovers stale files, and returns structured `file_lock` errors. `with()`
+releases the lease after successful, failed, or throwing callbacks. An async
+mutation running inside `neoagent.async.run()` may call `acquire_async()`;
+acquisition is cancellable, and `refresh_ms` maintains the lease timestamp for
+long operations.
 
 CONTEXT COMPACTION                                  *neoagent-compaction*
 

@@ -1,10 +1,26 @@
 local fs = require("neoagent.fs")
+local file_lock = require("neoagent.file_lock")
 local tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 
 local M = {}
 local Store = {}
 Store.__index = Store
+
+local INDEX_FILENAME = "session-index.json"
+local INDEX_VERSION = 1
+local INDEX_LOCK_TIMEOUT_MS = 15000
+local INDEX_LOCK_POLL_MS = 50
+local INDEX_LOCK_STALE_MS = 120000
+
+local function session_lock(path)
+  return file_lock.new({
+    path = path .. ".lock",
+    timeout_ms = INDEX_LOCK_TIMEOUT_MS,
+    poll_ms = INDEX_LOCK_POLL_MS,
+    stale_ms = INDEX_LOCK_STALE_MS,
+  })
+end
 
 local function random_id(bytes)
   return (vim.uv.random(bytes or 8):gsub(".", function(char)
@@ -37,6 +53,104 @@ end
 local function copy_metadata(value)
   if type(value) == "table" and next(value) == nil then return vim.empty_dict() end
   return util.copy(value)
+end
+
+local function mtime_ms(stat)
+  local mtime = stat and stat.mtime or {}
+  return (tonumber(mtime.sec) or 0) * 1000
+    + math.floor((tonumber(mtime.nsec) or 0) / 1000000)
+end
+
+local function empty_index()
+  return { version = INDEX_VERSION, sessions = vim.empty_dict() }
+end
+
+local function index_entry(value)
+  if type(value) ~= "table" or util.is_list(value)
+      or type(value.text) ~= "string" or value.text == "" then
+    return nil
+  end
+  if value.parent_session ~= nil and value.parent_session ~= vim.NIL
+      and type(value.parent_session) ~= "string" then
+    return nil
+  end
+  local result = { text = value.text }
+  if type(value.parent_session) == "string" then
+    result.parent_session = value.parent_session
+  end
+  return result
+end
+
+local function read_index(path)
+  if not vim.uv.fs_stat(path) then return empty_index() end
+  local data = fs.read(path)
+  if not data then return empty_index() end
+  local ok, decoded = pcall(vim.json.decode, data)
+  if not ok or type(decoded) ~= "table" or util.is_list(decoded)
+      or decoded.version ~= INDEX_VERSION
+      or type(decoded.sessions) ~= "table" or util.is_list(decoded.sessions) then
+    return empty_index()
+  end
+  local sessions = vim.empty_dict()
+  for filename, value in pairs(decoded.sessions) do
+    if type(filename) == "string" and filename ~= ""
+        and not filename:find("[/\\]") and filename:sub(-6) == ".jsonl" then
+      local selected = index_entry(value)
+      if selected then sessions[filename] = selected end
+    end
+  end
+  return { version = INDEX_VERSION, sessions = sessions }
+end
+
+local function write_index(path, document)
+  local temporary = path .. "." .. random_id(8) .. ".tmp"
+  local ok, err = fs.write_all(temporary,
+    util.json_encode(document) .. "\n", "wx", 384)
+  if not ok then return nil, err end
+  ok, err = vim.uv.fs_rename(temporary, path)
+  if not ok then
+    vim.uv.fs_unlink(temporary)
+    return nil, err
+  end
+  vim.uv.fs_chmod(path, 384)
+  return true
+end
+
+local function modify_index(path, modifier)
+  local ok, result = pcall(function()
+    return file_lock.new({
+      path = path .. ".lock",
+      timeout_ms = INDEX_LOCK_TIMEOUT_MS,
+      poll_ms = INDEX_LOCK_POLL_MS,
+      stale_ms = INDEX_LOCK_STALE_MS,
+    }):with(function()
+      local document = read_index(path)
+      modifier(document.sessions)
+      return write_index(path, document)
+    end)
+  end)
+  if not ok then return nil end
+  return result
+end
+
+local function workspace_index_path(workspace)
+  return fs.join(workspace.directory, INDEX_FILENAME)
+end
+
+local function session_index_path(path)
+  local sessions_directory = vim.fs.dirname(path)
+  if vim.fs.basename(sessions_directory) ~= "sessions" then return nil end
+  return fs.join(vim.fs.dirname(sessions_directory), INDEX_FILENAME)
+end
+
+local function picker_text(value)
+  value = type(value) == "string" and value or ""
+  value = util.trim(value:gsub("[%c%s]+", " "))
+  if value == "" then value = "(no messages)" end
+  if vim.fn.strchars(value) > 80 then
+    value = vim.fn.strcharpart(value, 0, 80) .. "…"
+  end
+  return value
 end
 
 local function rebuild(store)
@@ -171,6 +285,22 @@ function Store:info()
   }
 end
 
+local function store_index_entry(store)
+  local info = store:info()
+  local result = { text = picker_text(info.name or info.first_message) }
+  if store._parent_session then result.parent_session = store._parent_session end
+  return result
+end
+
+local function update_store_index(store)
+  if not store._index_path then return end
+  local filename = vim.fs.basename(store._path)
+  local value = store_index_entry(store)
+  modify_index(store._index_path, function(sessions)
+    sessions[filename] = value
+  end)
+end
+
 function Store:metadata()
   return {
     id = self._id,
@@ -219,7 +349,8 @@ function Store:_append(entry_type, values, persist)
     return true, nil, util.copy(entry), projection
   end
 
-  if not self._persisted then
+  local first_persistence = not self._persisted
+  if first_persistence then
     local header = {
       type = "session",
       version = 3,
@@ -250,13 +381,21 @@ function Store:_append(entry_type, values, persist)
     self._persisted = true
     self._pending = {}
   else
-    local ok, err = fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
+    local ok, err = session_lock(self._path):with(function()
+      return fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
+    end)
     if not ok then
+      if type(err) == "table" and err.kind == "file_lock" then
+        err = err.detail or err.message
+      end
       return nil, storage_error("Failed to append session entry", err)
     end
   end
   local committed, projection = commit_entry(self, entry)
   if not committed then return nil, storage_error("Failed to update session", projection) end
+  if first_persistence or entry_type == "session_info" then
+    update_store_index(self)
+  end
   return true, nil, util.copy(entry), projection
 end
 
@@ -302,6 +441,7 @@ function M.new(opts)
     _id = id,
     _timestamp = timestamp,
     _path = fs.join(workspace.sessions_directory, filename),
+    _index_path = workspace_index_path(workspace),
     _persisted = false,
     _messages = {},
     _entries = {},
@@ -316,8 +456,11 @@ end
 
 function M.open(path)
   path = fs.normalize(path)
-  local data, read_err = fs.read(path)
+  local data, read_err = session_lock(path):with(function() return fs.read(path) end)
   if not data then
+    if type(read_err) == "table" and read_err.kind == "file_lock" then
+      read_err = read_err.detail or read_err.message
+    end
     return nil, storage_error("Failed to read session", read_err)
   end
   local lines = vim.tbl_filter(function(line) return util.trim(line) ~= "" end,
@@ -357,6 +500,7 @@ function M.open(path)
     _id = header.id,
     _timestamp = header.timestamp,
     _path = path,
+    _index_path = session_index_path(path),
     _persisted = true,
     _messages = {},
     _entries = entries,
@@ -443,6 +587,7 @@ function M.fork(source, opts)
   store._leaf_id = forked.leaf_id
   local rebuilt, rebuild_err = rebuild(store)
   if not rebuilt then return nil, storage_error("Failed to open forked session", rebuild_err) end
+  update_store_index(store)
   return store
 end
 
@@ -470,10 +615,51 @@ function M.list(directory, cwd)
 end
 
 function M.list_sessions(directory, cwd)
+  local workspace = require("neoagent.workspace_settings").new({
+    directory = directory,
+    root = cwd,
+  })
+  local index_path = workspace_index_path(workspace)
+  local indexed = read_index(index_path)
   local sessions = {}
+  local repairs = {}
+  local present = {}
   for _, path in ipairs(M.list(directory, cwd)) do
-    local store = M.open(path)
-    if store then sessions[#sessions + 1] = store:info() end
+    local filename = vim.fs.basename(path)
+    present[filename] = true
+    local value = indexed.sessions[filename]
+    if not value then
+      local store = M.open(path)
+      if store then
+        value = store_index_entry(store)
+        repairs[filename] = value
+      end
+    end
+    local stat = value and vim.uv.fs_stat(path)
+    if value and stat then
+      sessions[#sessions + 1] = {
+        path = path,
+        parent_session = value.parent_session,
+        text = value.text,
+        modified_at = mtime_ms(stat),
+      }
+    end
+  end
+  local stale = {}
+  for filename in pairs(indexed.sessions) do
+    if not present[filename] then stale[#stale + 1] = filename end
+  end
+  if next(repairs) or #stale > 0 then
+    modify_index(index_path, function(values)
+      for filename, value in pairs(repairs) do
+        if not values[filename] then values[filename] = value end
+      end
+      for _, filename in ipairs(stale) do
+        if not vim.uv.fs_stat(fs.join(workspace.sessions_directory, filename)) then
+          values[filename] = nil
+        end
+      end
+    end)
   end
   table.sort(sessions, function(a, b)
     if a.modified_at == b.modified_at then return a.path > b.path end

@@ -17,14 +17,6 @@ local function relative_age(modified_at, now)
   return math.floor(days / 365) .. "y"
 end
 
-local function session_text(info)
-  local text = info.name or info.first_message or "(no messages)"
-  text = util.trim(text:gsub("[%c%s]+", " "))
-  if text == "" then text = "(no messages)" end
-  if vim.fn.strchars(text) > 80 then text = vim.fn.strcharpart(text, 0, 80) .. "…" end
-  return text
-end
-
 function M.build(sessions, current_path)
   local by_path = {}
   local nodes = {}
@@ -67,8 +59,8 @@ function M.build(sessions, current_path)
     local info = util.copy(node.info)
     info.current = current ~= nil and fs.canonical(info.path) == current
     local marker = info.current and "● " or "  "
-    info.label = string.format("%s%s%s  %d  %s", marker, prefix .. branch,
-      session_text(info), info.message_count, relative_age(info.modified_at, now))
+    info.label = string.format("%s%s%s  %s", marker, prefix .. branch,
+      info.text, relative_age(info.modified_at, now))
     choices[#choices + 1] = info
     local child_prefix = prefix
     if branch ~= "" then child_prefix = child_prefix .. (is_last and "   " or "│  ") end

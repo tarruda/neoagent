@@ -351,6 +351,32 @@ describe("neoagent provider authentication", function()
     vim.fn.delete(directory, "rf")
   end)
 
+  it("serializes direct credential writes with a concurrent writer", function()
+    local directory = vim.fn.tempname()
+    local path = directory .. "/auth.json"
+    local lock_path = path .. ".lock"
+    local store = store_module.new(path)
+    assert(store:write("first", { value = 1 }))
+    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+
+    local concurrent_done, concurrent_err
+    vim.defer_fn(function()
+      local written, write_err = require("neoagent.fs").write_all(path,
+        vim.json.encode({ first = { value = 1 }, concurrent = { value = 2 } }) .. "\n")
+      local removed, remove_err = vim.uv.fs_unlink(lock_path)
+      concurrent_err = write_err or remove_err
+      concurrent_done = written and removed
+    end, 20)
+
+    assert(store:write("local", { value = 3 }))
+    assert(vim.wait(1000, function() return concurrent_done or concurrent_err ~= nil end, 5))
+    assert.is_nil(concurrent_err)
+    assert.are.same({ value = 1 }, store:read("first"))
+    assert.are.same({ value = 2 }, store:read("concurrent"))
+    assert.are.same({ value = 3 }, store:read("local"))
+    vim.fn.delete(directory, "rf")
+  end)
+
   it("stores credentials only when written and uses restrictive modes", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/nested/auth.json"

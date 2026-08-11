@@ -1,3 +1,4 @@
+local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
@@ -28,7 +29,7 @@ function History:load()
   return history
 end
 
-function History:write(history)
+local function encode_history(self, history)
   assert(util.is_list(history), "history must be a list")
   local lines = {}
   for index = math.min(#history, self.limit), 1, -1 do
@@ -36,16 +37,27 @@ function History:write(history)
       "history entries must be non-empty strings")
     lines[#lines + 1] = vim.json.encode(history[index])
   end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+local function prepare_directory(self)
   local existed = vim.uv.fs_stat(self.directory) ~= nil
   local ok, err = fs.mkdirp(self.directory)
   if not ok then return nil, history_error("Failed to create workspace directory", err) end
   if not existed then vim.uv.fs_chmod(self.directory, 448) end
+  return true
+end
 
-  local suffix = vim.uv.random(8):gsub(".", function(char)
+local function replace(self, history, encoded)
+  local bytes, random_err = vim.uv.random(8)
+  if not bytes then
+    return nil, history_error("Failed to create input history temporary file", random_err)
+  end
+  local suffix = bytes:gsub(".", function(char)
     return string.format("%02x", char:byte())
   end)
   local temporary = self.path .. "." .. suffix .. ".tmp"
-  ok, err = fs.write_all(temporary, table.concat(lines, "\n") .. "\n", "wx", 384)
+  local ok, err = fs.write_all(temporary, encoded, "wx", 384)
   if not ok then return nil, history_error("Failed to write input history", err) end
   ok, err = vim.uv.fs_rename(temporary, self.path)
   if not ok then
@@ -56,15 +68,38 @@ function History:write(history)
   return vim.list_slice(history, 1, self.limit)
 end
 
+local function with_lock(self, fn)
+  local result, err = file_lock.new({ path = self.path .. ".lock" }):with(fn)
+  if not result and type(err) == "table" and err.kind == "file_lock" then
+    local releasing = err.code == "release" or err.code == "ownership"
+    local action = releasing and "release" or "acquire"
+    return nil, history_error("Failed to " .. action .. " input history lock",
+      err.detail or err.message)
+  end
+  return result, err
+end
+
+function History:write(history)
+  local encoded = encode_history(self, history)
+  local prepared, prepare_err = prepare_directory(self)
+  if not prepared then return nil, prepare_err end
+  return with_lock(self, function() return replace(self, history, encoded) end)
+end
+
 function History:add(text)
   assert(type(text) == "string", "history input must be a string")
   text = util.trim(text)
-  local history, err = self:load()
-  if not history then return nil, err end
-  if text == "" or history[1] == text then return history end
-  table.insert(history, 1, text)
-  if #history > self.limit then table.remove(history) end
-  return self:write(history)
+  if text == "" then return self:load() end
+  local prepared, prepare_err = prepare_directory(self)
+  if not prepared then return nil, prepare_err end
+  return with_lock(self, function()
+    local history, read_err = self:load()
+    if not history then return nil, read_err end
+    if history[1] == text then return history end
+    table.insert(history, 1, text)
+    if #history > self.limit then table.remove(history) end
+    return replace(self, history, encode_history(self, history))
+  end)
 end
 
 function M.new(opts)
