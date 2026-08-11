@@ -157,6 +157,7 @@ The important options are: >lua
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
+      style = "pi",          -- pi/codex
       position = "center",    -- auto/left/right/top/bottom/center
       width = nil,
       height = nil,
@@ -254,7 +255,7 @@ matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, `set_position`, `set_input`, `get_input`, `view`,
+`cycle`, `set_position`, `set_transcript_style`, `set_input`, `get_input`, `view`,
 `rendered_controller`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
 and shares workspace input history. `view()` returns the owned View after its
@@ -268,8 +269,10 @@ active. A Controller's initial Session is created on its first send.
 existing Controller and returns the previous active Controller.
 `set_default_window(window)` installs an assembled Window and returns the
 previous Window. `default()` and `default_window()` return the active Controller
-and command-facing Window. `set_position(position)` updates that Window and
-`select_position()` opens its position selector. Another `setup()` destroys the
+and command-facing Window. `set_position(position)` updates that Window,
+`select_position()` opens its position selector, and
+`set_transcript_style(style)` replaces its live transcript flavor. Another
+`setup()` destroys the
 Controllers owned by an earlier `setup()` call. An active Run on either owned
 Controller blocks the replacement.
 
@@ -785,8 +788,11 @@ with: >lua
 
 `update_plan` accepts an optional explanation and a complete list of
 `{ step, status }` items, where status is `pending`, `in_progress`, or
-`completed`. It returns `Plan updated` and renders successful calls as a Codex
-checklist. Each tool instance tracks current plans by an opaque Session ID and
+`completed`. It returns `Plan updated`. Both transcript flavors render a
+successful call as a checklist. Codex animates a pending update and heads the
+finished checklist with `• Updated Plan`; Pi keeps its ordinary generated title
+and state-colored tool card.
+Each tool instance tracks current plans by an opaque Session ID and
 reconstructs them from the latest successful call on the active conversation
 path. `tool.current({ session_id = id })` returns a copy for integrations that
 receive the ID through execution or `on_messages`. Session persistence carries
@@ -887,6 +893,7 @@ lock.
   :NeoagentModel [provider/model] Select a configured Model or choose one.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.
+  :NeoagentTranscriptStyle style  Select `pi` or `codex` transcript chrome.
   :NeoagentLogin [method]         Store an API key or authenticate an account.
   :NeoagentLogin!                 Cancel an active login.
   :NeoagentLogout [method]        Remove a stored credential or select one.
@@ -907,8 +914,10 @@ and yank. Dialogs render without stealing focus while the input draft
 contains text, and the transcript, dialog, and card-details buffers remain
 in Normal mode. Set `ui.scroll_on_submit`,
 `ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
-automatic scrolling. The input footer lists the highest-priority configured
-mappings for the focused surface and mode that fit its current width.
+automatic scrolling. The input footer lists the highest-priority Neoagent
+actions for the focused surface that fit its current width. Ordinary Neovim
+editing keys such as Insert-mode `<C-j>` are available without appearing in
+the footer.
 
 User and assistant text renders Markdown in borderless cards whose long
 lines soft-wrap at word boundaries. Assistant cards show the complete
@@ -932,21 +941,64 @@ footer displays context usage when the selected Model declares a
 
 Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
-show complete card lines with soft wrapping. Compaction cards present their
-summary in at most 20 visible card lines and keep each preview line clipped;
-their details view contains the complete soft-wrapped summary. A Unicode
-outline follows the card beneath the cursor while the transcript is focused,
+show complete card lines with soft wrapping.
+
+`ui.style` selects the initial transcript flavor. The default `"pi"` flavor
+uses shaded, state-colored tool cards and a shaded compaction card. The
+`"codex"` flavor uses transparent tool and compaction cards, prefixes tool
+headings with `•`, and draws a muted horizontal rule where a group of tool
+cards meets assistant prose or thinking. Consecutive tool cards share one
+group without rules between them. Each rule touches the tool group and keeps
+one empty line between the rule and prose or thinking. Read and shell headings
+use activity wording such as `• Reading`, `• Read`, `• Running`, and `• Ran`.
+Write, edit, grep, and find use `Writing`/`Written`, `Editing`/`Edited`,
+`Searching`/`Searched`, and `Finding`/`Found`. Read, grep, and find cards show
+only the heading in the transcript and remain selectable for complete details.
+Shell cards place wrapped command continuations under a `│` gutter, keeping two
+continuation rows and an omitted-line count. Completed calls show at most five
+output rows under a `└` gutter, retaining rows from both ends around an
+omitted-line count; empty output appears as `(no output)`. Shell preview output
+uses normal text attributes and preserves parsed terminal colors. Write headings
+adopt a streamed target path as soon as it is available. Write cards show at
+most three source rows and an omitted-line count. Successful Codex Edit cards
+show added and removed counts plus at most ten numbered patch rows; context,
+added, and removed lines retain their patch colors. Expanded details show the
+complete numbered patch. Pi Edit cards use their ordinary diff presentation.
+Activity bullets are muted while active, green after success, and red after
+failure. User cards blend 12% white into a dark editor background or 4% black
+into a light editor background, matching Codex. An editor background without a
+resolved RGB value leaves the card transparent. Use
+`:NeoagentTranscriptStyle pi` or
+`:NeoagentTranscriptStyle codex` to re-render the current Window immediately;
+the Session messages and tool results remain unchanged.
+
+Compaction cards present their summary in at most 20 visible card lines and
+keep each preview line clipped; their details view contains the complete
+soft-wrapped summary. A Unicode outline follows the card beneath the cursor
+while the transcript is focused,
 and tool card outlines carry an `<CR> to expand` hint in the bottom border
-while hovered. The
-configured `card_details` mapping opens that card's complete content in a
-scrollable, read-only floating window that soft-wraps long lines and is
-titled by card kind (`Tool call`, `Thinking`, `Text`, or `Card details`).
-Shell
-details include the complete command and all output retained by the tool
-result, and thinking details reveal the full reasoning trace. Ctrl-C closes
-the details window and returns to the transcript. Text and Thinking details
-render Markdown by default. Press `r`, configured by `card_raw`, to toggle the
-original raw Markdown. The title shows the mapping and the view it will open.
+while hovered. A multiline Codex tool card continues its top border after the
+visible heading. Its bottom border replaces an adjacent tool-to-prose group
+separator while hovered, and otherwise occupies the card's trailing spacing
+row. The underlying separator or spacing returns when focus leaves the card. A
+one-line Codex tool card keeps its heading visible and shows the hint in a
+right-aligned `[<CR> to expand]` badge. The badge moves an existing ellipsis
+left or adds one when it overlaps the heading. The configured
+`card_details` mapping opens that card's complete content in a scrollable,
+read-only floating window that soft-wraps long lines and is titled by card kind
+(`Tool call`, `Thinking`, `Text`, or `Card details`). Shell details include the
+complete command and all output retained by the tool result. Read details
+include the complete file contents with target-file syntax. Grep and find
+details include their complete retained results. Codex read, grep, find, and
+shell outputs use the normal foreground and attributes as their base, while
+shell output applies parsed terminal colors. Codex Write bodies use the normal
+foreground as their base. Visible Write previews and expanded Read and Write
+details apply Neovim syntax only to file-content rows, preserving tool UI text.
+Thinking details reveal the full reasoning trace.
+Ctrl-C closes the details window and returns to the transcript. Text and
+Thinking details render Markdown by default. Press `r`, configured by
+`card_raw`, to toggle the original raw Markdown. The title shows the mapping and
+the view it will open.
 
 Enter queues steering while the active Controller is working. The queue appears
 in the transcript and drains one message after the current assistant response
@@ -972,7 +1024,6 @@ Default mappings:
 
   <CR>        Accept popup completion, or send from input in Normal or Insert
               mode; open full details for the transcript card under the cursor.
-  <C-j>       Insert a newline from input Insert mode.
   <Tab>       Open filename completion or select the next popup item in Insert
               mode.
   <C-c>       Clear a nonempty draft without interrupting. With an empty draft,
@@ -983,7 +1034,11 @@ Default mappings:
               Jump to the previous or next transcript card; counts are
               supported in Normal mode. Alt-K or Ctrl-Up focuses the newest
               card from input Normal or Insert mode. Alt-J or Ctrl-Down
-              focuses the input in Insert mode from the newest card.
+              focuses the input in Insert mode from the newest card. These
+              mappings replace open card details with the adjacent card;
+              moving below the final card closes details and focuses input.
+  <C-w>j      Focus input from the transcript.
+  <C-w>k      Focus the transcript from input Normal or Insert mode.
   r           Toggle rendered and raw Markdown in Text or Thinking details.
   <S-Tab>     Cycle through supported thinking levels.
   <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
@@ -999,16 +1054,22 @@ Default mappings:
 
 Set a value in `ui.mappings` to a non-empty lhs string or non-empty list of
 strings, or to `false` to disable it. Card actions use `card_details`,
-`card_raw`, `card_previous`, and `card_next`.
+`card_raw`, `card_previous`, and `card_next`. Paired-window focus uses
+`focus_input` and `focus_transcript`.
 Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
 With no argument, the command opens a position selector. Position changes are
 saved when workspace settings are enabled. `ui.width` and `ui.height` accept a
 fraction in `(0, 1]`, an integer greater than one, or `nil` for the layout
 default.
 Card colors are customizable through `NeoagentUserBackground`,
+`NeoagentCodexUserBackground`,
 `NeoagentToolPendingBackground`, `NeoagentToolSuccessBackground`, and
-`NeoagentToolErrorBackground`. Markdown highlight groups begin with
-`NeoagentMarkdown`. All Neoagent highlights use Neovim's `default` behavior.
+`NeoagentToolErrorBackground`. Codex tool status bullets use
+`NeoagentCodexToolSuccess` and `NeoagentCodexToolError`; their defaults follow
+ANSI green and red. Codex Patch additions and removals use `NeoagentGreen` and
+`NeoagentRed` with the same ANSI shades and normal text weight. Markdown
+highlight groups begin with `NeoagentMarkdown`. All Neoagent highlights use
+Neovim's `default` behavior.
 
 ===============================================================================
 5. CORE APIS                                                   *neoagent-core-api*
@@ -1152,14 +1213,24 @@ state by that value and derive it entirely from conversation messages. Direct
 `agent.run()` remains Session-independent and does not call this hook.
 
 A tool may also define a bundled-View `render(opts)` callback. `opts` contains
-`arguments`, the current `result`, `state`, visible `width`, `full`, and the
-current `spinner` frame. Return `{ card?, background?, animated?, lines =
-{...} }`, where each line is a list of `{ text, style? }` segments. `style` is
-one or more of `accent`, `bold`, `cyan`, `error`, `italic`, `muted`, and
-`strike`; `card` defaults to true. Set `background = false` for a transparent
-card. Set `animated = true` to refresh the presentation with new spinner
-frames while the View is active. Callback errors and malformed presentations
-use the ordinary tool card.
+`arguments`, the current `result`, `state`, transcript `style`, visible `width`,
+`full`, and the current `spinner` frame. Return
+`{ default?, card?, background?, title?, status?, animated?, lines?, command? }`.
+`title` is one line or `true` to retain the ordinary generated title. `lines`
+is a list of lines; each line contains `{ text, style? }`
+segments. Each segment's text occupies one physical line; represent line
+breaks with separate `lines` entries. `style` is one or more of `accent`,
+`bold`, `cyan`, `error`, `green`, `italic`, `muted`, `red`, and `strike`. Set
+`default = true` and omit `lines` to retain the ordinary tool output; `title`
+then replaces its title line. `card` defaults to true. Set `background = false`
+for a transparent card. Set `status = true` to let the transcript flavor style
+the title marker from the current tool state. Set `animated = true` to refresh
+the presentation with new spinner frames while the View is active. Callback
+errors and malformed presentations use the ordinary tool card. A compact
+presentation may set `command` to a shell command and supply an explicit title;
+it omits `default` and `lines`. The bundled View combines that command with the
+current result using the Codex command and output gutters. Full presentations
+retain the complete ordinary command and result.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.

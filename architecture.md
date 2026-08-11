@@ -139,10 +139,26 @@ neither imports a Session nor interprets tool state.
 
 Tools may also carry a bundled-View `render(opts)` callback. The Window resolves
 the active tool by name, and the View converts its line-and-segment
-presentation into transcript text and highlights. Semantic presentations can
-request transparent cards and active spinner refreshes. Tool-specific
-rendering therefore stays on the tool value while the View owns Neovim drawing
-and a malformed callback falls back to the generic card.
+presentation into transcript text and highlights through an explicit transcript
+flavor value. Presentation segments occupy one physical line, preserving the
+buffer API's line-oriented contract. Semantic presentations can retain generic
+output while overriding the title, retain the generated title with custom
+content, supply complete content, describe a compact command preview, request
+transparent cards, apply tool state to flavor-owned title markers, and
+activate spinner refreshes. Transcript block rendering receives its adjacent
+blocks so
+flavors can express grouping without placing presentation state in Sessions.
+Tool-specific rendering stays on the tool value while the View owns Neovim
+drawing, card chrome, and malformed-presentation fallback. Bundled filesystem
+and process tools use state-aware Codex activity titles. Read, grep, and find
+keep heading-only transcript cards and expose their generic output through full
+card details. Shell supplies a bounded command and output preview with Codex
+gutters, middle truncation, normal output attributes, and parsed ANSI colors.
+Write retains a three-line source preview with filetype syntax. The Edit tool's
+semantic renderer converts its retained unified patch into numbered Codex rows,
+bounds the transcript preview, and supplies the complete patch to card details.
+The bundled plan tool supplies checklist content for both flavors while Pi
+retains its generated title and card chrome.
 
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
 composition can add dialogs, sandboxing, logging, or post-edit checks
@@ -538,16 +554,37 @@ The Window:
 The passive View consumes Controller snapshots and updates and invokes callbacks
 supplied by the Window. Its replaceable interface keeps presentation independent
 from the model and agent loop. The bundled renderer produces compact transcript
-cards and full card content from the same block values. Transcript cards clip
-lines at the current visible width by default and rebuild after layout changes;
+cards and full card content from the same block values. Each rendered block owns
+its range and decoration extmarks; incremental redraw replaces those marks and
+lets neighboring range anchors track line shifts. Transcript cards clip lines
+at the current visible width by default and rebuild after layout changes;
 configured card wrapping presents their complete lines. The Window supplies a
 tool resolver, so the bundled View can consume an optional semantic renderer
 carried by the active tool without recognizing tool names. The View can omit
-thinking blocks while the Controller and Session retain complete messages. The
-View resolves the card beneath the focused transcript cursor, provides
-count-aware previous and next card motions, draws the card outline in a
+thinking blocks while the Controller and Session retain complete messages.
+Its explicit Pi or Codex flavor selects transcript card chrome. Pi uses its
+fixed user shade plus shaded tool and compaction cards. Codex derives user-card
+shading from the editor background with Codex's light and dark blend ratios,
+uses transparent tool and compaction cards, prefixes tool headings with a
+bullet, and places horizontal rules against the tool side of tool/prose group
+boundaries with one spacer on the prose side. Codex shell summaries wrap and
+bound command and output rows independently. Codex read, grep, find, and shell
+details use the normal foreground as their base, and shell summaries and
+details preserve parsed ANSI spans. A Window can replace the flavor on its live
+View and re-render the complete transcript from the same blocks.
+The flavor also selects an inline details hint for one-line Codex tool cards.
+Multiline Codex tool outlines continue from the visible heading. Their bottom
+edge occupies a following semantic group separator when present and otherwise
+occupies the card's structural trailing spacing row. Other cards use the
+Unicode focus outline. The View resolves the card beneath the focused
+transcript cursor, provides count-aware previous and next card motions across
+the transcript and an open details window, draws focus decoration in a
 presentation namespace, and owns the read-only floating details buffer and
 window.
+Codex Write presentations and expanded Read cards identify their source range
+and target path. The View detects each target filetype and includes its Neovim
+syntax inside the contained transcript or details range, preserving the
+surrounding tool presentation.
 
 An optional dialog source lets an executor inject a lifetime-scoped
 `ctx.dialog` capability and publish bounded asynchronous requests to a Window.
