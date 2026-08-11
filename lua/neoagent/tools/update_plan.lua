@@ -95,7 +95,18 @@ local function wrap_text(text, available)
 end
 
 local function presentation(opts)
-  if type(opts) ~= "table" or opts.state ~= "success" then return nil end
+  if type(opts) ~= "table" then return nil end
+  if opts.state == "pending" or opts.state == "running" then
+    return {
+      animated = true,
+      background = false,
+      lines = { {
+        { text = opts.spinner or "⠋", style = "cyan" },
+        { text = " Updating plan", style = "muted" },
+      } },
+    }
+  end
+  if opts.state ~= "success" then return nil end
   local result = opts.result
   local details = result and type(result.details) == "table"
       and result.details.plan ~= nil and result.details or nil
@@ -124,7 +135,7 @@ local function presentation(opts)
     for _, item in ipairs(arguments.plan) do
       local marker = item.status == "completed" and "✔ " or "□ "
       local style = item.status == "completed" and { "muted", "strike" }
-        or item.status == "in_progress" and { "accent", "bold" }
+        or item.status == "in_progress" and { "cyan", "bold" }
         or "muted"
       for index, line in ipairs(wrap_text(item.step, body_width - 2)) do
         body[#body + 1] = {

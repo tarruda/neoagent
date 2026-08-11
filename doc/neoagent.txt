@@ -905,8 +905,7 @@ contains text, and the transcript, dialog, and card-details buffers remain
 in Normal mode. Set `ui.scroll_on_submit`,
 `ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
 automatic scrolling. The input footer lists the highest-priority configured
-mappings for the focused surface and mode that fit its current width. Card
-navigation labels identify whether the next destination is a card or input.
+mappings for the focused surface and mode that fit its current width.
 
 User and assistant text renders Markdown in borderless cards whose long
 lines soft-wrap at word boundaries. Assistant cards show the complete
@@ -1150,11 +1149,14 @@ state by that value and derive it entirely from conversation messages. Direct
 `agent.run()` remains Session-independent and does not call this hook.
 
 A tool may also define a bundled-View `render(opts)` callback. `opts` contains
-`arguments`, the current `result`, `state`, visible `width`, and `full`.
-Return `{ card?, lines = {...} }`, where each line is a list of
-`{ text, style? }` segments. `style` is one or more of `accent`, `bold`,
-`error`, `italic`, `muted`, and `strike`; `card` defaults to true. Callback
-errors and malformed presentations use the ordinary tool card.
+`arguments`, the current `result`, `state`, visible `width`, `full`, and the
+current `spinner` frame. Return `{ card?, background?, animated?, lines =
+{...} }`, where each line is a list of `{ text, style? }` segments. `style` is
+one or more of `accent`, `bold`, `cyan`, `error`, `italic`, `muted`, and
+`strike`; `card` defaults to true. Set `background = false` for a transparent
+card. Set `animated = true` to refresh the presentation with new spinner
+frames while the View is active. Callback errors and malformed presentations
+use the ordinary tool card.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.
@@ -1271,9 +1273,9 @@ provider context-overflow error. A successful assistant message with
 compacts first when the threshold is reached. A second `length` result finishes
 the interaction, bounding recovery. Subsequent Model requests use the summary
 before retained recent messages; the complete Session tree remains available
-for navigation. Transcript snapshots omit the compacted prefix while preserving
-append order, so retained messages precede the compaction card and messages
-created after compaction follow it. The bundled View presents complete
+for navigation. Transcript snapshots use the same projection, so the compaction
+card precedes retained recent messages and messages created after compaction
+while the compacted prefix remains omitted. The bundled View presents complete
 compaction summaries through the configured `card_details` mapping.
 
 The threshold is `context_window - reserve_tokens`, and recent retention uses

@@ -248,14 +248,12 @@ local function retained_before(path, compaction_index)
   return result
 end
 
-local function compacted_entries(path, summary_first)
+local function compacted_entries(path)
   local compaction_index = latest_compaction(path)
   if not compaction_index then return util.copy(path) end
   local compaction = util.copy(path[compaction_index])
-  local result = {}
-  if summary_first then result[#result + 1] = compaction end
+  local result = { compaction }
   vim.list_extend(result, retained_before(path, compaction_index))
-  if not summary_first then result[#result + 1] = compaction end
   for index = compaction_index + 1, #path do
     result[#result + 1] = util.copy(path[index])
   end
@@ -263,11 +261,11 @@ local function compacted_entries(path, summary_first)
 end
 
 function M.context_entries(path)
-  return compacted_entries(path, true)
+  return compacted_entries(path)
 end
 
 function M.transcript_entries(path)
-  return compacted_entries(path, false)
+  return compacted_entries(path)
 end
 
 function M.messages(entries, context_only)

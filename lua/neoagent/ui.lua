@@ -231,22 +231,24 @@ function View:_input_footer(width)
   local items
   if context == "input_insert" then
     items = {
-      { action = "submit", label = "send" },
+      { action = "select_history", label = "history" },
       { action = "newline", label = "newline" },
-      { action = "card_previous", label = "transcript" },
+      { action = "resume_session", label = "resume" },
+      { action = "select_model", label = "select model" },
       { action = "interrupt", label = "clear/cancel" },
     }
   elseif context == "input_normal" then
     items = {
-      { action = "submit", label = "send" },
-      { action = "card_previous", label = "transcript" },
+      { action = "select_history", label = "history" },
+      { action = "resume_session", label = "resume" },
+      { action = "select_model", label = "select model" },
       { action = "interrupt", label = "clear/cancel" },
     }
   else
     items = {
       { action = "card_details", label = "details" },
-      { action = "card_previous", label = "previous" },
-      { action = "card_next", label = self:_has_card(1) and "next" or "input" },
+      { action = "resume_session", label = "resume" },
+      { action = "select_model", label = "select model" },
       { action = "interrupt", label = "clear/cancel" },
     }
   end
@@ -514,6 +516,14 @@ function View:_sync_spinner()
     if self.destroyed or self.spinner_timer ~= timer then return end
     self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
     self:_refresh_transcript_border()
+    local animated = false
+    for _, block in ipairs(self.blocks) do
+      if block.animated then
+        block.dirty = true
+        animated = true
+      end
+    end
+    if animated then self:_schedule_flush() end
   end))
   self:_schedule_flush()
 end
@@ -598,7 +608,6 @@ View._move_input_history = input._move_input_history
 View.set_input = input.set_input
 
 View._card_at_cursor = cards._card_at_cursor
-View._has_card = cards._has_card
 View._move_card = cards._move_card
 View._clear_card_outline = cards._clear_card_outline
 View._update_overflow_badges = cards._update_overflow_badges

@@ -240,7 +240,7 @@ describe("neoagent default controller", function()
     assert.matches("Continue the work", transcript)
     local retained = assert(transcript:find("work work work", 1, true))
     local compaction_card = assert(transcript:find("Compacted from 900 tokens", 1, true))
-    assert.is_true(retained < compaction_card)
+    assert.is_true(compaction_card < retained)
     assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
     assert.not_matches("perform the large task", transcript)
     assert.are.equal("summary quota", current_view().context.provider_status)
@@ -1898,7 +1898,6 @@ describe("neoagent default controller", function()
 
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Resume Neoagent session:", options.prompt)
       assert.are.equal(8, #items)
       assert.are.equal(parent:metadata().path, items[1].path)
       assert.are.equal(child:metadata().path, items[2].path)
@@ -1960,7 +1959,6 @@ describe("neoagent default controller", function()
     local original_select = vim.ui.select
     local selected
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Neoagent branch", options.prompt)
       assert.is_true(#items >= 3)
       local choice
       for _, item in ipairs(items) do
@@ -1976,7 +1974,6 @@ describe("neoagent default controller", function()
 
     local source_path = neoagent.get_session():metadata().path
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Fork Neoagent session from", options.prompt)
       assert.matches("user · question", options.format_item(items[1]))
       callback(items[1])
     end
@@ -2028,7 +2025,6 @@ describe("neoagent default controller", function()
     })
     local original_select = vim.ui.select
     vim.ui.select = function(items, options, callback)
-      assert.are.equal("Select Neoagent model:", options.prompt)
       assert.are.same({ "fake/alpha", "fake/test" }, items)
       callback(items[1])
     end

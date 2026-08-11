@@ -133,6 +133,10 @@ local function define_highlights()
       ctermfg = vim.o.background == "light" and 24 or 6,
       bold = true,
     },
+    NeoagentCyan = {
+      fg = palette_rgb(6),
+      ctermfg = 6,
+    },
     NeoagentDialogTitle = { bold = true },
     NeoagentMarkdownBold = { bold = true },
     NeoagentMarkdownItalic = { italic = true },
@@ -310,6 +314,7 @@ end
 local function card(content, background, width)
   if width then truncate_card_lines(content, width) end
   local result = rendered()
+  result.animated = content.animated
   if background then add_line(result, "", nil, background) end
   for row, line in ipairs(content.lines) do
     local spans = {}
@@ -407,6 +412,7 @@ end
 local presentation_styles = {
   accent = "NeoagentAccent",
   bold = "NeoagentMarkdownBold",
+  cyan = "NeoagentCyan",
   error = "NeoagentError",
   italic = "NeoagentMarkdownItalic",
   muted = "NeoagentMuted",
@@ -426,6 +432,7 @@ local function custom_tool_content(self, block, args, options)
     state = block.state,
     width = options.width or self:_content_width(),
     full = options.full == true,
+    spinner = self.spinner_frames[self.spinner_frame],
   })
   if not ok or type(presentation) ~= "table"
       or not util.is_list(presentation.lines) then
@@ -467,9 +474,11 @@ local function custom_tool_content(self, block, args, options)
     end
     add_line(content, line, spans)
   end
+  if presentation.animated == true then content.animated = true end
   local background = block.state == "error" and "NeoagentToolErrorBackground"
     or block.state == "success" and "NeoagentToolSuccessBackground"
     or "NeoagentToolPendingBackground"
+  if presentation.background == false then background = nil end
   return content, background, presentation.card ~= false
 end
 

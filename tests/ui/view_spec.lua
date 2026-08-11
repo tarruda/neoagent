@@ -104,21 +104,22 @@ describe("neoagent.ui", function()
 
   it("builds a bounded input footer from configured mappings", function()
     local result = view({ mappings = {
-      submit = { "<C-s>", "<CR>" },
+      select_history = { "<C-r>", "<C-s>" },
+      resume_session = "<A-r>",
+      select_model = "<A-m>",
       newline = false,
-      card_previous = "g[",
       interrupt = false,
     } })
-    assert.are.equal(" <C-s> send · g[ transcript ",
+    assert.are.equal(" <C-r> history · <A-r> resume · <A-m> select model ",
       result:_input_footer(80))
     local narrow = result:_input_footer(18)
     assert.is_true(vim.fn.strdisplaywidth(narrow) <= 18)
-    assert.matches("^ <C%-s>", narrow)
-    assert.is_not_nil(narrow:find("<C%-s> send"))
-    assert.is_nil(narrow:find("transcript", 1, true))
+    assert.matches("^ <C%-r>", narrow)
+    assert.is_not_nil(narrow:find("<C%-r> history"))
+    assert.is_nil(narrow:find("select model", 1, true))
   end)
 
-  it("updates input mapping hints for focus, mode, and card position", function()
+  it("updates input mapping hints for focus and mode", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "first" },
@@ -136,38 +137,29 @@ describe("neoagent.ui", function()
     end
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel "
+        == " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
     end))
 
     vim.cmd("stopinsert")
     vim.api.nvim_exec_autocmds("InsertLeave", { buffer = result.input_buf })
     assert(vim.wait(1000, function()
-      return footer() == " <CR> send · <A-k> transcript · <C-c> clear/cancel "
+      return footer()
+        == " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
     end))
 
     result:focus_transcript()
-    local rows = {}
-    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
       result.transcript_buf, 0, -1, false)) do
-      if line:find("first", 1, true) then rows.first = row end
-      if line:find("latest", 1, true) then rows.latest = row end
+      if line:find("first", 1, true) then row = index break end
     end
-    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.first, 0 })
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
       buffer = result.transcript_buf,
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · <A-k> previous · <A-j> next · <C-c> clear/cancel "
-    end))
-
-    vim.api.nvim_win_set_cursor(result.transcript_win, { rows.latest, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
-    })
-    assert(vim.wait(1000, function()
-      return footer()
-        == " <CR> details · <A-k> previous · <A-j> input · <C-c> clear/cancel "
+        == " <CR> details · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
     end))
   end)
 
@@ -1065,6 +1057,59 @@ describe("neoagent.ui", function()
     assert.not_matches("fallback unstyled", transcript)
   end)
 
+  it("renders streamed update_plan calls as transparent spinner cards", function()
+    local result = view(
+      { position = "center", width = 44 },
+      { require("neoagent.tools.update_plan").new() })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    result:apply({
+      type = "tool_call_delta", index = 0, id = "plan",
+      name = "update_plan", arguments_delta = '{"plan":[',
+    })
+
+    local function updating_line()
+      for _, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find("Updating plan", 1, true) then return line end
+      end
+    end
+    assert(vim.wait(1000, function() return updating_line() ~= nil end))
+    local initial = updating_line()
+    assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
+    assert.is_table(result.blocks[1].card)
+    assert(vim.wait(1000, function()
+      local current = updating_line()
+      return current ~= nil and current ~= initial
+    end))
+
+    local arguments = {
+      plan = { { step = "Implement the UI", status = "in_progress" } },
+    }
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = { {
+        type = "toolCall", id = "plan", name = "update_plan",
+        arguments = arguments,
+      } },
+    } })
+    result:apply({ type = "tool_start", call = {
+      id = "plan", name = "update_plan", arguments = arguments,
+    } })
+    assert(vim.wait(1000, function() return updating_line() ~= nil end))
+    result:apply({
+      type = "tool_end",
+      call = { id = "plan", name = "update_plan", arguments = arguments },
+      message = {
+        role = "toolResult", toolCallId = "plan", toolName = "update_plan",
+        isError = false, content = { { type = "text", text = "Plan updated" } },
+      },
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("Updated Plan", 1, true) ~= nil
+    end))
+    assert.is_nil(updating_line())
+  end)
+
   it("renders successful update_plan calls like Codex todo lists", function()
     local result = view(
       { position = "center", width = 44 },
@@ -1114,7 +1159,10 @@ describe("neoagent.ui", function()
     end
     assert.is_true(groups(0).NeoagentMarkdownBold)
     assert.is_true(groups(2).NeoagentMarkdownStrike)
-    assert.is_true(groups(3).NeoagentAccent)
+    assert.is_true(groups(3).NeoagentCyan)
+    assert.are.equal(6, vim.api.nvim_get_hl(0, {
+      name = "NeoagentCyan", link = false,
+    }).ctermfg)
     assert.is_true(groups(3).NeoagentMarkdownBold)
     assert.is_true(groups(4).NeoagentMuted)
   end)
@@ -1861,7 +1909,7 @@ describe("neoagent.ui", function()
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
     assert.are.equal(
-      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel ",
+      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
@@ -1879,7 +1927,7 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.are.equal(
-      " <CR> send · <C-j> newline · <A-k> transcript · <C-c> clear/cancel ",
+      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))

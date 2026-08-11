@@ -200,6 +200,73 @@ describe("neoagent process runner", function()
     }, calls)
   end)
 
+  it("reports process supervisor, spawn, and attachment setup failures", function()
+    local tree_module = jit.os == "Windows"
+      and "neoagent.process.windows" or "neoagent.process.posix"
+    local original_tree = package.loaded[tree_module]
+    local original_process = package.loaded["neoagent.process"]
+    local original_system = vim.system
+    local function runner(tree)
+      package.loaded[tree_module] = tree
+      package.loaded["neoagent.process"] = nil
+      return require("neoagent.process")
+    end
+    local ok, err = pcall(function()
+      local failed = complete(function()
+        return runner({
+          detach = false,
+          new = function() return nil, "supervisor failed" end,
+        }).run({ "true" })
+      end)
+      assert.is_false(failed.ok)
+      assert.matches("Failed to create process supervisor", failed.error.message)
+
+      local closed
+      vim.system = function() error("spawn failed") end
+      failed = complete(function()
+        return runner({
+          detach = false,
+          new = function()
+            return {
+              close = function(_, force) closed = force end,
+            }
+          end,
+        }).run({ "true" })
+      end)
+      assert.is_false(failed.ok)
+      assert.matches("Failed to start process", failed.error.message)
+      assert.is_true(closed)
+
+      local killed
+      closed = nil
+      vim.system = function()
+        return {
+          pid = 42,
+          kill = function(_, signal) killed = signal end,
+        }
+      end
+      failed = complete(function()
+        return runner({
+          detach = false,
+          new = function()
+            return {
+              attach = function() return nil, "attach failed" end,
+              close = function(_, force) closed = force end,
+            }
+          end,
+        }).run({ "true" })
+      end)
+      assert.is_false(failed.ok)
+      assert.matches("Failed to supervise process tree", failed.error.message)
+      assert.are.equal(9, killed)
+      assert.is_true(closed)
+    end)
+    vim.system = original_system
+    package.loaded[tree_module] = original_tree
+    package.loaded["neoagent.process"] = original_process
+    assert(ok, err)
+  end)
+
   it("reports stdout and stderr stream read failures", function()
     local original_system = vim.system
     for _, stream in ipairs({ "stdout", "stderr" }) do

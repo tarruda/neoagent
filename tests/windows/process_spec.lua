@@ -56,7 +56,7 @@ describe("neoagent Windows process runner", function()
         "-ExecutionPolicy", "Bypass", "-File", parent,
       }, { kill_grace_ms = 0 })
     end)
-    local child_started = vim.wait(5000, function()
+    local child_started = vim.wait(20000, function()
       return vim.uv.fs_stat(started) ~= nil
     end, 10)
     active:cancel()

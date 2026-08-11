@@ -139,9 +139,10 @@ neither imports a Session nor interprets tool state.
 
 Tools may also carry a bundled-View `render(opts)` callback. The Window resolves
 the active tool by name, and the View converts its line-and-segment
-presentation into transcript text and highlights. Tool-specific rendering
-therefore stays on the tool value while the View owns Neovim drawing and a
-malformed callback falls back to the generic card.
+presentation into transcript text and highlights. Semantic presentations can
+request transparent cards and active spinner refreshes. Tool-specific
+rendering therefore stays on the tool value while the View owns Neovim drawing
+and a malformed callback falls back to the generic card.
 
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
 composition can add dialogs, sandboxing, logging, or post-edit checks
@@ -479,8 +480,8 @@ skill-discovery metadata. The Controller publishes updates and feeds complete
 active-conversation copies to optional tool state hooks after activation,
 message changes, resume, forks, and branch changes. Model context projects the
 latest compaction checkpoint before its retained suffix. Transcript snapshots
-omit the compacted prefix while preserving active-path chronology: retained
-messages precede the compaction card, and later messages follow it. A replay
+use the same projection, placing the compaction card before retained and later
+messages while omitting the compacted prefix. A replay
 removes a failed partial assistant message from the active branch before
 continuing the interaction. A successful assistant `length` stop continues
 once, compacting first when the context threshold is reached. Completion

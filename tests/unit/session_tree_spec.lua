@@ -117,7 +117,7 @@ describe("neoagent.session_tree", function()
     assert.matches("entry not found", err)
   end)
 
-  it("orders compacted model context and transcripts independently", function()
+  it("orders compacted model context and transcripts identically", function()
     local prefix = base("message", {
       id = "prefix", message = { role = "user", content = "old" },
     })
@@ -140,7 +140,7 @@ describe("neoagent.session_tree", function()
 
     assert.are.same({ "compaction", "kept", "after" },
       ids(tree.context_entries(path)))
-    assert.are.same({ "kept", "compaction", "after" },
+    assert.are.same({ "compaction", "kept", "after" },
       ids(tree.transcript_entries(path)))
   end)
 
