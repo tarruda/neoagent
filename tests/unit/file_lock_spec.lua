@@ -12,7 +12,7 @@ describe("neoagent file locks", function()
   local children = {}
 
   after_each(function()
-    for _, child in ipairs(children) do pcall(child.kill, child, 15) end
+    for child in pairs(children) do pcall(child.kill, child, 15) end
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
     children = {}
@@ -64,7 +64,7 @@ describe("neoagent file locks", function()
       assert(vim.env.NEOAGENT_NVIM), "--headless", "--noplugin",
       "-u", "tests/minimal_init.lua", "-c", "lua " .. script, "-c", "qa",
     }, { text = true, env = { NEOAGENT_COVERAGE = "0" } })
-    children[#children + 1] = child
+    children[child] = true
 
     assert(vim.wait(30000, function()
       return vim.uv.fs_stat(blocked_path) ~= nil
@@ -74,6 +74,7 @@ describe("neoagent file locks", function()
 
     assert(parent:release())
     local result = child:wait(15000)
+    children[child] = nil
     assert.are.equal(0, result.code, vim.inspect(result))
     local child_token = assert(fs.read(acquired_token_path))
     assert.are.equal(child_token, assert(fs.read(lock_path)))
