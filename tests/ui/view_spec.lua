@@ -2314,6 +2314,31 @@ describe("neoagent.ui", function()
     }, vim.list_slice(lines, activity, activity + 1))
   end)
 
+  it("clips long Codex shell command lines without wrapping", function()
+    local result = view({ position = "center", width = 52, style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "long-shell", name = "shell",
+        arguments = {
+          command = "printf one two three four five six seven eight nine ten",
+        },
+      } } },
+    })
+    assert(result:open())
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local activity
+    for index, line in ipairs(lines) do
+      if line:find("• Running printf", 1, true) then activity = index break end
+    end
+    assert.is_not_nil(activity)
+    assert.matches("%.%.%. $", lines[activity])
+    assert.are.equal("", lines[activity + 1])
+  end)
+
   it("summarizes Codex shell commands and output with official gutters", function()
     local result = view({ position = "center", width = 72, style = "codex" }, {
       require("neoagent.tools.shell").new(),
@@ -2332,7 +2357,7 @@ describe("neoagent.ui", function()
           }, "\n") } },
         { type = "toolCall", id = "summary-empty", name = "shell",
           arguments = { command = "true" } },
-        { type = "toolCall", id = "summary-wrapped", name = "shell",
+        { type = "toolCall", id = "summary-long", name = "shell",
           arguments = { command = table.concat({
             "printf one two three four five six seven eight nine ten",
             string.rep("x", 200),
@@ -2378,23 +2403,17 @@ describe("neoagent.ui", function()
       "   └ (no output) ",
     }, vim.list_slice(lines, empty, empty + 1))
 
-    local wrapped
+    local long
     for index, line in ipairs(lines) do
       if line:find("• Running printf one", 1, true) then
-        wrapped = index
+        long = index
         break
       end
     end
-    assert.is_not_nil(wrapped)
-    local wrapped_lines = vim.list_slice(lines, wrapped, wrapped + 3)
-    assert.are.equal(4, #wrapped_lines)
-    assert.matches("^ • Running printf one", wrapped_lines[1])
-    assert.matches("^   │ ", wrapped_lines[2])
-    assert.matches("^   │ ", wrapped_lines[3])
-    assert.matches("^   │ … %+%d+ lines $", wrapped_lines[4])
-    for _, line in ipairs(wrapped_lines) do
-      assert.is_true(vim.fn.strdisplaywidth(line) <= 72)
-    end
+    assert.is_not_nil(long)
+    assert.matches("%.%.%. $", lines[long])
+    assert.are.equal("", lines[long + 1])
+    assert.is_true(vim.fn.strdisplaywidth(lines[long]) <= 72)
 
     local plain_index = first + 5
     local plain_row = plain_index - 1

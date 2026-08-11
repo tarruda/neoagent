@@ -331,47 +331,6 @@ local function fit_card_line(text, width)
   return prefix .. ellipsis, #prefix
 end
 
-local function display_prefix(text, width)
-  if vim.fn.strdisplaywidth(text) <= width then return text, #text end
-  local characters = vim.fn.strchars(text)
-  local low, high = 0, characters
-  while low < high do
-    local count = math.floor((low + high + 1) / 2)
-    local prefix = vim.fn.strcharpart(text, 0, count)
-    if vim.fn.strdisplaywidth(prefix) <= width then
-      low = count
-    else
-      high = count - 1
-    end
-  end
-  if low == 0 and characters > 0 then low = 1 end
-  local prefix = vim.fn.strcharpart(text, 0, low)
-  return prefix, #prefix
-end
-
-local function wrap_display_line(text, width)
-  width = math.max(1, width)
-  if text == "" then return { "" } end
-  local result = {}
-  local remaining = text
-  while remaining ~= "" do
-    local prefix, bytes = display_prefix(remaining, width)
-    if bytes >= #remaining then
-      result[#result + 1] = remaining
-      break
-    end
-    local split = prefix:match("^.*()%s")
-    if split and split > 1 then
-      result[#result + 1] = prefix:sub(1, split - 1):gsub("%s+$", "")
-      remaining = remaining:sub(split + 1):gsub("^%s+", "")
-    else
-      result[#result + 1] = prefix
-      remaining = remaining:sub(bytes + 1)
-    end
-  end
-  return result
-end
-
 local function truncate_card_lines(content, width)
   width = math.max(1, width)
   local truncated = {}
@@ -1171,39 +1130,28 @@ local function command_output_content(self, block)
     middle_rendered(content, COMMAND_OUTPUT_MAX_LINES), "  └ ", "    ")
 end
 
-local function command_tool_content(
-    self, block, options, presentation)
+local function command_tool_content(self, block, presentation)
   local content = rendered()
-  content.wrap = true
   local title, title_spans = presentation_line(self.flavor.tool_title(
     presentation.title,
     presentation.status and block.state or nil))
   local command = presentation.command:gsub("\r\n", "\n"):gsub("\r", "\n")
   local source = vim.split(command, "\n", { plain = true })
-  local available = math.max(1, (options.width or self:_content_width())
-    - vim.fn.strdisplaywidth(title .. " "))
-  local first = wrap_display_line(source[1] or "", available)
-  local first_command = table.remove(first, 1) or ""
+  local first_command = source[1] or ""
   add_line(content, title .. (first_command == "" and "" or " " .. first_command),
     title_spans)
 
-  local continuation = first
-  local continuation_width = math.max(1,
-    (options.width or self:_content_width()) - 4)
-  for index = 2, #source do
-    vim.list_extend(continuation,
-      wrap_display_line(source[index], continuation_width))
-  end
-  for index = 1, math.min(#continuation,
-      COMMAND_CONTINUATION_MAX_LINES) do
+  for index = 2, math.min(#source,
+      COMMAND_CONTINUATION_MAX_LINES + 1) do
     local line, spans = segments({
       { text = "  │ ", group = "NeoagentMuted" },
-      { text = continuation[index] },
+      { text = source[index] },
     })
     add_line(content, line, spans)
   end
-  if #continuation > COMMAND_CONTINUATION_MAX_LINES then
-    local omitted = #continuation - COMMAND_CONTINUATION_MAX_LINES
+  local continuation_count = #source - 1
+  if continuation_count > COMMAND_CONTINUATION_MAX_LINES then
+    local omitted = continuation_count - COMMAND_CONTINUATION_MAX_LINES
     local line, spans = segments({
       { text = "  │ ", group = "NeoagentMuted" },
       { text = string.format("… +%d lines", omitted),
@@ -1239,7 +1187,7 @@ local function presented_tool_content(self, block, args, options, presentation)
     return ordinary_tool_content(self, block, args, options.full)
   end
   if presentation.command then
-    return command_tool_content(self, block, options, presentation)
+    return command_tool_content(self, block, presentation)
   end
   local content
   if presentation.default == true then

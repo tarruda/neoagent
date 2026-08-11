@@ -954,10 +954,11 @@ use activity wording such as `• Reading`, `• Read`, `• Running`, and `• 
 Write, edit, grep, and find use `Writing`/`Written`, `Editing`/`Edited`,
 `Searching`/`Searched`, and `Finding`/`Found`. Read, grep, and find cards show
 only the heading in the transcript and remain selectable for complete details.
-Shell cards place wrapped command continuations under a `│` gutter, keeping two
-continuation rows and an omitted-line count. Completed calls show at most five
-output rows under a `└` gutter, retaining rows from both ends around an
-omitted-line count; empty output appears as `(no output)`. Shell preview output
+Shell cards place newline-delimited command continuations under a `│` gutter,
+keeping two continuation rows and an omitted-line count. Long command and output
+rows are clipped to the card width. Completed calls show at most five output
+rows under a `└` gutter, retaining rows from both ends around an omitted-line
+count; empty output appears as `(no output)`. Shell preview output
 uses normal text attributes and preserves parsed terminal colors. Write headings
 adopt a streamed target path as soon as it is available. Write cards show at
 most three source rows and an omitted-line count. Successful Codex Edit cards

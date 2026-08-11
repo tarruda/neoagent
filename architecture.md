@@ -567,8 +567,9 @@ fixed user shade plus shaded tool and compaction cards. Codex derives user-card
 shading from the editor background with Codex's light and dark blend ratios,
 uses transparent tool and compaction cards, prefixes tool headings with a
 bullet, and places horizontal rules against the tool side of tool/prose group
-boundaries with one spacer on the prose side. Codex shell summaries wrap and
-bound command and output rows independently. Codex read, grep, find, and shell
+boundaries with one spacer on the prose side. Codex shell summaries preserve
+command newlines, clip command and output rows, and bound each group
+independently. Codex read, grep, find, and shell
 details use the normal foreground as their base, and shell summaries and
 details preserve parsed ANSI spans. A Window can replace the flavor on its live
 View and re-render the complete transcript from the same blocks.
