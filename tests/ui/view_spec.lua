@@ -960,6 +960,66 @@ describe("neoagent.ui", function()
     assert.are.equal(1, separators)
   end)
 
+  it("replaces completed parallel Pi tool cards in place", function()
+    local result = view({ position = "center", style = "pi" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    assert(result:open())
+    result:apply({
+      type = "text_delta", index = 0, text = "Inspect both caches.",
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("Inspect both caches", 1, true) ~= nil
+    end))
+    local calls = {
+      { type = "toolCall", id = "pi-one", name = "shell",
+        arguments = { command = "printf pi-one" } },
+      { type = "toolCall", id = "pi-two", name = "shell",
+        arguments = { command = "printf pi-two" } },
+    }
+    for index, call in ipairs(calls) do
+      result:apply({
+        type = "tool_call_delta", index = index, id = call.id,
+        name = call.name,
+        arguments_delta = vim.json.encode(call.arguments),
+      })
+      assert(vim.wait(1000, function()
+        return text(result):find("$ " .. call.arguments.command, 1, true)
+          ~= nil
+      end))
+    end
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = {
+        { type = "text", index = 0, text = "Inspect both caches." },
+        calls[1], calls[2],
+      },
+    } })
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+
+    for index = #calls, 1, -1 do
+      local call = calls[index]
+      result:apply({ type = "tool_end", call = call, message = {
+        role = "toolResult", toolCallId = call.id,
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "result " .. index } },
+      } })
+      assert(vim.wait(1000, function()
+        return text(result):find("result " .. index, 1, true) ~= nil
+      end))
+    end
+
+    local rendered = text(result)
+    for _, call in ipairs(calls) do
+      local _, count = rendered:gsub(
+        "$ " .. vim.pesc(call.arguments.command), "")
+      assert.are.equal(1, count)
+    end
+    local prose = assert(rendered:find("Inspect both caches", 1, true))
+    local first = assert(rendered:find("$ printf pi-one", 1, true))
+    local second = assert(rendered:find("$ printf pi-two", 1, true))
+    assert.is_true(prose < first and first < second)
+  end)
+
   it("renders semantic presentations supplied by active tools", function()
     local tool = {
       name = "present",
