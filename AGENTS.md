@@ -77,6 +77,9 @@ changes.
   refresh, and deletion; enumerate only secret-free credential metadata.
   Credential directories created by the store use mode `0700`; files use mode
   `0600`. Never log API keys, access tokens, or refresh tokens.
+- Neoagent-owned cross-process persistence composes `neoagent.file_lock` with
+  token-validated release and bounded stale recovery. Windows sandbox state
+  composes its per-directory named OS mutex.
 - Persistence remains compatible with the Pi v3 append-only tree format.
   Opening Neovim or creating an empty Session must not create a session file.
 - Compaction receives its Session path and Model explicitly. Controllers own

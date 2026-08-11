@@ -1,4 +1,5 @@
 local fs = require("neoagent.fs")
+local file_lock = require("neoagent.file_lock")
 local tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 
@@ -8,9 +9,18 @@ Store.__index = Store
 
 local INDEX_FILENAME = "session-index.json"
 local INDEX_VERSION = 1
-local INDEX_LOCK_TIMEOUT_MS = 3000
-local INDEX_LOCK_POLL_MS = 10
+local INDEX_LOCK_TIMEOUT_MS = 15000
+local INDEX_LOCK_POLL_MS = 50
 local INDEX_LOCK_STALE_MS = 120000
+
+local function session_lock(path)
+  return file_lock.new({
+    path = path .. ".lock",
+    timeout_ms = INDEX_LOCK_TIMEOUT_MS,
+    poll_ms = INDEX_LOCK_POLL_MS,
+    stale_ms = INDEX_LOCK_STALE_MS,
+  })
+end
 
 local function random_id(bytes)
   return (vim.uv.random(bytes or 8):gsub(".", function(char)
@@ -43,15 +53,6 @@ end
 local function copy_metadata(value)
   if type(value) == "table" and next(value) == nil then return vim.empty_dict() end
   return util.copy(value)
-end
-
-local function error_code(err, code)
-  if type(code) == "string" and code ~= "" then return code end
-  return type(err) == "string" and err:match("^([A-Z][A-Z0-9_]+):") or nil
-end
-
-local function is_error(err, code, expected)
-  return error_code(err, code) == expected
 end
 
 local function mtime_ms(stat)
@@ -115,63 +116,19 @@ local function write_index(path, document)
   return true
 end
 
-local function acquire_index_lock(path)
-  local lock_path = path .. ".lock"
-  local token = random_id(16)
-  local acquired
-  local failure
-
-  local function attempt()
-    local fd, open_err, open_code = vim.uv.fs_open(lock_path, "wx", 384)
-    if fd then
-      local written, write_err = vim.uv.fs_write(fd, token, 0)
-      local closed, close_err = vim.uv.fs_close(fd)
-      if written ~= #token or not closed then
-        vim.uv.fs_unlink(lock_path)
-        failure = write_err or close_err or "short lock write"
-      else
-        acquired = true
-      end
-      return true
-    end
-    if not is_error(open_err, open_code, "EEXIST") then
-      failure = open_err
-      return true
-    end
-    local stat, stat_err, stat_code = vim.uv.fs_stat(lock_path)
-    if not stat then
-      if not is_error(stat_err, stat_code, "ENOENT") then failure = stat_err end
-      return failure ~= nil
-    end
-    if util.now_ms() - mtime_ms(stat) > INDEX_LOCK_STALE_MS then
-      local removed, remove_err, remove_code = vim.uv.fs_unlink(lock_path)
-      if not removed and not is_error(remove_err, remove_code, "ENOENT") then
-        failure = remove_err
-        return true
-      end
-    end
-    return false
-  end
-
-  if not attempt() then
-    vim.wait(INDEX_LOCK_TIMEOUT_MS, attempt, INDEX_LOCK_POLL_MS, false)
-  end
-  if not acquired then return nil, failure or "timed out waiting for session index lock" end
-  return function()
-    local contents = fs.read(lock_path)
-    if contents == token then vim.uv.fs_unlink(lock_path) end
-  end
-end
-
 local function modify_index(path, modifier)
-  local release = acquire_index_lock(path)
-  if not release then return nil end
   local ok, result = pcall(function()
-    local document = read_index(path)
-    modifier(document.sessions)
-    return write_index(path, document)
+    return file_lock.new({
+      path = path .. ".lock",
+      timeout_ms = INDEX_LOCK_TIMEOUT_MS,
+      poll_ms = INDEX_LOCK_POLL_MS,
+      stale_ms = INDEX_LOCK_STALE_MS,
+    }):with(function()
+      local document = read_index(path)
+      modifier(document.sessions)
+      return write_index(path, document)
+    end)
   end)
-  release()
   if not ok then return nil end
   return result
 end
@@ -424,8 +381,13 @@ function Store:_append(entry_type, values, persist)
     self._persisted = true
     self._pending = {}
   else
-    local ok, err = fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
+    local ok, err = session_lock(self._path):with(function()
+      return fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
+    end)
     if not ok then
+      if type(err) == "table" and err.kind == "file_lock" then
+        err = err.detail or err.message
+      end
       return nil, storage_error("Failed to append session entry", err)
     end
   end
@@ -494,8 +456,11 @@ end
 
 function M.open(path)
   path = fs.normalize(path)
-  local data, read_err = fs.read(path)
+  local data, read_err = session_lock(path):with(function() return fs.read(path) end)
   if not data then
+    if type(read_err) == "table" and read_err.kind == "file_lock" then
+      read_err = read_err.detail or read_err.message
+    end
     return nil, storage_error("Failed to read session", read_err)
   end
   local lines = vim.tbl_filter(function(line) return util.trim(line) ~= "" end,

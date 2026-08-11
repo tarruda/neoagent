@@ -469,6 +469,36 @@ describe("neoagent.storage", function()
     assert.are.same({ "recovered", "waited" }, texts)
   end)
 
+  it("serializes session appends with a concurrent writer", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local ok, _, first = store:append({ role = "user", content = "first" })
+    assert(ok)
+    local path = store:metadata().path
+    assert(fs.write_all(path .. ".lock", "held", "wx", 384))
+    local external = {
+      type = "message",
+      id = "external-entry",
+      parentId = first.id,
+      timestamp = "2020-01-01T00:00:00.000Z",
+      message = { role = "assistant", content = "external" },
+    }
+    local concurrent_done = false
+    vim.defer_fn(function()
+      assert(fs.write_all(path, vim.json.encode(external) .. "\n", "a", 384))
+      assert(vim.uv.fs_unlink(path .. ".lock"))
+      concurrent_done = true
+    end, 20)
+
+    assert(store:append({ role = "assistant", content = "local" }))
+    assert(vim.wait(1000, function() return concurrent_done end))
+    local lines = vim.split(assert(fs.read(path)), "\n",
+      { plain = true, trimempty = true })
+    assert.are.equal("external", vim.json.decode(lines[#lines - 1]).message.content)
+    assert.are.equal("local", vim.json.decode(lines[#lines]).message.content)
+  end)
+
   it("keeps session persistence independent from disposable index writes", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
@@ -494,42 +524,36 @@ describe("neoagent.storage", function()
   it("merges session index updates from concurrent Neovim processes", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
-    local probe = storage.new({ directory = directory, cwd = directory })
-    local path = index_path(probe)
+    local parent = storage.new({ directory = directory, cwd = directory })
+    local path = index_path(parent)
+    local ready_path = directory .. "/child-ready"
     assert(fs.mkdirp(vim.fs.dirname(path)))
     assert(fs.write_all(path .. ".lock", "held", "wx", 384))
 
-    local processes = {}
-    for _, text in ipairs({ "concurrent one", "concurrent two" }) do
-      local script = string.format(
-        "local s=require('neoagent.storage').new({directory=%q,cwd=%q});"
-          .. "assert(s:append({role='user',content=%q}))",
-        directory, directory, text)
-      processes[#processes + 1] = vim.system({
-        assert(vim.env.NEOAGENT_NVIM), "--headless", "--noplugin", "-u", "tests/minimal_init.lua",
-        "-c", "lua " .. script, "-c", "qa",
-      }, { text = true, env = { NEOAGENT_COVERAGE = "0" } })
-    end
-    local ready, wait_reason = vim.wait(10000, function()
-      return #storage.list(directory, directory) == 2
-    end, 10)
-    local removed, remove_err = vim.uv.fs_unlink(path .. ".lock")
-    local results = {}
-    for _, process in ipairs(processes) do
-      results[#results + 1] = process:wait(10000)
-    end
-    assert.is_true(ready, "child startup wait failed: " .. tostring(wait_reason))
-    assert(removed, remove_err)
-    for _, result in ipairs(results) do
-      assert.are.equal(0, result.code, vim.inspect(result))
-    end
+    local script = string.format(
+      "local fs=require('neoagent.fs');"
+        .. "local s=require('neoagent.storage').new({directory=%q,cwd=%q});"
+        .. "vim.defer_fn(function() assert(fs.write_all(%q,'ready','wx')) end,0);"
+        .. "assert(s:append({role='user',content='child'}))",
+      directory, directory, ready_path)
+    local child = vim.system({
+      assert(vim.env.NEOAGENT_NVIM), "--headless", "--noplugin", "-u", "tests/minimal_init.lua",
+      "-c", "lua " .. script, "-c", "qa",
+    }, { text = true, env = { NEOAGENT_COVERAGE = "0" } })
+    assert(vim.wait(30000, function()
+      return vim.uv.fs_stat(ready_path) ~= nil
+    end, 10), "child did not reach index lock contention")
+    vim.defer_fn(function() assert(vim.uv.fs_unlink(path .. ".lock")) end, 20)
+    assert(parent:append({ role = "user", content = "parent" }))
+    local result = child:wait(15000)
+    assert.are.equal(0, result.code, vim.inspect(result))
 
     local data = assert(original_read(path))
     local document = vim.json.decode(data)
     local texts = {}
     for _, value in pairs(document.sessions) do texts[#texts + 1] = value.text end
     table.sort(texts)
-    assert.are.same({ "concurrent one", "concurrent two" }, texts)
+    assert.are.same({ "child", "parent" }, texts)
   end)
 
   it("validates tree entry references before persistence", function()

@@ -1,8 +1,10 @@
 local fs = require("neoagent.fs")
+local file_lock = require("neoagent.file_lock")
 
 local M = {}
 
 local MAX_BYTES = 1024 * 1024
+local LOCK_TIMEOUT_MS = 1000
 local fields = {
   "type", "timestamp", "api", "provider", "model", "request_attempt",
   "request_max_attempts", "stream_attempt", "kind", "message", "code",
@@ -29,7 +31,7 @@ local function sanitized(event)
   return result
 end
 
-local function prepare(path)
+local function prepare_directory(path)
   local directory = vim.fs.dirname(path)
   local existed = vim.uv.fs_stat(directory) ~= nil
   local ok, result = pcall(vim.fn.mkdir, directory, "p", 448)
@@ -37,6 +39,10 @@ local function prepare(path)
     return nil, ok and "failed to create diagnostic log directory" or result
   end
   if not existed then pcall(vim.uv.fs_chmod, directory, 448) end
+  return true
+end
+
+local function append(path, encoded)
   local stat = vim.uv.fs_stat(path)
   if stat then pcall(vim.uv.fs_chmod, path, 384) end
   if stat and stat.size >= MAX_BYTES then
@@ -45,22 +51,29 @@ local function prepare(path)
     if not renamed then return nil, rename_err end
     pcall(vim.uv.fs_chmod, path .. ".1", 384)
   end
+  local written, write_err = fs.write_all(path, encoded .. "\n", "a", 384)
+  if not written then return nil, write_err end
+  pcall(vim.uv.fs_chmod, path, 384)
   return true
 end
 
 function M.append(path, event)
   assert(type(path) == "string" and path ~= "", "diagnostic log path is required")
   assert(type(event) == "table", "diagnostic event is required")
-  local ready, prepare_err = prepare(path)
-  if not ready then return nil, prepare_err end
   local encoded, encode_err
   local ok, result = pcall(vim.json.encode, sanitized(event))
   if ok then encoded = result else encode_err = result end
   if not encoded then return nil, encode_err end
-  local written, write_err = fs.write_all(path, encoded .. "\n", "a", 384)
-  if not written then return nil, write_err end
-  pcall(vim.uv.fs_chmod, path, 384)
-  return true
+  local ready, prepare_err = prepare_directory(path)
+  if not ready then return nil, prepare_err end
+  local appended, append_err = file_lock.new({
+    path = path .. ".lock",
+    timeout_ms = LOCK_TIMEOUT_MS,
+  }):with(function() return append(path, encoded) end)
+  if not appended and type(append_err) == "table" and append_err.kind == "file_lock" then
+    return nil, append_err.detail or append_err.message
+  end
+  return appended, append_err
 end
 
 function M.callback(path)

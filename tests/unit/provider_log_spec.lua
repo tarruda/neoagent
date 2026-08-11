@@ -58,6 +58,22 @@ describe("neoagent provider diagnostics", function()
     assert.matches("diagnostic log failed", messages[1])
   end)
 
+  it("reports diagnostic lock failures", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert(fs.mkdirp(directory))
+    local path = directory .. "/codex.log"
+    local original_open = vim.uv.fs_open
+    vim.uv.fs_open = function(candidate, ...)
+      if candidate == path .. ".lock" then return nil, "EACCES: denied" end
+      return original_open(candidate, ...)
+    end
+    local ok, err = provider_log.append(path, { type = "request_failed" })
+    vim.uv.fs_open = original_open
+    assert.is_nil(ok)
+    assert.matches("EACCES", err)
+  end)
+
   it("rotates a full diagnostic log before appending", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -72,5 +88,29 @@ describe("neoagent provider diagnostics", function()
     assert.are.equal(493, bit.band(assert(vim.uv.fs_stat(directory)).mode, 511))
     local raw = assert(fs.read(path))
     assert.are.equal("new", vim.json.decode(raw).message)
+  end)
+
+  it("serializes appends with a concurrent writer", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert(fs.mkdirp(directory))
+    local path = directory .. "/codex.log"
+    assert(fs.write_all(path, vim.json.encode({ type = "existing" }) .. "\n", "w"))
+    assert(fs.write_all(path .. ".lock", "held", "wx", 384))
+
+    local concurrent_done = false
+    vim.defer_fn(function()
+      assert(fs.write_all(path,
+        vim.json.encode({ type = "concurrent" }) .. "\n", "a", 384))
+      assert(vim.uv.fs_unlink(path .. ".lock"))
+      concurrent_done = true
+    end, 20)
+
+    assert(provider_log.append(path, { type = "local" }))
+    assert(vim.wait(1000, function() return concurrent_done end))
+    local events = vim.tbl_map(vim.json.decode,
+      vim.split(assert(fs.read(path)), "\n", { plain = true, trimempty = true }))
+    assert.are.same({ "existing", "concurrent", "local" },
+      vim.tbl_map(function(event) return event.type end, events))
   end)
 end)

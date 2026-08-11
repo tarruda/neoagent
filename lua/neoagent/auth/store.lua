@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
@@ -14,108 +15,38 @@ local function failure(message, detail)
   return util.error("auth", message, detail)
 end
 
-local function close_handle(handle)
-  if handle and not handle:is_closing() then
-    handle:stop()
-    handle:close()
+local function credential_lock_error(err, releasing)
+  err = util.normalize_error(err, "file_lock")
+  if err.kind == "cancelled" then return err end
+  if releasing then
+    return failure("Failed to release credential lock", err.detail or err.message)
   end
+  if err.code == "timeout" then
+    return failure("Timed out acquiring credential lock", err.detail)
+  end
+  return failure("Failed to acquire credential lock", err.detail or err.message)
 end
 
-local function error_code(err, code)
-  if type(code) == "string" and code ~= "" then return code end
-  return type(err) == "string" and err:match("^([A-Z][A-Z0-9_]+):") or nil
-end
-
-local function is_error(err, code, expected)
-  return error_code(err, code) == expected
-end
-
-local function mtime_ms(stat)
-  local mtime = stat and stat.mtime or {}
-  return (tonumber(mtime.sec) or 0) * 1000
-    + math.floor((tonumber(mtime.nsec) or 0) / 1000000)
+function Store:_file_lock(refresh)
+  return file_lock.new({
+    path = self.path .. ".lock",
+    timeout_ms = self.lock_timeout_ms,
+    poll_ms = self.lock_poll_ms,
+    stale_ms = self.lock_stale_ms,
+    refresh_ms = refresh and self.lock_refresh_ms or nil,
+  })
 end
 
 function Store:_lock()
-  local lock_path = self.path .. ".lock"
-  return async.await(function(done)
-    local timer = vim.uv.new_timer()
-    local heartbeat = vim.uv.new_timer()
-    local started_at = vim.uv.hrtime() / 1000000
-    local settled = false
-    local acquired = false
-
-    local function release()
-      if not acquired then return end
-      acquired = false
-      close_handle(heartbeat)
-      vim.uv.fs_unlink(lock_path)
-    end
-
-    local function reject(err)
-      if settled then return end
-      settled = true
-      close_handle(timer)
-      close_handle(heartbeat)
-      done.reject(err)
-    end
-
-    local attempt
-    local function retry()
-      local elapsed = vim.uv.hrtime() / 1000000 - started_at
-      if elapsed >= self.lock_timeout_ms then
-        reject(failure("Timed out acquiring credential lock"))
-        return
-      end
-      timer:start(math.min(self.lock_poll_ms,
-        math.max(1, self.lock_timeout_ms - elapsed)), 0, attempt)
-    end
-
-    attempt = function()
-      if settled then return end
-      local fd, open_err, open_code = vim.uv.fs_open(lock_path, "wx", 384)
-      if fd then
-        vim.uv.fs_close(fd)
-        acquired = true
-        settled = true
-        close_handle(timer)
-        heartbeat:start(self.lock_refresh_ms, self.lock_refresh_ms, function()
-          if not acquired then return end
-          local now = util.now_ms() / 1000
-          vim.uv.fs_utime(lock_path, now, now)
-        end)
-        done.resolve(release)
-        return
-      end
-      if not is_error(open_err, open_code, "EEXIST") then
-        reject(failure("Failed to acquire credential lock", open_err))
-        return
-      end
-      local stat, stat_err, stat_code = vim.uv.fs_stat(lock_path)
-      if not stat then
-        if is_error(stat_err, stat_code, "ENOENT") then attempt() else
-          reject(failure("Failed to inspect credential lock", stat_err))
-        end
-        return
-      end
-      if util.now_ms() - mtime_ms(stat) > self.lock_stale_ms then
-        local removed, remove_err, remove_code = vim.uv.fs_unlink(lock_path)
-        if removed or is_error(remove_err, remove_code, "ENOENT") then
-          attempt()
-        else
-          reject(failure("Failed to recover stale credential lock", remove_err))
-        end
-        return
-      end
-      retry()
-    end
-
-    attempt()
-    return function()
-      close_handle(timer)
-      release()
-    end
+  local ok, lease = pcall(function()
+    return self:_file_lock(true):acquire_async()
   end)
+  if not ok then error(credential_lock_error(lease, false), 0) end
+  return function()
+    local released, release_err = lease:release()
+    if not released then return nil, credential_lock_error(release_err, true) end
+    return true
+  end
 end
 
 function Store:_read_all()
@@ -156,7 +87,9 @@ function Store:_write_all(values)
   ok, err = fs.mkdirp(directory)
   if not ok then return nil, failure("Failed to create credential directory", err) end
   if not directory_exists then vim.uv.fs_chmod(directory, 448) end
-  local suffix = vim.uv.random(8):gsub(".", function(char) return string.format("%02x", char:byte()) end)
+  local bytes, random_err = vim.uv.random(8)
+  if not bytes then return nil, failure("Failed to create credential temporary file", random_err) end
+  local suffix = bytes:gsub(".", function(char) return string.format("%02x", char:byte()) end)
   local temporary = self.path .. "." .. suffix .. ".tmp"
   local encoded = next(values) == nil and vim.empty_dict() or values
   ok, err = fs.write_all(temporary, vim.json.encode(encoded) .. "\n", "wx", 384)
@@ -171,10 +104,21 @@ function Store:_write_all(values)
 end
 
 function Store:write(id, credential)
-  local values, err = self:_read_all()
-  if not values then return nil, err end
-  values[id] = util.copy(credential)
-  return self:_write_all(values)
+  local directory = vim.fs.dirname(self.path)
+  local existed = vim.uv.fs_stat(directory) ~= nil
+  local created, create_err = fs.mkdirp(directory)
+  if not created then return nil, failure("Failed to create credential directory", create_err) end
+  if not existed then vim.uv.fs_chmod(directory, 448) end
+  local result, err = self:_file_lock(false):with(function()
+    local values, read_err = self:_read_all()
+    if not values then return nil, read_err end
+    values[id] = util.copy(credential)
+    return self:_write_all(values)
+  end)
+  if not result and type(err) == "table" and err.kind == "file_lock" then
+    return nil, credential_lock_error(err, err.code == "release" or err.code == "ownership")
+  end
+  return result, err
 end
 
 function Store:delete(id)
@@ -215,8 +159,9 @@ function Store:modify(id, fn)
       end
       return post
     end)
-    release()
+    local released, release_err = release()
     if not ok then error(result, 0) end
+    if not released then error(release_err, 0) end
     return { ok = true, credential = result }
   end, { error_kind = "auth" })
 end

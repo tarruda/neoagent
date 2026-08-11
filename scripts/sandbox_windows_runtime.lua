@@ -3203,7 +3203,12 @@ end
 
 local directory = default_state_directory()
 if arguments[1] == "--setup" then
-  local ok, err = pcall(setup, directory)
+  local mutex
+  local ok, err = pcall(function()
+    mutex = acquire_mutex(directory)
+    setup(directory)
+  end)
+  release_mutex(mutex)
   if not ok then
     local value = error_value(err, "setup")
     io.stderr:write(vim.json.encode({
