@@ -157,7 +157,7 @@ The important options are: >lua
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
-      style = "pi",          -- pi/codex
+      style = "codex",       -- pi/codex
       position = "center",    -- auto/left/right/top/bottom/center
       width = nil,
       height = nil,
@@ -943,14 +943,14 @@ Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
 show complete card lines with soft wrapping.
 
-`ui.style` selects the initial transcript flavor. The default `"pi"` flavor
-uses shaded, state-colored tool cards and a shaded compaction card. The
-`"codex"` flavor uses transparent tool and compaction cards, prefixes tool
-headings with `•`, and draws a muted horizontal rule where a group of tool
-cards meets assistant prose or thinking. Consecutive tool cards share one
-group without rules between them. Each rule touches the tool group and keeps
-one empty line between the rule and prose or thinking. Read and shell headings
-use activity wording such as `• Reading`, `• Read`, `• Running`, and `• Ran`.
+`ui.style` selects the initial transcript flavor. The default `"codex"` flavor
+uses transparent tool and compaction cards, prefixes tool headings with `•`,
+and draws a muted horizontal rule where a group of tool cards meets assistant
+prose or thinking. The `"pi"` flavor uses shaded, state-colored tool cards and
+a shaded compaction card. Consecutive Codex tool cards share one group without
+rules between them. Each rule touches the tool group and keeps one empty line
+between the rule and prose or thinking. Codex read and shell headings use
+activity wording such as `• Reading`, `• Read`, `• Running`, and `• Ran`.
 Write, edit, grep, and find use `Writing`/`Written`, `Editing`/`Edited`,
 `Searching`/`Searched`, and `Finding`/`Found`. Read, grep, and find cards show
 only the heading in the transcript and remain selectable for complete details.

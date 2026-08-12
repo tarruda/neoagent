@@ -48,7 +48,9 @@ describe("neoagent.ui", function()
   end)
 
   local function view(overrides, tools)
-    local ui_config = config.setup({ ui = overrides or {} }).ui
+    local ui_config = config.setup({
+      ui = vim.tbl_extend("force", { style = "pi" }, overrides or {}),
+    }).ui
     local lookup = {}
     for _, tool in ipairs(tools or {}) do lookup[tool.name] = tool end
     local result = ui.new({

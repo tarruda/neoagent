@@ -562,9 +562,10 @@ configured card wrapping presents their complete lines. The Window supplies a
 tool resolver, so the bundled View can consume an optional semantic renderer
 carried by the active tool without recognizing tool names. The View can omit
 thinking blocks while the Controller and Session retain complete messages.
-Its explicit Pi or Codex flavor selects transcript card chrome. Pi uses its
-fixed user shade plus shaded tool and compaction cards. Codex derives user-card
-shading from the editor background with Codex's light and dark blend ratios,
+Its configured Pi or Codex flavor selects transcript card chrome, with Codex
+as the default. Pi uses its fixed user shade plus shaded tool and compaction
+cards. Codex derives user-card shading from the editor background with Codex's
+light and dark blend ratios,
 uses transparent tool and compaction cards, prefixes tool headings with a
 bullet, and places horizontal rules against the tool side of tool/prose group
 boundaries with one spacer on the prose side. Codex shell summaries preserve

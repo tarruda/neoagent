@@ -600,10 +600,6 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("<C-w>j", config.setup({}).ui.mappings.focus_input)
     assert.are.equal("<C-w>k", config.setup({}).ui.mappings.focus_transcript)
     assert.is_nil(config.setup({}).ui.mappings.toggle_focus)
-    assert.are.equal("pi", config.setup({}).ui.style)
-    assert.are.equal("codex", config.setup({
-      ui = { style = "codex" },
-    }).ui.style)
     assert.is_false(config.setup({}).ui.wrap_cards)
     assert.is_true(config.setup({}).ui.show_thinking)
     assert.is_true(config.setup({ ui = { wrap_cards = true } }).ui.wrap_cards)

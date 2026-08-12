@@ -58,7 +58,7 @@ local defaults = {
     keep_recent_tokens = 20000,
   },
   ui = {
-    style = "pi",
+    style = "codex",
     position = "center",
     margin = 1,
     input_height = 7,
