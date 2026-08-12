@@ -1,4 +1,5 @@
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.edit_presentation")
 
 local function normalize_lf(text)
   return text:gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -206,6 +207,7 @@ local function new()
         details = diff_details(path, content, changed),
       }
     end,
+    render = presentation.render,
   }
 end
 

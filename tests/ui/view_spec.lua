@@ -31,7 +31,11 @@ end
 
 describe("neoagent.ui", function()
   local views = {}
+  local normal_highlight
   before_each(function()
+    normal_highlight = vim.api.nvim_get_hl(0, {
+      name = "Normal", link = true,
+    })
     config._reset()
     vim.o.columns = 120
     vim.o.lines = 40
@@ -40,10 +44,13 @@ describe("neoagent.ui", function()
     for _, view in ipairs(views) do view:destroy() end
     views = {}
     vim.cmd("silent! only")
+    vim.api.nvim_set_hl(0, "Normal", normal_highlight)
   end)
 
   local function view(overrides, tools)
-    local ui_config = config.setup({ ui = overrides or {} }).ui
+    local ui_config = config.setup({
+      ui = vim.tbl_extend("force", { style = "pi" }, overrides or {}),
+    }).ui
     local lookup = {}
     for _, tool in ipairs(tools or {}) do lookup[tool.name] = tool end
     local result = ui.new({
@@ -107,7 +114,6 @@ describe("neoagent.ui", function()
       select_history = { "<C-r>", "<C-s>" },
       resume_session = "<A-r>",
       select_model = "<A-m>",
-      newline = false,
       interrupt = false,
     } })
     assert.are.equal(" <C-r> history · <A-r> resume · <A-m> select model ",
@@ -119,7 +125,7 @@ describe("neoagent.ui", function()
     assert.is_nil(narrow:find("select model", 1, true))
   end)
 
-  it("updates input mapping hints for focus and mode", function()
+  it("updates input mapping hints for the focused surface", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "first" },
@@ -137,7 +143,7 @@ describe("neoagent.ui", function()
     end
     assert(vim.wait(1000, function()
       return footer()
-        == " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
+        == " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
     end))
 
     vim.cmd("stopinsert")
@@ -960,12 +966,346 @@ describe("neoagent.ui", function()
     assert.are.equal(1, separators)
   end)
 
+  it("switches live between Pi and grouped Codex transcript styles", function()
+    local result = view({ position = "center", width = 52 })
+    result:set_messages({
+      {
+        role = "compactionSummary",
+        summary = "Earlier work",
+        tokensBefore = 100,
+      },
+      { role = "assistant", content = {
+        { type = "thinking", thinking = "I will inspect the files." },
+        { type = "text", text = "Starting the inspection." },
+        { type = "toolCall", id = "read-style", name = "read_file",
+          arguments = { path = "README.md" } },
+        { type = "toolCall", id = "grep-style", name = "grep",
+          arguments = { pattern = "Neoagent", path = "." } },
+      } },
+      { role = "toolResult", toolCallId = "read-style",
+        toolName = "read_file", isError = false,
+        content = { { type = "text", text = "contents" } } },
+      { role = "toolResult", toolCallId = "grep-style",
+        toolName = "grep", isError = false,
+        content = { { type = "text", text = "README.md:1:Neoagent" } } },
+      { role = "assistant", content = {
+        { type = "text", text = "The inspection is complete." },
+      } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("The inspection is complete.", 1, true) ~= nil
+    end))
+
+    local function separator_count()
+      local count = 0
+      for _, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find("────", 1, true) then count = count + 1 end
+      end
+      return count
+    end
+
+    assert.are.equal("pi", result.config.style)
+    assert.are.equal(0, separator_count())
+    assert.not_matches("• read README%.md", text(result))
+    assert.is_true(has_line_group(result, "NeoagentUserBackground"))
+    assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
+
+    assert.are.equal("codex", result:set_style("codex"))
+    assert(vim.wait(1000, function()
+      return text(result):find("• read README.md", 1, true) ~= nil
+    end))
+    assert.are.equal(2, separator_count())
+    assert.matches("• grep Neoagent in %.", text(result))
+    assert.is_false(has_line_group(result, "NeoagentUserBackground"))
+    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
+
+    assert.are.equal("pi", result:set_style("pi"))
+    assert(vim.wait(1000, function()
+      return text(result):find("• read README.md", 1, true) == nil
+    end))
+    assert.are.equal(0, separator_count())
+    assert.is_true(has_line_group(result, "NeoagentUserBackground"))
+    assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
+    local selected, err = result:set_style("other")
+    assert.is_nil(selected)
+    assert.are.equal("transcript style must be pi or codex", err.message)
+  end)
+
+  it("places Codex separators against tools with prose-side spacing", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.update_plan").new(),
+      require("neoagent.tools.shell").new(),
+    })
+    local plan = {
+      { step = "Item 1", status = "pending" },
+      { step = "Item 2", status = "pending" },
+      { step = "Item 3", status = "pending" },
+      { step = "Item 4", status = "pending" },
+    }
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "plan-boundary", name = "update_plan",
+        arguments = { plan = plan },
+      } } },
+      { role = "toolResult", toolCallId = "plan-boundary",
+        toolName = "update_plan", isError = false,
+        content = { { type = "text", text = "Plan updated" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Item 4", 1, true) ~= nil
+    end))
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = {
+        { type = "thinking", thinking = "Let me start by looking ..." },
+        { type = "toolCall", id = "shell-boundary", name = "shell",
+          arguments = { command = "rg -n needle" } },
+      },
+    } })
+    result:apply({ type = "tool_end", call = {
+      id = "shell-boundary", name = "shell",
+      arguments = { command = "rg -n needle" },
+    }, message = {
+      role = "toolResult", toolCallId = "shell-boundary",
+      toolName = "shell", isError = false,
+      content = { { type = "text", text = "match" } },
+    } })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran rg -n needle", 1, true) ~= nil
+    end))
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local item, thinking, shell
+    for index, line in ipairs(lines) do
+      if line:find("Item 4", 1, true) then item = index end
+      if line:find("Let me start", 1, true) then thinking = index end
+      if line:find("• Ran rg -n needle", 1, true) then shell = index end
+    end
+    assert.is_not_nil(item)
+    assert.is_not_nil(thinking)
+    assert.is_not_nil(shell)
+    assert.matches("────", lines[item + 1])
+    assert.are.equal("", lines[item + 2])
+    assert.are.equal(thinking, item + 3)
+    assert.are.equal("", lines[thinking + 1])
+    assert.matches("────", lines[thinking + 2])
+    assert.are.equal(shell, thinking + 3)
+  end)
+
+  it("keeps streamed parallel Codex tools on separate card rows", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    assert(result:open())
+    result:apply({
+      type = "tool_call_delta", index = 0, id = "parallel-one",
+      name = "shell", arguments_delta = '{"command":"printf one"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Running printf one", 1, true) ~= nil
+    end))
+    result:apply({
+      type = "tool_call_delta", index = 1, id = "parallel-two",
+      name = "shell", arguments_delta = '{"command":"printf two"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Running printf two", 1, true) ~= nil
+    end))
+
+    local function assert_separate(first_label, second_label)
+      local lines = vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)
+      local first, second
+      for row, line in ipairs(lines) do
+        if line:find(first_label, 1, true) then first = row end
+        if line:find(second_label, 1, true) then second = row end
+      end
+      assert.is_not_nil(first)
+      assert.is_not_nil(second)
+      assert.is_true(first < second)
+      assert.are.equal("", lines[second - 1])
+    end
+    assert_separate("• Running printf one", "• Running printf two")
+
+    local calls = {
+      { type = "toolCall", id = "parallel-one", name = "shell",
+        arguments = { command = "printf one" } },
+      { type = "toolCall", id = "parallel-two", name = "shell",
+        arguments = { command = "printf two" } },
+    }
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = calls,
+    } })
+    assert(vim.wait(1000, function()
+      return not result.flush_pending
+    end))
+    assert_separate("• Running printf one", "• Running printf two")
+
+    for _, call in ipairs(calls) do
+      result:apply({ type = "tool_end", call = call, message = {
+        role = "toolResult", toolCallId = call.id, toolName = "shell",
+        isError = false, content = { { type = "text", text = "ok" } },
+      } })
+    end
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran printf two", 1, true) ~= nil
+    end))
+    assert_separate("• Ran printf one", "• Ran printf two")
+  end)
+
+  it("keeps prose before parallel Codex tools as siblings finish", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    assert(result:open())
+    result:apply({
+      type = "text_delta", index = 0,
+      text = "Let me start by exploring the server flags.",
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("Let me start by exploring", 1, true) ~= nil
+    end))
+    result:apply({
+      type = "tool_call_delta", index = 1, id = "ordered-one",
+      name = "shell", arguments_delta = '{"command":"rg -n cram"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Running rg -n cram", 1, true) ~= nil
+    end))
+    result:apply({
+      type = "tool_call_delta", index = 2, id = "ordered-two",
+      name = "shell", arguments_delta = '{"command":"rg -n swa"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Running rg -n swa", 1, true) ~= nil
+    end))
+
+    local calls = {
+      { type = "toolCall", id = "ordered-one", name = "shell",
+        arguments = { command = "rg -n cram" } },
+      { type = "toolCall", id = "ordered-two", name = "shell",
+        arguments = { command = "rg -n swa" } },
+    }
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = {
+        { type = "text", index = 0,
+          text = "Let me start by exploring the server flags." },
+        calls[1], calls[2],
+      },
+    } })
+    assert(vim.wait(1000, function()
+      return not result.flush_pending
+    end))
+    result:apply({ type = "tool_end", call = calls[2], message = {
+      role = "toolResult", toolCallId = calls[2].id,
+      toolName = "shell", isError = false,
+      content = { { type = "text", text = "ok" } },
+    } })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran rg -n swa", 1, true) ~= nil
+    end))
+
+    local function assert_order(first_label)
+      local lines = vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)
+      local prose, first, second, prose_count = nil, nil, nil, 0
+      for row, line in ipairs(lines) do
+        if line:find("Let me start by exploring", 1, true) then
+          prose, prose_count = row, prose_count + 1
+        end
+        if line:find(first_label, 1, true) then first = row end
+        if line:find("• Ran rg -n swa", 1, true) then second = row end
+      end
+      assert.are.equal(1, prose_count)
+      assert.is_not_nil(first)
+      assert.is_not_nil(second)
+      assert.is_true(prose < first)
+      assert.is_true(first < second)
+      assert.are.equal("", lines[second - 1])
+    end
+    assert_order("• Running rg -n cram")
+
+    result:apply({ type = "tool_end", call = calls[1], message = {
+      role = "toolResult", toolCallId = calls[1].id,
+      toolName = "shell", isError = false,
+      content = { { type = "text", text = "ok" } },
+    } })
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran rg -n cram", 1, true) ~= nil
+    end))
+    assert_order("• Ran rg -n cram")
+  end)
+
+  it("replaces completed parallel Pi tool cards in place", function()
+    local result = view({ position = "center", style = "pi" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    assert(result:open())
+    result:apply({
+      type = "text_delta", index = 0, text = "Inspect both caches.",
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("Inspect both caches", 1, true) ~= nil
+    end))
+    local calls = {
+      { type = "toolCall", id = "pi-one", name = "shell",
+        arguments = { command = "printf pi-one" } },
+      { type = "toolCall", id = "pi-two", name = "shell",
+        arguments = { command = "printf pi-two" } },
+    }
+    for index, call in ipairs(calls) do
+      result:apply({
+        type = "tool_call_delta", index = index, id = call.id,
+        name = call.name,
+        arguments_delta = vim.json.encode(call.arguments),
+      })
+      assert(vim.wait(1000, function()
+        return text(result):find("$ " .. call.arguments.command, 1, true)
+          ~= nil
+      end))
+    end
+    result:apply({ type = "message_end", message = {
+      role = "assistant", content = {
+        { type = "text", index = 0, text = "Inspect both caches." },
+        calls[1], calls[2],
+      },
+    } })
+    assert(vim.wait(1000, function() return not result.flush_pending end))
+
+    for index = #calls, 1, -1 do
+      local call = calls[index]
+      result:apply({ type = "tool_end", call = call, message = {
+        role = "toolResult", toolCallId = call.id,
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "result " .. index } },
+      } })
+      assert(vim.wait(1000, function()
+        return text(result):find("result " .. index, 1, true) ~= nil
+      end))
+    end
+
+    local rendered = text(result)
+    for _, call in ipairs(calls) do
+      local _, count = rendered:gsub(
+        "$ " .. vim.pesc(call.arguments.command), "")
+      assert.are.equal(1, count)
+    end
+    local prose = assert(rendered:find("Inspect both caches", 1, true))
+    local first = assert(rendered:find("$ printf pi-one", 1, true))
+    local second = assert(rendered:find("$ printf pi-two", 1, true))
+    assert.is_true(prose < first and first < second)
+  end)
+
   it("renders semantic presentations supplied by active tools", function()
     local tool = {
       name = "present",
       render = function(opts)
         assert.are.equal("value", opts.arguments.label)
         assert.are.equal("success", opts.state)
+        assert.are.equal("pi", opts.style)
         assert.is_false(opts.full)
         return {
           card = false,
@@ -1000,6 +1340,84 @@ describe("neoagent.ui", function()
     assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
   end)
 
+  it("composes semantic tool titles with the default output", function()
+    local tool = {
+      name = "present_default",
+      render = function()
+        return {
+          default = true,
+          title = {
+            { text = "Presented", style = "bold" },
+            { text = " operation", style = "accent" },
+          },
+        }
+      end,
+    }
+    local result = view({ position = "center" }, { tool })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "present-default",
+        name = "present_default", arguments = {},
+      } } },
+      { role = "toolResult", toolCallId = "present-default",
+        toolName = "present_default", isError = false,
+        content = { { type = "text", text = "retained output" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("retained output", 1, true) ~= nil
+    end))
+    assert.matches("Presented operation", text(result))
+    assert.not_matches("present_default", text(result))
+    assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
+  end)
+
+  it("applies semantic tool status to Codex-colored title markers", function()
+    local tool = {
+      name = "present_status",
+      render = function()
+        return {
+          title = { { text = "Presented status", style = "bold" } },
+          status = true,
+        }
+      end,
+    }
+    local result = view(
+      { position = "center", style = "codex" }, { tool })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "present-status",
+        name = "present_status", arguments = {},
+      } } },
+      { role = "toolResult", toolCallId = "present-status",
+        toolName = "present_status", isError = false,
+        content = { { type = "text", text = "hidden" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Presented status", 1, true) ~= nil
+    end))
+
+    local row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("• Presented status", 1, true) then
+        row = index - 1
+        break
+      end
+    end
+    assert.is_not_nil(row)
+    local groups = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.namespace,
+      { row, 0 }, { row, -1 }, { details = true, hl_name = true }
+    )) do
+      if mark[4].hl_group then groups[mark[4].hl_group] = true end
+    end
+    assert.is_true(groups.NeoagentCodexToolSuccess)
+    assert.not_matches("hidden", text(result))
+  end)
+
   it("falls back safely from malformed semantic presentations", function()
     local specifications = {
       { name = "invalid-lines", render = function()
@@ -1016,6 +1434,32 @@ describe("neoagent.ui", function()
       end },
       { name = "unknown-style", render = function()
         return { lines = { { { text = "invalid", style = "unknown" } } } }
+      end },
+      { name = "default-with-lines", render = function()
+        return { default = true, lines = {} }
+      end },
+      { name = "invalid-title", render = function()
+        return { default = true, title = "invalid" }
+      end },
+      { name = "newline-title", render = function()
+        return { title = { { text = "invalid\ntitle" } } }
+      end },
+      { name = "newline-line", render = function()
+        return { lines = { { { text = "invalid\nline" } } } }
+      end },
+      { name = "invalid-status", render = function()
+        return { title = true, status = "success" }
+      end },
+      { name = "invalid-command", render = function()
+        return { title = { { text = "invalid" } }, command = {} }
+      end },
+      { name = "command-with-lines", render = function()
+        return {
+          title = { { text = "invalid" } }, command = "true", lines = {},
+        }
+      end },
+      { name = "command-with-default", render = function()
+        return { default = true, title = true, command = "true" }
       end },
       { name = "unstyled", render = function()
         return { card = false, lines = { { { text = "unstyled presentation" } } } }
@@ -1059,7 +1503,7 @@ describe("neoagent.ui", function()
 
   it("renders streamed update_plan calls as transparent spinner cards", function()
     local result = view(
-      { position = "center", width = 44 },
+      { position = "center", width = 44, style = "codex" },
       { require("neoagent.tools.update_plan").new() })
     assert(result:open())
     result:set_context({ state = "running" })
@@ -1112,7 +1556,7 @@ describe("neoagent.ui", function()
 
   it("renders successful update_plan calls like Codex todo lists", function()
     local result = view(
-      { position = "center", width = 44 },
+      { position = "center", width = 44, style = "codex" },
       { require("neoagent.tools.update_plan").new() })
     result:set_messages({
       { role = "assistant", content = { {
@@ -1136,11 +1580,11 @@ describe("neoagent.ui", function()
     local lines = vim.api.nvim_buf_get_lines(
       result.transcript_buf, 0, -1, false)
     assert.are.same({
-      " • Updated Plan",
-      "   └ Implement in three focused phases.",
-      "     ✔ Inspect Codex behavior",
-      "     □ Add the optional tool",
-      "     □ Verify the UI",
+      " • Updated Plan ",
+      "    └ Implement in three focused phases. ",
+      "      ✔ Inspect Codex behavior ",
+      "      □ Add the optional tool ",
+      "      □ Verify the UI ",
       "",
     }, lines)
     assert.not_matches("Plan updated", text(result))
@@ -1165,6 +1609,1182 @@ describe("neoagent.ui", function()
     }).ctermfg)
     assert.is_true(groups(3).NeoagentMarkdownBold)
     assert.is_true(groups(4).NeoagentMuted)
+  end)
+
+  it("keeps multiline Codex tool headers visible while hovered", function()
+    local tool = require("neoagent.tools.update_plan").new()
+    local plan = {
+      explanation = "Workspace inspection is complete.",
+      plan = {
+        { step = "Inspect workspace", status = "completed" },
+        { step = "Create the app", status = "completed" },
+        { step = "Run local checks", status = "in_progress" },
+      },
+    }
+    local result = view(
+      { position = "center", width = 72, style = "codex" }, { tool })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "plan-hover", name = "update_plan",
+        arguments = plan,
+      } } },
+      { role = "toolResult", toolCallId = "plan-hover",
+        toolName = "update_plan", isError = false,
+        content = { { type = "text", text = "Plan updated" } },
+        details = plan,
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Run local checks", 1, true) ~= nil
+    end))
+    local header_row, last_row, header_line
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("• Updated Plan", 1, true) then
+        header_row, header_line = index - 1, line
+      elseif line:find("Run local checks", 1, true) then
+        last_row = index - 1
+      end
+    end
+    assert.is_not_nil(header_row)
+    assert.is_not_nil(last_row)
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(
+      result.transcript_win, { header_row + 1, 0 })
+    vim.api.nvim_exec_autocmds(
+      "CursorMoved", { buffer = result.transcript_buf })
+
+    local top, top_col, bottom, bottom_row, virtual_bottom
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace,
+      0, -1, { details = true }
+    )) do
+      local details = mark[4]
+      if mark[2] == header_row then
+        for _, chunk in ipairs(details.virt_text or {}) do
+          if chunk[1]:find("╮", 1, true) then
+            top, top_col = chunk[1], details.virt_text_win_col
+          end
+          assert.is_nil(chunk[1]:find("╭", 1, true))
+        end
+      end
+      for _, line in ipairs(details.virt_lines or {}) do
+        for _, chunk in ipairs(line) do
+          if chunk[1]:find("╰", 1, true) then
+            virtual_bottom = chunk[1]
+          end
+        end
+      end
+      for _, chunk in ipairs(details.virt_text or {}) do
+        if chunk[1]:find("╰", 1, true) then
+          bottom, bottom_row = chunk[1], mark[2]
+        end
+      end
+    end
+    assert.are.equal(vim.fn.strdisplaywidth(header_line), top_col)
+    assert.is_true(vim.fn.strchars(top) > 1)
+    assert.are.equal("╮", vim.fn.strcharpart(
+      top, vim.fn.strchars(top) - 1, 1))
+    assert.are.equal("╰", vim.fn.strcharpart(bottom, 0, 1))
+    assert.are.equal("╯", vim.fn.strcharpart(
+      bottom, vim.fn.strchars(bottom) - 1, 1))
+    assert.is_not_nil(bottom:find("<CR> to expand", 1, true))
+    assert.is_nil(virtual_bottom)
+    assert.are.equal(last_row + 1, bottom_row)
+    assert.are.equal("", vim.api.nvim_buf_get_lines(
+      result.transcript_buf, bottom_row, bottom_row + 1, false)[1])
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, header_row, last_row + 1, false),
+      "      □ Run local checks "))
+  end)
+
+  it("replaces adjacent Codex separators with tool hover outlines", function()
+    local plan = {
+      explanation = "Keep the boundary stable.",
+      plan = {
+        { step = "Inspect the plan", status = "completed" },
+        { step = "Verify the hover", status = "in_progress" },
+      },
+    }
+    local result = view(
+      { position = "center", width = 72, style = "codex" }, {
+        require("neoagent.tools.update_plan").new(),
+        require("neoagent.tools.shell").new(),
+      })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "hover-plan", name = "update_plan",
+        arguments = plan,
+      } } },
+      { role = "toolResult", toolCallId = "hover-plan",
+        toolName = "update_plan", isError = false,
+        content = { { type = "text", text = "Plan updated" } },
+        details = plan,
+      },
+      { role = "assistant", content = {
+        { type = "text", text = "Run the follow-up command." },
+      } },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "hover-shell", name = "shell",
+        arguments = { command = "printf 'one\\ntwo\\n'" },
+      } } },
+      { role = "toolResult", toolCallId = "hover-shell",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "one\ntwo" } },
+      },
+      { role = "assistant", content = {
+        { type = "text", text = "The command is complete." },
+      } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("The command is complete.", 1, true) ~= nil
+    end))
+
+    local function card_rows(id)
+      local block
+      for _, candidate in ipairs(result.blocks) do
+        if candidate.call and candidate.call.id == id then
+          block = candidate
+          break
+        end
+      end
+      assert.is_not_nil(block)
+      local position = vim.api.nvim_buf_get_extmark_by_id(
+        result.transcript_buf, result.namespace, block.mark,
+        { details = true })
+      local first = position[1] + block.card.first
+      local last = position[1] + block.card.last
+      local separator = last + 1
+      assert.matches("────", vim.api.nvim_buf_get_lines(
+        result.transcript_buf, separator, separator + 1, false)[1])
+      return first, separator
+    end
+
+    local function assert_hover_replaces_separator(id)
+      local first, separator = card_rows(id)
+      result:focus_transcript()
+      vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
+      vim.api.nvim_exec_autocmds(
+        "CursorMoved", { buffer = result.transcript_buf })
+
+      local virtual_bottom, overlay_row, overlay_text
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace, 0, -1,
+        { details = true }
+      )) do
+        for _, line in ipairs(mark[4].virt_lines or {}) do
+          for _, chunk in ipairs(line) do
+            if chunk[1]:find("<CR> to expand", 1, true) then
+              virtual_bottom = chunk[1]
+            end
+          end
+        end
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          if chunk[1]:find("<CR> to expand", 1, true) then
+            overlay_row, overlay_text = mark[2], chunk[1]
+          end
+        end
+      end
+      assert.is_nil(virtual_bottom)
+      assert.are.equal(separator, overlay_row)
+      assert.are.equal(
+        vim.api.nvim_win_get_width(result.transcript_win),
+        vim.fn.strdisplaywidth(overlay_text))
+    end
+
+    assert_hover_replaces_separator("hover-plan")
+    assert_hover_replaces_separator("hover-shell")
+
+    local _, shell_separator = card_rows("hover-shell")
+    vim.api.nvim_win_set_cursor(
+      result.transcript_win, { shell_separator + 3, 0 })
+    vim.api.nvim_exec_autocmds(
+      "CursorMoved", { buffer = result.transcript_buf })
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1,
+      { details = true }
+    )) do
+      if mark[2] == shell_separator then
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          assert.is_nil(chunk[1]:find("<CR> to expand", 1, true))
+        end
+      end
+    end
+    assert.matches("────", vim.api.nvim_buf_get_lines(
+      result.transcript_buf, shell_separator,
+      shell_separator + 1, false)[1])
+  end)
+
+  it("reuses Codex card spacing for hover outlines in tool groups", function()
+    local plan = {
+      plan = {
+        { step = "Inspect the workspace", status = "pending" },
+        { step = "Implement the app", status = "pending" },
+        { step = "Run a smoke check", status = "pending" },
+      },
+    }
+    local result = view(
+      { position = "center", width = 72, style = "codex" }, {
+        require("neoagent.tools.update_plan").new(),
+        require("neoagent.tools.shell").new(),
+      })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "group-plan", name = "update_plan",
+        arguments = plan,
+      } } },
+      { role = "toolResult", toolCallId = "group-plan",
+        toolName = "update_plan", isError = false,
+        content = { { type = "text", text = "Plan updated" } },
+        details = plan,
+      },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "group-shell", name = "shell",
+        arguments = { command = "printf 'one\\ntwo\\n'" },
+      } } },
+      { role = "toolResult", toolCallId = "group-shell",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "one\ntwo" } },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran printf", 1, true) ~= nil
+    end))
+
+    local block = assert(vim.tbl_filter(function(candidate)
+      return candidate.call and candidate.call.id == "group-plan"
+    end, result.blocks)[1])
+    local position = vim.api.nvim_buf_get_extmark_by_id(
+      result.transcript_buf, result.namespace, block.mark,
+      { details = true })
+    local first = position[1] + block.card.first
+    local spacer = position[1] + block.card.last + 1
+    assert.are.equal("", vim.api.nvim_buf_get_lines(
+      result.transcript_buf, spacer, spacer + 1, false)[1])
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
+    vim.api.nvim_exec_autocmds(
+      "CursorMoved", { buffer = result.transcript_buf })
+
+    local virtual_bottom, overlay_row
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace, 0, -1,
+      { details = true }
+    )) do
+      for _, line in ipairs(mark[4].virt_lines or {}) do
+        for _, chunk in ipairs(line) do
+          if chunk[1]:find("<CR> to expand", 1, true) then
+            virtual_bottom = chunk[1]
+          end
+        end
+      end
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        if chunk[1]:find("<CR> to expand", 1, true) then
+          overlay_row = mark[2]
+        end
+      end
+    end
+    assert.is_nil(virtual_bottom)
+    assert.are.equal(spacer, overlay_row)
+  end)
+
+  it("renders update_plan checklists inside ordinary Pi tool cards", function()
+    local result = view(
+      { position = "center", width = 44 },
+      { require("neoagent.tools.update_plan").new() })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "plan-pi", name = "update_plan",
+        arguments = {
+          explanation = "Keep Pi presentation.",
+          plan = {
+            { step = "Keep card chrome", status = "completed" },
+            { step = "Use one card", status = "in_progress" },
+            { step = "Verify the result", status = "pending" },
+          },
+        },
+      } } },
+      { role = "toolResult", toolCallId = "plan-pi",
+        toolName = "update_plan", isError = false,
+        content = { { type = "text", text = "Plan updated" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("[ ] Use one card", 1, true) ~= nil
+    end))
+    assert.matches("update_plan", text(result))
+    assert.not_matches("Updated Plan", text(result))
+    assert.matches("Keep Pi presentation", text(result))
+    assert.matches("%[x%] Keep card chrome", text(result))
+    assert.matches("%[ %] Verify the result", text(result))
+    assert.not_matches("Plan updated", text(result))
+    assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
+
+    local active_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+      if line:find("[ ] Use one card", 1, true) then active_row = index - 1 end
+    end
+    assert.is_not_nil(active_row)
+    local active_groups = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.namespace,
+      { active_row, 0 }, { active_row, -1 },
+      { details = true, hl_name = true }
+    )) do
+      if mark[4].hl_group then active_groups[mark[4].hl_group] = true end
+    end
+    assert.is_true(active_groups.NeoagentMarkdownBold)
+    assert.is_nil(active_groups.NeoagentCyan)
+    assert.is_nil(active_groups.NeoagentMarkdownItalic)
+
+    assert.are.equal("codex", result:set_style("codex"))
+    assert(vim.wait(1000, function()
+      return text(result):find("Updated Plan", 1, true) ~= nil
+    end))
+    assert.not_matches("Plan updated", text(result))
+    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
+  end)
+
+  it("uses compact Codex activity cards while retaining mutation bodies", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.read_file").new(),
+      require("neoagent.tools.shell").new(),
+      require("neoagent.tools.write_file").new(),
+      require("neoagent.tools.edit_file").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "read-activity", name = "read_file",
+          arguments = { path = "README.md" } },
+        { type = "toolCall", id = "shell-activity", name = "shell",
+          arguments = { command = "printf output" } },
+        { type = "toolCall", id = "write-running", name = "write_file",
+          arguments = { path = "pending.lua", content = "return false" } },
+        { type = "toolCall", id = "write-body", name = "write_file",
+          arguments = { path = "new.lua", content = "return true" } },
+        { type = "toolCall", id = "edit-body", name = "edit_file",
+          arguments = { path = "existing.lua", edits = {} } },
+      } },
+      { role = "toolResult", toolCallId = "read-activity",
+        toolName = "read_file", isError = false,
+        content = { { type = "text", text = "file contents" } } },
+      { role = "toolResult", toolCallId = "shell-activity",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "command output" } } },
+      { role = "toolResult", toolCallId = "write-body",
+        toolName = "write_file", isError = false,
+        content = { { type = "text", text = "Successfully wrote new.lua" } } },
+      { role = "toolResult", toolCallId = "edit-body",
+        toolName = "edit_file", isError = false,
+        content = { { type = "text", text = "Successfully edited existing.lua" } },
+        details = { diff = " context\n-old\n+new" } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("+new", 1, true) ~= nil
+    end))
+    assert.matches("• Read README%.md", text(result))
+    assert.matches("• Ran printf output", text(result))
+    assert.not_matches("file contents", text(result))
+    assert.matches("└ command output", text(result))
+    assert.matches("• Writing pending%.lua", text(result))
+    assert.matches("return false", text(result))
+    assert.matches("• Written new%.lua", text(result))
+    assert.matches("return true", text(result))
+    assert.matches("• Edited existing%.lua", text(result))
+    assert.matches("%-old", text(result))
+    assert.matches("%+new", text(result))
+    assert.not_matches("• Added", text(result))
+    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
+
+    local successful = {}
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("• Read README.md", 1, true)
+          or line:find("• Written new.lua", 1, true)
+          or line:find("• Edited existing.lua", 1, true) then
+        successful[#successful + 1] = index - 1
+      end
+    end
+    assert.are.equal(3, #successful)
+    for _, row in ipairs(successful) do
+      local groups = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace,
+        { row, 0 }, { row, -1 }, { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then groups[mark[4].hl_group] = true end
+      end
+      assert.is_true(groups.NeoagentCodexToolSuccess)
+    end
+  end)
+
+  it("renders successful Codex edits as numbered patch previews", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.edit_file").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "patch-edit", name = "edit_file",
+        arguments = { path = "existing.lua", edits = {} },
+      } } },
+      { role = "toolResult", toolCallId = "patch-edit",
+        toolName = "edit_file", isError = false,
+        content = { {
+          type = "text", text = "Successfully edited existing.lua",
+        } },
+        details = {
+          patch = table.concat({
+            "@@ -1,3 +1,3 @@",
+            " line one",
+            "-line two",
+            "+line two changed",
+            " line three",
+          }, "\n"),
+          diff = "-line two\n+line two changed",
+          firstChangedLine = 2,
+        },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Edited existing.lua", 1, true) ~= nil
+    end))
+
+    local lines = vim.tbl_map(function(line)
+      return (line:gsub("%s+$", ""))
+    end, vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false))
+    assert.are.same({
+      " • Edited existing.lua (+1 -1)",
+      "    1  line one",
+      "    2 -line two",
+      "    2 +line two changed",
+      "    3  line three",
+      "",
+    }, lines)
+
+    local function groups(row)
+      local found = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace,
+        { row, 0 }, { row, -1 }, { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then found[mark[4].hl_group] = true end
+      end
+      return found
+    end
+    assert.is_true(groups(0).NeoagentCodexToolSuccess)
+    assert.is_true(groups(0).NeoagentMarkdownBold)
+    assert.is_true(groups(0).NeoagentGreen)
+    assert.is_true(groups(0).NeoagentRed)
+    assert.is_true(groups(2).NeoagentRed)
+    assert.is_true(groups(3).NeoagentGreen)
+    assert.are.equal(2, vim.api.nvim_get_hl(0, {
+      name = "NeoagentGreen", link = false,
+    }).ctermfg)
+    assert.are.equal(1, vim.api.nvim_get_hl(0, {
+      name = "NeoagentRed", link = false,
+    }).ctermfg)
+  end)
+
+  it("renders Codex write source without default output styling", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.write_file").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "plain-write", name = "write_file",
+        arguments = {
+          path = "demo.lua",
+          content = "local value = true\nreturn value",
+        },
+      } } },
+      { role = "toolResult", toolCallId = "plain-write",
+        toolName = "write_file", isError = false,
+        content = { { type = "text", text = "Successfully wrote demo.lua" } },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("local value = true", 1, true) ~= nil
+    end))
+
+    local function source_groups()
+      local source_row
+      for index, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find("local value = true", 1, true) then
+          source_row = index - 1
+        end
+      end
+      assert.is_not_nil(source_row)
+      local groups = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace,
+        { source_row, 0 }, { source_row, -1 },
+        { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then groups[mark[4].hl_group] = true end
+      end
+      return groups
+    end
+    local groups = source_groups()
+    assert.is_nil(groups.NeoagentToolOutput)
+
+    assert.are.equal("pi", result:set_style("pi"))
+    assert(vim.wait(1000, function()
+      return has_line_group(result, "NeoagentToolSuccessBackground")
+    end))
+    groups = source_groups()
+    assert.is_true(groups.NeoagentToolOutput)
+  end)
+
+  it("limits and highlights streamed Codex write previews", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.write_file").new(),
+    })
+    assert(result:open())
+    result:apply({
+      type = "tool_call_delta", index = 0, name = "write_file",
+      arguments_delta = '{"path":"/tmp/demo.lua"',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find(
+        "• Writing /tmp/demo.lua", 1, true) ~= nil
+    end))
+    result:apply({
+      type = "tool_call_delta", index = 0,
+      arguments_delta = ',"content":"local one = 1\\nlocal two = 2\\n'
+        .. 'local three = 3\\nlocal four = 4\\nreturn four"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("local three = 3", 1, true) ~= nil
+    end))
+
+    local transcript = text(result)
+    assert.matches("• Writing /tmp/demo%.lua", transcript)
+    assert.matches("local one = 1", transcript)
+    assert.matches("local two = 2", transcript)
+    assert.matches("local three = 3", transcript)
+    assert.not_matches("local four = 4", transcript)
+    assert.not_matches("return four", transcript)
+    assert.matches("%[%.%.%. 2 more lines%]", transcript)
+
+    local header_row, source_row, omitted_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false
+    )) do
+      if line:find("• Writing /tmp/demo.lua", 1, true) then
+        header_row = index - 1
+      elseif line:find("local one = 1", 1, true) then
+        source_row = index
+      elseif line:find("[... 2 more lines]", 1, true) then
+        omitted_row = index
+      end
+    end
+    assert.is_not_nil(header_row)
+    assert.is_not_nil(source_row)
+    assert.is_not_nil(omitted_row)
+    vim.api.nvim_win_call(result.transcript_win, function()
+      assert.are.equal("", vim.fn.synIDattr(
+        vim.fn.synID(header_row + 1, 3, true), "name"))
+      assert.are.equal("luaStatement", vim.fn.synIDattr(
+        vim.fn.synID(source_row, 2, true), "name"))
+      assert.are.equal("", vim.fn.synIDattr(
+        vim.fn.synID(omitted_row, 2, true), "name"))
+    end)
+
+    result:apply({
+      type = "tool_call_delta", index = 1, name = "write_file",
+      arguments_delta = '{"path":"/tmp/demo.py",'
+        .. '"content":"def greet():\\n    return True"}',
+    })
+    assert(vim.wait(1000, function()
+      return text(result):find("def greet():", 1, true) ~= nil
+    end))
+    local python_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false
+    )) do
+      if line:find("def greet():", 1, true) then python_row = index end
+    end
+    assert.is_not_nil(python_row)
+    vim.api.nvim_win_call(result.transcript_win, function()
+      assert.are.equal("luaStatement", vim.fn.synIDattr(
+        vim.fn.synID(source_row, 2, true), "name"))
+      assert.are.equal("pythonStatement", vim.fn.synIDattr(
+        vim.fn.synID(python_row, 2, true), "name"))
+    end)
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { header_row + 1, 0 })
+    assert.is_true(result:show_card_details())
+    local details = table.concat(vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false), "\n")
+    assert.matches("local four = 4", details)
+    assert.matches("return four", details)
+    result:_close_card_details(true)
+  end)
+
+  it("scopes Codex write detail syntax to the file contents", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.write_file").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "syntax-write", name = "write_file",
+        arguments = {
+          path = "demo.lua",
+          content = "local value = true\nreturn value",
+        },
+      } } },
+      { role = "toolResult", toolCallId = "syntax-write",
+        toolName = "write_file", isError = false,
+        content = { { type = "text", text = "Successfully wrote demo.lua" } },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Written demo.lua", 1, true) ~= nil
+    end))
+
+    local header_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("• Written demo.lua", 1, true) then
+        header_row = index - 1
+      end
+    end
+    assert.is_not_nil(header_row)
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(
+      result.transcript_win, { header_row + 1, 0 })
+    assert.is_true(result:show_card_details())
+    assert.are.equal("neoagent", vim.bo[result.details_buf].filetype)
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false)
+    local detail_header, source_row
+    for index, line in ipairs(lines) do
+      if line:find("• Written demo.lua", 1, true) then
+        detail_header = index
+      elseif line == "local value = true" then
+        source_row = index
+      end
+    end
+    assert.is_not_nil(detail_header)
+    assert.is_not_nil(source_row)
+    vim.api.nvim_win_call(result.details_win, function()
+      local header = vim.fn.synIDattr(
+        vim.fn.synID(detail_header, 3, true), "name")
+      local source = vim.fn.synIDattr(
+        vim.fn.synID(source_row, 1, true), "name")
+      assert.are.equal("", header)
+      assert.are.equal("luaStatement", source)
+    end)
+    result:_close_card_details(true)
+  end)
+
+  it("renders multiline Codex shell commands as continuation rows", function()
+    local result = view({ position = "center", width = 64, style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "multiline-shell", name = "shell",
+        arguments = { command = "set -eu\nprintf '%s\\n' done" },
+      } } },
+    })
+    assert(result:open())
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local activity
+    for index, line in ipairs(lines) do
+      if line:find("• Running", 1, true) then activity = index break end
+    end
+    assert.is_not_nil(activity)
+    assert.are.same({
+      " • Running set -eu ",
+      "   │ printf '%s\\n' done ",
+    }, vim.list_slice(lines, activity, activity + 1))
+  end)
+
+  it("clips long Codex shell command lines without wrapping", function()
+    local result = view({ position = "center", width = 52, style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "long-shell", name = "shell",
+        arguments = {
+          command = "printf one two three four five six seven eight nine ten",
+        },
+      } } },
+    })
+    assert(result:open())
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local activity
+    for index, line in ipairs(lines) do
+      if line:find("• Running printf", 1, true) then activity = index break end
+    end
+    assert.is_not_nil(activity)
+    assert.matches("%.%.%. $", lines[activity])
+    assert.are.equal("", lines[activity + 1])
+  end)
+
+  it("summarizes Codex shell commands and output with official gutters", function()
+    local result = view({ position = "center", width = 72, style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    local output = table.concat(vim.tbl_map(tostring, vim.fn.range(1, 10)), "\n")
+    local ansi = "\27[31m1\27[0m\n"
+      .. table.concat(vim.tbl_map(tostring, vim.fn.range(2, 10)), "\n")
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "summary-output", name = "shell",
+          arguments = { command = table.concat({
+            "git status --short &&",
+            "git log -1 --format='%h %s%n%n%b' &&",
+            "printf done",
+            "printf hidden",
+          }, "\n") } },
+        { type = "toolCall", id = "summary-empty", name = "shell",
+          arguments = { command = "true" } },
+        { type = "toolCall", id = "summary-long", name = "shell",
+          arguments = { command = table.concat({
+            "printf one two three four five six seven eight nine ten",
+            string.rep("x", 200),
+          }, " ") } },
+      } },
+      { role = "toolResult", toolCallId = "summary-output",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = output } },
+        details = { ansi = ansi } },
+      { role = "toolResult", toolCallId = "summary-empty",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "" } } },
+    })
+    assert(result:open())
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local first
+    for index, line in ipairs(lines) do
+      if line:find("• Ran git status", 1, true) then first = index break end
+    end
+    assert.is_not_nil(first)
+    assert.are.same({
+      " • Ran git status --short && ",
+      "   │ git log -1 --format='%h %s%n%n%b' && ",
+      "   │ printf done ",
+      "   │ … +1 lines ",
+      "   └ 1 ",
+      "     2 ",
+      "     … +6 lines ",
+      "     9 ",
+      "     10 ",
+    }, vim.list_slice(lines, first, first + 8))
+    assert.not_matches("ctrl %+ t", text(result))
+
+    local empty
+    for index, line in ipairs(lines) do
+      if line:find("• Ran true", 1, true) then empty = index break end
+    end
+    assert.is_not_nil(empty)
+    assert.are.same({
+      " • Ran true ",
+      "   └ (no output) ",
+    }, vim.list_slice(lines, empty, empty + 1))
+
+    local long
+    for index, line in ipairs(lines) do
+      if line:find("• Running printf one", 1, true) then
+        long = index
+        break
+      end
+    end
+    assert.is_not_nil(long)
+    assert.matches("%.%.%. $", lines[long])
+    assert.are.equal("", lines[long + 1])
+    assert.is_true(vim.fn.strdisplaywidth(lines[long]) <= 72)
+
+    local plain_index = first + 5
+    local plain_row = plain_index - 1
+    local plain_col = assert(lines[plain_index]:find("2", 1, true)) - 1
+    local groups, normal_start, ansi_group = {}, nil, nil
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.namespace,
+      { first + 3, 0 }, { plain_row, -1 },
+      { details = true, hl_name = true }
+    )) do
+      local group = mark[4].hl_group
+      if group then
+        groups[group] = true
+        if mark[2] == plain_row and group == "Normal" then
+          normal_start = mark[3]
+        end
+        if tostring(group):match("^NeoagentAnsi") then
+          ansi_group = group
+        end
+      end
+    end
+    assert.are.equal(plain_col, normal_start)
+    assert.is_nil(groups.NeoagentToolOutput)
+    assert.is_nil(groups.NeoagentMarkdownItalic)
+    assert.is_not_nil(ansi_group)
+    assert.are.equal(0xcd0000, vim.api.nvim_get_hl(0, {
+      name = ansi_group, link = false,
+    }).fg)
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { first, 0 })
+    assert.is_true(result:show_card_details())
+    local details = table.concat(vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false), "\n")
+    assert.matches("1\n2\n3\n4\n5\n6\n7\n8\n9\n10", details)
+    assert.not_matches("… %+6 lines", details)
+    result:_close_card_details(true)
+  end)
+
+  it("collapses Codex search cards and expands their results", function()
+    local result = view({ position = "center", width = 64, style = "codex" }, {
+      require("neoagent.tools.grep").new(),
+      require("neoagent.tools.find").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "grep-compact", name = "grep",
+          arguments = { pattern = "needle", path = "lua", glob = "*.lua" } },
+        { type = "toolCall", id = "find-compact", name = "find",
+          arguments = { pattern = "*.lua", path = "src" } },
+      } },
+      { role = "toolResult", toolCallId = "grep-compact",
+        toolName = "grep", isError = false,
+        content = { { type = "text",
+          text = "lua/a.lua:1:needle\nlua/b.lua:2:needle" } } },
+      { role = "toolResult", toolCallId = "find-compact",
+        toolName = "find", isError = false,
+        content = { { type = "text", text = "src/a.lua\nsrc/b.lua" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Found *.lua in src", 1, true) ~= nil
+    end))
+    assert.matches("• Searched needle in lua %(%*%.lua%)", text(result))
+    assert.not_matches("lua/a%.lua:1:needle", text(result))
+    assert.not_matches("src/a%.lua", text(result))
+
+    local function expand(label, expected)
+      local row
+      for index, line in ipairs(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false)) do
+        if line:find(label, 1, true) then row = index - 1 break end
+      end
+      assert.is_not_nil(row)
+      local title_groups = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace,
+        { row, 0 }, { row, -1 }, { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then
+          title_groups[mark[4].hl_group] = true
+        end
+      end
+      assert.is_true(title_groups.NeoagentCodexToolSuccess)
+      result:focus_transcript()
+      vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+      vim.api.nvim_exec_autocmds(
+        "CursorMoved", { buffer = result.transcript_buf })
+      local hint
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.card_namespace,
+        { row, 0 }, { row, -1 }, { details = true }
+      )) do
+        for _, chunk in ipairs(mark[4].virt_text or {}) do
+          if chunk[1] == "[<CR> to expand]" then hint = chunk[1] end
+        end
+      end
+      assert.are.equal("[<CR> to expand]", hint)
+      assert.is_true(result:show_card_details())
+      local details = table.concat(vim.api.nvim_buf_get_lines(
+        result.details_buf, 0, -1, false), "\n")
+      assert.matches(expected, details)
+      local groups = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.details_buf, result.namespace, 0, -1,
+        { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then groups[mark[4].hl_group] = true end
+      end
+      assert.is_true(groups.Normal)
+      assert.is_nil(groups.NeoagentToolOutput)
+      result:_close_card_details(true)
+    end
+
+    expand("• Searched needle", "lua/a%.lua:1:needle")
+    expand("• Found *.lua", "src/a%.lua")
+  end)
+
+  it("expands one-line Codex read cards with source syntax", function()
+    local path = "src/" .. string.rep("nested/", 8) .. "file.lua"
+    local result = view(
+      { position = "center", width = 52, style = "codex" },
+      { require("neoagent.tools.read_file").new() })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "read-compact", name = "read_file",
+        arguments = { path = path },
+      } } },
+      { role = "toolResult", toolCallId = "read-compact",
+        toolName = "read_file", isError = false,
+        content = { { type = "text", text =
+          "local value = true\nreturn value\n\n"
+            .. "[602 more lines in file. Use offset=1904 to continue.]" } },
+        details = { truncation = { outputLines = 2 } },
+      },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Read src/", 1, true) ~= nil
+    end))
+    assert.not_matches("local value", text(result))
+
+    local row, line
+    for index, candidate in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if candidate:find("• Read src/", 1, true) then
+        row, line = index - 1, candidate
+        break
+      end
+    end
+    assert.is_not_nil(row)
+    assert.matches("%.%.%. $", line)
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+    vim.api.nvim_exec_autocmds(
+      "CursorMoved", { buffer = result.transcript_buf })
+
+    local badge = "[<CR> to expand]"
+    local badge_col = vim.api.nvim_win_get_width(result.transcript_win)
+      - 1 - vim.fn.strdisplaywidth(badge)
+    local overlays = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace,
+      { row, 0 }, { row, -1 }, { details = true }
+    )) do
+      local col = mark[4].virt_text_win_col
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        overlays[chunk[1]] = col
+      end
+    end
+    assert.are.equal(badge_col, overlays[badge])
+    assert.are.equal(badge_col - 4, overlays[" ..."])
+
+    assert.is_true(result:show_card_details())
+    local details = vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(details, "local value = true"))
+    assert.is_true(vim.tbl_contains(details, "return value"))
+    local detail_header, source_row, continuation_row
+    for index, candidate in ipairs(details) do
+      if candidate:find("• Read src/", 1, true) then
+        detail_header = index
+      elseif candidate == "local value = true" then
+        source_row = index
+      elseif candidate:find("602 more lines", 1, true) then
+        continuation_row = index
+      end
+    end
+    assert.is_not_nil(detail_header)
+    assert.is_not_nil(source_row)
+    assert.is_not_nil(continuation_row)
+    vim.api.nvim_win_call(result.details_win, function()
+      assert.are.equal("", vim.fn.synIDattr(
+        vim.fn.synID(detail_header, 3, true), "name"))
+      assert.are.equal("luaStatement", vim.fn.synIDattr(
+        vim.fn.synID(source_row, 1, true), "name"))
+      assert.are.equal("", vim.fn.synIDattr(
+        vim.fn.synID(continuation_row, 2, true), "name"))
+    end)
+    local groups = {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.details_buf, result.namespace, 0, -1,
+      { details = true, hl_name = true }
+    )) do
+      if mark[4].hl_group then groups[mark[4].hl_group] = true end
+    end
+    assert.is_nil(groups.Normal)
+    assert.is_nil(groups.NeoagentToolOutput)
+    result:_close_card_details(true)
+  end)
+
+  it("shows Codex shell previews with state-colored bullets", function()
+    local result = view({ position = "center", style = "codex" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    result:set_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "shell-pending", name = "shell",
+          arguments = { command = "printf pending" } },
+        { type = "toolCall", id = "shell-success", name = "shell",
+          arguments = { command = "printf success" } },
+        { type = "toolCall", id = "shell-error", name = "shell",
+          arguments = { command = "false" } },
+      } },
+      { role = "toolResult", toolCallId = "shell-success",
+        toolName = "shell", isError = false,
+        content = { { type = "text", text = "plain red output" } },
+        details = { ansi = "plain \27[31mred\27[0m output" } },
+      { role = "toolResult", toolCallId = "shell-error",
+        toolName = "shell", isError = true,
+        content = { { type = "text", text = "failed output" } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Ran false", 1, true) ~= nil
+    end))
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local rows = {}
+    for index, line in ipairs(lines) do
+      if line:find("• Running printf pending", 1, true) then
+        rows.pending = index - 1
+      elseif line:find("• Ran printf success", 1, true) then
+        rows.success = index - 1
+      elseif line:find("• Ran false", 1, true) then
+        rows.error = index - 1
+      end
+    end
+    assert.is_not_nil(rows.pending)
+    assert.is_not_nil(rows.success)
+    assert.is_not_nil(rows.error)
+    assert.matches("└ plain red output", text(result))
+    assert.matches("└ failed output", text(result))
+
+    local function groups(row)
+      local found = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        result.transcript_buf, result.namespace,
+        { row, 0 }, { row, -1 }, { details = true, hl_name = true }
+      )) do
+        if mark[4].hl_group then found[mark[4].hl_group] = true end
+      end
+      return found
+    end
+    assert.is_true(groups(rows.pending).NeoagentMuted)
+    assert.is_true(groups(rows.success).NeoagentCodexToolSuccess)
+    assert.is_true(groups(rows.error).NeoagentCodexToolError)
+    local success = vim.api.nvim_get_hl(0, {
+      name = "NeoagentCodexToolSuccess", link = false,
+    })
+    local failure = vim.api.nvim_get_hl(0, {
+      name = "NeoagentCodexToolError", link = false,
+    })
+    assert.are.equal(2, success.ctermfg)
+    assert.are.equal(0x00cd00, success.fg)
+    assert.is_true(success.bold)
+    assert.are.equal(1, failure.ctermfg)
+    assert.are.equal(0xcd0000, failure.fg)
+    assert.is_true(failure.bold)
+
+    local cards = 0
+    for _, block in ipairs(result.blocks) do
+      if block.kind == "tool" then
+        cards = cards + 1
+        assert.is_table(block.card)
+      end
+    end
+    assert.are.equal(3, cards)
+
+    result:focus_transcript()
+    vim.api.nvim_win_set_cursor(result.transcript_win, {
+      rows.success + 1, 0,
+    })
+    assert.is_true(result:show_card_details())
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
+      result.details_buf, 0, -1, false), "plain red output"))
+    local detail_groups, ansi_group = {}, nil
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.details_buf, result.namespace, 0, -1,
+      { details = true, hl_name = true }
+    )) do
+      local group = mark[4].hl_group
+      if group then
+        detail_groups[group] = true
+        if tostring(group):match("^NeoagentAnsi") then
+          ansi_group = group
+        end
+      end
+    end
+    assert.is_true(detail_groups.Normal)
+    assert.is_nil(detail_groups.NeoagentToolOutput)
+    assert.is_not_nil(ansi_group)
+    assert.are.equal(0xcd0000, vim.api.nvim_get_hl(0, {
+      name = ansi_group, link = false,
+    }).fg)
+    result:_close_card_details(true)
+  end)
+
+  it("shows inline expand hints for one-line pending Codex tools", function()
+    local result = view(
+      { position = "center", width = 52, style = "codex" },
+      { require("neoagent.tools.shell").new() })
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "pending-short", name = "shell",
+        arguments = { command = "true" },
+      } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("• Running true", 1, true) ~= nil
+    end))
+    result:focus_transcript()
+
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local row
+    for index, line in ipairs(lines) do
+      if line:find("• Running true", 1, true) then
+        row = index - 1
+        break
+      end
+    end
+    assert.is_not_nil(row)
+    vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+    vim.api.nvim_exec_autocmds(
+      "CursorMoved", { buffer = result.transcript_buf })
+
+    local badge = "[<CR> to expand]"
+    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local badge_col = width - 1 - vim.fn.strdisplaywidth(badge)
+    local overlays, decoration = {}, {}
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      result.transcript_buf, result.card_namespace,
+      { row, 0 }, { row, -1 }, { details = true }
+    )) do
+      local col = mark[4].virt_text_win_col
+      for _, chunk in ipairs(mark[4].virt_text or {}) do
+        overlays[chunk[1]] = col
+        decoration[#decoration + 1] = chunk[1]
+      end
+    end
+    assert.is_true(vim.fn.strdisplaywidth(lines[row + 1]) <= badge_col)
+    assert.are.equal(badge_col, overlays[badge])
+    assert.is_nil(overlays[" ..."])
+    local joined = table.concat(decoration)
+    assert.is_nil(joined:find("╭", 1, true))
+    assert.is_nil(joined:find("╰", 1, true))
   end)
 
   it("renders shell ANSI colors and leaves other escapes visible", function()
@@ -1829,6 +3449,36 @@ describe("neoagent.ui", function()
     assert.are.equal(math.floor((width - vim.fn.strdisplaywidth(" Idle ")) / 2), idle_offset)
   end)
 
+  it("matches Codex user cards to its adaptive terminal background", function()
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0x202020 })
+    vim.api.nvim_set_hl(0, "NeoagentCodexUserBackground", {})
+    local result = view({ position = "center", style = "codex" })
+    result:set_messages({ { role = "user", content = "Codex prompt" } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Codex prompt", 1, true) ~= nil
+    end))
+    assert.is_true(has_line_group(result, "NeoagentCodexUserBackground"))
+    assert.is_false(has_line_group(result, "NeoagentUserBackground"))
+    assert.are.equal(0x3a3a3a, vim.api.nvim_get_hl(0, {
+      name = "NeoagentCodexUserBackground", link = false,
+    }).bg)
+
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0xf0f0f0 })
+    vim.api.nvim_set_hl(0, "NeoagentCodexUserBackground", {})
+    require("neoagent.ui.render").define_highlights()
+    assert.are.equal(0xe6e6e6, vim.api.nvim_get_hl(0, {
+      name = "NeoagentCodexUserBackground", link = false,
+    }).bg)
+
+    vim.api.nvim_set_hl(0, "Normal", {})
+    vim.api.nvim_set_hl(0, "NeoagentCodexUserBackground", {})
+    require("neoagent.ui.render").define_highlights()
+    assert.is_nil(vim.api.nvim_get_hl(0, {
+      name = "NeoagentCodexUserBackground", link = false,
+    }).bg)
+  end)
+
   it("uses card backgrounds, inherits the editor background, and animates active states", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "user", content = "hello" } })
@@ -1909,7 +3559,7 @@ describe("neoagent.ui", function()
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
     assert.are.equal(
-      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
+      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
@@ -1927,7 +3577,7 @@ describe("neoagent.ui", function()
     end))
     result:set_context({ provider_status = false })
     assert.are.equal(
-      " <C-r> history · <C-j> newline · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
+      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
       input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))

@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local flavors = require("neoagent.ui.flavors")
 
 local M = {}
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
@@ -46,6 +47,7 @@ function M.new(opts)
     dialog_unsubscribe = nil,
     dialog = nil,
     position = opts.config.position,
+    transcript_style = opts.config.style,
     position_loaded = false,
     destroyed = false,
   }
@@ -190,8 +192,10 @@ function M.new(opts)
     if state.view and not state.view.destroyed then return state.view end
     local factory = opts.view or require("neoagent.ui").new
     state.rendered_controller = nil
+    local view_config = util.copy(opts.config)
+    view_config.style = state.transcript_style
     state.view = factory({
-      config = util.copy(opts.config),
+      config = view_config,
       on_submit = function(prompt)
         local controller = active()
         local run, err = controller:send(prompt)
@@ -337,6 +341,23 @@ function M.new(opts)
         vim.log.levels.WARN)
     end
     return position, err
+  end
+
+  function window:set_transcript_style(style)
+    if not flavors.get(style) then
+      return nil, util.error("ui", "invalid transcript style")
+    end
+    if state.view and not state.view.destroyed
+        and type(state.view.set_style) ~= "function" then
+      return nil, util.error(
+        "ui", "the active View does not support transcript styles")
+    end
+    state.transcript_style = style
+    if state.view and not state.view.destroyed then
+      local selected, err = state.view:set_style(style)
+      if not selected then return nil, err end
+    end
+    return style
   end
 
   function window:set_input(value)

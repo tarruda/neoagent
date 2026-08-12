@@ -1,4 +1,5 @@
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 
 local function new()
@@ -69,6 +70,7 @@ local function new()
         lines_truncated = captured.linesTruncated,
       } }
     end,
+    render = presentation.grep,
   }
 end
 

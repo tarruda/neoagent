@@ -58,6 +58,7 @@ local defaults = {
     keep_recent_tokens = 20000,
   },
   ui = {
+    style = "codex",
     position = "center",
     margin = 1,
     input_height = 7,
@@ -72,7 +73,6 @@ local defaults = {
     border = "rounded",
     mappings = {
       submit = "<CR>",
-      newline = "<C-j>",
       complete = "<Tab>",
       interrupt = "<C-c>",
       close_input = "<Esc><Esc>",
@@ -81,6 +81,8 @@ local defaults = {
       card_raw = "r",
       card_previous = { "<A-k>", "<C-Up>" },
       card_next = { "<A-j>", "<C-Down>" },
+      focus_input = "<C-w>j",
+      focus_transcript = "<C-w>k",
       cycle_thinking = "<S-Tab>",
       cycle_agent = "<A-n>",
       select_model = "<A-m>",
@@ -277,6 +279,8 @@ local function validate(opts)
     string_list(opts.skills.global_dirs, "skills.global_dirs")
     string_list(opts.skills.project_dirs, "skills.project_dirs")
   end
+  assert(require("neoagent.ui.flavors").get(opts.ui.style),
+    "ui.style must be pi or codex")
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
   assert(positions[opts.ui.position], "invalid ui.position")
   validate_dimension(opts.ui.width, "ui.width")

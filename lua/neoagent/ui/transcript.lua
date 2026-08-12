@@ -1,4 +1,5 @@
 local render = require("neoagent.ui.render")
+local source_syntax = require("neoagent.ui.source_syntax")
 local util = require("neoagent.util")
 
 local M = {}
@@ -100,22 +101,41 @@ function M:_content_width()
   return math.max(1, vim.o.columns - 2)
 end
 
+local function clear_block_marks(view, block)
+  for _, mark in ipairs(block.marks or {}) do
+    pcall(vim.api.nvim_buf_del_extmark,
+      view.transcript_buf, view.namespace, mark)
+  end
+  block.mark = nil
+  block.marks = nil
+end
+
 function M:_mark_block(block, start, finish, content)
-  block.mark = vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start, 0, {
+  local marks = {}
+  local function mark(row, col, options)
+    local id = vim.api.nvim_buf_set_extmark(
+      self.transcript_buf, self.namespace, row, col, options)
+    marks[#marks + 1] = id
+    return id
+  end
+  block.mark = mark(start, 0, {
     end_row = finish,
-    right_gravity = false,
-    end_right_gravity = true,
+    right_gravity = true,
+    end_right_gravity = false,
   })
+  block.marks = marks
   block.card = content.card
+  block.separators = content.separators
+  block.source = content.source
   block.animated = content.animated == true
   for row, group in pairs(content.line_groups) do
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + row, 0, {
+    mark(start + row, 0, {
       line_hl_group = group,
       priority = 50,
     })
   end
   for _, span in ipairs(content.highlights) do
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.namespace, start + span.row, span.col, {
+    mark(start + span.row, span.col, {
       end_row = start + span.row,
       end_col = span.end_col,
       hl_group = span.group,
@@ -123,6 +143,26 @@ function M:_mark_block(block, start, finish, content)
     })
   end
   block.dirty = false
+end
+
+local function apply_transcript_source_syntax(view)
+  local sources = {}
+  for _, block in ipairs(view.blocks) do
+    if block.source and block.mark then
+      local position = vim.api.nvim_buf_get_extmark_by_id(
+        view.transcript_buf, view.namespace, block.mark, {})
+      if #position > 0 then
+        sources[#sources + 1] = {
+          path = block.source.path,
+          first = position[1] + block.source.first,
+          last = position[1] + block.source.last,
+        }
+      end
+    end
+  end
+  local lines = vim.api.nvim_buf_get_lines(
+    view.transcript_buf, 0, -1, false)
+  source_syntax.apply(view.transcript_buf, sources, lines)
 end
 
 function M:_remove_status()
@@ -199,8 +239,11 @@ function M:_flush()
     vim.api.nvim_buf_clear_namespace(self.transcript_buf, self.namespace, 0, -1)
     local lines = {}
     local ranges = {}
-    for _, block in ipairs(self.blocks) do
-      local content = render.block(self, block)
+    for index, block in ipairs(self.blocks) do
+      local content = render.block(self, block, {
+        previous = self.blocks[index - 1],
+        next = self.blocks[index + 1],
+      })
       local start = #lines
       vim.list_extend(lines, content.lines)
       ranges[#ranges + 1] = { block = block, content = content, start = start, finish = #lines }
@@ -213,29 +256,45 @@ function M:_flush()
     self.has_rendered = #ranges > 0
     self.full_dirty = false
   else
-    for _, block in ipairs(self.blocks) do
+    local rendered, appended = {}, {}
+    for index, block in ipairs(self.blocks) do
       if block.dirty then
-        local start, finish
         local position = block.mark and vim.api.nvim_buf_get_extmark_by_id(
           self.transcript_buf, self.namespace, block.mark, { details = true }
         ) or {}
-        if #position > 0 then
-          start = position[1]
-          finish = position[3].end_row
-          vim.api.nvim_buf_clear_namespace(self.transcript_buf, self.namespace, start, finish)
-        else
-          local count = vim.api.nvim_buf_line_count(self.transcript_buf)
-          start = self.has_rendered and count or 0
-          finish = self.has_rendered and count or count
-        end
-        local content = render.block(self, block)
-        vim.api.nvim_buf_set_lines(self.transcript_buf, start, finish, false, content.lines)
-        self:_mark_block(block, start, start + #content.lines, content)
-        self.has_rendered = true
+        local target = #position > 0 and rendered or appended
+        target[#target + 1] = {
+          block = block,
+          content = render.block(self, block, {
+            previous = self.blocks[index - 1],
+            next = self.blocks[index + 1],
+          }),
+          start = position[1],
+          finish = position[3] and position[3].end_row,
+        }
       end
+    end
+    for index = #rendered, 1, -1 do
+      local range = rendered[index]
+      clear_block_marks(self, range.block)
+      vim.api.nvim_buf_set_lines(self.transcript_buf,
+        range.start, range.finish, false, range.content.lines)
+      self:_mark_block(range.block, range.start,
+        range.start + #range.content.lines, range.content)
+    end
+    for _, range in ipairs(appended) do
+      local count = vim.api.nvim_buf_line_count(self.transcript_buf)
+      local start = self.has_rendered and count or 0
+      local finish = self.has_rendered and count or count
+      vim.api.nvim_buf_set_lines(
+        self.transcript_buf, start, finish, false, range.content.lines)
+      self:_mark_block(range.block, start,
+        start + #range.content.lines, range.content)
+      self.has_rendered = true
     end
   end
   self:_render_status()
+  apply_transcript_source_syntax(self)
   vim.bo[self.transcript_buf].modifiable = false
   self:_restore_view(saved)
   self:_refresh_card_details()
@@ -252,6 +311,11 @@ function M:_schedule_flush()
 end
 
 function M:_add_block(block)
+  local previous = self.blocks[#self.blocks]
+  if previous
+      and self.flavor.separator(previous, block) == "after_previous" then
+    previous.dirty = true
+  end
   block.dirty = true
   self.blocks[#self.blocks + 1] = block
   self:_schedule_flush()

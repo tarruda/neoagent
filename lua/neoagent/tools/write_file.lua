@@ -1,4 +1,5 @@
 local common = require("neoagent.tools.common")
+local presentation = require("neoagent.tools.activity_presentation")
 
 local function new()
   return {
@@ -31,6 +32,7 @@ local function new()
         details = { changed_paths = { path } },
       }
     end,
+    render = presentation.write,
   }
 end
 

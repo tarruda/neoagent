@@ -14,6 +14,24 @@ local ansi_palette = {
 local ansi_highlights = {}
 local ansi_highlight_names = {}
 
+local function blend_channel(top, background, alpha)
+  return math.floor(top * alpha + background * (1 - alpha))
+end
+
+local function codex_user_background()
+  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  if type(normal.bg) ~= "number" then return nil end
+  local red = math.floor(normal.bg / 0x10000) % 0x100
+  local green = math.floor(normal.bg / 0x100) % 0x100
+  local blue = normal.bg % 0x100
+  local light = 0.299 * red + 0.587 * green + 0.114 * blue > 128
+  local top, alpha = light and 0 or 255, light and 0.04 or 0.12
+  red = blend_channel(top, red, alpha)
+  green = blend_channel(top, green, alpha)
+  blue = blend_channel(top, blue, alpha)
+  return red * 0x10000 + green * 0x100 + blue
+end
+
 local function palette_rgb(index)
   local configured = index < 16 and vim.g["terminal_color_" .. index] or nil
   if type(configured) == "string" and configured ~= "" then
@@ -133,9 +151,27 @@ local function define_highlights()
       ctermfg = vim.o.background == "light" and 24 or 6,
       bold = true,
     },
+    NeoagentCodexToolError = {
+      fg = palette_rgb(1),
+      ctermfg = 1,
+      bold = true,
+    },
+    NeoagentCodexToolSuccess = {
+      fg = palette_rgb(2),
+      ctermfg = 2,
+      bold = true,
+    },
     NeoagentCyan = {
       fg = palette_rgb(6),
       ctermfg = 6,
+    },
+    NeoagentGreen = {
+      fg = palette_rgb(2),
+      ctermfg = 2,
+    },
+    NeoagentRed = {
+      fg = palette_rgb(1),
+      ctermfg = 1,
     },
     NeoagentDialogTitle = { bold = true },
     NeoagentMarkdownBold = { bold = true },
@@ -160,6 +196,10 @@ local function define_highlights()
   }) do
     vim.api.nvim_set_hl(0, name, { bg = background, default = true })
   end
+  vim.api.nvim_set_hl(0, "NeoagentCodexUserBackground", {
+    bg = codex_user_background(),
+    default = true,
+  })
   for name, definition in pairs(ansi_highlights) do
     define_ansi_highlight(name, definition)
   end
@@ -225,6 +265,29 @@ local function append_rendered(target, source, gap)
       priority = span.priority,
     }
   end
+  if source.source then
+    target.source = {
+      path = source.source.path,
+      first = source.source.first + row_offset,
+      last = source.source.last + row_offset,
+    }
+  end
+end
+
+local function append_rendered_row(target, source, row)
+  local spans = {}
+  for _, span in ipairs(source.highlights or {}) do
+    if span.row == row then
+      spans[#spans + 1] = {
+        col = span.col,
+        end_col = span.end_col,
+        group = span.group,
+        priority = span.priority,
+      }
+    end
+  end
+  add_line(target, source.lines[row + 1], spans,
+    source.line_groups and source.line_groups[row])
 end
 
 local function plain(text, group)
@@ -332,7 +395,19 @@ local function card(content, background, width)
   end
   if background then add_line(result, "", nil, background) end
   add_line(result, "")
-  result.card = { first = 0, last = #result.lines - 2 }
+  result.card = {
+    first = 0,
+    last = #result.lines - 2,
+    after = #result.lines - 1,
+  }
+  if content.source then
+    local row_offset = background and 1 or 0
+    result.source = {
+      path = content.source.path,
+      first = content.source.first + row_offset,
+      last = content.source.last + row_offset,
+    }
+  end
   return result
 end
 
@@ -412,14 +487,65 @@ end
 local presentation_styles = {
   accent = "NeoagentAccent",
   bold = "NeoagentMarkdownBold",
+  codex_tool_error = "NeoagentCodexToolError",
+  codex_tool_success = "NeoagentCodexToolSuccess",
   cyan = "NeoagentCyan",
   error = "NeoagentError",
+  green = "NeoagentGreen",
   italic = "NeoagentMarkdownItalic",
   muted = "NeoagentMuted",
+  red = "NeoagentRed",
   strike = "NeoagentMarkdownStrike",
 }
 
-local function custom_tool_content(self, block, args, options)
+local function presentation_line(segments_value)
+  if type(segments_value) ~= "table"
+      or not util.is_list(segments_value) then return nil end
+  local line, spans = "", {}
+  for _, segment in ipairs(segments_value) do
+    if type(segment) ~= "table" or type(segment.text) ~= "string"
+        or segment.text:find("\n", 1, true)
+        or segment.text:find("\r", 1, true) then
+      return nil
+    end
+    local start = #line
+    line = line .. segment.text
+    local styles
+    if segment.style == nil then
+      styles = {}
+    elseif type(segment.style) == "string" then
+      styles = { segment.style }
+    elseif type(segment.style) == "table" and util.is_list(segment.style) then
+      styles = segment.style
+    else
+      return nil
+    end
+    for index, style in ipairs(styles) do
+      local group = presentation_styles[style]
+      if not group then return nil end
+      spans[#spans + 1] = {
+        col = start,
+        end_col = #line,
+        group = group,
+        priority = 100 + index,
+      }
+    end
+  end
+  return line, spans
+end
+
+local function presentation_content(lines)
+  if type(lines) ~= "table" or not util.is_list(lines) then return nil end
+  local content = rendered()
+  for _, segments_value in ipairs(lines) do
+    local line, spans = presentation_line(segments_value)
+    if not line then return nil end
+    add_line(content, line, spans)
+  end
+  return content
+end
+
+local function custom_tool_presentation(self, block, args, options)
   if type(self.resolve_tool) ~= "function" then return nil end
   local name = block.name or (block.call and block.call.name)
     or (block.message and block.message.toolName)
@@ -430,56 +556,35 @@ local function custom_tool_content(self, block, args, options)
     arguments = util.copy(args),
     result = util.copy(block.message or block.update),
     state = block.state,
+    style = self.flavor.name,
     width = options.width or self:_content_width(),
     full = options.full == true,
     spinner = self.spinner_frames[self.spinner_frame],
   })
-  if not ok or type(presentation) ~= "table"
-      or not util.is_list(presentation.lines) then
+  if not ok or type(presentation) ~= "table" then return nil end
+  if presentation.default ~= nil and type(presentation.default) ~= "boolean"
+      or presentation.card ~= nil and type(presentation.card) ~= "boolean"
+      or presentation.background ~= nil
+        and type(presentation.background) ~= "boolean"
+      or presentation.command ~= nil
+        and type(presentation.command) ~= "string"
+      or presentation.status ~= nil
+        and type(presentation.status) ~= "boolean"
+      or presentation.animated ~= nil
+        and type(presentation.animated) ~= "boolean" then
     return nil
   end
-
-  local content = rendered()
-  for _, segments_value in ipairs(presentation.lines) do
-    if type(segments_value) ~= "table" or not util.is_list(segments_value) then
-      return nil
-    end
-    local line, spans = "", {}
-    for _, segment in ipairs(segments_value) do
-      if type(segment) ~= "table" or type(segment.text) ~= "string" then
-        return nil
-      end
-      local start = #line
-      line = line .. segment.text
-      local styles
-      if segment.style == nil then
-        styles = {}
-      elseif type(segment.style) == "string" then
-        styles = { segment.style }
-      elseif type(segment.style) == "table" and util.is_list(segment.style) then
-        styles = segment.style
-      else
-        return nil
-      end
-      for index, style in ipairs(styles) do
-        local group = presentation_styles[style]
-        if not group then return nil end
-        spans[#spans + 1] = {
-          col = start,
-          end_col = #line,
-          group = group,
-          priority = 100 + index,
-        }
-      end
-    end
-    add_line(content, line, spans)
-  end
-  if presentation.animated == true then content.animated = true end
-  local background = block.state == "error" and "NeoagentToolErrorBackground"
-    or block.state == "success" and "NeoagentToolSuccessBackground"
-    or "NeoagentToolPendingBackground"
-  if presentation.background == false then background = nil end
-  return content, background, presentation.card ~= false
+  if presentation.default == true and presentation.lines ~= nil then return nil end
+  if presentation.title ~= nil and presentation.title ~= true
+      and not presentation_line(presentation.title) then return nil end
+  if presentation.lines ~= nil
+      and not presentation_content(presentation.lines) then return nil end
+  if presentation.command ~= nil and (presentation.default == true
+      or presentation.lines ~= nil or presentation.title == nil
+      or presentation.title == true) then return nil end
+  if presentation.default ~= true and presentation.title == nil
+      and presentation.lines == nil and presentation.command == nil then return nil end
+  return presentation
 end
 
 local tool_labels = {
@@ -531,7 +636,10 @@ local function tool_title(name, args, full)
   name = type(name) == "string" and name or "<tool>"
   local label = tool_labels[name] or name
   if name == "shell" then
-    return segments({ { text = "$ " .. argument_text(args.command, "…", full), group = "NeoagentMarkdownBold" } })
+    return { {
+      text = "$ " .. argument_text(args.command, "…", full),
+      group = "NeoagentMarkdownBold",
+    } }
   end
   local parts = { { text = label, group = "NeoagentMarkdownBold" } }
   if name == "read" or name == "read_file" or name == "write" or name == "write_file"
@@ -555,7 +663,7 @@ local function tool_title(name, args, full)
     table.sort(values)
     if #values > 0 then parts[#parts + 1] = { text = " " .. table.concat(values, " "), group = "NeoagentToolOutput" } end
   end
-  return segments(parts)
+  return parts
 end
 
 local function limited(text, maximum, tail)
@@ -717,6 +825,7 @@ end
 
 local function output_lines(text, maximum, tail, group, ansi)
   local result = rendered()
+  result.output_line_count = 0
   if text == nil or text == "" then return result end
   local ansi_spans = {}
   if type(ansi) == "string" then text, ansi_spans = parse_ansi(ansi) end
@@ -727,7 +836,7 @@ local function output_lines(text, maximum, tail, group, ansi)
       line_group = line:sub(1, 1) == "+" and "NeoagentDiffAdded"
         or line:sub(1, 1) == "-" and "NeoagentDiffRemoved" or "NeoagentDiffContext"
     end
-    local line_spans = #line > 0
+    local line_spans = #line > 0 and line_group
         and { { col = 0, end_col = #line, group = line_group } } or {}
     local source_row = first_row + index - 1
     for _, span in ipairs(ansi_spans) do
@@ -742,9 +851,26 @@ local function output_lines(text, maximum, tail, group, ansi)
     end
     add_line(result, line, line_spans)
   end
+  result.output_line_count = #lines
   if omitted > 0 then
     local message = string.format("[... %d more line%s]", omitted, omitted == 1 and "" or "s")
     add_line(result, message, { { col = 0, end_col = #message, group = "NeoagentMuted" } })
+  end
+  return result
+end
+
+local function source_output(result, path, line_count)
+  if line_count == nil then line_count = result.output_line_count end
+  if type(path) == "string" and type(line_count) == "number"
+      and line_count >= 0 and line_count % 1 == 0 then
+    line_count = math.min(line_count, result.output_line_count)
+    if line_count > 0 then
+      result.source = {
+        path = path,
+        first = 0,
+        last = line_count - 1,
+      }
+    end
   end
   return result
 end
@@ -758,21 +884,42 @@ local function tool_output(self, block, args, full)
   if not full then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
 
   if name == "write" or name == "write_file" then
-    return output_lines(args.content, maximum, false, "NeoagentToolOutput")
+    if not full and self.flavor.write_preview_lines then
+      maximum = self.flavor.write_preview_lines
+    end
+    local result = output_lines(
+      args.content, maximum, false, self.flavor.write_output_group())
+    local path = args.path or args.file_path
+    if self.flavor.write_source_syntax then source_output(result, path) end
+    return result
   elseif name == "edit" or name == "edit_file" then
     local diff = message and message.details and message.details.diff
     if diff and diff ~= "" then return output_lines(diff, maximum, false, "diff") end
     if message and message.isError then return output_lines(value, maximum, false, "NeoagentError") end
     return rendered()
   elseif name == "read" or name == "read_file" then
-    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput")
+    local syntax = full and self.flavor.read_source_syntax
+      and not (message and message.isError)
+    local group
+    if not syntax then
+      group = self.flavor.plain_output_group(message and message.isError)
+    end
+    local result = output_lines(value, maximum, false, group)
+    local path = args.path or args.file_path
+    local truncation = message and message.details
+      and message.details.truncation
+    local source_lines = type(truncation) == "table"
+      and truncation.outputLines or nil
+    if syntax then source_output(result, path, source_lines) end
+    return result
   elseif name == "shell" then
     local active = message or update
     local ansi = active and active.details and active.details.ansi
     return output_lines(value, maximum, true,
-      message and message.isError and "NeoagentError" or "NeoagentToolOutput", ansi)
+      self.flavor.plain_output_group(message and message.isError), ansi)
   elseif name == "grep" or name == "find" then
-    return output_lines(value, maximum, false, message and message.isError and "NeoagentError" or "NeoagentToolOutput")
+    return output_lines(value, maximum, false,
+      self.flavor.plain_output_group(message and message.isError))
   elseif message and message.isError then
     return output_lines(value, maximum, false, "NeoagentError")
   end
@@ -918,6 +1065,158 @@ local function thinking_content(self, block, full, width)
   return content
 end
 
+local function ordinary_tool_title(self, block, args, full, status)
+  return segments(self.flavor.tool_title(tool_title(
+    block.name or (block.call and block.call.name), args, full), status))
+end
+
+local COMMAND_CONTINUATION_MAX_LINES = 2
+local COMMAND_OUTPUT_MAX_LINES = 5
+
+local function middle_rendered(source, maximum)
+  if #source.lines <= maximum then return source end
+  local result = rendered()
+  local retained = maximum - 1
+  local head = math.floor(retained / 2)
+  local tail = retained - head
+  for row = 0, head - 1 do append_rendered_row(result, source, row) end
+  local omitted = #source.lines - head - tail
+  local message = string.format("… +%d lines", omitted)
+  add_line(result, message, {
+    { col = 0, end_col = #message, group = "NeoagentMuted" },
+  })
+  for row = #source.lines - tail, #source.lines - 1 do
+    append_rendered_row(result, source, row)
+  end
+  return result
+end
+
+local function prefix_rendered(source, first_prefix, prefix)
+  local result = rendered()
+  for row, line in ipairs(source.lines) do
+    local value = row == 1 and first_prefix or prefix
+    local spans = #value > 0 and {
+      { col = 0, end_col = #value, group = "NeoagentMuted" },
+    } or {}
+    for _, span in ipairs(source.highlights or {}) do
+      if span.row == row - 1 then
+        spans[#spans + 1] = {
+          col = span.col + #value,
+          end_col = span.end_col + #value,
+          group = span.group,
+          priority = span.priority,
+        }
+      end
+    end
+    add_line(result, value .. line, spans,
+      source.line_groups and source.line_groups[row - 1])
+  end
+  return result
+end
+
+local function command_output_content(self, block)
+  local active = block.message or block.update
+  if not active then return rendered() end
+  local value = content_text(active.content)
+  local ansi = active.details and active.details.ansi
+  local content = output_lines(value, nil, false,
+    self.flavor.plain_output_group(active.isError), ansi)
+  if #content.lines == 0 then
+    add_line(content, "(no output)", {
+      { col = 0, end_col = 11, group = "NeoagentMuted" },
+    })
+  end
+  return prefix_rendered(
+    middle_rendered(content, COMMAND_OUTPUT_MAX_LINES), "  └ ", "    ")
+end
+
+local function command_tool_content(self, block, presentation)
+  local content = rendered()
+  local title, title_spans = presentation_line(self.flavor.tool_title(
+    presentation.title,
+    presentation.status and block.state or nil))
+  local command = presentation.command:gsub("\r\n", "\n"):gsub("\r", "\n")
+  local source = vim.split(command, "\n", { plain = true })
+  local first_command = source[1] or ""
+  add_line(content, title .. (first_command == "" and "" or " " .. first_command),
+    title_spans)
+
+  for index = 2, math.min(#source,
+      COMMAND_CONTINUATION_MAX_LINES + 1) do
+    local line, spans = segments({
+      { text = "  │ ", group = "NeoagentMuted" },
+      { text = source[index] },
+    })
+    add_line(content, line, spans)
+  end
+  local continuation_count = #source - 1
+  if continuation_count > COMMAND_CONTINUATION_MAX_LINES then
+    local omitted = continuation_count - COMMAND_CONTINUATION_MAX_LINES
+    local line, spans = segments({
+      { text = "  │ ", group = "NeoagentMuted" },
+      { text = string.format("… +%d lines", omitted),
+        group = "NeoagentMuted" },
+    })
+    add_line(content, line, spans)
+  end
+  append_rendered(content, command_output_content(self, block))
+  return content
+end
+
+local function ordinary_tool_content(
+    self, block, args, full, title_override, status)
+  local content = rendered()
+  local title, spans = ordinary_tool_title(self, block, args, full, status)
+  if title_override and title_override ~= true then
+    title, spans = presentation_line(
+      self.flavor.tool_title(title_override, status))
+  end
+  add_line(content, title, spans)
+  append_rendered(content, tool_output(self, block, args, full), true)
+  for _, note in ipairs(
+      block.message and image_notes(block.message.content) or {}) do
+    add_line(content, note, {
+      { col = 0, end_col = #note, group = "NeoagentMuted" },
+    })
+  end
+  return content
+end
+
+local function presented_tool_content(self, block, args, options, presentation)
+  if not presentation then
+    return ordinary_tool_content(self, block, args, options.full)
+  end
+  if presentation.command then
+    return command_tool_content(self, block, presentation)
+  end
+  local content
+  if presentation.default == true then
+    content = ordinary_tool_content(
+      self, block, args, options.full, presentation.title,
+      presentation.status and block.state or nil)
+  else
+    content = rendered()
+    if presentation.title then
+      local title, spans
+      if presentation.title == true then
+        title, spans = ordinary_tool_title(
+          self, block, args, options.full,
+          presentation.status and block.state or nil)
+      else
+        title, spans = presentation_line(
+          self.flavor.tool_title(presentation.title,
+            presentation.status and block.state or nil))
+      end
+      add_line(content, title, spans)
+    end
+    if presentation.lines then
+      append_rendered(content, presentation_content(presentation.lines))
+    end
+  end
+  if presentation.animated == true then content.animated = true end
+  return content
+end
+
 local function card_content(self, block, options)
   options = options or {}
   local width = options.width or self:_content_width()
@@ -926,9 +1225,10 @@ local function card_content(self, block, options)
     for _, note in ipairs(block.extra or {}) do
       add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
     end
-    return content, "NeoagentUserBackground"
+    return content, self.flavor.user_background()
   elseif block.kind == "compaction" then
-    return compaction_content(self, block, options.full, width), "NeoagentUserBackground"
+    return compaction_content(self, block, options.full, width),
+      self.flavor.compaction_background()
   elseif block.kind == "thinking" then
     return thinking_content(self, block, options.full, width)
   elseif block.kind == "assistant" then
@@ -939,42 +1239,95 @@ local function card_content(self, block, options)
 
   local args = block.call and block.call.arguments or partial_arguments(block.raw)
   if type(args) ~= "table" then args = {} end
-  local custom, custom_background, custom_card =
-    custom_tool_content(self, block, args, options)
-  if custom then return custom, custom_background, custom_card end
-  local content = rendered()
-  local title, spans = tool_title(
-    block.name or (block.call and block.call.name), args, options.full)
-  add_line(content, title, spans)
-  append_rendered(content, tool_output(self, block, args, options.full), true)
-  for _, note in ipairs(block.message and image_notes(block.message.content) or {}) do
-    add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
-  end
-  local background = block.state == "error" and "NeoagentToolErrorBackground"
-    or block.state == "success" and "NeoagentToolSuccessBackground" or "NeoagentToolPendingBackground"
-  return content, background
+  local presentation = custom_tool_presentation(self, block, args, options)
+  local content = presented_tool_content(
+    self, block, args, options, presentation)
+  local background = self.flavor.tool_background(block.state)
+  if presentation and presentation.background == false then background = nil end
+  return content, background, not presentation or presentation.card ~= false
 end
 
-function M.block(self, block)
+local function insert_group_separator(content, width, index, side)
+  if #content.lines == 0 then return content end
+  local row = index - 1
+  for _, span in ipairs(content.highlights) do
+    if span.row >= row then span.row = span.row + 1 end
+  end
+  local groups = {}
+  for group_row, group in pairs(content.line_groups) do
+    groups[group_row >= row and group_row + 1 or group_row] = group
+  end
+  content.line_groups = groups
+  local separators = {}
+  for name, separator in pairs(content.separators or {}) do
+    separators[name] = separator >= row and separator + 1 or separator
+  end
+  separators[side] = row
+  content.separators = separators
+  local line = " " .. string.rep("─", math.max(1, width))
+  table.insert(content.lines, index, line)
+  content.highlights[#content.highlights + 1] = {
+    row = row,
+    col = 1,
+    end_col = #line,
+    group = "NeoagentMuted",
+  }
+  if content.card then
+    for _, name in ipairs({ "first", "last", "after" }) do
+      if content.card[name] and row <= content.card[name] then
+        content.card[name] = content.card[name] + 1
+      end
+    end
+  end
+  if content.source and row <= content.source.first then
+    content.source.first = content.source.first + 1
+    content.source.last = content.source.last + 1
+  end
+  return content
+end
+
+local function prepend_group_separator(content, width)
+  return insert_group_separator(content, width, 1, "before")
+end
+
+local function append_group_separator(content, width)
+  return insert_group_separator(content, width, #content.lines, "after")
+end
+
+local function decorate_block(self, block, content, neighbors)
+  local previous = neighbors and neighbors.previous or nil
+  local following = neighbors and neighbors.next or nil
+  if self.flavor.separator(previous, block) == "before_current" then
+    prepend_group_separator(content, self:_content_width())
+  end
+  if self.flavor.separator(block, following) == "after_previous" then
+    append_group_separator(content, self:_content_width())
+  end
+  return content
+end
+
+function M.block(self, block, neighbors)
   local content, background, as_card = card_content(self, block)
   if content then
     if as_card == false then
       add_line(content, "")
-      return content
+      return decorate_block(self, block, content, neighbors)
     end
     local width
-    if block.kind == "compaction" or (
+    if content.wrap ~= true and (block.kind == "compaction" or (
         self.config.wrap_cards ~= true and block.kind ~= "assistant"
-          and block.kind ~= "user") then
+          and block.kind ~= "user")) then
       width = self:_content_width()
     end
     local result = card(content, background, width)
     if block.kind == "thinking" then
       block.overflow = content.truncated == true
     end
-    return result
+    return decorate_block(self, block, result, neighbors)
   end
-  return prose(plain(block.text, block.error and "NeoagentError" or "NeoagentMuted"))
+  return decorate_block(self, block,
+    prose(plain(block.text,
+      block.error and "NeoagentError" or "NeoagentMuted")), neighbors)
 end
 
 function M.details(self, block, options)

@@ -1753,6 +1753,7 @@ describe("neoagent default controller", function()
     setup_model(fake_model.new({}), {
       persistence = { enabled = true, directory = directory },
       tools = { tool },
+      ui = { style = "codex" },
     })
     assert(neoagent.resume(store:metadata().path))
     local resumed_id = session_ids[#session_ids]
