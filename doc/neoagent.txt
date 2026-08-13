@@ -1163,8 +1163,8 @@ Callbacks run on Neovim's main loop and completion occurs exactly once.
 
 Assistant tool calls may carry `argumentsError` when a Model cannot normalize
 the provider's arguments. The agent skips the executor, sends that failure as an
-error tool result, and continues the model loop. The OpenAI-compatible Chat
-Completions adapter uses this path for malformed argument JSON.
+error tool result, and continues the model loop. Every built-in API adapter uses
+this path for malformed JSON and non-object argument values.
 
 The tool loop is: >lua
 

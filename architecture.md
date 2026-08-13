@@ -92,8 +92,8 @@ prompt-cache prefixes for persisted Sessions. Provider, model, and per-call
 `request_opts` are recursively layered before sending the request. The Codex
 adapter classifies provider errors, retries transient requests that produced no
 output, and reports safe metadata through an injected diagnostic callback.
-The Chat Completions adapter normalizes malformed tool argument JSON into a
-non-executable call so the agent can return the failure to the model.
+The built-in adapters normalize malformed or non-object tool arguments into
+non-executable calls so the agent can return each failure to the model.
 
 Authentication wraps a Model. Credentials are tagged API-key or OAuth values
 and are resolved at stream time, which keeps authentication independent from

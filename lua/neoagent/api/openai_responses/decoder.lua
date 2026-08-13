@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local tool_arguments = require("neoagent.api.tool_arguments")
 
 local M = {}
 
@@ -137,16 +138,9 @@ function M.new(model, emit)
       if delta ~= "" then
         emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
       end
-      local decoded, arguments = pcall(vim.json.decode, raw ~= "" and raw or "{}")
-      if not decoded then
-        error(util.error("protocol", "Tool arguments are not valid JSON", arguments), 0)
-      end
-      if type(arguments) ~= "table" or util.is_list(arguments) then
-        error(util.error("protocol", "Tool arguments are not a JSON object", slot.block.name), 0)
-      end
       if slot.block.id == "" then error(util.error("protocol", "Tool call is missing an id"), 0) end
       if slot.block.name == "" then error(util.error("protocol", "Tool call is missing a name"), 0) end
-      slot.block.arguments = arguments
+      slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
     end
     slots[index] = nil
     finished[index] = true

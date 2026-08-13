@@ -196,6 +196,37 @@ describe("neoagent.agent", function()
     assert.are.equal(count, #events)
   end)
 
+  it("returns argument normalization errors without executing tools", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall",
+        id = "c1",
+        name = "edit",
+        arguments = {},
+        argumentsError = "Tool arguments are not valid JSON",
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local executed = false
+    local result = wait(agent.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "edit",
+        description = "Edit",
+        input_schema = { type = "object" },
+        execute = function() executed = true end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.is_false(executed)
+    assert.is_true(result.new_messages[2].isError)
+    assert.are.equal("Tool arguments are not valid JSON",
+      result.new_messages[2].content[1].text)
+    assert.are.equal("recovered", result.text)
+  end)
+
   it("uses the custom execution boundary", function()
     local model = fake_model.new({
       { result = fake_model.assistant({

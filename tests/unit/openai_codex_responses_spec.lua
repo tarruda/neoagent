@@ -122,6 +122,28 @@ describe("neoagent.api.openai_codex_responses", function()
     }, emitted[#emitted])
   end)
 
+  it("normalizes malformed Codex tool arguments for agent recovery", function()
+    local call = {
+      type = "function_call", id = "fc", call_id = "call", name = "edit",
+      arguments = "{",
+    }
+    local result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = fake_transport.new({ { chunks = { event({
+        type = "response.done",
+        response = { id = "response", status = "completed", output = { call } },
+      }) } } }),
+    }):stream({ messages = {} }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not valid JSON",
+      result.message.content[1].argumentsError)
+  end)
+
   it("extracts nested Codex errors and reports safe diagnostics", function()
     local diagnostics = {}
     local result = wait(codex.new({

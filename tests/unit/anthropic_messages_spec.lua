@@ -232,7 +232,7 @@ describe("neoagent.api.anthropic_messages", function()
       request.body.messages[3].content[1].content)
   end)
 
-  it("returns malformed tool input as a protocol failure with partial output", function()
+  it("normalizes malformed tool input for agent recovery", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
       event({
@@ -246,6 +246,12 @@ describe("neoagent.api.anthropic_messages", function()
         delta = { type = "input_json_delta", partial_json = "{" },
       }),
       event({ type = "content_block_stop", index = 0 }),
+      event({
+        type = "message_delta",
+        delta = { stop_reason = "tool_use", stop_sequence = vim.NIL },
+        usage = { output_tokens = 1 },
+      }),
+      event({ type = "message_stop" }),
     } } })
     local model = anthropic.new({
       provider = "p",
@@ -254,10 +260,44 @@ describe("neoagent.api.anthropic_messages", function()
       transport = fake,
     })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.are.equal("error", result.message.stopReason)
-    assert.matches("Tool input", result.error.message)
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not valid JSON",
+      result.message.content[1].argumentsError)
+  end)
+
+  it("normalizes non-object tool input for agent recovery", function()
+    local fake = fake_transport.new({ { chunks = {
+      message_start(),
+      event({
+        type = "content_block_start",
+        index = 0,
+        content_block = {
+          type = "tool_use", id = "call_1", name = "broken", input = { "bad" },
+        },
+      }),
+      event({ type = "content_block_stop", index = 0 }),
+      event({
+        type = "message_delta",
+        delta = { stop_reason = "tool_use", stop_sequence = vim.NIL },
+        usage = { output_tokens = 1 },
+      }),
+      event({ type = "message_stop" }),
+    } } })
+    local model = anthropic.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake,
+    })
+    local result = wait(model:stream({ messages = {} }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not a JSON object",
+      result.message.content[1].argumentsError)
   end)
 
   it("reports provider, stop-reason, transport, and stream protocol failures", function()
@@ -475,17 +515,6 @@ describe("neoagent.api.anthropic_messages", function()
           event({ type = "content_block_stop", index = 0 }),
         },
         message = "missing a name",
-      },
-      {
-        chunks = {
-          message_start(),
-          event({
-            type = "content_block_start", index = 0,
-            content_block = { type = "tool_use", id = "c1", name = "inspect", input = { "bad" } },
-          }),
-          event({ type = "content_block_stop", index = 0 }),
-        },
-        message = "not a JSON object",
       },
       {
         chunks = { message_start(), message_start() },
