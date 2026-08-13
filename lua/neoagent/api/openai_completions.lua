@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local messages = require("neoagent.api.messages")
 local request_opts = require("neoagent.api.request_opts")
+local tool_arguments = require("neoagent.api.tool_arguments")
 local tool_schema = require("neoagent.api.tool_schema")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
@@ -343,15 +344,10 @@ function Model:stream(opts)
         if not finished then error(util.error("protocol", finish_err), 0) end
       end
       for _, call in pairs(calls) do
-        local decoded_ok, arguments = pcall(vim.json.decode, call._raw ~= "" and call._raw or "{}")
+        local arguments, arguments_error = tool_arguments.decode(call._raw)
         call._raw = nil
-        if not decoded_ok then
-          protocol_error = util.error("protocol", "Tool arguments are not valid JSON", arguments)
-        elseif type(arguments) ~= "table" or util.is_list(arguments) then
-          protocol_error = util.error("protocol", "Tool arguments are not a JSON object", call.name)
-        else
-          call.arguments = arguments
-        end
+        call.arguments = arguments
+        call.argumentsError = arguments_error
         if call.id == "" then
           protocol_error = util.error("protocol", "Tool call is missing an id")
         elseif call.name == "" then

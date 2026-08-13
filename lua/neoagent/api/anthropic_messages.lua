@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local request = require("neoagent.api.anthropic_messages.request")
+local tool_arguments = require("neoagent.api.tool_arguments")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
@@ -137,7 +138,7 @@ function Model:stream(opts)
             arguments = vim.empty_dict(),
           }
           state.block = block
-          state.input = type(raw.input) == "table" and util.copy(raw.input) or vim.empty_dict()
+          state.input = raw.input == nil and vim.empty_dict() or util.copy(raw.input)
           state.raw = ""
           blocks[index] = state
           message.content[#message.content + 1] = block
@@ -188,18 +189,15 @@ function Model:stream(opts)
         if not nonempty(state.block.name) then
           error(util.error("protocol", "Tool call is missing a name"), 0)
         end
-        local input = state.input
+        local arguments
+        local arguments_error
         if state.raw ~= "" then
-          local decoded, value = pcall(vim.json.decode, state.raw)
-          if not decoded then
-            error(util.error("protocol", "Tool input is not valid JSON", value), 0)
-          end
-          input = value
+          arguments, arguments_error = tool_arguments.decode(state.raw)
+        else
+          arguments, arguments_error = tool_arguments.normalize(state.input)
         end
-        if type(input) ~= "table" or util.is_list(input) then
-          error(util.error("protocol", "Tool input is not a JSON object"), 0)
-        end
-        state.block.arguments = next(input) == nil and vim.empty_dict() or input
+        state.block.arguments = arguments
+        state.block.argumentsError = arguments_error
       end
 
       local function process_payload(payload)

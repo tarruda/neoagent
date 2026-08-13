@@ -65,7 +65,9 @@ It returns a cancellable `Run`.
 tools, executor, context, and steering callback. It copies the input messages,
 streams an assistant response, executes requested tools, appends tool results,
 and repeats while the model requests tools or steering supplies another turn.
-A final assistant response or cancellation ends the Run.
+Calls carrying a provider argument-normalization error produce error tool results
+without entering the executor. A final assistant response or cancellation ends
+the Run.
 
 ## Models and providers
 
@@ -90,6 +92,8 @@ prompt-cache prefixes for persisted Sessions. Provider, model, and per-call
 `request_opts` are recursively layered before sending the request. The Codex
 adapter classifies provider errors, retries transient requests that produced no
 output, and reports safe metadata through an injected diagnostic callback.
+The built-in adapters normalize malformed or non-object tool arguments into
+non-executable calls so the agent can return each failure to the model.
 
 Authentication wraps a Model. Credentials are tagged API-key or OAuth values
 and are resolved at stream time, which keeps authentication independent from
@@ -586,7 +590,9 @@ window.
 Codex Write presentations and expanded Read cards identify their source range
 and target path. The View detects each target filetype and includes its Neovim
 syntax inside the contained transcript or details range, preserving the
-surrounding tool presentation.
+surrounding tool presentation. Included filetypes do not change the buffer's
+syntax sync, so comment and string patterns outside a source range cannot
+recolor surrounding cards.
 
 An optional dialog source lets an executor inject a lifetime-scoped
 `ctx.dialog` capability and publish bounded asynchronous requests to a Window.

@@ -109,7 +109,7 @@ describe("neoagent.api.openai_responses", function()
     assert.is_false(request.tools[1].strict)
   end)
 
-  it("reports truncated function call arguments as invalid JSON with the decode error", function()
+  it("normalizes truncated function call arguments for agent recovery", function()
     local call = {
       type = "function_call", id = "fc_1", call_id = "call_1", name = "edit",
       arguments = "{\"path\":",
@@ -124,13 +124,14 @@ describe("neoagent.api.openai_responses", function()
     }
     local fake = fake_transport.new({ { chunks = chunks } })
     local result = wait(model(fake):stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.matches("not valid JSON", result.error.message)
-    assert.is_truthy(result.error.detail)
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not valid JSON",
+      result.message.content[1].argumentsError)
   end)
 
-  it("reports array function call arguments as not being a JSON object", function()
+  it("normalizes array function call arguments for agent recovery", function()
     local call = {
       type = "function_call", id = "fc_1", call_id = "call_1", name = "edit", arguments = "[]",
     }
@@ -144,10 +145,11 @@ describe("neoagent.api.openai_responses", function()
     }
     local fake = fake_transport.new({ { chunks = chunks } })
     local result = wait(model(fake):stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.matches("not a JSON object", result.error.message)
-    assert.are.equal("edit", result.error.detail)
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not a JSON object",
+      result.message.content[1].argumentsError)
   end)
 
   it("encodes stateless multimodal history and merges request options", function()
@@ -447,7 +449,7 @@ describe("neoagent.api.openai_responses", function()
         item = { type = "function_call", id = "fc", call_id = "call", name = "bad", arguments = "" } }),
         event({ type = "response.output_item.done", output_index = 0,
           item = { type = "function_call", id = "fc", call_id = "call", name = "bad", arguments = "{" } }) },
-        kind = "protocol", message = "not valid JSON", partial = true },
+        kind = "protocol", message = "terminal", partial = true },
     }
     for _, case in ipairs(cases) do
       local result = wait(model(fake_transport.new({ { chunks = case.chunks } })):stream({ messages = {} }))
