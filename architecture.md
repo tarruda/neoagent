@@ -65,7 +65,9 @@ It returns a cancellable `Run`.
 tools, executor, context, and steering callback. It copies the input messages,
 streams an assistant response, executes requested tools, appends tool results,
 and repeats while the model requests tools or steering supplies another turn.
-A final assistant response or cancellation ends the Run.
+Calls carrying a provider argument-normalization error produce error tool results
+without entering the executor. A final assistant response or cancellation ends
+the Run.
 
 ## Models and providers
 
@@ -90,6 +92,8 @@ prompt-cache prefixes for persisted Sessions. Provider, model, and per-call
 `request_opts` are recursively layered before sending the request. The Codex
 adapter classifies provider errors, retries transient requests that produced no
 output, and reports safe metadata through an injected diagnostic callback.
+The Chat Completions adapter normalizes malformed tool argument JSON into a
+non-executable call so the agent can return the failure to the model.
 
 Authentication wraps a Model. Credentials are tagged API-key or OAuth values
 and are resolved at stream time, which keeps authentication independent from

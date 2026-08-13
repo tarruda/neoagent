@@ -111,7 +111,9 @@ function M.run(opts)
         run:emit({ type = "tool_start", call = util.copy(call) })
         local result
         local tool = lookup[call.name]
-        if not tool then
+        if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
+          result = error_result(util.error("tool", call.argumentsError))
+        elseif not tool then
           result = error_result(util.error("tool", "Unknown tool: " .. tostring(call.name)))
         elseif type(call.arguments) ~= "table" or (next(call.arguments) ~= nil and util.is_list(call.arguments)) then
           result = error_result(util.error("tool", "Tool arguments must be a JSON object"))

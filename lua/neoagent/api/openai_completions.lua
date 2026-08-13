@@ -346,9 +346,11 @@ function Model:stream(opts)
         local decoded_ok, arguments = pcall(vim.json.decode, call._raw ~= "" and call._raw or "{}")
         call._raw = nil
         if not decoded_ok then
-          protocol_error = util.error("protocol", "Tool arguments are not valid JSON", arguments)
+          call.arguments = vim.empty_dict()
+          call.argumentsError = "Tool arguments are not valid JSON"
         elseif type(arguments) ~= "table" or util.is_list(arguments) then
-          protocol_error = util.error("protocol", "Tool arguments are not a JSON object", call.name)
+          call.arguments = vim.empty_dict()
+          call.argumentsError = "Tool arguments are not a JSON object"
         else
           call.arguments = arguments
         end

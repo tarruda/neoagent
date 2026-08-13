@@ -1,4 +1,5 @@
 local openai = require("neoagent.api.openai_completions")
+local agent = require("neoagent.agent")
 local fake_transport = require("tests.helpers.fake_transport")
 
 local function wait(run)
@@ -144,39 +145,68 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal("data:image/png;base64,AAAA", converted[2].content[2].image_url.url)
   end)
 
-  it("returns malformed tool arguments as a protocol failure with partial output", function()
+  it("normalizes malformed tool arguments for recovery by the agent", function()
     local fake = fake_transport.new({ { chunks = {
       "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bad\",\"arguments\":\"{\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.are.equal("error", result.message.stopReason)
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not valid JSON", result.message.content[1].argumentsError)
   end)
 
-  it("reports truncated tool arguments as invalid JSON with the decode error", function()
-    local fake = fake_transport.new({ { chunks = {
-      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit\",\"arguments\":\"{\\\"path\\\":\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
-    } } })
-    local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
-    local result = wait(model:stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.matches("not valid JSON", result.error.message)
-    assert.is_truthy(result.error.detail)
+  it("returns malformed tool arguments to the model as a tool error", function()
+    local fake = fake_transport.new({ {
+      chunks = {
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"{\\\"edits\\\":[\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      },
+    }, {
+      chunks = {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"},\"finish_reason\":\"stop\"}]}\n\n",
+      },
+    } })
+    local executed = false
+    local model = openai.new({
+      provider = "deepseek",
+      model = "deepseek-v4-pro",
+      base_url = "http://x",
+      transport = fake,
+    })
+    local result = wait(agent.run({
+      model = model,
+      messages = { { role = "user", content = "Edit the file" } },
+      tools = { {
+        name = "edit_file",
+        description = "Edit a file",
+        input_schema = { type = "object" },
+        execute = function()
+          executed = true
+          return { content = { { type = "text", text = "edited" } } }
+        end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.is_false(executed)
+    assert.are.equal("recovered", result.text)
+    assert.is_true(result.new_messages[2].isError)
+    assert.matches("valid JSON", result.new_messages[2].content[1].text)
+    local retry = vim.json.decode(fake.requests[2].body)
+    assert.are.equal("{}", retry.messages[2].tool_calls[1]["function"].arguments)
+    assert.matches("valid JSON", retry.messages[3].content)
   end)
 
-  it("reports array tool arguments as not being a JSON object", function()
+  it("normalizes array tool arguments for recovery by the agent", function()
     local fake = fake_transport.new({ { chunks = {
       "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit\",\"arguments\":\"[]\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.matches("not a JSON object", result.error.message)
-    assert.are.equal("edit", result.error.detail)
+    assert.is_true(result.ok)
+    assert.are.same({}, result.message.content[1].arguments)
+    assert.are.equal("Tool arguments are not a JSON object", result.message.content[1].argumentsError)
   end)
 
   it("rejects unsupported request option fields", function()
