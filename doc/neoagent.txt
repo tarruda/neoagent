@@ -994,7 +994,8 @@ details include their complete retained results. Codex read, grep, find, and
 shell outputs use the normal foreground and attributes as their base, while
 shell output applies parsed terminal colors. Codex Write bodies use the normal
 foreground as their base. Visible Write previews and expanded Read and Write
-details apply Neovim syntax only to file-content rows, preserving tool UI text.
+details apply Neovim syntax only to file-content rows, preserving tool UI text
+and never recoloring text outside those rows.
 Thinking details reveal the full reasoning trace.
 Ctrl-C closes the details window and returns to the transcript. Text and
 Thinking details render Markdown by default. Press `r`, configured by

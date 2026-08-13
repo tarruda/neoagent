@@ -590,7 +590,9 @@ window.
 Codex Write presentations and expanded Read cards identify their source range
 and target path. The View detects each target filetype and includes its Neovim
 syntax inside the contained transcript or details range, preserving the
-surrounding tool presentation.
+surrounding tool presentation. Included filetypes do not change the buffer's
+syntax sync, so comment and string patterns outside a source range cannot
+recolor surrounding cards.
 
 An optional dialog source lets an executor inject a lifetime-scoped
 `ctx.dialog` capability and publish bounded asynchronous requests to a Window.

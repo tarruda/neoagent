@@ -2291,6 +2291,59 @@ describe("neoagent.ui", function()
     result:_close_card_details(true)
   end)
 
+  it("keeps source syntax from spilling comment styles across later cards", function()
+    local result = view({ position = "center", style = "codex" })
+    local filler = {}
+    for index = 1, 60 do filler[index] = "filler " .. index end
+    result:set_messages({
+      { role = "assistant", content = { {
+        type = "toolCall", id = "js-write", name = "write_file",
+        arguments = {
+          path = "app.js",
+          content = "// entry\nfunction main() {\n  return 1\n}\n",
+        },
+      } } },
+      { role = "toolResult", toolCallId = "js-write", toolName = "write_file",
+        isError = false, content = { { type = "text", text = "wrote app.js" } } },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "html-write", name = "write_file",
+        arguments = {
+          path = "app.html",
+          content = "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>app</title>\n<style>body{margin:0}</style>\n",
+        },
+      } } },
+      { role = "toolResult", toolCallId = "html-write", toolName = "write_file",
+        isError = false, content = { { type = "text", text = "wrote app.html" } } },
+      { role = "assistant", content = { {
+        type = "toolCall", id = "snippet", name = "shell",
+        arguments = { command = "printf '/**'" },
+      } } },
+      { role = "toolResult", toolCallId = "snippet", toolName = "shell",
+        isError = false, content = { { type = "text", text = "/**" } } },
+      { role = "assistant", content = { {
+        type = "text", text = table.concat(filler, "\n"),
+      } } },
+      { role = "assistant", content = { {
+        type = "text", text = "Done! plain text after the preview.",
+      } } },
+    })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("Done! plain text", 1, true) ~= nil
+    end))
+
+    local done_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)) do
+      if line:find("Done! plain text", 1, true) then done_row = index end
+    end
+    assert.is_not_nil(done_row)
+    vim.api.nvim_win_call(result.transcript_win, function()
+      assert.are.equal("", vim.fn.synIDattr(
+        vim.fn.synID(done_row, 2, true), "name"))
+    end)
+  end)
+
   it("renders multiline Codex shell commands as continuation rows", function()
     local result = view({ position = "center", width = 64, style = "codex" }, {
       require("neoagent.tools.shell").new(),

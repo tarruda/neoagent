@@ -60,6 +60,10 @@ function M.apply(buffer, sources, lines)
     end
     vim.b.current_syntax = current_syntax
     vim.b.neoagent_source_filetypes = loaded
+    -- Included filetypes may register C-style comment sync patterns. The
+    -- transcript keeps no sync strategy, so stray comment markers outside a
+    -- source range never recolor surrounding cards.
+    vim.cmd("syntax sync clear")
 
     local regions = 0
     for _, item in ipairs(valid) do
