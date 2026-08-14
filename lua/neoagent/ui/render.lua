@@ -862,7 +862,7 @@ end
 
 local function source_output(result, path, line_count)
   if line_count == nil then line_count = result.output_line_count end
-  if type(path) == "string" and type(line_count) == "number"
+  if type(path) == "string" and path ~= "" and type(line_count) == "number"
       and line_count >= 0 and line_count % 1 == 0 then
     line_count = math.min(line_count, result.output_line_count)
     if line_count > 0 then

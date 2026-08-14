@@ -346,4 +346,35 @@ describe("neoagent UI Renderer protocol", function()
     })
     assert.are.same({ { { "ab", "Accent" }, { "c", "NormalFloat" } } }, chunks)
   end)
+
+  it("renders write previews while the streamed path is incomplete", function()
+    local renderers = require("neoagent.ui.renderers")
+    local blocks = {
+      {
+        kind = "tool",
+        name = "write_file",
+        state = "pending",
+        raw = '{"content":"new content","path":"',
+      },
+      {
+        kind = "tool",
+        name = "write_file",
+        state = "running",
+        call = {
+          name = "write_file",
+          arguments = { path = "", content = "new content" },
+        },
+      },
+    }
+    for _, block in ipairs(blocks) do
+      local content, err = protocol.render_block(renderers.codex, block, {
+        width = 40,
+        spinner = "*",
+        details_key = "<CR>",
+      })
+      assert.is_nil(err)
+      assert.matches("new content", table.concat(content.lines, "\n"))
+      assert.is_nil(content.source)
+    end
+  end)
 end)
