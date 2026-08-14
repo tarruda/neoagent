@@ -247,6 +247,10 @@ describe("neoagent controller windows", function()
     windows = { window }
     assert(window:open())
     assert.are.equal(window, created.window)
+    local selected_renderer, renderer_err = window:set_renderer(
+      require("neoagent.ui.renderers").pi)
+    assert.is_nil(selected_renderer)
+    assert.matches("does not support Renderers", renderer_err.message)
     local selected_model = false
     local original_select = vim.ui.select
     vim.ui.select = function(_, _, callback)
@@ -440,6 +444,24 @@ describe("neoagent controller windows", function()
     assert.are.equal(replacement, neoagent.default())
     assert(neoagent.open())
     assert.is_true(window:is_open())
+    local renderer = {
+      name = "instance-test",
+      render_block = function(_, block)
+        return {
+          lines = { block.text or block.kind },
+          highlights = {},
+          line_groups = {},
+        }
+      end,
+      render_details = function() return nil end,
+      render_dialog = function()
+        return {
+          content = { lines = { "dialog" }, highlights = {}, line_groups = {} },
+        }
+      end,
+    }
+    assert.are.equal(renderer, neoagent.set_renderer(renderer))
+    assert.are.equal("instance-test", window:view().renderer.name)
     assert.are.equal(replacement, neoagent.set_default(old))
     windows[#windows + 1] = neoagent.default_window()
     assert.are.equal(old, neoagent.default())

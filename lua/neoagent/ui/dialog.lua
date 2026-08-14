@@ -1,53 +1,7 @@
 local util = require("neoagent.util")
+local presentation = require("neoagent.ui.presentation")
 
 local M = {}
-
-local function wrapped_lines(text, width)
-  width = math.max(20, width)
-  local result = {}
-  for _, source in ipairs(vim.split(tostring(text or ""), "\n",
-    { plain = true })) do
-    if source == "" then
-      result[#result + 1] = ""
-    else
-      local remaining = source
-      while vim.fn.strdisplaywidth(remaining) > width do
-        local count = 1
-        while count < vim.fn.strchars(remaining)
-            and vim.fn.strdisplaywidth(
-              vim.fn.strcharpart(remaining, 0, count + 1)) <= width do
-          count = count + 1
-        end
-        result[#result + 1] = vim.fn.strcharpart(remaining, 0, count)
-        remaining = vim.fn.strcharpart(remaining, count)
-      end
-      result[#result + 1] = remaining
-    end
-  end
-  return result
-end
-
-local function dialog_lines(snapshot, width)
-  local dialog = snapshot.active
-  local lines = {
-    string.rep("─", math.max(1, width)),
-    dialog.title,
-    "",
-  }
-  vim.list_extend(lines, wrapped_lines(dialog.body, width))
-  lines[#lines + 1] = ""
-  local action_row = #lines
-  for _, action in ipairs(dialog.actions) do
-    lines[#lines + 1] =
-      string.format("[%s] %s", action.key, action.label)
-  end
-  if snapshot.queue_count and snapshot.queue_count > 0 then
-    lines[#lines + 1] = string.format(
-      "%d more dialog%s pending",
-      snapshot.queue_count, snapshot.queue_count == 1 and "" or "s")
-  end
-  return lines, action_row
-end
 
 local extmark_fields = {
   "end_row", "end_col", "hl_group", "hl_eol", "virt_text",
@@ -136,6 +90,13 @@ function M:_map_dialog_actions(buffer, modes)
   end
 end
 
+function M:_map_dialog_navigation(buffer, modes)
+  local mappings = self.config.mappings or {}
+  local function focus_input() self:focus_input() end
+  self:_map(buffer, modes, mappings.focus_input, focus_input)
+  self:_map(buffer, modes, mappings.card_next, focus_input)
+end
+
 function M:_show_transcript_dialog()
   self:_flush()
   self.dialog_scroll =
@@ -154,37 +115,19 @@ function M:_show_transcript_dialog()
     self.transcript_buf, 0, -1, false)
   if #lines > 0 and lines[#lines] ~= "" then lines[#lines + 1] = "" end
   local dialog_start = #lines
-  local rendered, action_row = dialog_lines(
-    self.dialog,
-    math.max(20, vim.api.nvim_win_get_width(self.transcript_win) - 2))
-  vim.list_extend(lines, rendered)
+  local rendered = self:_render_dialog(self.dialog, {
+    surface = "transcript",
+    width = math.max(20,
+      vim.api.nvim_win_get_width(self.transcript_win) - 2),
+  }).content
+  vim.list_extend(lines, rendered.lines)
   vim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
   self:_copy_transcript_marks(buffer)
   self.dialog_status_row = math.max(
     0, vim.api.nvim_buf_line_count(self.transcript_buf) - 1)
-  for row = dialog_start, #lines - 1 do
-    vim.api.nvim_buf_set_extmark(buffer, self.namespace, row, 0, {
-      line_hl_group = "NeoagentDialogBackground",
-      priority = 25,
-    })
-  end
-  vim.api.nvim_buf_set_extmark(
-    buffer, self.namespace, dialog_start + 1, 0, {
-      end_row = dialog_start + 1,
-      end_col = #lines[dialog_start + 2],
-      hl_group = "NeoagentDialogTitle",
-      priority = 100,
-    })
-  for row = dialog_start + action_row,
-      dialog_start + action_row + #self.dialog.active.actions - 1 do
-    vim.api.nvim_buf_set_extmark(buffer, self.namespace, row, 0, {
-      end_row = row,
-      end_col = #lines[row + 1],
-      hl_group = "NeoagentDialogAction",
-      priority = 100,
-    })
-  end
+  presentation.apply_marks(self, buffer, rendered, dialog_start)
   vim.bo[buffer].modifiable = false
+  self:_map_dialog_navigation(buffer, "n")
   self:_map_dialog_actions(buffer, "n")
   vim.api.nvim_create_autocmd("InsertEnter", {
     group = self.augroup,
@@ -205,36 +148,14 @@ end
 function M:_show_float_dialog()
   local dialog = self.dialog.active
   local width = math.max(20, math.min(80, vim.o.columns - 4))
-  local body = wrapped_lines(dialog.body, width - 2)
-  local virtual = {}
-  for _, line in ipairs(body) do
-    virtual[#virtual + 1] = { { line, "NormalFloat" } }
-  end
-  if dialog.input then
-    if #virtual > 0 then virtual[#virtual + 1] = { { "", "NormalFloat" } } end
-    virtual[#virtual + 1] =
-      { { dialog.input.label, "NeoagentDialogTitle" } }
-  end
+  local rendered = self:_render_dialog(self.dialog, {
+    surface = "float",
+    width = width,
+  })
+  local virtual = presentation.virtual_lines(rendered.content)
   local input_lines = dialog.input
       and vim.split(dialog.input.value, "\n", { plain = true })
     or { "" }
-  local action_lines = {}
-  for _, action in ipairs(dialog.actions) do
-    action_lines[#action_lines + 1] =
-      string.format("[%s] %s", action.key, action.label)
-  end
-  virtual[#virtual + 1] = { { "", "NormalFloat" } }
-  virtual[#virtual + 1] = {
-    { table.concat(action_lines, "  "), "NeoagentDialogAction" },
-  }
-  if self.dialog.queue_count and self.dialog.queue_count > 0 then
-    virtual[#virtual + 1] = { {
-      string.format("%d more dialog%s pending",
-        self.dialog.queue_count,
-        self.dialog.queue_count == 1 and "" or "s"),
-      "NeoagentMuted",
-    } }
-  end
   local buffer = vim.api.nvim_create_buf(false, true)
   self.dialog_counter = (self.dialog_counter or 0) + 1
   pcall(vim.api.nvim_buf_set_name, buffer,
@@ -262,12 +183,13 @@ function M:_show_float_dialog()
     height = height,
     style = "minimal",
     border = self.config.border,
-    title = " " .. dialog.title .. " ",
+    title = rendered.title or " " .. dialog.title .. " ",
     title_pos = "center",
   })
   vim.wo[window].wrap = false
-  self:_map_dialog_actions(
-    buffer, dialog.input and { "n", "i" } or "n")
+  local modes = dialog.input and { "n", "i" } or "n"
+  self:_map_dialog_navigation(buffer, modes)
+  self:_map_dialog_actions(buffer, modes)
   self.dialog_buf = buffer
   self.dialog_win = window
   if dialog.input then

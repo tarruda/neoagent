@@ -15,8 +15,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 - Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
   local models with llama.cpp, built-in Anthropic, DeepSeek, and Z.AI
   catalogs, or Claude and ChatGPT subscription authentication.
-- Compose Models, tools, executors, Sessions, Controllers, and Views as
-  ordinary Lua values with explicit dependencies.
+- Compose Models, tools, executors, Sessions, Controllers, Renderers, and
+  Views as ordinary Lua values with explicit dependencies.
 - Run cancellable agent loops with custom tools, steering messages, retry
   handling, and context compaction.
 - Use bundled coding tools for file operations, shell commands, and on-demand
@@ -25,7 +25,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 - Persist conversations with branches, linked forks, labels, model state, and
   context compaction.
 - Work from a floating Markdown UI with separate transcript and input windows.
-- Switch a live transcript between shaded Pi cards and transparent Codex cards.
+- Use bundled Pi and Codex Renderers or inject a custom presentation for the
+  bundled View.
 - Start with **Neo** for coding tasks and **Chat** for tool-free conversation.
 - See `:help neoagent` for the complete configuration and API reference.
 

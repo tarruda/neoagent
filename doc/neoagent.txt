@@ -157,7 +157,8 @@ The important options are: >lua
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
-      style = "codex",       -- pi/codex
+      style = "codex",       -- bundled pi/codex selector
+      renderer = nil,         -- explicit Renderer; takes precedence
       position = "center",    -- auto/left/right/top/bottom/center
       width = nil,
       height = nil,
@@ -255,8 +256,8 @@ matching names in separate Windows share one.
 
 A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, `set_position`, `set_transcript_style`, `set_input`, `get_input`, `view`,
-`rendered_controller`, `input_history`, `add_input_history`,
+`cycle`, `set_position`, `set_renderer`, `set_transcript_style`, `set_input`,
+`get_input`, `view`, `rendered_controller`, `input_history`, `add_input_history`,
 `select_input_history`, and `destroy`. It retains input drafts per Controller
 and shares workspace input history. `view()` returns the owned View after its
 creation, and `rendered_controller()` identifies the Controller currently
@@ -271,7 +272,9 @@ existing Controller and returns the previous active Controller.
 previous Window. `default()` and `default_window()` return the active Controller
 and command-facing Window. `set_position(position)` updates that Window,
 `select_position()` opens its position selector, and
-`set_transcript_style(style)` replaces its live transcript flavor. Another
+`set_renderer(renderer)` installs an explicit Renderer, while
+`set_transcript_style(style)` resolves and installs a bundled Renderer. Both
+operations redraw the live transcript and active dialog. Another
 `setup()` destroys the
 Controllers owned by an earlier `setup()` call. An active Run on either owned
 Controller blocks the replacement.
@@ -281,7 +284,9 @@ Controller blocks the replacement.
 returns the current messages, context, pending events, and result for a newly
 attached consumer.
 
-The `view` option is a factory receiving `config`, `window`, `on_submit`,
+The bundled Window resolves `config.renderer` and passes that explicit value in
+the View configuration. The `view` option is a factory receiving `config`,
+`window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
 `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
 `on_resume_session`, `resolve_tool`, `on_dialog_action`, and
@@ -292,6 +297,10 @@ by a Window with a dialog source implements `set_dialog(snapshot)`. The
 factory returns a passive View with `open`, `close`,
 `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
 `apply`, and `finish`.
+
+The bundled View also implements `set_renderer(renderer)`. A custom View may
+implement that method to support live Renderer replacement; a Window reports a
+UI error when its active custom View does not provide it.
 
 An executor can inject an optional `ctx.dialog` capability and attach its
 source to a Window:
@@ -329,7 +338,10 @@ surface. `placement = "float"` opens a focused floating surface;
 an optional `input = { label, value, multiline }` adds editable text and the
 result includes `input`. A request fails when no presenter is attached.
 Presenter loss cancels pending dialogs and sets
-`presenter_unavailable = true`. The injected capability expires with the tool
+`presenter_unavailable = true`. While a dialog surface owns focus,
+`ui.mappings.focus_input` and `ui.mappings.card_next` move focus to the input
+window. Action keys keep priority when an action reuses one of those lhs.
+The injected capability expires with the tool
 call. Headless compositions can omit it.
 
 WORKSPACE TRUST                                  *neoagent-workspace-trust*
@@ -788,7 +800,7 @@ with: >lua
 
 `update_plan` accepts an optional explanation and a complete list of
 `{ step, status }` items, where status is `pending`, `in_progress`, or
-`completed`. It returns `Plan updated`. Both transcript flavors render a
+`completed`. It returns `Plan updated`. Both bundled Renderers render a
 successful call as a checklist. Codex animates a pending update and heads the
 finished checklist with `• Updated Plan`; Pi keeps its ordinary generated title
 and state-colored tool card.
@@ -919,6 +931,100 @@ actions for the focused surface that fit its current width. Ordinary Neovim
 editing keys such as Insert-mode `<C-j>` are available without appearing in
 the footer.
 
+RENDERERS                                                *neoagent-renderers*
+
+A Renderer is an explicit Lua table that decides how semantic content appears
+in the bundled View. Pi and Codex are bundled values: >lua
+
+  local renderers = require("neoagent.ui.renderers")
+
+  renderers.pi
+  renderers.codex
+  renderers.get("pi")
+  renderers.names() -- { "pi", "codex" }
+<
+Set `ui.renderer` to use another value. It takes precedence over the bundled
+`ui.style` selector: >lua
+
+  require("neoagent").setup({
+    ui = { renderer = my_renderer },
+  })
+<
+A Renderer has a non-empty `name`, `render_block`, `render_details`, and
+`render_dialog`. `define_highlights`, `render_focus`, and `render_status` are
+optional. A complete plain-text implementation is maintained as an executable
+example in:
+
+https://github.com/tarruda/neoagent/blob/main/tests/unit/simple_renderer_spec.lua
+
+`render_block` receives a copied display block with semantic fields for its
+`user`, `assistant`, `thinking`, `tool`, `compaction`, or `notice` kind.
+User blocks retain their original multimodal `content`; the Renderer derives
+attachment labels and other visual summaries. `opts` supplies visible `width`,
+copied `previous` and `following` blocks, the current `spinner`, the configured
+`details_key`, `wrap_cards`, and the active tool's presentation capability when
+applicable. The tool value contains its name and optional semantic `render`
+callback.
+`render_details` receives the same semantic block and the detail width. It may
+return nil when the block has no expanded presentation.
+
+`render_dialog` receives a copied `{ active = dialog, queue_count = number }`
+snapshot and `{ surface = "transcript" | "float", width = number }`. It owns
+the visible prompt body, action descriptions, queue text, colors, and optional
+floating title. The View owns the copied transcript buffer, floating windows,
+editable input buffer, mappings, focus, and action routing.
+
+`render_status` receives copied transient state and layout hints. The current
+status value contains `steering`, and its options contain `dequeue_key`. It may
+return a content presentation or nil.
+
+`render_focus` receives a copied block plus options containing `active`, the
+block's visible `lines`, `width`, `card`, `separators`, Renderer-defined `focus`
+metadata, and `details_key`. It returns zero or more relative decorations: >lua
+
+  {
+    {
+      row = 0,
+      chunks = { { text = "[details]", group = "NeoagentMuted" } },
+      position = "overlay",
+      win_col = 20,
+      priority = 200,
+    },
+  }
+<
+The View converts those decorations into extmarks at the block's current
+buffer position.
+
+A content presentation has this shape: >lua
+
+  {
+    lines = { "first physical line", "second physical line" },
+    highlights = {
+      { row = 0, col = 0, end_col = 5, group = "NeoagentAccent" },
+    },
+    line_groups = {
+      [0] = "NeoagentUserBackground",
+    },
+  }
+<
+Each `lines` entry is one physical valid-UTF-8 buffer line. Rows and byte
+columns are zero-based. `highlights` and `line_groups` may be omitted.
+Highlights stay inside their line, and line groups address existing rows.
+Bundled Renderers also return bounded card, separator,
+source-syntax, animation, background, and focus metadata consumed by the bundled
+View. Renderer inputs are copies and contain no buffer, window, namespace, or
+extmark identifiers, mutable View state, or dialog-response callbacks.
+Rendering is synchronous.
+
+Call `window:set_renderer(renderer)` or `neoagent.set_renderer(renderer)` to
+replace a live Renderer and redraw its transcript and active dialog.
+`set_transcript_style("pi")` and `set_transcript_style("codex")` resolve the
+corresponding bundled value and use the same replacement path.
+
+Interaction prompts carried by dialog requests are presentation content and
+therefore flow through `render_dialog`. Model request messages, system-prompt
+construction, Session content, and tool execution remain outside the Renderer.
+
 User and assistant text renders Markdown in borderless cards whose long
 lines soft-wrap at word boundaries. Assistant cards show the complete
 response without a line limit, and while hovered a right-aligned badge such
@@ -943,10 +1049,10 @@ Card lines are clipped to the visible transcript width with `...` by default
 and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
 show complete card lines with soft wrapping.
 
-`ui.style` selects the initial transcript flavor. The default `"codex"` flavor
+`ui.style` selects the initial bundled Renderer. The default `"codex"` Renderer
 uses transparent tool and compaction cards, prefixes tool headings with `•`,
 and draws a muted horizontal rule where a group of tool cards meets assistant
-prose or thinking. The `"pi"` flavor uses shaded, state-colored tool cards and
+prose or thinking. The `"pi"` Renderer uses shaded, state-colored tool cards and
 a shaded compaction card. Consecutive Codex tool cards share one group without
 rules between them. Each rule touches the tool group and keeps one empty line
 between the rule and prose or thinking. Codex read and shell headings use
@@ -1219,25 +1325,31 @@ changes. `ctx.session_id` is the same opaque per-Session table available at
 state by that value and derive it entirely from conversation messages. Direct
 `agent.run()` remains Session-independent and does not call this hook.
 
-A tool may also define a bundled-View `render(opts)` callback. `opts` contains
-`arguments`, the current `result`, `state`, transcript `style`, visible `width`,
-`full`, and the current `spinner` frame. Return
-`{ default?, card?, background?, title?, status?, animated?, lines?, command? }`.
-`title` is one line or `true` to retain the ordinary generated title. `lines`
-is a list of lines; each line contains `{ text, style? }`
-segments. Each segment's text occupies one physical line; represent line
-breaks with separate `lines` entries. `style` is one or more of `accent`,
-`bold`, `cyan`, `error`, `green`, `italic`, `muted`, `red`, and `strike`. Set
-`default = true` and omit `lines` to retain the ordinary tool output; `title`
-then replaces its title line. `card` defaults to true. Set `background = false`
-for a transparent card. Set `status = true` to let the transcript flavor style
-the title marker from the current tool state. Set `animated = true` to refresh
-the presentation with new spinner frames while the View is active. Callback
-errors and malformed presentations use the ordinary tool card. A compact
-presentation may set `command` to a shell command and supply an explicit title;
-it omits `default` and `lines`. The bundled View combines that command with the
-current result using the Codex command and output gutters. Full presentations
-retain the complete ordinary command and result.
+A tool may also define a renderer-neutral `render(opts)` callback. `opts`
+contains copies of `arguments`, the current `result`, and lifecycle `state`.
+The callback receives no Renderer name, layout width, spinner, buffer, or
+window. It returns semantic data that the selected Renderer may interpret.
+
+Pi and Codex understand a general plain-text form: >lua
+
+  {
+    kind = "text",
+    title = "Optional title",
+    lines = { "first physical line", "second physical line" },
+    include_output = false,
+  }
+<
+`title` and `lines` are optional, with at least one present. Set
+`include_output = true` with no `lines` to retain the ordinary result body.
+The Renderer owns card chrome, highlights, state markers, clipping, animation,
+source syntax, and grouping.
+
+Bundled tools return richer semantic `activity`, `plan`, and `edit` values.
+These carry action words and subjects, plan items and statuses, or parsed diff
+rows. Pi and Codex choose their own layouts for those values. A custom Renderer
+receives the active tool and callback in block options and may interpret these
+or additional semantic kinds. Callback errors, unknown kinds, and malformed
+values use the Renderer's ordinary tool presentation.
 
 Bundled tools use `ctx.fs` for model-directed disk access and
 `ctx.process(argv, opts)` for subprocesses when an executor supplies them.

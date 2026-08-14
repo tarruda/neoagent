@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
-local flavors = require("neoagent.ui.flavors")
+local renderer_protocol = require("neoagent.ui.renderer")
+local renderers = require("neoagent.ui.renderers")
 
 local M = {}
 local ui_positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
@@ -33,6 +34,9 @@ function M.new(opts)
   end
 
   local window = { _neoagent_window = true }
+  local initial_renderer = opts.config.renderer
+    or renderers.get(opts.config.style)
+  renderer_protocol.assert(initial_renderer, "Window Renderer")
   local state = {
     controllers = vim.list_slice(opts.controllers),
     active = opts.active or 1,
@@ -48,6 +52,7 @@ function M.new(opts)
     dialog = nil,
     position = opts.config.position,
     transcript_style = opts.config.style,
+    renderer = initial_renderer,
     position_loaded = false,
     destroyed = false,
   }
@@ -194,6 +199,7 @@ function M.new(opts)
     state.rendered_controller = nil
     local view_config = util.copy(opts.config)
     view_config.style = state.transcript_style
+    view_config.renderer = state.renderer
     state.view = factory({
       config = view_config,
       on_submit = function(prompt)
@@ -343,19 +349,32 @@ function M.new(opts)
     return position, err
   end
 
+  function window:set_renderer(renderer)
+    local selected, err = renderer_protocol.validate(renderer)
+    if not selected then return nil, err end
+    if state.view and not state.view.destroyed
+        and type(state.view.set_renderer) ~= "function" then
+      return nil, util.error(
+        "ui", "the active View does not support Renderers")
+    end
+    if state.view and not state.view.destroyed then
+      local installed, install_err = state.view:set_renderer(selected)
+      if not installed then return nil, install_err end
+    end
+    state.renderer = selected
+    return selected
+  end
+
   function window:set_transcript_style(style)
-    if not flavors.get(style) then
+    local renderer = renderers.get(style)
+    if not renderer then
       return nil, util.error("ui", "invalid transcript style")
     end
-    if state.view and not state.view.destroyed
-        and type(state.view.set_style) ~= "function" then
-      return nil, util.error(
-        "ui", "the active View does not support transcript styles")
-    end
+    local selected, err = self:set_renderer(renderer)
+    if not selected then return nil, err end
     state.transcript_style = style
     if state.view and not state.view.destroyed then
-      local selected, err = state.view:set_style(style)
-      if not selected then return nil, err end
+      state.view.config.style = style
     end
     return style
   end

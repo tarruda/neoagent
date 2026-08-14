@@ -268,6 +268,95 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("moves focus to the input window from an open dialog", function()
+    local responses = {}
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+      on_dialog_action = function(id, action)
+        responses[#responses + 1] = action
+        return true
+      end,
+    })
+    assert(result:open())
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true),
+        "x", false)
+    end
+    local function focused_input()
+      return vim.api.nvim_get_current_win() == result.input_win
+    end
+
+    result:set_dialog({
+      active = {
+        id = "approval",
+        placement = "transcript",
+        title = "Approval required",
+        body = "Allow this operation?",
+        actions = {
+          { id = "approve", label = "approve", key = "y" },
+          { id = "deny", label = "deny", key = "n" },
+        },
+      },
+      queue_count = 0,
+    })
+    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
+    feed("<A-j>")
+    assert(vim.wait(1000, focused_input))
+    assert.are.same({}, responses)
+    result:focus_transcript()
+    feed("<C-w>j")
+    assert(vim.wait(1000, focused_input))
+    assert.are.same({}, responses)
+
+    result:focus_transcript()
+    feed("y")
+    assert(vim.wait(1000, function() return responses[1] == "approve" end))
+    assert.are.equal(1, #responses)
+
+    result:set_dialog({
+      active = {
+        id = "confirm",
+        placement = "float",
+        title = "Approve operation",
+        body = "Allow this operation?",
+        actions = {
+          { id = "allow", label = "allow", key = "y" },
+          { id = "deny", label = "deny", key = "n" },
+        },
+      },
+      queue_count = 0,
+    })
+    assert.are.equal(result.dialog_win, vim.api.nvim_get_current_win())
+    feed("<A-j>")
+    assert(vim.wait(1000, focused_input))
+    assert.are.same({ "approve" }, responses)
+
+    result:set_dialog({
+      active = {
+        id = "prefix",
+        placement = "float",
+        title = "Remember command prefix",
+        body = "Edit the command prefix.",
+        input = {
+          label = "Command prefix",
+          value = "make",
+          multiline = false,
+        },
+        actions = {
+          { id = "accept", label = "accept", key = "<CR>" },
+          { id = "cancel", label = "cancel", key = "<C-c>" },
+        },
+      },
+      queue_count = 0,
+    })
+    assert.are.equal(result.dialog_win, vim.api.nvim_get_current_win())
+    feed("<A-j>")
+    assert(vim.wait(1000, focused_input))
+    assert.are.same({ "approve" }, responses)
+    result:destroy()
+  end)
+
   it("moves directly between the transcript and input windows", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

@@ -75,37 +75,10 @@ local function latest(messages)
   return current
 end
 
-local function wrap_text(text, available)
-  local result = {}
-  available = math.max(1, available)
-  for _, source in ipairs(vim.split(text or "", "\n", { plain = true })) do
-    local line = ""
-    for word in source:gmatch("%S+") do
-      local candidate = line == "" and word or line .. " " .. word
-      if line ~= "" and vim.fn.strdisplaywidth(candidate) > available then
-        result[#result + 1] = line
-        line = word
-      else
-        line = candidate
-      end
-    end
-    result[#result + 1] = line
-  end
-  return result
-end
-
 local function presentation(opts)
-  if type(opts) ~= "table"
-      or opts.style ~= "pi" and opts.style ~= "codex" then return nil end
+  if type(opts) ~= "table" then return nil end
   if opts.state == "pending" or opts.state == "running" then
-    if opts.style == "pi" then return nil end
-    return {
-      animated = true,
-      title = {
-        { text = opts.spinner or "⠋", style = "cyan" },
-        { text = " Updating plan", style = "muted" },
-      },
-    }
+    return { kind = "plan" }
   end
   if opts.state ~= "success" then return nil end
   local result = opts.result
@@ -114,58 +87,11 @@ local function presentation(opts)
   local arguments = accepted(details or opts.arguments)
   if not arguments then return nil end
 
-  local lines = {}
-  local body = {}
-  local codex = opts.style == "codex"
-  local body_width = math.max(1, (opts.width or 80) - (codex and 4 or 2))
-  local explanation = type(arguments.explanation) == "string"
-      and util.trim(arguments.explanation) or ""
-  if explanation ~= "" then
-    for _, line in ipairs(wrap_text(explanation, body_width)) do
-      body[#body + 1] = { text = line, style = { "muted", "italic" } }
-    end
-  end
-  if #arguments.plan == 0 then
-    body[#body + 1] = {
-      text = "(no steps provided)",
-      style = { "muted", "italic" },
-    }
-  else
-    for _, item in ipairs(arguments.plan) do
-      local marker = codex
-          and (item.status == "completed" and "✔ " or "□ ")
-        or (item.status == "completed" and "[x] " or "[ ] ")
-      local style = item.status == "completed" and { "muted", "strike" }
-        or item.status == "in_progress"
-          and (codex and { "cyan", "bold" } or "bold")
-        or "muted"
-      local marker_width = codex and 2 or 4
-      for index, line in ipairs(
-          wrap_text(item.step, body_width - marker_width)) do
-        body[#body + 1] = {
-          text = (index == 1 and marker
-            or string.rep(" ", marker_width)) .. line,
-          style = style,
-        }
-      end
-    end
-  end
-  if codex then
-    for index, item in ipairs(body) do
-      lines[#lines + 1] = {
-        { text = index == 1 and "   └ " or "     ", style = "muted" },
-        { text = item.text, style = item.style },
-      }
-    end
-  else
-    lines[1] = { { text = "" } }
-    for _, item in ipairs(body) do
-      lines[#lines + 1] = { { text = item.text, style = item.style } }
-    end
-  end
   return {
-    title = codex and { { text = "Updated Plan", style = "bold" } } or true,
-    lines = lines,
+    kind = "plan",
+    explanation = type(arguments.explanation) == "string"
+      and arguments.explanation or nil,
+    plan = util.copy(arguments.plan),
   }
 end
 

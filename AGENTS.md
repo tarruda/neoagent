@@ -46,14 +46,19 @@ changes.
 - The passive View consumes messages and events. A Window owns one View,
   selects an active Controller, and retains one input draft per Controller.
   Attached Controllers have unique, non-empty names.
+- Each bundled View receives an explicit Renderer value. Renderer methods
+  consume copied semantic blocks, dialogs, focus state, and transient status
+  plus bounded presentation context and return declarative content. The View
+  owns buffers, windows, extmarks, mappings, focus, and scrolling. Pi and Codex
+  are bundled Renderer values.
 - Controllers compose configuration, model selection, Session, Workspace, and
   Run. They publish transcript snapshots and updates while the Session retains
   the complete active branch.
 - Optional Tool `on_messages` hooks derive state from complete active
   conversation copies keyed by an opaque per-Session identity; the reusable
   agent loop remains Session-independent. Optional Tool renderers flow
-  through the Window's active-tool resolver, and the bundled View interprets
-  their semantic presentations without matching tool names.
+  through the Window's active-tool resolver, and the selected Renderer
+  interprets their semantic presentations without matching tool names.
 - Controller Runs remain independent when a shared Window selects another
   Controller. The command-facing default Window is replaceable; custom
   Controllers and Windows must not mutate or depend on it.

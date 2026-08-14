@@ -141,28 +141,24 @@ Controller supplies complete active-conversation copies and the same opaque
 keeps Session ownership above the reusable agent loop: direct `agent.run()`
 neither imports a Session nor interprets tool state.
 
-Tools may also carry a bundled-View `render(opts)` callback. The Window resolves
-the active tool by name, and the View converts its line-and-segment
-presentation into transcript text and highlights through an explicit transcript
-flavor value. Presentation segments occupy one physical line, preserving the
-buffer API's line-oriented contract. Semantic presentations can retain generic
-output while overriding the title, retain the generated title with custom
-content, supply complete content, describe a compact command preview, request
-transparent cards, apply tool state to flavor-owned title markers, and
-activate spinner refreshes. Transcript block rendering receives its adjacent
-blocks so
-flavors can express grouping without placing presentation state in Sessions.
-Tool-specific rendering stays on the tool value while the View owns Neovim
-drawing, card chrome, and malformed-presentation fallback. Bundled filesystem
-and process tools use state-aware Codex activity titles. Read, grep, and find
-keep heading-only transcript cards and expose their generic output through full
-card details. Shell supplies a bounded command and output preview with Codex
-gutters, middle truncation, normal output attributes, and parsed ANSI colors.
-Write retains a three-line source preview with filetype syntax. The Edit tool's
-semantic renderer converts its retained unified patch into numbered Codex rows,
-bounds the transcript preview, and supplies the complete patch to card details.
-The bundled plan tool supplies checklist content for both flavors while Pi
-retains its generated title and card chrome.
+Tools may also carry a renderer-neutral `render(opts)` callback. Its copied
+inputs contain tool arguments, the current result, and lifecycle state. It
+receives no Renderer identity, layout dimensions, spinner state, or Neovim
+resources. The callback returns semantic activity, plan, edit, or plain-text
+data. The Window resolves the active tool by name and supplies that capability
+to the selected Renderer. Transcript block rendering also receives adjacent
+blocks so a Renderer can express grouping without placing presentation state
+in Sessions. Tool-specific semantic data stays on the tool value while the
+Renderer owns layout, card chrome, highlights, clipping, animation, source
+syntax, and malformed-presentation fallback. The View owns Neovim drawing.
+
+Bundled filesystem and process tools expose activity actions and subjects.
+The Edit tool parses its retained unified patch into numbered semantic rows,
+and the plan tool exposes explanation text plus step statuses. Codex presents
+compact activity headings, command gutters, numbered patch previews, and todo
+lists. Pi uses ordinary tool cards for activities and edits, and presents plans
+inside its card chrome. Complete Read and Write presentations may identify
+source ranges for filetype syntax according to the selected Renderer.
 
 `execute_tool(tool, arguments, ctx)` is the policy boundary. A custom
 composition can add dialogs, sandboxing, logging, or post-edit checks
@@ -557,28 +553,40 @@ The Window:
 
 The passive View consumes Controller snapshots and updates and invokes callbacks
 supplied by the Window. Its replaceable interface keeps presentation independent
-from the model and agent loop. The bundled renderer produces compact transcript
-cards and full card content from the same block values. Each rendered block owns
-its range and decoration extmarks; incremental redraw replaces those marks and
-lets neighboring range anchors track line shifts. Transcript cards clip lines
-at the current visible width by default and rebuild after layout changes;
-configured card wrapping presents their complete lines. The Window supplies a
-tool resolver, so the bundled View can consume an optional semantic renderer
-carried by the active tool without recognizing tool names. The View can omit
-thinking blocks while the Controller and Session retain complete messages.
-Its configured Pi or Codex flavor selects transcript card chrome, with Codex
-as the default. Pi uses its fixed user shade plus shaded tool and compaction
-cards. Codex derives user-card shading from the editor background with Codex's
-light and dark blend ratios,
+from the model and agent loop. The Window injects an explicit Renderer into the
+bundled View. Renderer methods receive copied semantic blocks and dialogs with
+bounded layout context, then return lines, highlights, line backgrounds, and
+presentation metadata. These inputs contain no buffers, windows, namespaces,
+extmarks, mutable View state, execution callbacks, or dialog-response
+callbacks. The optional tool value contains its name and semantic `render`
+callback. The View validates each result and materializes it through Neovim
+resources. Each rendered block owns its range and decoration extmarks;
+incremental redraw replaces those marks and lets neighboring range anchors
+track line shifts. Transcript cards clip lines at the current visible width by
+default and rebuild after layout changes; configured card wrapping presents
+their complete lines. The Window supplies a tool resolver, so a bundled
+Renderer can consume an optional semantic renderer carried by the active tool
+without recognizing tool names. The View can omit thinking blocks while the
+Controller and Session retain complete messages.
+
+The Renderer also presents transient steering status, active-card focus
+decorations, and semantic dialogs. It determines prompt text, action labels,
+and floating titles while the View owns dialog buffers, windows, mappings,
+focus, transcript copying, and response routing.
+
+Pi and Codex are bundled Renderer values assembled from a shared private layout
+engine and their own card chrome. Codex is the default. Pi uses its fixed user
+shade plus shaded tool and compaction cards. Codex derives user-card shading
+from the editor background with Codex's light and dark blend ratios,
 uses transparent tool and compaction cards, prefixes tool headings with a
 bullet, and places horizontal rules against the tool side of tool/prose group
 boundaries with one spacer on the prose side. Codex shell summaries preserve
 command newlines, clip command and output rows, and bound each group
 independently. Codex read, grep, find, and shell
 details use the normal foreground as their base, and shell summaries and
-details preserve parsed ANSI spans. A Window can replace the flavor on its live
-View and re-render the complete transcript from the same blocks.
-The flavor also selects an inline details hint for one-line Codex tool cards.
+details preserve parsed ANSI spans. A Window can replace the Renderer on its
+live View and re-render the complete transcript from the same blocks.
+The Renderer also selects an inline details hint for one-line Codex tool cards.
 Multiline Codex tool outlines continue from the visible heading. Their bottom
 edge occupies a following semantic group separator when present and otherwise
 occupies the card's structural trailing spacing row. Other cards use the
@@ -601,9 +609,11 @@ and may collect editable text. An optional Controller name scopes presentation
 to that Controller; `dialog.wrap()` derives this scope from an agent execution
 context when the request omits it. The Window retains the unresolved request
 while another Controller is active. The Window owns presenter attachment and
-teardown, while the bundled View renders requests without interpreting action
-IDs. The source resolves requests in FIFO order and cancels pending requests
-when its presenter detaches.
+teardown. The Renderer formats the semantic request for its transcript or
+floating surface. The View copies the transcript when required, creates buffers
+and windows, installs mappings, and routes semantic action IDs. The source
+resolves requests in FIFO order and cancels pending requests when its presenter
+detaches.
 
 ## Public composition
 

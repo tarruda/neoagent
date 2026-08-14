@@ -1,5 +1,5 @@
-local render = require("neoagent.ui.render")
 local source_syntax = require("neoagent.ui.source_syntax")
+local presentation = require("neoagent.ui.presentation")
 local util = require("neoagent.util")
 
 local M = {}
@@ -128,6 +128,7 @@ function M:_mark_block(block, start, finish, content)
   block.separators = content.separators
   block.source = content.source
   block.animated = content.animated == true
+  block.focus = util.copy(content.focus)
   for row, group in pairs(content.line_groups) do
     mark(start + row, 0, {
       line_hl_group = group,
@@ -180,19 +181,12 @@ function M:_remove_status()
 end
 
 local function status_lines(view)
-  local steering = type(view.context.steering) == "table"
-    and view.context.steering or {}
-  if #steering == 0 then return nil end
-  local lines = {}
-  for _, message in ipairs(steering) do
-    local text = util.trim(tostring(message):gsub("%s+", " "))
-    lines[#lines + 1] = { { " Steering: " .. text, "NeoagentMuted" } }
-  end
   local key = (view.config.mappings or {}).dequeue_steering
-  local hint = type(key) == "string" and key or "Alt-Up"
-  lines[#lines + 1] =
-    { { " ↳ " .. hint .. " to edit queued messages", "NeoagentMuted" } }
-  return lines
+  local hint = type(key) == "table" and key[1] or key
+  local content = view:_present_status({
+    steering = util.copy(view.context.steering or {}),
+  }, { dequeue_key = hint or "Alt-Up" })
+  return content and presentation.virtual_lines(content)
 end
 
 function M:_render_dialog_status(lines)
@@ -240,7 +234,7 @@ function M:_flush()
     local lines = {}
     local ranges = {}
     for index, block in ipairs(self.blocks) do
-      local content = render.block(self, block, {
+      local content = self:_render_block(block, {
         previous = self.blocks[index - 1],
         next = self.blocks[index + 1],
       })
@@ -265,7 +259,7 @@ function M:_flush()
         local target = #position > 0 and rendered or appended
         target[#target + 1] = {
           block = block,
-          content = render.block(self, block, {
+          content = self:_render_block(block, {
             previous = self.blocks[index - 1],
             next = self.blocks[index + 1],
           }),
@@ -312,10 +306,7 @@ end
 
 function M:_add_block(block)
   local previous = self.blocks[#self.blocks]
-  if previous
-      and self.flavor.separator(previous, block) == "after_previous" then
-    previous.dirty = true
-  end
+  if previous then previous.dirty = true end
   block.dirty = true
   self.blocks[#self.blocks + 1] = block
   self:_schedule_flush()
@@ -324,7 +315,11 @@ end
 
 function M:_message(message)
   if message.role == "user" then
-    return self:_add_block({ kind = "user", text = util.text_content(message.content), extra = render.image_notes(message.content) })
+    return self:_add_block({
+      kind = "user",
+      content = util.copy(message.content),
+      text = util.text_content(message.content),
+    })
   elseif message.role == "assistant" then
     for _, content in ipairs(message.content or {}) do
       if content.type == "thinking" then

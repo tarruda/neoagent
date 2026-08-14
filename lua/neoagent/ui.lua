@@ -2,8 +2,8 @@ local input = require("neoagent.ui.input")
 local layout = require("neoagent.ui.layout")
 local dialog = require("neoagent.ui.dialog")
 local cards = require("neoagent.ui.cards")
-local flavors = require("neoagent.ui.flavors")
-local render = require("neoagent.ui.render")
+local renderer_protocol = require("neoagent.ui.renderer")
+local renderers = require("neoagent.ui.renderers")
 local transcript = require("neoagent.ui.transcript")
 local util = require("neoagent.util")
 
@@ -470,6 +470,65 @@ function View:set_context(context)
   self:_schedule_flush()
 end
 
+function View:_presentation_options(block)
+  local tool
+  if block and block.kind == "tool" and type(self.resolve_tool) == "function" then
+    local name = block.name or block.call and block.call.name
+      or block.message and block.message.toolName
+    local ok, resolved = pcall(self.resolve_tool, name)
+    if ok and type(resolved) == "table" then
+      tool = { name = resolved.name, render = resolved.render }
+    end
+  end
+  return {
+    width = self:_content_width(),
+    spinner = self.spinner_frames[self.spinner_frame],
+    details_key = mapping_hint((self.config.mappings or {}).card_details),
+    wrap_cards = self.config.wrap_cards == true,
+    tool = tool,
+  }
+end
+
+function View:_render_block(block, neighbors)
+  local opts = self:_presentation_options(block)
+  opts.previous = neighbors and neighbors.previous or nil
+  opts.following = neighbors and neighbors.next or nil
+  local content, err = renderer_protocol.render_block(
+    self.renderer, block, opts)
+  if not content then error(err.message, 0) end
+  return content
+end
+
+function View:_render_details(block, opts)
+  local options = self:_presentation_options(block)
+  options.width = opts and opts.width or options.width
+  local content, err = renderer_protocol.render_details(
+    self.renderer, block, options)
+  if err then error(err.message, 0) end
+  return content
+end
+
+function View:_render_dialog(snapshot, opts)
+  local content, err = renderer_protocol.render_dialog(
+    self.renderer, snapshot, opts)
+  if not content then error(err.message, 0) end
+  return content
+end
+
+function View:_present_status(status, opts)
+  local content, err = renderer_protocol.render_status(
+    self.renderer, status, opts)
+  if err then error(err.message, 0) end
+  return content
+end
+
+function View:_present_focus(block, opts)
+  local decorations, err = renderer_protocol.render_focus(
+    self.renderer, block, opts)
+  if not decorations then error(err.message, 0) end
+  return decorations
+end
+
 function View:_stop_spinner()
   if not self.spinner_timer then return end
   self.spinner_timer:stop()
@@ -521,16 +580,31 @@ function View:set_position(position)
   return true
 end
 
-function View:set_style(style)
-  local flavor = flavors.get(style)
-  if not flavor then
-    return nil, util.error("ui", "transcript style must be pi or codex")
-  end
-  if self.flavor == flavor then return style end
-  self.config.style = style
-  self.flavor = flavor
+function View:set_renderer(renderer)
+  local selected, err = renderer_protocol.validate(renderer)
+  if not selected then return nil, err end
+  if self.renderer == selected then return selected end
+  local defined, define_err = renderer_protocol.define_highlights(selected)
+  if not defined then return nil, define_err end
+  local dialog_visible = self.dialog ~= nil and self:is_open()
+  if dialog_visible then self:_hide_dialog_surface() end
+  self.renderer = selected
+  self.config.renderer = selected
   self.full_dirty = true
   self:_schedule_flush()
+  if dialog_visible then self:_show_dialog() end
+  return selected
+end
+
+function View:set_style(style)
+  local renderer = renderers.get(style)
+  if not renderer then
+    return nil, util.error("ui", "transcript style must be pi or codex")
+  end
+  if self.config.style == style and self.renderer == renderer then return style end
+  local selected, err = self:set_renderer(renderer)
+  if not selected then return nil, err end
+  self.config.style = style
   return style
 end
 
@@ -580,6 +654,7 @@ View._hide_dialog_surface = dialog._hide_dialog_surface
 View._dialog_input = dialog._dialog_input
 View._respond_to_dialog = dialog._respond_to_dialog
 View._map_dialog_actions = dialog._map_dialog_actions
+View._map_dialog_navigation = dialog._map_dialog_navigation
 View._show_transcript_dialog = dialog._show_transcript_dialog
 View._show_float_dialog = dialog._show_float_dialog
 View._show_dialog = dialog._show_dialog
@@ -610,12 +685,14 @@ View.show_card_details = cards.show_card_details
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
-  render.define_highlights()
-  local flavor = flavors.get(opts.config.style)
-  assert(flavor, "UI transcript style must be pi or codex")
+  local renderer = opts.config.renderer or renderers.get(opts.config.style)
+  renderer_protocol.assert(renderer, "UI Renderer")
+  local defined, define_err = renderer_protocol.define_highlights(renderer)
+  assert(defined, define_err and define_err.message
+    or "UI Renderer highlight definition failed")
   local view = setmetatable({
     config = util.copy(opts.config),
-    flavor = flavor,
+    renderer = renderer,
     on_submit = opts.on_submit or function() end,
     on_stop = opts.on_stop or function() end,
     on_dequeue_steering = opts.on_dequeue_steering or function() return {} end,
@@ -673,7 +750,10 @@ function M.new(opts)
   })
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = view.augroup,
-    callback = render.define_highlights,
+    callback = function()
+      local ok, err = renderer_protocol.define_highlights(view.renderer)
+      if not ok then vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR) end
+    end,
   })
   return view
 end
