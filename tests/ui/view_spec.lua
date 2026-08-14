@@ -1033,6 +1033,61 @@ describe("neoagent.ui", function()
     assert.are.equal("transcript style must be pi or codex", err.message)
   end)
 
+  it("renders through an injected Renderer and replaces it live", function()
+    local calls = {}
+    local function renderer(name, prefix)
+      return {
+        name = name,
+        define_highlights = function() calls[#calls + 1] = name .. ":highlights" end,
+        render_block = function(_, block, opts)
+          calls[#calls + 1] = {
+            name = name,
+            block = block,
+            opts = opts,
+          }
+          return {
+            lines = { prefix .. ":" .. block.kind .. ":" .. (block.text or "") },
+            highlights = {},
+            line_groups = {},
+          }
+        end,
+        render_details = function(_, block)
+          return {
+            lines = { "details:" .. block.kind },
+            highlights = {},
+            line_groups = {},
+          }
+        end,
+        render_dialog = function()
+          return {
+            content = { lines = { "dialog" }, highlights = {}, line_groups = {} },
+          }
+        end,
+      }
+    end
+    local first = renderer("first", "one")
+    local second = renderer("second", "two")
+    local result = view({ position = "center", renderer = first })
+    result:set_messages({ { role = "user", content = "hello" } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("one:user:hello", 1, true) ~= nil
+    end))
+    assert.are.equal("first", result.renderer.name)
+    assert.are.equal("user", calls[#calls].block.kind)
+    assert.are.equal("hello", calls[#calls].block.text)
+    assert.is_number(calls[#calls].opts.width)
+    assert.is_nil(calls[#calls].opts.transcript_buf)
+    assert.is_nil(calls[#calls].opts.transcript_win)
+    assert.is_nil(calls[#calls].opts.namespace)
+
+    assert.are.equal("second", result:set_renderer(second).name)
+    assert(vim.wait(1000, function()
+      return text(result):find("two:user:hello", 1, true) ~= nil
+    end))
+    assert.are.equal("second", result.renderer.name)
+  end)
+
   it("places Codex separators against tools with prose-side spacing", function()
     local result = view({ position = "center", style = "codex" }, {
       require("neoagent.tools.update_plan").new(),
@@ -1305,19 +1360,15 @@ describe("neoagent.ui", function()
       render = function(opts)
         assert.are.equal("value", opts.arguments.label)
         assert.are.equal("success", opts.state)
-        assert.are.equal("pi", opts.style)
-        assert.is_false(opts.full)
+        assert.is_nil(opts.style)
+        assert.is_nil(opts.width)
+        assert.is_nil(opts.full)
+        assert.is_nil(opts.spinner)
         return {
-          card = false,
+          kind = "text",
           lines = {
-            {
-              { text = " • ", style = "muted" },
-              { text = "Custom presentation", style = "bold" },
-            },
-            {
-              { text = "   └ ", style = "muted" },
-              { text = "complete", style = { "accent", "italic" } },
-            },
+            "Custom presentation",
+            "complete",
           },
         }
       end,
@@ -1337,7 +1388,7 @@ describe("neoagent.ui", function()
     end))
     assert.not_matches("hidden", text(result))
     assert.not_matches("label=value", text(result))
-    assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
+    assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
   end)
 
   it("composes semantic tool titles with the default output", function()
@@ -1345,11 +1396,9 @@ describe("neoagent.ui", function()
       name = "present_default",
       render = function()
         return {
-          default = true,
-          title = {
-            { text = "Presented", style = "bold" },
-            { text = " operation", style = "accent" },
-          },
+          kind = "text",
+          title = "Presented operation",
+          include_output = true,
         }
       end,
     }
@@ -1377,8 +1426,8 @@ describe("neoagent.ui", function()
       name = "present_status",
       render = function()
         return {
-          title = { { text = "Presented status", style = "bold" } },
-          status = true,
+          kind = "text",
+          title = "Presented status",
         }
       end,
     }
@@ -1420,49 +1469,43 @@ describe("neoagent.ui", function()
 
   it("falls back safely from malformed semantic presentations", function()
     local specifications = {
-      { name = "invalid-lines", render = function()
-        return { lines = "invalid" }
-      end },
-      { name = "invalid-line", render = function()
+      { name = "missing-kind", render = function()
         return { lines = { "invalid" } }
       end },
-      { name = "invalid-segment", render = function()
-        return { lines = { { "invalid" } } }
+      { name = "unknown-kind", render = function()
+        return { kind = "unknown" }
       end },
-      { name = "invalid-style", render = function()
-        return { lines = { { { text = "invalid", style = 1 } } } }
+      { name = "invalid-lines", render = function()
+        return { kind = "text", lines = "invalid" }
       end },
-      { name = "unknown-style", render = function()
-        return { lines = { { { text = "invalid", style = "unknown" } } } }
+      { name = "invalid-line", render = function()
+        return { kind = "text", lines = { 1 } }
       end },
-      { name = "default-with-lines", render = function()
-        return { default = true, lines = {} }
+      { name = "output-with-lines", render = function()
+        return { kind = "text", include_output = true, lines = {} }
       end },
       { name = "invalid-title", render = function()
-        return { default = true, title = "invalid" }
-      end },
-      { name = "newline-title", render = function()
-        return { title = { { text = "invalid\ntitle" } } }
+        return { kind = "text", title = {} }
       end },
       { name = "newline-line", render = function()
-        return { lines = { { { text = "invalid\nline" } } } }
+        return { kind = "text", lines = { "invalid\nline" } }
       end },
-      { name = "invalid-status", render = function()
-        return { title = true, status = "success" }
+      { name = "invalid-output", render = function()
+        return { kind = "text", title = "invalid", include_output = "yes" }
       end },
-      { name = "invalid-command", render = function()
-        return { title = { { text = "invalid" } }, command = {} }
+      { name = "invalid-activity", render = function()
+        return { kind = "activity", ongoing = true }
       end },
-      { name = "command-with-lines", render = function()
-        return {
-          title = { { text = "invalid" } }, command = "true", lines = {},
-        }
+      { name = "invalid-plan", render = function()
+        return { kind = "plan", plan = { { step = true } } }
       end },
-      { name = "command-with-default", render = function()
-        return { default = true, title = true, command = "true" }
+      { name = "invalid-edit", render = function()
+        return { kind = "edit", path = "file", rows = { {
+          kind = "add", number = "one", text = "invalid",
+        } } }
       end },
-      { name = "unstyled", render = function()
-        return { card = false, lines = { { { text = "unstyled presentation" } } } }
+      { name = "plain", render = function()
+        return { kind = "text", lines = { "plain presentation" } }
       end },
     }
     local tools, calls, messages = {}, {}, {}
@@ -1488,17 +1531,17 @@ describe("neoagent.ui", function()
     result:set_messages(messages)
     assert(result:open())
     assert(vim.wait(1000, function()
-      return text(result):find("fallback unknown-style", 1, true) ~= nil
+      return text(result):find("fallback unknown-kind", 1, true) ~= nil
     end))
     local transcript = text(result)
     for _, specification in ipairs(specifications) do
-      if specification.name ~= "unstyled" then
+      if specification.name ~= "plain" then
         assert.is_not_nil(transcript:find(
           "fallback " .. specification.name, 1, true))
       end
     end
-    assert.matches("unstyled presentation", transcript)
-    assert.not_matches("fallback unstyled", transcript)
+    assert.matches("plain presentation", transcript)
+    assert.not_matches("fallback plain", transcript)
   end)
 
   it("renders streamed update_plan calls as transparent spinner cards", function()

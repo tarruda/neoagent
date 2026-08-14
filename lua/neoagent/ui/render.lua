@@ -552,20 +552,21 @@ local function custom_tool_presentation(self, block, args, options)
   local resolved, tool = pcall(self.resolve_tool, name)
   if not resolved or type(tool) ~= "table"
       or type(tool.render) ~= "function" then return nil end
-  local ok, presentation = pcall(tool.render, {
+  local ok, semantic = pcall(tool.render, {
     arguments = util.copy(args),
     result = util.copy(block.message or block.update),
     state = block.state,
-    style = self.flavor.name,
-    width = options.width or self:_content_width(),
-    full = options.full == true,
-    spinner = self.spinner_frames[self.spinner_frame],
   })
-  if not ok or type(presentation) ~= "table" then return nil end
+  if not ok or type(semantic) ~= "table" then return nil end
+  local presented, presentation = pcall(self.policy.present_tool,
+    util.copy(semantic), {
+      state = block.state,
+      width = options.width or self:_content_width(),
+      full = options.full == true,
+      spinner = self.spinner_frames[self.spinner_frame],
+    })
+  if not presented or type(presentation) ~= "table" then return nil end
   if presentation.default ~= nil and type(presentation.default) ~= "boolean"
-      or presentation.card ~= nil and type(presentation.card) ~= "boolean"
-      or presentation.background ~= nil
-        and type(presentation.background) ~= "boolean"
       or presentation.command ~= nil
         and type(presentation.command) ~= "string"
       or presentation.status ~= nil
@@ -884,13 +885,13 @@ local function tool_output(self, block, args, full)
   if not full then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
 
   if name == "write" or name == "write_file" then
-    if not full and self.flavor.write_preview_lines then
-      maximum = self.flavor.write_preview_lines
+    if not full and self.policy.write_preview_lines then
+      maximum = self.policy.write_preview_lines
     end
     local result = output_lines(
-      args.content, maximum, false, self.flavor.write_output_group())
+      args.content, maximum, false, self.policy.write_output_group())
     local path = args.path or args.file_path
-    if self.flavor.write_source_syntax then source_output(result, path) end
+    if self.policy.write_source_syntax then source_output(result, path) end
     return result
   elseif name == "edit" or name == "edit_file" then
     local diff = message and message.details and message.details.diff
@@ -898,11 +899,11 @@ local function tool_output(self, block, args, full)
     if message and message.isError then return output_lines(value, maximum, false, "NeoagentError") end
     return rendered()
   elseif name == "read" or name == "read_file" then
-    local syntax = full and self.flavor.read_source_syntax
+    local syntax = full and self.policy.read_source_syntax
       and not (message and message.isError)
     local group
     if not syntax then
-      group = self.flavor.plain_output_group(message and message.isError)
+      group = self.policy.plain_output_group(message and message.isError)
     end
     local result = output_lines(value, maximum, false, group)
     local path = args.path or args.file_path
@@ -916,10 +917,10 @@ local function tool_output(self, block, args, full)
     local active = message or update
     local ansi = active and active.details and active.details.ansi
     return output_lines(value, maximum, true,
-      self.flavor.plain_output_group(message and message.isError), ansi)
+      self.policy.plain_output_group(message and message.isError), ansi)
   elseif name == "grep" or name == "find" then
     return output_lines(value, maximum, false,
-      self.flavor.plain_output_group(message and message.isError))
+      self.policy.plain_output_group(message and message.isError))
   elseif message and message.isError then
     return output_lines(value, maximum, false, "NeoagentError")
   end
@@ -1066,7 +1067,7 @@ local function thinking_content(self, block, full, width)
 end
 
 local function ordinary_tool_title(self, block, args, full, status)
-  return segments(self.flavor.tool_title(tool_title(
+  return segments(self.policy.tool_title(tool_title(
     block.name or (block.call and block.call.name), args, full), status))
 end
 
@@ -1120,7 +1121,7 @@ local function command_output_content(self, block)
   local value = content_text(active.content)
   local ansi = active.details and active.details.ansi
   local content = output_lines(value, nil, false,
-    self.flavor.plain_output_group(active.isError), ansi)
+    self.policy.plain_output_group(active.isError), ansi)
   if #content.lines == 0 then
     add_line(content, "(no output)", {
       { col = 0, end_col = 11, group = "NeoagentMuted" },
@@ -1132,7 +1133,7 @@ end
 
 local function command_tool_content(self, block, presentation)
   local content = rendered()
-  local title, title_spans = presentation_line(self.flavor.tool_title(
+  local title, title_spans = presentation_line(self.policy.tool_title(
     presentation.title,
     presentation.status and block.state or nil))
   local command = presentation.command:gsub("\r\n", "\n"):gsub("\r", "\n")
@@ -1169,7 +1170,7 @@ local function ordinary_tool_content(
   local title, spans = ordinary_tool_title(self, block, args, full, status)
   if title_override and title_override ~= true then
     title, spans = presentation_line(
-      self.flavor.tool_title(title_override, status))
+      self.policy.tool_title(title_override, status))
   end
   add_line(content, title, spans)
   append_rendered(content, tool_output(self, block, args, full), true)
@@ -1204,7 +1205,7 @@ local function presented_tool_content(self, block, args, options, presentation)
           presentation.status and block.state or nil)
       else
         title, spans = presentation_line(
-          self.flavor.tool_title(presentation.title,
+          self.policy.tool_title(presentation.title,
             presentation.status and block.state or nil))
       end
       add_line(content, title, spans)
@@ -1222,13 +1223,13 @@ local function card_content(self, block, options)
   local width = options.width or self:_content_width()
   if block.kind == "user" then
     local content = markdown.render(block.text, { width = width, preserve_markers = true })
-    for _, note in ipairs(block.extra or {}) do
+    for _, note in ipairs(block.extra or image_notes(block.content)) do
       add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
     end
-    return content, self.flavor.user_background()
+    return content, self.policy.user_background()
   elseif block.kind == "compaction" then
     return compaction_content(self, block, options.full, width),
-      self.flavor.compaction_background()
+      self.policy.compaction_background()
   elseif block.kind == "thinking" then
     return thinking_content(self, block, options.full, width)
   elseif block.kind == "assistant" then
@@ -1242,9 +1243,8 @@ local function card_content(self, block, options)
   local presentation = custom_tool_presentation(self, block, args, options)
   local content = presented_tool_content(
     self, block, args, options, presentation)
-  local background = self.flavor.tool_background(block.state)
-  if presentation and presentation.background == false then background = nil end
-  return content, background, not presentation or presentation.card ~= false
+  local background = self.policy.tool_background(block.state)
+  return content, background
 end
 
 local function insert_group_separator(content, width, index, side)
@@ -1297,22 +1297,18 @@ end
 local function decorate_block(self, block, content, neighbors)
   local previous = neighbors and neighbors.previous or nil
   local following = neighbors and neighbors.next or nil
-  if self.flavor.separator(previous, block) == "before_current" then
+  if self.policy.separator(previous, block) == "before_current" then
     prepend_group_separator(content, self:_content_width())
   end
-  if self.flavor.separator(block, following) == "after_previous" then
+  if self.policy.separator(block, following) == "after_previous" then
     append_group_separator(content, self:_content_width())
   end
   return content
 end
 
 function M.block(self, block, neighbors)
-  local content, background, as_card = card_content(self, block)
+  local content, background = card_content(self, block)
   if content then
-    if as_card == false then
-      add_line(content, "")
-      return decorate_block(self, block, content, neighbors)
-    end
     local width
     if content.wrap ~= true and (block.kind == "compaction" or (
         self.config.wrap_cards ~= true and block.kind ~= "assistant"
@@ -1336,7 +1332,6 @@ function M.details(self, block, options)
 end
 
 M.define_highlights = define_highlights
-M.expand_hint = expand_hint
 M.image_notes = image_notes
 
 return M

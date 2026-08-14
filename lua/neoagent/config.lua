@@ -279,8 +279,12 @@ local function validate(opts)
     string_list(opts.skills.global_dirs, "skills.global_dirs")
     string_list(opts.skills.project_dirs, "skills.project_dirs")
   end
-  assert(require("neoagent.ui.flavors").get(opts.ui.style),
-    "ui.style must be pi or codex")
+  if opts.ui.renderer ~= nil then
+    require("neoagent.ui.renderer").assert(opts.ui.renderer, "ui.renderer")
+  else
+    assert(require("neoagent.ui.renderers").get(opts.ui.style),
+      "ui.style must be pi or codex")
+  end
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
   assert(positions[opts.ui.position], "invalid ui.position")
   validate_dimension(opts.ui.width, "ui.width")
@@ -324,6 +328,8 @@ function M.resolve(opts)
   opts = opts or {}
   local configured = util.deep_merge(defaults, opts)
   configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
+  configured.ui.renderer = configured.ui.renderer
+    or require("neoagent.ui.renderers").get(configured.ui.style)
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
   return util.copy(configured)

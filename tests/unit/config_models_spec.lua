@@ -630,6 +630,21 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function()
       config.setup({ workspace_trust = { path = "/tmp/trust.json", extra = true } })
     end)
+    local renderer = {
+      name = "custom",
+      define_highlights = function() end,
+      render_block = function() end,
+      render_details = function() end,
+      render_dialog = function() end,
+    }
+    assert.are.equal("custom",
+      config.setup({ ui = { renderer = renderer } }).ui.renderer.name)
+    assert.are.equal("custom", config.setup({
+      ui = { style = "custom", renderer = renderer },
+    }).ui.renderer.name)
+    assert.has_error(function()
+      config.setup({ ui = { renderer = { name = "incomplete" } } })
+    end)
     assert.has_error(function() config.setup({ ui = { style = "other" } }) end)
     assert.has_error(function() config.setup({ ui = { width = 1.5 } }) end)
     assert.has_error(function() config.setup({ ui = { scroll_on_submit = "yes" } }) end)

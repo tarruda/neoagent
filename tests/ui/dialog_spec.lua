@@ -209,6 +209,105 @@ describe("neoagent generic dialog UI", function()
     assert.are.equal(view.input_win, vim.api.nvim_get_current_win())
   end)
 
+  it("lets the Renderer present transcript and floating dialogs", function()
+    local surfaces, responses = {}, {}
+    local renderer = {
+      name = "dialog-test",
+      define_highlights = function() end,
+      render_block = function(_, block)
+        return {
+          lines = { block.text or block.kind },
+          highlights = {},
+          line_groups = {},
+        }
+      end,
+      render_details = function(_, block)
+        return {
+          lines = { block.text or block.kind },
+          highlights = {},
+          line_groups = {},
+        }
+      end,
+      render_dialog = function(_, value, opts)
+        surfaces[#surfaces + 1] = {
+          value = value,
+          opts = opts,
+        }
+        return {
+          title = " Rendered " .. opts.surface .. " ",
+          content = {
+            lines = {
+              "custom " .. opts.surface .. " prompt",
+              value.active.title,
+            },
+            highlights = {},
+            line_groups = {},
+          },
+        }
+      end,
+    }
+    local ui_config = config.resolve({ ui = { renderer = renderer } }).ui
+    local view = require("neoagent.ui").new({
+      config = ui_config,
+      on_dialog_action = function(id, action, input)
+        responses[#responses + 1] = { id, action, input }
+      end,
+    })
+    views[#views + 1] = view
+    assert(view:open())
+
+    view:set_dialog(snapshot(transcript_dialog(), "transcript"))
+    assert.matches("custom transcript prompt", buffer_text(view.dialog_buf))
+    assert.are.equal("transcript", surfaces[1].opts.surface)
+    assert.is_nil(surfaces[1].opts.transcript_buf)
+    assert.is_nil(surfaces[1].opts.transcript_win)
+    feed("y")
+    assert.are.same({ "transcript", "run" }, responses[1])
+
+    view:set_dialog(nil)
+    view:set_dialog(snapshot(floating_confirm_dialog(), "float"))
+    local window = assert(view.dialog_win)
+    local title = vim.api.nvim_win_get_config(window).title
+    if type(title) == "table" then
+      title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
+    end
+    assert.are.equal(" Rendered float ", title)
+    local virtual = vim.api.nvim_buf_get_extmarks(
+      view.dialog_buf, view.namespace, 0, -1, { details = true })
+    local visible = {}
+    for _, mark in ipairs(virtual) do
+      for _, line in ipairs(mark[4].virt_lines or {}) do
+        visible[#visible + 1] = table.concat(vim.tbl_map(
+          function(chunk) return chunk[1] end, line))
+      end
+    end
+    assert.matches("custom float prompt", table.concat(visible, "\n"))
+    assert.are.equal("float", surfaces[2].opts.surface)
+    local replacement = vim.tbl_extend("force", renderer, {
+      name = "replacement-dialog-test",
+      render_dialog = function(_, value, opts)
+        return {
+          title = " Replacement " .. opts.surface .. " ",
+          content = {
+            lines = { "replacement prompt", value.active.title },
+            highlights = {},
+            line_groups = {},
+          },
+        }
+      end,
+    })
+    assert.are.equal(replacement, view:set_renderer(replacement))
+    assert.is_false(vim.api.nvim_win_is_valid(window))
+    window = assert(view.dialog_win)
+    title = vim.api.nvim_win_get_config(window).title
+    if type(title) == "table" then
+      title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
+    end
+    assert.are.equal(" Replacement float ", title)
+    feed("n")
+    assert.are.same({ "float", "deny" }, responses[2])
+  end)
+
   it("collects caller-defined text from a focused floating dialog",
     function()
       local responses, dismissed = {}, {}

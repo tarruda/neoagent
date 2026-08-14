@@ -1,4 +1,3 @@
-local render = require("neoagent.ui.render")
 local source_syntax = require("neoagent.ui.source_syntax")
 
 local M = {}
@@ -40,7 +39,8 @@ local function detail_content(view, block, width)
   if view.details_raw and supports_raw_details(block) then
     return raw_detail_content(block)
   end
-  return render.details(view, block, { width = width })
+  local content = view:_render_details(block, { width = width })
+  return content, content and content.background
 end
 
 local function detail_title(view, block)
@@ -103,20 +103,6 @@ local function card_range(view, block)
   local start = block_start(view, block)
   if not start then return nil end
   return start + block.card.first, start + block.card.last
-end
-
-local function card_row(view, block, name)
-  local row = block.card and block.card[name]
-  if type(row) ~= "number" then return nil end
-  local start = block_start(view, block)
-  return start and start + row or nil
-end
-
-local function separator_row(view, block, side)
-  local separator = block.separators and block.separators[side]
-  if type(separator) ~= "number" then return nil end
-  local start = block_start(view, block)
-  return start and start + separator or nil
 end
 
 local function apply_rendered(view, buffer, content, background)
@@ -239,185 +225,56 @@ local function card_width(view)
   return 2
 end
 
-local function suffix_to_width(text, width)
-  local characters = vim.fn.strchars(text)
-  local low, high = 0, characters
-  while low < high do
-    local count = math.floor((low + high + 1) / 2)
-    local candidate = vim.fn.strcharpart(
-      text, characters - count, count)
-    if vim.fn.strdisplaywidth(candidate) <= width then
-      low = count
-    else
-      high = count - 1
-    end
-  end
-  return vim.fn.strcharpart(text, characters - low, low)
-end
-
-local function fit_badge(header, width)
-  local available = math.max(1, width - 1)
-  if vim.fn.strdisplaywidth(header) <= available then return header end
-  if available <= 3 then return suffix_to_width(header, available) end
-  return "..." .. suffix_to_width(header, available - 3)
-end
-
-local function overflow_badge(view, row, header, width)
-  header = fit_badge(header, width)
-  local start = math.max(0, width - 1 - vim.fn.strdisplaywidth(header))
-  local chunks = {}
-  if start >= 3 then chunks[#chunks + 1] = { "...", "NeoagentMuted" } end
-  chunks[#chunks + 1] = { header, "NeoagentMuted" }
-  vim.api.nvim_buf_set_extmark(view.transcript_buf, view.card_namespace, row, 0, {
-    virt_text = chunks,
-    virt_text_pos = "overlay",
-    virt_text_win_col = start - (start >= 3 and 3 or 0),
-    priority = 200,
+local function apply_focus(view, block, active, width)
+  if not block.card or not block.mark then return false end
+  local position = vim.api.nvim_buf_get_extmark_by_id(
+    view.transcript_buf, view.namespace, block.mark, { details = true })
+  if #position == 0 then return false end
+  local first, finish = position[1], position[3].end_row
+  local lines = vim.api.nvim_buf_get_lines(
+    view.transcript_buf, first, finish, false)
+  local decorations = view:_present_focus(block, {
+    active = active,
+    lines = lines,
+    width = width,
+    card = block.card,
+    separators = block.separators,
+    focus = block.focus,
+    details_key = mapping_hint((view.config.mappings or {}).card_details),
   })
-end
-
-local function overflow_badges(view, width, skip)
-  if not view.transcript_buf or not vim.api.nvim_buf_is_valid(view.transcript_buf) then return end
-  for _, candidate in ipairs(view.blocks) do
-    if candidate ~= skip and candidate.kind == "thinking"
-        and candidate.overflow and candidate.resting_header then
-      local row = card_range(view, candidate)
-      if row then overflow_badge(view, row, candidate.resting_header, width) end
+  for _, decoration in ipairs(decorations) do
+    local chunks = {}
+    for _, chunk in ipairs(decoration.chunks) do
+      chunks[#chunks + 1] = { chunk.text, chunk.group }
     end
+    vim.api.nvim_buf_set_extmark(
+      view.transcript_buf, view.card_namespace,
+      first + decoration.row, 0, {
+        virt_text = chunks,
+        virt_text_pos = decoration.position,
+        virt_text_win_col = decoration.win_col,
+        priority = decoration.priority,
+      })
   end
+  return true
 end
 
 function M:_update_overflow_badges()
   self:_clear_card_outline()
-  overflow_badges(self, card_width(self), nil)
+  local width = card_width(self)
+  for _, block in ipairs(self.blocks) do
+    apply_focus(self, block, false, width)
+  end
 end
 
 function M:_update_card_outline()
   self:_clear_card_outline()
+  local active = self:_card_at_cursor()
   local width = card_width(self)
-  local block, first, last = self:_card_at_cursor()
-  overflow_badges(self, width, block)
-  local function outline(row, text, position, group)
-    local options = {
-      virt_text = { { text, group or "NeoagentCardFocus" } },
-      virt_text_pos = position or "overlay",
-      priority = 200,
-    }
-    if type(position) == "number" then
-      options.virt_text_pos = nil
-      options.virt_text_win_col = position
-    end
-    vim.api.nvim_buf_set_extmark(
-      self.transcript_buf, self.card_namespace, row, 0, options)
+  for _, block in ipairs(self.blocks) do
+    apply_focus(self, block, block == active, width)
   end
-  if not block then return false end
-  local function horizontal(row, left, right)
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, row, row + 1, false)[1] or ""
-    local gap = math.min(vim.fn.strdisplaywidth(line), width - 1)
-    if gap <= 0 then
-      outline(row, left .. string.rep("─", width - 2) .. right)
-    else
-      outline(row, left)
-      outline(row, string.rep("─", width - gap - 1) .. right, gap)
-    end
-  end
-  local function bottom(row)
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, row, row + 1, false)[1] or ""
-    if vim.fn.strdisplaywidth(line) > width then
-      horizontal(row + 1, "╰", "╯")
-    else
-      horizontal(row, "╰", "╯")
-    end
-  end
-  local function badge(row, header)
-    header = fit_badge(header, width)
-    local start = math.max(0, width - 1 - vim.fn.strdisplaywidth(header))
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, row, row + 1, false)[1] or ""
-    local line_width = vim.fn.strdisplaywidth(line)
-    outline(row, "╭")
-    if line_width <= start then
-      local fill = start - line_width
-      if fill > 0 then outline(row, string.rep("─", fill), line_width) end
-    elseif start >= 3 then
-      outline(row, "...", start - 3)
-    end
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.card_namespace, row, 0, {
-      virt_text = { { header, "NeoagentMuted" } },
-      virt_text_pos = "overlay",
-      virt_text_win_col = start,
-      priority = 200,
-    })
-  end
-  local function inline_tool_badge(row, header)
-    header = fit_badge(header, width)
-    local start = math.max(0, width - 1 - vim.fn.strdisplaywidth(header))
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, row, row + 1, false)[1] or ""
-    if vim.fn.strdisplaywidth(line) > start and start >= 4 then
-      outline(row, " ...", start - 4, "NeoagentMuted")
-    end
-    vim.api.nvim_buf_set_extmark(self.transcript_buf, self.card_namespace, row, 0, {
-      virt_text = { { header, "NeoagentMuted" } },
-      virt_text_pos = "overlay",
-      virt_text_win_col = start,
-      priority = 200,
-    })
-  end
-  local function inline_tool_top(row)
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, row, row + 1, false)[1] or ""
-    local start = math.min(vim.fn.strdisplaywidth(line), width - 1)
-    outline(row, string.rep("─", width - start - 1) .. "╮", start)
-  end
-  local function tool_bottom()
-    local value = "╰" .. string.rep("─", width - 2) .. "╯"
-    local key = render.expand_hint(self)
-    if key then
-      local hint = " " .. key .. " to expand "
-      local remaining = width - 2 - vim.fn.strdisplaywidth(hint)
-      if remaining >= 2 then
-        local left = math.floor(remaining / 2)
-        value = "╰" .. string.rep("─", left) .. hint
-          .. string.rep("─", remaining - left) .. "╯"
-      end
-    end
-    return value
-  end
-  local function response_badge(kind)
-    local hint = render.expand_hint(self)
-    return string.format("[%s: 0 words%s]", kind,
-      hint and ", " .. hint .. " to expand" or "")
-  end
-  if block.kind == "thinking" then
-    badge(first, block.header or response_badge("thinking"))
-    if last > first then bottom(last) end
-  elseif block.kind == "assistant" then
-    badge(first, block.header or response_badge("text"))
-    if last > first then bottom(last) end
-  elseif block.kind == "tool" and last > first
-      and self.flavor.inline_multiline_tool_outline then
-    inline_tool_top(first)
-    local separator = separator_row(self, block, "after")
-    local after = separator or assert(card_row(self, block, "after"),
-      "card trailing row is missing")
-    outline(after, tool_bottom())
-  elseif block.kind == "tool" and first == last
-      and self.flavor.inline_single_line_tool_hint then
-    local key = render.expand_hint(self)
-    local line = vim.api.nvim_buf_get_lines(
-      self.transcript_buf, first, first + 1, false)[1] or ""
-    if key and vim.fn.strdisplaywidth(line) <= width then
-      inline_tool_badge(first, "[" .. key .. " to expand]")
-    end
-  else
-    outline(first, "╭" .. string.rep("─", width - 2) .. "╮")
-    outline(last, block.kind == "tool" and tool_bottom()
-      or "╰" .. string.rep("─", width - 2) .. "╯")
-  end
-  return true
+  return active ~= nil
 end
 
 function M:_refresh_card_details()

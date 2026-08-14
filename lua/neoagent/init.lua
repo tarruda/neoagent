@@ -259,6 +259,16 @@ function M.set_transcript_style(style)
   return selected
 end
 
+function M.set_renderer(renderer)
+  local selected, err = M.default_window():set_renderer(renderer)
+  if not selected then
+    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    return nil, err
+  end
+  M.open()
+  return selected
+end
+
 function M.select_model()
   local controller = M.default()
   return controller:select_model(function()

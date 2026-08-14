@@ -60,7 +60,7 @@ vim.api.nvim_create_user_command("NeoagentTranscriptStyle", function(opts)
   require("neoagent").set_transcript_style(opts.args)
 end, {
   nargs = 1,
-  complete = function() return require("neoagent.ui.flavors").names() end,
+  complete = function() return require("neoagent.ui.renderers").names() end,
 })
 local function auth_method_completion()
   local methods = require("neoagent").default():config().auth.methods
