@@ -338,7 +338,10 @@ surface. `placement = "float"` opens a focused floating surface;
 an optional `input = { label, value, multiline }` adds editable text and the
 result includes `input`. A request fails when no presenter is attached.
 Presenter loss cancels pending dialogs and sets
-`presenter_unavailable = true`. The injected capability expires with the tool
+`presenter_unavailable = true`. While a dialog surface owns focus,
+`ui.mappings.focus_input` and `ui.mappings.card_next` move focus to the input
+window. Action keys keep priority when an action reuses one of those lhs.
+The injected capability expires with the tool
 call. Headless compositions can omit it.
 
 WORKSPACE TRUST                                  *neoagent-workspace-trust*

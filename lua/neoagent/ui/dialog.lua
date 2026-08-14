@@ -90,6 +90,13 @@ function M:_map_dialog_actions(buffer, modes)
   end
 end
 
+function M:_map_dialog_navigation(buffer, modes)
+  local mappings = self.config.mappings or {}
+  local function focus_input() self:focus_input() end
+  self:_map(buffer, modes, mappings.focus_input, focus_input)
+  self:_map(buffer, modes, mappings.card_next, focus_input)
+end
+
 function M:_show_transcript_dialog()
   self:_flush()
   self.dialog_scroll =
@@ -120,6 +127,7 @@ function M:_show_transcript_dialog()
     0, vim.api.nvim_buf_line_count(self.transcript_buf) - 1)
   presentation.apply_marks(self, buffer, rendered, dialog_start)
   vim.bo[buffer].modifiable = false
+  self:_map_dialog_navigation(buffer, "n")
   self:_map_dialog_actions(buffer, "n")
   vim.api.nvim_create_autocmd("InsertEnter", {
     group = self.augroup,
@@ -179,8 +187,9 @@ function M:_show_float_dialog()
     title_pos = "center",
   })
   vim.wo[window].wrap = false
-  self:_map_dialog_actions(
-    buffer, dialog.input and { "n", "i" } or "n")
+  local modes = dialog.input and { "n", "i" } or "n"
+  self:_map_dialog_navigation(buffer, modes)
+  self:_map_dialog_actions(buffer, modes)
   self.dialog_buf = buffer
   self.dialog_win = window
   if dialog.input then

@@ -654,6 +654,7 @@ View._hide_dialog_surface = dialog._hide_dialog_surface
 View._dialog_input = dialog._dialog_input
 View._respond_to_dialog = dialog._respond_to_dialog
 View._map_dialog_actions = dialog._map_dialog_actions
+View._map_dialog_navigation = dialog._map_dialog_navigation
 View._show_transcript_dialog = dialog._show_transcript_dialog
 View._show_float_dialog = dialog._show_float_dialog
 View._show_dialog = dialog._show_dialog
