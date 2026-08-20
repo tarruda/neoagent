@@ -283,6 +283,10 @@ describe("neoagent dynamic model catalogs", function()
         pattern = "thinking must be a table or false",
       },
       {
+        entries = { { id = "bad-api", api = "" } },
+        pattern = "api must be safe non%-empty text",
+      },
+      {
         entries = { { id = "bad-options", request_opts = "invalid" } },
         pattern = "request_opts must be a table or function",
       },

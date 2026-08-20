@@ -163,6 +163,9 @@ dynamic catalog seam in `models.available()` and `models.resolve()` merges
 validated `get_models()` entries under the configured model table and honors
 user removals recorded by `registry.compose()`. Providers with
 `auth_optional = true` expose Models and resolve credentials opportunistically.
+Each model may select an `api` different from its provider default. Resolution
+uses that effective API while retaining the provider's shared base URL,
+authentication, service, and request-option layer.
 
 Operations receive a copied public provider projection, the selected model,
 `agent_running`, a cancellable auth resolution Run, and a provider-neutral

@@ -766,6 +766,24 @@ provider with `auth` or `api_key` is available when its credential resolves;
 providers without either are always available. The built-in catalog is
 returned by `require("neoagent.registry").defaults()`.
 
+A model entry may declare `api` to override its provider's default adapter.
+This supports providers whose catalog shares authentication and a base URL
+while individual models use different wire protocols. The effective API
+selects the built-in or configured factory; provider and model `request_opts`
+remain independent merge layers: >lua
+
+  providers = {
+    mixed = {
+      api = "openai-completions",
+      base_url = "https://example.test/v1",
+      models = {
+        chat = {},
+        messages = { api = "anthropic-messages" },
+      },
+    },
+  }
+<
+
 The built-in prompt follows the active tools and includes the current working
 directory. A string replaces it completely. Append instructions by composing
 the exported default in a callback: >lua

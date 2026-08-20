@@ -19,6 +19,13 @@ local function validate_dynamic_model(provider_id, entry)
     return invalid_dynamic(provider_id,
       "dynamic model id must be safe non-empty text of at most 512 bytes")
   end
+  if entry.api ~= nil and (type(entry.api) ~= "string"
+      or entry.api == "" or #entry.api > 128
+      or not util.is_valid_utf8(entry.api)
+      or entry.api:find("[%z\1-\31\127]")) then
+    return invalid_dynamic(provider_id,
+      entry.id .. " api must be safe non-empty text of at most 128 bytes")
+  end
   if entry.input ~= nil then
     if not util.is_list(entry.input) or #entry.input == 0 then
       return invalid_dynamic(provider_id, entry.id .. " input must be a non-empty list")
@@ -171,23 +178,25 @@ function M.resolve(provider_id, model_id, configured, manager, services)
   if not models then error(models_err, 0) end
   local model = models[model_id]
   if not model then error("Unknown model: " .. tostring(provider_id) .. "/" .. tostring(model_id)) end
-  local factory = configured.apis[provider.api]
-  if not factory and provider.api == "openai-completions" then
-    factory = function(value) return api_factory("neoagent.api.openai_completions", value) end
-  elseif not factory and provider.api == "openai-responses" then
-    factory = function(value) return api_factory("neoagent.api.openai_responses", value) end
-  elseif not factory and provider.api == "openai-codex-responses" then
-    factory = function(value) return api_factory("neoagent.api.openai_codex_responses", value) end
-  elseif not factory and provider.api == "anthropic-messages" then
-    factory = function(value) return api_factory("neoagent.api.anthropic_messages", value) end
-  end
-  if not factory then error("Unknown API: " .. tostring(provider.api)) end
+  local api = model.api or provider.api
   local resolved = {
+    api = api,
     provider_id = provider_id,
     model_id = model_id,
     provider = util.copy(provider),
     model = util.copy(model),
   }
+  local factory = configured.apis[api]
+  if not factory and api == "openai-completions" then
+    factory = function(value) return api_factory("neoagent.api.openai_completions", value) end
+  elseif not factory and api == "openai-responses" then
+    factory = function(value) return api_factory("neoagent.api.openai_responses", value) end
+  elseif not factory and api == "openai-codex-responses" then
+    factory = function(value) return api_factory("neoagent.api.openai_codex_responses", value) end
+  elseif not factory and api == "anthropic-messages" then
+    factory = function(value) return api_factory("neoagent.api.anthropic_messages", value) end
+  end
+  if not factory then error("Unknown API: " .. tostring(api)) end
   if provider.auth then
     manager = manager or require("neoagent.auth").configured(configured)
     if provider.api_key ~= nil then

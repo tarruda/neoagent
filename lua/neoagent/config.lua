@@ -111,6 +111,20 @@ local defaults = {
 }
 
 local current
+local built_in_apis = {
+  ["openai-completions"] = true,
+  ["openai-responses"] = true,
+  ["openai-codex-responses"] = true,
+  ["anthropic-messages"] = true,
+}
+
+local function provider_uses_api(provider, name)
+  if provider.api == name then return true end
+  for _, model in pairs(provider.models or {}) do
+    if type(model) == "table" and model.api == name then return true end
+  end
+  return false
+end
 
 local function validate_dimension(value, name)
   if value == nil then return end
@@ -193,8 +207,14 @@ local function validate(opts)
         "provider " .. id
           .. " catalog_cache.ttl_ms must be a non-negative integer")
     end
-    if provider.api == "openai-completions" or provider.api == "openai-responses"
-        or provider.api == "openai-codex-responses" or provider.api == "anthropic-messages" then
+    local uses_built_in_api = built_in_apis[provider.api] == true
+    for _, model in pairs(provider.models) do
+      if type(model) == "table" and built_in_apis[model.api] then
+        uses_built_in_api = true
+        break
+      end
+    end
+    if uses_built_in_api then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
     end
     if provider.auth ~= nil then
@@ -211,7 +231,8 @@ local function validate(opts)
     if provider.request_opts ~= nil then
       assert(type(provider.request_opts) == "table" or type(provider.request_opts) == "function", "request_opts must be a table or function")
     end
-    if provider.api == "openai-codex-responses" and provider.diagnostics ~= nil
+    if provider_uses_api(provider, "openai-codex-responses")
+        and provider.diagnostics ~= nil
         and provider.diagnostics ~= false then
       assert(type(provider.diagnostics) == "table", "provider diagnostics must be false or a table")
       assert(type(provider.diagnostics.path) == "string" and provider.diagnostics.path ~= "",
@@ -219,6 +240,10 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      assert(model.api == nil
+          or type(model.api) == "string" and model.api ~= "",
+        "model api must be a non-empty string")
+      local model_api = model.api or provider.api
       if model.input ~= nil then
         assert(util.is_list(model.input) and #model.input > 0,
           "model input must be a non-empty list")
@@ -243,7 +268,8 @@ local function validate(opts)
             "thinking levels must contain request_opts tables, functions, or false")
         end
       end
-      if provider.api == "openai-responses" or provider.api == "openai-codex-responses" then
+      if model_api == "openai-responses"
+          or model_api == "openai-codex-responses" then
         if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
         if model.reasoning_effort ~= nil then
           assert(type(model.reasoning_effort) == "string" and model.reasoning_effort ~= "",
@@ -257,11 +283,11 @@ local function validate(opts)
           assert(type(model.reasoning_context) == "string" and model.reasoning_context ~= "",
             "model reasoning_context must be a non-empty string")
         end
-        if provider.api == "openai-codex-responses" and model.text_verbosity ~= nil then
+        if model_api == "openai-codex-responses" and model.text_verbosity ~= nil then
           assert(type(model.text_verbosity) == "string" and model.text_verbosity ~= "",
             "model text_verbosity must be a non-empty string")
         end
-        if provider.api == "openai-codex-responses" and model.responses_lite ~= nil then
+        if model_api == "openai-codex-responses" and model.responses_lite ~= nil then
           assert(type(model.responses_lite) == "boolean", "model responses_lite must be boolean")
         end
       end

@@ -118,6 +118,38 @@ describe("neoagent configuration and model resolution", function()
     assert.is_nil(model.thinking)
   end)
 
+  it("lets one provider route models through different APIs", function()
+    local selected = {}
+    config.setup({
+      default_registry = false,
+      providers = {
+        mixed = {
+          api = "default-wire",
+          models = {
+            ordinary = {},
+            alternate = { api = "alternate-wire" },
+          },
+        },
+      },
+      apis = {
+        ["default-wire"] = function(resolved)
+          selected[#selected + 1] = resolved.api
+          return { api = "default-wire", stream = function() end }
+        end,
+        ["alternate-wire"] = function(resolved)
+          selected[#selected + 1] = resolved.api
+          return { api = "alternate-wire", stream = function() end }
+        end,
+      },
+    })
+
+    assert.are.equal("default-wire",
+      models.resolve("mixed", "ordinary").api)
+    assert.are.equal("alternate-wire",
+      models.resolve("mixed", "alternate").api)
+    assert.are.same({ "default-wire", "alternate-wire" }, selected)
+  end)
+
   it("supports providers whose authentication is optional", function()
     local configured = config.setup({
       default_registry = false,
