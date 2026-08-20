@@ -1,5 +1,6 @@
 local config = require("neoagent.config")
 local Controller = require("neoagent.controller")
+local provider_services = require("neoagent.provider_services")
 local Window = require("neoagent.window")
 local util = require("neoagent.util")
 
@@ -7,6 +8,7 @@ local M = {}
 local positions = { "auto", "left", "right", "top", "bottom", "center" }
 local default_window
 local owned_controllers
+local owned_services
 local default_sandbox
 
 local function configured_toolset(configured)
@@ -27,7 +29,13 @@ local function trust_protected(configured, toolset)
       and #configured.skills.project_dirs > 0
 end
 
-local function default_controllers(configured)
+local function provider_store()
+  return require("neoagent.state_store").new({
+    directory = vim.fn.stdpath("state") .. "/neoagent/provider-state",
+  })
+end
+
+local function default_controllers(configured, user_opts)
   local neo = util.copy(configured)
   neo.name = neo.name or "Neo"
   local host_toolset = configured_toolset(neo)
@@ -55,8 +63,17 @@ local function default_controllers(configured)
     view = require("neoagent.sandbox.view").warn_once(
       view, sandbox_warning, neo.name)
   end
+  local auth_manager = require("neoagent.auth").configured(configured)
+  local services, service_err = provider_services.compose(configured, {
+    auth = auth_manager,
+    store = provider_store(),
+    explicit = user_opts and user_opts.providers,
+    default_model = configured.default_model,
+  })
+  if not services then error(service_err, 0) end
   local neo_controller = Controller.from_config(neo, {
     workspace_trust = trust_policy,
+    providers = services,
   })
   assert(neo_controller:set_toolset(sandbox_toolset))
   local sandbox_state = {
@@ -78,8 +95,8 @@ local function default_controllers(configured)
 
   return {
     neo_controller,
-    Controller.from_config(chat),
-  }, dialogs, sandbox_state, trust_policy, view
+    Controller.from_config(chat, { providers = services }),
+  }, dialogs, sandbox_state, trust_policy, view, services
 end
 
 local function attach_trust(policy, window, controller)
@@ -95,6 +112,7 @@ end
 
 local function destroy_owned()
   for _, controller in ipairs(owned_controllers or {}) do controller:destroy() end
+  provider_services.destroy(owned_services)
 end
 
 local function window_for(controllers, opts)
@@ -111,7 +129,37 @@ local function window_for(controllers, opts)
 end
 
 function M.new(opts, runtime)
-  return Controller.new(opts or {}, runtime)
+  opts = opts or {}
+  runtime = runtime or {}
+  local resolved = config.resolve(opts)
+  local selected = {}
+  for key, value in pairs(runtime) do selected[key] = value end
+  selected.destroy_providers = nil
+  local destroy_providers
+  if selected.providers == nil then
+    local auth = require("neoagent.auth").configured(resolved)
+    local services, err = provider_services.compose(resolved, {
+      auth = auth,
+      store = provider_store(),
+      explicit = opts.providers,
+      default_model = resolved.default_model,
+    })
+    if not services then error(err, 0) end
+    selected.providers = services
+    local owned = services
+    destroy_providers = function()
+      local current = owned
+      owned = nil
+      provider_services.destroy(current)
+    end
+    selected.destroy_providers = destroy_providers
+  end
+  local ok, controller = pcall(Controller.from_config, resolved, selected)
+  if not ok then
+    if destroy_providers then destroy_providers() end
+    error(controller, 0)
+  end
+  return controller
 end
 
 function M.new_window(opts)
@@ -124,7 +172,7 @@ end
 function M.default_window()
   if not default_window then
     local dialogs, trust_policy, view
-    owned_controllers, dialogs, default_sandbox, trust_policy, view =
+    owned_controllers, dialogs, default_sandbox, trust_policy, view, owned_services =
       default_controllers(config.get())
     default_window = window_for(owned_controllers, {
       dialogs = dialogs,
@@ -144,8 +192,8 @@ function M.setup(opts)
     error("Cannot reconfigure neoagent while a run is active")
   end
   local configured = config.setup(opts or {})
-  local replacements, dialogs, sandbox_state, trust_policy, view =
-    default_controllers(configured)
+  local replacements, dialogs, sandbox_state, trust_policy, view, services =
+    default_controllers(configured, opts)
   local replacement_window = window_for(replacements, {
     dialogs = dialogs,
     view = view,
@@ -155,6 +203,7 @@ function M.setup(opts)
   destroy_owned()
   default_window = replacement_window
   owned_controllers = replacements
+  owned_services = services
   default_sandbox = sandbox_state
   return replacements[1]
 end
@@ -166,8 +215,10 @@ function M.set_default(controller)
     or (owned_controllers and owned_controllers[1])
   local replacement = window_for({ controller })
   if default_window then default_window:destroy() end
+  destroy_owned()
   default_window = replacement
   owned_controllers = nil
+  owned_services = nil
   default_sandbox = nil
   config._set(controller:config())
   return previous
@@ -179,6 +230,7 @@ function M.set_default_window(window)
   local previous = default_window
   default_window = window
   owned_controllers = nil
+  owned_services = nil
   default_sandbox = nil
   config._set(window:active():config())
   return previous
@@ -218,11 +270,24 @@ for _, method in ipairs({
   "logout",
   "get_session",
   "get_model",
+  "provider_operations",
+  "provider_completion",
+  "provider_info",
+  "cancel_provider",
 }) do
   M[method] = function(...)
     local controller = M.default()
     return controller[method](controller, ...)
   end
+end
+
+function M.provider(operation, args)
+  local controller = M.default()
+  return controller:provider_operation(operation, args)
+end
+
+function M.provider_console()
+  return M.default_window():toggle_provider_console()
 end
 
 function M.resume(path)

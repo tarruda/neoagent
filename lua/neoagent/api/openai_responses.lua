@@ -48,9 +48,15 @@ function Model:stream(opts)
       if not transport_ok then error(transport_result, 0) end
       if not transport_result.ok then error(transport_result.error, 0) end
       if self._response_status then
-        local status = self._response_status(transport_result.response.headers or {})
-        if type(status) == "string" and status ~= "" then
-          run:emit({ type = "provider_status", text = status })
+        local status, details = self._response_status(
+          transport_result.response.headers or {})
+        if type(status) == "string" and status ~= ""
+            or type(details) == "table" then
+          run:emit({
+            type = "provider_status",
+            text = type(status) == "string" and status or nil,
+            details = type(details) == "table" and details or nil,
+          })
         end
       end
       if not stream.is_terminal() then

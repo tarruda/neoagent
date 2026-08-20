@@ -89,6 +89,25 @@ describe("neoagent.session", function()
     assert.are.equal("accepted", session:messages()[1].content)
   end)
 
+  it("reloads stores that return an unknown incremental projection", function()
+    local loads = 0
+    local store = {
+      load = function()
+        loads = loads + 1
+        if loads == 1 then return {} end
+        return { { role = "assistant", content = "reloaded" } }
+      end,
+      append = function()
+        return true, nil, { id = "entry" }, { type = "future" }
+      end,
+    }
+    local session = assert(Session.new({ store = store }))
+
+    assert(session:append({ role = "assistant", content = "requested" }))
+    assert.are.equal(2, loads)
+    assert.are.equal("reloaded", session:messages()[1].content)
+  end)
+
   it("does not add a message when storage rejects it", function()
     local session = assert(Session.new({ store = {
       load = function() return {} end,

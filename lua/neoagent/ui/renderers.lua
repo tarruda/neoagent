@@ -1,5 +1,6 @@
 local dialog_presentation = require("neoagent.ui.dialog_presentation")
 local focus_presentation = require("neoagent.ui.focus_presentation")
+local provider_presentation = require("neoagent.ui.provider_presentation")
 local render = require("neoagent.ui.render")
 local status_presentation = require("neoagent.ui.status_presentation")
 local tool_presentation = require("neoagent.ui.tool_presentation")
@@ -133,6 +134,9 @@ local function new(policy)
     end,
     render_status = function(_, status, opts)
       return status_presentation.render(status, opts)
+    end,
+    render_provider = function(_, snapshot, opts)
+      return provider_presentation.render(snapshot, opts)
     end,
   }
 end

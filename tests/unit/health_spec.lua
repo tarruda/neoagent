@@ -76,4 +76,69 @@ describe("neoagent health", function()
     require("neoagent.health").check()
     assert.is_true(contains(messages.error, "could not determine"))
   end)
+
+  it("accepts a default model discovered by a provider service", function()
+    require("neoagent.config").setup({
+      default_registry = false,
+      default_model = { provider = "dynamic", model = "discovered" },
+      persistence = { enabled = false },
+      providers = {
+        dynamic = {
+          api = "fake",
+          models = {},
+          service = function()
+            return {
+              id = "dynamic",
+              name = "Dynamic",
+              state = function() return false end,
+              operations = {},
+              get_models = function()
+                return { { id = "discovered", context_window = 4096 } }
+              end,
+            }
+          end,
+        },
+      },
+      apis = {
+        fake = function()
+          return { stream = function() end }
+        end,
+      },
+    })
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.ok, "^configuration is valid$"))
+  end)
+
+  it("reports a dynamic default that awaits its first catalog", function()
+    require("neoagent.config").setup({
+      default_registry = false,
+      default_model = { provider = "dynamic", model = "pending" },
+      persistence = { enabled = false },
+      providers = {
+        dynamic = {
+          api = "fake",
+          models = {},
+          service = function()
+            return {
+              id = "dynamic",
+              name = "Dynamic",
+              state = function() return false end,
+              operations = {},
+              get_models = function() return {} end,
+              refresh_catalog = function() end,
+            }
+          end,
+        },
+      },
+      apis = {
+        fake = function()
+          return { stream = function() end }
+        end,
+      },
+    })
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.warn,
+      "default model dynamic/pending awaits the dynamic provider catalog"))
+    assert.is_true(contains(messages.ok, "^configuration is valid$"))
+  end)
 end)

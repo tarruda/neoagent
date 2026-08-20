@@ -1,0 +1,29 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/backend-api/wham/usage",
+        "headers": {
+          "authorization": "Bearer integration-secret",
+          "chatgpt-account-id": "integration-account"
+        }
+      },
+      "respond": {
+        "json": {
+          "plan_type": "plus",
+          "rate_limit": {
+            "allowed": true,
+            "limit_reached": false,
+            "primary_window": {
+              "used_percent": 25,
+              "limit_window_seconds": 18000,
+              "reset_after_seconds": 300,
+              "reset_at": 1787793900
+            }
+          }
+        }
+      }
+    }
+  ]
+}

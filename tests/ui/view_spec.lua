@@ -165,7 +165,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
+        == " <CR> details · <A-r> resume · <A-m> select model · <A-l> provider · <C-c> clear/cancel "
     end))
   end)
 
@@ -187,6 +187,14 @@ describe("neoagent.ui", function()
     assert.are.equal("one\ntwo", result:get_input())
     assert(result:open())
     assert.are.equal("one\ntwo", result:get_input())
+  end)
+
+  it("removes interaction tracking when destroyed", function()
+    local listener_count = vim.on_key()
+    local result = view({ position = "center" })
+    assert.are.equal(listener_count + 1, vim.on_key())
+    result:destroy()
+    assert.are.equal(listener_count, vim.on_key())
   end)
 
   it("closes both windows when either one is closed externally", function()
@@ -478,6 +486,22 @@ describe("neoagent.ui", function()
     vim.api.nvim_feedkeys("i", "x", false)
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
     result:_close_card_details(true)
+  end)
+
+  it("leaves Insert mode when read-only windows receive direct focus", function()
+    local executable = vim.env.NEOAGENT_NVIM or "nvim"
+    for _, surface in ipairs({ "transcript", "provider" }) do
+      local result = vim.system({
+        executable, "--headless", "--noplugin", "-u", "tests/minimal_init.lua",
+        "-c", "luafile tests/helpers/read_only_focus.lua",
+      }, {
+        text = true,
+        env = { NEOAGENT_FOCUS_SURFACE = surface },
+      }):wait(5000)
+      local output = (result.stderr or "") .. (result.stdout or "")
+      assert.are.equal(0, result.code,
+        surface .. " focus failed: " .. output)
+    end
   end)
 
   it("badges complete text cards with word counts on hover", function()
@@ -3647,8 +3671,9 @@ describe("neoagent.ui", function()
     assert.matches("Compacting%.%.%.", transcript_footer())
     assert.is_nil(transcript_footer():find("think:", 1, true))
     assert.is_not_nil(transcript_footer():find(
-      "ctx 250/1k (25.0%) (5h 80% left · weekly 60% left)", 1, true
+      "ctx 250/1k (25.0%)", 1, true
     ))
+    assert.is_nil(transcript_footer():find("weekly 60% left", 1, true))
     assert.are.equal(vim.api.nvim_win_get_width(result.transcript_win),
       vim.fn.strdisplaywidth(transcript_footer()))
     local input_config = vim.api.nvim_win_get_config(result.input_win)

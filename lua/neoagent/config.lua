@@ -27,8 +27,18 @@ local defaults = {
           return { headers = { ["x-api-key"] = credential.key } }
         end,
       }),
+      ["opencode-go"] = api_key.new({
+        name = "OpenCode Go API key",
+        request_opts = function(credential)
+          return { headers = {
+            Authorization = "Bearer " .. credential.key,
+            ["x-api-key"] = credential.key,
+          } }
+        end,
+      }),
       ["anthropic-plan"] = require("neoagent.auth.anthropic").new(),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
+      llama = require("neoagent.providers.llama.auth").new(),
     },
   },
   persistence = {
@@ -67,6 +77,11 @@ local defaults = {
     scroll_on_reopen = true,
     wrap_cards = false,
     show_thinking = true,
+    provider_console = {
+      position = "top",
+      width = 0.4,
+      height = 0.35,
+    },
     completion = {
       sources = { "files" },
     },
@@ -83,6 +98,11 @@ local defaults = {
       card_next = { "<A-j>", "<C-Down>" },
       focus_input = "<C-w>j",
       focus_transcript = "<C-w>k",
+      focus_provider = "<A-l>",
+      provider_back = "<A-h>",
+      provider_input = "<A-j>",
+      provider_previous = "<Up>",
+      provider_next = "<Down>",
       cycle_thinking = "<S-Tab>",
       cycle_agent = "<A-n>",
       select_model = "<A-m>",
@@ -91,6 +111,8 @@ local defaults = {
       history_next = "<Down>",
       select_history = "<C-r>",
       dequeue_steering = "<A-Up>",
+      toggle_provider = "<A-p>",
+      provider_close = "q",
       close = "q",
     },
   },
@@ -98,6 +120,20 @@ local defaults = {
 }
 
 local current
+local built_in_apis = {
+  ["openai-completions"] = true,
+  ["openai-responses"] = true,
+  ["openai-codex-responses"] = true,
+  ["anthropic-messages"] = true,
+}
+
+local function provider_uses_api(provider, name)
+  if provider.api == name then return true end
+  for _, model in pairs(provider.models or {}) do
+    if type(model) == "table" and model.api == name then return true end
+  end
+  return false
+end
 
 local function validate_dimension(value, name)
   if value == nil then return end
@@ -160,20 +196,52 @@ local function validate(opts)
     assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
-    if provider.api == "openai-completions" or provider.api == "openai-responses"
-        or provider.api == "openai-codex-responses" or provider.api == "anthropic-messages" then
+    assert(provider.service == nil or type(provider.service) == "function",
+      "provider " .. id .. " service must be a function")
+    assert(provider.service_opts == nil
+        or type(provider.service_opts) == "table" and not util.is_list(provider.service_opts),
+      "provider " .. id .. " service_opts must be a table")
+    assert(provider.catalog_cache == nil or provider.catalog_cache == false
+        or type(provider.catalog_cache) == "table"
+          and not util.is_list(provider.catalog_cache),
+      "provider " .. id .. " catalog_cache must be false or a table")
+    if type(provider.catalog_cache) == "table" then
+      for name in pairs(provider.catalog_cache) do
+        assert(name == "ttl_ms",
+          "unsupported provider catalog_cache setting: " .. tostring(name))
+      end
+      local ttl_ms = provider.catalog_cache.ttl_ms
+      assert(ttl_ms == nil or type(ttl_ms) == "number"
+          and ttl_ms >= 0 and ttl_ms % 1 == 0,
+        "provider " .. id
+          .. " catalog_cache.ttl_ms must be a non-negative integer")
+    end
+    local uses_built_in_api = built_in_apis[provider.api] == true
+    for _, model in pairs(provider.models) do
+      if type(model) == "table" and built_in_apis[model.api] then
+        uses_built_in_api = true
+        break
+      end
+    end
+    if uses_built_in_api then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
     end
     if provider.auth ~= nil then
       assert(type(provider.auth) == "string" and provider.auth ~= "", "provider auth must be a method name")
     end
+    assert(provider.auth_optional == nil
+        or type(provider.auth_optional) == "boolean",
+      "provider auth_optional must be boolean")
+    assert(provider.auth_optional ~= true or provider.auth ~= nil,
+      "provider auth_optional requires auth")
     if provider.api_key ~= nil then
       assert(type(provider.api_key) == "string" or type(provider.api_key) == "function", "api_key must be a string or function")
     end
     if provider.request_opts ~= nil then
       assert(type(provider.request_opts) == "table" or type(provider.request_opts) == "function", "request_opts must be a table or function")
     end
-    if provider.api == "openai-codex-responses" and provider.diagnostics ~= nil
+    if provider_uses_api(provider, "openai-codex-responses")
+        and provider.diagnostics ~= nil
         and provider.diagnostics ~= false then
       assert(type(provider.diagnostics) == "table", "provider diagnostics must be false or a table")
       assert(type(provider.diagnostics.path) == "string" and provider.diagnostics.path ~= "",
@@ -181,6 +249,10 @@ local function validate(opts)
     end
     for model_id, model in pairs(provider.models) do
       assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
+      assert(model.api == nil
+          or type(model.api) == "string" and model.api ~= "",
+        "model api must be a non-empty string")
+      local model_api = model.api or provider.api
       if model.input ~= nil then
         assert(util.is_list(model.input) and #model.input > 0,
           "model input must be a non-empty list")
@@ -205,7 +277,8 @@ local function validate(opts)
             "thinking levels must contain request_opts tables, functions, or false")
         end
       end
-      if provider.api == "openai-responses" or provider.api == "openai-codex-responses" then
+      if model_api == "openai-responses"
+          or model_api == "openai-codex-responses" then
         if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
         if model.reasoning_effort ~= nil then
           assert(type(model.reasoning_effort) == "string" and model.reasoning_effort ~= "",
@@ -219,11 +292,11 @@ local function validate(opts)
           assert(type(model.reasoning_context) == "string" and model.reasoning_context ~= "",
             "model reasoning_context must be a non-empty string")
         end
-        if provider.api == "openai-codex-responses" and model.text_verbosity ~= nil then
+        if model_api == "openai-codex-responses" and model.text_verbosity ~= nil then
           assert(type(model.text_verbosity) == "string" and model.text_verbosity ~= "",
             "model text_verbosity must be a non-empty string")
         end
-        if provider.api == "openai-codex-responses" and model.responses_lite ~= nil then
+        if model_api == "openai-codex-responses" and model.responses_lite ~= nil then
           assert(type(model.responses_lite) == "boolean", "model responses_lite must be boolean")
         end
       end
@@ -246,6 +319,8 @@ local function validate(opts)
       "auth method type must be api_key or oauth")
     assert(type(method.login) == "function" and type(method.request_opts) == "function",
       "auth methods require login and request_opts")
+    assert(method.public_metadata == nil or type(method.public_metadata) == "function",
+      "auth method public_metadata must be a function")
     if method.type == "api_key" then
       assert(method.refresh == nil or type(method.refresh) == "function",
         "API key auth method refresh must be a function")
@@ -297,6 +372,14 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
   assert(type(opts.ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
   assert(type(opts.ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
+  assert(type(opts.ui.provider_console) == "table" and not util.is_list(opts.ui.provider_console),
+    "ui.provider_console must be a table")
+  assert(opts.ui.provider_console.position == "right"
+      or opts.ui.provider_console.position == "top"
+      or opts.ui.provider_console.position == "bottom",
+    "ui.provider_console.position must be right, top, or bottom")
+  validate_dimension(opts.ui.provider_console.width, "ui.provider_console.width")
+  validate_dimension(opts.ui.provider_console.height, "ui.provider_console.height")
   assert(opts.ui.completion == false or type(opts.ui.completion) == "table",
     "ui.completion must be false or a table")
   if opts.ui.completion then

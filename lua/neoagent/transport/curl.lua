@@ -66,6 +66,7 @@ end
 function M.command(request, header_path)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
+  local method = request.method or "POST"
   local command = {
     "curl",
     "--no-buffer",
@@ -73,15 +74,22 @@ function M.command(request, header_path)
     "--show-error",
     "--fail-with-body",
     "-X",
-    "POST",
+    method,
   }
   if header_path then
     command[#command + 1] = "--dump-header"
     command[#command + 1] = header_path
   end
   append_headers(command, request.headers)
-  command[#command + 1] = "--data-binary"
-  command[#command + 1] = "@-"
+  if request.body ~= nil then
+    command[#command + 1] = "--data-binary"
+    command[#command + 1] = "@-"
+  end
+  if type(request.timeout_ms) == "number" then
+    command[#command + 1] = "--max-time"
+    command[#command + 1] = string.format("%.3f",
+      math.max(0.001, request.timeout_ms / 1000))
+  end
   command[#command + 1] = request.url
   return command
 end
@@ -92,19 +100,52 @@ function M.fetch(opts)
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
   local command = { "curl", "--silent", "--show-error", "-X", request.method or "POST" }
   append_headers(command, request.headers)
-  command[#command + 1] = "--data-binary"
-  command[#command + 1] = "@-"
+  if request.body ~= nil then
+    command[#command + 1] = "--data-binary"
+    command[#command + 1] = "@-"
+  end
+  if type(request.timeout_ms) == "number" then
+    command[#command + 1] = "--max-time"
+    command[#command + 1] = string.format("%.3f",
+      math.max(0.001, request.timeout_ms / 1000))
+  end
   command[#command + 1] = "--write-out"
   command[#command + 1] = "\n%{http_code}"
   command[#command + 1] = request.url
   return async.run(function()
+    local maximum = request.max_response_bytes
+    if maximum ~= nil then
+      assert(type(maximum) == "number" and maximum >= 0
+          and maximum % 1 == 0,
+        "request.max_response_bytes must be a non-negative integer")
+    end
     local completed = async.await(function(done)
       local process
+      local stdout = ""
       local ok, err = pcall(function()
-        process = vim.system(command, {
+        local system_opts = {
           stdin = request.body or "",
           text = false,
-        }, function(result)
+        }
+        if maximum then
+          system_opts.stdout = function(read_err, data)
+            if read_err then
+              done.reject(util.error("transport",
+                "Failed reading curl stdout", read_err))
+              if process then pcall(process.kill, process, 15) end
+            elseif data and data ~= "" then
+              stdout = stdout .. data
+              if #stdout > maximum + 4 then
+                done.reject(util.error("transport",
+                  "curl response exceeds " .. tostring(maximum)
+                    .. " bytes"))
+                if process then pcall(process.kill, process, 15) end
+              end
+            end
+          end
+        end
+        process = vim.system(command, system_opts, function(result)
+          if maximum then result.stdout = stdout end
           if result.code == 0 then done.resolve(result) else done.reject(util.error(
             "transport", "curl exited with status " .. tostring(result.code), result.stderr
           )) end
@@ -131,7 +172,7 @@ function M.request(opts)
         local process
         local ok, err = pcall(function()
           process = vim.system(M.command(request, header_path), {
-            stdin = assert(request.body, "request.body is required"),
+            stdin = request.body or "",
             text = false,
             stdout = function(read_err, data)
               if read_err then

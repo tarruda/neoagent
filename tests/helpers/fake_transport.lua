@@ -3,7 +3,12 @@ local async = require("neoagent.async")
 local M = {}
 
 function M.new(responses)
-  local fake = { requests = {}, responses = responses or {} }
+  local fake = {
+    requests = {},
+    fetch_requests = {},
+    responses = responses or {},
+    fetches = {},
+  }
   function fake.request(opts)
     fake.requests[#fake.requests + 1] = opts.request
     local response = table.remove(fake.responses, 1) or {}
@@ -15,6 +20,20 @@ function M.new(responses)
         return { ok = false, error = response.error }
       end
       return { ok = true, response = { code = 0, headers = response.headers or {} } }
+    end)
+  end
+  function fake.fetch(opts)
+    fake.fetch_requests[#fake.fetch_requests + 1] = opts.request
+    local response = table.remove(fake.fetches, 1) or {}
+    return async.run(function()
+      if response.error then
+        return { ok = false, error = response.error }
+      end
+      return {
+        ok = true,
+        status = response.status or 200,
+        body = response.body or "",
+      }
     end)
   end
   return fake

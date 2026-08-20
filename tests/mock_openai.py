@@ -24,17 +24,25 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        length = int(self.headers.get("content-length", "0"))
-        raw = self.rfile.read(length)
-        if self.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
-            body = dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
-        else:
-            try:
-                body = json.loads(raw)
-            except Exception as error:
-                body = {"_decode_error": str(error), "_raw": raw.decode("utf-8", "replace")}
+        self._handle("POST")
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def _handle(self, method):
+        body = {}
+        if method == "POST":
+            length = int(self.headers.get("content-length", "0"))
+            raw = self.rfile.read(length)
+            if self.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+                body = dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
+            else:
+                try:
+                    body = json.loads(raw)
+                except Exception as error:
+                    body = {"_decode_error": str(error), "_raw": raw.decode("utf-8", "replace")}
         received = {
-            "method": "POST",
+            "method": method,
             "path": self.path,
             "headers": {key.lower(): value for key, value in self.headers.items()},
             "body": body,

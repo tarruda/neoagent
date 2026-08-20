@@ -62,6 +62,40 @@ end, {
   nargs = 1,
   complete = function() return require("neoagent.ui.renderers").names() end,
 })
+local function provider_operation_completion(arg_lead, command_line, cursor_pos)
+  local neoagent = require("neoagent")
+  local before = type(command_line) == "string"
+    and command_line:sub(1, cursor_pos or #command_line) or ""
+  local tail = before:match("^%s*NeoagentProvider!?%s+(.*)$") or ""
+  local operation, args = tail:match("^(%S+)%s+(.*)$")
+  if operation then
+    return neoagent.provider_completion(operation, arg_lead, args)
+  end
+  local operations = neoagent.provider_operations() or {}
+  local result = {}
+  for _, operation in ipairs(operations) do
+    if arg_lead == "" or vim.startswith(operation.id, arg_lead) then
+      result[#result + 1] = operation.id
+    end
+  end
+  return result
+end
+
+vim.api.nvim_create_user_command("NeoagentProvider", function(opts)
+  local neoagent = require("neoagent")
+  if opts.bang then
+    neoagent.cancel_provider()
+  elseif opts.args == "" then
+    neoagent.provider_console()
+  else
+    local operation, args = opts.args:match("^(%S+)%s*(.*)$")
+    neoagent.provider(operation, args ~= "" and args or nil)
+  end
+end, {
+  nargs = "?",
+  bang = true,
+  complete = provider_operation_completion,
+})
 local function auth_method_completion()
   local methods = require("neoagent").default():config().auth.methods
   local result = {}

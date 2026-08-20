@@ -728,6 +728,56 @@ describe("neoagent UI mappings", function()
     result:destroy()
   end)
 
+  it("defers streaming while an input yank is operator-pending", function()
+    local result = ui.new({
+      config = config.setup({ ui = { position = "center" } }).ui,
+    })
+    result:set_messages({ {
+      role = "assistant",
+      content = { { type = "text", text = "existing response" } },
+    } })
+    assert(result:open())
+    result:set_context({ state = "running" })
+    result:set_input("clipboard input target")
+    result:focus_input()
+    local focus_settled = false
+    vim.schedule(function() focus_settled = true end)
+    assert(vim.wait(1000, function() return focus_settled end))
+    vim.cmd("stopinsert")
+    vim.api.nvim_win_set_cursor(result.input_win, { 1, 0 })
+    vim.fn.setreg("+", "sentinel")
+
+    vim.api.nvim_feedkeys('"+y', "x", false)
+    assert.matches("o", vim.fn.state("oS"))
+    assert.are.equal("+", vim.v.register)
+    assert.are.equal("y", vim.v.operator)
+    local lines = vim.api.nvim_buf_get_lines(
+      result.transcript_buf, 0, -1, false)
+    local changedtick = vim.api.nvim_buf_get_changedtick(result.transcript_buf)
+
+    result:apply({ type = "text_delta", text = "streamed response" })
+    local next_tick = false
+    vim.schedule(function() next_tick = true end)
+    assert(vim.wait(1000, function() return next_tick end))
+    assert.are.same(lines,
+      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+    assert.are.equal(changedtick,
+      vim.api.nvim_buf_get_changedtick(result.transcript_buf))
+    assert.matches("o", vim.fn.state("oS"))
+    assert.are.equal("+", vim.v.register)
+    assert.are.equal("y", vim.v.operator)
+
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
+    vim.api.nvim_exec_autocmds("SafeState", {})
+    assert(vim.wait(1000, function()
+      return table.concat(vim.api.nvim_buf_get_lines(
+        result.transcript_buf, 0, -1, false
+      ), "\n"):match("streamed response") ~= nil
+    end))
+    result:destroy()
+  end)
+
   it("yanks an input Visual selection to the clipboard while streaming", function()
     local result = ui.new({
       config = config.setup({ ui = { position = "center" } }).ui,

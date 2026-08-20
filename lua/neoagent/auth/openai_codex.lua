@@ -9,6 +9,40 @@ local AUTH_BASE_URL = "https://auth.openai.com"
 local REDIRECT_URI = "http://localhost:1455/auth/callback"
 local DEVICE_REDIRECT_URI = AUTH_BASE_URL .. "/deviceauth/callback"
 local CLAIM = "https://api.openai.com/auth"
+local PROFILE_CLAIM = "https://api.openai.com/profile"
+
+local plan_labels = {
+  free = "Free",
+  go = "Go",
+  plus = "Plus",
+  pro = "Pro",
+  prolite = "Pro Lite",
+  team = "Business",
+  self_serve_business_prolite = "Business",
+  self_serve_business_usage_based = "Business",
+  business = "Enterprise",
+  ent26 = "Enterprise",
+  enterprise_cbp_automation = "Enterprise (Automation)",
+  enterprise_cbp_usage_based = "Enterprise",
+  enterprise = "Enterprise",
+  education = "Edu",
+  edu = "Edu",
+  edu_plus = "Edu Plus",
+  edu_pro = "Edu Pro",
+  k12 = "K-12",
+  quorum = "Quorum",
+}
+
+local function safe_metadata_text(value, maximum)
+  if type(value) ~= "string" then return nil end
+  value = util.trim(value)
+  if value == "" or #value > maximum
+      or not util.is_valid_utf8(value)
+      or value:find("[%z\1-\31\127]") then
+    return nil
+  end
+  return value
+end
 
 local function encode_fields(fields)
   local keys, result = {}, {}
@@ -45,12 +79,42 @@ local function hex_bytes(value)
 end
 
 local function decode_jwt(token)
+  if type(token) ~= "string" then return nil end
   local payload = token:match("^[^.]+%.([^.]+)%.[^.]+$")
   if not payload then return nil end
   payload = payload:gsub("-", "+"):gsub("_", "/")
   payload = payload .. string.rep("=", (4 - #payload % 4) % 4)
   local ok, decoded = pcall(function() return vim.json.decode(vim.base64.decode(payload)) end)
   return ok and type(decoded) == "table" and decoded or nil
+end
+
+local function token_metadata(token)
+  local payload = decode_jwt(token)
+  if not payload then return {} end
+  local auth = type(payload[CLAIM]) == "table" and payload[CLAIM] or {}
+  local profile = type(payload[PROFILE_CLAIM]) == "table" and payload[PROFILE_CLAIM] or {}
+  local email = safe_metadata_text(payload.email, 254)
+    or safe_metadata_text(profile.email, 254)
+  return {
+    account_id = type(auth.chatgpt_account_id) == "string"
+      and auth.chatgpt_account_id ~= "" and auth.chatgpt_account_id or nil,
+    email = email,
+    plan = safe_metadata_text(auth.chatgpt_plan_type, 64),
+  }
+end
+
+local function public_metadata(credential)
+  local fallback = token_metadata(credential and credential.access)
+  local result = {}
+  local email = safe_metadata_text(credential and credential.email, 254) or fallback.email
+  local raw_plan = safe_metadata_text(credential and credential.plan, 64) or fallback.plan
+  if email then result.email = email end
+  if raw_plan then
+    local plan = plan_labels[raw_plan:lower():gsub("%-", "_"):gsub("%s+", "_")]
+    if plan then result.plan = plan end
+  end
+  if next(result) == nil then result.account = "ChatGPT" end
+  return result
 end
 
 local function parse_authorization(value)
@@ -168,16 +232,16 @@ function M.new(opts)
     return value
   end
 
-  local function credential(value)
+  local function credential(value, previous)
     if type(value.access_token) ~= "string" or value.access_token == ""
         or type(value.refresh_token) ~= "string" or value.refresh_token == ""
         or type(value.expires_in) ~= "number" then
       error(util.error("auth", "OpenAI token response is missing fields"), 0)
     end
-    local payload = decode_jwt(value.access_token)
-    local account = payload and payload[CLAIM]
-    local account_id = type(account) == "table" and account.chatgpt_account_id or nil
-    if type(account_id) ~= "string" or account_id == "" then
+    local access = token_metadata(value.access_token)
+    local identity = token_metadata(value.id_token)
+    local account_id = access.account_id or identity.account_id
+    if not account_id then
       error(util.error("auth", "Failed to extract accountId from OpenAI token"), 0)
     end
     return {
@@ -186,6 +250,10 @@ function M.new(opts)
       refresh = value.refresh_token,
       expires = now() + value.expires_in * 1000,
       accountId = account_id,
+      email = identity.email or access.email
+        or safe_metadata_text(previous and previous.email, 254),
+      plan = identity.plan or access.plan
+        or safe_metadata_text(previous and previous.plan, 64),
     }
   end
 
@@ -317,9 +385,10 @@ function M.new(opts)
           refresh_token = current.refresh,
           client_id = CLIENT_ID,
         }))
-        return { ok = true, credential = credential(value) }
+        return { ok = true, credential = credential(value, current) }
       end, { error_kind = "auth" })
     end,
+    public_metadata = public_metadata,
     request_opts = function(current)
       if type(current.accountId) ~= "string" or current.accountId == "" then
         error(util.error("auth", "Stored OpenAI credential has no accountId"), 0)

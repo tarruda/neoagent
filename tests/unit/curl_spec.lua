@@ -40,10 +40,71 @@ describe("neoagent.transport.curl", function()
     assert.are.same({
       "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
       "-X", "POST", "-H", "Authorization: Bearer x", "-H",
-      "Content-Type: application/json", "--data-binary", "@-", "http://localhost",
+      "Content-Type: application/json", "http://localhost",
     }, curl.command({
       url = "http://localhost",
       headers = { ["Content-Type"] = "application/json", Authorization = "Bearer x" },
     }))
+    assert.are.same({
+      "curl", "--silent", "--show-error", "-X", "GET", "--max-time", "1.500",
+      "--write-out", "\n%{http_code}", "http://localhost",
+    }, (function()
+      local original_system = vim.system
+      local commands = {}
+      vim.system = function(command) commands[1] = command return { kill = function() end } end
+      curl.fetch({
+        request = { url = "http://localhost", method = "GET", timeout_ms = 1500 },
+      })
+      vim.system = original_system
+      return commands[1]
+    end)())
+    assert.are.same({
+      "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
+      "-X", "GET", "--max-time", "1.500", "http://localhost",
+    }, curl.command({ url = "http://localhost", method = "GET", timeout_ms = 1500 }))
+  end)
+
+  it("bounds fetched response bodies while curl is running", function()
+    local original_system = vim.system
+    local function result(maximum, send)
+      vim.system = function(_, options, on_exit)
+        send(options, on_exit)
+        return { kill = function() end }
+      end
+      local run = curl.fetch({ request = {
+        url = "http://localhost",
+        method = "GET",
+        max_response_bytes = maximum,
+      } })
+      assert(vim.wait(1000, function() return run:is_done() end))
+      return run:result()
+    end
+
+    local fetched = result(2, function(options, on_exit)
+      options.stdout(nil, "{}\n200")
+      on_exit({ code = 0 })
+    end)
+    assert.is_true(fetched.ok)
+    assert.are.equal("{}", fetched.body)
+    assert.are.equal(200, fetched.status)
+
+    fetched = result(2, function(options, on_exit)
+      options.stdout(nil, "too-large\n200")
+      on_exit({ code = 15 })
+    end)
+    assert.is_false(fetched.ok)
+    assert.matches("exceeds 2 bytes", fetched.error.message)
+
+    fetched = result(2, function(options, on_exit)
+      options.stdout("read failed")
+      on_exit({ code = 15 })
+    end)
+    assert.is_false(fetched.ok)
+    assert.matches("Failed reading curl stdout", fetched.error.message)
+
+    fetched = result(-1, function() end)
+    vim.system = original_system
+    assert.is_false(fetched.ok)
+    assert.matches("max_response_bytes", fetched.error.message)
   end)
 end)

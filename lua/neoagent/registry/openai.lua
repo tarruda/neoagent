@@ -138,5 +138,6 @@ return {
     base_url = "https://chatgpt.com/backend-api",
     auth = "openai-codex",
     models = codex_models,
+    service = require("neoagent.providers.codex").new,
   },
 }

@@ -2,6 +2,7 @@ local input = require("neoagent.ui.input")
 local layout = require("neoagent.ui.layout")
 local dialog = require("neoagent.ui.dialog")
 local cards = require("neoagent.ui.cards")
+local provider_console = require("neoagent.ui.provider_console")
 local renderer_protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")
 local transcript = require("neoagent.ui.transcript")
@@ -10,6 +11,14 @@ local util = require("neoagent.util")
 local M = { layout = layout.layout }
 local View = {}
 View.__index = View
+
+function View:_guard_normal_mode(buffer)
+  vim.api.nvim_create_autocmd({ "InsertEnter", "WinEnter" }, {
+    group = self.augroup,
+    buffer = buffer,
+    callback = function() vim.cmd("stopinsert") end,
+  })
+end
 
 local function active_state(context)
   return context.state == "running" or context.state == "stopping"
@@ -70,11 +79,7 @@ function View:_ensure_buffers()
         self:_refresh_input_footer()
       end,
     })
-    vim.api.nvim_create_autocmd("InsertEnter", {
-      group = self.augroup,
-      buffer = self.transcript_buf,
-      callback = function() vim.cmd("stopinsert") end,
-    })
+    self:_guard_normal_mode(self.transcript_buf)
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     self.input_buf = vim.api.nvim_create_buf(false, true)
@@ -127,6 +132,7 @@ function View:_configs()
   local position = self.position
   local container = self:_host_container()
   if position == "auto" and not container then position = "right" end
+  local provider_console = self.config.provider_console or {}
   return M.layout({
     columns = vim.o.columns,
     lines = vim.o.lines - vim.o.cmdheight,
@@ -137,6 +143,10 @@ function View:_configs()
     margin = self.config.margin,
     input_height = self.config.input_height,
     border = self.config.border,
+    provider = self.provider_open == true and self.provider_snapshot ~= nil,
+    provider_position = provider_console.position or "right",
+    provider_width = provider_console.width or 0.4,
+    provider_height = provider_console.height or 0.35,
   })
 end
 
@@ -224,6 +234,7 @@ function View:_input_footer(width)
       { action = "card_details", label = "details" },
       { action = "resume_session", label = "resume" },
       { action = "select_model", label = "select model" },
+      { action = "focus_provider", label = "provider" },
       { action = "interrupt", label = "clear/cancel" },
     }
   end
@@ -309,11 +320,6 @@ function View:_transcript_footer(width)
   local right_parts = {}
   local context = context_status(self.context)
   if context then right_parts[#right_parts + 1] = context end
-  local status = self.context.provider_status
-  if type(status) == "string" then
-    status = util.trim(status)
-    if status ~= "" then right_parts[#right_parts + 1] = "(" .. status .. ")" end
-  end
   local right = #right_parts > 0 and " " .. table.concat(right_parts, " ") .. " " or nil
   if not active and not waiting and not right then
     local idle = truncate_right(" Idle ", width)
@@ -393,6 +399,9 @@ function View:open(origin)
   self:_window_options(self.input_win, false)
   self:_flush()
   self.has_opened = true
+  if self.provider_open and self.provider_snapshot then
+    self:_open_provider(false)
+  end
   if reopening and self.config.scroll_on_reopen then self:_scroll_transcript_to_bottom() end
   self:_sync_spinner()
   if self.dialog then
@@ -405,6 +414,8 @@ end
 
 function View:close()
   self:_close_card_details(false)
+  self:_close_provider(false)
+  self.provider_open = false
   self:_hide_dialog_surface()
   self:_stop_spinner()
   local transcript_win, input_win = self.transcript_win, self.input_win
@@ -449,8 +460,9 @@ function View:destroy()
   self:close()
   self.dialog = nil
   self.destroyed = true
+  transcript.stop_tracking_interactions(self)
   if self.augroup then pcall(vim.api.nvim_del_augroup_by_id, self.augroup) end
-  for _, buffer in ipairs({ self.transcript_buf, self.input_buf }) do
+  for _, buffer in ipairs({ self.transcript_buf, self.input_buf, self.provider_buf }) do
     if buffer and vim.api.nvim_buf_is_valid(buffer) then pcall(vim.api.nvim_buf_delete, buffer, { force = true }) end
   end
 end
@@ -573,6 +585,7 @@ function View:set_position(position)
   self:_decorate(configs)
   vim.api.nvim_win_set_config(self.transcript_win, configs.transcript)
   vim.api.nvim_win_set_config(self.input_win, configs.input)
+  self:_layout_provider()
   self.full_dirty = true
   self:_schedule_flush()
   if vim.api.nvim_win_is_valid(focused) then vim.api.nvim_set_current_win(focused) end
@@ -662,7 +675,12 @@ View.set_dialog = dialog.set_dialog
 
 View._complete_input = input._complete_input
 View._map = input._map
-View._map_buffers = input._map_buffers
+local map_buffers = input._map_buffers
+View._map_buffers = function(self, ...)
+  local result = { map_buffers(self, ...) }
+  self:_map_provider_toggle()
+  return unpack(result)
+end
 View.get_input = input.get_input
 View._reset_input_history = input._reset_input_history
 View._set_history_input = input._set_history_input
@@ -681,6 +699,26 @@ View._close_card_details = cards._close_card_details
 View._card_details_closed = cards._card_details_closed
 View._toggle_card_details_raw = cards._toggle_card_details_raw
 View.show_card_details = cards.show_card_details
+
+View._provider_width = provider_console._provider_width
+View._provider_content = provider_console._provider_content
+View._ensure_provider_buffer = provider_console._ensure_provider_buffer
+View._provider_rows = provider_console._provider_rows
+View._provider_row = provider_console._provider_row
+View._move_provider = provider_console._move_provider
+View._select_provider = provider_console._select_provider
+View._refresh_provider = provider_console._refresh_provider
+View._schedule_provider_refresh = provider_console._schedule_provider_refresh
+View._map_provider_buffer = provider_console._map_provider_buffer
+View._open_provider = provider_console._open_provider
+View._close_provider = provider_console._close_provider
+View._provider_closed = provider_console._provider_closed
+View._layout_provider = provider_console._layout_provider
+View._toggle_provider = provider_console._toggle_provider
+View._map_provider_toggle = provider_console._map_provider_toggle
+View.set_provider = provider_console.set_provider
+View.set_provider_open = provider_console.set_provider_open
+View.focus_provider = provider_console.focus_provider
 
 function M.new(opts)
   opts = opts or {}
@@ -704,6 +742,9 @@ function M.new(opts)
     on_resume_session = opts.on_resume_session or function() end,
     on_dialog_action = opts.on_dialog_action or function() end,
     on_dialog_dismiss = opts.on_dialog_dismiss or function() end,
+    on_provider_action = opts.on_provider_action or function() end,
+    on_provider_close = opts.on_provider_close or function() end,
+    on_provider_toggle = opts.on_provider_toggle,
     resolve_tool = opts.resolve_tool or function() end,
     namespace = vim.api.nvim_create_namespace("neoagent-view-" .. tostring(vim.uv.hrtime())),
     card_namespace = vim.api.nvim_create_namespace(
@@ -715,14 +756,29 @@ function M.new(opts)
     spinner_frame = 1,
     history_index = 0,
     has_opened = false,
+    provider_buf = nil,
+    provider_win = nil,
+    provider_open = false,
+    provider_snapshot = nil,
+    provider_targets = nil,
+    provider_refresh_pending = false,
+    provider_counter = 0,
   }, View)
+  if not view.on_provider_toggle then
+    view.on_provider_toggle = function() view:_toggle_provider() end
+  end
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
+  transcript.track_interactions(view)
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {
     group = view.augroup,
     callback = function(event)
       if event.event == "WinClosed" then
         local closed = tonumber(event.match)
         if view:_card_details_closed(closed) then return end
+        if view:_provider_closed(closed) then
+          view.on_provider_close()
+          return
+        end
         if closed == view.dialog_win and not view.hiding_dialog then
           local id = view.dialog and view.dialog.active.id
           view.dialog_win = nil

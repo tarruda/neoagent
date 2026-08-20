@@ -12,6 +12,7 @@ end
 describe("neoagent.session_tree", function()
   it("validates every Pi v3 entry shape", function()
     local invalid = {
+      base("message", { parentId = {}, message = { role = "user", content = "x" } }),
       base("active_tools_change", { activeToolNames = { 1 } }),
       base("compaction", { summary = "", firstKeptEntryId = "x", tokensBefore = 1 }),
       base("compaction", { summary = "x", firstKeptEntryId = "x", tokensBefore = 1, fromHook = "yes" }),

@@ -52,14 +52,98 @@ function M.layout(opts)
     relative = "editor",
     style = "minimal",
     focusable = true,
-    width = content_width,
-    col = col,
     border = opts.border,
     zindex = opts.zindex or 50,
   }
+
+  local provider
+  if opts.provider then
+    local provider_position = opts.provider_position or "right"
+    if provider_position == "right" then
+      local desired = math.min(content_width - 11,
+        dimension(opts.provider_width, outer_width, 0.4))
+      if desired < 1 or content_width - desired - 1 < 10 then
+        return nil, "Provider console does not fit in the available editor area"
+      end
+      local transcript_width = content_width - desired - 1
+      provider = vim.tbl_extend("force", common, {
+        row = row,
+        col = col + transcript_width + 1,
+        width = desired,
+        height = transcript_height,
+      })
+      return {
+        transcript = vim.tbl_extend("force", common, {
+          row = row,
+          col = col,
+          width = transcript_width,
+          height = transcript_height,
+        }),
+        provider = provider,
+        input = vim.tbl_extend("force", common, {
+          row = row + transcript_height + borders,
+          col = col,
+          width = content_width,
+          height = input_height,
+        }),
+      }
+    end
+    local desired_height = math.min(transcript_height - 4,
+      dimension(opts.provider_height, outer_height, 0.35))
+    if desired_height < 1 or transcript_height - desired_height < 4 then
+      return nil, "Provider console does not fit in the available editor area"
+    end
+    local divider = math.max(1, borders)
+    local transcript_size = transcript_height - desired_height - divider
+    if provider_position == "top" then
+      provider = vim.tbl_extend("force", common, {
+        row = row,
+        col = col,
+        width = content_width,
+        height = desired_height,
+      })
+      return {
+        transcript = vim.tbl_extend("force", common, {
+          row = row + desired_height + divider,
+          col = col,
+          width = content_width,
+          height = transcript_size,
+        }),
+        provider = provider,
+        input = vim.tbl_extend("force", common, {
+          row = row + transcript_height + borders,
+          col = col,
+          width = content_width,
+          height = input_height,
+        }),
+      }
+    end
+    provider = vim.tbl_extend("force", common, {
+      row = row + transcript_size + divider,
+      col = col,
+      width = content_width,
+      height = desired_height,
+    })
+    return {
+      transcript = vim.tbl_extend("force", common, {
+        row = row,
+        col = col,
+        width = content_width,
+        height = transcript_size,
+      }),
+      provider = provider,
+      input = vim.tbl_extend("force", common, {
+        row = row + transcript_height + borders,
+        col = col,
+        width = content_width,
+        height = input_height,
+      }),
+    }
+  end
+
   return {
-    transcript = vim.tbl_extend("force", common, { row = row, height = transcript_height }),
-    input = vim.tbl_extend("force", common, { row = row + transcript_height + borders, height = input_height }),
+    transcript = vim.tbl_extend("force", common, { row = row, col = col, width = content_width, height = transcript_height }),
+    input = vim.tbl_extend("force", common, { row = row + transcript_height + borders, col = col, width = content_width, height = input_height }),
   }
 end
 

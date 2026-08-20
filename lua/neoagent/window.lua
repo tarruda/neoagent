@@ -54,6 +54,8 @@ function M.new(opts)
     transcript_style = opts.config.style,
     renderer = initial_renderer,
     position_loaded = false,
+    provider_console_open = false,
+    provider_open_request = 0,
     destroyed = false,
   }
   assert(type(state.active) == "number" and state.controllers[state.active],
@@ -151,6 +153,13 @@ function M.new(opts)
         view:set_input(view:get_input())
       end
       view:set_context(context(update.context))
+      if type(view.set_provider) == "function" then
+        view:set_provider(update.context.provider or false)
+        if state.provider_console_open and update.context.provider
+            and view.provider_open ~= true then
+          view:set_provider_open(true)
+        end
+      end
     elseif update.type == "messages" then
       view:set_messages(update.messages)
     elseif update.type == "event" then
@@ -185,6 +194,13 @@ function M.new(opts)
     select_workspace(snapshot.context.workspace)
     state.view:set_messages(snapshot.messages)
     state.view:set_context(context(snapshot.context))
+    if type(state.view.set_provider) == "function" then
+      state.view:set_provider(snapshot.context.provider or false, true)
+      if state.provider_console_open and snapshot.context.provider
+          and state.view.provider_open ~= true then
+        state.view:set_provider_open(true)
+      end
+    end
     for _, event in ipairs(snapshot.events) do state.view:apply(event) end
     if snapshot.result then state.view:finish(snapshot.result) end
     state.view:set_input(state.drafts[controller] or "")
@@ -232,6 +248,19 @@ function M.new(opts)
       on_dialog_dismiss = function(id)
         if not opts.dialogs then return nil end
         return opts.dialogs:cancel(id, "dialog dismissed by user")
+      end,
+      on_provider_action = function(id, args)
+        return active():provider_operation(id, args)
+      end,
+      on_provider_close = function()
+        state.provider_console_open = false
+      end,
+      on_provider_toggle = function()
+        local toggled, err = window:toggle_provider_console()
+        if toggled == nil and err then
+          notify(err.message, vim.log.levels.WARN)
+        end
+        return toggled, err
       end,
       window = window,
     })
@@ -315,6 +344,7 @@ function M.new(opts)
   function window:close()
     if not state.view then return end
     state.drafts[active()] = state.view:get_input()
+    state.provider_console_open = false
     state.view:close()
   end
 
@@ -388,6 +418,83 @@ function M.new(opts)
     return value
   end
 
+  function window:set_provider_console(open)
+    assert(type(open) == "boolean", "provider console visibility must be boolean")
+    state.provider_open_request = state.provider_open_request + 1
+    local request = state.provider_open_request
+    if open then
+      if state.destroyed then
+        return nil, util.error("ui", "Window is destroyed")
+      end
+      local controller = active()
+      if type(controller.is_destroyed) == "function"
+          and controller:is_destroyed() then
+        return nil, util.error("controller", "Controller is destroyed")
+      end
+      local snapshot, err = prepared_snapshot(controller)
+      if not snapshot then return nil, err end
+      if not controller:provider_service_bound() then
+        local providers = controller:console_providers()
+        if #providers == 1 then
+          local bound, bind_err = controller:bind_provider(providers[1].id)
+          if not bound then return nil, bind_err end
+          snapshot = controller:snapshot()
+        elseif #providers > 1 then
+          local picked = controller:select_console_provider(function()
+            util.schedule(function()
+              if state.destroyed or request ~= state.provider_open_request
+                  or active() ~= controller
+                  or type(controller.is_destroyed) == "function"
+                    and controller:is_destroyed() then
+                return
+              end
+              window:set_provider_console(true)
+            end)
+          end)
+          if picked ~= nil then return true end
+        elseif not snapshot.context.provider then
+          notify("the active provider has no console service", vim.log.levels.WARN)
+          return nil
+        end
+      end
+      local view, view_err = ensure_view()
+      if not view then return nil, view_err end
+      if state.rendered_controller ~= active() then
+        local hydrated, hydrate_err = hydrate(controller, snapshot)
+        if not hydrated then return nil, hydrate_err end
+      end
+      local main_opened, main_err = self:open()
+      if not main_opened then return nil, main_err end
+      if type(view.set_provider_open) ~= "function" then
+        notify("the active View does not support the provider console",
+          vim.log.levels.WARN)
+        return nil
+      end
+      local opened, open_err = view:set_provider_open(true)
+      if not opened then
+        if open_err then notify(open_err.message, vim.log.levels.WARN) end
+        return nil, open_err
+      end
+      state.provider_console_open = true
+      controller:provider_console_opened()
+      return true
+    end
+    state.provider_console_open = false
+    if state.view and not state.view.destroyed
+        and type(state.view.set_provider_open) == "function" then
+      state.view:set_provider_open(false)
+    end
+    return true
+  end
+
+  function window:toggle_provider_console()
+    return self:set_provider_console(not state.provider_console_open)
+  end
+
+  function window:provider_console_open()
+    return state.provider_console_open
+  end
+
   function window:get_input()
     if state.view and not state.view.destroyed
         and state.rendered_controller == active() then
@@ -430,6 +537,7 @@ function M.new(opts)
   function window:destroy()
     if state.destroyed then return end
     state.destroyed = true
+    state.provider_open_request = state.provider_open_request + 1
     if opts.dialogs then
       opts.dialogs:cancel_pending("dialog Window destroyed", {
         presenter_unavailable = true,

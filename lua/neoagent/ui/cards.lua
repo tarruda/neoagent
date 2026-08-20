@@ -372,11 +372,7 @@ function M:show_card_details()
   vim.wo[window].winhl =
     "NormalFloat:Normal,FloatBorder:NeoagentBorder,FloatTitle:NeoagentWindowTitle"
   fit_detail_height(window)
-  vim.api.nvim_create_autocmd("InsertEnter", {
-    group = self.augroup,
-    buffer = buffer,
-    callback = function() vim.cmd("stopinsert") end,
-  })
+  self:_guard_normal_mode(buffer)
   vim.keymap.set("n", "<C-c>", function()
     self:_close_card_details(true)
   end, { buffer = buffer, silent = true, nowait = true })

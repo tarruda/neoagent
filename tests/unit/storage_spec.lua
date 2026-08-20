@@ -140,6 +140,23 @@ describe("neoagent.storage", function()
     assert.is_nil(vim.uv.fs_stat(store:metadata().path))
   end)
 
+  it("rejects duplicate generated entry ids", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local random = vim.uv.random
+    vim.uv.random = function() return string.rep("x", 8) end
+    local call_ok, append_ok, append_err = pcall(function()
+      assert(store:append({ role = "user", content = "first" }))
+      return store:append({ role = "user", content = "second" })
+    end)
+    vim.uv.random = random
+
+    assert(call_ok, append_ok)
+    assert.is_nil(append_ok)
+    assert.matches("duplicate entry id", append_err.detail)
+  end)
+
   it("rejects invalid UTF-8 before persisting a Session message", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
