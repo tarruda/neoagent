@@ -96,6 +96,7 @@ describe("neoagent configuration and model resolution", function()
 
     local model = models.resolve()
     local request = model:_request({ messages = {}, tools = {} })
+    assert.are.same({ "local-anthropic/coder" }, assert(models.available()))
     assert.are.equal("anthropic-messages", model.api)
     assert.are.equal("http://localhost:8080/v1/messages", request.url)
     assert.are.equal("local-key", request.headers["x-api-key"])
@@ -219,6 +220,17 @@ describe("neoagent configuration and model resolution", function()
     assert.is_false(ok)
     assert.are.equal("model", resolve_err.kind)
     assert.matches("model catalog must be a list", resolve_err.message)
+
+    for _, api in ipairs({ "forged\napi", string.char(255) }) do
+      available, err = models.available(configured, nil, {
+        dynamic = {
+          get_models = function() return { { id = "model", api = api } } end,
+        },
+      })
+      assert.is_nil(available)
+      assert.are.equal("model", err.kind)
+      assert.matches("api must be safe", err.message)
+    end
   end)
 
   it("resolves configured OpenAI Responses models", function()
@@ -707,6 +719,26 @@ describe("neoagent configuration and model resolution", function()
     assert.is_true(ambient_result.ok, vim.inspect(ambient_result))
     assert.are.same({ "Bearer stored-key", "Bearer ambient-key" }, seen)
     assert.are.equal(1, ambient_calls)
+    vim.fn.delete(vim.fs.dirname(path), "rf")
+  end)
+
+  it("uses literal API keys as optional authentication fallbacks", function()
+    local path = vim.fn.tempname() .. "/auth.json"
+    local configured = config.setup({
+      default_registry = false,
+      auth = { path = path },
+      providers = { mixed = {
+        api = "openai-completions",
+        auth = "openai",
+        api_key = "ambient-key",
+        base_url = "https://example.test/v1",
+        models = { model = {} },
+      } },
+    })
+
+    local resolved = models.resolve("mixed", "model", configured)
+    local request = resolved._model:_request({ messages = {}, tools = {} })
+    assert.are.equal("Bearer ambient-key", request.headers.Authorization)
     vim.fn.delete(vim.fs.dirname(path), "rf")
   end)
 

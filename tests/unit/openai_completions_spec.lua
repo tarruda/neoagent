@@ -305,6 +305,29 @@ describe("neoagent.api.openai_completions", function()
       assert.matches(case.message, result.error.message)
     end
 
+    local oversized = fake_transport.new({ { chunks = {
+      "data: " .. string.rep("x", 1024 * 1024 + 1),
+    } } })
+    local oversized_model = openai.new({
+      provider = "p", model = "m", base_url = "http://x",
+      transport = oversized,
+    })
+    local oversized_result = wait(oversized_model:stream({ messages = {} }))
+    assert.is_false(oversized_result.ok)
+    assert.are.equal("protocol", oversized_result.error.kind)
+    assert.matches("SSE pending buffer exceeded", oversized_result.error.message)
+
+    local missing_delta = fake_transport.new({ { chunks = {
+      'data: {"choices":[{"delta":"invalid","finish_reason":"stop"}]}\n\n',
+    } } })
+    local missing_delta_model = openai.new({
+      provider = "p", model = "m", base_url = "http://x",
+      transport = missing_delta,
+    })
+    local missing_delta_result = wait(missing_delta_model:stream({ messages = {} }))
+    assert.is_true(missing_delta_result.ok)
+    assert.are.same({}, missing_delta_result.message.content)
+
     local fake = fake_transport.new({ { chunks = {
       "data: {\"choices\":[{\"delta\":{\"content\":\"cut off\"},\"finish_reason\":\"length\"}]}\n\n",
     } } })
