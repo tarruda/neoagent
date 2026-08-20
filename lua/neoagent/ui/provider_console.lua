@@ -40,11 +40,7 @@ function M:_ensure_provider_buffer()
   vim.bo[buffer].undofile = false
   vim.bo[buffer].filetype = "neoagent-provider"
   vim.bo[buffer].modifiable = false
-  vim.api.nvim_create_autocmd("InsertEnter", {
-    group = self.augroup,
-    buffer = buffer,
-    callback = function() vim.cmd("stopinsert") end,
-  })
+  self:_guard_normal_mode(buffer)
   self.provider_buf = buffer
   return buffer
 end

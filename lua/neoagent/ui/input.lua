@@ -67,7 +67,13 @@ function M:_map_buffers()
   self:_map(self.transcript_buf, "n", mappings.card_details,
     function() self:show_card_details() end)
   self:_map(self.transcript_buf, "n", mappings.card_previous,
-    function() self:_move_card(-1, vim.v.count1) end)
+    function()
+      if not self:_move_card(-1, vim.v.count1)
+          and self.provider_win
+          and vim.api.nvim_win_is_valid(self.provider_win) then
+        self:focus_provider()
+      end
+    end)
   self:_map(self.transcript_buf, "n", mappings.card_next,
     function()
       if not self:_move_card(1, vim.v.count1) then self:focus_input() end

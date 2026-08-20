@@ -1218,9 +1218,12 @@ move through operation rows.
 
 The input and transcript are focusable Neovim buffers. Input opens in Insert
 mode, and the transcript supports normal search, motions, Visual selection,
-and yank. Dialogs render without stealing focus while the input draft
-contains text, and the transcript, dialog, and card-details buffers remain
-in Normal mode. Set `ui.scroll_on_submit`,
+and yank. Streamed transcript redraws wait for register selection, pending
+operators, and input Visual selections so these interactions use stable text.
+Dialogs render without stealing focus while the input draft contains text.
+The transcript, provider, informational-dialog, and card-details buffers enter
+Normal mode through keyboard, mouse, and direct window-focus paths.
+Set `ui.scroll_on_submit`,
 `ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
 automatic scrolling. The input footer lists the highest-priority Neoagent
 actions for the focused surface that fit its current width. Ordinary Neovim
@@ -1445,10 +1448,12 @@ Default mappings:
   <A-k>/<A-j> (aliases <C-Up>/<C-Down>)
               Jump to the previous or next transcript card; counts are
               supported in Normal mode. Alt-K or Ctrl-Up focuses the newest
-              card from input Normal or Insert mode. Alt-J or Ctrl-Down
-              focuses the input in Insert mode from the newest card. These
-              mappings replace open card details with the adjacent card;
-              moving below the final card closes details and focuses input.
+              card from input Normal or Insert mode. At the first transcript
+              card, Alt-K or Ctrl-Up focuses an open provider console. Alt-J
+              or Ctrl-Down focuses the input in Insert mode from the newest
+              card. These mappings replace open card details with the adjacent
+              card; moving below the final card closes details and focuses
+              input.
   <C-w>j      Focus input from the transcript.
   <C-w>k      Focus the transcript from input Normal or Insert mode.
   r           Toggle rendered and raw Markdown in Text or Thinking details.

@@ -129,11 +129,7 @@ function M:_show_transcript_dialog()
   vim.bo[buffer].modifiable = false
   self:_map_dialog_navigation(buffer, "n")
   self:_map_dialog_actions(buffer, "n")
-  vim.api.nvim_create_autocmd("InsertEnter", {
-    group = self.augroup,
-    buffer = buffer,
-    callback = function() vim.cmd("stopinsert") end,
-  })
+  self:_guard_normal_mode(buffer)
   self.dialog_buf = buffer
   self:_render_dialog_status()
   vim.api.nvim_win_set_buf(self.transcript_win, buffer)

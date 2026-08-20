@@ -680,10 +680,12 @@ resources. Each rendered block owns its range and decoration extmarks;
 incremental redraw replaces those marks and lets neighboring range anchors
 track line shifts. Transcript cards clip lines at the current visible width by
 default and rebuild after layout changes; configured card wrapping presents
-their complete lines. The Window supplies a tool resolver, so a bundled
-Renderer can consume an optional semantic renderer carried by the active tool
-without recognizing tool names. The View can omit thinking blocks while the
-Controller and Session retain complete messages.
+their complete lines. The View defers streamed transcript redraws while a
+register selection, pending operator, or input Visual selection owns the
+editor interaction. The Window supplies a tool resolver, so a bundled Renderer
+can consume an optional semantic renderer carried by the active tool without
+recognizing tool names. The View can omit thinking blocks while the Controller
+and Session retain complete messages.
 
 The Renderer also presents transient steering status, active-card focus
 decorations, semantic dialogs, and the optional provider console. Provider
@@ -693,6 +695,9 @@ dialog buffers, windows, mappings, focus, transcript copying, and response
 routing. An optional `render_provider(snapshot, opts)` method returns console
 content, a title, and selectable operation rows. The View owns the provider
 buffer and window, arrow navigation, selection routing, and close behavior.
+A shared read-only-buffer guard keeps the transcript, provider console,
+informational dialogs, and card details in Normal mode across `InsertEnter` and
+direct `WinEnter` focus paths.
 
 Pi and Codex are bundled Renderer values assembled from a shared private layout
 engine and their own card chrome. Codex is the default. Pi uses its fixed user

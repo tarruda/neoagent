@@ -1453,6 +1453,33 @@ describe("neoagent provider console", function()
     end))
   end)
 
+  it("moves above the first transcript card into the visible provider", function()
+    local controller = neoagent.new(options("provider", fake_model.new({})), {
+      providers = { fake = service({}) },
+    })
+    controllers = { controller }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+    assert(window:open())
+    assert(window:set_provider_console(true))
+    local view = window:view()
+
+    local function feed(keys)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    end
+    local function focused(target)
+      return vim.wait(1000, function()
+        return vim.api.nvim_get_current_win() == target
+      end)
+    end
+
+    view:focus_transcript()
+    vim.api.nvim_win_set_cursor(view.transcript_win, { 1, 0 })
+    feed("<A-k>")
+    assert(focused(view.provider_win))
+  end)
+
   it("applies and restores the complete provider panel layout", function()
     local controller = neoagent.new(options("provider", fake_model.new({})), {
       providers = { fake = service({}) },

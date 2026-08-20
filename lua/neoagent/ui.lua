@@ -12,6 +12,14 @@ local M = { layout = layout.layout }
 local View = {}
 View.__index = View
 
+function View:_guard_normal_mode(buffer)
+  vim.api.nvim_create_autocmd({ "InsertEnter", "WinEnter" }, {
+    group = self.augroup,
+    buffer = buffer,
+    callback = function() vim.cmd("stopinsert") end,
+  })
+end
+
 local function active_state(context)
   return context.state == "running" or context.state == "stopping"
     or context.state == "compacting"
@@ -71,11 +79,7 @@ function View:_ensure_buffers()
         self:_refresh_input_footer()
       end,
     })
-    vim.api.nvim_create_autocmd("InsertEnter", {
-      group = self.augroup,
-      buffer = self.transcript_buf,
-      callback = function() vim.cmd("stopinsert") end,
-    })
+    self:_guard_normal_mode(self.transcript_buf)
   end
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     self.input_buf = vim.api.nvim_create_buf(false, true)
@@ -456,6 +460,7 @@ function View:destroy()
   self:close()
   self.dialog = nil
   self.destroyed = true
+  transcript.stop_tracking_interactions(self)
   if self.augroup then pcall(vim.api.nvim_del_augroup_by_id, self.augroup) end
   for _, buffer in ipairs({ self.transcript_buf, self.input_buf, self.provider_buf }) do
     if buffer and vim.api.nvim_buf_is_valid(buffer) then pcall(vim.api.nvim_buf_delete, buffer, { force = true }) end
@@ -763,6 +768,7 @@ function M.new(opts)
     view.on_provider_toggle = function() view:_toggle_provider() end
   end
   view.augroup = vim.api.nvim_create_augroup("NeoagentView" .. tostring(view.namespace), { clear = true })
+  transcript.track_interactions(view)
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinNew", "WinClosed" }, {
     group = view.augroup,
     callback = function(event)

@@ -14,14 +14,62 @@ local selection_modes = {
 }
 
 function M.interaction_pending(view)
-  if not view.transcript_win or not vim.api.nvim_win_is_valid(view.transcript_win)
-      or vim.fn.state("o") == "" then
+  if not view.transcript_win
+      or not vim.api.nvim_win_is_valid(view.transcript_win) then
     return false
   end
   local current = vim.api.nvim_get_current_win()
+  if current ~= view.transcript_win and current ~= view.input_win then
+    return false
+  end
+  if view.register_pending then return true end
+  if vim.fn.state("o") == "" then return false end
   if current == view.transcript_win then return true end
-  return current == view.input_win
-    and selection_modes[vim.api.nvim_get_mode().mode] == true
+  local mode = vim.api.nvim_get_mode().mode
+  return selection_modes[mode] == true
+    or mode:sub(1, 2) == "no"
+end
+
+function M.track_interactions(view)
+  if view.interaction_namespace then return end
+  local namespace = vim.api.nvim_create_namespace(
+    "neoagent-interaction-" .. tostring(vim.uv.hrtime()))
+  view.interaction_namespace = namespace
+  vim.on_key(function(key)
+    if view.destroyed or key ~= '"' then return end
+    local current = vim.api.nvim_get_current_win()
+    if current ~= view.transcript_win and current ~= view.input_win then
+      return
+    end
+    if vim.api.nvim_get_mode().mode:sub(1, 1) ~= "n" then return end
+    view.register_pending = true
+    view:_stop_spinner()
+    if view.register_safe_autocmd then return end
+    local id
+    id = vim.api.nvim_create_autocmd("SafeState", {
+      group = view.augroup,
+      once = true,
+      callback = function()
+        if view.register_safe_autocmd == id then
+          view.register_safe_autocmd = nil
+        end
+        view.register_pending = false
+        if not view.destroyed then view:_sync_spinner() end
+      end,
+    })
+    view.register_safe_autocmd = id
+  end, namespace)
+end
+
+function M.stop_tracking_interactions(view)
+  if not view.interaction_namespace then return end
+  vim.on_key(nil, view.interaction_namespace)
+  view.interaction_namespace = nil
+  if view.register_safe_autocmd then
+    pcall(vim.api.nvim_del_autocmd, view.register_safe_autocmd)
+    view.register_safe_autocmd = nil
+  end
+  view.register_pending = false
 end
 
 local function flush_when_safe(view)
@@ -297,6 +345,11 @@ function M:_flush()
 end
 
 function M:_schedule_flush()
+  if M.interaction_pending(self) then
+    self.flush_pending = true
+    flush_when_safe(self)
+    return
+  end
   if self.flush_pending then return end
   self.flush_pending = true
   vim.schedule(function()

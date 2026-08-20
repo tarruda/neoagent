@@ -189,6 +189,14 @@ describe("neoagent.ui", function()
     assert.are.equal("one\ntwo", result:get_input())
   end)
 
+  it("removes interaction tracking when destroyed", function()
+    local listener_count = vim.on_key()
+    local result = view({ position = "center" })
+    assert.are.equal(listener_count + 1, vim.on_key())
+    result:destroy()
+    assert.are.equal(listener_count, vim.on_key())
+  end)
+
   it("closes both windows when either one is closed externally", function()
     local result = view({ position = "center" })
     assert(result:open())
@@ -478,6 +486,22 @@ describe("neoagent.ui", function()
     vim.api.nvim_feedkeys("i", "x", false)
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
     result:_close_card_details(true)
+  end)
+
+  it("leaves Insert mode when read-only windows receive direct focus", function()
+    local executable = vim.env.NEOAGENT_NVIM or "nvim"
+    for _, surface in ipairs({ "transcript", "provider" }) do
+      local result = vim.system({
+        executable, "--headless", "--noplugin", "-u", "tests/minimal_init.lua",
+        "-c", "luafile tests/helpers/read_only_focus.lua",
+      }, {
+        text = true,
+        env = { NEOAGENT_FOCUS_SURFACE = surface },
+      }):wait(5000)
+      local output = (result.stderr or "") .. (result.stdout or "")
+      assert.are.equal(0, result.code,
+        surface .. " focus failed: " .. output)
+    end
   end)
 
   it("badges complete text cards with word counts on hover", function()
