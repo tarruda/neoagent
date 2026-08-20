@@ -168,6 +168,27 @@ Each model may select an `api` different from its provider default. Resolution
 uses that effective API while retaining the provider's shared base URL,
 authentication, service, and request-option layer.
 
+The OpenCode Go provider composes one subscription key across Responses,
+Anthropic Messages, and OpenAI-compatible Chat Completions Models. Its auth
+method derives both Bearer and `x-api-key` headers to satisfy the three Go
+routes. A static catalog supplies protocol, context, modality, output, and
+thinking metadata. The service's public model refresh adds bounded ids from
+`GET /models`; configured entries retain precedence over discovered entries.
+Its versioned catalog cache contains ids and its source timestamp, preserves
+that timestamp on cache-only restoration, and defaults to a one-hour TTL.
+
+`lua/neoagent/providers/opencode_go/client.lua` owns bounded, cancellable
+`GET /usage` and `GET /models` requests. Usage parsing accepts exactly the
+rolling, weekly, and monthly counters, their finite percentages, status, and
+UTC reset timestamps. Provider errors exclude response bodies and credentials.
+The OpenCode Go service declares usage refresh as its initial console
+operation, so the first console open performs one authenticated request while
+ordinary composition and subscription perform none. Its semantic quota blocks
+identify the counters as shared across all Go models. Selected-model request
+figures are derived estimates based on the documented typical workloads and
+the authoritative global remaining ratio. Refresh failures retain valid quota
+blocks while replacing only the transient status.
+
 Operations receive a copied public provider projection, the selected model,
 `agent_running`, a cancellable auth resolution Run, and a provider-neutral
 `interact` adapter with select, input, confirm, progress, and notify

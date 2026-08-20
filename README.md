@@ -17,8 +17,8 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
   opens or focuses it, `<A-h>` returns to the transcript, and `<A-j>` moves
   to the input.
 - Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
-  local models with llama.cpp, built-in Anthropic, DeepSeek, and Z.AI
-  catalogs, or Claude and ChatGPT subscription authentication.
+  local models with llama.cpp, built-in Anthropic, DeepSeek, Z.AI, and OpenCode
+  Go catalogs, or Claude and ChatGPT subscription authentication.
 - Compose Models, tools, executors, Sessions, Controllers, Renderers, and
   Views as ordinary Lua values with explicit dependencies.
 - Run cancellable agent loops with custom tools, steering messages, retry
@@ -49,6 +49,11 @@ Choose a provider:
 - Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
   before starting Neovim. The credential enables both the metered API and
   global Coding Plan catalogs.
+- For an OpenCode Go subscription, run `:NeoagentLogin opencode-go` or set
+  `OPENCODE_API_KEY`, then select an `opencode-go` model. The provider console
+  loads the shared 5-hour, weekly, and monthly balances when it first opens
+  and shows an estimated remaining request count for the selected model.
+  Its `models` operation refreshes OpenCode's public Go model catalog.
 - The built-in llama.cpp provider supports anonymous local routers directly.
   Run its `refresh` operation to discover the default local server, or run
   `:NeoagentLogin llama` to select another URL or store an API key. Model
@@ -116,6 +121,15 @@ Coding Plan:
 default_model = {
   provider = "zai-coding-plan",
   model = "glm-5.2",
+}
+```
+
+For an OpenCode Go subscription:
+
+```lua
+default_model = {
+  provider = "opencode-go",
+  model = "gpt-5.6-luna",
 }
 ```
 

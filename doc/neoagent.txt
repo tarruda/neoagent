@@ -79,12 +79,14 @@ The default registry contains these provider IDs:
   zai                Z.AI API and Coding Plan; `:NeoagentLogin zai` or
                      `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Coding Plan models using the same `zai` credential.
+  opencode-go        OpenCode Go subscription; `:NeoagentLogin opencode-go`
+                     or `OPENCODE_API_KEY`.
   llama.cpp          Local llama.cpp router; `:NeoagentLogin llama` stores the
                      server URL and optional API key.
 
 `:NeoagentModel` lists the models currently available from configured and
-authenticated providers. The `openai-codex` provider ships a Provider Service;
-`:NeoagentProvider` opens its rate-limit console.
+authenticated providers. The `openai-codex`, `opencode-go`, and `llama.cpp`
+providers ship Provider Services; `:NeoagentProvider` opens their consoles.
 
 Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
 credentials take precedence over environment variables. `:NeoagentLogout`
@@ -1070,6 +1072,39 @@ bytes. A custom `base_url` supplies the prefix for the same `/wham/*` routes.
 ChatGPT account operations require OAuth; an API-key credential leaves an
 explicit unavailable status. Quota details live in the provider console while
 the transcript border remains focused on agent and context state.
+
+The OpenCode Go provider uses a subscription API key from
+`:NeoagentLogin opencode-go` or `OPENCODE_API_KEY`. It supplies both Bearer and
+`x-api-key` authentication because Go's Responses and Chat Completions routes
+use Bearer authentication while its Messages route uses `x-api-key`. Models
+select their documented Go route through their per-model `api`: Responses,
+Anthropic Messages, or OpenAI-compatible Chat Completions. The built-in static
+catalog carries model context, modality, output, and thinking declarations.
+
+Its `refresh` operation is the initial console operation. The first console
+open sends one authenticated `GET /usage` request and displays the shared
+5-hour, weekly, and monthly remaining percentages and reset times. The Go
+service performs no background polling; reopening the same service retains the
+snapshot, and the `refresh` operation requests a new one. The current Go
+allowances are $12 per 5-hour window, $30 per week, and $60 per month. OpenCode
+reports these as global dollar-value counters shared by every Go model. The
+console labels that scope and derives an approximate remaining request count
+for the selected model from OpenCode's published typical-request estimates.
+Running `refresh` after changing models updates the estimate; it does not
+represent a separate quota. A failed refresh preserves the latest valid quota
+snapshot and exposes a body-free error status.
+
+The `models` operation loads `GET /models` without credentials. Model ids form
+a bounded, versioned, secret-free catalog with a one-hour default cache. The
+service refreshes this catalog at startup when OpenCode Go is explicitly
+configured or selected as the default provider. Static model definitions take
+precedence when the discovered id is already known. Newly discovered ids use
+text input and the Chat Completions route; OpenCode's gateway converts that
+wire format for its selected upstream. Set
+`providers["opencode-go"].catalog_cache = false` to disable persistence or set
+another `ttl_ms`. `service_opts.timeout_ms` changes the 15-second management
+request deadline, and `service_opts.max_response_bytes` changes the 256-KiB
+response bound. The response bound must be at least 1024 bytes.
 
 `models.available()` and `models.resolve()` accept an optional
 `providers` map. For a service with `get_models()`, discovered entries merge

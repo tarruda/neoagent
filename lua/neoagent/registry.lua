@@ -11,6 +11,7 @@ local defaults = {
   ["zai-coding-plan"] = require("neoagent.registry.zai_coding_plan"),
   anthropic = require("neoagent.registry.anthropic"),
   ["anthropic-plan"] = require("neoagent.registry.anthropic_plan"),
+  ["opencode-go"] = require("neoagent.registry.opencode_go"),
   ["llama.cpp"] = {
     api = "openai-completions",
     base_url = "http://127.0.0.1:8080/v1",

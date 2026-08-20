@@ -27,6 +27,15 @@ local defaults = {
           return { headers = { ["x-api-key"] = credential.key } }
         end,
       }),
+      ["opencode-go"] = api_key.new({
+        name = "OpenCode Go API key",
+        request_opts = function(credential)
+          return { headers = {
+            Authorization = "Bearer " .. credential.key,
+            ["x-api-key"] = credential.key,
+          } }
+        end,
+      }),
       ["anthropic-plan"] = require("neoagent.auth.anthropic").new(),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
       llama = require("neoagent.providers.llama.auth").new(),

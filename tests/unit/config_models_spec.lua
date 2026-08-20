@@ -12,6 +12,7 @@ describe("neoagent configuration and model resolution", function()
   local original_zai_key
   local original_anthropic_key
   local original_anthropic_oauth_token
+  local original_opencode_key
 
   before_each(function()
     config._reset()
@@ -20,11 +21,13 @@ describe("neoagent configuration and model resolution", function()
     original_zai_key = vim.env.ZAI_API_KEY
     original_anthropic_key = vim.env.ANTHROPIC_API_KEY
     original_anthropic_oauth_token = vim.env.ANTHROPIC_OAUTH_TOKEN
+    original_opencode_key = vim.env.OPENCODE_API_KEY
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
     vim.env.ANTHROPIC_API_KEY = nil
     vim.env.ANTHROPIC_OAUTH_TOKEN = nil
+    vim.env.OPENCODE_API_KEY = nil
   end)
 
   after_each(function()
@@ -34,6 +37,7 @@ describe("neoagent configuration and model resolution", function()
     vim.env.ZAI_API_KEY = original_zai_key
     vim.env.ANTHROPIC_API_KEY = original_anthropic_key
     vim.env.ANTHROPIC_OAUTH_TOKEN = original_anthropic_oauth_token
+    vim.env.OPENCODE_API_KEY = original_opencode_key
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -360,6 +364,48 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ type = "enabled" }, request.body.thinking)
     assert.are.equal("max", request.body.reasoning_effort)
     assert.are.equal("", request.body.messages[1].reasoning_content)
+  end)
+
+  it("routes the built-in OpenCode Go catalog across its three APIs", function()
+    vim.env.OPENCODE_API_KEY = "go-key"
+    config.setup({})
+
+    local provider = config.get().providers["opencode-go"]
+    assert.are.equal("openai-completions", provider.api)
+    assert.are.equal("https://opencode.ai/zen/go/v1", provider.base_url)
+    assert.are.equal("opencode-go", provider.auth)
+    assert.is_function(provider.service)
+
+    local chat = models.resolve("opencode-go", "glm-5.3")
+    local chat_request = chat._model:_request({ messages = {}, tools = {} })
+    assert.are.equal("openai-completions", chat.api)
+    assert.are.equal("https://opencode.ai/zen/go/v1/chat/completions",
+      chat_request.url)
+    assert.are.equal("Bearer go-key", chat_request.headers.Authorization)
+
+    local responses = models.resolve("opencode-go", "gpt-5.6-luna")
+    local responses_request = responses._model:_request({
+      messages = {}, tools = {}, request_opts = responses.thinking.high,
+    })
+    assert.are.equal("openai-responses", responses.api)
+    assert.are.equal("https://opencode.ai/zen/go/v1/responses",
+      responses_request.url)
+    assert.are.equal("high", responses_request.body.reasoning.effort)
+
+    local messages = models.resolve("opencode-go", "minimax-m3")
+    local messages_request = messages._model:_request({
+      messages = {}, tools = {}, request_opts = messages.thinking.high,
+    })
+    assert.are.equal("anthropic-messages", messages.api)
+    assert.are.equal("https://opencode.ai/zen/go/v1/messages",
+      messages_request.url)
+    assert.are.equal("go-key", messages_request.headers["x-api-key"])
+    assert.are.same({ type = "adaptive" }, messages_request.body.thinking)
+
+    local headers = config.get().auth.methods["opencode-go"]
+      .request_opts({ type = "api_key", key = "stored-key" }).headers
+    assert.are.equal("Bearer stored-key", headers.Authorization)
+    assert.are.equal("stored-key", headers["x-api-key"])
   end)
 
   it("downgrades images for DeepSeek text-only models", function()
