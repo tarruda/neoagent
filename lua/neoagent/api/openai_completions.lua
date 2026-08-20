@@ -199,6 +199,13 @@ function Model:_request(call_opts)
     headers = headers,
     body = body,
   }
+  local timeout = self._timeout_ms
+  if call_opts.timeout_ms ~= nil then timeout = call_opts.timeout_ms end
+  if timeout == false then
+    request.timeout_ms = false
+  elseif type(timeout) == "number" and timeout > 0 then
+    request.timeout_ms = timeout
+  end
   local ctx = {
     model = self,
     messages = util.copy(call_opts.messages),
@@ -330,6 +337,7 @@ function Model:stream(opts)
           url = request.url,
           headers = request.headers,
           body = util.json_encode(request.body),
+          timeout_ms = request.timeout_ms,
         },
         on_chunk = function(chunk)
           local parsed, err = parser:feed(chunk)
@@ -401,18 +409,25 @@ function M.new(opts)
   if opts.request_opts ~= nil then
     layers[#layers + 1] = opts.request_opts
   end
+  if opts.timeout_ms ~= nil then
+    assert(type(opts.timeout_ms) == "number" and opts.timeout_ms > 0
+      and opts.timeout_ms % 1 == 0,
+      "timeout_ms must be a positive integer")
+  end
   return setmetatable({
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
     input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
+    timeout_ms = opts.timeout_ms,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
     _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
+    _timeout_ms = opts.timeout_ms,
     _transport = opts.transport or curl,
   }, Model)
 end

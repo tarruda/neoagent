@@ -47,6 +47,52 @@ describe("neoagent.api.openai_completions", function()
     assert.is_true(request.body.stream_options.include_usage)
   end)
 
+  it("applies request timeouts from construction and stream options", function()
+    local fake = fake_transport.new({
+      { chunks = { "data: [DONE]\n\n" } },
+      { chunks = { "data: [DONE]\n\n" } },
+    })
+    local model = openai.new({
+      provider = "local",
+      model = "test",
+      base_url = "http://localhost/v1",
+      transport = fake,
+      timeout_ms = 30000,
+    })
+    local result = wait(model:stream({
+      messages = {},
+      timeout_ms = 45000,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal(45000, fake.requests[1].timeout_ms)
+
+    result = wait(model:stream({ messages = {} }))
+    assert.is_true(result.ok)
+    assert.are.equal(30000, fake.requests[2].timeout_ms)
+
+    fake.responses = { { chunks = { "data: [DONE]\n\n" } } }
+    result = wait(model:stream({ messages = {}, timeout_ms = false }))
+    assert.is_true(result.ok)
+    assert.is_false(fake.requests[3].timeout_ms)
+
+    local plain = openai.new({
+      provider = "local",
+      model = "test",
+      base_url = "http://localhost/v1",
+      transport = fake_transport.new({ { chunks = { "data: [DONE]\n\n" } } }),
+    })
+    assert.is_nil(plain.timeout_ms)
+    assert.is_nil(plain:_request({ messages = {} }).timeout_ms)
+    assert.has_error(function()
+      openai.new({
+        provider = "local",
+        model = "test",
+        base_url = "http://localhost/v1",
+        timeout_ms = 0,
+      })
+    end, "timeout_ms must be a positive integer")
+  end)
+
   it("recursively merges request options without mutating inputs", function()
     local provider_opts = {
       headers = { ["X-Test"] = "provider" },
