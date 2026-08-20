@@ -912,13 +912,18 @@ A Provider Service is a plain table: >lua
 
   service.id              -- non-empty provider id
   service.name            -- display name
-  service:state()         -- copied bounded snapshot or false
+  service:state(ctx)      -- copied bounded snapshot or false
   service.operations      -- keyed operation descriptors
   service.open_operation  -- optional initial non-mutating operation id
 <
 Optional members include `get_models()`, `refresh_models(ctx)`,
 `refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
 `on_event(event)`, and `destroy()`.
+The Controller passes `{ model = { provider, model } }` to `state(ctx)` when
+the bound service owns the selected model. `ctx.model` is nil when another
+provider is selected. Context-sensitive dashboards can derive selected-model
+details from this per-Controller value while shared service state remains
+provider-wide.
 `lua/neoagent/provider_service.lua` validates services, exposes sorted
 operation metadata, builds operation contexts, and starts operations as
 cancellable Runs. Operations on one service are serialized across Controllers.

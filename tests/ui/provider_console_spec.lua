@@ -122,6 +122,33 @@ describe("neoagent provider console", function()
     controllers = {}
   end)
 
+  it("updates provider state when the selected model changes", function()
+    local value = service({})
+    value.seen_models = {}
+    function value:state(ctx)
+      local selection = ctx and ctx.model
+      self.seen_models[#self.seen_models + 1] = util.copy(selection)
+      return { blocks = { {
+        type = "field",
+        label = "Selected model",
+        value = selection and selection.model or "none",
+      } } }
+    end
+    local opts = options("first", fake_model.new({}))
+    opts.providers.fake.models.second = {}
+    local controller = neoagent.new(opts, { providers = { fake = value } })
+    controllers = { controller }
+
+    assert(controller:prepare())
+    assert.are.equal("first", controller:snapshot().context.provider
+      .state.blocks[1].value)
+    assert(controller:set_model("fake", "second"))
+    assert.are.equal("second", controller:snapshot().context.provider
+      .state.blocks[1].value)
+    assert.are.same({ provider = "fake", model = "second" },
+      value.seen_models[#value.seen_models])
+  end)
+
   it("owns provider operation lifecycle and cancellation", function()
     local pending = {}
     local value = service({

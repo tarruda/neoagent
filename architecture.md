@@ -116,7 +116,8 @@ quota, stale, or refresh-failure status without reconstructing it.
 
 A Provider Service is an explicit runtime value for provider state,
 operations, and optional dynamic catalogs. It is a plain table with `id`,
-`name`, `state()`, and an `operations` table. Optional members include
+`name`, `state(ctx)`, and an `operations` table. The state context carries the
+requesting Controller's selected model as `ctx.model`. Optional members include
 `open_operation`, `get_models()`, `refresh_models(ctx)`,
 `refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
 `on_event(event)`, and `destroy()`.

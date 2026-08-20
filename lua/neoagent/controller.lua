@@ -473,7 +473,10 @@ function M.from_config(options, runtime)
   end
 
   local function safe_state(service)
-    local ok, value = pcall(service.state, service)
+    local selected = state.model_selection
+    local model = selected and selected.provider == service.id
+      and util.copy(selected) or nil
+    local ok, value = pcall(service.state, service, { model = model })
     if not ok then
       notify("provider state failed: " .. tostring(value), vim.log.levels.ERROR)
       return nil
