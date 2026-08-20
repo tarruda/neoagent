@@ -1,84 +1,19 @@
 # Neoagent
 
-A small, hackable LLM and coding-agent toolkit for Neovim.
+A hackable LLM and harness toolkit for Neovim.
 
-![](assets/inspect-project.gif)
+Neoagent streams conversations, reasoning, tool calls, and provider status in a
+floating Markdown UI. It includes coding tools, persistent sessions, multiple
+providers, and optional native sandboxing. Its Models, tools, Sessions,
+Controllers, Renderers, and Views are ordinary Lua values, so each layer can be
+used or replaced on its own.
 
-![](assets/edit-code.gif)
+Requirements: Neovim 0.10+, curl 7.76+, `rg`, and `fd`. ImageMagick's `magick`
+is optional and enables image conversion.
 
-![](assets/local-chat.gif)
+## Setup
 
-## Features
-
-- Stream assistant responses, reasoning, tool calls, usage, and provider status
-  directly in Neovim.
-- Open the provider console with `:NeoagentProvider` to inspect live provider
-  status and run declared provider operations. `<A-p>` toggles it, `<A-l>`
-  opens or focuses it, `<A-h>` returns to the transcript, and `<A-j>` moves
-  to the input.
-- Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
-  local models with llama.cpp, built-in Anthropic, DeepSeek, Z.AI, and OpenCode
-  Go catalogs, or Claude and ChatGPT subscription authentication.
-- Compose Models, tools, executors, Sessions, Controllers, Renderers, and
-  Views as ordinary Lua values with explicit dependencies.
-- Run cancellable agent loops with custom tools, steering messages, retry
-  handling, and context compaction.
-- Use bundled coding tools for file operations, shell commands, and on-demand
-  Neoagent documentation.
-- Experimental sandboxed tools (disabled by default).
-- Persist conversations with branches, linked forks, labels, model state, and
-  context compaction.
-- Work from a floating Markdown UI with separate transcript and input windows.
-- Use bundled Pi and Codex Renderers or inject a custom presentation for the
-  bundled View.
-- Start with **Neo** for coding tasks and **Chat** for tool-free conversation.
-- See `:help neoagent` for the complete configuration and API reference.
-
-## Quick configuration
-
-Choose a provider:
-
-- Run `:NeoagentLogin openai` to store an OpenAI API key, or set
-  `OPENAI_API_KEY` before starting Neovim.
-- Run `:NeoagentLogin anthropic` to store an Anthropic API key, or set
-  `ANTHROPIC_API_KEY` before starting Neovim.
-- For Claude Pro or Max authentication, run `:NeoagentLogin anthropic-plan`,
-  or provide an existing `ANTHROPIC_OAUTH_TOKEN`.
-- Run `:NeoagentLogin deepseek` to store a DeepSeek API key, or set
-  `DEEPSEEK_API_KEY` before starting Neovim.
-- Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
-  before starting Neovim. The credential enables both the metered API and
-  global Coding Plan catalogs.
-- For an OpenCode Go subscription, run `:NeoagentLogin opencode-go` or set
-  `OPENCODE_API_KEY`, then select an `opencode-go` model. The provider console
-  loads the shared 5-hour, weekly, and monthly balances when it first opens
-  and shows an estimated remaining request count for the selected model.
-  Its `models` operation refreshes OpenCode's public Go model catalog.
-- The built-in llama.cpp provider supports anonymous local routers directly.
-  Run its `refresh` operation to discover the default local server, or run
-  `:NeoagentLogin llama` to select another URL or store an API key. Model
-  definitions under `providers["llama.cpp"].models` declare the Hugging Face
-  source, router load parameters, and inference parameters. The console shows
-  pushed router, request, load, and download state. The `catalog` operation
-  opens the model list, `download` and `load` accept definition ids, and the
-  `preset` operation opens a valid server-side `--models-preset` document.
-  Router catalogs use a 60-second cache by default; provider operations
-  publish their fresh results.
-- For a ChatGPT Plus or Pro subscription, run
-  `:NeoagentLogin openai-codex`, complete the browser or device-code login,
-  then select a subscription model with `:NeoagentModel`. The provider console
-  shows account quotas reported by responses. Run its `refresh` operation for
-  reset times, credits, spend controls, and other account limits. Separate
-  operations load aggregate activity, workspace names, and earned reset
-  credits; redemption always asks for confirmation.
-
-API keys are entered through a masked prompt. A stored credential takes
-precedence over its environment variable. `:NeoagentLogout [method]` removes
-the stored credential and leaves environment variables unchanged. Anthropic
-currently bills third-party Claude subscription OAuth requests as extra usage
-per token; they do not consume included Claude plan limits.
-
-Configure an OpenAI model and a mapping:
+Choose a model and map a key:
 
 ```lua
 require("neoagent").setup({
@@ -93,90 +28,47 @@ vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>", {
 })
 ```
 
-For Anthropic API-key billing, use `anthropic`; use `anthropic-plan` with
-Claude Pro/Max OAuth:
+Authenticate with `:NeoagentLogin provider`, or set the provider's environment
+variable before starting Neovim:
+
+| Provider | Login name | Environment variable |
+| --- | --- | --- |
+| OpenAI API | `openai` | `OPENAI_API_KEY` |
+| ChatGPT subscription | `openai-codex` | — |
+| Anthropic API | `anthropic` | `ANTHROPIC_API_KEY` |
+| Claude subscription | `anthropic-plan` | `ANTHROPIC_OAUTH_TOKEN` |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| Z.AI | `zai` | `ZAI_API_KEY` |
+| OpenCode Go | `opencode-go` | `OPENCODE_API_KEY` |
+| llama.cpp | `llama` | — |
+
+Stored credentials take precedence over environment variables. Remove one with
+`:NeoagentLogout provider`.
+
+Use `:NeoagentModel` to choose another model and `:NeoagentProvider` to open
+the active provider's status and operations. The built-in `Neo` Controller is
+configured for coding; `Chat` is a tool-free conversation Controller. Switch
+between them with `:NeoagentCycle`.
+
+## Trust and sandboxing
+
+Before Neo loads project instructions or uses tools, it asks you to trust the
+workspace. Trust allows repository content to influence the agent; tool effects
+are controlled separately by the executor and sandbox.
+
+Native sandboxing is experimental and disabled by default:
 
 ```lua
-default_model = {
-  provider = "anthropic",
-  model = "claude-sonnet-4-6",
-}
+require("neoagent").setup({
+  sandbox = { enabled = true },
+})
 ```
 
-Set `provider = "anthropic-plan"` in the same value for Claude Pro/Max OAuth.
+`:NeoagentToggleSandbox` changes the built-in Neo executor for the current
+editor, and `:NeoagentSandboxInfo` shows the active backend. Linux and Windows
+use bundled native runtimes; macOS uses `/usr/bin/sandbox-exec`. Windows
+sandboxing requires Neovim 0.12+ and one-time elevated setup. The sandbox
+implementation was ported from Codex CLI.
 
-To use DeepSeek by default, replace `default_model` with:
-
-```lua
-default_model = {
-  provider = "deepseek",
-  model = "deepseek-v4-flash",
-}
-```
-
-For Z.AI, use `zai` for the metered API or `zai-coding-plan` for the global
-Coding Plan:
-
-```lua
-default_model = {
-  provider = "zai-coding-plan",
-  model = "glm-5.2",
-}
-```
-
-For an OpenCode Go subscription:
-
-```lua
-default_model = {
-  provider = "opencode-go",
-  model = "gpt-5.6-luna",
-}
-```
-
-## Workspace trust
-
-The built-in **Neo** composition asks for explicit workspace trust before it
-loads project instructions or starts a tool-capable agent. Review the canonical
-workspace path and effective sandbox status, then choose persistent trust,
-trust until Neovim exits, or cancel. **Chat** and direct Lua compositions keep
-their explicit caller-defined policy; custom Controllers can compose the same
-trust policy through `workspace_trust.compose()` and `neoagent.new()` runtime
-injection. Workspace trust does not make repository content, commands, or model
-output safe; native sandboxing and executor policy control runtime effects. See
-`:help neoagent-workspace-trust` for complete behavior and configuration.
-
-## OS-enforced sandbox
-
-Codex ported sandboxing is experimental and disabled by default. The setup flag
-selects its initial editor state:
-
-```lua
-sandbox = {
-  enabled = true,
-}
-```
-
-Use `:NeoagentToggleSandbox` to switch the built-in Neo executor between host
-and sandbox execution and `:NeoagentSandboxInfo` to inspect the active backend,
-isolation level, and capabilities. Runtime changes are editor-local, preserve
-the advertised tools, and can occur while Neo is working.
-
-Linux and Windows use a bundled LuaJIT FFI runtime to invoke native isolation
-APIs; macOS uses `/usr/bin/sandbox-exec`. The sandbox mediates bundled-tool
-file and process operations. Custom tool Lua runs in Neovim and must use the
-injected capabilities to participate.
-
-Neoagent sandbox behavior follows Codex's bundled-tool sandboxing model, with
-platform-specific implementation notes:
-
-- Linux performs namespace setup and seccomp filtering directly in the bundled
-  LuaJIT FFI runtime, without a bubblewrap dependency.
-- Windows drains pipe output from the runner loop with `PeekNamedPipe`,
-  `WaitForSingleObject`, and bounded sleeps, while Codex uses blocking
-  `ReadFile` readers on separate Rust threads.
-- macOS follows Codex's backend shape by compiling a Seatbelt profile and
-  executing it through `/usr/bin/sandbox-exec`.
-
-See `:help neoagent-sandbox` for configuration and platform details. Windows
-sandboxing requires Neovim 0.12+ and an elevated one-time setup command before
-it is enabled.
+See `:help neoagent` for commands, configuration, and the Lua API.
+Implementation boundaries are described in [architecture.md](architecture.md).

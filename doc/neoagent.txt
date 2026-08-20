@@ -1,32 +1,57 @@
-*neoagent.txt*  Minimal, composable LLM and agent primitives for Neovim
+*neoagent.txt*  LLM and coding-agent tools for Neovim
 
 ===============================================================================
 CONTENTS                                                        *neoagent-contents*
 
 1. Introduction                                      |neoagent-introduction|
 2. Setup                                                    |neoagent-setup|
+   Built-in providers                         |neoagent-built-in-providers|
+   Controllers and Views                           |neoagent-controllers|
+   Workspace trust                             |neoagent-workspace-trust|
+   Sandboxing                                            |neoagent-sandbox|
+   AGENTS.md and skills                             |neoagent-context-files|
+   Provider services                             |neoagent-provider-services|
+   Workspace settings                             |neoagent-workspace-settings|
 3. Commands                                              |neoagent-commands|
 4. UI                                                          |neoagent-ui|
+   Renderers                                          |neoagent-renderers|
 5. Core APIs                                              |neoagent-core-api|
 6. Tools and sessions                               |neoagent-composition|
+   Context compaction                              |neoagent-compaction|
 
 ===============================================================================
 1. INTRODUCTION                                           *neoagent-introduction*
 
-Neoagent supplies a streamed Model API, cancellable Runs, and a plain tool
-loop. Sessions, persistence, bundled tools, and the floating UI are optional
-layers. Anthropic Messages, OpenAI-compatible Chat Completions, stateless
-Responses, and the ChatGPT Codex subscription endpoint use curl.
+Neoagent provides streamed Models, cancellable Runs, and a plain agent loop.
+The plugin adds optional tools, persistence, provider management, and a
+floating UI.
 
-Requirements: Neovim 0.10+, curl 7.76+, rg, and fd. ImageMagick's `magick` is
-optional. Run >
+Requirements:
+
+  Neovim 0.10+
+  curl 7.76+
+  rg
+  fd
+
+ImageMagick's `magick` is optional. Run this after installation: >
 
   :checkhealth neoagent
 
 ===============================================================================
 2. SETUP                                                         *neoagent-setup*
 
-Example for llama.cpp: >lua
+A minimal setup selects a model. Neoagent installs no global mappings: >lua
+
+  require("neoagent").setup({
+    default_model = {
+      provider = "openai",
+      model = "gpt-5.4",
+    },
+  })
+
+  vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>")
+<
+For a local OpenAI-compatible endpoint: >lua
 
   require("neoagent").setup({
     providers = {
@@ -45,82 +70,23 @@ Example for llama.cpp: >lua
     default_model = { provider = "local_llama", model = "coder" },
   })
 <
-For a Responses-compatible endpoint with request-time thinking levels: >lua
-
-  providers = {
-    local_llama = {
-      api = "openai-responses",
-      base_url = "http://127.0.0.1:8080/v1",
-      models = {
-        coder = {
-          max_output_tokens = 8192,
-          thinking = {
-            off = {},
-            low = { body = { reasoning = { effort = "low" } } },
-            high = { body = { reasoning = { effort = "high" } } },
-          },
-        },
-      },
-    },
-  }
-<
-BUILT-IN PROVIDERS                              *neoagent-built-in-providers*
-
-The default registry contains these provider IDs:
-
-  openai             OpenAI API; `:NeoagentLogin openai` or `OPENAI_API_KEY`.
-  openai-codex       ChatGPT Codex plan; `:NeoagentLogin openai-codex`.
-  anthropic          Anthropic API; `:NeoagentLogin anthropic` or
-                     `ANTHROPIC_API_KEY`.
-  anthropic-plan     Claude plan OAuth; `:NeoagentLogin anthropic-plan` or
-                     `ANTHROPIC_OAUTH_TOKEN`.
-  deepseek           DeepSeek API; `:NeoagentLogin deepseek` or
-                     `DEEPSEEK_API_KEY`.
-  zai                Z.AI API and Coding Plan; `:NeoagentLogin zai` or
-                     `ZAI_API_KEY`.
-  zai-coding-plan    Z.AI Coding Plan models using the same `zai` credential.
-  opencode-go        OpenCode Go subscription; `:NeoagentLogin opencode-go`
-                     or `OPENCODE_API_KEY`.
-  llama.cpp          Local llama.cpp router; `:NeoagentLogin llama` stores the
-                     server URL and optional API key.
-
-`:NeoagentModel` lists the models currently available from configured and
-authenticated providers. The `openai-codex`, `opencode-go`, and `llama.cpp`
-providers ship Provider Services; `:NeoagentProvider` opens their consoles.
-
-Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
-credentials take precedence over environment variables. `:NeoagentLogout`
-removes a stored credential and restores any matching environment source.
-Credential mutations use a lock file with a 30-second acquisition timeout and
-two-minute stale recovery. Active mutations refresh the lock timestamp. Lock
-permission and filesystem failures return immediately. Low-level compositions
-may customize `lock_timeout_ms`, `lock_poll_ms`, and `lock_stale_ms` through
-`require("neoagent.auth.store").new(path, opts)`.
-
-Codex provider diagnostics default to
-`stdpath("state") .. "/neoagent/codex.log"`. Configure or disable them with: >lua
-
-  providers = {
-    ["openai-codex"] = {
-      diagnostics = { path = vim.fn.stdpath("state") .. "/my-codex.log" },
-      -- diagnostics = false,
-    },
-  }
-<
-Diagnostic records exclude credentials, request and response bodies, and
-conversation content. Rotation and append operations are serialized when
-multiple Neovim processes use the same diagnostic path.
-
-The important options are: >lua
+The main options and defaults are: >lua
 
   {
-    name = nil,                -- Controller label and settings scope
+    name = nil,
     default_registry = true,
     providers = {},
     apis = {},
     auth = { path = ..., methods = {} },
     default_model = nil,
     default_thinking_level = "medium",
+    system_prompt = nil,
+    tools = nil,
+    shell_timeout = 300,
+    execute_tool = nil,
+    interaction = nil,
+    view = nil,
+
     retry = {
       enabled = true,
       max_retries = 3,
@@ -132,15 +98,9 @@ The important options are: >lua
       keep_recent_tokens = 20000,
       run = nil,
     },
-    system_prompt = nil,       -- nil uses the built-in coding prompt
-    tools = nil,               -- nil uses the coding preset
-    shell_timeout = 300,       -- seconds; false disables the default
-    execute_tool = nil,
-    interaction = nil,
-    view = nil,                -- bundled Window's View constructor
     sandbox = {
-      enabled = false,        -- initial editor state
-      profile = nil,           -- table or function(default, ctx)
+      enabled = false,
+      profile = nil,
     },
     workspace_trust = {
       path = stdpath("state") .. "/neoagent/trust.json",
@@ -158,13 +118,13 @@ The important options are: >lua
     },
     persistence = {
       enabled = true,
-      workspace_settings = true, -- name-scoped model/thinking, shared UI
+      workspace_settings = true,
       directory = stdpath("state") .. "/neoagent/workspaces",
     },
     ui = {
-      style = "codex",       -- bundled pi/codex selector
-      renderer = nil,         -- explicit Renderer; takes precedence
-      position = "center",    -- auto/left/right/top/bottom/center
+      style = "codex",
+      renderer = nil,
+      position = "center",
       width = nil,
       height = nil,
       margin = 1,
@@ -175,46 +135,105 @@ The important options are: >lua
       wrap_cards = false,
       show_thinking = true,
       provider_console = {
-        position = "top", -- top, right, or bottom
+        position = "top",
         width = 0.4,
         height = 0.35,
       },
-      completion = {
-        sources = { "files" },
-      },
+      completion = { sources = { "files" } },
       border = "rounded",
       mappings = {},
     },
   }
 <
+Provider and model tables recursively override the built-in registry. Assign
+`false` to remove an entry, or set `default_registry = false` to use only
+your own providers. A model may set `api` to override its provider's adapter.
+Built-in adapter names are `openai-completions`, `openai-responses`,
+`openai-codex-responses`, and `anthropic-messages`.
+
+Providers, models, and individual Model calls may set `request_opts` to a
+table or callback. The layers merge in that order across `url`, `headers`,
+and `body`. Header names are case-insensitive, maps merge recursively, and
+lists replace inherited lists.
+
+A model's `thinking` table maps levels to request options. Levels are ordered
+`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+Missing levels are unavailable; `false` removes an inherited level. Selecting
+a model starts at `default_thinking_level`, clamped to a supported value.
+
+`input` lists accepted message modalities: `"text"`, `"image"`, or both.
+Built-in adapters replace unsupported images in the request copy with a text
+placeholder. Sessions keep the original image block.
+
+The built-in system prompt follows the active tools and includes the working
+directory. Set `system_prompt` to a string or callback to replace it. The
+callback receives the Session, Model, Workspace, submitted prompt, tools, and
+discovered resources. Configured AGENTS.md and skill context is appended to
+the result.
+
+BUILT-IN PROVIDERS                              *neoagent-built-in-providers*
+
+The default provider IDs are:
+
+  openai             OpenAI API; login `openai` or `OPENAI_API_KEY`.
+  openai-codex       ChatGPT subscription; login `openai-codex`.
+  anthropic          Anthropic API; login `anthropic` or
+                     `ANTHROPIC_API_KEY`.
+  anthropic-plan     Claude subscription; login `anthropic-plan` or
+                     `ANTHROPIC_OAUTH_TOKEN`.
+  deepseek           DeepSeek API; login `deepseek` or `DEEPSEEK_API_KEY`.
+  zai                Z.AI API; login `zai` or `ZAI_API_KEY`.
+  zai-coding-plan    Z.AI Coding Plan using the `zai` credential.
+  opencode-go        OpenCode Go; login `opencode-go` or
+                     `OPENCODE_API_KEY`.
+  llama.cpp          Local llama.cpp router; login `llama`.
+
+Use `:NeoagentLogin [method]` to store a key or start OAuth.
+`:NeoagentLogout [method]` removes the stored credential. Stored credentials
+take precedence over environment variables.
+
+Credentials live at `stdpath("state") .. "/neoagent/auth.json"`. The store
+uses atomic writes, private permissions, and a cross-process lock. Listing
+credentials returns IDs and types only.
+
+Codex diagnostics default to
+`stdpath("state") .. "/neoagent/codex.log"`. They contain bounded transport
+metadata and exclude credentials, request and response bodies, and conversation
+content. Configure or disable the sink under the provider: >lua
+
+  providers = {
+    ["openai-codex"] = {
+      diagnostics = false,
+      -- diagnostics = { path = "/private/path/codex.log" },
+    },
+  }
+<
 CONTROLLERS AND VIEWS                                *neoagent-controllers*
 
-`setup(opts)` constructs the built-in `Neo` and `Chat` Controllers, installs
-their shared default Window, and returns `Neo`. `Neo` uses the configured
-system prompt, resources, and tools. `Chat` shares the model and provider
-configuration while using an empty system prompt and tool list; AGENTS.md and
-skill discovery are disabled for it. Commands and top-level convenience
-functions target the active Controller in that Window. `new(opts[, runtime])`
-constructs an independent Controller. The optional runtime object explicitly
-injects higher-level policies such as `workspace_trust` and shared
-`providers`; it is separate from the reusable Controller configuration:
->lua
+`setup(opts)` creates the built-in Neo and Chat Controllers in one Window and
+returns Neo. Neo uses the coding prompt, resources, and tools. Chat has an empty
+system prompt and tool list. Top-level functions and commands target the active
+Controller.
+
+`new(opts[, runtime])` creates an independent Controller. Runtime policies,
+such as workspace trust and shared Provider Services, are passed separately
+from configuration: >lua
 
   local neoagent = require("neoagent")
-  local coding = neoagent.setup({ name = "Coding" })
-  local reviewer = neoagent.new({
+  local coding = neoagent.setup()
+  local review = neoagent.new({
     name = "Review",
     tools = require("neoagent.tools").read_only(),
     persistence = { enabled = false },
-    system_prompt = "Review without editing.",
+    system_prompt = "Review this project.",
   })
   local window = neoagent.new_window({
-    controllers = { coding, reviewer },
+    controllers = { coding, review },
     ui = { position = "left" },
   })
   neoagent.set_default_window(window)
 <
-Controller methods are: >lua
+Controller methods include: >lua
 
   controller:prepare()
   controller:send(text)
@@ -223,12 +242,12 @@ Controller methods are: >lua
   controller:compact([instructions])
   controller:stop()
   controller:new_session()
-  controller:resume([path[, on_resumed]])
+  controller:resume([path[, callback]])
   controller:branch(entry_id[, summary])
-  controller:select_branch([on_selected])
+  controller:select_branch([callback])
   controller:fork([entry_id[, position]])
-  controller:select_fork([on_selected])
-  controller:select_model([on_selected])
+  controller:select_fork([callback])
+  controller:select_model([callback])
   controller:set_model(provider, model)
   controller:available_thinking_levels()
   controller:get_thinking_level()
@@ -254,306 +273,91 @@ Controller methods are: >lua
   controller:is_authenticating()
   controller:destroy()
 <
-`send` starts an interaction while idle and queues steering while working.
-Controllers have independent Sessions, model selections, active toolsets,
-steering queues, and Runs. A toolset is a plain `{ tools = {...},
-execute_tool = function(...) ... end }` table whose executor may be omitted to
-call each tool directly. `set_toolset()` atomically replaces both values
-between Runs and returns the previous toolset; `get_toolset()` returns a copy.
-The Controller snapshots the selected toolset
-when a Run begins, and its construction configuration remains unchanged.
-Controllers using the same persistence directory share workspace data.
+`send()` starts a turn while idle and queues steering while a Run is active.
+Each Controller owns its Session, draft, model selection, toolset, steering
+queue, and Run. `set_toolset()` replaces the `{ tools, execute_tool }` pair
+between Runs and returns the previous value. A Run keeps the toolset it started
+with.
 
-Window Controllers require unique, non-empty names. A Controller name is its
-View label and workspace-settings scope. Renaming it selects a fresh scope;
-matching names in separate Windows share one.
+A Window owns one View and requires unique, non-empty Controller names. Its
+public operations are `open`, `close`, `toggle`, `is_open`, `active`,
+`controllers`, `select`, `cycle`, `set_position`, `set_renderer`,
+`set_transcript_style`, `set_input`, `get_input`, `view`,
+`rendered_controller`, `input_history`, `add_input_history`,
+`select_input_history`, `set_provider_console`,
+`toggle_provider_console`, `provider_console_open`, and `destroy`.
+Inactive Controllers continue running.
 
-A Window owns one View and selects an attached Controller. Its operations are
-`open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
-`cycle`, `set_position`, `set_renderer`, `set_transcript_style`, `set_input`,
-`get_input`, `view`, `rendered_controller`, `input_history`, `add_input_history`,
-`select_input_history`, `set_provider_console`, `toggle_provider_console`,
-`provider_console_open`, and `destroy`. It retains input drafts per Controller
-and shares workspace input history. `view()` returns the owned View after its
-creation, and `rendered_controller()` identifies the Controller currently
-presented by that View. Selection restores the active transcript and draft
-while inactive Controller Runs continue. When preparation of a visible target
-fails, the current Controller, subscription, transcript, and draft remain
-active. A Controller's initial Session is created on its first send.
+`set_default_window(window)` installs the command-facing Window.
+`default_window()` and `default()` return that Window and its active
+Controller. `set_default(controller)` creates a one-Controller default
+Window. Replacing a setup-owned composition destroys the previous owned
+Controllers; an active owned Run blocks another `setup()`.
 
-`set_default(controller)` points commands and top-level functions at an
-existing Controller and returns the previous active Controller.
-`set_default_window(window)` installs an assembled Window and returns the
-previous Window. `default()` and `default_window()` return the active Controller
-and command-facing Window. `set_position(position)` updates that Window,
-`select_position()` opens its position selector, and
-`set_renderer(renderer)` installs an explicit Renderer, while
-`set_transcript_style(style)` resolves and installs a bundled Renderer. Both
-operations redraw the live transcript and active dialog. Another
-`setup()` destroys the
-Controllers owned by an earlier `setup()` call. An active Run on either owned
-Controller blocks the replacement.
+`controller:subscribe(callback)` publishes `messages`, `context`, `event`,
+and `finish` updates and returns an unsubscribe function. `snapshot()`
+provides the current state to a newly attached consumer.
 
-`controller:subscribe(callback)` publishes `messages`, `context`, `event`, and
-`finish` updates and returns an unsubscribe function. `controller:snapshot()`
-returns the current messages, context, pending events, and result for a newly
-attached consumer.
+A custom View factory receives the resolved UI configuration, its Window,
+callbacks for user actions, and active-tool resolution. It returns a passive
+View implementing `open`, `close`, `is_open`, `destroy`, `get_input`,
+`set_input`, `set_messages`, `set_context`, `apply`, and `finish`.
+Renderer replacement, dialogs, and provider console support use the optional
+`set_renderer`, `set_dialog`, `set_provider`, and `set_provider_open`
+methods.
 
-The bundled Window resolves `config.renderer` and passes that explicit value in
-the View configuration. The `view` option is a factory receiving `config`,
-`window`, `on_submit`,
-`on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
-`on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
-`on_resume_session`, `resolve_tool`, `on_dialog_action`,
-`on_dialog_dismiss`, `on_provider_action`, and `on_provider_close`.
-`resolve_tool(name)` returns the active Controller's tool
-with that name, allowing a custom View to consume optional tool presentation
-callbacks. `on_provider_action(id, args)` starts the active Controller's
-provider operation, and `on_provider_close()` reports console dismissal. A View used
-by a Window with a dialog source implements `set_dialog(snapshot)`. The
-factory returns a passive View with `open`, `close`,
-`is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
-`apply`, and `finish`.
-
-The bundled View also implements `set_renderer(renderer)`,
-`set_provider(snapshot)`, and `set_provider_open(open)`. A custom View may
-implement the Renderer method to support live Renderer replacement and the
-provider methods to present the console; a Window reports a UI error when its
-active custom View cannot provide them.
-
-An executor can inject an optional `ctx.dialog` capability and attach its
-source to a Window:
->lua
-
-  local dialogs = require("neoagent.dialog").new()
-  local opts = controller:config()
-  opts.execute_tool = require("neoagent.dialog").wrap(
-    dialogs, opts.execute_tool)
-  controller = require("neoagent").new(opts)
-  local window = neoagent.new_window({
-    controllers = { controller },
-    dialogs = dialogs,
-  })
-
-  local response = ctx.dialog:show({
-    placement = "transcript",
-    title = "Deploy release",
-    body = "Deploy release 1.2.3 to production?",
-    actions = {
-      { id = "deploy", label = "deploy", key = "y" },
-      { id = "cancel", label = "cancel", key = "n" },
-    },
-  }):await()
-<
-`show()` returns a cancellable Run whose successful result contains the
-caller-defined `action`. Dialogs use FIFO order. Each action supplies its own
-key and label. An optional `controller = "Review"` scopes presentation to the
-matching Controller in a Window. Dialog capabilities created by `wrap()` use
-the calling agent context's Controller name when the request omits one. A
-scoped dialog stays unresolved and hidden while another Controller is active,
-then returns when its owner is selected.
-`placement = "transcript"` presents the body and actions in the transcript
-surface. `placement = "float"` opens a focused floating surface;
-an optional `input = { label, value, multiline }` adds editable text and the
-result includes `input`. A request fails when no presenter is attached.
-Presenter loss cancels pending dialogs and sets
-`presenter_unavailable = true`. While a dialog surface owns focus,
-`ui.mappings.focus_input` and `ui.mappings.card_next` move focus to the input
-window. Action keys keep priority when an action reuses one of those lhs.
-The injected capability expires with the tool
-call. Headless compositions can omit it.
+Executors may publish dialogs through an injected `ctx.dialog` capability.
+`dialog:show(request)` returns a cancellable Run. Requests choose
+`placement = "transcript"` or `"float"`, define actions, and may include an
+editable input. Dialogs are FIFO and may be scoped to a Controller name.
 
 WORKSPACE TRUST                                  *neoagent-workspace-trust*
 
-The built-in `setup()` composition protects Neo with a workspace trust check
-when Neo has tools, project AGENTS.md discovery, or project skill discovery.
-Chat is tool-free with project discovery disabled and never requests trust.
-`neoagent.new()`, direct Models, `agent.run()`, Sessions, custom Controllers,
-and custom Windows receive only the policies explicitly composed by their
-caller.
+The built-in Neo Controller asks for trust before it loads project resources
+or starts a tool-capable Run. Chat and direct Lua compositions use only
+policies supplied by their caller.
 
-The trust target is the canonical root of the current Git worktree when a
-`.git` marker is present in the workspace or an ancestor. Outside Git it is
-the canonical workspace cwd. Decisions match that exact target. Symlink aliases
-for one target share a decision, moved checkouts receive a fresh prompt, and
-Windows matching is case-insensitive.
-
-Neo requests trust when its Controller first becomes active and visible. Chat
-can be opened without a prompt; selecting Neo requests trust at that point.
-Every new Session workspace and resumed Session workspace is checked again.
-Direct sends while the Window is closed also fail closed and open the prompt;
-a hidden Neo Controller is selected before its prompt appears. Selecting Chat
-hides an unresolved trust prompt without resolving it, and selecting Neo
-restores the same prompt.
-
-The transcript prompt shows the canonical target, warns that repository content
-may contain prompt injection, lists project resources and tool capabilities,
-and reports whether tools use the native sandbox, use the host because
-sandboxing is disabled, or use the host because activation failed. Its actions
-are:
-
-  t  Trust workspace. Persist the decision.
-  s  Trust until Neovim exits. Keep the decision in process memory.
-  q  Cancel. Close the Neoagent Window and preserve its draft.
-
-Enter has no trust action. Closing the Neoagent Window leaves the decision
-unresolved and writes no decision. Accepting trust leaves a blocked draft for
-explicit submission; it does not start a Run. Acceptance immediately re-runs
-the protected Controller's preparation, resolving the configured default model
-so the displayed model matches the configuration before the first send.
-
-The Controller enforces trust before it creates a Session, selects a Model,
-discovers project AGENTS.md or skills, or starts a Run. A blocked operation
-returns a bounded `workspace_trust` error. Read, validation, lock, and write
-failures leave the target unresolved and report a local error.
-
-Custom compositions use the same policy and View composition as built-in Neo:
->lua
-
-  local neoagent = require("neoagent")
-  local dialogs = require("neoagent.dialog").new()
-  local opts = neoagent.default():config()
-  opts.name = "Review"
-
-  local trust_view, policy =
-    require("neoagent.workspace_trust").compose(opts, {
-      dialogs = dialogs,
-      -- Pass the status returned by sandbox composition when applicable.
-      sandbox_status = { enabled = false, active = false },
-    })
-  local controller = neoagent.new(opts, { workspace_trust = policy })
-  local window = neoagent.new_window({
-    controllers = { controller },
-    dialogs = dialogs,
-    view = trust_view,
-  })
-  policy:attach_window(window, controller)
-<
-`compose()` reads the trust path from `opts.workspace_trust.path`, returns a
-View factory and policy, and leaves `opts` unchanged. The same dialog source is
-passed to the composition and Window. `attach_window()` binds prompt activation,
-cancellation behavior, and post-acceptance Controller preparation to the
-protected Controller. A caller can pass an explicit `path`, `sandbox_status`,
-`notify`, `store`, or process `session` table to `compose()`.
-`workspace_trust.new()` and `workspace_trust.view()` remain available for
-lower-level compositions.
+The trust target is the canonical Git worktree root, or the canonical working
+directory outside Git. The prompt offers persistent trust, trust until Neovim
+exits, and cancel (`t`, `s`, and `q`). Accepting trust leaves the draft ready
+for explicit submission. Closing the Window leaves the decision unresolved.
 
 Persistent decisions default to
-`stdpath("state") .. "/neoagent/trust.json"`. Configure the location or disable
-the built-in policy explicitly with: >lua
+`stdpath("state") .. "/neoagent/trust.json"`. The file contains canonical
+trusted paths and is updated atomically with private permissions. Remove a path
+from that file to revoke trust. Configure another path or disable the built-in
+policy with: >lua
 
   workspace_trust = { path = "/private/path/trust.json" }
   -- workspace_trust = false
 <
-The store is a deterministic versioned JSON document containing only positive
-canonical targets: >json
+Trust allows repository content to influence Neo. Executor policy and sandbox
+configuration control tool effects.
 
-  {
-    "trusted": ["/canonical/path/to/repository"],
-    "version": 1
-  }
-<
-Reads create no file or directory. Updates are serialized across Neovim
-processes, merge while holding a same-directory lock, and atomically rename a
-private temporary file. Directories created by the store use mode `0700`; files
-use mode `0600`. Process-lifetime decisions are shared by built-in Controllers
-and `setup()` replacements until Neovim exits. To revoke trust, remove a target
-from the inspectable JSON file or remove the file.
-
-Workspace trust records informed consent for repository content to influence
-Neo. Repository files, command output, and model output remain untrusted
-content. Native sandboxing and `execute_tool` decorators provide separate
-runtime controls.
+Custom compositions can use `neoagent.workspace_trust.compose(opts, runtime)`.
+It returns a View factory and policy. Pass the policy to
+`neoagent.new(opts, { workspace_trust = policy })`, pass the View and shared
+dialog source to the Window, then call `policy:attach_window(window,
+controller)`.
 
 SANDBOXING                                                 *neoagent-sandbox*
 
-The command-facing Neo Controller can compose native sandbox enforcement
-around its tools: >lua
+Native sandboxing is experimental and disabled by default. Enable its initial
+state for the built-in Neo Controller with: >lua
 
   require("neoagent").setup({
-    sandbox = {
-      enabled = true,
-    },
+    sandbox = { enabled = true },
   })
 <
-Sandboxing is experimental and defaults to disabled. `sandbox.enabled`
-selects the initial editor state of the built-in Neo composition. Runtime
-changes are editor-local and leave configuration unchanged:
+Use `:NeoagentToggleSandbox` to change the current editor state and
+`:NeoagentSandboxInfo` to inspect the backend and capabilities. Each tool call
+keeps the mode it started with. Runtime changes preserve the tool list and
+schemas.
 
->lua
-  require("neoagent").set_sandbox_enabled(true)
-  require("neoagent").toggle_sandbox()
-<
-Use >
-
-  :NeoagentToggleSandbox
-  :NeoagentSandboxInfo
-<
-to switch Neo's executor between host and sandbox execution and inspect the
-active backend, isolation level, and available capabilities. The command can
-run while Neo has an active Run. Each tool call reads the current state when it
-starts; an in-flight call retains its selected execution mode until it ends.
-The tool list, schemas, executor identity, and sandbox guidance remain stable
-across runtime changes. The command targets the built-in Neo Controller when
-Chat is selected. Calling `setup()` applies the configured initial state again.
-The command-facing Window owns a generic dialog source in either state, so a
-custom `view` used by `setup()` implements the documented
-`set_dialog(snapshot)` method.
-
-Successful activation wraps only the built-in Neo Controller. Chat remains
-tool-free. Linux and Windows use bundled standalone LuaJIT FFI runtimes to
-invoke native isolation APIs. Linux applies namespaces and seccomp; Windows
-applies restricted tokens, ACLs, Job Objects, and WFP; macOS delegates
-isolation to `/usr/bin/sandbox-exec`. `neoagent.new()` and direct Controller
-constructors do not interpret the setup flag; custom compositions can pass a
-plain toolset through `require("neoagent.sandbox.composition").compose()` and
-install the result with `controller:set_toolset()`:
->lua
-  local dialogs = require("neoagent.dialog").new()
-  local sandboxed, status =
-    require("neoagent.sandbox.composition").compose(
-      controller:get_toolset(),
-      { enabled = true },
-      { dialogs = dialogs })
-  if sandboxed then controller:set_toolset(sandboxed) end
-<
-Attach `dialogs` to the custom Window to present escalation requests. The
-returned status reports activation requirements and capabilities.
-
-Custom compositions that require runtime switching can install one stable
-toolset and retain its runtime control: >lua
-
-  local toolset, status, dialogs, sandbox =
-    require("neoagent.sandbox.composition").switchable(
-      controller:get_toolset(),
-      { enabled = false })
-  controller:set_toolset(toolset)
-  sandbox:set_enabled(true)
-<
-`set_enabled()` returns the current status and can run while the Controller is
-working. A disabled switchable composition delays its platform probe until the
-first activation request.
-
-Activation failures include their setup stage and reason. When activation
-requirements fail, Neo's stable executor uses the configured host path. The
-workspace trust prompt includes the failure and effective host execution
-status. With `workspace_trust = false`, a warning is shown once when an
-initially enabled Neo is first displayed. Runtime activation requests report
-failures immediately. Successful activation reports full or degraded isolation
-through |:NeoagentSandboxInfo|. Failures after successful activation fail
-closed as tool errors and never retry through the host executor.
-
-The default profile provides a read-only host filesystem, grants writes within
-a bounded Workspace root and the shared host temporary roots, keeps
-`<workspace>/.git` read-only, restricts networking, and clears the environment
-to an explicit inherited set. POSIX systems grant the active host temporary
-directory and canonical `/tmp`. Windows uses the managed `shared-tmp`
-directory beneath its protected sandbox state. The profile points `TMPDIR`,
-`TMP`, and `TEMP` at the selected directory. Files created there remain
-visible to later sandbox invocations and host processes until they are
-removed. Read-only access includes host files outside the Workspace; add deny
-entries for sensitive paths. Override the profile with a table merged over
-the default: >lua
+The default profile grants read-only host access, writes within the Workspace
+and shared temporary directory, read-only access to `.git`, restricted
+networking, and a small inherited environment. Override it with a table or a
+callback: >lua
 
   sandbox = {
     enabled = true,
@@ -569,801 +373,276 @@ the default: >lua
     },
   }
 <
-Lists replace their defaults. Entry access is `read`, `write`, or `deny`;
-paths are canonical absolute paths and writable roots must exist. The
-filesystem default is `read`. `network` is `restricted` or `enabled`.
+Filesystem access is `read`, `write`, or `deny`; paths are canonical and
+absolute. `network` is `restricted` or `enabled`. Lists replace their
+defaults. A profile callback receives a copy of the default profile and the
+tool context, then returns the complete profile.
 
-Windows paths may use drive roots or UNC shares. Profile and policy comparison
-is case-insensitive, environment variable names share Windows casing
-semantics, and device paths, alternate data streams, reserved device names,
-and non-canonical paths are rejected. Windows sandboxing requires Neovim
-0.12 or newer.
+Linux uses namespaces and seccomp. macOS uses
+`/usr/bin/sandbox-exec`. Windows uses restricted accounts, ACLs, Job Objects,
+and WFP and requires Neovim 0.12+. Provision Windows once from an elevated
+PowerShell in the plugin checkout: >
 
-The default state directory is
-`<stdpath("state")>/neoagent/windows-sandbox`. Set
-`NEOAGENT_WINDOWS_SANDBOX_STATE` before starting Neovim to select another
-directory. From an elevated PowerShell in the plugin checkout, provision the
-directory once: >
-
-  nvim --headless -u NONE -i NONE -n \
-    -l scripts/sandbox_windows_runtime.lua -- --setup
+  nvim --headless -u NONE -i NONE -n -l scripts/sandbox_windows_runtime.lua -- --setup
 <
-Setup creates dedicated offline and online local accounts, stores random
-passwords with current-user DPAPI in an owner-only state directory, and
-installs persistent identity-scoped Windows Filtering Platform rules for the
-offline account. Each state directory owns random filter identifiers, so
-separate Neoagent installations do not replace one another's filters. Setup
-creates `<state-directory>/shared-tmp` as the only default Windows temporary
-write root. A state file is accepted only by the Windows identity that created
-it.
+Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to choose another
+state directory.
 
-Activation runs a live runtime probe. The probe verifies a fresh restricting
-SID, filesystem write and deny rules, account-authenticated runner launch,
-private-desktop process launch, Job Object supervision, shared
-temporary-directory writes, and blocked offline loopback networking. Any
-missing guarantee leaves the backend inactive.
+Custom tools participate when they route file and process effects through
+`ctx.fs` and `ctx.process`. Tool Lua itself runs in Neovim.
 
-Each Windows operation compiles the resolved profile into writable ACL roots
-and read/write deny carveouts. Existing carveouts are opened without following
-their final reparse point and checked by filesystem identity. A missing read or
-deny child beneath a writable root is protected by a runtime-owned directory
-placeholder when its parent exists. The placeholder identity is journaled and
-only that exact object is removed after the call. A write entry below a deny
-entry cannot be represented and fails before execution. A nested write below
-a read entry becomes a separate writable ACL root. The runtime canonicalizes
-the plan again, rejects overlap with its protected state
-directory, creates an ephemeral restricting SID, and removes the account and
-restricting-SID ACEs when the operation ends. Parent write grants omit
-delete-child authority so a protected child cannot be removed through its
-parent. A state-directory-scoped Windows mutex serializes ACL leases. The
-owner-only state journals every transient ACL and placeholder before mutation,
-and the next operation reconciles the journal after interruption.
-
-`network = "restricted"` selects the WFP-blocked offline account.
-`network = "enabled"` selects the online account. The owner runtime launches an
-internal runner with `CreateProcessWithLogonW` over account-ACL-scoped named
-pipes and verifies both pipe peer process IDs.
-That runner creates a restricted primary token and starts the requested
-process with `CreateProcessAsUserW` on a fresh private desktop. The runner and
-target both start suspended and enter nested kill-on-close Job Objects before
-their first instruction. Cancelling or timing out the runtime terminates both
-stages and the complete process tree. Protocol handles are excluded from
-target inheritance. Direct file operations impersonate the restricted token
-and use the same framed, binary-safe protocol.
-
-On Linux, missing read-only and denied paths beneath a writable entry remain
-absent from the host filesystem. The namespace supervisor mediates creation
-and removal while a sandboxed process runs, including open, directory, link,
-rename, node, and Unix-socket operations. A path created concurrently by a
-host process keeps the same creation and removal protection and is never
-removed by sandbox cleanup.
-
-Linux staging roots are created atomically beneath a host runtime directory
-covered by the sandbox's private `/run` or `/dev`. Linux verifies each root's
-identity before use and cleanup and fails closed when a filesystem profile
-exposes every staging directory or a root pathname is missing, linked, or
-substituted.
-
-A callback can calculate the complete profile per tool call: >lua
-
-  sandbox = {
-    enabled = true,
-    profile = function(default, ctx)
-      default.filesystem.entries[#default.filesystem.entries + 1] = {
-        path = "/absolute/read-only/path",
-        access = "read",
-      }
-      return default
-    end,
-  }
-<
-Bundled file and subprocess operations use the selected backend and the
-same resolved profile. Tool Lua runs in Neovim, so custom tools participate in
-the sandbox only when they route effects through `ctx.fs` and `ctx.process`.
-Subprocess exit codes retain each tool's normal success or error semantics.
-Nonzero exits receive restricted-execution guidance when bounded output
-contains recognized sandbox-denial text, or when Linux reports `SIGSYS`.
-Explicit sandbox policy denials and backend failures receive sandbox-owned
-errors.
-
-Sandbox denials are ordinary `isError` tool results. They tell the agent to
-retry the exact call only when necessary by adding: >json
+A denied call can request one host execution by adding these tool arguments:
+>json
 
   {
     "options": {
       "require_escalation": true,
-      "escalation_justification": "why unrestricted execution is necessary"
+      "escalation_justification": "why host execution is required"
     }
   }
 <
-The sandbox then presents an approval dialog. Approval grants host filesystem
-and process capabilities for that one call. Denial returns an error without
-running the unrestricted call. Escalation is denied when no dialog presenter
-is available.
+Approval grants host capabilities for that call. Shell approvals may remember
+a literal argument-token prefix for the current Session. Remembered rules are
+held in memory and apply only to later calls that explicitly request
+escalation. Compound or dynamic shell syntax always prompts.
 
-The built-in switchable toolset appends a stable sandbox-controls section to
-Neo's system prompt whenever Neo has tools. It explains that the editor selects
-restricted or host execution per call and tells the agent to request escalation
-with `options.require_escalation = true` and an
-`options.escalation_justification` when restricted execution blocks required
-work. The stable tool schemas always include those fields. Host execution
-strips them and calls the configured executor directly. A custom
-`system_prompt` string or callback receives the section appended after the
-composed agents and skills sections. Static `composition.compose()` toolsets
-append platform-specific guidance for their active backend.
+Activation failures report the failed stage. An initial failure uses the host
+executor and is shown in the workspace trust prompt or a UI warning. Failures
+after successful activation return tool errors and do not fall back to host
+execution.
 
-Shell approvals whose command starts with at least one literal argument token
-also offer `yes and don't ask again for commands starting with`. Selecting it
-opens a focused floating editor containing the current command. `<Enter>`
-accepts the edited prefix and `<C-c>` returns to the approval dialog.
-Accepted rules are argument-token prefixes bound to the active shell, scoped
-to the active Session, and held only in memory. They apply only to later
-shell calls that explicitly request escalation. Creating, resuming, or
-forking a Session clears the remembered rules.
+Custom compositions can use
+`require("neoagent.sandbox.composition").compose(toolset, config, runtime)`.
+Use `.switchable()` when the caller needs runtime changes. Both return the
+effective toolset and sandbox status; switchable composition also returns its
+dialog source and runtime control.
 
-The option supports POSIX shells, `cmd.exe`, and PowerShell. Any literal
-argument-token prefix of the current command can be remembered; the offered
-tokens end at the first unquoted operator, redirection, comment,
-substitution, expansion, newline, or control character. An edited prefix
-containing such syntax is rejected and remains in the floating editor with an
-explanation. A remembered rule only matches commands that form one literal
-argument vector, so a prefix is never followed by shell syntax that chains
-further commands: compound and dynamic commands always prompt. Token matching
-preserves argument boundaries, so `git status` does not match
-`git status-danger`; quoted literal operator text remains an ordinary
-argument.
-
-The low-level platform-neutral API has the process-runner result shape: >lua
-
-  local result = require("neoagent.sandbox").sandbox_exec(argv, {
-    profile = profile,
-    cwd = cwd,
-    env = env,
-    stdin = input,
-    capture = true,
-    timeout_ms = 30000,
-    kill_grace_ms = 1000,
-    on_output = on_output,
-  })
-<
-It returns `code`, `signal`, `stdout`, `stderr`, `output`, and `timed_out`.
-Unsupported platforms and unavailable native requirements raise
-`sandbox_unavailable`.
-
-Controllers automatically replay assistant turns after transient transport and
-provider failures. The default retry delays are 2, 4, and 8 seconds. Set
-`retry.enabled = false`, or configure `retry.max_retries` and
-`retry.base_delay_ms`, to change this policy. Backoff is cancellable with the
-normal interrupt action. Failed partial assistant output is removed from the
-active branch before replay, while the Session retains it as inactive history.
-HTTP authentication, invalid-request, quota, billing, and context-window
-failures fail immediately; context-window failures follow the compaction
-recovery path. A completion-transition failure returns the Controller to idle
-and publishes a Controller error containing the transition failure message.
-
-The final model registry composes the defaults with `providers`. Provider and
-model tables recursively override matching defaults. Use `false` to remove a
-default provider or model: >lua
-
-  require("neoagent").setup({
-    providers = {
-      openai = {
-        api_key = function() return vim.env.MY_OPENAI_API_KEY end,
-        models = {
-          ["gpt-5.4"] = {
-            thinking = {
-              minimal = false,
-              high = { body = { reasoning = { effort = "high" } } },
-            },
-          },
-          ["gpt-4"] = false,
-        },
-      },
-      ["openai-codex"] = false,
-    },
-  })
-<
-Set `default_registry = false` to use only the user `providers` table. A
-provider with `auth` or `api_key` is available when its credential resolves;
-providers without either are always available. The built-in catalog is
-returned by `require("neoagent.registry").defaults()`.
-
-A model entry may declare `api` to override its provider's default adapter.
-This supports providers whose catalog shares authentication and a base URL
-while individual models use different wire protocols. The effective API
-selects the built-in or configured factory; provider and model `request_opts`
-remain independent merge layers: >lua
-
-  providers = {
-    mixed = {
-      api = "openai-completions",
-      base_url = "https://example.test/v1",
-      models = {
-        chat = {},
-        messages = { api = "anthropic-messages" },
-      },
-    },
-  }
-<
-
-The built-in prompt follows the active tools and includes the current working
-directory. A string replaces it completely. Append instructions by composing
-the exported default in a callback: >lua
-
-  local default_prompt = require("neoagent.system_prompt").default
-
-  require("neoagent").setup({
-    system_prompt = function(context)
-      return table.concat({
-        default_prompt(context),
-        "Run the project formatter after editing Lua files.",
-      }, "\n\n")
-    end,
-  })
-<
-The callback context contains `session`, `model`, `workspace`, the submitted
-`prompt`, the active `tools`, and discovered `agents` and `skills`. A custom
-value replaces the base prompt, but contextual resources are appended unless
-their configuration is disabled.
-
-The default coding preset includes `read_agent_documentation`. The `tools`
-option selects exactly the supplied tools. To keep the four coding tools
-without the documentation tool: >lua
-
-  require("neoagent").setup({
-    tools = {
-      require("neoagent.tools.read_file").new(),
-      require("neoagent.tools.write_file").new(),
-      require("neoagent.tools.edit_file").new(),
-      require("neoagent.tools.shell").new(),
-    },
-  })
-<
-
-Use `tools = {}` for a tool-free chat composition.
-
-Custom compositions can add the documentation tool directly with: >lua
-
-  require("neoagent.tools.read_agent_documentation").new()
-<
-
-The Codex-compatible `update_plan` tool is opt-in. Add it to the coding preset
-with: >lua
-
-  local tools = require("neoagent.tools").coding()
-  tools[#tools + 1] = require("neoagent.tools").update_plan()
-  require("neoagent").setup({ tools = tools })
-<
-
-`update_plan` accepts an optional explanation and a complete list of
-`{ step, status }` items, where status is `pending`, `in_progress`, or
-`completed`. It returns `Plan updated`. Both bundled Renderers render a
-successful call as a checklist. Codex animates a pending update and heads the
-finished checklist with `• Updated Plan`; Pi keeps its ordinary generated title
-and state-colored tool card.
-Each tool instance tracks current plans by an opaque Session ID and
-reconstructs them from the latest successful call on the active conversation
-path. `tool.current({ session_id = id })` returns a copy for integrations that
-receive the ID through execution or `on_messages`. Session persistence carries
-the call and result, so resumed sessions and branch changes restore the derived
-plan. `require("neoagent.tools").all()` includes the tool; the default coding
-preset excludes it.
-
-Neoagent integrations are ordinary Lua modules loaded explicitly by Neovim
-configuration. They can construct independent Controllers with `new()`, attach
-them to a shared Window with `new_window()`, and install that Window with
-`set_default_window()`.
+Retries are configured separately under `retry`. Transient failures use
+cancellable exponential backoff. Authentication, invalid-request, quota, and
+billing failures return immediately. Context-window errors use compaction
+recovery.
 
 AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
-The default controller loads the global file
-`stdpath("config") .. "/AGENTS.md"`, followed by every `AGENTS.md` from the Git
-root through the active Workspace. Without a Git root it walks from the
-filesystem root. Existing files enter the prompt in broad-to-specific order.
+Neo loads the global `stdpath("config") .. "/AGENTS.md"` and each project
+`AGENTS.md` from the Git root to the Workspace. Outside Git, discovery starts
+at the filesystem root. Files enter the prompt from broadest to most specific.
 
-Agent Skills are `SKILL.md` files with YAML frontmatter containing `name` and
-`description`. Neoagent recursively scans these defaults:
+Skills are directories containing a `SKILL.md` with YAML `name` and
+`description`. The defaults are:
 
   ~/.agents/skills
   stdpath("config") .. "/neoagent/skills"
-  <each project ancestor>/.agents/skills
+  <project ancestor>/.agents/skills
 
-Later global locations override earlier skills with the same name. Project
-skills override global skills, and nearer project skills override broader
-ones. Only skill metadata and the `SKILL.md` path enter the prompt. The model
-loads full instructions on demand with `read_file`, so skills are included only
-when that tool is active. Relative references inside a skill resolve from the
-directory containing its `SKILL.md`.
+Nearer project skills override broader or global skills with the same name.
+Only metadata and the path enter the initial prompt; the model reads full
+instructions on demand. Skill discovery requires an active file-reading tool.
 
-Replace the configured lists to customize discovery. An empty list disables
-that class of locations. Set `agents = false` or `skills = false` to disable a
-resource type completely. The independent `neoagent.agents` and
-`neoagent.skills` modules expose `discover(opts)` and `format(resources)` for
-custom workflows; discovery results include non-fatal `diagnostics`.
-
-Provider, model, and Model:stream() options may each define `request_opts` as
-a table or callback. Layers merge in that order. Only `url`, `headers`, and
-`body` are accepted. Headers and body merge recursively, lists replace lists,
-and header keys are case-insensitive.
-
-Models expose optional request-time thinking controls through a `thinking`
-table. Keys use the order `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-and `max`; values are `request_opts` tables or callbacks. Missing keys are
-unsupported and `false` removes an inherited level. The selected level supplies
-request options for Controller Model calls. Selecting a model resets thinking
-to `default_thinking_level`, clamped to that model's supported profiles.
-
-Models expose accepted message modalities through `input`, a list containing
-`"text"`, `"image"`, or both. Built-in Model constructors default to
-`{ "text", "image" }`. The API adapters replace images with explicit text
-placeholders when `input` excludes `"image"`; the Session retains the original
-image blocks. DeepSeek models and Z.AI language models declare text input. Z.AI
-models with a `V` suffix declare text and image input.
+Replace the configured lists to customize discovery. Empty lists disable those
+locations. `agents = false` or `skills = false` disables that resource
+type. The `neoagent.agents` and `neoagent.skills` modules also expose
+`discover(opts)` and `format(resources)`.
 
 PROVIDER SERVICES                                  *neoagent-provider-services*
 
-A configured provider may declare a `service` constructor. The built-in
-`openai-codex` provider declares one. The composition builds Provider Service
-values from secret-free provider projections and injects them through
-`runtime.providers`. Static providers use their configured model tables.
-Direct Model constructors do not compose services.
+A Provider Service supplies status, operations, and optional dynamic Models:
+>lua
 
-A Provider Service is a plain table: >lua
-
-  local service = require("neoagent.providers.codex").new()
-
-  service.id              -- non-empty provider id
-  service.name            -- display name
-  service:state(ctx)      -- copied bounded snapshot or false
-  service.operations      -- keyed operation descriptors
-  service.open_operation  -- optional initial non-mutating operation id
-<
-Optional members include `get_models()`, `refresh_models(ctx)`,
-`refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
-`on_event(event)`, and `destroy()`.
-The Controller passes `{ model = { provider, model } }` to `state(ctx)` when
-the bound service owns the selected model. `ctx.model` is nil when another
-provider is selected. Context-sensitive dashboards can derive selected-model
-details from this per-Controller value while shared service state remains
-provider-wide.
-`lua/neoagent/provider_service.lua` validates services, exposes sorted
-operation metadata, builds operation contexts, and starts operations as
-cancellable Runs. Operations on one service are serialized across Controllers.
-The Window runs `open_operation` once per service when its provider console
-first opens. The operation uses the ordinary authentication, cancellation,
-status, and interaction context.
-Agent and compaction Runs hold a service usage lease; mutating operations are
-disabled while a lease exists, and an active mutating operation blocks new
-leases. Failed service composition destroys every service constructed during
-that attempt. `lua/neoagent/provider_state.lua` normalizes snapshots and
-bounds every retained string and collection.
-
-`provider_state.new()` creates a reusable push channel for provider
-dashboards. Providers push JSON-compatible Lua tables. The channel validates
-and copies each snapshot, then notifies subscribers on Neovim's main loop.
-Pushes from provider-owned `vim.uv` timers are supported directly. >lua
-
-  local dashboard = require("neoagent.provider_state").new({
-    blocks = {
-      { type = "status", text = "Connecting", level = "muted" },
-    },
-  })
-
-  local service = {
+  {
     id = "example",
     name = "Example",
-    operations = {},
-    state = dashboard.state,
-    subscribe = dashboard.subscribe,
-  }
-
-  dashboard:push({
-    blocks = {
-      { type = "status", text = "Ready", level = "success" },
-      { type = "field", label = "Endpoint", value = "localhost:8080" },
-      {
-        type = "progress",
-        label = "Downloading model",
-        value = 0.42,
-        detail = "3.4 GiB / 8.0 GiB",
-      },
-      {
-        type = "limit",
-        label = "Weekly limit",
-        remaining = 0.84,
-        resets_at = 1787870220,
-        level = "success",
-      },
-      {
-        type = "activity",
-        title = "Recent activity",
-        entries = {
-          { level = "info", message = "Download started", timestamp = 1 },
-        },
+    state = function(ctx) ... end,
+    operations = {
+      refresh = {
+        name = "Refresh",
+        run = function(ctx) ... end,
       },
     },
-  })
+  }
 <
-Dashboard block types are `status`, `field`, `progress`, `limit`, `list`, and
-`activity`. Status, progress, and limit levels are `info`, `success`, `warn`,
-`error`, and `muted`. A progress `value` is a ratio from 0 through 1; omitting
-it represents indeterminate work. A limit has a bounded `label`, a required
-`remaining` ratio from 0 through 1, an optional finite Unix `resets_at`
-timestamp, optional `detail`, and optional `level`. Lists contain
-`{ label, detail? }` items, and activity blocks contain
-`{ level, message, timestamp? }` entries. Providers describe semantics only.
-The active Renderer chooses text, symbols, colors, spacing, and meter geometry.
-The bundled provider Renderer presents limits in adaptive rows with a
-20-segment remaining-capacity bar. Narrow rows retain the percentage and reset
-time and omit the bar.
+Optional members are `open_operation`, `get_models`,
+`refresh_models(ctx)`, `refresh_catalog(opts)`, `wrap_model(model)`,
+`subscribe(listener)`, `on_event(event)`, and `destroy()`.
 
-Operations use the independent provider service runner: >lua
+Operations receive raw arguments, the selected model, agent-running state,
+authentication resolution, and interaction helpers for selection, input,
+confirmation, progress, and notifications. They return cancellable Runs. A
+successful operation may return a bounded document artifact, which opens in a
+scratch tab. Mutating operations are serialized and cannot overlap agent or
+compaction use of the same service.
 
-  local run = provider_service.run(service, "operation", {
-    args = "raw argument tail",
-    model = { provider = "...", model = "..." },
-    agent_running = false,
-    auth = auth_manager,
-    auth_method = configured_provider.auth,
-    interact = my_interaction_adapter,
-  })
-<
-Operation callbacks receive a copied public provider projection,
-`ctx.args`, the current `ctx.model`, `ctx.agent_running`,
-`ctx.resolve_auth()` returning a Run, and `ctx.interact` with `select`,
-`input`, `confirm`, `progress`, and `notify` capabilities. The bundled
-Controller adapter presents interactions through `vim.ui.select` and
-`vim.ui.input`. An operation descriptor may define
-`complete(arg_lead, args)` for command-line argument completion. A successful
-Run may return a bounded `{ kind = "document", name, filetype, content }`
-artifact; the Controller opens it as a scratch tab. `auth.Manager:resolve()`
-may include validated
-`public_metadata` from an auth method; credential values never enter provider
-state or interactions.
+`neoagent.provider_state.new(snapshot)` creates a reusable dashboard channel.
+Snapshots contain semantic `status`, `field`, `progress`, `limit`,
+`list`, and `activity` blocks. The channel validates and copies updates and
+delivers them on Neovim's main loop. Renderers decide layout and styling.
 
-A Controller binds a console service explicitly and publishes
-`context.provider` as `{ id, name, state, operations }`. A provider without a
-service publishes `state = false` and an empty operations list, so its
-console opens with the empty information view. A console may inspect a service
-other than the selected Model's service; model events always flow to the
-selected Model's service. The active
-Controller's provider Run is independent of the agent Run. The read-only
-provider console renders that snapshot with arrow navigation over operation
-rows and preserves the selected row across pushed updates. The Window owns
-its visibility and lays out the provider above the transcript by default,
-with the input beneath both surfaces. `<A-p>` toggles the console from every
-Neoagent surface,
-`<A-l>` focuses or opens it from the transcript or input, `<A-h>` returns to
-the transcript, `<A-j>` moves to the input, and Up/Down arrows select
-operation rows. The Codex service receives structured quota windows, reset
-timestamps, credits, and additional metered limits from `x-codex-*` response
-headers. The event retains a short `provider_status.text` value for transcript
-and retry consumers. Header state updates the console immediately, including
-terminal HTTP failures, while the latest request token counts arrive through
-`usage` events. Codex request retries publish `reconnecting = true` with their
-temporary status and publish `reconnecting = false` when the request recovers,
-fails, or is cancelled. The console overlays that connection state on its
-durable usage status and reveals the usage status when the retry ends.
+The built-in services are:
 
-The Codex service declares `refresh` as its initial console operation. The
-first provider-console open resolves the configured ChatGPT OAuth login and
-loads the authoritative `/wham/usage` snapshot. Manual refresh runs the same
-operation. It publishes bounded email and plan display metadata, primary,
-secondary, monthly, and additional metered limits, credits, workspace spend
-controls, reset-credit count, and reset reasons.
-Account identifiers, credential values, request headers, and raw response
-bodies do not enter provider state. Snapshots older than 15 minutes retain
-their data with a muted stale warning. A failed refresh also keeps the last
-rich snapshot visible. Service subscription performs no request; refresh is an
-explicit operation, so composed providers that are never opened create no
-account traffic.
+  openai-codex  Shows account limits and usage. Operations refresh usage, load
+                activity and workspaces, inspect reset credits, and redeem a
+                credit after confirmation.
+  opencode-go   Shows shared subscription windows and a selected-model request
+                estimate. `models` refreshes the public catalog.
+  llama.cpp     Shows router, model, load, download, and request state.
+                Operations are `catalog`, `refresh`, `load`, `unload`,
+                `download`, and `preset`.
 
-`activity` loads aggregate token statistics from `/wham/profiles/me`,
-`workspaces` loads display names from `/wham/accounts/check`, and
-`reset_credits` loads bounded earned-credit details from
-`/wham/rate-limit-reset-credits`. `redeem` is a separate mutating operation. It
-asks for confirmation, sends a stable idempotency key to
-`/wham/rate-limit-reset-credits/consume`, and refreshes usage after a successful
-redemption. Cancellation propagates through every request. The management
-client uses a 15-second default timeout and a 512-KiB response limit; configure
-`providers["openai-codex"].service_opts.timeout_ms` or
-`max_response_bytes` to change them. The response limit must be at least 1024
-bytes. A custom `base_url` supplies the prefix for the same `/wham/*` routes.
-ChatGPT account operations require OAuth; an API-key credential leaves an
-explicit unavailable status. Quota details live in the provider console while
-the transcript border remains focused on agent and context state.
+The provider console runs `open_operation` once when first opened. It performs
+no background polling. Use `:NeoagentProvider operation [args]` to run another
+operation and `:NeoagentProvider!` to cancel it.
 
-The OpenCode Go provider uses a subscription API key from
-`:NeoagentLogin opencode-go` or `OPENCODE_API_KEY`. It supplies both Bearer and
-`x-api-key` authentication because Go's Responses and Chat Completions routes
-use Bearer authentication while its Messages route uses `x-api-key`. Models
-select their documented Go route through their per-model `api`: Responses,
-Anthropic Messages, or OpenAI-compatible Chat Completions. The built-in static
-catalog carries model context, modality, output, and thinking declarations.
+OpenCode Go catalogs cache for one hour by default; llama.cpp catalogs cache
+for 60 seconds. Set a provider's `catalog_cache = false` to disable persistence
+or `{ ttl_ms = milliseconds }` to set another freshness window.
 
-Its `refresh` operation is the initial console operation. The first console
-open sends one authenticated `GET /usage` request and displays the shared
-5-hour, weekly, and monthly remaining percentages and reset times. The Go
-service performs no background polling; reopening the same service retains the
-snapshot, and the `refresh` operation requests a new one. The current Go
-allowances are $12 per 5-hour window, $30 per week, and $60 per month. OpenCode
-reports these as global dollar-value counters shared by every Go model. The
-console labels that scope and derives an approximate remaining request count
-for the selected model from OpenCode's published typical-request estimates.
-Running `refresh` after changing models updates the estimate; it does not
-represent a separate quota. A failed refresh preserves the latest valid quota
-snapshot and exposes a body-free error status.
+llama.cpp model definitions can name a Hugging Face source and router load
+parameters: >lua
 
-The `models` operation loads `GET /models` without credentials. Model ids form
-a bounded, versioned, secret-free catalog with a one-hour default cache. The
-service refreshes this catalog at startup when OpenCode Go is explicitly
-configured or selected as the default provider. Static model definitions take
-precedence when the discovered id is already known. Newly discovered ids use
-text input and the Chat Completions route; OpenCode's gateway converts that
-wire format for its selected upstream. Set
-`providers["opencode-go"].catalog_cache = false` to disable persistence or set
-another `ttl_ms`. `service_opts.timeout_ms` changes the 15-second management
-request deadline, and `service_opts.max_response_bytes` changes the 256-KiB
-response bound. The response bound must be at least 1024 bytes.
-
-`models.available()` and `models.resolve()` accept an optional
-`providers` map. For a service with `get_models()`, discovered entries merge
-under the configured model table, and user `models[id] = false` entries
-remain recorded as removals for discovered catalogs. Dynamic entries are
-validated before they enter availability or resolution. `auth_optional = true`
-allows a provider to use anonymous or ambient access while a stored login
-optionally supplies request overrides. `service_opts` is copied into the
-secret-free constructor projection for provider-specific configuration.
-`catalog_cache` is also copied into that projection. Set it to `false` to
-disable persisted model catalogs, or to `{ ttl_ms = milliseconds }` to select
-a freshness window. Provider Services opt into this policy when composing
-`provider_catalog`. Forced publications from provider commands update both
-the runtime catalog and its persisted entry. `models.resolve()` also applies an
-optional `service:wrap_model()` hook after authentication wrapping. The
-llama.cpp service uses its pushed catalog and router events to disable
-`request_timeout_ms` while the router loads the requested model. The
-openai-completions adapter accepts `timeout_ms` at
-construction and per stream call; `false` disables the transport deadline.
-
-The bundled llama.cpp service uses `get_models()` for router catalog Models
-and `refresh_models()` with its injected provider state store. Its default
-catalog cache has a 60-second TTL. Set `catalog_cache = false` on the provider
-to query the router at every startup, or configure another `ttl_ms`. Catalog,
-load, unload, download, and refresh operations publish fresh router results
-regardless of the TTL. The cache is a versioned, secret-free projection
-containing model identity, status, modalities, context, and size. Router
-command lines, paths, presets, progress payloads, and credentials are excluded.
-The startup refresh runs when llama.cpp is explicitly configured or selected
-as the default provider. A configured dynamic default can remain pending while
-that asynchronous refresh completes. Login forces a refresh for services using
-the login method. Load and unload force a network refresh after mutation. Its
-operations are `catalog`, `refresh`, `load`, `unload`, `download`, and
-`preset`; their arguments have provider-specific completion. Load, unload,
-and download waits are bounded. Cancelling load or download requests a
-server-side unload. The console shows the router connection, SSE state,
-independent concurrent inference requests, recent activity, and live load or
-download progress. It starts live events for catalogs restored from cache.
-The `catalog` operation presents router models and configured definitions
-through `vim.ui.select`.
-When the active provider has no service, opening the console offers available
-provider services. The llama.cpp auth method stores the server URL and exposes
-it through `public_metadata`; anonymous servers require no saved login, and
-login prompts for an API key only after a 401 or 403 response.
-
-llama.cpp model definitions are plain tables under
-`providers["llama.cpp"].models`. Each definition id is the selectable model
-id; `hf_repo` with an optional `quantization` names the router model
-`org/repo:quant`, `load` records router parameters, and the remaining keys
-are the usual inference parameters (`input`, `context_window`,
-`max_output_tokens`, `request_timeout_ms`, `thinking`, `request_opts`). When
-the definition id aliases an HF source, `get_models()` exposes the alias and
-routes inference to the router model id automatically. Definitions merge
-ahead of the server catalog: every definition appears in `get_models()` even
-before its model is downloaded, definition parameters win over
-server-reported values, and unclaimed server models follow. The router
-applies load parameters through its own server-side config. Known convenience
-keys are `ctx_size`, `gpu_layers`, `threads`, and `flash_attn`; other safe
-scalar keys map underscores to dashes. The `preset` operation returns a
-versioned `--models-preset` INI document. HF aliases include `hf-repo`, and
-`flash_attn` renders as `flash-attn = on|off`.
-
-When llama-server starts with `--models-preset`, the preset file merges into
-the router catalog alongside cached and `--models-dir` models; it does not
-replace discovery. Preset sections with a new name define new models (via
-`model` or `hf-repo`), sections matching existing models override their
-parameters, `load-on-startup = true` autoloads a model, and `?reload=1`
-re-reads the file, so the `refresh` operation applies config edits without a
-server restart. The catalog selector marks such models as `server preset`.
-Model definitions work in both modes: inference parameters apply client-side,
-aliases name preset models whose router id matches the `hf_repo` source, and
-the `preset` operation generates the server config sections from defined load
-parameters.
-
-Example: >
   providers = {
     ["llama.cpp"] = {
-      catalog_cache = { ttl_ms = 60 * 1000 }, -- false disables persistence
-      service_opts = {
-        wait_timeout_ms = 10 * 60 * 1000,
-        download_timeout_ms = 60 * 60 * 1000,
-        poll_interval_ms = 250,
-      },
       models = {
         qwen = {
           hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
           quantization = "Q4_0",
-          load = { ctx_size = 32768, gpu_layers = 99, flash_attn = true },
+          load = { ctx_size = 32768, gpu_layers = 99 },
           context_window = 262144,
           max_output_tokens = 80000,
-          thinking = {
-            off = { body = { chat_template_kwargs = { enable_thinking = false } } },
-            high = { body = { chat_template_kwargs = { enable_thinking = true } } },
-          },
         },
       },
     },
   }
 <
-
-`wait_timeout_ms` bounds load and unload polling. `download_timeout_ms`
-bounds downloads, and `poll_interval_ms` controls status polling. Each value
-must be positive. These settings affect the management API and remain
-independent from Model `request_timeout_ms`.
+Configured definitions take precedence over router entries. The definition ID
+is selectable and aliases its Hugging Face router ID. `service_opts` may set
+`wait_timeout_ms`, `download_timeout_ms`, and `poll_interval_ms`.
 
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
-With persistence and `workspace_settings` enabled, model and thinking
-preferences are scoped by Controller name and UI position is shared by the
-workspace. An unnamed standalone Controller uses the `default` scope. A
-new Session resolves its Controller's workspace preferences before display. An
-unavailable workspace model is ignored; a valid configured default is used,
-and a workspace without a valid configured default opens without a selected
-model. A resumed Session's recorded model and thinking values take precedence
-for that Session.
+With persistence and workspace settings enabled, model and thinking choices
+are scoped by Controller name. UI position and the latest 100 accepted inputs
+are shared by the Workspace. A resumed Session's recorded model and thinking
+choice take precedence.
 
-The bundled Window keeps the 100 most recent accepted inputs for each
-workspace and shares them across its Controllers. Set
-`persistence.workspace_settings = false` to keep configured model, thinking,
-and position defaults authoritative while retaining Sessions and input
+Set `persistence.workspace_settings = false` to keep configured model,
+thinking, and position values authoritative while retaining Sessions and input
 history.
 
-The workspace settings layer is also usable independently: >lua
+The reusable settings object is created with
+`require("neoagent.workspace_settings").new({ directory, root })`. It exposes
+`metadata()`, `load()`, `merge(defaults)`, `write(settings)`, and
+`update(patch)`.
 
-  local settings = require("neoagent.workspace_settings").new({
-    directory = vim.fn.stdpath("state") .. "/my-plugin/workspaces",
-    root = vim.fn.getcwd(),
-  })
-  local effective, overrides = assert(settings:merge(defaults))
-  assert(settings:update({ my_option = { enabled = true } }))
-  assert(settings:write(overrides))
-<
-The returned object exposes `metadata()`, `load()`, `merge(defaults)`,
-`write(settings)`, and `update(patch)`. Settings updates and input-history
-additions reload and merge their current file while holding a cross-process
-lock.
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
 
-  :Neoagent                       Toggle the floating UI.
+  :Neoagent                       Toggle the UI.
   :NeoagentCycle                  Select the next Controller.
-  :NeoagentNew                    Use a new empty UI Session.
-  :NeoagentResume [path]          Resume a stored Session or select one.
-  :NeoagentStop                   Cancel the active UI Run.
-  :NeoagentSandboxInfo            Show current sandbox capabilities.
-  :NeoagentToggleSandbox          Switch Neo between host and sandbox execution.
-  :NeoagentModel [provider/model] Select a configured Model or choose one.
-  :NeoagentThinking [level]       Set a thinking level or cycle to the next.
-  :NeoagentPosition [position]    Set the UI position or select one.
-  :NeoagentTranscriptStyle style  Select `pi` or `codex` transcript chrome.
-  :NeoagentProvider [op [args]]  Toggle the console or run an operation.
-  :NeoagentProvider!             Cancel the active provider operation.
-  :NeoagentLogin [method]         Store an API key or authenticate an account.
-  :NeoagentLogin!                 Cancel an active login.
-  :NeoagentLogout [method]        Remove a stored credential or select one.
-  :NeoagentCompact [instructions] Compact the active branch context.
-  :NeoagentBranch [entry-id]      Move the leaf or select a branch point.
+  :NeoagentNew                    Start an empty Session.
+  :NeoagentResume [path]          Resume a Session or open the selector.
+  :NeoagentStop                   Cancel the active agent Run.
+  :NeoagentModel [provider/model] Select a Model or open the selector.
+  :NeoagentThinking [level]       Set or cycle the thinking level.
+  :NeoagentPosition [position]    Set or select the UI position.
+  :NeoagentTranscriptStyle style  Select the `pi` or `codex` Renderer.
+  :NeoagentProvider [op [args]]   Toggle the console or run an operation.
+  :NeoagentProvider!              Cancel the provider operation.
+  :NeoagentLogin [method]         Store a key or authenticate an account.
+  :NeoagentLogin!                 Cancel login.
+  :NeoagentLogout [method]        Remove a stored credential.
+  :NeoagentCompact [instructions] Compact the active branch.
+  :NeoagentBranch [entry-id]      Move to an entry or select a branch point.
   :NeoagentFork [entry-id]        Fork before a user message or select one.
+  :NeoagentToggleSandbox          Toggle sandbox execution for Neo.
+  :NeoagentSandboxInfo            Show sandbox status and capabilities.
 
-No global mappings are installed. Argument-free selectors and the input-history
-selector use `vim.ui.select`, so configured `vim.ui` providers can render them.
-Fork selection restores the selected user message to the input buffer. The
-provider console uses `<A-p>` to toggle, `<A-l>` to focus or open, `<A-h>` to
-return to the transcript, `<A-j>` to move to the input, and Up/Down arrows to
-move through operation rows.
+Argument-free selectors use `vim.ui.select`. Fork selection restores the
+chosen user message to the input.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
 
-The input and transcript are focusable Neovim buffers. Input opens in Insert
-mode, and the transcript supports normal search, motions, Visual selection,
-and yank. Streamed transcript redraws wait for register selection, pending
-operators, and input Visual selections so these interactions use stable text.
-Dialogs render without stealing focus while the input draft contains text.
-The transcript, provider, informational-dialog, and card-details buffers enter
-Normal mode through keyboard, mouse, and direct window-focus paths.
-Set `ui.scroll_on_submit`,
-`ui.scroll_on_transcript_leave`, or `ui.scroll_on_reopen` to control
-automatic scrolling. The input footer lists the highest-priority Neoagent
-actions for the focused surface that fit its current width. Ordinary Neovim
-editing keys such as Insert-mode `<C-j>` are available without appearing in
-the footer.
+The bundled UI has separate transcript and input windows. The transcript
+supports normal search, motions, Visual selection, and yank. Streamed redraws
+pause during operations that require stable text.
+
+Input accepted while a Controller is busy becomes steering. Steering is sent
+after the current assistant response and tool calls. The interrupt mapping
+cancels the Run and restores queued steering to the draft.
+
+Filename completion is available in Insert mode. Input history is shared by
+Controllers in the Workspace and keeps the latest 100 accepted entries.
+
+Default mappings:
+
+  <CR>        Submit input, accept completion, or open card details.
+  <Tab>       Open filename completion or select its next item.
+  <C-c>       Clear a draft; with an empty draft, stop the active Run.
+  <Esc><Esc>  Hide the UI from input Normal mode.
+  <C-d>       Hide the UI when input is empty.
+  <A-k>       Move to the previous card. `<C-Up>` is an alias.
+  <A-j>       Move to the next card or input. `<C-Down>` is an alias.
+  <C-w>j      Focus input.
+  <C-w>k      Focus transcript.
+  r           Toggle rendered and raw Markdown in text or thinking details.
+  <S-Tab>     Cycle thinking levels.
+  <A-n>       Cycle Controllers.
+  <A-m>       Select a Model.
+  <A-r>       Resume a Session.
+  <Up>/<Down> Browse input history.
+  <C-k>       Browse toward older input.
+  <C-r>       Select from input history.
+  <A-Up>      Restore queued steering to input.
+  <A-p>       Toggle the provider console.
+  <A-l>       Open or focus the provider console.
+  <A-h>       Return from provider console to transcript.
+  q           Hide the transcript or provider console.
+
+Every `ui.mappings` value accepts a lhs string, a list of lhs strings, or
+`false`. Mapping keys are `submit`, `complete`, `interrupt`, `close_input`,
+`close_empty`, `card_details`, `card_raw`, `card_previous`, `card_next`,
+`focus_input`, `focus_transcript`, `focus_provider`, `provider_back`,
+`provider_input`, `provider_previous`, `provider_next`, `cycle_thinking`,
+`cycle_agent`, `select_model`, `resume_session`, `history_previous`,
+`history_next`, `select_history`, `dequeue_steering`, `toggle_provider`,
+`provider_close`, and `close`.
+
+`ui.position` accepts `auto`, `left`, `right`, `top`, `bottom`, or
+`center`. Width and height accept a fraction in `(0, 1]`, an integer greater
+than one, or nil for the layout default.
+
+Set `ui.show_thinking = false` to hide reasoning from the transcript while
+retaining it in the Session. Set `ui.wrap_cards = true` to soft-wrap complete
+card lines. The default clipped view recomputes when the Window size changes.
 
 RENDERERS                                                *neoagent-renderers*
 
-A Renderer is an explicit Lua table that decides how semantic content appears
-in the bundled View. Pi and Codex are bundled values: >lua
+A Renderer turns copied semantic values into declarative UI content. Codex is
+the default; Pi is also bundled: >lua
 
   local renderers = require("neoagent.ui.renderers")
-
-  renderers.pi
   renderers.codex
-  renderers.get("pi")
-  renderers.names() -- { "pi", "codex" }
+  renderers.pi
+  renderers.get("codex")
+  renderers.names()
 <
-Set `ui.renderer` to use another value. It takes precedence over the bundled
-`ui.style` selector: >lua
+Select one with `ui.style` or provide `ui.renderer`. The explicit Renderer
+takes precedence. `window:set_renderer(renderer)` replaces the live Renderer
+and redraws the current transcript.
 
-  require("neoagent").setup({
-    ui = { renderer = my_renderer },
-  })
-<
-A Renderer has a non-empty `name`, `render_block`, `render_details`, and
-`render_dialog`. `define_highlights`, `render_focus`, `render_status`, and
-`render_provider` are optional. A complete plain-text implementation is
-maintained as an executable example in:
+A Renderer has a non-empty `name` and these required methods:
 
-https://github.com/tarruda/neoagent/blob/main/tests/unit/simple_renderer_spec.lua
+  render_block(block, opts)
+  render_details(block, opts)
+  render_dialog(snapshot, opts)
 
-`render_block` receives a copied display block with semantic fields for its
-`user`, `assistant`, `thinking`, `tool`, `compaction`, or `notice` kind.
-User blocks retain their original multimodal `content`; the Renderer derives
-attachment labels and other visual summaries. `opts` supplies visible `width`,
-copied `previous` and `following` blocks, the current `spinner`, the configured
-`details_key`, `wrap_cards`, and the active tool's presentation capability when
-applicable. The tool value contains its name and optional semantic `render`
-callback.
-`render_details` receives the same semantic block and the detail width. It may
-return nil when the block has no expanded presentation.
+Optional methods are `define_highlights`, `render_focus`, `render_status`,
+and `render_provider`.
 
-`render_dialog` receives a copied `{ active = dialog, queue_count = number }`
-snapshot and `{ surface = "transcript" | "float", width = number }`. It owns
-the visible prompt body, action descriptions, queue text, colors, and optional
-floating title. The View owns the copied transcript buffer, floating windows,
-editable input buffer, mappings, focus, and action routing.
-
-`render_provider` receives the copied `context.provider` snapshot and
-`{ width, surface, focus }`. It returns `{ title, content, selectable }`,
-where `content` is a content presentation and `selectable` maps zero-based
-content rows to operation ids. The View owns the provider buffer, floating
-window, arrow navigation, selection routing, and close behavior. A Renderer
-without `render_provider` means the bundled View presents no provider
-console.
-
-`render_status` receives copied transient state and layout hints. The current
-status value contains `steering`, and its options contain `dequeue_key`. It may
-return a content presentation or nil.
-
-`render_focus` receives a copied block plus options containing `active`, the
-block's visible `lines`, `width`, `card`, `separators`, Renderer-defined `focus`
-metadata, and `details_key`. It returns zero or more relative decorations: >lua
+Content presentations have this shape: >lua
 
   {
-    {
-      row = 0,
-      chunks = { { text = "[details]", group = "NeoagentMuted" } },
-      position = "overlay",
-      win_col = 20,
-      priority = 200,
-    },
-  }
-<
-The View converts those decorations into extmarks at the block's current
-buffer position.
-
-A content presentation has this shape: >lua
-
-  {
-    lines = { "first physical line", "second physical line" },
+    lines = { "first line", "second line" },
     highlights = {
       { row = 0, col = 0, end_col = 5, group = "NeoagentAccent" },
     },
@@ -1372,195 +651,36 @@ A content presentation has this shape: >lua
     },
   }
 <
-Each `lines` entry is one physical valid-UTF-8 buffer line. Rows and byte
-columns are zero-based. `highlights` and `line_groups` may be omitted.
-Highlights stay inside their line, and line groups address existing rows.
-Bundled Renderers also return bounded card, separator,
-source-syntax, animation, background, and focus metadata consumed by the bundled
-View. Renderer inputs are copies and contain no buffer, window, namespace, or
-extmark identifiers, mutable View state, or dialog-response callbacks.
-Rendering is synchronous.
+Rows and byte columns are zero-based. Renderer inputs are copies and contain no
+buffers, windows, namespaces, extmarks, mutable View state, or response
+callbacks. Rendering is synchronous.
 
-Call `window:set_renderer(renderer)` or `neoagent.set_renderer(renderer)` to
-replace a live Renderer and redraw its transcript and active dialog.
-`set_transcript_style("pi")` and `set_transcript_style("codex")` resolve the
-corresponding bundled value and use the same replacement path.
+`render_block` and `render_details` receive a `user`, `assistant`,
+`thinking`, `tool`, `compaction`, or `notice` block plus bounded layout
+context. Tool blocks may carry the active Tool's semantic `render` callback.
+`render_dialog` formats dialog text and actions. `render_provider` maps
+provider content rows to operation IDs. The View owns all Neovim resources,
+focus, mappings, and action routing.
 
-Interaction prompts carried by dialog requests are presentation content and
-therefore flow through `render_dialog`. Model request messages, system-prompt
-construction, Session content, and tool execution remain outside the Renderer.
-
-User and assistant text renders Markdown in borderless cards whose long
-lines soft-wrap at word boundaries. Assistant cards show the complete
-response without a line limit, and while hovered a right-aligned badge such
-as `[text: 42 words, <CR> to expand]` reports the word count and expand key.
-The `card_details` mapping opens the response without card padding for
-copying. Thinking appears in
-borderless cards with a muted italic style, clipped to the most recent
-lines. While a thinking card is hovered, a right-aligned badge such
-as `[thinking: 42 words, 8 lines above..., <CR> to expand]` reports the
-running word count, clipped lines, and expand key; the first line is
-truncated with `...` when it reaches the badge. When a thinking card has
-lines clipped to the visible width, a borderless `...[thinking: ...]` banner
-rests at the card's top right while the card is not hovered, keeping the
-hidden content visible; the expand key appears only while hovered. The
-`card_details` mapping reveals the complete reasoning trace.
-Set `ui.show_thinking = false` to omit thinking traces from
-the transcript while retaining them in the Session and model context. The
-footer displays context usage when the selected Model declares a
-`context_window`.
-
-Card lines are clipped to the visible transcript width with `...` by default
-and are recomputed when the window is resized. Set `ui.wrap_cards = true` to
-show complete card lines with soft wrapping.
-
-`ui.style` selects the initial bundled Renderer. The default `"codex"` Renderer
-uses transparent tool and compaction cards, prefixes tool headings with `•`,
-and draws a muted horizontal rule where a group of tool cards meets assistant
-prose or thinking. The `"pi"` Renderer uses shaded, state-colored tool cards and
-a shaded compaction card. Consecutive Codex tool cards share one group without
-rules between them. Each rule touches the tool group and keeps one empty line
-between the rule and prose or thinking. Codex read and shell headings use
-activity wording such as `• Reading`, `• Read`, `• Running`, and `• Ran`.
-Write, edit, grep, and find use `Writing`/`Written`, `Editing`/`Edited`,
-`Searching`/`Searched`, and `Finding`/`Found`. Read, grep, and find cards show
-only the heading in the transcript and remain selectable for complete details.
-Shell cards place newline-delimited command continuations under a `│` gutter,
-keeping two continuation rows and an omitted-line count. Long command and output
-rows are clipped to the card width. Completed calls show at most five output
-rows under a `└` gutter, retaining rows from both ends around an omitted-line
-count; empty output appears as `(no output)`. Shell preview output
-uses normal text attributes and preserves parsed terminal colors. Write headings
-adopt a streamed target path as soon as it is available. Write cards show at
-most three source rows and an omitted-line count. Successful Codex Edit cards
-show added and removed counts plus at most ten numbered patch rows; context,
-added, and removed lines retain their patch colors. Expanded details show the
-complete numbered patch. Pi Edit cards use their ordinary diff presentation.
-Activity bullets are muted while active, green after success, and red after
-failure. User cards blend 12% white into a dark editor background or 4% black
-into a light editor background, matching Codex. An editor background without a
-resolved RGB value leaves the card transparent. Use
-`:NeoagentTranscriptStyle pi` or
-`:NeoagentTranscriptStyle codex` to re-render the current Window immediately;
-the Session messages and tool results remain unchanged.
-
-Compaction cards present their summary in at most 20 visible card lines and
-keep each preview line clipped; their details view contains the complete
-soft-wrapped summary. A Unicode outline follows the card beneath the cursor
-while the transcript is focused,
-and tool card outlines carry an `<CR> to expand` hint in the bottom border
-while hovered. A multiline Codex tool card continues its top border after the
-visible heading. Its bottom border replaces an adjacent tool-to-prose group
-separator while hovered, and otherwise occupies the card's trailing spacing
-row. The underlying separator or spacing returns when focus leaves the card. A
-one-line Codex tool card keeps its heading visible and shows the hint in a
-right-aligned `[<CR> to expand]` badge. The badge moves an existing ellipsis
-left or adds one when it overlaps the heading. The configured
-`card_details` mapping opens that card's complete content in a scrollable,
-read-only floating window that soft-wraps long lines and is titled by card kind
-(`Tool call`, `Thinking`, `Text`, or `Card details`). Shell details include the
-complete command and all output retained by the tool result. Read details
-include the complete file contents with target-file syntax. Grep and find
-details include their complete retained results. Codex read, grep, find, and
-shell outputs use the normal foreground and attributes as their base, while
-shell output applies parsed terminal colors. Codex Write bodies use the normal
-foreground as their base. Visible Write previews and expanded Read and Write
-details apply Neovim syntax only to file-content rows, preserving tool UI text
-and never recoloring text outside those rows.
-Thinking details reveal the full reasoning trace.
-Ctrl-C closes the details window and returns to the transcript. Text and
-Thinking details render Markdown by default. Press `r`, configured by
-`card_raw`, to toggle the original raw Markdown. The title shows the mapping and
-the view it will open.
-
-Enter queues steering while the active Controller is working. The queue appears
-in the transcript and drains one message after the current assistant response
-and tool calls. Alt-Up restores all pending steering messages to the
-input. Ctrl-C restores the queue and cancels the active Run; while idle it
-clears the draft.
-
-Insert-mode Tab opens Neovim's popup menu with filename matches relative to the
-current working directory and advances through them. Enter accepts the selected
-match without submitting the prompt. Up, Down, and Ctrl-K navigate an open
-completion menu. Set `ui.completion` to false, use an empty
-`ui.completion.sources` list, or change `ui.mappings.complete` to configure the
-behavior. `files` is the supported completion source.
-
-Accepted input is shared by every Controller in the workspace. Insert-mode Up,
-Down, and Ctrl-K browse the most recent 100 entries. Multiline
-cursor movement takes precedence until the cursor reaches the first or last
-line, and returning past the newest entry restores the previous draft. Ctrl-R
-opens a searchable history selector and places the selected entry in the
-active draft.
-
-Default mappings:
-
-  <CR>        Accept popup completion, or send from input in Normal or Insert
-              mode; open full details for the transcript card under the cursor.
-  <Tab>       Open filename completion or select the next popup item in Insert
-              mode.
-  <C-c>       Clear a nonempty draft without interrupting. With an empty draft,
-              interrupt the active Run and restore queued steering.
-  <Esc><Esc>   Hide the UI from input Normal mode.
-  <C-d>       Hide the UI when the input is empty.
-  <A-k>/<A-j> (aliases <C-Up>/<C-Down>)
-              Jump to the previous or next transcript card; counts are
-              supported in Normal mode. Alt-K or Ctrl-Up focuses the newest
-              card from input Normal or Insert mode. At the first transcript
-              card, Alt-K or Ctrl-Up focuses an open provider console. Alt-J
-              or Ctrl-Down focuses the input in Insert mode from the newest
-              card. These mappings replace open card details with the adjacent
-              card; moving below the final card closes details and focuses
-              input.
-  <C-w>j      Focus input from the transcript.
-  <C-w>k      Focus the transcript from input Normal or Insert mode.
-  r           Toggle rendered and raw Markdown in Text or Thinking details.
-  <S-Tab>     Cycle through supported thinking levels.
-  <A-n>       Cycle Controllers (input Normal/Insert; transcript Normal).
-  <A-m>       Select a model (input Normal/Insert; transcript Normal).
-  <A-r>       Resume a session (input Normal/Insert; transcript Normal).
-  <Up>/<Down> or <C-k>
-              Browse workspace input history from Insert mode; Ctrl-K moves
-              toward older entries.
-  <C-r>       Select workspace input history (input Normal/Insert; transcript
-              Normal).
-  <A-Up>      Restore queued steering messages to the input.
-  q           Hide the UI from the transcript.
-
-Set a value in `ui.mappings` to a non-empty lhs string or non-empty list of
-strings, or to `false` to disable it. Card actions use `card_details`,
-`card_raw`, `card_previous`, and `card_next`. Paired-window focus uses
-`focus_input` and `focus_transcript`.
-Use `:NeoagentPosition [auto|left|right|top|bottom|center]` to place the UI.
-With no argument, the command opens a position selector. Position changes are
-saved when workspace settings are enabled. `ui.width` and `ui.height` accept a
-fraction in `(0, 1]`, an integer greater than one, or `nil` for the layout
-default.
-Card colors are customizable through `NeoagentUserBackground`,
-`NeoagentCodexUserBackground`,
-`NeoagentToolPendingBackground`, `NeoagentToolSuccessBackground`, and
-`NeoagentToolErrorBackground`. Codex tool status bullets use
-`NeoagentCodexToolSuccess` and `NeoagentCodexToolError`; their defaults follow
-ANSI green and red. Codex Patch additions and removals use `NeoagentGreen` and
-`NeoagentRed` with the same ANSI shades and normal text weight. Markdown
-highlight groups begin with `NeoagentMarkdown`. All Neoagent highlights use
-Neovim's `default` behavior.
+Codex uses compact transparent tool cards. Pi uses shaded, state-colored cards.
+Both expose complete text, reasoning, tool output, and compaction summaries
+through the details view. Text and thinking details can toggle rendered and raw
+Markdown with the `card_raw` mapping.
 
 ===============================================================================
 5. CORE APIS                                                   *neoagent-core-api*
 
-The direct Model constructor requires no setup: >lua
+Models can be constructed without `setup()`: >lua
 
   local model = require("neoagent.api.openai_completions").new({
     provider = "local",
     model = "coder",
     base_url = "http://127.0.0.1:8080/v1",
-    api_key = nil,                 -- string or callback
-    input = { "text", "image" },  -- accepted message modalities
-    context_window = nil,          -- enables bundled context usage display
+    api_key = nil,
+    input = { "text", "image" },
+    context_window = nil,
     max_output_tokens = nil,
     request_opts = nil,
-    request_opts_layers = nil,
   })
 
   local run = model:stream({
@@ -1572,68 +692,15 @@ The direct Model constructor requires no setup: >lua
     on_done = function(result) end,
   })
 <
-Use `require("neoagent.api.anthropic_messages").new` for an Anthropic Messages
-endpoint with the same Model interface. Its default `max_output_tokens` is
-4096.
+Other constructors are `neoagent.api.anthropic_messages`,
+`neoagent.api.openai_responses`, and
+`neoagent.api.openai_codex_responses`. The Codex constructor also accepts
+`responses_lite`, `request_max_retries`, and `on_diagnostic`.
 
-Use `require("neoagent.api.openai_responses").new` for a Responses endpoint.
-Its additional constructor options are `reasoning`, `reasoning_effort`,
-`reasoning_summary`, and `reasoning_context`. Set
-`reasoning_summary = "none"` to omit summaries.
-
-`require("neoagent.api.openai_codex_responses").new` adds
-`responses_lite`, `request_max_retries` (default 4), and
-`on_diagnostic(event)` options. Direct construction requires explicit
-authentication and diagnostic handling.
-
-Authentication is separately composable: >lua
-
-  local manager = require("neoagent.auth").new({
-    methods = { my_plan = my_login_method },
-    store = my_credential_store,
-  })
-  local authenticated_model = manager:wrap(model, "my_plan")
-<
-Credentials have one of these tagged forms: >lua
-
-  { type = "api_key", key = "...", env = { OPTIONAL = "value" } }
-  { type = "oauth", access = "...", refresh = "...", expires = 0 }
-<
-Untagged OAuth values are accepted as OAuth credentials. A method has an
-optional `type`, `name`, `login(interaction)`, `request_opts(credential)`,
-and `public_metadata(credential)`. OAuth methods also have
-`refresh(credential)`. Login and refresh return Runs.
-The interaction prompt types are `text`, `secret`, `select`, and `manual_code`;
-the bundled Controller uses a masked command-line prompt for `secret`.
-`public_metadata` returns a bounded secret-free string map that Provider
-Service operations receive with resolved authentication.
-
-`require("neoagent.auth.api_key").new({ name = "Example API key" })` creates a
-Bearer-key method. Its optional `request_opts(credential)` callback can derive
-another header profile.
-
-A store implements `read(id)`, `write(id, credential)`, `modify(id, fn)`,
-`list()`, and `delete(id)`. `manager:list_credentials()` returns secret-free
-metadata, and `manager:logout(id)` returns a cancellable Run.
-
-`manager:wrap(model, id, { optional = true })` runs the underlying Model when
-no stored credential exists, allowing its ambient API-key callback to supply
-authentication. Stored credentials take precedence over ambient credentials.
-
-Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
-`usage`. A Model may emit
-`{ type = "provider_status", text = "...", details = {...} }`; the Controller
-retains the text as transient provider status and forwards a copied complete
-event to the selected Model's Provider Service. A terminal Model error may
-carry the same text and structured details. A paired
-`{ type = "provider_status", reconnecting = true|false }` event marks the
-start and end of a temporary request-retry status. The Controller also
-publishes `context.provider` as
-`{ id, name, state, operations }` for the provider console. A successful
-result has
-`{ ok = true, message, text }`; a failure has
-`{ ok = false, error, message? }`. Non-empty partial output is retained in the
-optional failure message.
+Model events are `text_delta`, `thinking_delta`, `tool_call_delta`,
+`usage`, and optional `provider_status`. A successful result has
+`{ ok = true, message, text }`; failure has `{ ok = false, error, message? }`.
+Partial output may appear in a failure message.
 
 A Run supports: >lua
 
@@ -1641,16 +708,11 @@ A Run supports: >lua
   run:is_done()
   run:is_cancelled()
   run:result()
-  run:await()       -- only inside neoagent.async.run()
+  run:await()       -- inside neoagent.async.run()
 <
-Callbacks run on Neovim's main loop and completion occurs exactly once.
+Callbacks run on Neovim's main loop and completion occurs once.
 
-Assistant tool calls may carry `argumentsError` when a Model cannot normalize
-the provider's arguments. The agent skips the executor, sends that failure as an
-error tool result, and continues the model loop. Every built-in API adapter uses
-this path for malformed JSON and non-object argument values.
-
-The tool loop is: >lua
+The reusable agent loop is: >lua
 
   require("neoagent.agent").run({
     model = model,
@@ -1660,139 +722,93 @@ The tool loop is: >lua
     execute_tool = nil,
     context = nil,
     model_options = nil,
+    get_steering_messages = nil,
     on_event = nil,
     on_done = nil,
   })
 <
-It copies input messages, performs no global model lookup, and uses exactly the
-tools passed by the caller. The loop continues while the model requests tools
-or steering supplies another turn. A final assistant response or cancellation
-ends the Run. Executor context includes `model`, `run`, `execute_tool`,
-`context`, `on_update`, and a copy of the current tool call in `call`.
+It copies messages and uses exactly the supplied Model, tools, executor, and
+context. Malformed provider tool arguments become error tool results without
+entering the executor.
 
-To bridge a callback API inside a tool or executor: >lua
+Authentication is independently composable: >lua
 
-  local value = require("neoagent.async").await(function(done)
-    start_operation(function(err, result)
-      if err then done.reject(err) else done.resolve(result) end
-    end)
-    return function() cancel_operation() end
-  end)
+  local manager = require("neoagent.auth").new({
+    methods = { example = login_method },
+    store = credential_store,
+  })
+  local authenticated = manager:wrap(model, "example")
 <
+Credentials are tagged `api_key` or `oauth` values. A login method may
+provide `login`, `refresh`, `request_opts`, and `public_metadata`.
+Stores implement `read`, `write`, `modify`, `list`, and `delete`.
+`manager:list_credentials()` returns secret-free metadata.
+
+Use `manager:wrap(model, id, { optional = true })` when an ambient credential
+may run the Model without a stored login.
+
 ===============================================================================
 6. TOOLS AND SESSIONS                                    *neoagent-composition*
 
-A tool is `{ name, description, input_schema, execute }`. `execute(arguments,
-ctx)` returns `{ content = { ... }, isError?, details? }`; content blocks are
-text or base64 images. Text blocks contain valid UTF-8 strings. The agent turns
-malformed tool results into error tool results. Replace or decorate
-`execute_tool(tool, arguments, ctx)` to add approval, logging, a native
-sandbox, or subagent behavior.
+A Tool is `{ name, description, input_schema, execute }`.
+`execute(arguments, ctx)` returns
+`{ content = { ... }, isError?, details? }`. Content blocks are UTF-8 text or
+base64 images. The agent converts malformed results into tool errors.
 
-A tool that can read workspace files may declare
-`capabilities = { read_files = true }`. The Controller discovers configured
-skills when the active toolset carries that capability. A successful disk
-mutation may return `details.changed_paths` as a list of paths. The built-in
-Neo Controller checks matching unmodified buffers after those results, so
-custom file tools receive the same refresh behavior as bundled file tools.
+`execute_tool(tool, arguments, ctx)` is the policy boundary for approval,
+logging, sandboxing, and other decorators. Its context contains the Model, Run,
+caller context, executor, update callback, and current tool call.
 
-A tool may define `on_messages(messages, ctx)`. Controllers call it with a
-copy of the complete active conversation after Session activation and message
-changes. `ctx.session_id` is the same opaque per-Session table available at
-`execute()` time as `ctx.context.session_id`. Tools can key weak in-memory
-state by that value and derive it entirely from conversation messages. Direct
-`agent.run()` remains Session-independent and does not call this hook.
+Optional Tool fields are:
 
-A tool may also define a renderer-neutral `render(opts)` callback. `opts`
-contains copies of `arguments`, the current `result`, and lifecycle `state`.
-The callback receives no Renderer name, layout width, spinner, buffer, or
-window. It returns semantic data that the selected Renderer may interpret.
+  capabilities.read_files   Enable skill discovery for this toolset.
+  on_messages(messages, ctx)
+                            Derive state from the active conversation.
+  render(opts)              Return semantic presentation data.
 
-Pi and Codex understand a general plain-text form: >lua
-
-  {
-    kind = "text",
-    title = "Optional title",
-    lines = { "first physical line", "second physical line" },
-    include_output = false,
-  }
-<
-`title` and `lines` are optional, with at least one present. Set
-`include_output = true` with no `lines` to retain the ordinary result body.
-The Renderer owns card chrome, highlights, state markers, clipping, animation,
-source syntax, and grouping.
-
-Bundled tools return richer semantic `activity`, `plan`, and `edit` values.
-These carry action words and subjects, plan items and statuses, or parsed diff
-rows. Pi and Codex choose their own layouts for those values. A custom Renderer
-receives the active tool and callback in block options and may interpret these
-or additional semantic kinds. Callback errors, unknown kinds, and malformed
-values use the Renderer's ordinary tool presentation.
-
-Bundled tools use `ctx.fs` for model-directed disk access and
-`ctx.process(argv, opts)` for subprocesses when an executor supplies them.
-Direct calls use `neoagent.fs` and `require("neoagent.process").run`.
-Decorators can copy `ctx`, replace either capability for one invocation, and
-then invoke the next executor. The filesystem capability implements
-`create_temp`, `read`, `mkdirp`, and `write_all`.
-
-Process options support `cwd`, `env`, `clear_env`, `stdin`, `capture`,
-`max_capture_bytes`, `timeout_ms`, `kill_grace_ms`, and `on_output`. The host
-runner executes argv with `vim.system`, captures ordered output unless
-`capture` is false, and owns the command's complete process tree. A configured
-`max_capture_bytes` limit applies to retained stdout and stderr together.
-POSIX commands run in a dedicated process group; Windows commands use a
-kill-on-close Job Object. Completion closes the tree, cancellation and timeout
-escalate it from TERM to KILL, and the result contains `code`, `signal`,
-`stdout`, `stderr`, `output`, and `timed_out`.
+`details.changed_paths` tells the built-in Neo Controller which unmodified
+buffers may be refreshed after a successful disk mutation.
 
 Bundled presets: >lua
 
-  require("neoagent.tools").coding()     -- read/write/edit/shell/Neoagent docs
-  require("neoagent.tools").read_only()  -- read/grep/find
-  require("neoagent.tools").update_plan() -- Codex-compatible plan tool
-  require("neoagent.tools").all()        -- every bundled tool
+  require("neoagent.tools").coding()
+  require("neoagent.tools").read_only()
+  require("neoagent.tools").update_plan()
+  require("neoagent.tools").all()
 <
-File tools operate on disk, never loaded buffers. The default `read_file`
-accepts image inputs up to 20 MiB, 40 million decoded pixels, and a 4.5 MiB
-base64 payload. Its ImageMagick operations have a 30-second timeout, bounded
-capture, 128 MiB memory and 256 MiB map limits, and no disk cache. Low-level
-compositions may customize the three input limits through
-`read_file.new({ max_image_input_bytes = ..., max_image_pixels = ...,
-max_image_payload_bytes = ... })`. Transformations stream image bytes through
-stdin and stdout and create no temporary files.
-The shell tool retains a bounded output tail and streams overflow to a
-temporary log through `ctx.fs`. The returned path remains available to later
-sandboxed file reads. Shell updates and final results preserve valid UTF-8
-text, tabs, and newlines; they display invalid byte sequences and other C0/C1
-controls as `\xNN` and identify the output as escaped. Output containing escape
-bytes also carries a bounded, valid UTF-8 `details.ansi` display copy. The
-bundled View interprets SGR colors and text attributes from that copy when it
-renders shell cards. Non-SGR escape sequences remain visible as `\x1B`.
-Overflow logs retain the original bytes. Shell commands time out after
-`shell_timeout` seconds, which defaults to 300. A tool call may supply a
-positive finite `timeout` in seconds to override the configured default. Set
-`shell_timeout = false` to leave calls without an explicit tool timeout
-unbounded.
+The coding preset provides file read, write, edit, shell, and Neoagent
+documentation tools. File tools operate on disk. The optional plan tool derives
+its current state from successful calls in the active Session path.
 
-`require("neoagent.session").new()` is an in-memory, tool-free message owner.
-It may receive `{ store = store }` or `{ messages = messages }`, but not both.
-The default JSONL Store is created with: >lua
+Bundled tools use `ctx.fs` and `ctx.process(argv, opts)` when supplied.
+The filesystem capability implements `create_temp`, `read`, `mkdirp`, and
+`write_all`. Process options include `cwd`, `env`, `clear_env`, `stdin`,
+`capture`, `max_capture_bytes`, `timeout_ms`, `kill_grace_ms`, and
+`on_output`. Results contain `code`, `signal`, `stdout`, `stderr`,
+`output`, and `timed_out`.
+
+The shell timeout defaults to 300 seconds. Set `shell_timeout = false` to
+disable the default, or pass a positive `timeout` in the tool call. Captured
+output is bounded; overflow is written through the filesystem capability.
+
+`require("neoagent.session").new()` creates an in-memory Session. It accepts
+`{ store = store }` or `{ messages = messages }`. The bundled store uses the
+Pi v3 append-only JSONL format: >lua
 
   local store = require("neoagent.storage").new({
     directory = directory,
     cwd = cwd,
   })
+
+  local session = require("neoagent.session").new({ store = store })
 <
-`directory` is the workspaces root. The Store uses the Pi v3 append-only JSONL
-format, accepts values that encode as valid UTF-8 JSON, and creates no file
-until the first accepted message. Use `require("neoagent.storage").open(path)`
-to open an existing Store.
+No file is created until the first message is accepted. Open an existing store
+with `require("neoagent.storage").open(path)`.
 
 Tree-aware Session methods are: >lua
 
-  session:messages()                 -- active branch for consumers
-  session:context_messages()         -- compacted LLM projection
+  session:messages()
+  session:context_messages()
   session:entries()
   session:entry(id)
   session:leaf_id()
@@ -1803,24 +819,8 @@ Tree-aware Session methods are: >lua
   session:label(id)
   session:name()
 <
-`move_to()` changes the active leaf; the next append creates a branch child.
-The optional summary creates a Pi `branch_summary` entry. Complete-tree
-validation requires parents and every leaf, label, branch-summary, and
-compaction reference to precede its entry; `branch_summary.fromId = "root"` is
-the root sentinel. A compaction's first retained entry must also belong to its
-active parent path. Store `append`, `append_entry`, and `set_leaf` methods may
-return a fourth projection-update result after the usual success, error, and
-entry values: >lua
-
-  { type = "append", messages = { ... } }
-  { type = "replace", messages = { ... } }
-<
-A Session copies a recognized update into its message cache. When a custom
-Store omits the update, the Session reloads through `store:load()`. Reload
-failures return a structured storage error and leave the cached projection
-unchanged. The default JSONL Store returns projection updates, so linear
-Session appends update the cache incrementally.
-Fork a linked child session with: >lua
+`move_to()` changes the active leaf; the next append creates a branch.
+Create a linked child with: >lua
 
   local child = require("neoagent.storage").fork(store_or_path, {
     directory = directory,
@@ -1828,87 +828,50 @@ Fork a linked child session with: >lua
     position = "before", -- or "at"
   })
 <
-Omitting `entry_id` copies the complete append-only file. The default
-Controller exposes `branch`, `select_branch`, `fork`, and `select_fork`.
+`storage.list_sessions(directory, cwd)` returns recent picker records.
+Workspace session indexes are disposable and rebuilt from the JSONL files when
+missing or invalid. Reads and appends use per-file locks.
 
-`store:info()` returns the path, ID, cwd, optional name and parent, creation
-timestamp, latest message activity, message count, and first user message.
-`storage.list_sessions(directory, cwd)` returns picker records containing the
-path, optional parent, bounded display text, and filesystem modification time
-in recent-activity order.
-
-Each workspace has a disposable `session-index.json` mapping session filenames
-to bounded display text and an optional parent path. Filesystem modification
-times provide recent-activity ordering. The index is written atomically when a
-session is first persisted, named, or forked. Concurrent Neovim processes
-merge changes under a bounded lock. Session JSONL remains authoritative:
-listing sessions rebuilds a missing or malformed index and repairs missing
-entries. Conversation appends update the session file mtime used for ordering
-without rewriting the index. Reads and appends of an existing session are
-serialized by a per-session lock.
-
-Reusable file locks are available to custom persistence layers: >lua
+Reusable locks are available from `neoagent.file_lock`: >lua
 
   local lock = require("neoagent.file_lock").new({
     path = persistence_path .. ".lock",
     timeout_ms = 15000,
     poll_ms = 50,
     stale_ms = 120000,
-    -- refresh_ms = 30000,
   })
-
-  local result = assert(lock:with(function()
-    return read_modify_write()
-  end))
-
-  local lease = assert(lock:acquire())
-  local ok, err = lease:release()
+  local result = assert(lock:with(function() return update() end))
 <
-The lock parent directory must exist. Lock files contain a random ownership
-token and use mode `0600` by default. Acquisition retries only contention,
-recovers stale files, and returns structured `file_lock` errors. `with()`
-releases the lease after successful, failed, or throwing callbacks. An async
-mutation running inside `neoagent.async.run()` may call `acquire_async()`;
-acquisition is cancellable, and `refresh_ms` maintains the lease timestamp for
-long operations.
+The parent directory must exist. `acquire()` returns an owned lease with
+`release()`; `acquire_async()` is cancellable. Locks use token-validated
+release and bounded stale recovery.
 
 CONTEXT COMPACTION                                  *neoagent-compaction*
 
-Automatic compaction runs at the configured context threshold and after a
-provider context-overflow error. A successful assistant message with
-`stopReason = "length"` is incomplete: the Controller continues it once and
-compacts first when the threshold is reached. A second `length` result finishes
-the interaction, bounding recovery. Subsequent Model requests use the summary
-before retained recent messages; the complete Session tree remains available
-for navigation. Transcript snapshots use the same projection, so the compaction
-card precedes retained recent messages and messages created after compaction
-while the compacted prefix remains omitted. The bundled View presents complete
-compaction summaries through the configured `card_details` mapping.
+Automatic compaction runs near the Model's context limit and after a provider
+context-overflow error. It stores a summary in the Session tree and uses that
+summary before retained recent messages in later requests. The full tree
+remains available for branch navigation.
 
-The threshold is `context_window - reserve_tokens`, and recent retention uses
-`keep_recent_tokens`. Set `compaction = false` to disable Controller compaction
-or `compaction.auto = false` to retain manual and overflow compaction. A custom
-`compaction.run(opts)` returns a cancellable Run with `summary`,
-`first_kept_entry_id`, `tokens_before`, and optional `usage` and `details`.
-Runner startup is transactional: exceptions and invalid Run values produce a
-structured compaction error while preserving Controller lifecycle state.
-The `neoagent.compaction` module exposes `settings`, `estimate_context`,
-`should_compact`, `prepare`, `serialize`, and `run` for direct composition.
+The threshold is `context_window - reserve_tokens`; recent retention uses
+`keep_recent_tokens`. Set `compaction = false` to disable all Controller
+compaction or `compaction.auto = false` to keep manual and overflow
+compaction.
 
-Session adapters: >lua
+A custom `compaction.run(opts)` returns a cancellable Run whose result
+contains `summary`, `first_kept_entry_id`, `tokens_before`, and optional
+`usage` and `details`. The `neoagent.compaction` module exposes
+`settings`, `estimate_context`, `should_compact`, `prepare`,
+`serialize`, and `run`.
+
+Session adapters are: >lua
 
   require("neoagent.chat").send(session, prompt, opts)
   require("neoagent.chat").run(session, prompt, opts)
   require("neoagent.chat").continue(session, opts)
 <
-`continue()` uses the projected context without appending another user
-message. `run()` and `continue()` forward an optional `get_steering_messages`
-callback to the agent loop. It returns user-message tables to inject after the
-current assistant response and tool calls. Accepted messages are persisted.
-Session adapters allow one active mutation per Session.
-The top-level `require("neoagent")` module constructs Controllers with `new`,
-constructs shared Windows with `new_window`, owns the replaceable default
-Window, and forwards commands and convenience operations to its active
-Controller.
+`continue()` uses projected context without adding a user message. The
+optional `get_steering_messages` callback supplies user-message tables between
+assistant/tool turns. Session adapters allow one active mutation per Session.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

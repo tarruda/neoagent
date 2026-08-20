@@ -318,7 +318,7 @@ describe("neoagent shared sandbox contract", function()
       assert.matches("search.txt", text(results.grep), 1, true)
       assert.matches("found.txt", text(results.find), 1, true)
       assert.are.equal("Plan updated", text(results.plan))
-      assert.matches("# Neoagent configuration", text(results.documentation))
+      assert.matches("# Neoagent API map", text(results.documentation))
       assert.are.equal(image,
         vim.base64.decode(results.image.content[2].data))
       assert.is_truthy(results.shell.details.output_path)
