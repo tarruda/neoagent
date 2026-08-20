@@ -781,6 +781,70 @@ describe("neoagent default controller", function()
     assert.matches("No default_model", model_err.message)
   end)
 
+  it("returns provider lease conflicts from manual compaction", function()
+    local async = require("neoagent.async")
+    local pending
+    local service = {
+      id = "fake",
+      name = "Fake",
+      state = function() return false end,
+      operations = {
+        mutate = {
+          label = "Mutate",
+          mutating = true,
+          run = function()
+            return async.run(function()
+              return async.await(function(done)
+                pending = done
+                return function() end
+              end)
+            end)
+          end,
+        },
+      },
+    }
+    local compactions = 0
+    setup_model(fake_model.new({ {
+      result = fake_model.assistant({
+        { type = "text", text = string.rep("answer ", 20) },
+      }),
+    } }), {
+      providers = {
+        fake = {
+          api = "fake-api",
+          models = { test = {} },
+          service = function() return service end,
+        },
+      },
+      compaction = {
+        auto = false,
+        reserve_tokens = 20,
+        keep_recent_tokens = 5,
+        run = function()
+          compactions = compactions + 1
+          return async.run(function() return { ok = true } end)
+        end,
+      },
+    })
+    local interaction = assert(neoagent.send("create a session"))
+    assert(vim.wait(1000, function() return interaction:is_done() end))
+    local operation = assert(neoagent.provider("mutate"))
+    assert(vim.wait(1000, function() return pending ~= nil end))
+
+    local called, run, err = pcall(neoagent.compact)
+    assert.is_true(called)
+    assert.is_nil(run)
+    assert.are.equal("provider", err.kind)
+    assert.matches("mutating provider operation", err.message)
+    assert.are.equal(0, compactions)
+    assert.is_false(neoagent.default():is_running())
+
+    operation:cancel()
+    assert(vim.wait(1000, function() return operation:is_done() end))
+    local release = assert(require("neoagent.provider_service").acquire(service))
+    assert.is_true(release())
+  end)
+
   it("cycles model thinking profiles and applies them at request time", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "done" } }) } })
     setup_model(model, {
@@ -1330,6 +1394,67 @@ describe("neoagent default controller", function()
     assert(neoagent.open())
 
     assert(neoagent.new_session())
+    assert.are.equal(model, neoagent.get_model())
+    assert.are.equal("fake/test", current_view().context.model)
+  end)
+
+  it("does not let an unavailable persisted dynamic model block startup", function()
+    local directory = vim.fn.tempname()
+    local workspace = vim.fn.tempname()
+    paths[#paths + 1], paths[#paths + 2] = directory, workspace
+    vim.fn.mkdir(workspace, "p")
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = workspace,
+    })
+    assert(settings:write({
+      controllers = {
+        Neo = {
+          default_model = { provider = "dynamic", model = "remote" },
+        },
+      },
+    }))
+    local model = fake_model.new({})
+    local options = {
+      workspace_trust = false,
+      default_registry = false,
+      persistence = {
+        enabled = true,
+        workspace_settings = true,
+        directory = directory,
+      },
+      providers = {
+        fake = { api = "fake-api", models = { test = {} } },
+        dynamic = {
+          api = "fake-api",
+          models = {},
+          service = function()
+            return {
+              id = "dynamic",
+              name = "Dynamic",
+              state = function() return false end,
+              operations = {},
+              get_models = function() return {} end,
+            }
+          end,
+        },
+      },
+      apis = { ["fake-api"] = function() return model end },
+      tools = {},
+      agents = false,
+      skills = false,
+      ui = { position = "center" },
+    }
+    neoagent.setup(options)
+    vim.cmd("cd " .. vim.fn.fnameescape(workspace))
+
+    assert(neoagent.open())
+    assert.is_nil(neoagent.get_model())
+    assert.are.equal("no model", current_view().context.model)
+
+    options.default_model = { provider = "fake", model = "test" }
+    neoagent.setup(options)
+    assert(neoagent.open())
     assert.are.equal(model, neoagent.get_model())
     assert.are.equal("fake/test", current_view().context.model)
   end)

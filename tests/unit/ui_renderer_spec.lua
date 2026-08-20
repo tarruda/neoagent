@@ -36,6 +36,7 @@ describe("neoagent UI Renderer protocol", function()
       renderer({ define_highlights = true }),
       renderer({ render_focus = true }),
       renderer({ render_status = true }),
+      renderer({ render_provider = true }),
     }
     for _, value in ipairs(invalid) do
       local selected, err = protocol.validate(value)
@@ -376,5 +377,48 @@ describe("neoagent UI Renderer protocol", function()
       assert.matches("new content", table.concat(content.lines, "\n"))
       assert.is_nil(content.source)
     end
+  end)
+
+  it("validates optional provider console presentations", function()
+    local base = renderer()
+    assert.is_nil(protocol.render_provider(base, {}, { width = 40 }))
+
+    local selected = renderer({
+      render_provider = function(_, snapshot, opts)
+        return {
+          title = snapshot.name,
+          content = content({ "summary" }),
+          selectable = { [0] = { kind = "operation", id = "ping" } },
+        }
+      end,
+    })
+    local presentation, err = protocol.render_provider(selected, {
+      name = "Fake",
+    }, { width = 40 })
+    assert(presentation, err and err.message)
+    assert.are.equal("Fake", presentation.title)
+    assert.are.equal("operation", presentation.selectable[0].kind)
+    assert.are.equal("ping", presentation.selectable[0].id)
+
+    for _, value in ipairs({
+      "invalid",
+      { title = "x\ny" },
+      { content = { lines = { "x" } }, selectable = { [1] = { kind = "action", id = "x" } } },
+      { content = content(), selectable = { [-1] = { kind = "operation", id = "x" } } },
+      { content = content(), selectable = { [5] = { kind = "operation", id = "x" } } },
+      { content = content(), selectable = { [0] = "ping" } },
+    }) do
+      local ok, provider_err = protocol.render_provider(renderer({
+        render_provider = function() return value end,
+      }), {}, { width = 40 })
+      assert.is_nil(ok)
+      assert.are.equal("ui", provider_err.kind)
+    end
+
+    local ok, provider_err = protocol.render_provider(renderer({
+      render_provider = function() error("provider render boom") end,
+    }), {}, { width = 40 })
+    assert.is_nil(ok)
+    assert.matches("provider render boom", provider_err.message)
   end)
 end)

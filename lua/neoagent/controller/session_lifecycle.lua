@@ -62,7 +62,7 @@ function M.new(opts)
     end
     for _, selected in ipairs(candidates) do
       local ok, model = pcall(require("neoagent.models").resolve, selected.provider, selected.model,
-        config, opts.auth_manager)
+        config, opts.auth_manager, opts.providers)
       if ok then
         state.model = model
         state.model_selection = util.copy(selected)
@@ -74,6 +74,7 @@ function M.new(opts)
     end
     if state.model then
       state.thinking_level = opts.thinking_level(state.model, stored.thinking_level)
+      opts.bind_provider(state.model_selection.provider)
     end
   end
 

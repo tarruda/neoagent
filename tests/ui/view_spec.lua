@@ -165,7 +165,7 @@ describe("neoagent.ui", function()
     })
     assert(vim.wait(1000, function()
       return footer()
-        == " <CR> details · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
+        == " <CR> details · <A-r> resume · <A-m> select model · <A-l> provider · <C-c> clear/cancel "
     end))
   end)
 
@@ -3647,8 +3647,9 @@ describe("neoagent.ui", function()
     assert.matches("Compacting%.%.%.", transcript_footer())
     assert.is_nil(transcript_footer():find("think:", 1, true))
     assert.is_not_nil(transcript_footer():find(
-      "ctx 250/1k (25.0%) (5h 80% left · weekly 60% left)", 1, true
+      "ctx 250/1k (25.0%)", 1, true
     ))
+    assert.is_nil(transcript_footer():find("weekly 60% left", 1, true))
     assert.are.equal(vim.api.nvim_win_get_width(result.transcript_win),
       vim.fn.strdisplaywidth(transcript_footer()))
     local input_config = vim.api.nvim_win_get_config(result.input_win)

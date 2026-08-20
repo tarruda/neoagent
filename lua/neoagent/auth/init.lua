@@ -17,6 +17,36 @@ local function valid_env(env)
   return true
 end
 
+local function public_metadata(value)
+  if value == nil then return nil end
+  if type(value) ~= "table" or util.is_list(value) then
+    return nil, util.error("auth", "Login method public_metadata must return a keyed table")
+  end
+  local result = {}
+  for name, entry in pairs(value) do
+    if type(name) ~= "string" or name == "" then
+      return nil, util.error("auth", "public_metadata names must be non-empty strings")
+    end
+    local lower = name:lower()
+    if lower:find("key", 1, true) or lower:find("token", 1, true)
+        or lower:find("secret", 1, true)
+        or lower:find("authorization", 1, true) then
+      return nil, util.error("auth", "public_metadata name is reserved: " .. name)
+    end
+    if type(entry) ~= "string" or entry == "" or #entry > 512 then
+      return nil, util.error("auth", "public_metadata values must be non-empty strings of at most 512 bytes")
+    end
+    if entry:find("[%z\1-\31\127]") then
+      return nil, util.error("auth", "public_metadata values contain control characters")
+    end
+    if not util.is_valid_utf8(entry) then
+      return nil, util.error("auth", "public_metadata values must contain valid UTF-8")
+    end
+    result[name] = entry
+  end
+  return result
+end
+
 local function credential_type(credential)
   if type(credential) ~= "table" then return nil end
   if credential.type == "api_key" then return "api_key" end
@@ -133,12 +163,23 @@ function Manager:resolve(id, opts)
     if type(override) ~= "table" then
       error(util.error("auth", "Login method request_opts must return a table"), 0)
     end
+    local metadata
+    if type(method.public_metadata) == "function" then
+      local ok, value = pcall(method.public_metadata, util.copy(credential))
+      if not ok then
+        error(util.error("auth", "Login method public_metadata failed: " .. tostring(value)), 0)
+      end
+      local metadata_err
+      metadata, metadata_err = public_metadata(value)
+      if not metadata then error(metadata_err, 0) end
+    end
     return {
       ok = true,
       method = id,
       configured = true,
       credential_type = credential_type(credential),
       request_opts = override,
+      metadata = metadata,
     }
   end, { on_done = opts.on_done, error_kind = "auth" })
 end
@@ -219,6 +260,7 @@ function Manager:wrap(model, id, opts)
     id = model.id,
     input = util.copy(model.input),
     context_window = model.context_window,
+    timeout_ms = model.timeout_ms,
     thinking = util.copy(model.thinking),
   }
   function wrapped:stream(call_opts)

@@ -12,6 +12,10 @@ A small, hackable LLM and coding-agent toolkit for Neovim.
 
 - Stream assistant responses, reasoning, tool calls, usage, and provider status
   directly in Neovim.
+- Open the provider console with `:NeoagentProvider` to inspect live provider
+  status and run declared provider operations. `<A-p>` toggles it, `<A-l>`
+  opens or focuses it, `<A-h>` returns to the transcript, and `<A-j>` moves
+  to the input.
 - Use Anthropic Messages, OpenAI-compatible Chat Completions and Responses,
   local models with llama.cpp, built-in Anthropic, DeepSeek, and Z.AI
   catalogs, or Claude and ChatGPT subscription authentication.
@@ -45,9 +49,20 @@ Choose a provider:
 - Run `:NeoagentLogin zai` to store a Z.AI API key, or set `ZAI_API_KEY`
   before starting Neovim. The credential enables both the metered API and
   global Coding Plan catalogs.
+- The built-in llama.cpp provider supports anonymous local routers directly.
+  Run its `refresh` operation to discover the default local server, or run
+  `:NeoagentLogin llama` to select another URL or store an API key. Model
+  definitions under `providers["llama.cpp"].models` declare the Hugging Face
+  source, router load parameters, and inference parameters. The console shows
+  pushed router, request, load, and download state. The `catalog` operation
+  opens the model list, `download` and `load` accept definition ids, and the
+  `preset` operation opens a valid server-side `--models-preset` document.
+  Router catalogs use a 60-second cache by default; provider operations
+  publish their fresh results.
 - For a ChatGPT Plus or Pro subscription, run
   `:NeoagentLogin openai-codex`, complete the browser or device-code login,
-  then select a subscription model with `:NeoagentModel`.
+  then select a subscription model with `:NeoagentModel`. The provider console
+  shows the rate-limit windows reported by each response.
 
 API keys are entered through a masked prompt. A stored credential takes
 precedence over its environment variable. `:NeoagentLogout [method]` removes

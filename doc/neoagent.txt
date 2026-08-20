@@ -79,9 +79,12 @@ The default registry contains these provider IDs:
   zai                Z.AI API and Coding Plan; `:NeoagentLogin zai` or
                      `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Coding Plan models using the same `zai` credential.
+  llama.cpp          Local llama.cpp router; `:NeoagentLogin llama` stores the
+                     server URL and optional API key.
 
 `:NeoagentModel` lists the models currently available from configured and
-authenticated providers.
+authenticated providers. The `openai-codex` provider ships a Provider Service;
+`:NeoagentProvider` opens its rate-limit console.
 
 Credentials are stored at `stdpath("state") .. "/neoagent/auth.json"`. Stored
 credentials take precedence over environment variables. `:NeoagentLogout`
@@ -169,6 +172,11 @@ The important options are: >lua
       scroll_on_reopen = true,
       wrap_cards = false,
       show_thinking = true,
+      provider_console = {
+        position = "top", -- top, right, or bottom
+        width = 0.4,
+        height = 0.35,
+      },
       completion = {
         sources = { "files" },
       },
@@ -186,8 +194,8 @@ configuration while using an empty system prompt and tool list; AGENTS.md and
 skill discovery are disabled for it. Commands and top-level convenience
 functions target the active Controller in that Window. `new(opts[, runtime])`
 constructs an independent Controller. The optional runtime object explicitly
-injects higher-level policies such as `workspace_trust`; it is separate from
-the reusable Controller configuration:
+injects higher-level policies such as `workspace_trust` and shared
+`providers`; it is separate from the reusable Controller configuration:
 >lua
 
   local neoagent = require("neoagent")
@@ -227,6 +235,10 @@ Controller methods are: >lua
   controller:login([method])
   controller:cancel_login()
   controller:logout([method])
+  controller:provider_operations()
+  controller:provider_info()
+  controller:provider_operation(operation[, args])
+  controller:cancel_provider()
   controller:set_ui_position(position)
   controller:subscribe(callback)
   controller:snapshot()
@@ -258,7 +270,8 @@ A Window owns one View and selects an attached Controller. Its operations are
 `open`, `close`, `toggle`, `is_open`, `active`, `controllers`, `select`,
 `cycle`, `set_position`, `set_renderer`, `set_transcript_style`, `set_input`,
 `get_input`, `view`, `rendered_controller`, `input_history`, `add_input_history`,
-`select_input_history`, and `destroy`. It retains input drafts per Controller
+`select_input_history`, `set_provider_console`, `toggle_provider_console`,
+`provider_console_open`, and `destroy`. It retains input drafts per Controller
 and shares workspace input history. `view()` returns the owned View after its
 creation, and `rendered_controller()` identifies the Controller currently
 presented by that View. Selection restores the active transcript and draft
@@ -289,18 +302,22 @@ the View configuration. The `view` option is a factory receiving `config`,
 `window`, `on_submit`,
 `on_stop`, `on_dequeue_steering`, `on_input_history`, `on_select_history`,
 `on_cycle_thinking`, `on_cycle_agent`, `on_select_model`,
-`on_resume_session`, `resolve_tool`, `on_dialog_action`, and
-`on_dialog_dismiss`. `resolve_tool(name)` returns the active Controller's tool
+`on_resume_session`, `resolve_tool`, `on_dialog_action`,
+`on_dialog_dismiss`, `on_provider_action`, and `on_provider_close`.
+`resolve_tool(name)` returns the active Controller's tool
 with that name, allowing a custom View to consume optional tool presentation
-callbacks. A View used
+callbacks. `on_provider_action(id, args)` starts the active Controller's
+provider operation, and `on_provider_close()` reports console dismissal. A View used
 by a Window with a dialog source implements `set_dialog(snapshot)`. The
 factory returns a passive View with `open`, `close`,
 `is_open`, `destroy`, `get_input`, `set_input`, `set_messages`, `set_context`,
 `apply`, and `finish`.
 
-The bundled View also implements `set_renderer(renderer)`. A custom View may
-implement that method to support live Renderer replacement; a Window reports a
-UI error when its active custom View does not provide it.
+The bundled View also implements `set_renderer(renderer)`,
+`set_provider(snapshot)`, and `set_provider_open(open)`. A custom View may
+implement the Renderer method to support live Renderer replacement and the
+provider methods to present the console; a Window reports a UI error when its
+active custom View cannot provide them.
 
 An executor can inject an optional `ctx.dialog` capability and attach its
 source to a Window:
@@ -863,14 +880,240 @@ placeholders when `input` excludes `"image"`; the Session retains the original
 image blocks. DeepSeek models and Z.AI language models declare text input. Z.AI
 models with a `V` suffix declare text and image input.
 
+PROVIDER SERVICES                                  *neoagent-provider-services*
+
+A configured provider may declare a `service` constructor. The built-in
+`openai-codex` provider declares one. The composition builds Provider Service
+values from secret-free provider projections and injects them through
+`runtime.providers`. Static providers use their configured model tables.
+Direct Model constructors do not compose services.
+
+A Provider Service is a plain table: >lua
+
+  local service = require("neoagent.providers.codex").new()
+
+  service.id              -- non-empty provider id
+  service.name            -- display name
+  service:state()         -- copied bounded snapshot or false
+  service.operations      -- keyed operation descriptors
+<
+Optional members include `get_models()`, `refresh_models(ctx)`,
+`refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
+`on_event(event)`, and `destroy()`.
+`lua/neoagent/provider_service.lua` validates services, exposes sorted
+operation metadata, builds operation contexts, and starts operations as
+cancellable Runs. Operations on one service are serialized across Controllers.
+Agent and compaction Runs hold a service usage lease; mutating operations are
+disabled while a lease exists, and an active mutating operation blocks new
+leases. Failed service composition destroys every service constructed during
+that attempt. `lua/neoagent/provider_state.lua` normalizes snapshots and
+bounds every retained string and collection.
+
+`provider_state.new()` creates a reusable push channel for provider
+dashboards. Providers push JSON-compatible Lua tables. The channel validates
+and copies each snapshot, then notifies subscribers on Neovim's main loop.
+Pushes from provider-owned `vim.uv` timers are supported directly. >lua
+
+  local dashboard = require("neoagent.provider_state").new({
+    blocks = {
+      { type = "status", text = "Connecting", level = "muted" },
+    },
+  })
+
+  local service = {
+    id = "example",
+    name = "Example",
+    operations = {},
+    state = dashboard.state,
+    subscribe = dashboard.subscribe,
+  }
+
+  dashboard:push({
+    blocks = {
+      { type = "status", text = "Ready", level = "success" },
+      { type = "field", label = "Endpoint", value = "localhost:8080" },
+      {
+        type = "progress",
+        label = "Downloading model",
+        value = 0.42,
+        detail = "3.4 GiB / 8.0 GiB",
+      },
+      {
+        type = "activity",
+        title = "Recent activity",
+        entries = {
+          { level = "info", message = "Download started", timestamp = 1 },
+        },
+      },
+    },
+  })
+<
+Dashboard block types are `status`, `field`, `progress`, `list`, and
+`activity`. Status and progress levels are `info`, `success`, `warn`, `error`,
+and `muted`. A progress `value` is a ratio from 0 through 1; omitting it
+represents indeterminate work. Lists contain `{ label, detail? }` items, and
+activity blocks contain `{ level, message, timestamp? }` entries. Providers
+describe semantics only. The active Renderer chooses text, symbols, colors,
+spacing, and progress-bar geometry.
+
+Operations use the independent provider service runner: >lua
+
+  local run = provider_service.run(service, "operation", {
+    args = "raw argument tail",
+    model = { provider = "...", model = "..." },
+    agent_running = false,
+    auth = auth_manager,
+    auth_method = configured_provider.auth,
+    interact = my_interaction_adapter,
+  })
+<
+Operation callbacks receive a copied public provider projection,
+`ctx.args`, the current `ctx.model`, `ctx.agent_running`,
+`ctx.resolve_auth()` returning a Run, and `ctx.interact` with `select`,
+`input`, `confirm`, `progress`, and `notify` capabilities. The bundled
+Controller adapter presents interactions through `vim.ui.select` and
+`vim.ui.input`. An operation descriptor may define
+`complete(arg_lead, args)` for command-line argument completion. A successful
+Run may return a bounded `{ kind = "document", name, filetype, content }`
+artifact; the Controller opens it as a scratch tab. `auth.Manager:resolve()`
+may include validated
+`public_metadata` from an auth method; credential values never enter provider
+state or interactions.
+
+A Controller binds a console service explicitly and publishes
+`context.provider` as `{ id, name, state, operations }`. A provider without a
+service publishes `state = false` and an empty operations list, so its
+console opens with the empty information view. A console may inspect a service
+other than the selected Model's service; model events always flow to the
+selected Model's service. The active
+Controller's provider Run is independent of the agent Run. The read-only
+provider console renders that snapshot with arrow navigation over operation
+rows and preserves the selected row across pushed updates. The Window owns
+its visibility and lays out the provider above the transcript by default,
+with the input beneath both surfaces. `<A-p>` toggles the console from every
+Neoagent surface,
+`<A-l>` focuses or opens it from the transcript or input, `<A-h>` returns to
+the transcript, `<A-j>` moves to the input, and Up/Down arrows select
+operation rows. The basic Codex service derives plan and rolling-window
+progress meters from the `provider_status` events produced from `x-codex-*`
+response headers. It also pushes the latest request token counts. Quota
+details live in the provider console while the transcript border remains
+focused on agent and context state.
+
+`models.available()` and `models.resolve()` accept an optional
+`providers` map. For a service with `get_models()`, discovered entries merge
+under the configured model table, and user `models[id] = false` entries
+remain recorded as removals for discovered catalogs. Dynamic entries are
+validated before they enter availability or resolution. `auth_optional = true`
+allows a provider to use anonymous or ambient access while a stored login
+optionally supplies request overrides. `service_opts` is copied into the
+secret-free constructor projection for provider-specific configuration.
+`catalog_cache` is also copied into that projection. Set it to `false` to
+disable persisted model catalogs, or to `{ ttl_ms = milliseconds }` to select
+a freshness window. Provider Services opt into this policy when composing
+`provider_catalog`. Forced publications from provider commands update both
+the runtime catalog and its persisted entry. `models.resolve()` also applies an
+optional `service:wrap_model()` hook after authentication wrapping. The
+llama.cpp service uses its pushed catalog and router events to disable
+`request_timeout_ms` while the router loads the requested model. The
+openai-completions adapter accepts `timeout_ms` at
+construction and per stream call; `false` disables the transport deadline.
+
+The bundled llama.cpp service uses `get_models()` for router catalog Models
+and `refresh_models()` with its injected provider state store. Its default
+catalog cache has a 60-second TTL. Set `catalog_cache = false` on the provider
+to query the router at every startup, or configure another `ttl_ms`. Catalog,
+load, unload, download, and refresh operations publish fresh router results
+regardless of the TTL. The cache is a versioned, secret-free projection
+containing model identity, status, modalities, context, and size. Router
+command lines, paths, presets, progress payloads, and credentials are excluded.
+The startup refresh runs when llama.cpp is explicitly configured or selected
+as the default provider. A configured dynamic default can remain pending while
+that asynchronous refresh completes. Login forces a refresh for services using
+the login method. Load and unload force a network refresh after mutation. Its
+operations are `catalog`, `refresh`, `load`, `unload`, `download`, and
+`preset`; their arguments have provider-specific completion. Load, unload,
+and download waits are bounded. Cancelling load or download requests a
+server-side unload. The console shows the router connection, SSE state,
+independent concurrent inference requests, recent activity, and live load or
+download progress. It starts live events for catalogs restored from cache.
+The `catalog` operation presents router models and configured definitions
+through `vim.ui.select`.
+When the active provider has no service, opening the console offers available
+provider services. The llama.cpp auth method stores the server URL and exposes
+it through `public_metadata`; anonymous servers require no saved login, and
+login prompts for an API key only after a 401 or 403 response.
+
+llama.cpp model definitions are plain tables under
+`providers["llama.cpp"].models`. Each definition id is the selectable model
+id; `hf_repo` with an optional `quantization` names the router model
+`org/repo:quant`, `load` records router parameters, and the remaining keys
+are the usual inference parameters (`input`, `context_window`,
+`max_output_tokens`, `request_timeout_ms`, `thinking`, `request_opts`). When
+the definition id aliases an HF source, `get_models()` exposes the alias and
+routes inference to the router model id automatically. Definitions merge
+ahead of the server catalog: every definition appears in `get_models()` even
+before its model is downloaded, definition parameters win over
+server-reported values, and unclaimed server models follow. The router
+applies load parameters through its own server-side config. Known convenience
+keys are `ctx_size`, `gpu_layers`, `threads`, and `flash_attn`; other safe
+scalar keys map underscores to dashes. The `preset` operation returns a
+versioned `--models-preset` INI document. HF aliases include `hf-repo`, and
+`flash_attn` renders as `flash-attn = on|off`.
+
+When llama-server starts with `--models-preset`, the preset file merges into
+the router catalog alongside cached and `--models-dir` models; it does not
+replace discovery. Preset sections with a new name define new models (via
+`model` or `hf-repo`), sections matching existing models override their
+parameters, `load-on-startup = true` autoloads a model, and `?reload=1`
+re-reads the file, so the `refresh` operation applies config edits without a
+server restart. The catalog selector marks such models as `server preset`.
+Model definitions work in both modes: inference parameters apply client-side,
+aliases name preset models whose router id matches the `hf_repo` source, and
+the `preset` operation generates the server config sections from defined load
+parameters.
+
+Example: >
+  providers = {
+    ["llama.cpp"] = {
+      catalog_cache = { ttl_ms = 60 * 1000 }, -- false disables persistence
+      service_opts = {
+        wait_timeout_ms = 10 * 60 * 1000,
+        download_timeout_ms = 60 * 60 * 1000,
+        poll_interval_ms = 250,
+      },
+      models = {
+        qwen = {
+          hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
+          quantization = "Q4_0",
+          load = { ctx_size = 32768, gpu_layers = 99, flash_attn = true },
+          context_window = 262144,
+          max_output_tokens = 80000,
+          thinking = {
+            off = { body = { chat_template_kwargs = { enable_thinking = false } } },
+            high = { body = { chat_template_kwargs = { enable_thinking = true } } },
+          },
+        },
+      },
+    },
+  }
+<
+
+`wait_timeout_ms` bounds load and unload polling. `download_timeout_ms`
+bounds downloads, and `poll_interval_ms` controls status polling. Each value
+must be positive. These settings affect the management API and remain
+independent from Model `request_timeout_ms`.
+
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
 With persistence and `workspace_settings` enabled, model and thinking
 preferences are scoped by Controller name and UI position is shared by the
 workspace. An unnamed standalone Controller uses the `default` scope. A
-new Session resolves its Controller's workspace preferences before display. A
-resumed Session's recorded model and thinking values take precedence for that
-Session.
+new Session resolves its Controller's workspace preferences before display. An
+unavailable workspace model is ignored; a valid configured default is used,
+and a workspace without a valid configured default opens without a selected
+model. A resumed Session's recorded model and thinking values take precedence
+for that Session.
 
 The bundled Window keeps the 100 most recent accepted inputs for each
 workspace and shares them across its Controllers. Set
@@ -906,6 +1149,8 @@ lock.
   :NeoagentThinking [level]       Set a thinking level or cycle to the next.
   :NeoagentPosition [position]    Set the UI position or select one.
   :NeoagentTranscriptStyle style  Select `pi` or `codex` transcript chrome.
+  :NeoagentProvider [op [args]]  Toggle the console or run an operation.
+  :NeoagentProvider!             Cancel the active provider operation.
   :NeoagentLogin [method]         Store an API key or authenticate an account.
   :NeoagentLogin!                 Cancel an active login.
   :NeoagentLogout [method]        Remove a stored credential or select one.
@@ -915,7 +1160,10 @@ lock.
 
 No global mappings are installed. Argument-free selectors and the input-history
 selector use `vim.ui.select`, so configured `vim.ui` providers can render them.
-Fork selection restores the selected user message to the input buffer.
+Fork selection restores the selected user message to the input buffer. The
+provider console uses `<A-p>` to toggle, `<A-l>` to focus or open, `<A-h>` to
+return to the transcript, `<A-j>` to move to the input, and Up/Down arrows to
+move through operation rows.
 
 ===============================================================================
 4. UI                                                               *neoagent-ui*
@@ -951,9 +1199,9 @@ Set `ui.renderer` to use another value. It takes precedence over the bundled
   })
 <
 A Renderer has a non-empty `name`, `render_block`, `render_details`, and
-`render_dialog`. `define_highlights`, `render_focus`, and `render_status` are
-optional. A complete plain-text implementation is maintained as an executable
-example in:
+`render_dialog`. `define_highlights`, `render_focus`, `render_status`, and
+`render_provider` are optional. A complete plain-text implementation is
+maintained as an executable example in:
 
 https://github.com/tarruda/neoagent/blob/main/tests/unit/simple_renderer_spec.lua
 
@@ -973,6 +1221,14 @@ snapshot and `{ surface = "transcript" | "float", width = number }`. It owns
 the visible prompt body, action descriptions, queue text, colors, and optional
 floating title. The View owns the copied transcript buffer, floating windows,
 editable input buffer, mappings, focus, and action routing.
+
+`render_provider` receives the copied `context.provider` snapshot and
+`{ width, surface, focus }`. It returns `{ title, content, selectable }`,
+where `content` is a content presentation and `selectable` maps zero-based
+content rows to operation ids. The View owns the provider buffer, floating
+window, arrow navigation, selection routing, and close behavior. A Renderer
+without `render_provider` means the bundled View presents no provider
+console.
 
 `render_status` receives copied transient state and layout hints. The current
 status value contains `steering`, and its options contain `dequeue_key`. It may
@@ -1233,10 +1489,13 @@ Credentials have one of these tagged forms: >lua
   { type = "oauth", access = "...", refresh = "...", expires = 0 }
 <
 Untagged OAuth values are accepted as OAuth credentials. A method has an
-optional `type`, `name`, `login(interaction)`, and `request_opts(credential)`.
-OAuth methods also have `refresh(credential)`. Login and refresh return Runs.
+optional `type`, `name`, `login(interaction)`, `request_opts(credential)`,
+and `public_metadata(credential)`. OAuth methods also have
+`refresh(credential)`. Login and refresh return Runs.
 The interaction prompt types are `text`, `secret`, `select`, and `manual_code`;
 the bundled Controller uses a masked command-line prompt for `secret`.
+`public_metadata` returns a bounded secret-free string map that Provider
+Service operations receive with resolved authentication.
 
 `require("neoagent.auth.api_key").new({ name = "Example API key" })` creates a
 Bearer-key method. Its optional `request_opts(credential)` callback can derive
@@ -1252,7 +1511,11 @@ authentication. Stored credentials take precedence over ambient credentials.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
 `usage`. A Model may emit `{ type = "provider_status", text = "..." }`; the
-Controller retains it as transient provider status. A successful result has
+Controller retains it as transient provider status and forwards it to the
+selected Model's Provider Service. The Controller also publishes
+`context.provider` as
+`{ id, name, state, operations }` for the provider console. A successful
+result has
 `{ ok = true, message, text }`; a failure has
 `{ ok = false, error, message? }`. Non-empty partial output is retained in the
 optional failure message.

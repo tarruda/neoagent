@@ -29,6 +29,7 @@ local defaults = {
       }),
       ["anthropic-plan"] = require("neoagent.auth.anthropic").new(),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
+      llama = require("neoagent.providers.llama.auth").new(),
     },
   },
   persistence = {
@@ -67,6 +68,11 @@ local defaults = {
     scroll_on_reopen = true,
     wrap_cards = false,
     show_thinking = true,
+    provider_console = {
+      position = "top",
+      width = 0.4,
+      height = 0.35,
+    },
     completion = {
       sources = { "files" },
     },
@@ -83,6 +89,11 @@ local defaults = {
       card_next = { "<A-j>", "<C-Down>" },
       focus_input = "<C-w>j",
       focus_transcript = "<C-w>k",
+      focus_provider = "<A-l>",
+      provider_back = "<A-h>",
+      provider_input = "<A-j>",
+      provider_previous = "<Up>",
+      provider_next = "<Down>",
       cycle_thinking = "<S-Tab>",
       cycle_agent = "<A-n>",
       select_model = "<A-m>",
@@ -91,6 +102,8 @@ local defaults = {
       history_next = "<Down>",
       select_history = "<C-r>",
       dequeue_steering = "<A-Up>",
+      toggle_provider = "<A-p>",
+      provider_close = "q",
       close = "q",
     },
   },
@@ -160,6 +173,26 @@ local function validate(opts)
     assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
+    assert(provider.service == nil or type(provider.service) == "function",
+      "provider " .. id .. " service must be a function")
+    assert(provider.service_opts == nil
+        or type(provider.service_opts) == "table" and not util.is_list(provider.service_opts),
+      "provider " .. id .. " service_opts must be a table")
+    assert(provider.catalog_cache == nil or provider.catalog_cache == false
+        or type(provider.catalog_cache) == "table"
+          and not util.is_list(provider.catalog_cache),
+      "provider " .. id .. " catalog_cache must be false or a table")
+    if type(provider.catalog_cache) == "table" then
+      for name in pairs(provider.catalog_cache) do
+        assert(name == "ttl_ms",
+          "unsupported provider catalog_cache setting: " .. tostring(name))
+      end
+      local ttl_ms = provider.catalog_cache.ttl_ms
+      assert(ttl_ms == nil or type(ttl_ms) == "number"
+          and ttl_ms >= 0 and ttl_ms % 1 == 0,
+        "provider " .. id
+          .. " catalog_cache.ttl_ms must be a non-negative integer")
+    end
     if provider.api == "openai-completions" or provider.api == "openai-responses"
         or provider.api == "openai-codex-responses" or provider.api == "anthropic-messages" then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
@@ -167,6 +200,11 @@ local function validate(opts)
     if provider.auth ~= nil then
       assert(type(provider.auth) == "string" and provider.auth ~= "", "provider auth must be a method name")
     end
+    assert(provider.auth_optional == nil
+        or type(provider.auth_optional) == "boolean",
+      "provider auth_optional must be boolean")
+    assert(provider.auth_optional ~= true or provider.auth ~= nil,
+      "provider auth_optional requires auth")
     if provider.api_key ~= nil then
       assert(type(provider.api_key) == "string" or type(provider.api_key) == "function", "api_key must be a string or function")
     end
@@ -246,6 +284,8 @@ local function validate(opts)
       "auth method type must be api_key or oauth")
     assert(type(method.login) == "function" and type(method.request_opts) == "function",
       "auth methods require login and request_opts")
+    assert(method.public_metadata == nil or type(method.public_metadata) == "function",
+      "auth method public_metadata must be a function")
     if method.type == "api_key" then
       assert(method.refresh == nil or type(method.refresh) == "function",
         "API key auth method refresh must be a function")
@@ -297,6 +337,14 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
   assert(type(opts.ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
   assert(type(opts.ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
+  assert(type(opts.ui.provider_console) == "table" and not util.is_list(opts.ui.provider_console),
+    "ui.provider_console must be a table")
+  assert(opts.ui.provider_console.position == "right"
+      or opts.ui.provider_console.position == "top"
+      or opts.ui.provider_console.position == "bottom",
+    "ui.provider_console.position must be right, top, or bottom")
+  validate_dimension(opts.ui.provider_console.width, "ui.provider_console.width")
+  validate_dimension(opts.ui.provider_console.height, "ui.provider_console.height")
   assert(opts.ui.completion == false or type(opts.ui.completion) == "table",
     "ui.completion must be false or a table")
   if opts.ui.completion then

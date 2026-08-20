@@ -139,6 +139,12 @@ function M.new(opts)
   local config = opts.config
   local lifecycle = {}
 
+  local function release_provider()
+    local release = state.provider_usage_release
+    state.provider_usage_release = nil
+    if release then release() end
+  end
+
   local function close_unmatched_calls()
     local messages = state.session:messages()
     local pending = {}
@@ -251,6 +257,7 @@ function M.new(opts)
       state.run = nil
       state.status = "idle"
       state.live_usage = nil
+      if not after then release_provider() end
       opts.update_context()
       opts.publish({ type = "event", event = {
         type = "compaction_end", reason = reason, result = result,
@@ -327,6 +334,7 @@ function M.new(opts)
   end
 
   local function finish_interaction(done)
+    release_provider()
     state.run = nil
     state.status = "idle"
     state.live_usage = nil
@@ -343,6 +351,7 @@ function M.new(opts)
       opts.require_workspace_trust()
       opts.ensure_session()
       opts.ensure_model()
+      state.provider_usage_release = opts.acquire_provider()
       local closed, close_err = close_unmatched_calls()
       if not closed then error(close_err, 0) end
       local toolset = opts.copy_toolset(state.toolset)
@@ -401,6 +410,9 @@ function M.new(opts)
           state.pending_events = {}
         elseif event.type ~= "usage" and event.type ~= "provider_status" then
           state.pending_events[#state.pending_events + 1] = util.copy(event)
+        end
+        if type(opts.provider_event) == "function" then
+          opts.provider_event(event)
         end
         opts.publish({ type = "event", event = event })
         if event.type == "tool_end" and not event.message.isError then
@@ -506,6 +518,14 @@ function M.new(opts)
 
       local function on_done(done)
         if run_id ~= state.run_id then return end
+        if type(opts.provider_event) == "function"
+            and type(done.error) == "table"
+            and type(done.error.provider_status) == "string" then
+          opts.provider_event({
+            type = "provider_status",
+            text = done.error.provider_status,
+          })
+        end
         local transitioned, transition_err = pcall(transition_done, done)
         if not transitioned then
           finish_interaction(completion_failure(transition_err, done))
@@ -536,6 +556,7 @@ function M.new(opts)
       return launch(false)
     end)
     if not ok then
+      release_provider()
       local err = util.normalize_error(result, "session")
       opts.notify(err.message, vim.log.levels.ERROR)
       return nil, err
@@ -578,11 +599,19 @@ function M.new(opts)
       opts.notify(err.message, vim.log.levels.ERROR)
       return nil, err
     end
+    local acquired, release = pcall(opts.acquire_provider)
+    if not acquired then
+      local acquire_err = util.normalize_error(release, "provider")
+      opts.notify(acquire_err.message, vim.log.levels.WARN)
+      return nil, acquire_err
+    end
     local run_id = state.run_id + 1
     state.run_id = run_id
     state.last_result = nil
+    state.provider_usage_release = release
     local run, compact_err = start_compaction("manual", instructions, run_id)
     if not run then
+      release_provider()
       compact_err = compact_err or util.error("compaction", "Nothing to compact")
       opts.notify(compact_err.message, vim.log.levels.WARN)
       return nil, compact_err

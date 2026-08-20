@@ -141,6 +141,8 @@ local function enrich_error(value)
   err.request_id = headers["x-request-id"] or headers["x-oai-request-id"]
   err.cf_ray = headers["cf-ray"]
   err.authorization_error = headers["x-openai-authorization-error"]
+  local provider_status = rate_limit_status(headers)
+  if provider_status then err.provider_status = provider_status end
   err.retry_after_ms = retry_after(headers) or message_retry_after(err.code, err.message)
   if err.kind == "cancelled" or terminal_error(err.code, err.message) then
     err.retryable = false

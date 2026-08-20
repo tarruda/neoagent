@@ -12,6 +12,7 @@ local optional_methods = {
   "define_highlights",
   "render_focus",
   "render_status",
+  "render_provider",
 }
 
 local function failure(message)
@@ -222,6 +223,57 @@ function M.render_status(renderer, status, opts)
   end
   return validate_content(value,
     "Renderer " .. renderer.name .. " render_status", true)
+end
+
+function M.render_provider(renderer, snapshot, opts)
+  if type(renderer.render_provider) ~= "function" then return nil end
+  local ok, value = pcall(renderer.render_provider, renderer,
+    util.copy(snapshot or {}), util.copy(opts or {}))
+  if not ok then
+    return failure("Renderer " .. renderer.name
+      .. " render_provider failed: " .. tostring(value))
+  end
+  if type(value) ~= "table" then
+    return failure("Renderer " .. renderer.name
+      .. " render_provider must return a provider presentation")
+  end
+  if value.title ~= nil and (type(value.title) ~= "string"
+      or value.title:find("[\r\n]")
+      or not util.is_valid_utf8(value.title)) then
+    return failure("Renderer " .. renderer.name
+      .. " provider title must be a physical UTF-8 string")
+  end
+  local content, err = validate_content(value.content,
+    "Renderer " .. renderer.name .. " render_provider", false)
+  if not content then return nil, err end
+  local selectable = value.selectable
+  if selectable ~= nil then
+    if type(selectable) ~= "table" or util.is_list(selectable) then
+      return failure("Renderer " .. renderer.name
+        .. " provider selectable must be a keyed table")
+    end
+    local normalized = {}
+    for row, target in pairs(selectable) do
+      if type(row) ~= "number" or row < 0 or row % 1 ~= 0
+          or not content.lines[row + 1] then
+        return failure("Renderer " .. renderer.name
+          .. " provider selectable contains an invalid row")
+      end
+      if type(target) ~= "table" or util.is_list(target)
+          or target.kind ~= "operation"
+          or type(target.id) ~= "string" or target.id == "" then
+        return failure("Renderer " .. renderer.name
+          .. " provider selectable target must name an operation")
+      end
+      normalized[row] = { kind = "operation", id = target.id }
+    end
+    selectable = normalized
+  end
+  return {
+    title = value.title,
+    content = content,
+    selectable = selectable,
+  }
 end
 
 local positions = {

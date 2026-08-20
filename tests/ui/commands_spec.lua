@@ -6,7 +6,7 @@ describe("neoagent commands", function()
       "Neoagent", "NeoagentCycle", "NeoagentNew", "NeoagentResume", "NeoagentStop",
       "NeoagentModel", "NeoagentThinking", "NeoagentPosition", "NeoagentLogin", "NeoagentLogout", "NeoagentCompact",
       "NeoagentBranch", "NeoagentFork", "NeoagentSandboxInfo",
-      "NeoagentToggleSandbox", "NeoagentTranscriptStyle",
+      "NeoagentToggleSandbox", "NeoagentTranscriptStyle", "NeoagentProvider",
     }) do
       assert.are.equal(2, vim.fn.exists(":" .. name))
     end

@@ -118,6 +118,73 @@ describe("neoagent configuration and model resolution", function()
     assert.is_nil(model.thinking)
   end)
 
+  it("supports providers whose authentication is optional", function()
+    local configured = config.setup({
+      default_registry = false,
+      providers = {
+        local_server = {
+          api = "mine",
+          auth = "local-login",
+          auth_optional = true,
+          models = { model = {} },
+        },
+      },
+      apis = {
+        mine = function()
+          return { stream = function() end }
+        end,
+      },
+      auth = { methods = {
+        ["local-login"] = {
+          name = "Local",
+          type = "api_key",
+          login = function() end,
+          request_opts = function() return {} end,
+        },
+      } },
+    })
+    local optional
+    local manager = {
+      has_credentials = function() return false end,
+      wrap = function(_, model, _, opts)
+        optional = opts.optional
+        return model
+      end,
+    }
+    assert.are.same({ "local_server/model" },
+      models.available(configured, manager))
+    assert(models.resolve("local_server", "model", configured, manager))
+    assert.is_true(optional)
+  end)
+
+  it("rejects malformed models published by dynamic providers", function()
+    local configured = config.setup({
+      default_registry = false,
+      providers = {
+        dynamic = { api = "mine", models = {} },
+      },
+      apis = { mine = function() return { stream = function() end } end },
+    })
+    local available, err = models.available(configured, nil, {
+      dynamic = {
+        get_models = function()
+          return { { id = "forged\nmodel", context_window = -1 } }
+        end,
+      },
+    })
+    assert.is_nil(available)
+    assert.are.equal("model", err.kind)
+    assert.matches("dynamic model id", err.message)
+
+    local ok, resolve_err = pcall(models.resolve, "dynamic", "model",
+      configured, nil, {
+        dynamic = { get_models = function() return "invalid" end },
+      })
+    assert.is_false(ok)
+    assert.are.equal("model", resolve_err.kind)
+    assert.matches("model catalog must be a list", resolve_err.message)
+  end)
+
   it("resolves configured OpenAI Responses models", function()
     config.setup({
       default_model = { provider = "openai", model = "reasoning" },
@@ -616,10 +683,35 @@ describe("neoagent configuration and model resolution", function()
       workspace_trust = { path = "/tmp/custom-trust.json" },
     }).workspace_trust.path)
     assert.is_false(config.setup({ compaction = false }).compaction)
+    assert.are.same({ ttl_ms = 60000 },
+      config.setup({}).providers["llama.cpp"].catalog_cache)
+    assert.is_false(config.setup({
+      providers = { ["llama.cpp"] = { catalog_cache = false } },
+    }).providers["llama.cpp"].catalog_cache)
+    assert.are.same({ ttl_ms = 1000 }, config.setup({
+      providers = { ["llama.cpp"] = {
+        catalog_cache = { ttl_ms = 1000 },
+      } },
+    }).providers["llama.cpp"].catalog_cache)
     assert.is_nil(config.setup({}).name)
     assert.has_error(function() config.setup({ name = "" }) end)
     assert.has_error(function() config.setup({ view = true }) end)
     assert.has_error(function() config.setup({ default_registry = "yes" }) end)
+    assert.has_error(function()
+      config.setup({ providers = { ["llama.cpp"] = {
+        catalog_cache = true,
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { ["llama.cpp"] = {
+        catalog_cache = { ttl_ms = -1 },
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { ["llama.cpp"] = {
+        catalog_cache = { unknown = true },
+      } } })
+    end)
     assert.has_error(function() config.setup({ shell_timeout = 0 }) end)
     assert.has_error(function() config.setup({ shell_timeout = "slow" }) end)
     assert.has_error(function() config.setup({ shell_timeout = math.huge }) end)

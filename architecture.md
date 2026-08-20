@@ -109,6 +109,85 @@ The configured Codex composition injects a private rotating JSONL diagnostic
 sink. Rotation and append share a cross-process lock for each path; direct
 Model construction remains independent from file logging.
 
+A Provider Service is an explicit runtime value for provider state,
+operations, and optional dynamic catalogs. It is a plain table with `id`,
+`name`, `state()`, and an `operations` table. Optional members include
+`get_models()`, `refresh_models(ctx)`, `refresh_catalog(opts)`,
+`wrap_model(model)`, `subscribe(listener)`, `on_event(event)`, and
+`destroy()`. `lua/neoagent/provider_service.lua` validates the value, exposes
+sorted operation metadata, builds operation contexts, and starts operations
+as cancellable Runs. Its service-owned runtime serializes operations across
+Controllers and holds a usage lease for every agent or compaction Run. A
+usage lease blocks mutating operations on the shared service, and an active
+mutating operation blocks new usage leases. Failed service composition
+destroys every value constructed during that attempt.
+`lua/neoagent/provider_state.lua` normalizes console snapshots and bounds
+every retained string and collection. Its dashboard value owns a copied
+snapshot and a subscriber list. Providers call `dashboard:push()` with
+JSON-compatible `status`, `field`, `progress`, `list`, and `activity` blocks.
+Pushes from libuv callbacks schedule subscriber delivery onto Neovim's main
+loop. Renderers convert those semantic blocks into presentation.
+
+Configured providers may declare a `service` constructor.
+`lua/neoagent/provider_services.lua` builds the values from secret-free
+projections and injects them through `runtime.providers`. `service_opts`
+and `catalog_cache` carry copied provider-specific configuration. A catalog
+cache policy is `false` or a table with a non-negative `ttl_ms`. The basic Codex
+service (`lua/neoagent/providers/codex.lua`) pushes plan and rolling-window
+meters from `provider_status` events produced from response headers, plus
+request token counts from usage events. The
+dynamic catalog seam in `models.available()` and `models.resolve()` merges
+validated `get_models()` entries under the configured model table and honors
+user removals recorded by `registry.compose()`. Providers with
+`auth_optional = true` expose Models and resolve credentials opportunistically.
+
+Operations receive a copied public provider projection, the selected model,
+`agent_running`, a cancellable auth resolution Run, and a provider-neutral
+`interact` adapter with select, input, confirm, progress, and notify
+capabilities. An operation descriptor may provide synchronous argument
+completion. A successful operation may return a bounded document artifact,
+which the Controller command adapter opens in a scratch tab.
+`auth.Manager:resolve()` may include validated `public_metadata` from an auth
+method; credential values stay outside provider state and interactions.
+
+The llama.cpp provider (`lua/neoagent/providers/llama.lua`) composes a curl
+client for router `list`, `load`, `unload`, `download`, SSE progress, and
+bounded wait loops; a Hugging Face search client; a persisted dynamic
+catalog; and catalog, refresh, load, unload, download, and preset operations.
+Model definitions carry an HF source, router load parameters, and inference
+parameters. Alias ids route inference to the router model id through
+`request_opts`, and the preset operation renders a current server-side
+`--models-preset` INI document. Definitions merge ahead of the server
+catalog. The default cache TTL is 60 seconds and the provider accepts
+`catalog_cache = false` or a custom TTL. Catalog-dependent operations publish
+their fresh router results through the same cache helper. A startup refresh
+runs for explicit and default-model providers; login and provider mutations
+trigger a forced refresh. A Controller shows a pending dynamic selection and
+resolves it when discovery publishes the matching model.
+
+The service owns one SSE subscription while its dashboard has subscribers,
+including when the catalog was restored from cache. Router events push load
+and download progress, update catalog status, and record lifecycle activity.
+Its Model wrapper gives each concurrent request independent preparation,
+generation, completion, and token state. The wrapper reads the latest catalog
+status to disable a configured request deadline while the router loads the
+requested model. Load, unload, and download command waits have configured
+deadlines, and cancellation of a load or download requests a server-side
+unload. The auth method stores the server URL, uses anonymous access when
+accepted, prompts for an API key after an authorization failure, and exposes
+the URL as public metadata.
+
+`lua/neoagent/state_store.lua` persists provider entries with atomic writes
+and file locks. `lua/neoagent/provider_catalog.lua` guards publications by
+generation and applies the configured cache window. Direct publications from
+provider operations invalidate older in-flight refreshes. State reads and
+writes report structured failures. The llama.cpp cache contains a versioned
+projection of model identity, status, modalities, context, and size. Router
+command lines, paths, presets, progress payloads, and credentials stay outside
+runtime snapshots and persistence. The curl transport accepts `GET` requests
+without bodies and numeric `timeout_ms` values; `false` disables curl's
+deadline for router-managed autoload streams.
+
 ## Tools and execution policy
 
 Tools are plain tables:
@@ -496,6 +575,8 @@ Each Controller owns:
 - Current cancellable Run
 - Steering queue
 - Authentication interactions
+- Provider Service binding, provider operation Runs, and bounded provider
+  context
 - Retryable turn replay and cancellable backoff
 - Context compaction
 - AGENTS.md and skill discovery
@@ -506,6 +587,14 @@ Sessions. The run lifecycle module launches interactions, consumes steering,
 classifies transient failures, retries eligible turns, compacts context, and
 finishes or cancels Runs. Context metrics and session choices remain focused
 calculations.
+
+Provider Services are shared per composition. A Controller binds the service
+for its selected provider, publishes the bounded `context.provider` snapshot,
+forwards Model events through an optional `service:on_event()` hook, and owns
+one cancellable provider operation Run independent of the agent Run. A
+provider without a service publishes `state = false` and an empty operations
+list, so the console opens empty. `controller:destroy()` and the
+`VimLeavePre` lifecycle release that Run and unsubscribe the service.
 
 Its active toolset is a plain tools-and-executor pair that can be atomically
 replaced while idle. Each Run snapshots that pair, so retries, continuations,
@@ -550,6 +639,7 @@ The Window:
 - Keeps a separate input draft per Controller
 - Shares workspace input history
 - Leaves inactive Controllers running independently
+- Owns provider console visibility and forwards provider context
 
 The passive View consumes Controller snapshots and updates and invokes callbacks
 supplied by the Window. Its replaceable interface keeps presentation independent
@@ -570,9 +660,13 @@ without recognizing tool names. The View can omit thinking blocks while the
 Controller and Session retain complete messages.
 
 The Renderer also presents transient steering status, active-card focus
-decorations, and semantic dialogs. It determines prompt text, action labels,
-and floating titles while the View owns dialog buffers, windows, mappings,
-focus, transcript copying, and response routing.
+decorations, semantic dialogs, and the optional provider console. Provider
+snapshots contain presentation-neutral dashboard blocks. The Renderer
+determines prompt text, action labels, and floating titles while the View owns
+dialog buffers, windows, mappings, focus, transcript copying, and response
+routing. An optional `render_provider(snapshot, opts)` method returns console
+content, a title, and selectable operation rows. The View owns the provider
+buffer and window, arrow navigation, selection routing, and close behavior.
 
 Pi and Codex are bundled Renderer values assembled from a shared private layout
 engine and their own card chrome. Codex is the default. Pi uses its fixed user
@@ -634,6 +728,8 @@ Controller owned by `setup()`.
 
 `plugin/neoagent.lua` defines commands such as `:Neoagent`,
 `:NeoagentModel`, and `:NeoagentResume`, then delegates to the public API.
+`:NeoagentProvider` toggles the provider console, runs a named operation, or
+cancels the active provider operation with a bang.
 
 ## Request flow
 

@@ -28,6 +28,13 @@ local function execute(tool, arguments, context)
   return result
 end
 
+-- The fake magick script needs an absolute interpreter: vim.o.shell may
+-- resolve to a relative name in restricted environments.
+local function shebang_shell()
+  local shell = vim.fn.exepath(vim.o.shell)
+  return shell ~= "" and shell or vim.o.shell
+end
+
 describe("neoagent bundled tools", function()
   local roots = {}
   after_each(function()
@@ -702,7 +709,7 @@ describe("neoagent bundled tools", function()
     assert(fs.write_all(root .. "/image.png", png, "w"))
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
-      "#!" .. vim.o.shell,
+      "#!" .. shebang_shell(),
       "if [ \"$1\" = identify ]; then",
       "  input=$(cat)",
       "  case \"$input\" in *converted*) printf '2000 667' ;; *) printf '3000 1000' ;; esac",
@@ -719,7 +726,7 @@ describe("neoagent bundled tools", function()
     assert.are.equal("converted" .. png, vim.base64.decode(result.content[2].data))
 
     assert(fs.write_all(magick, table.concat({
-      "#!" .. vim.o.shell,
+      "#!" .. shebang_shell(),
       "if [ \"$1\" = identify ]; then printf '3000 1000'; exit 0; fi",
       "printf failure >&2",
       "exit 2",
@@ -738,7 +745,7 @@ describe("neoagent bundled tools", function()
     assert(fs.write_all(root .. "/image.png", png, "w"))
     local magick = root .. "/magick"
     assert(fs.write_all(magick, table.concat({
-      "#!" .. vim.o.shell,
+      "#!" .. shebang_shell(),
       "if [ \"$1\" = identify ]; then",
       "  input=$(cat)",
       "  case \"$input\" in *bounded*) printf '1600 1600' ;; *) printf '3000 3000' ;; esac",

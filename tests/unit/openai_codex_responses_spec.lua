@@ -333,4 +333,26 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.is_true(result.ok)
     assert.are.same({ type = "provider_status", text = "weekly 79% left" }, emitted[#emitted])
   end)
+
+  it("derives provider status from rate-limit error headers", function()
+    local transport = fake_transport.new({ {
+      error = {
+        kind = "transport",
+        message = "HTTP 429: The usage limit has been reached",
+        response = {
+          status = 429,
+          headers = {
+            ["X-Codex-Primary-Used-Percent"] = "100",
+            ["X-Codex-Primary-Window-Minutes"] = "10080",
+          },
+        },
+      },
+    } })
+    local result = wait(codex.new({
+      provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
+      transport = transport,
+    }):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("weekly 0% left", result.error.provider_status)
+  end)
 end)
