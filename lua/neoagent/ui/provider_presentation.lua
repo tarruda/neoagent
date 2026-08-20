@@ -78,6 +78,73 @@ local function add_progress(result, block, width)
   add_line(result, bar, spans)
 end
 
+local function default_reset_time(timestamp, now)
+  now = now or os.time()
+  if os.date("%Y-%m-%d", timestamp) == os.date("%Y-%m-%d", now) then
+    return os.date("%H:%M", timestamp)
+  end
+  local day = os.date("%d", timestamp):gsub("^0", "")
+  return os.date("%H:%M on ", timestamp) .. day
+    .. os.date(" %b", timestamp)
+end
+
+local function quota_bar(remaining)
+  local filled = math.floor(remaining * 20 + 0.5)
+  return string.rep("█", filled) .. string.rep("░", 20 - filled)
+end
+
+local function add_limit(result, block, opts)
+  local width = opts.width or 46
+  local percent = tostring(math.floor(block.remaining * 100 + 0.5)) .. "% left"
+  local reset
+  if block.resets_at then
+    local formatter = opts.format_reset_time or default_reset_time
+    reset = "resets " .. formatter(block.resets_at, opts.now)
+  end
+  local bar = quota_bar(block.remaining)
+  local value = bar .. " " .. percent
+  local metadata = reset and " (" .. reset .. ")" or ""
+  local prefix = block.label .. "  "
+  local line = prefix .. value .. metadata
+  local bar_start = #prefix
+  local bar_end = bar_start + #bar
+  if vim.fn.strdisplaywidth(line) <= width then
+    add_line(result, line, {
+      { col = 0, end_col = #block.label, group = "NeoagentMarkdownBold" },
+      { col = bar_start, end_col = bar_end,
+        group = level_groups[block.level] or "NeoagentAccent" },
+      { col = bar_end + 1, end_col = bar_end + 1 + #percent,
+        group = "Normal" },
+      { col = bar_end + 1 + #percent, end_col = #line,
+        group = "NeoagentMuted" },
+    })
+    return
+  end
+
+  line = prefix .. percent
+  if reset and vim.fn.strdisplaywidth(line .. " (" .. reset .. ")") <= width then
+    line = line .. " (" .. reset .. ")"
+    add_line(result, line, {
+      { col = 0, end_col = #block.label, group = "NeoagentMarkdownBold" },
+      { col = #prefix, end_col = #prefix + #percent, group = "Normal" },
+      { col = #prefix + #percent, end_col = #line, group = "NeoagentMuted" },
+    })
+    return
+  end
+
+  add_line(result, line, {
+    { col = 0, end_col = #block.label, group = "NeoagentMarkdownBold" },
+    { col = #prefix, end_col = #line, group = "Normal" },
+  })
+  if reset then
+    local indent = string.rep(" ", #prefix)
+    if vim.fn.strdisplaywidth(indent .. reset) > width then indent = "  " end
+    add_line(result, indent .. reset, {
+      { col = 0, end_col = #indent + #reset, group = "NeoagentMuted" },
+    })
+  end
+end
+
 local function add_status(result, block)
   local symbol = level_symbols[block.level] or level_symbols.info
   local line = symbol .. " " .. block.text
@@ -132,7 +199,7 @@ local function add_activity(result, block)
   end
 end
 
-local function add_block(result, block, width, previous)
+local function add_block(result, block, opts, previous)
   local grouped_field = block.type == "field" and previous == "field"
   if not grouped_field then separate(result) end
   if block.type == "status" then
@@ -140,7 +207,9 @@ local function add_block(result, block, width, previous)
   elseif block.type == "field" then
     add_field(result, block)
   elseif block.type == "progress" then
-    add_progress(result, block, width)
+    add_progress(result, block, opts.width)
+  elseif block.type == "limit" then
+    add_limit(result, block, opts)
   elseif block.type == "list" then
     add_list(result, block)
   elseif block.type == "activity" then
@@ -172,7 +241,7 @@ function M.render(snapshot, opts)
   if state and state ~= false then
     local previous
     for _, block in ipairs(state.blocks or {}) do
-      add_block(result, block, opts.width, previous)
+      add_block(result, block, opts, previous)
       previous = block.type
     end
     add_operation(result, state.operation, opts.width)

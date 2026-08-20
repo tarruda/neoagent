@@ -14,6 +14,14 @@ describe("neoagent provider state", function()
           level = "info",
         },
         {
+          type = "limit",
+          label = "Weekly limit",
+          remaining = 0.84,
+          resets_at = 1787812620,
+          detail = "Codex",
+          level = "success",
+        },
+        {
           type = "list",
           title = "Workers",
           items = { { label = "slot 0", detail = "generating" } },
@@ -104,7 +112,7 @@ describe("neoagent provider state", function()
 
   it("rejects control characters and invalid levels", function()
     local value = valid()
-    value.blocks[4].items[1].label = "slot\nforged"
+    value.blocks[5].items[1].label = "slot\nforged"
     assert.is_nil(provider_state.normalize(value))
 
     value = valid()
@@ -112,7 +120,7 @@ describe("neoagent provider state", function()
     assert.is_nil(provider_state.normalize(value))
 
     value = valid()
-    value.blocks[5].entries[1].timestamp = math.huge
+    value.blocks[6].entries[1].timestamp = math.huge
     assert.is_nil(provider_state.normalize(value))
   end)
 
@@ -125,6 +133,14 @@ describe("neoagent provider state", function()
     value.blocks[3].value = 1.5
     assert.is_nil(provider_state.normalize(value))
 
+    value = valid()
+    value.blocks[4].remaining = -0.1
+    assert.is_nil(provider_state.normalize(value))
+
+    value = valid()
+    value.blocks[4].resets_at = math.huge
+    assert.is_nil(provider_state.normalize(value))
+
     value = { blocks = {} }
     for _ = 1, 65 do
       value.blocks[#value.blocks + 1] = { type = "status", text = "ok" }
@@ -133,13 +149,13 @@ describe("neoagent provider state", function()
 
     value = valid()
     for _ = 2, 101 do
-      value.blocks[4].items[#value.blocks[4].items + 1] = { label = "worker" }
+      value.blocks[5].items[#value.blocks[5].items + 1] = { label = "worker" }
     end
     assert.is_nil(provider_state.normalize(value))
 
     value = valid()
     for _ = 2, 51 do
-      value.blocks[5].entries[#value.blocks[5].entries + 1] = {
+      value.blocks[6].entries[#value.blocks[6].entries + 1] = {
         level = "info", message = "event",
       }
     end

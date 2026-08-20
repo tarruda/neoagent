@@ -188,6 +188,35 @@ local function normalized_block(value)
     }
   end
 
+  if block_type == "limit" then
+    local limit_label, label_err = label(block.label, "limit label")
+    if not limit_label then return nil, label_err end
+    local remaining, ratio_err = normalized_ratio(
+      block.remaining, "limit remaining", false)
+    if not remaining then return nil, ratio_err end
+    if block.resets_at ~= nil
+        and (type(block.resets_at) ~= "number"
+          or block.resets_at ~= block.resets_at
+          or block.resets_at == math.huge
+          or block.resets_at == -math.huge) then
+      return nil, util.error("provider",
+        "limit resets_at must be a finite Unix timestamp")
+    end
+    local limit_detail, detail_err = detail(block.detail, "limit detail")
+    if not limit_detail and detail_err then return nil, detail_err end
+    local level, level_err = normalized_level(
+      block.level, "limit level", "info")
+    if not level then return nil, level_err end
+    return {
+      type = block_type,
+      label = limit_label,
+      remaining = remaining,
+      resets_at = block.resets_at,
+      detail = limit_detail,
+      level = level,
+    }
+  end
+
   if block_type == "list" then
     local title, title_err = label(block.title, "list title")
     if not title then return nil, title_err end

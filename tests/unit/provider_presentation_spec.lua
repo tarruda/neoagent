@@ -18,6 +18,10 @@ describe("neoagent provider presentation", function()
             value = 0.5, detail = "4 GiB / 8 GiB",
           },
           {
+            type = "limit", label = "Weekly limit", remaining = 0.97,
+            resets_at = 1787812620, level = "success",
+          },
+          {
             type = "list", title = "Workers",
             items = { { label = "slot 0", detail = "generating" } },
           },
@@ -50,6 +54,8 @@ describe("neoagent provider presentation", function()
     assert.matches("Downloading qwen3", text)
     assert.matches("50%%", text)
     assert.matches("4 GiB / 8 GiB", text)
+    assert.matches("Weekly limit", text)
+    assert.matches("97%% left", text)
     assert.matches("Workers", text)
     assert.matches("slot 0 · generating", text)
     assert.matches("Recent activity", text)
@@ -121,5 +127,57 @@ describe("neoagent provider presentation", function()
       end
     end
     assert.are.equal(2, bars)
+  end)
+
+  it("renders adaptive quota rows with deterministic local reset metadata", function()
+    local snapshot = {
+      name = "Codex",
+      state = { blocks = {
+        { type = "field", label = "Account", value = "account@example.com (Plus)" },
+        {
+          type = "limit", label = "5h limit", remaining = 0.55,
+          resets_at = 1787793900,
+        },
+        {
+          type = "limit", label = "Weekly limit", remaining = 0.97,
+          resets_at = 1787870220,
+        },
+        { type = "field", label = "Last response", value = "1,250 in · 87 out" },
+      } },
+      operations = {},
+    }
+    local format_time = function(timestamp)
+      return timestamp == 1787793900 and "09:25" or "07:37 on 27 Aug"
+    end
+    local wide = provider_presentation.render(snapshot, {
+      width = 80,
+      format_reset_time = format_time,
+    })
+    local wide_text = lines(wide)
+    assert.matches("Account  account@example.com %(Plus%)", wide_text)
+    assert.matches("5h limit  ███████████░░░░░░░░░ 55%% left %(resets 09:25%)",
+      wide_text)
+    assert.matches("Weekly limit  ███████████████████░ 97%% left %(resets 07:37 on 27 Aug%)",
+      wide_text)
+    assert.is_true(wide_text:find("Account", 1, true)
+      < wide_text:find("5h limit", 1, true))
+    assert.is_true(wide_text:find("Weekly limit", 1, true)
+      < wide_text:find("Last response", 1, true))
+
+    local narrow = provider_presentation.render(snapshot, {
+      width = 28,
+      format_reset_time = format_time,
+    })
+    local narrow_text = lines(narrow)
+    assert.is_nil(narrow_text:find("█", 1, true))
+    assert.matches("5h limit  55%% left", narrow_text)
+    assert.matches("          resets 09:25", narrow_text)
+    assert.matches("Weekly limit  97%% left", narrow_text)
+    assert.matches("  resets 07:37 on 27 Aug", narrow_text)
+    for _, line in ipairs(narrow.content.lines) do
+      if line:find("limit", 1, true) or line:find("resets", 1, true) then
+        assert.is_true(vim.fn.strdisplaywidth(line) <= 28)
+      end
+    end
   end)
 end)
