@@ -56,6 +56,20 @@ describe("neoagent provider service", function()
     assert.is_nil(metadata[1].run)
   end)
 
+  it("selects a declared initial console operation once", function()
+    local value = service({
+      refresh = {
+        label = "Refresh",
+        run = function() return async.run(function() return { ok = true } end) end,
+      },
+    })
+    value.open_operation = "refresh"
+
+    assert.are.equal("refresh", provider_service.take_open_operation(value))
+    assert.is_nil(provider_service.take_open_operation(value))
+    assert.is_nil(provider_service.take_open_operation(service({})))
+  end)
+
   it("builds operation contexts and completes exactly once", function()
     local seen
     local operations = {
@@ -253,6 +267,11 @@ describe("neoagent provider service", function()
       { id = "x", name = "x", operations = {} },
       { id = "x", name = "x", state = function() return false end, operations = { {} } },
       { id = "x", name = "x", state = function() return false end, operations = {}, get_models = true },
+      { id = "x", name = "x", state = function() return false end, operations = {}, open_operation = true },
+      { id = "x", name = "x", state = function() return false end, operations = {}, open_operation = "missing" },
+      { id = "x", name = "x", state = function() return false end, operations = {
+        mutate = { label = "Mutate", mutating = true, run = function() end },
+      }, open_operation = "mutate" },
     }) do
       local validated, err = provider_service.validate(value)
       assert.is_nil(validated)

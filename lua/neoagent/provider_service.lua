@@ -71,6 +71,20 @@ function M.validate(value)
     local validated, validate_err = validate_operation(id, operation)
     if not validated then return nil, validate_err end
   end
+  if value.open_operation ~= nil then
+    local operation_id, operation_err = valid_text(
+      value.open_operation, "Provider Service open_operation", 128)
+    if not operation_id then return nil, operation_err end
+    local operation = value.operations[operation_id]
+    if not operation then
+      return failure("Provider Service " .. value.id
+        .. " open_operation must name an operation")
+    end
+    if operation.mutating == true then
+      return failure("Provider Service " .. value.id
+        .. " open_operation must be non-mutating")
+    end
+  end
   for _, method in ipairs({
     "get_models", "refresh_models", "refresh_catalog", "subscribe",
     "on_event", "destroy", "wrap_model",
@@ -125,6 +139,17 @@ function M.operation_enabled(service, operation)
   local state = runtime(service)
   return state.operation == nil
     and not (operation.mutating == true and state.users > 0)
+end
+
+function M.take_open_operation(service)
+  service = M.assert(service)
+  local state = runtime(service)
+  if state.opened or state.operation ~= nil
+      or service.open_operation == nil then
+    return nil
+  end
+  state.opened = true
+  return service.open_operation
 end
 
 function M.acquire(service)

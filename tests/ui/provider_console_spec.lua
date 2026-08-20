@@ -398,6 +398,33 @@ describe("neoagent provider console", function()
     assert.matches("ready", restored_lines)
   end)
 
+  it("runs a service's initial operation when its console first opens", function()
+    local calls = 0
+    local value = service({
+      refresh = {
+        label = "Refresh",
+        run = function()
+          calls = calls + 1
+          return async.run(function() return { ok = true } end)
+        end,
+      },
+    })
+    value.open_operation = "refresh"
+    local controller = neoagent.new(options("provider", fake_model.new({})), {
+      providers = { fake = value },
+    })
+    controllers = { controller }
+    local window = neoagent.new_window({ controllers = controllers })
+    windows = { window }
+
+    assert(window:set_provider_console(true))
+    assert(vim.wait(1000, function() return calls == 1 end))
+    assert(window:set_provider_console(false))
+    assert(window:set_provider_console(true))
+    vim.wait(20)
+    assert.are.equal(1, calls)
+  end)
+
   it("preserves provider operation selection across status updates", function()
     local function operation(label)
       return {
@@ -1315,12 +1342,14 @@ describe("neoagent provider console", function()
     controller_options.providers = {
       ["openai-codex"] = { api = "fake", models = { codex = {} } },
     }
+    local codex_service = codex.new()
+    codex_service.open_operation = nil
     local controller = neoagent.new(controller_options, {
-      providers = { ["openai-codex"] = codex.new() },
+      providers = { ["openai-codex"] = codex_service },
     })
     controllers = { controller }
     assert(controller:prepare())
-    assert.are.equal("Usage not loaded · run Refresh usage",
+    assert.are.equal("Usage loads when this console opens",
       controller:snapshot().context.provider.state.blocks[1].text)
 
     local window = neoagent.new_window({ controllers = { controller } })

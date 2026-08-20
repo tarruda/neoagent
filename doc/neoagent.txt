@@ -896,6 +896,7 @@ A Provider Service is a plain table: >lua
   service.name            -- display name
   service:state()         -- copied bounded snapshot or false
   service.operations      -- keyed operation descriptors
+  service.open_operation  -- optional initial non-mutating operation id
 <
 Optional members include `get_models()`, `refresh_models(ctx)`,
 `refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
@@ -903,6 +904,9 @@ Optional members include `get_models()`, `refresh_models(ctx)`,
 `lua/neoagent/provider_service.lua` validates services, exposes sorted
 operation metadata, builds operation contexts, and starts operations as
 cancellable Runs. Operations on one service are serialized across Controllers.
+The Window runs `open_operation` once per service when its provider console
+first opens. The operation uses the ordinary authentication, cancellation,
+status, and interaction context.
 Agent and compaction Runs hold a service usage lease; mutating operations are
 disabled while a lease exists, and an active mutating operation blocks new
 leases. Failed service composition destroys every service constructed during
@@ -1016,10 +1020,12 @@ temporary status and publish `reconnecting = false` when the request recovers,
 fails, or is cancelled. The console overlays that connection state on its
 durable usage status and reveals the usage status when the retry ends.
 
-The `refresh` operation resolves the configured ChatGPT OAuth login and loads
-the authoritative `/wham/usage` snapshot. It publishes bounded email and plan
-display metadata, primary, secondary, monthly, and additional metered limits,
-credits, workspace spend controls, reset-credit count, and reset reasons.
+The Codex service declares `refresh` as its initial console operation. The
+first provider-console open resolves the configured ChatGPT OAuth login and
+loads the authoritative `/wham/usage` snapshot. Manual refresh runs the same
+operation. It publishes bounded email and plan display metadata, primary,
+secondary, monthly, and additional metered limits, credits, workspace spend
+controls, reset-credit count, and reset reasons.
 Account identifiers, credential values, request headers, and raw response
 bodies do not enter provider state. Snapshots older than 15 minutes retain
 their data with a muted stale warning. A failed refresh also keeps the last

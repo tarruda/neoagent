@@ -476,6 +476,7 @@ function M.new(opts)
         return nil, open_err
       end
       state.provider_console_open = true
+      controller:provider_console_opened()
       return true
     end
     state.provider_console_open = false

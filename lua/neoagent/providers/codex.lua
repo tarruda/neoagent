@@ -196,7 +196,7 @@ function M.new(opts, resources)
   })
   local status = {
     type = "status",
-    text = "Usage not loaded · run Refresh usage",
+    text = "Usage loads when this console opens",
     level = "muted",
   }
   local connection_status
@@ -534,6 +534,7 @@ function M.new(opts, resources)
   local service = {
     id = resources.provider_id or "openai-codex",
     name = "Codex",
+    open_operation = "refresh",
     operations = {},
   }
 

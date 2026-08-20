@@ -1250,6 +1250,14 @@ function M.from_config(options, runtime)
     return bound_service() ~= nil
   end
 
+  function controller:provider_console_opened()
+    local service = bound_service()
+    if not service then return false end
+    local operation_id = provider_service.take_open_operation(service)
+    if not operation_id then return false end
+    return self:provider_operation(operation_id)
+  end
+
   local function open_provider_artifact(artifact)
     if artifact == nil then return end
     if type(artifact) ~= "table" or util.is_list(artifact)

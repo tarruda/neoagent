@@ -89,6 +89,7 @@ describe("neoagent Codex provider service", function()
     local service = codex.new({ base_url = "https://chatgpt.com/backend-api" })
     assert.are.equal("openai-codex", service.id)
     assert.are.equal("Codex", service.name)
+    assert.are.equal("refresh", service.open_operation)
     local operation_ids = vim.tbl_keys(service.operations)
     table.sort(operation_ids)
     assert.are.same({
@@ -96,13 +97,13 @@ describe("neoagent Codex provider service", function()
     }, operation_ids)
     assert.are.same({
       type = "status",
-      text = "Usage not loaded · run Refresh usage",
+      text = "Usage loads when this console opens",
       level = "muted",
     }, service:state().blocks[1])
 
     local initial, err = require("neoagent.provider_state").normalize(service:state())
     assert(initial, err and err.message)
-    assert.matches("Usage not loaded", initial.blocks[1].text)
+    assert.matches("Usage loads", initial.blocks[1].text)
 
     local published
     local unsubscribe = service:subscribe(function(snapshot)
@@ -189,7 +190,7 @@ describe("neoagent Codex provider service", function()
     local service = codex.new()
     service:on_event({ type = "usage" })
     service:on_event({ type = "provider_status" })
-    assert.matches("Usage not loaded", service:state().blocks[1].text)
+    assert.matches("Usage loads", service:state().blocks[1].text)
   end)
 
   it("ignores provider status that exceeds dashboard bounds", function()
@@ -203,7 +204,7 @@ describe("neoagent Codex provider service", function()
     })
     vim.notify = original_notify
     assert.are.equal(0, #notifications)
-    assert.matches("Usage not loaded", service:state().blocks[1].text)
+    assert.matches("Usage loads", service:state().blocks[1].text)
   end)
 
   it("keeps startup, unavailable, and API-key states explicit", function()

@@ -117,15 +117,19 @@ quota, stale, or refresh-failure status without reconstructing it.
 A Provider Service is an explicit runtime value for provider state,
 operations, and optional dynamic catalogs. It is a plain table with `id`,
 `name`, `state()`, and an `operations` table. Optional members include
-`get_models()`, `refresh_models(ctx)`, `refresh_catalog(opts)`,
-`wrap_model(model)`, `subscribe(listener)`, `on_event(event)`, and
-`destroy()`. `lua/neoagent/provider_service.lua` validates the value, exposes
+`open_operation`, `get_models()`, `refresh_models(ctx)`,
+`refresh_catalog(opts)`, `wrap_model(model)`, `subscribe(listener)`,
+`on_event(event)`, and `destroy()`.
+`lua/neoagent/provider_service.lua` validates the value, exposes
 sorted operation metadata, builds operation contexts, and starts operations
 as cancellable Runs. Its service-owned runtime serializes operations across
 Controllers and holds a usage lease for every agent or compaction Run. A
 usage lease blocks mutating operations on the shared service, and an active
 mutating operation blocks new usage leases. Failed service composition
-destroys every value constructed during that attempt.
+destroys every value constructed during that attempt. A
+Window claims `open_operation` once from the shared service runtime when its
+provider console first opens and runs it through the Controller operation
+context.
 `lua/neoagent/provider_state.lua` normalizes console snapshots and bounds
 every retained string and collection. Its dashboard value owns a copied
 snapshot and a subscriber list. Providers call `dashboard:push()` with
@@ -147,7 +151,8 @@ header details while retaining compact status text. The Codex service
 request token counts into its private account snapshot. Its explicit refresh
 operation composes `lua/neoagent/providers/codex_management.lua`, resolved
 OAuth request options, and the configured transport to fetch authoritative
-usage. The client bounds time and response bytes before JSON decoding and
+usage. The service declares this refresh as its initial console operation.
+The client bounds time and response bytes before JSON decoding and
 reports body-free errors. Rich refreshes replace the quota collection; header
 events update individual windows between refreshes. Account activity,
 workspace names, reset-credit inspection, and confirmed idempotent redemption
