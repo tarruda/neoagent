@@ -106,6 +106,13 @@ describe("neoagent.api.openai_codex_responses", function()
         ["X-Codex-Primary-Window-Minutes"] = "300",
         ["X-Codex-Secondary-Used-Percent"] = "40",
         ["X-Codex-Secondary-Window-Minutes"] = "10080",
+        ["X-Codex-Secondary-Reset-At"] = "1787870220",
+        ["X-Codex-Credits-Has-Credits"] = "true",
+        ["X-Codex-Credits-Unlimited"] = "false",
+        ["X-Codex-Credits-Balance"] = "12.50",
+        ["X-Codex-Sonic-Primary-Used-Percent"] = "20",
+        ["X-Codex-Sonic-Primary-Window-Minutes"] = "43200",
+        ["X-Codex-Sonic-Limit-Name"] = "Sonic",
       },
     } })
     local emitted = {}
@@ -116,10 +123,63 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.is_true(result.ok)
     assert.are.equal("done", result.text)
     assert.are.equal("openai-codex-responses", result.message.api)
+    local status = emitted[#emitted]
+    assert.are.equal("provider_status", status.type)
+    assert.are.equal("5h 87.5% left · weekly 60% left", status.text)
+    assert.are.equal("codex", status.details.limits[1].id)
+    assert.are.equal(12.5,
+      status.details.limits[1].primary.used_percent)
+    assert.are.equal(1787870220,
+      status.details.limits[1].secondary.resets_at)
     assert.are.same({
-      type = "provider_status",
-      text = "5h 87.5% left · weekly 60% left",
-    }, emitted[#emitted])
+      has_credits = true, unlimited = false, balance = "12.50",
+    }, status.details.credits)
+    assert.are.equal("codex-sonic", status.details.limits[2].id)
+    assert.are.equal("Sonic", status.details.limits[2].name)
+    assert.are.equal(43200,
+      status.details.limits[2].primary.window_minutes)
+  end)
+
+  it("orders additional quota headers and rejects unsafe metadata", function()
+    local output = { {
+      type = "message", id = "msg", role = "assistant", status = "completed",
+      content = {},
+    } }
+    local transport = fake_transport.new({ {
+      chunks = { event({
+        type = "response.done",
+        response = { id = "response", status = "completed", output = output },
+      }) },
+      headers = {
+        ["X-Codex-Primary-Used-Percent"] = "30",
+        ["X-Codex-Primary-Window-Minutes"] = "300",
+        ["X-Alpha-Primary-Used-Percent"] = "10",
+        ["X-Alpha-Primary-Window-Minutes"] = "60",
+        ["X-Alpha-Limit-Name"] = "\n",
+        ["X-Beta-Primary-Used-Percent"] = "20",
+        ["X-Beta-Primary-Window-Minutes"] = "60",
+        ["X-Codex-Credits-Has-Credits"] = "maybe",
+        ["X-Codex-Credits-Unlimited"] = "true",
+      },
+    } })
+    local emitted = {}
+    local result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = transport,
+    }):stream({
+      messages = {},
+      on_event = function(value) emitted[#emitted + 1] = value end,
+    }))
+
+    assert.is_true(result.ok)
+    local status = emitted[#emitted]
+    assert.are.equal("5h 70% left", status.text)
+    assert.are.same({ "codex", "alpha", "beta" },
+      vim.tbl_map(function(limit) return limit.id end, status.details.limits))
+    assert.is_nil(status.details.limits[2].name)
+    assert.is_nil(status.details.credits)
   end)
 
   it("normalizes malformed Codex tool arguments for agent recovery", function()
@@ -190,6 +250,7 @@ describe("neoagent.api.openai_codex_responses", function()
       }) } },
     })
     local delays = {}
+    local statuses = {}
     local result = wait(codex.new({
       provider = "openai-codex",
       model = "gpt-test",
@@ -197,12 +258,27 @@ describe("neoagent.api.openai_codex_responses", function()
       transport = transport,
       request_max_retries = 1,
       sleep = function(delay) delays[#delays + 1] = delay end,
-    }):stream({ messages = {} }))
+    }):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "provider_status" then
+          statuses[#statuses + 1] = value
+        end
+      end,
+    }))
 
     assert.is_true(result.ok)
     assert.are.equal("recovered", result.text)
     assert.are.equal(2, #transport.requests)
     assert.are.same({ 200 }, delays)
+    assert.are.same({
+      {
+        type = "provider_status",
+        text = "Reconnecting… 1/1",
+        reconnecting = true,
+      },
+      { type = "provider_status", reconnecting = false },
+    }, statuses)
   end)
 
   it("honors provider retry delays with the default cancellable timer", function()
@@ -234,8 +310,40 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.are.equal(2, #transport.requests)
   end)
 
+  it("clears reconnect state when request retries are exhausted", function()
+    local failure = {
+      kind = "transport",
+      message = "HTTP 503: overloaded",
+      response = { status = 503, headers = {} },
+    }
+    local statuses = {}
+    local result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = fake_transport.new({
+        { error = vim.deepcopy(failure) },
+        { error = vim.deepcopy(failure) },
+      }),
+      request_max_retries = 1,
+      sleep = function() end,
+    }):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "provider_status" then
+          statuses[#statuses + 1] = value
+        end
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.is_true(statuses[1].reconnecting)
+    assert.is_false(statuses[#statuses].reconnecting)
+  end)
+
   it("cancels a Codex request during retry backoff", function()
     local retrying = false
+    local statuses = {}
     local transport = fake_transport.new({ { error = {
       kind = "transport",
       message = "HTTP 503: overloaded",
@@ -250,7 +358,14 @@ describe("neoagent.api.openai_codex_responses", function()
       on_diagnostic = function(value)
         if value.type == "request_retry" then retrying = true end
       end,
-    }):stream({ messages = {} })
+    }):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "provider_status" then
+          statuses[#statuses + 1] = value
+        end
+      end,
+    })
     assert(vim.wait(1000, function() return retrying end))
     run:cancel()
     local result = wait(run)
@@ -258,6 +373,8 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.is_false(result.ok)
     assert.are.equal("cancelled", result.error.kind)
     assert.are.equal(1, #transport.requests)
+    assert.is_true(statuses[1].reconnecting)
+    assert.is_false(statuses[#statuses].reconnecting)
   end)
 
   it("extracts Codex rate-limit retry delays", function()
@@ -331,7 +448,10 @@ describe("neoagent.api.openai_codex_responses", function()
       transport = transport,
     }):stream({ messages = {}, on_event = function(value) emitted[#emitted + 1] = value end }))
     assert.is_true(result.ok)
-    assert.are.same({ type = "provider_status", text = "weekly 79% left" }, emitted[#emitted])
+    assert.are.equal("provider_status", emitted[#emitted].type)
+    assert.are.equal("weekly 79% left", emitted[#emitted].text)
+    assert.are.equal(0.79,
+      emitted[#emitted].details.limits[1].primary.remaining)
   end)
 
   it("derives provider status from rate-limit error headers", function()
@@ -354,5 +474,7 @@ describe("neoagent.api.openai_codex_responses", function()
     }):stream({ messages = {} }))
     assert.is_false(result.ok)
     assert.are.equal("weekly 0% left", result.error.provider_status)
+    assert.are.equal(0,
+      result.error.provider_status_details.limits[1].primary.remaining)
   end)
 end)

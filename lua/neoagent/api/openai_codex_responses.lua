@@ -39,24 +39,125 @@ local function normalized_headers(headers)
   return result
 end
 
-local function rate_limit_status(headers)
+local function finite_number(value)
+  value = tonumber(value)
+  if value == nil or value ~= value
+      or value == math.huge or value == -math.huge then
+    return nil
+  end
+  return value
+end
+
+local function safe_header_text(value, maximum)
+  if type(value) ~= "string" then return nil end
+  value = util.trim(value)
+  if value == "" or #value > maximum
+      or not util.is_valid_utf8(value)
+      or value:find("[%z\1-\31\127]") then
+    return nil
+  end
+  return value
+end
+
+local function header_boolean(value)
+  if type(value) ~= "string" then return nil end
+  value = value:lower()
+  if value == "true" or value == "1" then return true end
+  if value == "false" or value == "0" then return false end
+  return nil
+end
+
+local function rate_limit_window(headers, prefix, name)
+  local base = "x-" .. prefix .. "-" .. name .. "-"
+  local used = finite_number(headers[base .. "used-percent"])
+  if not used then return nil end
+  local minutes = finite_number(headers[base .. "window-minutes"])
+  if not minutes or minutes <= 0 then minutes = nil end
+  local resets_at = finite_number(headers[base .. "reset-at"])
+  if resets_at and resets_at <= 0 then resets_at = nil end
+  if used == 0 and not minutes and not resets_at then return nil end
+  local remaining = math.max(0, math.min(1, (100 - used) / 100))
+  return {
+    used_percent = used,
+    remaining = remaining,
+    window_minutes = minutes,
+    resets_at = resets_at,
+  }
+end
+
+local function rate_limit_details(headers)
   local normalized = normalized_headers(headers)
-  local parts = {}
-  for _, window in ipairs({
-    { prefix = "primary" },
-    { prefix = "secondary" },
-  }) do
-    local base = "x-codex-" .. window.prefix .. "-"
-    local used = tonumber(normalized[base .. "used-percent"])
-    local minutes = tonumber(normalized[base .. "window-minutes"])
-    if used and minutes and minutes > 0 then
-      local remaining = math.max(0, math.min(100, 100 - used))
-      local formatted = string.format("%.1f", remaining):gsub("%.0$", "")
-      parts[#parts + 1] = string.format("%s %s%% left",
-        window_label(minutes), formatted)
+  local prefixes = {}
+  for name in pairs(normalized) do
+    local prefix = name:match("^x%-(.-)%-primary%-used%-percent$")
+    if prefix and #prefix <= 128 and prefix:match("^[%w%-_]+$") then
+      prefixes[prefix] = true
     end
   end
-  return #parts > 0 and table.concat(parts, " · ") or nil
+  if normalized["x-codex-secondary-used-percent"] ~= nil then
+    prefixes.codex = true
+  end
+
+  local credits
+  local has_credits = header_boolean(
+    normalized["x-codex-credits-has-credits"])
+  local unlimited = header_boolean(
+    normalized["x-codex-credits-unlimited"])
+  if has_credits ~= nil and unlimited ~= nil then
+    credits = {
+      has_credits = has_credits,
+      unlimited = unlimited,
+      balance = safe_header_text(
+        normalized["x-codex-credits-balance"], 128),
+    }
+    prefixes.codex = true
+  end
+
+  local names = {}
+  for prefix in pairs(prefixes) do names[#names + 1] = prefix end
+  table.sort(names, function(left, right)
+    if left == "codex" then return right ~= "codex" end
+    if right == "codex" then return false end
+    return left < right
+  end)
+  local limits = {}
+  for _, prefix in ipairs(names) do
+    if #limits >= 32 then break end
+    local primary = rate_limit_window(normalized, prefix, "primary")
+    local secondary = rate_limit_window(normalized, prefix, "secondary")
+    if primary or secondary then
+      limits[#limits + 1] = {
+        id = prefix,
+        name = safe_header_text(
+          normalized["x-" .. prefix .. "-limit-name"], 128),
+        primary = primary,
+        secondary = secondary,
+      }
+    end
+  end
+  if #limits == 0 and not credits then return nil end
+  return { source = "headers", limits = limits, credits = credits }
+end
+
+local function rate_limit_status(headers)
+  local details = rate_limit_details(headers)
+  local parts = {}
+  local default
+  for _, limit in ipairs(details and details.limits or {}) do
+    if limit.id == "codex" then default = limit break end
+  end
+  for _, window in ipairs(default and {
+    default.primary,
+    default.secondary,
+  } or {}) do
+    if window and window.window_minutes then
+      local remaining = window.remaining * 100
+      local formatted = string.format("%.1f", remaining):gsub("%.0$", "")
+      parts[#parts + 1] = string.format("%s %s%% left",
+        window_label(window.window_minutes), formatted)
+    end
+  end
+  return #parts > 0 and table.concat(parts, " · ") or nil, details
 end
 
 local function base_url(value)
@@ -141,8 +242,11 @@ local function enrich_error(value)
   err.request_id = headers["x-request-id"] or headers["x-oai-request-id"]
   err.cf_ray = headers["cf-ray"]
   err.authorization_error = headers["x-openai-authorization-error"]
-  local provider_status = rate_limit_status(headers)
+  local provider_status, provider_status_details = rate_limit_status(headers)
   if provider_status then err.provider_status = provider_status end
+  if provider_status_details then
+    err.provider_status_details = provider_status_details
+  end
   err.retry_after_ms = retry_after(headers) or message_retry_after(err.code, err.message)
   if err.kind == "cancelled" or terminal_error(err.code, err.message) then
     err.retryable = false
@@ -198,31 +302,44 @@ local function wrap_stream(model, opts)
   function model:stream(call_opts)
     call_opts = call_opts or {}
     return async.run(function(run)
-      local max_retries = self._request_max_retries
-      for attempt = 0, max_retries do
-        local call = util.copy(call_opts)
-        call.on_event = function(event) run:emit(event) end
-        call.on_done = nil
-        local result = base_stream(self, call):await()
-        if result.ok then return result end
+      local reconnecting = false
+      local ok, outcome = pcall(function()
+        local max_retries = self._request_max_retries
+        for attempt = 0, max_retries do
+          local call = util.copy(call_opts)
+          call.on_event = function(event) run:emit(event) end
+          call.on_done = nil
+          local result = base_stream(self, call):await()
+          if result.ok then return result end
 
-        local err = enrich_error(result.error)
-        result.error = err
-        if result.message then result.message.errorMessage = err.message end
-        if err.kind == "cancelled" then return result end
+          local err = enrich_error(result.error)
+          result.error = err
+          if result.message then result.message.errorMessage = err.message end
+          if err.kind == "cancelled" then return result end
 
-        local should_retry = err.retryable and result.message == nil and attempt < max_retries
-        local wait = should_retry and retry_delay(err, attempt) or nil
-        emit_diagnostic(self, call_opts, should_retry and "request_retry" or "request_failed",
-          err, attempt + 1, max_retries + 1, wait)
-        if not should_retry then return result end
+          local should_retry = err.retryable
+            and result.message == nil and attempt < max_retries
+          local wait = should_retry and retry_delay(err, attempt) or nil
+          emit_diagnostic(self, call_opts,
+            should_retry and "request_retry" or "request_failed",
+            err, attempt + 1, max_retries + 1, wait)
+          if not should_retry then return result end
 
-        run:emit({
-          type = "provider_status",
-          text = string.format("Reconnecting… %d/%d", attempt + 1, max_retries),
-        })
-        self._sleep(wait)
+          reconnecting = true
+          run:emit({
+            type = "provider_status",
+            text = string.format(
+              "Reconnecting… %d/%d", attempt + 1, max_retries),
+            reconnecting = true,
+          })
+          self._sleep(wait)
+        end
+      end)
+      if reconnecting then
+        run:emit({ type = "provider_status", reconnecting = false })
       end
+      if not ok then error(outcome, 0) end
+      return outcome
     end, {
       on_event = call_opts.on_event,
       on_done = call_opts.on_done,
@@ -242,5 +359,7 @@ function M.new(opts)
   wrap_stream(model, opts)
   return model
 end
+
+M.rate_limit_status = rate_limit_status
 
 return M

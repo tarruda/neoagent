@@ -520,10 +520,12 @@ function M.new(opts)
         if run_id ~= state.run_id then return end
         if type(opts.provider_event) == "function"
             and type(done.error) == "table"
-            and type(done.error.provider_status) == "string" then
+            and (type(done.error.provider_status) == "string"
+              or type(done.error.provider_status_details) == "table") then
           opts.provider_event({
             type = "provider_status",
             text = done.error.provider_status,
+            details = util.copy(done.error.provider_status_details),
           })
         end
         local transitioned, transition_err = pcall(transition_done, done)

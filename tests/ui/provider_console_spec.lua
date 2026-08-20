@@ -1320,7 +1320,7 @@ describe("neoagent provider console", function()
     })
     controllers = { controller }
     assert(controller:prepare())
-    assert.are.equal("Awaiting first response",
+    assert.are.equal("Usage not loaded · run Refresh usage",
       controller:snapshot().context.provider.state.blocks[1].text)
 
     local window = neoagent.new_window({ controllers = { controller } })
@@ -1332,22 +1332,21 @@ describe("neoagent provider console", function()
     wait(run)
     assert(vim.wait(1000, function()
       local state = controller:snapshot().context.provider.state
-      return state.blocks[2] and state.blocks[2].label == "Plan window"
-        and state.blocks[2].value == 0.84
+      return state.blocks[1] and state.blocks[1].label == "Weekly limit"
+        and state.blocks[1].remaining == 0.84
     end))
     local state = controller:snapshot().context.provider.state
-    assert.are.equal("Usage updated", state.blocks[1].text)
     assert.are.same({
-      { type = "progress", label = "Plan window", value = 0.84,
-        detail = "84% left", level = "info" },
-      { type = "progress", label = "Rolling window", value = 0.6,
-        detail = "60% left", level = "info" },
-    }, { state.blocks[2], state.blocks[3] })
+      { type = "limit", label = "Weekly limit", remaining = 0.84,
+        level = "success" },
+      { type = "limit", label = "5h limit", remaining = 0.6,
+        level = "success" },
+    }, { state.blocks[1], state.blocks[2] })
     local console = table.concat(vim.api.nvim_buf_get_lines(
       window:view().provider_buf, 0, -1, false), "\n")
-    assert.matches("Plan window  84%% left", console)
+    assert.matches("Weekly limit  .*84%% left", console)
     assert.matches("84%%", console)
-    assert.matches("Rolling window  60%% left", console)
+    assert.matches("5h limit  .*60%% left", console)
   end)
 
   it("derives Codex console state from rate-limit errors", function()
@@ -1376,11 +1375,12 @@ describe("neoagent provider console", function()
     wait(run)
     assert(vim.wait(1000, function()
       local state = controller:snapshot().context.provider.state
-      return state.blocks[2] and state.blocks[2].label == "Plan window"
-        and state.blocks[2].value == 0
+      return state.blocks[1] and state.blocks[1].label == "Weekly limit"
+        and state.blocks[1].remaining == 0
     end))
-    assert.are.equal("0% left",
-      controller:snapshot().context.provider.state.blocks[2].detail)
+    local block = controller:snapshot().context.provider.state.blocks[1]
+    assert.are.equal("error", block.level)
+    assert.are.equal(0, block.remaining)
   end)
 
   it("focuses the provider console with Alt-l and returns with Alt-h", function()

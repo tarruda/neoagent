@@ -216,6 +216,7 @@ describe("OpenAI-compatible HTTP integration", function()
     local server = mock_server.start("tests/fixtures/openai/codex_retry.json")
     servers[#servers + 1] = server
     local diagnostics = {}
+    local statuses = {}
     local result = wait(codex.new({
       provider = "mock-codex",
       model = "gpt-test",
@@ -223,7 +224,14 @@ describe("OpenAI-compatible HTTP integration", function()
       request_max_retries = 1,
       sleep = function() end,
       on_diagnostic = function(value) diagnostics[#diagnostics + 1] = value end,
-    }):stream({ messages = {} }))
+    }):stream({
+      messages = {},
+      on_event = function(value)
+        if value.type == "provider_status" then
+          statuses[#statuses + 1] = value
+        end
+      end,
+    }))
 
     assert.is_true(result.ok)
     assert.are.equal("recovered", result.text)
@@ -235,6 +243,8 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal(500, diagnostics[1].status)
     assert.are.equal("req-codex-retry", diagnostics[1].request_id)
     assert.are.equal("ray-codex-retry", diagnostics[1].cf_ray)
+    assert.is_true(statuses[1].reconnecting)
+    assert.is_false(statuses[#statuses].reconnecting)
   end)
 
   it("cancels Responses API curl and preserves partial output", function()

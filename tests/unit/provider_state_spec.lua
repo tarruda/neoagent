@@ -122,6 +122,14 @@ describe("neoagent provider state", function()
     value = valid()
     value.blocks[6].entries[1].timestamp = math.huge
     assert.is_nil(provider_state.normalize(value))
+
+    value = valid()
+    value.blocks[1].text = ""
+    assert.is_nil(provider_state.normalize(value))
+
+    value = valid()
+    value.blocks[1].text = string.char(0xff)
+    assert.is_nil(provider_state.normalize(value))
   end)
 
   it("bounds strings, ratios, and collections", function()
@@ -231,5 +239,10 @@ describe("neoagent provider state", function()
     assert.is_nil(normalized.ratio)
     assert.is_nil(normalized.detail)
     assert.is_nil(provider_state.normalize_operation({ label = "missing" }))
+    assert.is_nil(provider_state.normalize_operation({
+      id = "download",
+      label = "Download model",
+      state = "paused",
+    }))
   end)
 end)

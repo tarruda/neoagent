@@ -62,7 +62,10 @@ Choose a provider:
 - For a ChatGPT Plus or Pro subscription, run
   `:NeoagentLogin openai-codex`, complete the browser or device-code login,
   then select a subscription model with `:NeoagentModel`. The provider console
-  shows the rate-limit windows reported by each response.
+  shows account quotas reported by responses. Run its `refresh` operation for
+  reset times, credits, spend controls, and other account limits. Separate
+  operations load aggregate activity, workspace names, and earned reset
+  credits; redemption always asks for confirmation.
 
 API keys are entered through a masked prompt. A stored credential takes
 precedence over its environment variable. `:NeoagentLogout [method]` removes

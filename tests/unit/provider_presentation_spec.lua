@@ -179,5 +179,20 @@ describe("neoagent provider presentation", function()
         assert.is_true(vim.fn.strdisplaywidth(line) <= 28)
       end
     end
+
+    local now = os.time()
+    local compact = provider_presentation.render({
+      name = "Codex",
+      state = { blocks = { {
+        type = "limit",
+        label = "5h limit",
+        remaining = 0.55,
+        resets_at = now + 60,
+      } } },
+      operations = {},
+    }, { width = 40, now = now })
+    local compact_text = lines(compact)
+    assert.matches("5h limit  55%% left %(resets %d%d:%d%d%)", compact_text)
+    assert.is_nil(compact_text:find("\n%s+resets", 1))
   end)
 end)

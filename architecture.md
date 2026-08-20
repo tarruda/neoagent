@@ -108,6 +108,11 @@ identity headers at request time.
 The configured Codex composition injects a private rotating JSONL diagnostic
 sink. Rotation and append share a cross-process lock for each path; direct
 Model construction remains independent from file logging.
+Codex request retries publish paired connection-status events around their
+backoff and follow-up requests. Completion and cancellation close that
+transient lifecycle. The Codex Provider Service presents the connection status
+as an overlay on its durable usage state, so recovery reveals an authoritative
+quota, stale, or refresh-failure status without reconstructing it.
 
 A Provider Service is an explicit runtime value for provider state,
 operations, and optional dynamic catalogs. It is a plain table with `id`,
@@ -124,18 +129,31 @@ destroys every value constructed during that attempt.
 `lua/neoagent/provider_state.lua` normalizes console snapshots and bounds
 every retained string and collection. Its dashboard value owns a copied
 snapshot and a subscriber list. Providers call `dashboard:push()` with
-JSON-compatible `status`, `field`, `progress`, `list`, and `activity` blocks.
-Pushes from libuv callbacks schedule subscriber delivery onto Neovim's main
-loop. Renderers convert those semantic blocks into presentation.
+JSON-compatible `status`, `field`, `progress`, `limit`, `list`, and `activity`
+blocks. A semantic limit owns a remaining ratio plus optional reset timestamp,
+detail, and level. Pushes from libuv callbacks schedule subscriber delivery
+onto Neovim's main loop. Renderers convert those semantic blocks into
+presentation; the bundled provider presentation adapts quota rows to the
+available width without recognizing provider IDs.
 
 Configured providers may declare a `service` constructor.
 `lua/neoagent/provider_services.lua` builds the values from secret-free
 projections and injects them through `runtime.providers`. `service_opts`
 and `catalog_cache` carry copied provider-specific configuration. A catalog
-cache policy is `false` or a table with a non-negative `ttl_ms`. The basic Codex
-service (`lua/neoagent/providers/codex.lua`) pushes plan and rolling-window
-meters from `provider_status` events produced from response headers, plus
-request token counts from usage events. The
+cache policy is `false` or a table with a non-negative `ttl_ms`. The Codex
+Responses adapter parses every bounded `x-codex-*` limit family into structured
+header details while retaining compact status text. The Codex service
+(`lua/neoagent/providers/codex.lua`) merges those incremental details and
+request token counts into its private account snapshot. Its explicit refresh
+operation composes `lua/neoagent/providers/codex_management.lua`, resolved
+OAuth request options, and the configured transport to fetch authoritative
+usage. The client bounds time and response bytes before JSON decoding and
+reports body-free errors. Rich refreshes replace the quota collection; header
+events update individual windows between refreshes. Account activity,
+workspace names, reset-credit inspection, and confirmed idempotent redemption
+use separate cancellable operations. Provider state contains only display
+metadata and normalized blocks; account IDs, credentials, headers, raw bodies,
+idempotency keys, reset-credit IDs, and refresh timestamps remain private. The
 dynamic catalog seam in `models.available()` and `models.resolve()` merges
 validated `get_models()` entries under the configured model table and honors
 user removals recorded by `registry.compose()`. Providers with
@@ -588,7 +606,10 @@ classifies transient failures, retries eligible turns, compacts context, and
 finishes or cancels Runs. Context metrics and session choices remain focused
 calculations.
 
-Provider Services are shared per composition. A Controller binds the service
+Provider Services are shared per composition. `neoagent.new()` owns and
+destroys the private service map it composes after dependent Controller Runs
+and subscriptions stop. A caller-supplied `runtime.providers` map remains
+caller-owned and may be shared. A Controller binds the service
 for its selected provider, publishes the bounded `context.provider` snapshot,
 forwards Model events through an optional `service:on_event()` hook, and owns
 one cancellable provider operation Run independent of the agent Run. A

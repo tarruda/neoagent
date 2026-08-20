@@ -939,6 +939,13 @@ Pushes from provider-owned `vim.uv` timers are supported directly. >lua
         detail = "3.4 GiB / 8.0 GiB",
       },
       {
+        type = "limit",
+        label = "Weekly limit",
+        remaining = 0.84,
+        resets_at = 1787870220,
+        level = "success",
+      },
+      {
         type = "activity",
         title = "Recent activity",
         entries = {
@@ -948,13 +955,18 @@ Pushes from provider-owned `vim.uv` timers are supported directly. >lua
     },
   })
 <
-Dashboard block types are `status`, `field`, `progress`, `list`, and
-`activity`. Status and progress levels are `info`, `success`, `warn`, `error`,
-and `muted`. A progress `value` is a ratio from 0 through 1; omitting it
-represents indeterminate work. Lists contain `{ label, detail? }` items, and
-activity blocks contain `{ level, message, timestamp? }` entries. Providers
-describe semantics only. The active Renderer chooses text, symbols, colors,
-spacing, and progress-bar geometry.
+Dashboard block types are `status`, `field`, `progress`, `limit`, `list`, and
+`activity`. Status, progress, and limit levels are `info`, `success`, `warn`,
+`error`, and `muted`. A progress `value` is a ratio from 0 through 1; omitting
+it represents indeterminate work. A limit has a bounded `label`, a required
+`remaining` ratio from 0 through 1, an optional finite Unix `resets_at`
+timestamp, optional `detail`, and optional `level`. Lists contain
+`{ label, detail? }` items, and activity blocks contain
+`{ level, message, timestamp? }` entries. Providers describe semantics only.
+The active Renderer chooses text, symbols, colors, spacing, and meter geometry.
+The bundled provider Renderer presents limits in adaptive rows with a
+20-segment remaining-capacity bar. Narrow rows retain the percentage and reset
+time and omit the bar.
 
 Operations use the independent provider service runner: >lua
 
@@ -994,11 +1006,41 @@ with the input beneath both surfaces. `<A-p>` toggles the console from every
 Neoagent surface,
 `<A-l>` focuses or opens it from the transcript or input, `<A-h>` returns to
 the transcript, `<A-j>` moves to the input, and Up/Down arrows select
-operation rows. The basic Codex service derives plan and rolling-window
-progress meters from the `provider_status` events produced from `x-codex-*`
-response headers. It also pushes the latest request token counts. Quota
-details live in the provider console while the transcript border remains
-focused on agent and context state.
+operation rows. The Codex service receives structured quota windows, reset
+timestamps, credits, and additional metered limits from `x-codex-*` response
+headers. The event retains a short `provider_status.text` value for transcript
+and retry consumers. Header state updates the console immediately, including
+terminal HTTP failures, while the latest request token counts arrive through
+`usage` events. Codex request retries publish `reconnecting = true` with their
+temporary status and publish `reconnecting = false` when the request recovers,
+fails, or is cancelled. The console overlays that connection state on its
+durable usage status and reveals the usage status when the retry ends.
+
+The `refresh` operation resolves the configured ChatGPT OAuth login and loads
+the authoritative `/wham/usage` snapshot. It publishes bounded email and plan
+display metadata, primary, secondary, monthly, and additional metered limits,
+credits, workspace spend controls, reset-credit count, and reset reasons.
+Account identifiers, credential values, request headers, and raw response
+bodies do not enter provider state. Snapshots older than 15 minutes retain
+their data with a muted stale warning. A failed refresh also keeps the last
+rich snapshot visible. Service subscription performs no request; refresh is an
+explicit operation, so composed providers that are never opened create no
+account traffic.
+
+`activity` loads aggregate token statistics from `/wham/profiles/me`,
+`workspaces` loads display names from `/wham/accounts/check`, and
+`reset_credits` loads bounded earned-credit details from
+`/wham/rate-limit-reset-credits`. `redeem` is a separate mutating operation. It
+asks for confirmation, sends a stable idempotency key to
+`/wham/rate-limit-reset-credits/consume`, and refreshes usage after a successful
+redemption. Cancellation propagates through every request. The management
+client uses a 15-second default timeout and a 512-KiB response limit; configure
+`providers["openai-codex"].service_opts.timeout_ms` or
+`max_response_bytes` to change them. The response limit must be at least 1024
+bytes. A custom `base_url` supplies the prefix for the same `/wham/*` routes.
+ChatGPT account operations require OAuth; an API-key credential leaves an
+explicit unavailable status. Quota details live in the provider console while
+the transcript border remains focused on agent and context state.
 
 `models.available()` and `models.resolve()` accept an optional
 `providers` map. For a service with `get_models()`, discovered entries merge
@@ -1510,10 +1552,14 @@ no stored credential exists, allowing its ambient API-key callback to supply
 authentication. Stored credentials take precedence over ambient credentials.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, and
-`usage`. A Model may emit `{ type = "provider_status", text = "..." }`; the
-Controller retains it as transient provider status and forwards it to the
-selected Model's Provider Service. The Controller also publishes
-`context.provider` as
+`usage`. A Model may emit
+`{ type = "provider_status", text = "...", details = {...} }`; the Controller
+retains the text as transient provider status and forwards a copied complete
+event to the selected Model's Provider Service. A terminal Model error may
+carry the same text and structured details. A paired
+`{ type = "provider_status", reconnecting = true|false }` event marks the
+start and end of a temporary request-retry status. The Controller also
+publishes `context.provider` as
 `{ id, name, state, operations }` for the provider console. A successful
 result has
 `{ ok = true, message, text }`; a failure has

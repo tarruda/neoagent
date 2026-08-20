@@ -6,9 +6,17 @@ local function wait(run)
   return run:result()
 end
 
-local function token(account)
+local function token(account, claims)
+  claims = claims or {}
   local payload = vim.base64.encode(vim.json.encode({
-    ["https://api.openai.com/auth"] = { chatgpt_account_id = account },
+    email = claims.email,
+    ["https://api.openai.com/profile"] = claims.profile_email and {
+      email = claims.profile_email,
+    } or nil,
+    ["https://api.openai.com/auth"] = {
+      chatgpt_account_id = account,
+      chatgpt_plan_type = claims.plan,
+    },
   })):gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
   return "header." .. payload .. ".signature"
 end
@@ -41,7 +49,11 @@ end
 describe("OpenAI Codex subscription authentication", function()
   it("logs in through the browser PKCE flow and derives Codex headers", function()
     local http = fake_http({ json(200, {
-      access_token = token("acct"), refresh_token = "refresh", expires_in = 60,
+      access_token = token("acct", {
+        email = "account@example.com",
+        plan = "self_serve_business_usage_based",
+      }),
+      refresh_token = "refresh", expires_in = 60,
     }) })
     local closed = false
     local method = codex.new({
@@ -68,11 +80,74 @@ describe("OpenAI Codex subscription authentication", function()
     assert.are.equal("Bearer " .. result.credential.access, headers.Authorization)
     assert.are.equal("acct", headers["chatgpt-account-id"])
     assert.are.equal("responses=experimental", headers["OpenAI-Beta"])
+    assert.are.same({
+      email = "account@example.com",
+      plan = "Business",
+    }, method.public_metadata(result.credential))
+    assert.is_nil(method.public_metadata(result.credential).accountId)
+  end)
+
+  it("bounds safe public account metadata and normalizes plan labels", function()
+    local method = codex.new()
+    assert.are.same({ plan = "Enterprise" }, method.public_metadata({
+      plan = "enterprise_cbp_usage_based",
+      email = "bad\nemail@example.com",
+    }))
+    assert.are.same({ email = "member@example.com", plan = "Pro Lite" },
+      method.public_metadata({
+        email = "member@example.com",
+        plan = "prolite",
+      }))
+    assert.are.same({ account = "ChatGPT" }, method.public_metadata({
+      email = string.rep("a", 255),
+      plan = string.rep("p", 65),
+    }))
+    assert.are.same({ email = "legacy@example.com", plan = "Pro" },
+      method.public_metadata({ access = token("acct", {
+        profile_email = "legacy@example.com",
+        plan = "pro",
+      }) }))
+  end)
+
+  it("extracts account display metadata from the OAuth ID token", function()
+    local http = fake_http({ json(200, {
+      access_token = token("acct"),
+      id_token = token("acct", {
+        profile_email = "profile@example.com",
+        plan = "plus",
+      }),
+      refresh_token = "refresh",
+      expires_in = 60,
+    }) })
+    local method = codex.new({
+      http = http,
+      auth_base_url = "https://auth.test",
+      start_callback_server = function()
+        return { wait = function() return "browser-code" end, close = function() end }
+      end,
+    })
+    local result = wait(method.login(interaction({ "browser" }, {})))
+
+    assert.is_true(result.ok)
+    assert.are.equal("profile@example.com", result.credential.email)
+    assert.are.equal("plus", result.credential.plan)
+    assert.are.same({
+      email = "profile@example.com",
+      plan = "Plus",
+    }, method.public_metadata(result.credential))
   end)
 
   it("falls back to a pasted redirect URL and refreshes tokens", function()
     local http = fake_http({
-      json(200, { access_token = token("first"), refresh_token = "r1", expires_in = 1 }),
+      json(200, {
+        access_token = token("first"),
+        id_token = token("first", {
+          profile_email = "account@example.com",
+          plan = "plus",
+        }),
+        refresh_token = "r1",
+        expires_in = 1,
+      }),
       json(200, { access_token = token("second"), refresh_token = "r2", expires_in = 2 }),
     })
     local state
@@ -96,6 +171,8 @@ describe("OpenAI Codex subscription authentication", function()
     result = wait(method.refresh(result.credential))
     assert.is_true(result.ok)
     assert.are.equal("second", result.credential.accountId)
+    assert.are.equal("account@example.com", result.credential.email)
+    assert.are.equal("plus", result.credential.plan)
     assert.matches("grant_type=refresh_token", http.requests[2].body)
     assert.matches("refresh_token=r1", http.requests[2].body)
   end)
