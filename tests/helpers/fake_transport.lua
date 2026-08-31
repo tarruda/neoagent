@@ -33,6 +33,7 @@ function M.new(responses)
         ok = true,
         status = response.status or 200,
         body = response.body or "",
+        headers = response.headers or {},
       }
     end)
   end
