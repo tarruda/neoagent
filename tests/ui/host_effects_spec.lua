@@ -38,7 +38,7 @@ describe("Applet host effects", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "draft" })
     result = effects.refresh_file(path)
     assert.are.equal(0, result.refreshed)
-    assert.are.same({ path }, result.modified)
+    assert.are.same({ vim.api.nvim_buf_get_name(buffer) }, result.modified)
     assert.are.equal("draft", vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1])
     vim.bo[buffer].modified = false
 
