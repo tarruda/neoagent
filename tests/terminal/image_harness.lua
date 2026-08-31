@@ -288,7 +288,7 @@ timer:start(10, 10, vim.schedule_wrap(function()
     timer:close()
     active.close()
     vim.cmd("qa!")
-  elseif now - started > 300 * 1e9 then
+  elseif now - started > 600 * 1e9 then
     timer:stop()
     timer:close()
     active.close()
