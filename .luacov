@@ -2,6 +2,7 @@ return {
   statsfile = ".coverage/luacov.stats.out",
   reportfile = ".coverage/luacov.report.out",
   include = {
+    "lua/applet/",
     "lua/neoagent/",
     "plugin/neoagent$",
   },

@@ -11,7 +11,7 @@ with open(report, "r", encoding="utf-8") as source:
 
 expected = {
     path.as_posix()
-    for root in (Path("lua/neoagent"), Path("plugin"))
+    for root in (Path("lua/applet"), Path("lua/neoagent"), Path("plugin"))
     for path in root.rglob("*.lua")
 }
 reported = {}
@@ -41,10 +41,19 @@ if missing:
 def coverage(paths):
     hits = sum(reported[path][0] for path in paths)
     missed = sum(reported[path][1] for path in paths)
-    return 100 * hits / (hits + missed)
+    return hits, missed, 100 * hits / (hits + missed)
 
 
-plugin_coverage = coverage(expected)
+applet_paths = {path for path in expected if path.startswith("lua/applet/")}
+applet_hits, applet_missed, applet_coverage = coverage(applet_paths)
+print(
+    f"Applet Lua line coverage: {applet_coverage:.2f}% "
+    f"({applet_hits} hit, {applet_missed} missed; required: 100.00%)"
+)
+if applet_missed != 0:
+    raise SystemExit(1)
+
+_, _, plugin_coverage = coverage(expected)
 print(
     f"Neoagent Lua line coverage: {plugin_coverage:.2f}% "
     f"(required: > {plugin_threshold:.2f}%)"
