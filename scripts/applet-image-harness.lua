@@ -310,7 +310,6 @@ _G.applet_image_harness = function(backend, layout_mode)
   })
   local closed = false
   local center_timer
-  local frame_timer
   local close
   active = {
     backend = backend,
@@ -382,7 +381,7 @@ _G.applet_image_harness = function(backend, layout_mode)
       open = true,
       title = " Applet images: " .. backend
         .. " · hjkl scroll · HJKL detail · gh/gj/gk/gl badge"
-        .. " · a frame · A churn · p pending · r reset · q ",
+        .. " · a frame · A churn · p pending · u release · r reset · q ",
     },
     detail = {
       name = "detail",
@@ -617,6 +616,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     { lhs = "a", action = "harness.frame", desc = "show the next image frame" },
     { lhs = "A", action = "harness.churn", desc = "churn image revisions" },
     { lhs = "p", action = "harness.pending", desc = "hold a pending frame" },
+    { lhs = "u", action = "harness.release", desc = "release a pending frame" },
     { lhs = "r", action = "harness.reset", desc = "restore the first frame" },
   }) do
     bindings[#bindings + 1] = {
@@ -701,13 +701,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     end
   end
 
-  local function stop_frame_timer()
-    local timer = frame_timer
-    frame_timer = nil
-    if timer and not timer:is_closing() then
-      timer:stop()
-      timer:close()
-    end
+  local function stop_held_frame()
     held_identity, held_start = nil, nil
     active.frame_pending = false
   end
@@ -723,12 +717,12 @@ _G.applet_image_harness = function(backend, layout_mode)
     end
   end
 
-  function active:set_frame(index, hold_ms)
+  function active:set_frame(index, hold)
     assert(type(index) == "number" and index % 1 == 0
       and frames[index], "image harness frame must exist")
-    assert(hold_ms == nil or type(hold_ms) == "number" and hold_ms > 0,
-      "image harness hold must be positive")
-    stop_frame_timer()
+    assert(hold == nil or type(hold) == "boolean",
+      "image harness hold must be boolean")
+    stop_held_frame()
     self.frame_index = index
     self.frame_revision = self.frame_revision + 1
     source = {
@@ -738,24 +732,18 @@ _G.applet_image_harness = function(backend, layout_mode)
       revision = self.frame_revision,
     }
     self.source_identity = ImageSource.identity(source)
-    if hold_ms then
+    if hold then
       held_identity = self.source_identity
       self.frame_pending = true
     end
     submit_frame()
-    if not hold_ms then return end
-    local timer = vim.uv.new_timer()
-    frame_timer = timer
-    timer:start(hold_ms, 0, vim.schedule_wrap(function()
-      if frame_timer ~= timer then return end
-      frame_timer = nil
-      timer:stop()
-      timer:close()
-      local start = held_start
-      held_identity, held_start = nil, nil
-      self.frame_pending = false
-      if not closed and start then start() end
-    end))
+  end
+
+  function active:release_frame()
+    local start = held_start
+    held_identity, held_start = nil, nil
+    self.frame_pending = false
+    if not closed and start then start() end
   end
 
   local function next_frame()
@@ -767,7 +755,11 @@ _G.applet_image_harness = function(backend, layout_mode)
   end
 
   local function pending_frame()
-    active:set_frame(active.frame_index % #frames + 1, 1800)
+    active:set_frame(active.frame_index % #frames + 1, true)
+  end
+
+  local function release_frame()
+    active:release_frame()
   end
 
   local function reset_frame()
@@ -862,6 +854,7 @@ _G.applet_image_harness = function(backend, layout_mode)
       ["harness.frame"] = next_frame,
       ["harness.churn"] = churn_frames,
       ["harness.pending"] = pending_frame,
+      ["harness.release"] = release_frame,
       ["harness.reset"] = reset_frame,
       ["harness.close"] = function() vim.schedule(function() close() end) end,
     },
@@ -982,7 +975,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     if closed then return end
     closed = true
     stop_center_timer()
-    stop_frame_timer()
+    stop_held_frame()
     if active.group then pcall(vim.api.nvim_del_augroup_by_id, active.group) end
     if layout_mode == "native" then
       for _, name in ipairs({ "badge", "detail", "main" }) do

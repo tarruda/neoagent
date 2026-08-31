@@ -563,7 +563,7 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                         f"{name} exposed fallback pixels while frame 2 "
                         f"prepared: {pending_delta}")
 
-                frame_two = settled_capture("frame-two", True)
+                frame_two = move("u", "frame-two", True)
                 frame_two_pixels, frame_two_normal, frame_two_state = \
                     assert_frame("frame-two", frame_two, 2)
                 initial_to_two = difference(source_normal, frame_two_normal)
