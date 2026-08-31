@@ -121,6 +121,40 @@ describe("neoagent provider authentication", function()
     assert.is_false(manager:has_credentials("example"))
   end)
 
+  it("propagates credential enumeration failures and sorts public metadata", function()
+    local failed_store = memory_store()
+    failed_store.list = function()
+      return nil, { kind = "auth", message = "credential list unavailable" }
+    end
+    local manager = auth.new({
+      methods = { first = method() },
+      store = failed_store,
+    })
+    local listed, err = manager:list_credentials()
+    assert.is_nil(listed)
+    assert.are.equal("credential list unavailable", err.message)
+
+    local listed_store = memory_store()
+    listed_store.list = function()
+      return {
+        { id = "zeta", type = "oauth" },
+        { id = "beta", type = "api_key" },
+        { id = "alpha", type = "api_key" },
+      }
+    end
+    manager = auth.new({
+      methods = {
+        alpha = method({ name = "Same" }),
+        beta = method({ name = "Same" }),
+        zeta = method({ name = "Zulu" }),
+      },
+      store = listed_store,
+    })
+    listed = assert(manager:list_credentials())
+    assert.are.same({ "alpha", "beta", "zeta" },
+      vim.tbl_map(function(entry) return entry.id end, listed))
+  end)
+
   it("derives provider-specific request options from stored API keys", function()
     local storage = memory_store()
     local selected = require("neoagent.auth.api_key").new({

@@ -85,6 +85,17 @@ describe("neoagent input history", function()
     assert.is_nil(value)
     assert.matches("replace", err.message)
 
+    local original_random = vim.uv.random
+    vim.uv.random = function(size, ...)
+      if size == 8 then return nil, "entropy unavailable" end
+      return original_random(size, ...)
+    end
+    value, err = history:add("without random bytes")
+    vim.uv.random = original_random
+    assert.is_nil(value)
+    assert.matches("temporary file", err.message)
+    assert.are.equal("entropy unavailable", err.detail)
+
     vim.fn.delete(history.path)
     vim.fn.mkdir(history.path, "p")
     value, err = history:load()

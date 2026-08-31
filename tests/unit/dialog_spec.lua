@@ -159,10 +159,12 @@ describe("neoagent dialog source", function()
     local source = require("neoagent.dialog").new()
     local invalid = {
       function(value) value.placement = "sidebar" end,
-      function(value) value.controller = "" end,
-      function(value) value.controller = {} end,
+      function(value) value.agent = "" end,
+      function(value) value.agent = {} end,
       function(value) value.title = "" end,
       function(value) value.body = "bad\0body" end,
+      function(value) value.default_action = "" end,
+      function(value) value.default_action = "missing" end,
       function(value) value.actions = {} end,
       function(value) value.actions[1].id = "" end,
       function(value) value.actions[1].label = "" end,
@@ -201,12 +203,10 @@ describe("neoagent dialog source", function()
   end)
 
   it("isolates subscriber failures and reports presenter loss", function()
-    local source = require("neoagent.dialog").new()
-    local original_notify = vim.notify
     local notifications = {}
-    vim.notify = function(message, level)
+    local source = require("neoagent.dialog").new({ report = function(message, level)
       notifications[#notifications + 1] = { message, level }
-    end
+    end })
     local broken = source:subscribe(function(snapshot)
       if snapshot.active then error("subscriber exploded") end
     end)
@@ -219,7 +219,6 @@ describe("neoagent dialog source", function()
     wait(pending)
     broken()
     working()
-    vim.notify = original_notify
 
     local rejected = require("neoagent.dialog").new()
     assert.has_error(function()
@@ -247,13 +246,13 @@ describe("neoagent dialog source", function()
       end)
     local run = async.run(function()
       return execute({ name = "custom" }, {}, {
-        context = { controller = "Review" },
+        context = { agent = "Review" },
       })
     end)
     assert(vim.wait(1000, function()
       return source:snapshot().active ~= nil
     end, 5))
-    assert.are.equal("Review", source:snapshot().active.controller)
+    assert.are.equal("Review", source:snapshot().active.agent)
     assert(source:choose(source:snapshot().active.id, "proceed"))
     wait(run)
     assert.are.equal("proceed", run:result().action)

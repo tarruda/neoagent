@@ -5,8 +5,8 @@ local M = {}
 local Session = {}
 Session.__index = Session
 
-local function random_id()
-  return (vim.uv.random(8):gsub(".", function(char)
+local function random_id(bytes)
+  return (vim.uv.random(bytes or 8):gsub(".", function(char)
     return string.format("%02x", char:byte())
   end))
 end
@@ -47,17 +47,10 @@ local function memory_append(self, entry_type, values)
   return true, nil, util.copy(entry)
 end
 
-local function reload_store(self)
-  local loaded, err = self._store:load()
-  if not loaded then return nil, util.normalize_error(err, "storage") end
-  self._messages = util.copy(loaded)
-  return true
-end
-
 local function apply_store_projection(self, projection)
   if type(projection) ~= "table" or type(projection.messages) ~= "table"
       or not util.is_list(projection.messages) then
-    return reload_store(self)
+    return nil, util.error("storage", "Store returned an invalid projection")
   end
   if projection.type == "append" then
     vim.list_extend(self._messages, util.copy(projection.messages))
@@ -67,14 +60,75 @@ local function apply_store_projection(self, projection)
     self._messages = util.copy(projection.messages)
     return true
   end
-  return reload_store(self)
+  return nil, util.error("storage", "Store returned an unknown projection")
 end
 
-function Session:append(message)
+local function same_model(left, right)
+  return type(left) == "table" and type(right) == "table"
+    and left.provider == right.provider and left.model == right.model
+end
+
+local function restore_memory(self, entries, messages, leaf_id)
+  self._entries = entries
+  self._messages = messages
+  self._leaf_id = leaf_id
+  self._by_id = {}
+  for _, entry in ipairs(entries) do self._by_id[entry.id] = entry end
+end
+
+local function memory_append_message(self, message, state)
+  if state.model == nil and state.thinking_level == nil then
+    return memory_append(self, "message", { message = message })
+  end
+  local stored = assert(self:state())
+  local model_changed = state.model ~= nil
+    and not same_model(state.model, stored.model)
+  local thinking_changed = state.thinking_level ~= nil
+    and state.thinking_level ~= stored.thinking_level
+  if not model_changed and not thinking_changed then
+    return memory_append(self, "message", { message = message })
+  end
+  local entries = util.copy(self._entries)
+  local messages = util.copy(self._messages)
+  local leaf_id = self._leaf_id
+  local function append_state(entry_type, values)
+    local ok, err = memory_append(self, entry_type, values)
+    if not ok then
+      restore_memory(self, entries, messages, leaf_id)
+      return nil, err
+    end
+    return true
+  end
+  if model_changed then
+    local ok, err = append_state("model_change", {
+      provider = state.model.provider,
+      modelId = state.model.model,
+    })
+    if not ok then return nil, err end
+  end
+  if thinking_changed then
+    local ok, err = append_state("thinking_level_change", {
+      thinkingLevel = state.thinking_level,
+    })
+    if not ok then return nil, err end
+  end
+  local ok, err, entry = memory_append(self, "message", { message = message })
+  if not ok then
+    restore_memory(self, entries, messages, leaf_id)
+    return nil, err
+  end
+  return true, nil, entry
+end
+
+function Session:append(message, state)
   assert(type(message) == "table", "message must be a table")
+  assert(state == nil or type(state) == "table"
+      and (next(state) == nil or not util.is_list(state)),
+    "message state must be an object")
   local copy = util.copy(message)
+  state = util.copy(state or {})
   if self._store then
-    local ok, err, entry, projection = self._store:append(copy)
+    local ok, err, entry, projection = self._store:append(copy, state)
     if not ok then
       return nil, util.normalize_error(err, "storage")
     end
@@ -82,7 +136,7 @@ function Session:append(message)
     if not projected then return nil, projection_err end
     return true, nil, entry
   end
-  return memory_append(self, "message", { message = copy })
+  return memory_append_message(self, copy, state)
 end
 
 function Session:messages()
@@ -120,7 +174,12 @@ end
 
 function Session:path(...)
   if self._store and type(self._store.path) == "function" then return self._store:path(...) end
-  local requested = select("#", ...) > 0 and select(1, ...) or self._leaf_id
+  local requested
+  if select("#", ...) > 0 then
+    requested = select(1, ...)
+  else
+    requested = self._leaf_id
+  end
   if requested == nil then requested = vim.NIL end
   local path, err = tree.indexed_path(self._by_id, requested)
   if not path then return nil, util.error("session", "Failed to build session path", err) end
@@ -134,44 +193,21 @@ function Session:state()
   return tree.state(path)
 end
 
-function Session:label(id)
-  if self._store and type(self._store.label) == "function" then return self._store:label(id) end
-  local value
-  for _, entry in ipairs(self._entries) do
-    if entry.type == "label" and entry.targetId == id then
-      value = (entry.label == nil or entry.label == vim.NIL) and nil or entry.label
-    end
-  end
-  return value
-end
-
-function Session:name()
-  if self._store and type(self._store.name) == "function" then return self._store:name() end
-  local value
-  for _, entry in ipairs(self._entries) do
-    if entry.type == "session_info" then
-      value = type(entry.name) == "string" and util.trim(entry.name) or nil
-      if value == "" then value = nil end
-    end
-  end
-  return value
-end
-
-function Session:append_entry(entry_type, values)
+function Session:append_compaction(values)
   if self._store then
-    if type(self._store.append_entry) ~= "function" then
-      return nil, util.error("session", "Store does not support session entries")
+    if type(self._store.append_compaction) ~= "function" then
+      return nil, util.error("session", "Store does not support compaction")
     end
-    local ok, err, entry, projection = self._store:append_entry(entry_type, values)
+    local ok, err, entry, projection = self._store:append_compaction(values)
     if not ok then return nil, util.normalize_error(err, "storage") end
     local projected, projection_err = apply_store_projection(self, projection)
     if not projected then return nil, projection_err end
     return true, nil, entry
   end
-  return memory_append(self, entry_type, values)
+  return memory_append(self, "compaction", values)
 end
 
-function Session:move_to(entry_id, summary)
+function Session:move_to(entry_id)
   if entry_id ~= nil and not self:entry(entry_id) then
     return nil, util.error("session", "Entry not found: " .. tostring(entry_id))
   end
@@ -187,37 +223,76 @@ function Session:move_to(entry_id, summary)
     local ok, err = memory_append(self, "leaf", { targetId = entry_id or vim.NIL })
     if not ok then return nil, err end
   end
-  if summary then
-    assert(type(summary) == "table" and type(summary.summary) == "string", "summary.summary is required")
-    return self:append_entry("branch_summary", {
-      fromId = entry_id or "root",
-      summary = summary.summary,
-      details = summary.details,
-      usage = summary.usage,
-      fromHook = summary.from_hook,
-    })
-  end
   return true
 end
 
 function Session:metadata()
-  if not self._store then
-    return nil
+  if self._store then return util.copy(self._store:metadata()) end
+  if not self._header then return nil end
+  return {
+    id = self._id,
+    cwd = self._header.cwd,
+    timestamp = self._header.timestamp,
+    persisted = false,
+    parent_session = self._header.parent_session,
+    data = util.copy(self._header.data),
+  }
+end
+
+function Session:id()
+  return self._id
+end
+
+function Session:identity()
+  return self._identity
+end
+
+function Session:store()
+  return self._store
+end
+
+function Session:snapshot()
+  local entries = self:entries()
+  local validated, err = tree.validate_entries(entries)
+  if not validated then
+    return nil, util.error("session", "Invalid Session snapshot", err)
   end
-  return util.copy(self._store:metadata())
+  local leaf_id = self:leaf_id()
+  if validated.leaf_id ~= leaf_id then
+    return nil, util.error("session", "Invalid Session snapshot",
+      "active leaf does not match the entry journal")
+  end
+  local metadata = self:metadata()
+  return {
+    id = self._id,
+    workspace = metadata and metadata.cwd or nil,
+    timestamp = metadata and metadata.timestamp or nil,
+    parent_session = metadata and metadata.parent_session or nil,
+    metadata = metadata and util.copy(metadata.data) or nil,
+    entries = entries,
+    leaf_id = leaf_id,
+  }
 end
 
 function M.new(opts)
   opts = opts or {}
-  if opts.messages ~= nil and opts.store ~= nil then
-    return nil, util.error("session", "messages and store are mutually exclusive")
+  local sources = 0
+  for _, name in ipairs({ "messages", "entries", "store" }) do
+    if opts[name] ~= nil then sources = sources + 1 end
+  end
+  if sources > 1 then
+    return nil, util.error("session",
+      "messages, entries, and store are mutually exclusive")
   end
   local messages = {}
   local entries = {}
   local by_id = {}
   local leaf_id
-  if opts.store then
-    if type(opts.store.load) ~= "function" or type(opts.store.append) ~= "function" then
+  local store_metadata
+  if opts.store ~= nil then
+    if type(opts.store) ~= "table"
+        or type(opts.store.load) ~= "function"
+        or type(opts.store.append) ~= "function" then
       return nil, util.error("session", "store does not implement the storage contract")
     end
     local loaded, err = opts.store:load()
@@ -225,8 +300,33 @@ function M.new(opts)
       return nil, util.normalize_error(err, "storage")
     end
     messages = util.copy(loaded)
-  elseif opts.messages then
-    if type(opts.messages) ~= "table" then
+    if type(opts.store.metadata) == "function" then
+      store_metadata = opts.store:metadata()
+    end
+  elseif opts.entries ~= nil then
+    if type(opts.entries) ~= "table" or not util.is_list(opts.entries) then
+      return nil, util.error("session", "entries must be an array")
+    end
+    local validated, err = tree.validate_entries(opts.entries)
+    if not validated then
+      return nil, util.error("session", "Invalid Session entries", err)
+    end
+    if opts.leaf_id ~= nil and opts.leaf_id ~= validated.leaf_id then
+      return nil, util.error("session", "Invalid Session entries",
+        "active leaf does not match the entry journal")
+    end
+    entries = util.copy(opts.entries)
+    validated = assert(tree.validate_entries(entries))
+    by_id = validated.by_id
+    leaf_id = validated.leaf_id
+    local path, path_err = tree.indexed_path(by_id,
+      leaf_id == nil and vim.NIL or leaf_id)
+    if not path then
+      return nil, util.error("session", "Invalid Session entries", path_err)
+    end
+    messages = tree.messages(path, false)
+  elseif opts.messages ~= nil then
+    if type(opts.messages) ~= "table" or not util.is_list(opts.messages) then
       return nil, util.error("session", "messages must be an array")
     end
     messages = util.copy(opts.messages)
@@ -240,7 +340,28 @@ function M.new(opts)
       leaf_id = entry.id
     end
   end
+  local id = opts.id
+  if id == nil then
+    id = store_metadata and store_metadata.id or random_id(12)
+  end
+  if type(id) ~= "string" or id == "" then
+    return nil, util.error("session", "Session id must be a non-empty string")
+  end
+  local explicit_header = opts.workspace ~= nil or opts.metadata ~= nil
+    or opts.timestamp ~= nil or opts.parent_session ~= nil or opts.id ~= nil
+  local header
+  if explicit_header and not opts.store then
+    header = {
+      cwd = opts.workspace,
+      timestamp = opts.timestamp or iso_time(),
+      parent_session = opts.parent_session,
+      data = util.copy(opts.metadata),
+    }
+  end
   return setmetatable({
+    _id = id,
+    _identity = {},
+    _header = header,
     _messages = messages,
     _store = opts.store,
     _entries = entries,

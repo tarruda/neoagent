@@ -1,16 +1,38 @@
 if vim.g.loaded_neoagent then return end
 vim.g.loaded_neoagent = true
 
-vim.api.nvim_create_user_command("Neoagent", function() require("neoagent").toggle() end, {})
-vim.api.nvim_create_user_command("NeoagentCycle", function() require("neoagent").cycle_agent() end, {})
-vim.api.nvim_create_user_command("NeoagentNew", function() require("neoagent").new_session() end, {})
+local function toggle() return require("neoagent").toggle() end
+local function cycle() return require("neoagent").show_agents() end
+local function report_error(err)
+  if not err then return end
+  local message = type(err) == "table" and err.message or tostring(err)
+  if type(message) ~= "string" then message = tostring(err) end
+  if type(err) == "table" and err.detail then
+    message = message .. ": " .. tostring(err.detail)
+  end
+  require("neoagent").notify(message, vim.log.levels.ERROR)
+end
+
+vim.api.nvim_create_user_command("Neoagent", toggle, {})
+local function map(lhs, callback, desc)
+  vim.keymap.set("n", lhs, callback, { silent = true, desc = desc })
+end
+map("<Plug>(NeoagentToggle)", toggle, "Toggle Neoagent")
+map("<Plug>(NeoagentCycle)", cycle, "Select a Neoagent Agent")
+vim.api.nvim_create_user_command("NeoagentCycle", cycle, {})
 vim.api.nvim_create_user_command("NeoagentResume", function(opts)
   local neoagent = require("neoagent")
-  if opts.args == "" then neoagent.resume() return end
-  if neoagent.resume(opts.args) then neoagent.open() end
+  local resumed, err = neoagent.resume(
+    opts.args ~= "" and opts.args or nil)
+  if resumed and opts.args ~= "" then neoagent.open() end
+  if not resumed then report_error(err) end
 end, {
   nargs = "?", complete = "file",
 })
+vim.api.nvim_create_user_command("NeoagentCopySession", function()
+  local copied, err = require("neoagent").copy_session()
+  if not copied then report_error(err) end
+end, {})
 vim.api.nvim_create_user_command("NeoagentStop", function() require("neoagent").stop() end, {})
 vim.api.nvim_create_user_command("NeoagentSandboxInfo", function()
   require("neoagent").show_sandbox_info()
@@ -27,18 +49,22 @@ vim.api.nvim_create_user_command("NeoagentBranch", function(opts)
 end, { nargs = "?" })
 vim.api.nvim_create_user_command("NeoagentFork", function(opts)
   local neoagent = require("neoagent")
-  if opts.args == "" then neoagent.select_fork() return end
-  local forked, selected_text = neoagent.fork(opts.args, "before")
-  if forked then
-    neoagent.default_window():set_input(selected_text or "")
-    neoagent.open()
+  local forked, err
+  if opts.args == "" then
+    forked, err = neoagent.select_fork()
+  else
+    forked, err = neoagent.fork(opts.args, "before")
   end
+  if not forked then report_error(err) end
 end, { nargs = "?" })
 vim.api.nvim_create_user_command("NeoagentModel", function(opts)
   local neoagent = require("neoagent")
   if opts.args == "" then neoagent.select_model() return end
   local provider, model = opts.args:match("^([^/]+)/(.+)$")
-  if not provider then vim.notify("neoagent: expected provider/model", vim.log.levels.ERROR) return end
+  if not provider then
+    neoagent.notify("expected provider/model", vim.log.levels.ERROR)
+    return
+  end
   if neoagent.set_model(provider, model) then neoagent.open() end
 end, { nargs = "?" })
 vim.api.nvim_create_user_command("NeoagentThinking", function(opts)
@@ -64,14 +90,16 @@ end, {
 })
 local function provider_operation_completion(arg_lead, command_line, cursor_pos)
   local neoagent = require("neoagent")
+  local shell = neoagent.applet():provider_shell()
+  if not shell then return {} end
   local before = type(command_line) == "string"
     and command_line:sub(1, cursor_pos or #command_line) or ""
   local tail = before:match("^%s*NeoagentProvider!?%s+(.*)$") or ""
   local operation, args = tail:match("^(%S+)%s+(.*)$")
   if operation then
-    return neoagent.provider_completion(operation, arg_lead, args)
+    return shell:completion(operation, arg_lead, args)
   end
-  local operations = neoagent.provider_operations() or {}
+  local operations = shell:operations()
   local result = {}
   for _, operation in ipairs(operations) do
     if arg_lead == "" or vim.startswith(operation.id, arg_lead) then
@@ -83,38 +111,18 @@ end
 
 vim.api.nvim_create_user_command("NeoagentProvider", function(opts)
   local neoagent = require("neoagent")
+  local shell = neoagent.applet():provider_shell()
+  if not shell then return end
   if opts.bang then
-    neoagent.cancel_provider()
+    shell:cancel()
   elseif opts.args == "" then
-    neoagent.provider_console()
+    neoagent.toggle_provider_shell()
   else
     local operation, args = opts.args:match("^(%S+)%s*(.*)$")
-    neoagent.provider(operation, args ~= "" and args or nil)
+    shell:run(operation, args ~= "" and args or nil)
   end
 end, {
   nargs = "?",
   bang = true,
   complete = provider_operation_completion,
-})
-local function auth_method_completion()
-  local methods = require("neoagent").default():config().auth.methods
-  local result = {}
-  for id in pairs(methods) do result[#result + 1] = id end
-  table.sort(result)
-  return result
-end
-
-vim.api.nvim_create_user_command("NeoagentLogin", function(opts)
-  local neoagent = require("neoagent")
-  if opts.bang then neoagent.cancel_login() else neoagent.login(opts.args) end
-end, {
-  nargs = "?",
-  bang = true,
-  complete = auth_method_completion,
-})
-vim.api.nvim_create_user_command("NeoagentLogout", function(opts)
-  require("neoagent").logout(opts.args)
-end, {
-  nargs = "?",
-  complete = auth_method_completion,
 })

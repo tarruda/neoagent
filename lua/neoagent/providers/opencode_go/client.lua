@@ -111,7 +111,8 @@ end
 
 local function parse_models(value)
   if type(value) ~= "table" or util.is_list(value)
-      or type(value.data) ~= "table" or not util.is_list(value.data) then
+      or type(value.data) ~= "table" or not util.is_list(value.data)
+      or #value.data > 5000 then
     return nil
   end
   local result, seen = {}, {}

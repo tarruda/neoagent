@@ -1,14 +1,11 @@
 local async = require("neoagent.async")
+local llama_catalog = require("neoagent.providers.llama.catalog")
 local client_module = require("neoagent.providers.llama.client")
 local huggingface = require("neoagent.providers.llama.huggingface")
-local provider_catalog = require("neoagent.provider_catalog")
 local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
 local M = {}
-local ACTIVITY_LIMIT = 50
-local DEFAULT_CATALOG_TTL_MS = 60 * 1000
-local FALLBACK_CONTEXT_WINDOW = 4096
 
 local function trimmed(value)
   return type(value) == "string" and util.trim(value) or ""
@@ -16,27 +13,6 @@ end
 
 local function loaded(model)
   return model.status.value == "loaded" or model.status.value == "sleeping"
-end
-
-local function context_from_args(args)
-  if type(args) ~= "table" then return nil end
-  for index, argument in ipairs(args) do
-    if argument == "--ctx-size" or argument == "-c" or argument == "-ctx" then
-      local value = tonumber(args[index + 1])
-      if value and value > 0 then return math.floor(value) end
-    elseif type(argument) == "string" then
-      local value = tonumber(argument:match("^%-%-ctx%-size=(%d+)$"))
-      if value and value > 0 then return math.floor(value) end
-    end
-  end
-end
-
-local function reported_context(model)
-  local reported = type(model.meta) == "table"
-    and (model.meta.n_ctx or model.meta.n_ctx_train) or nil
-  local value = tonumber(reported) or tonumber(model.context_window)
-    or context_from_args(type(model.status) == "table" and model.status.args)
-  return value and value > 0 and math.floor(value) or nil
 end
 
 local function safe_text(value, maximum)
@@ -65,33 +41,7 @@ end
 -- environment-derived values. Runtime state and the persisted cache retain
 -- only the fields used to construct Models and render provider status.
 local function normalized_model(model)
-  if type(model) ~= "table" then return nil end
-  local id = safe_text(model.id, 512)
-  local status = type(model.status) == "table" and model.status or {}
-  local status_value = safe_text(status.value, 64)
-  if not id or not status_value then return nil end
-  local result = {
-    id = id,
-    status = { value = status_value },
-    context_window = reported_context(model),
-  }
-  if status.failed == true then result.status.failed = true end
-  if type(status.exit_code) == "number" then
-    result.status.exit_code = status.exit_code
-  end
-  if model.source == "preset" or model.source == "models_dir" then
-    result.source = model.source
-  end
-  if type(model.meta) == "table" and type(model.meta.size) == "number"
-      and model.meta.size >= 0 then
-    result.meta = { size = model.meta.size }
-  end
-  local modalities = type(model.architecture) == "table"
-    and model.architecture.input_modalities or nil
-  if type(modalities) == "table" and vim.tbl_contains(modalities, "image") then
-    result.architecture = { input_modalities = { "text", "image" } }
-  end
-  return result
+  return llama_catalog.normalize_model(model)
 end
 
 local function normalized_catalog(raw)
@@ -103,72 +53,8 @@ local function normalized_catalog(raw)
   return result
 end
 
-local function cached_catalog(models, checked_at)
-  return {
-    version = 1,
-    models = models,
-    checked_at = checked_at == nil and util.now_ms() or checked_at,
-  }
-end
-
--- Definitions with an alias id route inference to the router model id while
--- keeping the alias as the selectable Neoagent model id.
-local function definition_request_opts(definition)
-  if definition.router_id == definition.id then
-    return definition.request_opts
-  end
-  local layer = type(definition.request_opts) == "table"
-    and util.copy(definition.request_opts) or {}
-  layer.body = util.deep_merge(layer.body or {}, { model = definition.router_id })
-  return layer
-end
-
-local function to_model_entry(model, definition)
-  local context_window = definition and definition.context_window or nil
-  if not context_window then
-    context_window = reported_context(model)
-  end
-  if not context_window or context_window <= 0 then
-    context_window = FALLBACK_CONTEXT_WINDOW
-  end
-  local input = { "text" }
-  local architecture = model.architecture
-  if type(architecture) == "table"
-      and type(architecture.input_modalities) == "table" then
-    for _, modality in ipairs(architecture.input_modalities) do
-      if modality == "image" then
-        input = { "text", "image" }
-        break
-      end
-    end
-  end
-  if definition and definition.input ~= nil then
-    input = util.copy(definition.input)
-  end
-  local entry = {
-    id = definition and definition.id or model.id,
-    input = input,
-    context_window = math.floor(context_window + 0.5),
-  }
-  if definition then
-    if definition.max_output_tokens ~= nil then
-      entry.max_output_tokens = definition.max_output_tokens
-    end
-    if definition.request_timeout_ms ~= nil then
-      entry.request_timeout_ms = definition.request_timeout_ms
-    end
-    if definition.thinking ~= nil then
-      entry.thinking = util.copy(definition.thinking)
-    end
-    if definition.request_opts ~= nil or definition.router_id ~= definition.id then
-      entry.request_opts = definition_request_opts(definition)
-    end
-  end
-  return entry
-end
-
 local function context_label(model)
-  local value = reported_context(model)
+  local value = llama_catalog.reported_context(model)
   if value then
     return value >= 1000 and string.format("%dk", math.floor(value / 1000 + 0.5))
       or string.format("%d", value)
@@ -402,10 +288,13 @@ local function model_definition(id, value)
       or type(value.request_opts) == "function",
       definition_error(id, "request_opts must be a table or function"))
   end
+  local router_id = id
+  if hf_repo then
+    router_id = hf_repo .. (quantization and ":" .. quantization or "")
+  end
   local definition = {
     id = id,
-    router_id = hf_repo
-      and (hf_repo .. (quantization and ":" .. quantization or "")) or id,
+    router_id = router_id,
     hf_repo = hf_repo,
     quantization = quantization,
     load = validate_load(id, value.load),
@@ -429,10 +318,12 @@ local function definitions_of(models)
   local order = {}
   local aliases = {}
   for id, value in pairs(models or {}) do
-    local definition = model_definition(id, value)
-    result[id] = definition
-    order[#order + 1] = id
-    if definition.router_id ~= id then aliases[#aliases + 1] = definition end
+    if value ~= false then
+      local definition = model_definition(id, value)
+      result[id] = definition
+      order[#order + 1] = id
+      if definition.router_id ~= id then aliases[#aliases + 1] = definition end
+    end
   end
   table.sort(order)
   return result, order, aliases
@@ -454,24 +345,6 @@ local function validate_service_opts(value)
       "llama.cpp service option " .. name .. " must be a positive integer")
   end
   return util.copy(value)
-end
-
-local function validate_catalog_cache(value)
-  if value == false then return false end
-  value = value or { ttl_ms = DEFAULT_CATALOG_TTL_MS }
-  assert(type(value) == "table"
-      and (next(value) == nil or not util.is_list(value)),
-    "llama.cpp catalog_cache must be false or an object")
-  for name in pairs(value) do
-    assert(name == "ttl_ms",
-      "unknown llama.cpp catalog cache option: " .. tostring(name))
-  end
-  local ttl_ms = value.ttl_ms
-  if ttl_ms == nil then ttl_ms = DEFAULT_CATALOG_TTL_MS end
-  assert(type(ttl_ms) == "number" and ttl_ms >= 0
-      and ttl_ms % 1 == 0,
-    "llama.cpp catalog_cache.ttl_ms must be a non-negative integer")
-  return { ttl_ms = ttl_ms }
 end
 
 local function load_summary(definition)
@@ -536,36 +409,50 @@ end
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
-  local models = {}
-  local catalog = {}
+  local model_catalog = assert(resources.catalog,
+    "llama.cpp model catalog is required")
+  local catalog = normalized_catalog(model_catalog:discoveries())
   local display_server_url = client_module.normalize_server_url(opts.base_url or "")
-  local connection = {
-    type = "status",
-    text = "Connecting to router",
-    level = "muted",
-  }
-  local event_stream = "Waiting for catalog"
+  local connection_level = "muted"
   local model_progress = {}
   local request_progress = {}
   local next_request_id = 0
   local last_response
-  local activity = {}
   local destroyed = false
   local definitions, definition_order, alias_definitions =
     definitions_of(opts.models)
   local service_opts = validate_service_opts(opts.service_opts)
-  local catalog_cache = validate_catalog_cache(opts.catalog_cache)
-  local dashboard = provider_state.new({ blocks = {
-    util.copy(connection),
-    { type = "field", label = "Endpoint", value = display_server_url },
-    { type = "field", label = "Events", value = event_stream },
-  } })
+  local report = resources.report or function() end
+  local dashboard = provider_state.new({ blocks = { {
+    type = "field",
+    label = "Endpoint",
+    value = display_server_url,
+    level = connection_level,
+  } } }, { report = report })
 
   local function state_blocks()
-    local blocks = {
-      util.copy(connection),
-      { type = "field", label = "Endpoint", value = display_server_url },
-      { type = "field", label = "Events", value = event_stream },
+    local blocks = { {
+      type = "field",
+      label = "Endpoint",
+      value = display_server_url,
+      level = connection_level,
+    } }
+    local loaded_ids = {}
+    for _, model in ipairs(catalog) do
+      if loaded(model) then loaded_ids[#loaded_ids + 1] = model.id end
+    end
+    table.sort(loaded_ids)
+    blocks[#blocks + 1] = {
+      type = "field",
+      label = #loaded_ids <= 1 and "Loaded model" or "Loaded models",
+      value = #loaded_ids == 0 and "No model loaded"
+        or bounded_text(table.concat(loaded_ids, ", "), 512),
+    }
+    blocks[#blocks + 1] = {
+      type = "field",
+      label = "Models",
+      value = tostring(vim.tbl_count(model_catalog:snapshot().models))
+        .. " available",
     }
     if last_response then blocks[#blocks + 1] = util.copy(last_response) end
     local progress_models = {}
@@ -584,17 +471,6 @@ function M.new(opts, resources)
     for _, request_id in ipairs(request_ids) do
       blocks[#blocks + 1] = util.copy(request_progress[request_id])
     end
-    if #activity > 0 then
-      local entries = {}
-      for index = math.max(1, #activity - 7), #activity do
-        entries[#entries + 1] = util.copy(activity[index])
-      end
-      blocks[#blocks + 1] = {
-        type = "activity",
-        title = "Recent activity",
-        entries = entries,
-      }
-    end
     return blocks
   end
 
@@ -602,25 +478,9 @@ function M.new(opts, resources)
     if destroyed then return end
     local ok, err = dashboard:push({ blocks = state_blocks() })
     if not ok then
-      vim.notify("neoagent llama.cpp dashboard failed: "
+      report("neoagent llama.cpp dashboard failed: "
         .. tostring(err and err.message or err), vim.log.levels.ERROR)
     end
-  end
-
-  local function activity_add(message, level)
-    local bounded = bounded_text(message, 512)
-    local previous = activity[#activity]
-    if previous and previous.message == bounded then
-      previous.level = level or "info"
-      previous.timestamp = util.now_ms()
-      return
-    end
-    activity[#activity + 1] = {
-      level = level or "info",
-      message = bounded,
-      timestamp = util.now_ms(),
-    }
-    while #activity > ACTIVITY_LIMIT do table.remove(activity, 1) end
   end
 
   local function set_catalog(raw, resolved_server_url)
@@ -635,35 +495,13 @@ function M.new(opts, resources)
       if left_loaded ~= right_loaded then return left_loaded > right_loaded end
       return left.id < right.id
     end)
-    models = {}
-    local claimed = {}
-    for _, id in ipairs(definition_order) do
-      local definition = definitions[id]
-      local entry_model
-      for _, model in ipairs(catalog) do
-        if model.id == definition.router_id then
-          entry_model = model
-          break
-        end
-      end
-      models[#models + 1] = to_model_entry(entry_model or {
-        id = definition.router_id,
-        status = { value = "unloaded" },
-      }, definition)
-      claimed[definition.router_id] = true
-    end
-    for _, model in ipairs(catalog) do
-      if not claimed[model.id] then
-        models[#models + 1] = to_model_entry(model, nil)
-      end
-    end
-    connection = {
-      type = "status",
-      text = "Router ready",
-      level = "success",
-    }
+    connection_level = "success"
     publish()
   end
+
+  local catalog_unsubscribe = model_catalog:subscribe(function()
+    set_catalog(model_catalog:discoveries())
+  end)
 
   local service = {
     id = resources.provider_id or "llama.cpp",
@@ -676,6 +514,7 @@ function M.new(opts, resources)
   local watcher_generation = 0
   local subscriber_count = 0
   local ensure_watcher
+  local publish_catalog
 
   local function client_from_auth(resolved)
     local server_url = opts.base_url
@@ -743,13 +582,11 @@ function M.new(opts, resources)
     if event.event == "download_finished" then
       model_progress[model_id] = nil
       update_catalog_status(model_id, "unloaded", data)
-      activity_add("Downloaded " .. model_id, "success")
-      set_catalog(catalog)
+      publish_catalog(catalog)
       return
     end
     if event.event == "download_failed" then
       model_progress[model_id] = nil
-      activity_add("Download failed for " .. model_id, "error")
       publish()
       return
     end
@@ -776,24 +613,18 @@ function M.new(opts, resources)
     elseif status == "loaded" or status == "sleeping" then
       model_progress[model_id] = nil
       update_catalog_status(model_id, status, data)
-      activity_add((status == "loaded" and "Loaded " or "Sleeping ")
-        .. model_id, "success")
-      set_catalog(catalog)
+      publish_catalog(catalog)
     elseif status == "unloaded" then
       model_progress[model_id] = nil
       update_catalog_status(model_id, status, data)
-      local failed = type(data.exit_code) == "number" and data.exit_code ~= 0
-      activity_add((failed and "Model failed: " or "Unloaded ")
-        .. model_id, failed and "error" or "info")
-      set_catalog(catalog)
+      publish_catalog(catalog)
     end
   end
 
-  local function stop_watcher(next_state)
+  local function stop_watcher()
     watcher_generation = watcher_generation + 1
     if watcher_run then watcher_run:cancel() end
     watcher_run = nil
-    if next_state then event_stream = next_state end
   end
 
   ensure_watcher = function()
@@ -801,8 +632,6 @@ function M.new(opts, resources)
     watcher_generation = watcher_generation + 1
     local generation = watcher_generation
     local client = status_client
-    event_stream = client and "Live" or "Connecting"
-    publish()
     watcher_run = async.run(function()
       if not client then
         local resolved
@@ -815,17 +644,13 @@ function M.new(opts, resources)
         end
         client = client_from_auth(resolved)
         status_client = client
-        event_stream = "Live"
-        publish()
       end
       return client:watch(router_event):await()
     end, {
       on_done = function(result)
         if generation ~= watcher_generation then return end
         watcher_run = nil
-        event_stream = result.ok and "Disconnected"
-          or "Disconnected · " .. bounded_text(
-            result.error and result.error.message or "event stream failed", 200)
+        connection_level = result.ok and "muted" or "error"
         publish()
       end,
       error_kind = "provider",
@@ -839,47 +664,24 @@ function M.new(opts, resources)
       if resolved.ok == false then error(resolved.error, 0) end
     end
     local client = client_from_auth(resolved)
-    if watcher_run then stop_watcher("Connecting") end
+    if watcher_run then stop_watcher() end
     status_client = client
     ensure_watcher()
     return client
   end
 
+  local function fetch_catalog(client, list_opts)
+    local result = client:list(list_opts):await()
+    if not result.ok then
+      connection_level = "error"
+      publish()
+      error(result.error, 0)
+    end
+    return result.value
+  end
+
   function service:state()
     return dashboard:state()
-  end
-
-  function service:get_models()
-    return util.copy(models)
-  end
-
-  function service:refresh_models(ctx)
-    return async.run(function()
-      if ctx.stored and type(ctx.stored) == "table"
-          and util.is_list(ctx.stored.models) then
-        local restored = normalized_catalog(ctx.stored.models)
-        if vim.deep_equal(restored, ctx.stored.models) then
-          set_catalog(restored)
-        else
-          local migrated, migrate_err = ctx.publish({
-            update = function() set_catalog(restored) end,
-            persist = cached_catalog(restored, ctx.stored.checked_at),
-          })
-          if migrated == nil then error(migrate_err, 0) end
-        end
-      end
-      if not ctx.allow_network then return { ok = true } end
-      local client = resolved_client(ctx)
-      local current = await_ok(client:list({ reload = ctx.force })).value
-      local safe = normalized_catalog(current)
-      local resolved_server_url = client.server_url
-      local published, publish_err = ctx.publish({
-        update = function() set_catalog(safe, resolved_server_url) end,
-        persist = cached_catalog(safe),
-      })
-      if published == nil then error(publish_err, 0) end
-      return { ok = true, models = safe }
-    end, { error_kind = "provider" })
   end
 
   function service:subscribe(listener)
@@ -893,23 +695,19 @@ function M.new(opts, resources)
       unsubscribe()
       subscriber_count = math.max(0, subscriber_count - 1)
       if subscriber_count == 0 then
-        stop_watcher(status_client and "Paused" or "Waiting for catalog")
+        stop_watcher()
       end
     end
   end
 
-  local startup_run
-
   function service:destroy()
+    if destroyed then return end
     destroyed = true
-    if startup_run then startup_run:cancel() end
-    startup_run = nil
+    catalog_unsubscribe()
     stop_watcher()
     dashboard:destroy()
     subscriber_count = 0
-    models = {}
     catalog = {}
-    activity = {}
     model_progress = {}
     request_progress = {}
     status_client = nil
@@ -922,8 +720,10 @@ function M.new(opts, resources)
 
   local function response_usage(usage)
     if type(usage) ~= "table" then return nil end
-    local input = tonumber(usage.inputTokens or usage.input_tokens)
-    local output = tonumber(usage.outputTokens or usage.output_tokens)
+    local input = tonumber(
+      usage.inputTokens or usage.input_tokens or usage.input)
+    local output = tonumber(
+      usage.outputTokens or usage.output_tokens or usage.output)
     if not input and not output then return nil end
     local parts = {}
     if input then parts[#parts + 1] = tostring(input) .. " in" end
@@ -961,6 +761,21 @@ function M.new(opts, resources)
         local request_id = next_request_id
         local status = known_model_status(router_id)
         local inner = util.copy(opts)
+        if router_id ~= model.id then
+          local request_opts = inner.request_opts
+          if type(request_opts) == "function" then
+            inner.request_opts = function(context)
+              local selected_context = util.copy(context)
+              selected_context.request = util.deep_merge(
+                context.request, { body = { model = router_id } })
+              return util.deep_merge({ body = { model = router_id } },
+                request_opts(selected_context))
+            end
+          else
+            inner.request_opts = util.deep_merge(
+              { body = { model = router_id } }, request_opts or {})
+          end
+        end
         local generating = false
         request_progress[request_id] = {
           type = "progress",
@@ -999,9 +814,6 @@ function M.new(opts, resources)
         if ok and result.ok then
           last_response = response_usage(result.message and result.message.usage)
             or last_response
-          activity_add("Completed response · " .. router_id, "success")
-        elseif ok and result.error and result.error.kind ~= "cancelled" then
-          activity_add("Request failed · " .. router_id, "error")
         end
         publish()
         if not ok then error(result, 0) end
@@ -1017,64 +829,32 @@ function M.new(opts, resources)
     return wrapped
   end
 
-  local catalog_options = { service = service }
-  if catalog_cache ~= false then
-    catalog_options.store = resources.store
-    catalog_options.ttl_ms = catalog_cache.ttl_ms
-  end
-  local catalog_helper = provider_catalog.new(catalog_options)
-
-  local function catalog_publication(current, server_url)
+  publish_catalog = function(current, server_url)
     local safe = normalized_catalog(current)
-    return {
-      update = function() set_catalog(safe, server_url) end,
-      persist = cached_catalog(safe),
-    }
-  end
-
-  local function publish_catalog(current, server_url)
-    local published, err = catalog_helper:publish(
-      catalog_publication(current, server_url))
+    if type(server_url) == "string" and server_url ~= "" then
+      display_server_url = server_url
+    end
+    local published, err = model_catalog:publish_discoveries(safe, {
+      source = "router",
+    })
     if published == nil then error(err, 0) end
     return util.copy(catalog)
   end
 
-  function service:refresh_catalog(refresh_opts)
-    refresh_opts = refresh_opts or {}
-    local resolve_auth = refresh_opts.resolve_auth
-    if not resolve_auth and type(resources.auth) == "table"
-        and type(resources.auth.resolve) == "function" then
-      resolve_auth = function()
-        return resources.auth:resolve(opts.auth or "llama", {
-          optional = opts.auth_optional == true,
-        })
-      end
-    end
-    return catalog_helper:refresh({
-      allow_network = refresh_opts.allow_network ~= false,
-      force = refresh_opts.force == true,
-      resolve_auth = resolve_auth,
-      on_done = refresh_opts.on_done,
-    })
-  end
-
-  service.operations.refresh = {
-    label = "Refresh catalog",
-    description = "Reload the llama.cpp router catalog",
-    mutating = false,
+  service.operations.reload = {
+    label = "Reload router catalog",
+    description = "Ask the llama.cpp router to rescan its model sources",
+    mutating = true,
     run = function(ctx)
       return async.run(function()
         local operation = {
-          id = "refresh", label = "Refresh catalog",
-          state = "running", message = "Refreshing catalog",
+          id = "reload", label = "Reload router catalog",
+          state = "running", message = "Reloading router catalog",
         }
         progress(ctx, operation)
-        local result = await_ok(catalog_helper:refresh({
-          allow_network = true,
-          force = true,
-          resolve_auth = ctx.resolve_auth,
-        }))
-        if not result.ok then error(result.error, 0) end
+        local client = resolved_client(ctx)
+        publish_catalog(fetch_catalog(client, { reload = true }),
+          client.server_url)
         return { ok = true }
       end, { error_kind = "provider" })
     end,
@@ -1128,7 +908,7 @@ function M.new(opts, resources)
     run = function(ctx)
       return async.run(function()
         local client = resolved_client(ctx)
-        local current = await_ok(client:list()).value
+        local current = fetch_catalog(client)
         current = publish_catalog(current, client.server_url)
         local items = vim.tbl_map(function(entry)
           return {
@@ -1180,7 +960,7 @@ function M.new(opts, resources)
     run = function(ctx)
       return async.run(function()
         local client = resolved_client(ctx)
-        local current = await_ok(client:list()).value
+        local current = fetch_catalog(client)
         current = publish_catalog(current, client.server_url)
         local unloaded = {}
         for _, model in ipairs(current) do
@@ -1189,8 +969,6 @@ function M.new(opts, resources)
         local selected = ctx.args
         if selected == nil or selected == "" then
           if #unloaded == 0 then
-            activity_add("No unloaded models", "warn")
-            publish()
             error(util.error("provider", "No unloaded models"), 0)
           end
           local options = {
@@ -1225,13 +1003,7 @@ function M.new(opts, resources)
           operation.detail = update.detail
           progress(ctx, operation)
         end))
-        activity_add("Loaded " .. target.id, "info")
-        publish()
-        await_ok(catalog_helper:refresh({
-          allow_network = true,
-          force = true,
-          resolve_auth = ctx.resolve_auth,
-        }))
+        publish_catalog(fetch_catalog(client), client.server_url)
         return { ok = true, model = result.value }
       end, { error_kind = "provider" })
     end,
@@ -1247,7 +1019,7 @@ function M.new(opts, resources)
     run = function(ctx)
       return async.run(function()
         local client = resolved_client(ctx)
-        local current = await_ok(client:list()).value
+        local current = fetch_catalog(client)
         current = publish_catalog(current, client.server_url)
         local loaded_models = {}
         for _, model in ipairs(current) do
@@ -1256,8 +1028,6 @@ function M.new(opts, resources)
         local selected = ctx.args
         if selected == nil or selected == "" then
           if #loaded_models == 0 then
-            activity_add("No loaded models", "warn")
-            publish()
             error(util.error("provider", "No loaded models"), 0)
           end
           selected = interact_select(ctx, {
@@ -1281,13 +1051,7 @@ function M.new(opts, resources)
         }
         progress(ctx, operation)
         await_ok(client:unload_and_wait(selected))
-        activity_add("Unloaded " .. selected, "info")
-        publish()
-        await_ok(catalog_helper:refresh({
-          allow_network = true,
-          force = true,
-          resolve_auth = ctx.resolve_auth,
-        }))
+        publish_catalog(fetch_catalog(client), client.server_url)
         return { ok = true }
       end, { error_kind = "provider" })
     end,
@@ -1381,9 +1145,10 @@ function M.new(opts, resources)
 
         local function gated_choice(details)
           if not details.gated then return true end
-          local message = details.gated == "manual"
-            and "Manual approval is required"
-            or "Accept the access terms"
+          local message = "Accept the access terms"
+          if details.gated == "manual" then
+            message = "Manual approval is required"
+          end
           local choice = interact_select(ctx, {
             prompt = "Hugging Face access required\n" .. details.id .. "\n\n"
               .. message .. " at:\nhttps://huggingface.co/" .. details.id
@@ -1396,10 +1161,6 @@ function M.new(opts, resources)
           return choice == "continue"
         end
 
-        if not checked_details then
-          local repository = parse_huggingface_model(model)
-          checked_details = await_value(huggingface_client:details(repository))
-        end
         if not gated_choice(checked_details) then
           return { ok = true, cancelled = true }
         end
@@ -1415,8 +1176,6 @@ function M.new(opts, resources)
           progress(ctx, operation)
         end))
         publish_catalog(result.value, client.server_url)
-        activity_add("Downloaded " .. model, "info")
-        publish()
         return { ok = true, models = result.value }
       end, { error_kind = "provider" })
     end,
@@ -1433,8 +1192,6 @@ function M.new(opts, resources)
           error(util.error("provider",
             "No model definitions with load parameters"), 0)
         end
-        activity_add("Rendered router preset", "info")
-        publish()
         return {
           ok = true,
           artifact = {
@@ -1448,44 +1205,6 @@ function M.new(opts, resources)
     end,
   }
 
-  -- Read the short-lived provider catalog at startup and expose an explicit
-  -- router reload. Startup work is scoped to explicitly configured and
-  -- default-model providers.
-  local provider_id = resources.provider_id or "llama.cpp"
-  local startup_fetch = resources.startup ~= false
-    and (resources.explicit == true
-      or (type(resources.default_model) == "table"
-        and resources.default_model.provider == provider_id))
-  set_catalog({})
-  activity = {}
-  connection = {
-    type = "status",
-    text = "Catalog unavailable",
-    level = "muted",
-  }
-  publish()
-  if startup_fetch and type(resources.auth) == "table"
-      and type(resources.auth.resolve) == "function" then
-    startup_run = async.run(function()
-      return service:refresh_catalog({ allow_network = true }):await()
-    end, {
-      on_done = function(result)
-        startup_run = nil
-        if not result.ok then
-          connection = {
-            type = "status",
-            text = "Catalog unavailable",
-            level = "error",
-          }
-          activity_add("Catalog refresh failed: "
-            .. tostring(result.error and result.error.message or "unknown error"),
-            "error")
-          publish()
-        end
-      end,
-      error_kind = "provider",
-    })
-  end
   return service
 end
 

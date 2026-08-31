@@ -109,7 +109,7 @@ describe("neoagent.api.openai_responses", function()
     assert.is_false(request.tools[1].strict)
   end)
 
-  it("normalizes truncated function call arguments for agent recovery", function()
+  it("normalizes truncated function call arguments for Agent Loop recovery", function()
     local call = {
       type = "function_call", id = "fc_1", call_id = "call_1", name = "edit",
       arguments = "{\"path\":",
@@ -131,7 +131,7 @@ describe("neoagent.api.openai_responses", function()
       result.message.content[1].argumentsError)
   end)
 
-  it("normalizes array function call arguments for agent recovery", function()
+  it("normalizes array function call arguments for Agent Loop recovery", function()
     local call = {
       type = "function_call", id = "fc_1", call_id = "call_1", name = "edit", arguments = "[]",
     }
@@ -188,7 +188,7 @@ describe("neoagent.api.openai_responses", function()
         } },
         { role = "toolResult", toolCallId = "empty", content = {} },
         { role = "assistant", content = {
-          { type = "toolCall", id = "legacy", name = "legacy_tool", arguments = {} },
+          { type = "toolCall", id = "plain", name = "plain_tool", arguments = {} },
         } },
       },
       tools = { { name = "inspect", description = "Inspect", input_schema = { type = "object" } } },
@@ -396,7 +396,7 @@ describe("neoagent.api.openai_responses", function()
     assert.are.equal(0, result.message.usage.reasoning)
   end)
 
-  it("replays function calls and outputs through the stateless agent loop", function()
+  it("replays function calls and outputs through the stateless Agent Loop", function()
     local call = {
       type = "function_call", id = "fc_loop", call_id = "call_loop", name = "echo", arguments = "{}",
     }
@@ -414,7 +414,7 @@ describe("neoagent.api.openai_responses", function()
         event({ type = "response.completed", response = { status = "completed", output = { answer } } }),
       } },
     })
-    local result = wait(require("neoagent.agent").run({
+    local result = wait(require("neoagent.agent_loop").run({
       model = model(fake),
       messages = { { role = "user", content = "echo" } },
       tools = { {

@@ -49,8 +49,9 @@ describe("neoagent provider diagnostics", function()
     paths[#paths + 1] = path
     assert(fs.write_all(path, "file", "w"))
     local messages = {}
-    vim.notify = function(message) messages[#messages + 1] = message end
-    local log = provider_log.callback(path .. "/codex.log")
+    local log = provider_log.callback(path .. "/codex.log", {
+      report = function(message) messages[#messages + 1] = message end,
+    })
 
     log({ type = "request_failed" })
     log({ type = "request_failed" })

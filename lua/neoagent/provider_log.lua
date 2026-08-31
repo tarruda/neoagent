@@ -76,14 +76,20 @@ function M.append(path, event)
   return appended, append_err
 end
 
-function M.callback(path)
+function M.callback(path, opts)
+  opts = opts or {}
+  assert(type(opts) == "table", "diagnostic callback options must be a table")
+  assert(opts.report == nil or type(opts.report) == "function",
+    "diagnostic callback report must be a function")
+  local report = opts.report or function() end
   local warned = false
   return function(event)
     local ok, err = M.append(path, event)
     if not ok and not warned then
       warned = true
       vim.schedule(function()
-        vim.notify("neoagent diagnostic log failed: " .. tostring(err), vim.log.levels.WARN)
+        report("neoagent diagnostic log failed: " .. tostring(err),
+          vim.log.levels.WARN)
       end)
     end
   end

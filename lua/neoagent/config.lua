@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
+local model_config = require("neoagent.model_config")
 
 local M = {}
 
@@ -14,13 +15,13 @@ local defaults = {
   },
   default_thinking_level = "medium",
   providers = {},
-  apis = {},
+  _apis = {},
   auth = {
     path = vim.fn.stdpath("state") .. "/neoagent/auth.json",
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
-      zai = api_key.new({ name = "Z.AI API key" }),
+      zai = api_key.new({ name = "Z.AI API and Plan key" }),
       anthropic = api_key.new({
         name = "Anthropic API key",
         request_opts = function(credential)
@@ -36,7 +37,6 @@ local defaults = {
           } }
         end,
       }),
-      ["anthropic-plan"] = require("neoagent.auth.anthropic").new(),
       ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
       llama = require("neoagent.providers.llama.auth").new(),
     },
@@ -46,7 +46,7 @@ local defaults = {
     workspace_settings = true,
     directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
-  agents = {
+  agent_instructions = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
     project_filenames = { "AGENTS.md" },
   },
@@ -77,16 +77,16 @@ local defaults = {
     scroll_on_reopen = true,
     wrap_cards = false,
     show_thinking = true,
-    provider_console = {
-      position = "top",
-      width = 0.4,
-      height = 0.35,
+    images = { backend = "kitty", display = "always" },
+    provider_shell = {
+      position = "center",
+      width = 0.75,
+      height = 0.75,
     },
-    completion = {
-      sources = { "files" },
-    },
+    completion = true,
     border = "rounded",
     mappings = {
+      help = "<C-g>?",
       submit = "<CR>",
       complete = "<Tab>",
       interrupt = "<C-c>",
@@ -94,29 +94,53 @@ local defaults = {
       close_empty = "<C-d>",
       card_details = "<CR>",
       card_raw = "r",
+      card_follow = "<A-f>",
+      card_center = "zz",
       card_previous = { "<A-k>", "<C-Up>" },
       card_next = { "<A-j>", "<C-Down>" },
       focus_input = "<C-w>j",
       focus_transcript = "<C-w>k",
-      focus_provider = "<A-l>",
-      provider_back = "<A-h>",
-      provider_input = "<A-j>",
-      provider_previous = "<Up>",
-      provider_next = "<Down>",
+      provider_previous = "<C-k>",
+      provider_next = "<C-j>",
+      menu_previous = "K",
+      menu_next = "J",
       cycle_thinking = "<S-Tab>",
-      cycle_agent = "<A-n>",
+      agents = "<A-n>",
       select_model = "<A-m>",
       resume_session = "<A-r>",
       history_previous = { "<Up>", "<C-k>" },
       history_next = "<Down>",
       select_history = "<C-r>",
       dequeue_steering = "<A-Up>",
-      toggle_provider = "<A-p>",
+      toggle_provider_shell = "<A-p>",
       provider_close = "q",
       close = "q",
     },
   },
-  view = nil,
+  _view = nil,
+}
+
+local input_fields = {
+  default_registry = true,
+  shell_timeout = true,
+  sandbox = true,
+  workspace_trust = true,
+  default_thinking_level = true,
+  default_model = true,
+  providers = true,
+  auth = true,
+  persistence = true,
+  agent_instructions = true,
+  skills = true,
+  retry = true,
+  compaction = true,
+  ui = true,
+  name = true,
+  tools = true,
+  system_prompt = true,
+  execute_tool = true,
+  _apis = true,
+  _view = true,
 }
 
 local current
@@ -125,6 +149,27 @@ local built_in_apis = {
   ["openai-responses"] = true,
   ["openai-codex-responses"] = true,
   ["anthropic-messages"] = true,
+}
+
+local provider_fields = {
+  api = true,
+  api_key = true,
+  auth = true,
+  auth_optional = true,
+  base_url = true,
+  catalog = true,
+  diagnostics = true,
+  models = true,
+  request_opts = true,
+  service = true,
+  service_opts = true,
+}
+
+local catalog_fields = {
+  discover = true,
+  seed = true,
+  ttl_ms = true,
+  transform_model = true,
 }
 
 local function provider_uses_api(provider, name)
@@ -154,6 +199,14 @@ local function validate(opts)
     "sandbox must be a table")
   assert(type(opts.sandbox.enabled) == "boolean",
     "sandbox.enabled must be boolean")
+  for key in pairs(opts.sandbox) do
+    assert(key == "enabled" or key == "profile",
+      "unsupported sandbox setting: " .. tostring(key))
+  end
+  assert(opts.sandbox.profile == nil
+      or type(opts.sandbox.profile) == "table"
+      or type(opts.sandbox.profile) == "function",
+    "sandbox.profile must be a table or function")
   assert(opts.workspace_trust == false
       or (type(opts.workspace_trust) == "table"
         and not util.is_list(opts.workspace_trust)),
@@ -171,8 +224,10 @@ local function validate(opts)
     "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
   if opts.default_model ~= nil then
     assert(type(opts.default_model) == "table", "default_model must be a table")
-    assert(type(opts.default_model.provider) == "string", "default_model.provider is required")
-    assert(type(opts.default_model.model) == "string", "default_model.model is required")
+    assert(model_config.safe_provider_id(opts.default_model.provider),
+      "default_model.provider must be safe text without path separators")
+    assert(model_config.safe_id(opts.default_model.model),
+      "default_model.model must be safe non-empty text")
   end
   assert(type(opts.providers) == "table", "providers must be a table")
   assert(type(opts.retry) == "table", "retry must be a table")
@@ -189,11 +244,19 @@ local function validate(opts)
       assert(type(value) == "number" and value > 0 and value % 1 == 0,
         "compaction." .. key .. " must be a positive integer")
     end
-    assert(opts.compaction.run == nil or type(opts.compaction.run) == "function",
-      "compaction.run must be a function")
+    for key in pairs(opts.compaction) do
+      assert(key == "auto" or key == "reserve_tokens"
+          or key == "keep_recent_tokens",
+        "unsupported compaction setting: " .. tostring(key))
+    end
   end
   for id, provider in pairs(opts.providers) do
-    assert(type(id) == "string" and type(provider) == "table", "providers must be keyed tables")
+    assert(model_config.safe_provider_id(id) and type(provider) == "table",
+      "providers must use safe text keys without path separators")
+    for name in pairs(provider) do
+      assert(provider_fields[name],
+        "unsupported provider setting: " .. tostring(name))
+    end
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
     assert(provider.service == nil or type(provider.service) == "function",
@@ -201,20 +264,29 @@ local function validate(opts)
     assert(provider.service_opts == nil
         or type(provider.service_opts) == "table" and not util.is_list(provider.service_opts),
       "provider " .. id .. " service_opts must be a table")
-    assert(provider.catalog_cache == nil or provider.catalog_cache == false
-        or type(provider.catalog_cache) == "table"
-          and not util.is_list(provider.catalog_cache),
-      "provider " .. id .. " catalog_cache must be false or a table")
-    if type(provider.catalog_cache) == "table" then
-      for name in pairs(provider.catalog_cache) do
-        assert(name == "ttl_ms",
-          "unsupported provider catalog_cache setting: " .. tostring(name))
-      end
-      local ttl_ms = provider.catalog_cache.ttl_ms
-      assert(ttl_ms == nil or type(ttl_ms) == "number"
-          and ttl_ms >= 0 and ttl_ms % 1 == 0,
-        "provider " .. id
-          .. " catalog_cache.ttl_ms must be a non-negative integer")
+    assert(type(provider.catalog) == "table"
+        and (next(provider.catalog) == nil
+          or not util.is_list(provider.catalog)),
+      "provider " .. id .. " catalog must be an object")
+    for name in pairs(provider.catalog) do
+      assert(catalog_fields[name],
+        "unsupported provider catalog setting: " .. tostring(name))
+    end
+    local ttl_ms = provider.catalog.ttl_ms
+    assert(ttl_ms == nil or type(ttl_ms) == "number"
+        and ttl_ms > 0 and ttl_ms % 1 == 0 and ttl_ms < math.huge,
+      "provider " .. id .. " catalog.ttl_ms must be a positive integer")
+    assert(provider.catalog.discover == nil
+        or type(provider.catalog.discover) == "function",
+      "provider " .. id .. " catalog.discover must be a function")
+    assert(provider.catalog.transform_model == nil
+        or type(provider.catalog.transform_model) == "function",
+      "provider " .. id .. " catalog.transform_model must be a function")
+    if provider.catalog.seed ~= nil then
+      local seed, seed_err = model_config.normalize_discoveries(
+        id, provider.catalog.seed)
+      assert(seed, seed_err and seed_err.message
+        or "provider catalog seed is invalid")
     end
     local uses_built_in_api = built_in_apis[provider.api] == true
     for _, model in pairs(provider.models) do
@@ -248,66 +320,20 @@ local function validate(opts)
         "provider diagnostics.path is required")
     end
     for model_id, model in pairs(provider.models) do
-      assert(type(model_id) == "string" and type(model) == "table", "models must be keyed tables")
-      assert(model.api == nil
-          or type(model.api) == "string" and model.api ~= "",
-        "model api must be a non-empty string")
-      local model_api = model.api or provider.api
-      if model.input ~= nil then
-        assert(util.is_list(model.input) and #model.input > 0,
-          "model input must be a non-empty list")
-        local seen = {}
-        for _, input in ipairs(model.input) do
-          assert(input == "text" or input == "image",
-            "model input entries must be text or image")
-          assert(not seen[input], "model input entries must be unique")
-          seen[input] = true
-        end
-      end
-      if model.context_window ~= nil then
-        assert(type(model.context_window) == "number" and model.context_window > 0
-          and model.context_window % 1 == 0, "model context_window must be a positive integer")
-      end
-      if model.thinking ~= nil and model.thinking ~= false then
-        assert(type(model.thinking) == "table", "model thinking must be a table or false")
-        assert(model.reasoning ~= true, "model thinking and static reasoning are mutually exclusive")
-        for level, value in pairs(model.thinking) do
-          assert(require("neoagent.thinking").is_level(level), "unknown thinking level: " .. tostring(level))
-          assert(value == false or type(value) == "table" or type(value) == "function",
-            "thinking levels must contain request_opts tables, functions, or false")
-        end
-      end
-      if model_api == "openai-responses"
-          or model_api == "openai-codex-responses" then
-        if model.reasoning ~= nil then assert(type(model.reasoning) == "boolean", "model reasoning must be boolean") end
-        if model.reasoning_effort ~= nil then
-          assert(type(model.reasoning_effort) == "string" and model.reasoning_effort ~= "",
-            "model reasoning_effort must be a non-empty string")
-        end
-        if model.reasoning_summary ~= nil then
-          assert(type(model.reasoning_summary) == "string" and model.reasoning_summary ~= "",
-            "model reasoning_summary must be a non-empty string")
-        end
-        if model.reasoning_context ~= nil then
-          assert(type(model.reasoning_context) == "string" and model.reasoning_context ~= "",
-            "model reasoning_context must be a non-empty string")
-        end
-        if model_api == "openai-codex-responses" and model.text_verbosity ~= nil then
-          assert(type(model.text_verbosity) == "string" and model.text_verbosity ~= "",
-            "model text_verbosity must be a non-empty string")
-        end
-        if model_api == "openai-codex-responses" and model.responses_lite ~= nil then
-          assert(type(model.responses_lite) == "boolean", "model responses_lite must be boolean")
-        end
-      end
-      if model.request_opts ~= nil then
-        assert(type(model.request_opts) == "table" or type(model.request_opts) == "function", "model request_opts must be a table or function")
+      assert(model_config.safe_id(model_id)
+          and (model == false or type(model) == "table"),
+        "models must contain keyed tables or false")
+      if model ~= false then
+        local validated, model_err = model_config.validate(id, model_id, model)
+        assert(validated, model_err and model_err.message
+          or "model configuration is invalid")
       end
     end
   end
-  assert(type(opts.apis) == "table", "apis must be a table")
-  for name, factory in pairs(opts.apis) do
-    assert(type(name) == "string" and type(factory) == "function", "apis must contain functions")
+  assert(type(opts._apis) == "table", "_apis must be a table")
+  for name, factory in pairs(opts._apis) do
+    assert(type(name) == "string" and type(factory) == "function",
+      "_apis must contain functions")
   end
   assert(type(opts.auth) == "table", "auth must be a table")
   assert(type(opts.auth.path) == "string" and opts.auth.path ~= "", "auth.path is required")
@@ -344,10 +370,14 @@ local function validate(opts)
       assert(type(item) == "string" and item ~= "", name .. " must contain non-empty strings")
     end
   end
-  assert(opts.agents == false or type(opts.agents) == "table", "agents must be a table or false")
-  if opts.agents then
-    string_list(opts.agents.global_files, "agents.global_files")
-    string_list(opts.agents.project_filenames, "agents.project_filenames")
+  assert(opts.agent_instructions == false
+      or type(opts.agent_instructions) == "table",
+    "agent_instructions must be a table or false")
+  if opts.agent_instructions then
+    string_list(opts.agent_instructions.global_files,
+      "agent_instructions.global_files")
+    string_list(opts.agent_instructions.project_filenames,
+      "agent_instructions.project_filenames")
   end
   assert(opts.skills == false or type(opts.skills) == "table", "skills must be a table or false")
   if opts.skills then
@@ -372,22 +402,30 @@ local function validate(opts)
   assert(type(opts.ui.scroll_on_reopen) == "boolean", "ui.scroll_on_reopen must be boolean")
   assert(type(opts.ui.wrap_cards) == "boolean", "ui.wrap_cards must be boolean")
   assert(type(opts.ui.show_thinking) == "boolean", "ui.show_thinking must be boolean")
-  assert(type(opts.ui.provider_console) == "table" and not util.is_list(opts.ui.provider_console),
-    "ui.provider_console must be a table")
-  assert(opts.ui.provider_console.position == "right"
-      or opts.ui.provider_console.position == "top"
-      or opts.ui.provider_console.position == "bottom",
-    "ui.provider_console.position must be right, top, or bottom")
-  validate_dimension(opts.ui.provider_console.width, "ui.provider_console.width")
-  validate_dimension(opts.ui.provider_console.height, "ui.provider_console.height")
-  assert(opts.ui.completion == false or type(opts.ui.completion) == "table",
-    "ui.completion must be false or a table")
-  if opts.ui.completion then
-    string_list(opts.ui.completion.sources, "ui.completion.sources")
-    for _, source in ipairs(opts.ui.completion.sources) do
-      assert(source == "files", "unsupported ui.completion source: " .. source)
+  assert(opts.ui.images == false
+      or type(opts.ui.images) == "table" and not util.is_list(opts.ui.images),
+    "ui.images must be false or a table")
+  if opts.ui.images then
+    local images = opts.ui.images
+    for key in pairs(images) do
+      assert(key == "backend" or key == "display",
+        "unsupported ui.images setting: " .. tostring(key))
     end
+    assert(images.backend == "kitty",
+      "ui.images.backend must be kitty")
+    assert(images.display == "always" or images.display == "expanded",
+      "ui.images.display must be always or expanded")
   end
+  assert(type(opts.ui.provider_shell) == "table"
+      and not util.is_list(opts.ui.provider_shell),
+    "ui.provider_shell must be a table")
+  assert(({ left = true, right = true, top = true, bottom = true,
+    center = true })[opts.ui.provider_shell.position],
+    "ui.provider_shell.position must be left, right, top, bottom, or center")
+  validate_dimension(opts.ui.provider_shell.width, "ui.provider_shell.width")
+  validate_dimension(opts.ui.provider_shell.height, "ui.provider_shell.height")
+  assert(type(opts.ui.completion) == "boolean",
+    "ui.completion must be boolean")
   for action, mapping in pairs(opts.ui.mappings) do
     assert(type(action) == "string", "UI mapping names must be strings")
     if type(mapping) == "table" then
@@ -403,12 +441,19 @@ local function validate(opts)
   if opts.tools ~= nil then assert(type(opts.tools) == "table", "tools must be an array") end
   if opts.system_prompt ~= nil then assert(type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function", "system_prompt must be a string or function") end
   if opts.execute_tool ~= nil then assert(type(opts.execute_tool) == "function", "execute_tool must be a function") end
-  if opts.interaction ~= nil then assert(type(opts.interaction) == "function", "interaction must be a function") end
-  if opts.view ~= nil then assert(type(opts.view) == "function", "view must be a function") end
+  if opts._view ~= nil then
+    assert(type(opts._view) == "function", "_view must be a function")
+  end
 end
 
 function M.resolve(opts)
   opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "configuration must be an object")
+  for key in pairs(opts) do
+    assert(input_fields[key], "unsupported setting: " .. tostring(key))
+  end
   local configured = util.deep_merge(defaults, opts)
   configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
   configured.ui.renderer = configured.ui.renderer

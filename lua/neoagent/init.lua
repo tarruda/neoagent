@@ -1,313 +1,165 @@
+local NeoagentApplet = require("neoagent.applet")
+local async = require("neoagent.async")
 local config = require("neoagent.config")
-local Controller = require("neoagent.controller")
-local provider_services = require("neoagent.provider_services")
-local Window = require("neoagent.window")
+local Agent = require("neoagent.agent")
 local util = require("neoagent.util")
 
 local M = {}
 local positions = { "auto", "left", "right", "top", "bottom", "center" }
-local default_window
-local owned_controllers
-local owned_services
-local default_sandbox
+local default_applet
 
-local function configured_toolset(configured)
-  return {
-    tools = configured._tools_supplied and util.copy(configured.tools)
-      or require("neoagent.tools").coding({
-        shell_timeout = configured.shell_timeout,
-      }),
-    execute_tool = configured.execute_tool,
-  }
-end
-
-local function trust_protected(configured, toolset)
-  return #toolset.tools > 0
-    or configured.agents ~= false
-      and #configured.agents.project_filenames > 0
-    or configured.skills ~= false
-      and #configured.skills.project_dirs > 0
-end
-
-local function provider_store()
-  return require("neoagent.state_store").new({
-    directory = vim.fn.stdpath("state") .. "/neoagent/provider-state",
-  })
-end
-
-local function default_controllers(configured, user_opts)
-  local neo = util.copy(configured)
-  neo.name = neo.name or "Neo"
-  local host_toolset = configured_toolset(neo)
-  local dialogs = require("neoagent.dialog").new()
-  local sandbox_runtime
-  local sandbox_toolset
-  local sandbox_warning
-  local composition = require("neoagent.sandbox.composition")
-  local status
-  sandbox_toolset, status, _, sandbox_runtime = composition.switchable(
-    host_toolset, neo.sandbox, { dialogs = dialogs })
-  if neo.sandbox.enabled and not status.active then
-    sandbox_warning = composition.warning(neo.name, status)
-  end
-  local trust_policy
-  local view = neo.view
-  if configured.workspace_trust
-      and trust_protected(neo, host_toolset) then
-    view, trust_policy = require("neoagent.workspace_trust").compose(neo, {
-      path = configured.workspace_trust.path,
-      dialogs = dialogs,
-      sandbox_status = status,
-    })
-  elseif sandbox_warning then
-    view = require("neoagent.sandbox.view").warn_once(
-      view, sandbox_warning, neo.name)
-  end
-  local auth_manager = require("neoagent.auth").configured(configured)
-  local services, service_err = provider_services.compose(configured, {
-    auth = auth_manager,
-    store = provider_store(),
-    explicit = user_opts and user_opts.providers,
-    default_model = configured.default_model,
-  })
-  if not services then error(service_err, 0) end
-  local neo_controller = Controller.from_config(neo, {
-    workspace_trust = trust_policy,
-    providers = services,
-  })
-  assert(neo_controller:set_toolset(sandbox_toolset))
-  local sandbox_state = {
-    controller = neo_controller,
-    enabled = configured.sandbox.enabled,
-    runtime = sandbox_runtime,
-    status = util.copy(status),
-    trust = trust_policy,
-  }
-
-  local chat = util.copy(configured)
-  chat.name = "Chat"
-  chat.sandbox.enabled = false
-  chat.tools = {}
-  chat._tools_supplied = true
-  chat.system_prompt = ""
-  chat.agents = false
-  chat.skills = false
-
-  return {
-    neo_controller,
-    Controller.from_config(chat, { providers = services }),
-  }, dialogs, sandbox_state, trust_policy, view, services
-end
-
-local function attach_trust(policy, window, controller)
-  if policy then policy:attach_window(window, controller) end
-end
-
-local function any_owned_running()
-  for _, controller in ipairs(owned_controllers or {}) do
-    if controller:is_running() then return true end
-  end
-  return false
-end
-
-local function destroy_owned()
-  for _, controller in ipairs(owned_controllers or {}) do controller:destroy() end
-  provider_services.destroy(owned_services)
-end
-
-local function window_for(controllers, opts)
-  opts = opts or {}
-  local first = controllers[1]:config()
-  return Window.new({
-    controllers = controllers,
-    active = opts.active,
-    config = util.deep_merge(first.ui, opts.ui or {}),
-    view = opts.view or first.view,
-    persistence = first.persistence,
-    dialogs = opts.dialogs,
+local function build_applet(configured, runtime)
+  local profiles, default_profile, resources =
+    require("neoagent.profiles").bundled(configured, runtime)
+  return NeoagentApplet.new({
+    profiles = profiles,
+    default_profile = default_profile,
+    resources = resources,
   })
 end
 
 function M.new(opts, runtime)
-  opts = opts or {}
-  runtime = runtime or {}
-  local resolved = config.resolve(opts)
-  local selected = {}
-  for key, value in pairs(runtime) do selected[key] = value end
-  selected.destroy_providers = nil
-  local destroy_providers
-  if selected.providers == nil then
-    local auth = require("neoagent.auth").configured(resolved)
-    local services, err = provider_services.compose(resolved, {
-      auth = auth,
-      store = provider_store(),
-      explicit = opts.providers,
-      default_model = resolved.default_model,
-    })
-    if not services then error(err, 0) end
-    selected.providers = services
-    local owned = services
-    destroy_providers = function()
-      local current = owned
-      owned = nil
-      provider_services.destroy(current)
-    end
-    selected.destroy_providers = destroy_providers
-  end
-  local ok, controller = pcall(Controller.from_config, resolved, selected)
-  if not ok then
-    if destroy_providers then destroy_providers() end
-    error(controller, 0)
-  end
-  return controller
+  return Agent.new(opts, runtime)
 end
 
-function M.new_window(opts)
-  opts = opts or {}
-  assert(type(opts.controllers) == "table" and #opts.controllers > 0,
-    "new_window requires controllers")
-  return window_for(opts.controllers, opts)
+function M._new_applet(opts)
+  return NeoagentApplet._from_agents(opts)
 end
 
-function M.default_window()
-  if not default_window then
-    local dialogs, trust_policy, view
-    owned_controllers, dialogs, default_sandbox, trust_policy, view, owned_services =
-      default_controllers(config.get())
-    default_window = window_for(owned_controllers, {
-      dialogs = dialogs,
-      view = view,
-    })
-    attach_trust(trust_policy, default_window, owned_controllers[1])
+function M.applet()
+  if not default_applet or default_applet:is_destroyed() then
+    default_applet = build_applet(config.get())
   end
-  return default_window
+  return default_applet
 end
 
 function M.default()
-  return M.default_window():active()
+  return M.applet():default_agent()
+end
+
+local function setup(opts, runtime)
+  if default_applet and default_applet:any_running() then
+    error("Cannot reconfigure neoagent while a run is active")
+  end
+  local configured = config.resolve(opts or {})
+  local replacement = build_applet(configured, runtime)
+  local previous = default_applet
+  default_applet = replacement
+  config._set(configured)
+  if previous then previous:destroy() end
+  return replacement
 end
 
 function M.setup(opts)
-  if any_owned_running() then
-    error("Cannot reconfigure neoagent while a run is active")
-  end
-  local configured = config.setup(opts or {})
-  local replacements, dialogs, sandbox_state, trust_policy, view, services =
-    default_controllers(configured, opts)
-  local replacement_window = window_for(replacements, {
-    dialogs = dialogs,
-    view = view,
-  })
-  attach_trust(trust_policy, replacement_window, replacements[1])
-  if default_window then default_window:destroy() end
-  destroy_owned()
-  default_window = replacement_window
-  owned_controllers = replacements
-  owned_services = services
-  default_sandbox = sandbox_state
-  return replacements[1]
+  return setup(opts)
 end
 
-function M.set_default(controller)
-  assert(type(controller) == "table" and controller._neoagent_controller,
-    "default must be a Neoagent Controller")
-  local previous = default_window and default_window:active()
-    or (owned_controllers and owned_controllers[1])
-  local replacement = window_for({ controller })
-  if default_window then default_window:destroy() end
-  destroy_owned()
-  default_window = replacement
-  owned_controllers = nil
-  owned_services = nil
-  default_sandbox = nil
-  config._set(controller:config())
+function M._setup(opts, runtime)
+  assert(runtime == nil or type(runtime) == "table",
+    "setup runtime must be an object")
+  return setup(opts, runtime)
+end
+
+function M._set_default(agent)
+  assert(type(agent) == "table" and agent._neoagent_agent,
+    "default must be a Neoagent Agent")
+  local previous
+  if default_applet and not default_applet:is_destroyed() then
+    previous = default_applet:default_agent()
+  end
+  local replacement = NeoagentApplet._from_agents({
+    agents = { agent },
+  })
+  if default_applet then default_applet:destroy() end
+  default_applet = replacement
+  config._set(agent:config())
   return previous
 end
 
-function M.set_default_window(window)
-  assert(type(window) == "table" and window._neoagent_window,
-    "default window must be a Neoagent Window")
-  local previous = default_window
-  default_window = window
-  owned_controllers = nil
-  owned_services = nil
-  default_sandbox = nil
-  config._set(window:active():config())
+function M._set_default_applet(applet)
+  assert(type(applet) == "table" and applet._neoagent_applet,
+    "default applet must be a Neoagent Applet")
+  local previous = default_applet
+  default_applet = applet
+  local agent = applet:default_agent()
+  if agent then config._set(agent:config()) end
   return previous
 end
 
 function M.select_agent(value)
-  return M.default_window():select(value)
+  return M.applet():select(value)
 end
 
-function M.cycle_agent()
-  return M.default_window():cycle()
+local function report(message, level)
+  local presenter = M.applet():presenter()
+  return presenter:notify({
+    message = message,
+    level = level or vim.log.levels.INFO,
+  })
+end
+
+function M.notify(message, level)
+  assert(type(message) == "string", "notification message must be a string")
+  return report("neoagent: " .. message, level)
 end
 
 for _, method in ipairs({ "open", "close", "toggle" }) do
   M[method] = function(...)
-    local window = M.default_window()
-    return window[method](window, ...)
+    local applet = M.applet()
+    return applet[method](applet, ...)
   end
 end
 
-for _, method in ipairs({
-  "send",
-  "steer",
-  "dequeue_steering",
-  "compact",
-  "stop",
-  "new_session",
-  "branch",
-  "fork",
-  "set_model",
-  "available_thinking_levels",
-  "get_thinking_level",
-  "set_thinking_level",
-  "cycle_thinking_level",
-  "login",
-  "cancel_login",
-  "logout",
-  "get_session",
-  "get_model",
-  "provider_operations",
-  "provider_completion",
-  "provider_info",
-  "cancel_provider",
-}) do
-  M[method] = function(...)
-    local controller = M.default()
-    return controller[method](controller, ...)
-  end
+function M.show_agents()
+  return M.applet():show_agents()
 end
 
-function M.provider(operation, args)
-  local controller = M.default()
-  return controller:provider_operation(operation, args)
+function M.send(text)
+  return M.applet():send(text)
 end
 
-function M.provider_console()
-  return M.default_window():toggle_provider_console()
+local function agent_method(method, fallback, ...)
+  local agent = M.applet():target_agent()
+  if not agent then return fallback end
+  return agent[method](agent, ...)
+end
+
+function M.steer(...) return agent_method("steer", nil, ...) end
+function M.dequeue_steering(...)
+  return agent_method("dequeue_steering", {}, ...)
+end
+function M.compact(...) return agent_method("compact", nil, ...) end
+function M.stop(...) return agent_method("stop", false, ...) end
+function M.branch(...) return agent_method("branch", nil, ...) end
+function M.fork(...) return M.applet():fork(...) end
+function M.get_session(...) return agent_method("get_session", nil, ...) end
+function M.get_model(...) return agent_method("get_model", nil, ...) end
+function M.toggle_provider_shell()
+  return M.applet():toggle_provider_shell()
 end
 
 function M.resume(path)
-  local controller = M.default()
-  return controller:resume(path, path and nil or function()
-    if M.default() == controller then M.open() end
-  end)
+  return M.applet():resume(path)
 end
 
 function M.select_position()
-  vim.ui.select(positions, { prompt = "Select window position:" }, function(choice)
-    if choice then M.set_position(choice) end
-  end)
-  return true
+  local selection = M.applet():presenter():select({
+    prompt = "Select window position:",
+    items = positions,
+  })
+  local run = async.run(function()
+    local result = selection:await()
+    if result.ok then M.set_position(result.value) end
+    return result
+  end, { error_kind = "presentation" })
+  M.open()
+  return run
 end
 
 function M.set_position(position)
-  local selected, err = M.default_window():set_position(position)
+  local selected, err = M.applet():set_position(position)
   if not selected then
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   M.open()
@@ -315,9 +167,9 @@ function M.set_position(position)
 end
 
 function M.set_transcript_style(style)
-  local selected, err = M.default_window():set_transcript_style(style)
+  local selected, err = M.applet():set_transcript_style(style)
   if not selected then
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   M.open()
@@ -325,9 +177,9 @@ function M.set_transcript_style(style)
 end
 
 function M.set_renderer(renderer)
-  local selected, err = M.default_window():set_renderer(renderer)
+  local selected, err = M.applet():set_renderer(renderer)
   if not selected then
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   M.open()
@@ -335,74 +187,136 @@ function M.set_renderer(renderer)
 end
 
 function M.select_model()
-  local controller = M.default()
-  return controller:select_model(function()
-    if M.default() == controller then M.open() end
-  end)
+  local selected = M.applet():select_model()
+  if selected then M.open() end
+  return selected
+end
+
+function M.set_model(provider, model)
+  local selected, err = M.applet():set_model(provider, model)
+  if selected then M.open() end
+  return selected, err
+end
+
+function M.available_thinking_levels()
+  return M.applet():available_thinking_levels()
+end
+
+function M.get_thinking_level()
+  return M.applet():get_thinking_level()
+end
+
+function M.set_thinking_level(level)
+  return M.applet():set_thinking_level(level)
+end
+
+function M.cycle_thinking_level()
+  return M.applet():cycle_thinking_level()
 end
 
 function M.select_branch()
-  local controller = M.default()
-  return controller:select_branch(function()
-    if M.default() == controller then M.open() end
+  local agent = M.applet():target_agent()
+  if not agent then return nil end
+  local selected = agent:select_branch(function()
+    if M.default() == agent then M.open() end
   end)
+  if selected then M.open() end
+  return selected
 end
 
 function M.select_fork()
-  local controller = M.default()
-  return controller:select_fork(function(_, selected_text)
-    if M.default() == controller then
-      M.default_window():set_input(selected_text or "")
-      M.open()
-    end
-  end)
+  local selected, err = M.applet():select_fork()
+  if selected then M.open() end
+  return selected, err
+end
+
+function M.copy_session()
+  return M.applet():copy_session()
+end
+
+local function sandbox_target(create_draft)
+  local applet = M.applet()
+  local agent = applet:target_agent()
+  if agent then
+    local record = applet:record(agent)
+    return {
+      runtime = record and record.metadata.sandbox,
+      agent = agent,
+    }
+  end
+  local selected = applet:selected_applet()
+  local profile_id = selected and selected.profile or applet.default_profile
+  local profile = profile_id and applet:profile(profile_id) or nil
+  if not profile or profile.id ~= "neo" then return {} end
+  if not selected then selected = applet:retained_draft(profile.id) end
+  if not selected and create_draft then
+    selected = assert(applet:draft(profile.id))
+  end
+  local options = selected and applet:get_draft_options(selected) or {}
+  local configured = util.copy(profile.config)
+  configured.sandbox = util.deep_merge(
+    configured.sandbox, options.sandbox or {})
+  return {
+    applet = applet,
+    draft = selected,
+    config = configured,
+  }
 end
 
 function M.set_sandbox_enabled(enabled)
   assert(type(enabled) == "boolean", "sandbox state must be boolean")
-  M.default_window()
-  local state = default_sandbox
+  local target = sandbox_target(true)
+  local state = target.runtime
   if not state then
+    if target.draft then
+      local updated, update_err = target.applet:update_draft_options({
+        sandbox = { enabled = enabled },
+      }, target.draft)
+      if not updated then return nil, update_err end
+      local status = { enabled = enabled, active = false }
+      M.notify(enabled and "sandbox will be enabled for the next Neo Agent"
+          or "sandbox disabled; tools execute on the host",
+        vim.log.levels.INFO)
+      return status
+    end
     local err = util.error("sandbox",
-      "Sandbox toggling is available only for the built-in Neo composition")
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+      "Sandbox toggling is unavailable for the selected Agent")
+    M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   local status, err = state.runtime:set_enabled(enabled)
   if not status then
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
+    M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
-  state.enabled = status.enabled
   state.status = util.copy(status)
-  if state.trust then state.trust:set_sandbox_status(state.status) end
+  if state.trust then state.trust:set_sandbox_status(status) end
   if enabled and not status.active then
-    vim.notify(require("neoagent.sandbox.composition").warning(
-      state.controller:config().name, status), vim.log.levels.WARN)
-    return util.copy(state.status)
+    report(require("neoagent.sandbox.composition").warning(
+      target.agent:label(), status), vim.log.levels.WARN)
+    return util.copy(status)
   end
-  vim.notify(enabled and "neoagent: sandbox enabled"
-      or "neoagent: sandbox disabled; tools execute on the host",
+  M.notify(enabled and "sandbox enabled"
+      or "sandbox disabled; tools execute on the host",
     vim.log.levels.INFO)
-  return util.copy(state.status)
+  return util.copy(status)
 end
 
 function M.toggle_sandbox()
-  M.default_window()
-  if not default_sandbox then return M.set_sandbox_enabled(true) end
-  return M.set_sandbox_enabled(not default_sandbox.enabled)
+  local status = M.sandbox_info()
+  return M.set_sandbox_enabled(not status.enabled)
 end
 
 function M.sandbox_info()
-  M.default_window()
-  if default_sandbox then return util.copy(default_sandbox.status) end
-  return require("neoagent.sandbox").info(M.default())
+  local target = sandbox_target()
+  if target.runtime then return util.copy(target.runtime.status) end
+  return require("neoagent.sandbox").info(target.config)
 end
 
 function M.show_sandbox_info()
   local sandbox = require("neoagent.sandbox")
   local status = M.sandbox_info()
-  vim.notify(sandbox.format_info(status),
+  report(sandbox.format_info(status),
     status.enabled and not status.active
       and vim.log.levels.WARN or vim.log.levels.INFO)
   return status

@@ -1,5 +1,34 @@
 local config = require("neoagent.config")
-local models = require("neoagent.models")
+local model_api = require("neoagent.models")
+local provider_runtimes = require("neoagent.provider_runtimes")
+
+local runtime_sets = {}
+
+local function runtimes_for(configured)
+  configured = configured or config.get()
+  local runtimes = runtime_sets[configured]
+  if not runtimes then
+    local err
+    runtimes, err = provider_runtimes.compose(configured, { startup = false })
+    assert(runtimes, err and err.message)
+    runtime_sets[configured] = runtimes
+  end
+  return runtimes
+end
+
+local models = {}
+
+function models.resolve(provider_id, model_id, configured, manager, runtimes)
+  configured = configured or config.get()
+  return model_api.resolve(provider_id, model_id, configured, manager,
+    runtimes or runtimes_for(configured))
+end
+
+function models.available(configured, manager, runtimes)
+  configured = configured or config.get()
+  return model_api.available(configured, manager,
+    runtimes or runtimes_for(configured))
+end
 
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
@@ -11,7 +40,6 @@ describe("neoagent configuration and model resolution", function()
   local original_deepseek_key
   local original_zai_key
   local original_anthropic_key
-  local original_anthropic_oauth_token
   local original_opencode_key
 
   before_each(function()
@@ -20,23 +48,24 @@ describe("neoagent configuration and model resolution", function()
     original_deepseek_key = vim.env.DEEPSEEK_API_KEY
     original_zai_key = vim.env.ZAI_API_KEY
     original_anthropic_key = vim.env.ANTHROPIC_API_KEY
-    original_anthropic_oauth_token = vim.env.ANTHROPIC_OAUTH_TOKEN
     original_opencode_key = vim.env.OPENCODE_API_KEY
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
     vim.env.ANTHROPIC_API_KEY = nil
-    vim.env.ANTHROPIC_OAUTH_TOKEN = nil
     vim.env.OPENCODE_API_KEY = nil
   end)
 
   after_each(function()
+    for _, runtimes in pairs(runtime_sets) do
+      provider_runtimes.destroy(runtimes)
+    end
+    runtime_sets = {}
     config._reset()
     vim.env.OPENAI_API_KEY = original_openai_key
     vim.env.DEEPSEEK_API_KEY = original_deepseek_key
     vim.env.ZAI_API_KEY = original_zai_key
     vim.env.ANTHROPIC_API_KEY = original_anthropic_key
-    vim.env.ANTHROPIC_OAUTH_TOKEN = original_anthropic_oauth_token
     vim.env.OPENCODE_API_KEY = original_opencode_key
   end)
 
@@ -48,6 +77,21 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("direct", model.id)
     assert.are.same({ "text", "image" }, model.input)
     assert.are.equal(128000, model.context_window)
+  end)
+
+  it("composes every built-in provider through a Provider Service", function()
+    config.setup({})
+    local configured = config.get()
+    for _, id in ipairs({
+      "openai", "openai-codex", "deepseek", "zai", "zai-coding-plan",
+      "anthropic", "opencode-go", "llama.cpp",
+    }) do
+      assert.is_function(configured.providers[id].service, id)
+    end
+    assert.is_nil(configured.providers["anthropic-plan"])
+    assert.is_nil(configured.auth.methods["anthropic-plan"])
+    assert.is_nil(configured.auth.methods["openai-admin"])
+    assert.is_nil(configured.auth.methods["anthropic-admin"])
   end)
 
   it("resolves configured built-in models with separate request layers", function()
@@ -105,12 +149,12 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(64000, model.context_window)
   end)
 
-  it("supports ordinary custom API factories", function()
+  it("resolves API factories from the internal factory map", function()
     local seen
     config.setup({
       default_model = { provider = "custom", model = "one" },
       providers = { custom = { api = "mine", models = { one = { value = 1, context_window = 4096 } } } },
-      apis = { mine = function(resolved)
+      _apis = { mine = function(resolved)
         seen = resolved
         return { stream = function() end }
       end },
@@ -119,7 +163,7 @@ describe("neoagent configuration and model resolution", function()
     assert.is_function(model.stream)
     assert.are.equal(1, seen.model.value)
     assert.are.equal(4096, model.context_window)
-    assert.are.same({ "text", "image" }, model.input)
+    assert.are.same({ "text" }, model.input)
     assert.is_nil(model.thinking)
   end)
 
@@ -136,7 +180,7 @@ describe("neoagent configuration and model resolution", function()
           },
         },
       },
-      apis = {
+      _apis = {
         ["default-wire"] = function(resolved)
           selected[#selected + 1] = resolved.api
           return { api = "default-wire", stream = function() end }
@@ -166,7 +210,7 @@ describe("neoagent configuration and model resolution", function()
           models = { model = {} },
         },
       },
-      apis = {
+      _apis = {
         mine = function()
           return { stream = function() end }
         end,
@@ -194,47 +238,9 @@ describe("neoagent configuration and model resolution", function()
     assert.is_true(optional)
   end)
 
-  it("rejects malformed models published by dynamic providers", function()
-    local configured = config.setup({
-      default_registry = false,
-      providers = {
-        dynamic = { api = "mine", models = {} },
-      },
-      apis = { mine = function() return { stream = function() end } end },
-    })
-    local available, err = models.available(configured, nil, {
-      dynamic = {
-        get_models = function()
-          return { { id = "forged\nmodel", context_window = -1 } }
-        end,
-      },
-    })
-    assert.is_nil(available)
-    assert.are.equal("model", err.kind)
-    assert.matches("dynamic model id", err.message)
-
-    local ok, resolve_err = pcall(models.resolve, "dynamic", "model",
-      configured, nil, {
-        dynamic = { get_models = function() return "invalid" end },
-      })
-    assert.is_false(ok)
-    assert.are.equal("model", resolve_err.kind)
-    assert.matches("model catalog must be a list", resolve_err.message)
-
-    for _, api in ipairs({ "forged\napi", string.char(255) }) do
-      available, err = models.available(configured, nil, {
-        dynamic = {
-          get_models = function() return { { id = "model", api = api } } end,
-        },
-      })
-      assert.is_nil(available)
-      assert.are.equal("model", err.kind)
-      assert.matches("api must be safe", err.message)
-    end
-  end)
-
   it("resolves configured OpenAI Responses models", function()
     config.setup({
+      default_registry = false,
       default_model = { provider = "openai", model = "reasoning" },
       providers = {
         openai = {
@@ -252,7 +258,7 @@ describe("neoagent configuration and model resolution", function()
       },
     })
     local resolved = models.resolve()
-    local request = resolved._model:_request({ messages = {}, tools = {} })
+    local request = resolved:_request({ messages = {}, tools = {} })
     assert.are.equal("openai-responses", resolved.api)
     assert.are.equal("http://localhost:8080/v1/responses", request.url)
     assert.are.same({ provider = true, model = true }, request.body.metadata)
@@ -311,18 +317,16 @@ describe("neoagent configuration and model resolution", function()
         local_provider = { api = "custom", models = { local_model = {} } },
       },
     })
-    local providers = config.get().providers
-    assert.is_nil(providers.openai.models["gpt-4"])
+    local configured = config.get()
+    local providers = configured.providers
+    assert.is_false(providers.openai.models["gpt-4"])
     assert.is_false(providers.openai.models["gpt-5.4"].thinking.minimal)
     assert.are.equal("custom-high", providers.openai.models["gpt-5.4"].thinking.high.body.reasoning.effort)
     assert.is_table(providers.openai.models.custom)
-    assert.is_table(providers["openai-codex"].models["gpt-5.6-terra"])
-    assert.are.equal(272000, providers["openai-codex"].models["gpt-5.6-terra"].context_window)
-    assert.is_true(providers["openai-codex"].models["gpt-5.6-terra"].responses_lite)
-    assert.is_nil(providers["openai-codex"].models["gpt-5.6-terra"].thinking.high.body.reasoning.context)
-    assert.are.equal("auto", providers["openai-codex"].models["gpt-5.6-terra"].thinking.high.body.reasoning.summary)
-    assert.are.equal("high", providers["openai-codex"].models["gpt-5.5"].thinking.high.body.reasoning.effort)
-    assert.is_true(providers["openai-codex"].models["gpt-5.5"].thinking.high.body.metadata.user)
+    local catalog_models = runtimes_for(configured)["openai-codex"]
+      .catalog:snapshot().models
+    assert.is_true(catalog_models["gpt-5.5"]
+      .thinking.high.body.metadata.user)
     assert.are.same({ "local_provider/local_model" }, assert(models.available()))
 
     vim.env.OPENAI_API_KEY = "api-key"
@@ -353,14 +357,8 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("openai-completions", provider.api)
     assert.are.equal("deepseek", provider.auth)
     assert.are.equal("https://api.deepseek.com", provider.base_url)
-    local available = assert(models.available())
-    assert.is_true(vim.tbl_contains(available, "deepseek/deepseek-v4-flash"))
-    assert.is_true(vim.tbl_contains(available, "deepseek/deepseek-v4-pro"))
-    assert.are.equal(1000000, provider.models["deepseek-v4-flash"].context_window)
-    assert.are.equal(384000, provider.models["deepseek-v4-pro"].max_output_tokens)
-    assert.are.same({ "off", "high", "max" },
-      require("neoagent.thinking").levels(models.resolve("deepseek", "deepseek-v4-flash")))
-
+    assert.is_function(provider.service)
+    assert.are.equal(14 * 24 * 60 * 60 * 1000, provider.catalog.ttl_ms)
     local model = models.resolve("deepseek", "deepseek-v4-pro")
     local request = model._model:_request({
       messages = { { role = "assistant", content = {
@@ -376,6 +374,41 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ type = "enabled" }, request.body.thinking)
     assert.are.equal("max", request.body.reasoning_effort)
     assert.are.equal("", request.body.messages[1].reasoning_content)
+  end)
+
+  it("fills discovered DeepSeek metadata before applying user overrides", function()
+    vim.env.DEEPSEEK_API_KEY = "deepseek-key"
+    config.setup({ providers = { deepseek = { models = {
+      ["deepseek-v4-flash-vision-exp"] = {
+        thinking = {
+          low = false,
+          high = { body = {
+            thinking = { type = "enabled" },
+            reasoning_effort = "custom-high",
+          } },
+        },
+      },
+    } } } })
+    local configured = config.get()
+    local runtimes = runtimes_for(configured)
+    assert(runtimes.deepseek.catalog:publish_discoveries({ {
+      id = "deepseek-v4-flash-vision-exp",
+      input = { "text" },
+      thinking = {
+        off = { body = { thinking = { type = "disabled" } } },
+      },
+    } }))
+    local model = models.resolve("deepseek",
+      "deepseek-v4-flash-vision-exp", configured, nil, runtimes)
+
+    assert.are.same({ "text" }, model.input)
+    assert.are.same({ "off", "high", "max" },
+      require("neoagent.thinking").levels(model))
+    local request = model._model:_request({
+      messages = {}, tools = {}, request_opts = model.thinking.high,
+    })
+    assert.are.equal("custom-high", request.body.reasoning_effort)
+    assert.are.same({ type = "enabled" }, request.body.thinking)
   end)
 
   it("routes the built-in OpenCode Go catalog across its three APIs", function()
@@ -455,7 +488,7 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ "text" }, model.input)
   end)
 
-  it("resolves the built-in Z.AI API and Coding Plan catalogs", function()
+  it("resolves the built-in Z.AI API and Plan catalogs", function()
     vim.env.ZAI_API_KEY = "zai-key"
     config.setup({})
 
@@ -463,41 +496,13 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("openai-completions", provider.api)
     assert.are.equal("https://api.z.ai/api/paas/v4", provider.base_url)
     assert.are.equal("zai", provider.auth)
+    assert.are.equal("Z.AI API and Plan key",
+      config.get().auth.methods.zai.name)
     local plan = config.get().providers["zai-coding-plan"]
     assert.are.equal("https://api.z.ai/api/coding/paas/v4", plan.base_url)
     assert.are.equal("zai", plan.auth)
 
-    local available = assert(models.available())
-    for _, id in ipairs({
-      "glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v", "glm-4.6",
-      "glm-4.6v", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-5",
-      "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5v-turbo",
-    }) do
-      assert.is_true(vim.tbl_contains(available, "zai/" .. id))
-    end
-    for _, id in ipairs({
-      "glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5v-turbo",
-    }) do
-      assert.is_true(vim.tbl_contains(available, "zai-coding-plan/" .. id))
-    end
-    assert.is_false(vim.tbl_contains(available, "zai-coding-plan/glm-4.5"))
-
-    for _, id in ipairs({
-      "glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.6", "glm-4.7",
-      "glm-4.7-flash", "glm-4.7-flashx", "glm-5", "glm-5-turbo", "glm-5.1",
-      "glm-5.2",
-    }) do
-      assert.are.same({ "text" }, provider.models[id].input)
-    end
-    for _, id in ipairs({ "glm-4.5v", "glm-4.6v", "glm-5v-turbo" }) do
-      assert.are.same({ "text", "image" }, provider.models[id].input)
-    end
-    assert.are.same({ "text" }, plan.models["glm-5.2"].input)
-    assert.are.same({ "text", "image" }, plan.models["glm-5v-turbo"].input)
-
     local glm52 = models.resolve("zai-coding-plan", "glm-5.2")
-    assert.are.same({ "off", "low", "medium", "high", "max" },
-      require("neoagent.thinking").levels(glm52))
     local tools = { {
       name = "inspect",
       description = "Inspect a path",
@@ -510,10 +515,10 @@ describe("neoagent configuration and model resolution", function()
     })
     assert.are.equal("https://api.z.ai/api/coding/paas/v4/chat/completions", request.url)
     assert.are.equal("Bearer zai-key", request.headers.Authorization)
-    assert.are.equal(131072, request.body.max_completion_tokens)
     assert.is_true(request.body.stream_options.include_usage)
     assert.is_true(request.body.tool_stream)
-    assert.are.same({ type = "enabled", clear_thinking = false }, request.body.thinking)
+    assert.are.same({ type = "enabled", clear_thinking = false },
+      request.body.thinking)
     assert.are.equal("max", request.body.reasoning_effort)
 
     request = glm52._model:_request({
@@ -523,54 +528,39 @@ describe("neoagent configuration and model resolution", function()
     assert.are.same({ type = "disabled" }, request.body.thinking)
     assert.is_nil(request.body.reasoning_effort)
 
-    local glm45 = models.resolve("zai", "glm-4.5")
-    assert.are.same({ "off", "minimal", "low", "medium", "high" },
-      require("neoagent.thinking").levels(glm45))
-    request = glm45._model:_request({ messages = {}, tools = tools, request_opts = glm45.thinking.medium })
-    assert.are.same({ type = "enabled", clear_thinking = false }, request.body.thinking)
-    assert.is_nil(request.body.reasoning_effort)
-    assert.is_nil(request.body.tool_stream)
-    assert.are.equal(98304, request.body.max_completion_tokens)
-
     local glm46v = models.resolve("zai", "glm-4.6v")
     request = glm46v._model:_request({
       messages = {}, tools = tools, request_opts = glm46v.thinking.high,
     })
     assert.are.equal("https://api.z.ai/api/paas/v4/chat/completions", request.url)
     assert.is_true(request.body.tool_stream)
-    assert.are.equal(32768, request.body.max_completion_tokens)
-    assert.are.equal(128000, glm46v.context_window)
   end)
 
-  it("resolves Anthropic API-key and Claude plan catalogs", function()
-    local path = vim.fn.tempname() .. "/auth.json"
+  it("applies discovered Anthropic capabilities to requests", function()
     vim.env.ANTHROPIC_API_KEY = "anthropic-key"
-    config.setup({ auth = { path = path } })
+    config.setup({})
 
     local configured = config.get()
     assert.are.equal("anthropic-messages", configured.providers.anthropic.api)
     assert.are.equal("https://api.anthropic.com/v1", configured.providers.anthropic.base_url)
     assert.are.equal("anthropic", configured.providers.anthropic.auth)
-    assert.are.equal("anthropic-plan", configured.providers["anthropic-plan"].auth)
     local stored_key_opts = configured.auth.methods.anthropic.request_opts({
       type = "api_key", key = "stored-anthropic",
     })
     assert.are.equal("stored-anthropic", stored_key_opts.headers["x-api-key"])
-    local available = assert(models.available())
-    for _, id in ipairs({
-      "claude-opus-4-1", "claude-opus-4-1-20250805",
-      "claude-opus-4-5", "claude-opus-4-5-20251101",
-      "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
-      "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
-      "claude-sonnet-4-6", "claude-sonnet-5",
-      "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-fable-5",
-    }) do
-      assert.is_true(vim.tbl_contains(available, "anthropic/" .. id))
-    end
-    assert.is_false(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
+    local runtimes = runtimes_for(configured)
+    assert(runtimes.anthropic.catalog:publish_discoveries({ {
+      id = "claude-dynamic",
+      input = { "text", "image" },
+      context_window = 750000,
+      max_output_tokens = 96000,
+      thinking_type = "adaptive",
+      reasoning_levels = { "low", "xhigh" },
+    } }))
 
-    local opus = models.resolve("anthropic", "claude-opus-4-8")
-    assert.are.same({ "low", "medium", "high", "xhigh", "max" },
+    local opus = models.resolve(
+      "anthropic", "claude-dynamic", configured, nil, runtimes)
+    assert.are.same({ "low", "xhigh" },
       require("neoagent.thinking").levels(opus))
     local tools = { {
       name = "inspect",
@@ -585,8 +575,8 @@ describe("neoagent configuration and model resolution", function()
     })
     assert.are.equal("https://api.anthropic.com/v1/messages", request.url)
     assert.are.equal("anthropic-key", request.headers["x-api-key"])
-    assert.are.equal(1000000, opus.context_window)
-    assert.are.equal(128000, request.body.max_tokens)
+    assert.are.equal(750000, opus.context_window)
+    assert.are.equal(96000, request.body.max_tokens)
     assert.are.same({ type = "adaptive", display = "summarized" }, request.body.thinking)
     assert.are.equal("xhigh", request.body.output_config.effort)
     assert.are.equal("Be concise", request.body.system[1].text)
@@ -594,86 +584,18 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("ephemeral", request.body.messages[1].content[1].cache_control.type)
     assert.is_true(request.body.tools[1].eager_input_streaming)
     assert.are.equal("ephemeral", request.body.tools[1].cache_control.type)
-
-    local haiku = models.resolve("anthropic", "claude-haiku-4-5")
-    assert.are.same({ "off", "minimal", "low", "medium", "high" },
-      require("neoagent.thinking").levels(haiku))
-    request = haiku._model:_request({
-      messages = { { role = "user", content = "Hello" } },
+    local rich_messages = { { role = "user", content = {
+      { type = "text", text = "Inspect this" },
+      { type = "image", data = "AA==", mimeType = "image/png" },
+    } } }
+    request = opus._model:_request({
+      messages = rich_messages,
       tools = {},
-      request_opts = haiku.thinking.medium,
+      request_opts = opus.thinking.low,
     })
-    assert.are.equal("interleaved-thinking-2025-05-14", request.headers["anthropic-beta"])
-    assert.are.same({
-      type = "enabled", budget_tokens = 8192, display = "summarized",
-    }, request.body.thinking)
-    assert.are.equal(64000, request.body.max_tokens)
-    request = haiku._model:_request({
-      messages = {}, tools = {}, request_opts = haiku.thinking.off,
-    })
-    assert.are.same({ type = "disabled" }, request.body.thinking)
-    assert.are.equal("interleaved-thinking-2025-05-14", request.headers["anthropic-beta"])
-
-    vim.env.ANTHROPIC_OAUTH_TOKEN = "sk-ant-oat-environment"
-    available = assert(models.available())
-    assert.is_true(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
-    local ambient_plan = models.resolve("anthropic-plan", "claude-haiku-4-5")
-    request = ambient_plan._model:_request({
-      messages = {}, tools = {}, request_opts = ambient_plan.thinking.medium,
-    })
-    assert.are.equal("Bearer sk-ant-oat-environment", request.headers.Authorization)
-    assert.matches("oauth%-2025", request.headers["anthropic-beta"])
-    vim.env.ANTHROPIC_OAUTH_TOKEN = nil
-
-    assert(require("neoagent.auth.store").new(path):write("anthropic-plan", {
-      type = "oauth", access = "plan-access", refresh = "plan-refresh", expires = 9999999999999,
-    }))
-    available = assert(models.available())
-    assert.is_true(vim.tbl_contains(available, "anthropic-plan/claude-opus-4-8"))
-    local plan = models.resolve("anthropic-plan", "claude-opus-4-8")
-    request = plan._model:_request({
-      system_prompt = "Use the project tools",
-      messages = { { role = "user", content = {
-        { type = "text", text = "Inspect it" },
-      } } },
-      tools = tools,
-      request_opts = plan.thinking.high,
-    })
-    assert.are.equal("You are Claude Code, Anthropic's official CLI for Claude.",
-      request.body.system[1].text)
-    assert.are.equal("Use the project tools", request.body.system[2].text)
-    assert.are.equal("ephemeral", request.body.messages[1].content[1].cache_control.type)
-    assert.is_nil(request.headers["x-api-key"])
-
-    request = plan._model:_request({
-      messages = { { role = "user", content = {
-        { type = "text", text = "See image" },
-        { type = "image", mimeType = "image/png", data = "AAAA" },
-      } } },
-      tools = {},
-    })
-    assert.are.equal("ephemeral", request.body.messages[1].content[2].cache_control.type)
-    vim.fn.delete(vim.fs.dirname(path), "rf")
-  end)
-
-  it("exposes Claude Opus 5 with its adaptive thinking profile", function()
-    vim.env.ANTHROPIC_API_KEY = "anthropic-key"
-    config.setup({})
-
-    local available = assert(models.available())
-    assert.is_true(vim.tbl_contains(available, "anthropic/claude-opus-5"))
-
-    local opus = models.resolve("anthropic", "claude-opus-5")
-    assert.are.equal(1000000, opus.context_window)
-    assert.are.same({ "low", "medium", "high", "xhigh", "max" },
-      require("neoagent.thinking").levels(opus))
-
-    local request = opus._model:_request({
-      messages = {}, tools = {}, request_opts = opus.thinking.xhigh,
-    })
-    assert.are.equal(128000, request.body.max_tokens)
-    assert.are.same({ type = "adaptive", display = "summarized" }, request.body.thinking)
-    assert.are.equal("xhigh", request.body.output_config.effort)
+    assert.are.equal("ephemeral",
+      request.body.messages[1].content[2].cache_control.type)
+    assert.is_nil(rich_messages[1].content[2].cache_control)
   end)
 
   it("prefers stored API keys and resumes ambient keys after logout", function()
@@ -691,7 +613,7 @@ describe("neoagent configuration and model resolution", function()
         api_key = function() ambient_calls = ambient_calls + 1 return "ambient-key" end,
         models = { model = {} },
       } },
-      apis = { fake = function(resolved)
+      _apis = { fake = function(resolved)
         local model = { api = "fake", provider = resolved.provider_id, id = resolved.model_id }
         function model:stream(opts)
           return async.run(function()
@@ -770,20 +692,28 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("<Down>", config.setup({}).ui.mappings.history_next)
     assert.are.equal("<CR>", config.setup({}).ui.mappings.card_details)
     assert.are.equal("r", config.setup({}).ui.mappings.card_raw)
+    assert.are.equal("zz", config.setup({}).ui.mappings.card_center)
     assert.are.same({ "<A-k>", "<C-Up>" },
       config.setup({}).ui.mappings.card_previous)
     assert.are.same({ "<A-j>", "<C-Down>" },
       config.setup({}).ui.mappings.card_next)
     assert.are.equal("<C-w>j", config.setup({}).ui.mappings.focus_input)
     assert.are.equal("<C-w>k", config.setup({}).ui.mappings.focus_transcript)
+    assert.are.equal("K", config.setup({}).ui.mappings.menu_previous)
+    assert.are.equal("J", config.setup({}).ui.mappings.menu_next)
+    assert.are.equal("<A-n>", config.setup({}).ui.mappings.agents)
     assert.is_nil(config.setup({}).ui.mappings.toggle_focus)
     assert.is_false(config.setup({}).ui.wrap_cards)
     assert.is_true(config.setup({}).ui.show_thinking)
     assert.is_true(config.setup({ ui = { wrap_cards = true } }).ui.wrap_cards)
     assert.is_false(config.setup({ ui = { show_thinking = false } }).ui.show_thinking)
-    assert.are.same({ "files" }, config.setup({}).ui.completion.sources)
+    assert.are.equal("always", config.setup({}).ui.images.display)
+    assert.are.equal("kitty", config.setup({
+      ui = { images = { backend = "kitty" } },
+    }).ui.images.backend)
+    assert.is_false(config.setup({ ui = { images = false } }).ui.images)
+    assert.is_true(config.setup({}).ui.completion)
     assert.is_false(config.setup({ ui = { completion = false } }).ui.completion)
-    assert.are.same({}, config.setup({ ui = { completion = { sources = {} } } }).ui.completion.sources)
     assert.are.equal(16384, config.setup({}).compaction.reserve_tokens)
     assert.are.same({ enabled = true, max_retries = 3, base_delay_ms = 2000 },
       config.setup({}).retry)
@@ -793,34 +723,31 @@ describe("neoagent configuration and model resolution", function()
       workspace_trust = { path = "/tmp/custom-trust.json" },
     }).workspace_trust.path)
     assert.is_false(config.setup({ compaction = false }).compaction)
-    assert.are.same({ ttl_ms = 60000 },
-      config.setup({}).providers["llama.cpp"].catalog_cache)
-    assert.is_false(config.setup({
-      providers = { ["llama.cpp"] = { catalog_cache = false } },
-    }).providers["llama.cpp"].catalog_cache)
-    assert.are.same({ ttl_ms = 1000 }, config.setup({
+    assert.are.equal(5 * 60 * 1000,
+      config.setup({}).providers["llama.cpp"].catalog.ttl_ms)
+    assert.are.equal(1000, config.setup({
       providers = { ["llama.cpp"] = {
-        catalog_cache = { ttl_ms = 1000 },
+        catalog = { ttl_ms = 1000 },
       } },
-    }).providers["llama.cpp"].catalog_cache)
+    }).providers["llama.cpp"].catalog.ttl_ms)
     assert.is_nil(config.setup({}).name)
     assert.has_error(function() config.setup({ name = "" }) end)
     assert.has_error(function() config.setup({ view = true }) end)
     assert.has_error(function() config.setup({ default_registry = "yes" }) end)
     assert.has_error(function()
       config.setup({ providers = { ["llama.cpp"] = {
-        catalog_cache = true,
+        catalog = { ttl_ms = -1 },
       } } })
     end)
     assert.has_error(function()
       config.setup({ providers = { ["llama.cpp"] = {
-        catalog_cache = { ttl_ms = -1 },
+        catalog = { unknown = true },
       } } })
     end)
     assert.has_error(function()
-      config.setup({ providers = { ["llama.cpp"] = {
-        catalog_cache = { unknown = true },
-      } } })
+      config.setup({ default_registry = false, providers = {
+        ["../outside"] = { api = "custom", models = {} },
+      } })
     end)
     assert.has_error(function() config.setup({ shell_timeout = 0 }) end)
     assert.has_error(function() config.setup({ shell_timeout = "slow" }) end)
@@ -834,10 +761,11 @@ describe("neoagent configuration and model resolution", function()
     end)
     local renderer = {
       name = "custom",
-      define_highlights = function() end,
-      render_block = function() end,
+      theme = require("applet").Theme.new(),
+      render_block = function()
+        return require("applet").nodes.text({ key = "custom", text = "custom" })
+      end,
       render_details = function() end,
-      render_dialog = function() end,
     }
     assert.are.equal("custom",
       config.setup({ ui = { renderer = renderer } }).ui.renderer.name)
@@ -854,9 +782,25 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() config.setup({ ui = { scroll_on_reopen = "yes" } }) end)
     assert.has_error(function() config.setup({ ui = { wrap_cards = "yes" } }) end)
     assert.has_error(function() config.setup({ ui = { show_thinking = "yes" } }) end)
-    assert.has_error(function() config.setup({ ui = { completion = true } }) end)
+    for _, images in ipairs({
+      true,
+      { backend = "unknown" },
+      { display = "sometimes" },
+      { max_source_bytes = 1024 },
+      { max_pixels = 1024 },
+      { max_cache_bytes = 1024 },
+      { kitty = { cell_width = 8 } },
+      { unexpected = true },
+      { max_source_bytes = 0 },
+      { max_pixels = "many" },
+      { max_cache_bytes = -1 },
+      { kitty = true },
+      { kitty = { cell_width = 0 } },
+    }) do
+      assert.has_error(function() config.setup({ ui = { images = images } }) end)
+    end
     assert.has_error(function() config.setup({ ui = { completion = { sources = "files" } } }) end)
-    assert.has_error(function() config.setup({ ui = { completion = { sources = { "buffers" } } } }) end)
+    assert.has_error(function() config.setup({ ui = { completion = "files" } }) end)
     assert.has_error(function() config.setup({ ui = { mappings = { submit = "" } } }) end)
     assert.has_error(function() config.setup({ ui = { mappings = { submit = {} } } }) end)
     assert.has_error(function() config.setup({ retry = false }) end)
@@ -938,20 +882,31 @@ describe("neoagent configuration and model resolution", function()
 
   it("configures or disables contextual resource locations", function()
     local configured = config.setup({
-      agents = { global_files = { "/global/AGENTS.md" }, project_filenames = {} },
+      agent_instructions = {
+        global_files = { "/global/AGENTS.md" }, project_filenames = {},
+      },
       skills = { global_dirs = {}, project_dirs = { "skills" } },
     })
-    assert.are.same({ "/global/AGENTS.md" }, configured.agents.global_files)
-    assert.are.same({}, configured.agents.project_filenames)
+    assert.are.same({ "/global/AGENTS.md" },
+      configured.agent_instructions.global_files)
+    assert.are.same({}, configured.agent_instructions.project_filenames)
     assert.are.same({}, configured.skills.global_dirs)
     assert.are.same({ "skills" }, configured.skills.project_dirs)
 
-    configured = config.setup({ agents = false, skills = false })
-    assert.is_false(configured.agents)
+    configured = config.setup({ agent_instructions = false, skills = false })
+    assert.is_false(configured.agent_instructions)
     assert.is_false(configured.skills)
-    assert.has_error(function() config.setup({ agents = "yes" }) end)
-    assert.has_error(function() config.setup({ agents = { global_files = "AGENTS.md" } }) end)
-    assert.has_error(function() config.setup({ agents = { project_filenames = { false } } }) end)
+    assert.has_error(function()
+      config.setup({ agent_instructions = "yes" })
+    end)
+    assert.has_error(function()
+      config.setup({ agent_instructions = { global_files = "AGENTS.md" } })
+    end)
+    assert.has_error(function()
+      config.setup({
+        agent_instructions = { project_filenames = { false } },
+      })
+    end)
     assert.has_error(function() config.setup({ skills = "yes" }) end)
     assert.has_error(function() config.setup({ skills = { global_dirs = "skills" } }) end)
     assert.has_error(function() config.setup({ skills = { project_dirs = { "" } } }) end)

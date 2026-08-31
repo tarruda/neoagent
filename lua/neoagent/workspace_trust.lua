@@ -277,7 +277,7 @@ function Policy:_dialog(target)
       target,
       "",
       "Repository content may contain prompt injection.",
-      (self.controller_name or "Neo")
+      (self.agent_name or "Neo")
         .. " can load AGENTS.md and project skills, read and modify files, and run commands.",
       sandbox_text(self.sandbox_status),
     }, "\n"),
@@ -287,8 +287,8 @@ function Policy:_dialog(target)
       { id = "cancel", label = "Cancel", key = "q" },
     },
   }
-  if self.controller_name then
-    request.controller = self.controller_name
+  if self.agent_name then
+    request.agent = self.agent_name
   end
   return request
 end
@@ -311,11 +311,7 @@ function Policy:_close()
 end
 
 function Policy:_notify(err)
-  if self.notify then
-    self.notify(err)
-  else
-    vim.notify("neoagent: " .. err.message, vim.log.levels.ERROR)
-  end
+  self.notify(err)
 end
 
 function Policy:request(cwd)
@@ -409,45 +405,6 @@ function Policy:attach(opts)
   return self
 end
 
-function Policy:attach_window(window, controller)
-  assert(type(window) == "table" and window._neoagent_window
-      and type(window.controllers) == "function"
-      and type(window.active) == "function"
-      and type(window.select) == "function"
-      and type(window.close) == "function",
-    "workspace trust Window is invalid")
-  assert(type(controller) == "table" and controller._neoagent_controller
-      and type(controller.config) == "function"
-      and type(controller.prepare) == "function",
-    "workspace trust Controller is invalid")
-  local attached = false
-  for _, candidate in ipairs(window:controllers()) do
-    if candidate == controller then attached = true break end
-  end
-  assert(attached, "workspace trust Controller is not attached to the Window")
-  local name = controller:config().name
-  assert(self.controller_name == nil or self.controller_name == name,
-    "workspace trust Controller name does not match the policy")
-  self.controller_name = name
-  return self:attach({
-    activate = function()
-      if window:active() == controller then return end
-      local selected, err = window:select(controller)
-      if not selected then
-        error(err and err.message
-          or "Failed to select workspace trust Controller", 0)
-      end
-    end,
-    close = function() window:close() end,
-    on_trusted = function()
-      local prepared, prepare_err = controller:prepare()
-      if not prepared and prepare_err then
-        self:_notify(prepare_err)
-      end
-    end,
-  })
-end
-
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table" and not util.is_list(opts),
@@ -459,70 +416,26 @@ function M.new(opts)
     "workspace trust dialogs are required")
   assert(opts.notify == nil or type(opts.notify) == "function",
     "workspace trust notify callback must be a function")
-  assert(opts.controller == nil
-      or type(opts.controller) == "string" and opts.controller ~= "",
-    "workspace trust Controller name must be a non-empty string")
+  assert(opts.agent == nil
+      or type(opts.agent) == "string" and opts.agent ~= "",
+    "workspace trust Agent name must be a non-empty string")
   return setmetatable({
-    controller_name = opts.controller,
+    agent_name = opts.agent,
     store = opts.store or M.new_store(opts.path),
     dialogs = opts.dialogs,
     sandbox_status = util.copy(opts.sandbox_status),
-    notify = opts.notify,
+    notify = opts.notify or function() end,
     session = opts.session or process_session,
     pending = {},
     scheduled = {},
   }, Policy)
 end
 
-local function default_view(opts)
-  return require("neoagent.ui").new(opts)
-end
-
-function M.view(factory, policy, controller_name)
-  assert(factory == nil or type(factory) == "function",
-    "workspace trust View factory must be a function")
-  assert(type(policy) == "table" and type(policy.request) == "function",
-    "workspace trust policy is required")
-  assert(type(controller_name) == "string" and controller_name ~= "",
-    "workspace trust Controller name is required")
-  factory = factory or default_view
-  return function(opts)
-    local view = factory(opts)
-    assert(type(view) == "table" and type(view.open) == "function",
-      "workspace trust View must implement open")
-    local selected, workspace
-    local function request_if_visible()
-      if selected == controller_name and workspace
-          and type(view.is_open) == "function" and view:is_open() then
-        policy:request(workspace)
-      end
-    end
-    local set_context = view.set_context
-    if type(set_context) == "function" then
-      view.set_context = function(self, context, ...)
-        if type(context) == "table" then
-          selected, workspace = context.name, context.workspace
-        end
-        local result = { set_context(self, context, ...) }
-        request_if_visible()
-        return unpack(result)
-      end
-    end
-    local open = view.open
-    view.open = function(self, ...)
-      local result = { open(self, ...) }
-      if result[1] then request_if_visible() end
-      return unpack(result)
-    end
-    return view
-  end
-end
-
 function M.compose(configured, opts)
   assert(type(configured) == "table" and not util.is_list(configured),
-    "workspace trust Controller configuration must be an object")
+    "workspace trust Agent configuration must be an object")
   assert(type(configured.name) == "string" and configured.name ~= "",
-    "workspace trust Controller configuration requires a name")
+    "workspace trust Agent configuration requires a name")
   opts = opts or {}
   assert(type(opts) == "table" and not util.is_list(opts),
     "workspace trust composition options must be an object")
@@ -537,9 +450,9 @@ function M.compose(configured, opts)
     notify = opts.notify,
     store = opts.store,
     session = opts.session,
-    controller = configured.name,
+    agent = configured.name,
   })
-  return M.view(configured.view, policy, configured.name), policy
+  return policy
 end
 
 return M

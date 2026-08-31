@@ -10,17 +10,13 @@ local function base(entry_type, values)
 end
 
 describe("neoagent.session_tree", function()
-  it("validates every Pi v3 entry shape", function()
+  it("validates every current entry shape", function()
     local invalid = {
       base("message", { parentId = {}, message = { role = "user", content = "x" } }),
-      base("active_tools_change", { activeToolNames = { 1 } }),
+      base("message", { message = { role = "user" } }),
+      base("model_change", { provider = "", modelId = "x" }),
+      base("thinking_level_change", { thinkingLevel = "" }),
       base("compaction", { summary = "", firstKeptEntryId = "x", tokensBefore = 1 }),
-      base("compaction", { summary = "x", firstKeptEntryId = "x", tokensBefore = 1, fromHook = "yes" }),
-      base("branch_summary", { fromId = "", summary = "x" }),
-      base("branch_summary", { fromId = "x", summary = "x", fromHook = 1 }),
-      base("custom_message", { customType = "x", content = "x", display = "yes" }),
-      base("label", { targetId = "x", label = 1 }),
-      base("session_info", { name = 1 }),
       base("leaf", { targetId = 1 }),
     }
     for _, entry in ipairs(invalid) do
@@ -34,7 +30,7 @@ describe("neoagent.session_tree", function()
     assert.is_nil(err)
     ok, err = tree.validate_entry(base("custom", { customType = "" }))
     assert.is_false(ok)
-    assert.matches("customType", err)
+    assert.matches("unsupported entry type", err)
   end)
 
   it("rejects malformed tree relationships", function()
@@ -56,18 +52,6 @@ describe("neoagent.session_tree", function()
     validated, err = tree.validate_entries({ message, leaf })
     assert.is_nil(validated)
     assert.matches("leaf target", err)
-
-    local label = base("label", { id = "label", parentId = message.id, targetId = "missing", label = "bad" })
-    validated, err = tree.validate_entries({ message, label })
-    assert.is_nil(validated)
-    assert.matches("label target", err)
-
-    local summary = base("branch_summary", {
-      id = "summary", parentId = message.id, fromId = "missing", summary = "bad",
-    })
-    validated, err = tree.validate_entries({ message, summary })
-    assert.is_nil(validated)
-    assert.matches("branch summary", err)
 
     local compaction = base("compaction", {
       id = "compaction", parentId = message.id,
@@ -145,21 +129,11 @@ describe("neoagent.session_tree", function()
       ids(tree.transcript_entries(path)))
   end)
 
-  it("projects Pi execution and summary messages into LLM context", function()
+  it("projects compaction summaries into LLM context", function()
     local context = tree.to_llm({
-      { role = "bashExecution", command = "pwd", output = "", exitCode = 2, timestamp = 1 },
-      { role = "bashExecution", command = "sleep 1", output = "stopped", cancelled = true, timestamp = 2 },
-      { role = "bashExecution", command = "secret", output = "hidden", excludeFromContext = true },
-      { role = "custom", content = "remember", timestamp = 3 },
-      { role = "branchSummary", summary = "branch work", timestamp = 4 },
       { role = "compactionSummary", summary = "old work", timestamp = 5 },
     })
-    assert.are.equal(5, #context)
-    assert.matches("no output", context[1].content[1].text)
-    assert.matches("code 2", context[1].content[1].text)
-    assert.matches("cancelled", context[2].content[1].text)
-    assert.are.equal("remember", context[3].content[1].text)
-    assert.matches("branch work", context[4].content[1].text)
-    assert.matches("old work", context[5].content[1].text)
+    assert.are.equal(1, #context)
+    assert.matches("old work", context[1].content[1].text)
   end)
 end)

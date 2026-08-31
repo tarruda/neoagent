@@ -78,6 +78,13 @@ describe("neoagent.util", function()
   it("normalizes list and message content values", function()
     assert.is_false(util.is_list("not a table"))
     assert.is_true(util.is_list(util.list()))
+    local islist = vim.islist
+    local tbl_islist = vim.tbl_islist
+    vim.islist = nil
+    vim.tbl_islist = function(value) return value[1] ~= nil end
+    assert.is_true(util.is_list({ "Neovim 0.10" }))
+    vim.islist = islist
+    vim.tbl_islist = tbl_islist
     assert.are.equal("plain", util.text_content("plain"))
     assert.are.same({ { type = "text", text = "plain" } }, util.content_blocks("plain"))
     local content = { { type = "text", text = "copied" } }

@@ -21,7 +21,7 @@ local function publish(state)
   for _, subscriber in pairs(state.subscribers) do
     local ok, err = pcall(subscriber, util.copy(value))
     if not ok then
-      vim.notify("neoagent dialog subscriber failed: " .. tostring(err),
+      state.report("neoagent dialog subscriber failed: " .. tostring(err),
         vim.log.levels.ERROR)
     end
   end
@@ -55,11 +55,14 @@ local function validate_dialog(dialog)
     "dialog must be an object")
   assert(dialog.placement == "transcript" or dialog.placement == "float",
     "dialog placement must be transcript or float")
-  assert(dialog.controller == nil or valid_text(dialog.controller, 512),
-    "dialog controller must be a non-empty string")
+  assert(dialog.agent == nil or valid_text(dialog.agent, 512),
+    "dialog agent must be a non-empty string")
   assert(valid_text(dialog.title, 512), "dialog title is invalid")
   assert(valid_text(dialog.body, 16 * 1024, true),
     "dialog body is invalid")
+  assert(dialog.default_action == nil
+      or valid_text(dialog.default_action, 128),
+    "dialog default_action is invalid")
   if dialog.input ~= nil then
     assert(dialog.placement == "float",
       "dialog input requires float placement")
@@ -89,6 +92,8 @@ local function validate_dialog(dialog)
     assert(not keys[action.key], "dialog action keys must be distinct")
     ids[action.id], keys[action.key] = true, true
   end
+  assert(dialog.default_action == nil or ids[dialog.default_action],
+    "dialog default_action must name an action")
 end
 
 local function has_action(dialog, action_id)
@@ -205,8 +210,7 @@ function Dialogs:cancel(id, reason, opts)
   entry.done.resolve({
     ok = false,
     error = dialog_error(reason or "Dialog was cancelled"),
-    presenter_unavailable =
-      opts.presenter_unavailable == true and true or nil,
+    presenter_unavailable = opts.presenter_unavailable == true and true or nil,
   })
   publish(state)
   return true
@@ -258,8 +262,7 @@ function Dialogs:cancel_pending(reason, opts)
       entry.done.resolve({
         ok = false,
         error = dialog_error(reason or "Dialog was cancelled"),
-        presenter_unavailable =
-          opts.presenter_unavailable == true and true or nil,
+        presenter_unavailable = opts.presenter_unavailable == true and true or nil,
       })
     end
   end
@@ -293,13 +296,13 @@ function M.wrap(dialogs, next_execute_tool)
     decorated.dialog = {
       show = function(_, request)
         require_active()
-        local controller = type(decorated.context) == "table"
-            and decorated.context.controller
+        local agent = type(decorated.context) == "table"
+            and decorated.context.agent
           or nil
-        if type(request) == "table" and request.controller == nil
-            and type(controller) == "string" and controller ~= "" then
+        if type(request) == "table" and request.agent == nil
+            and type(agent) == "string" and agent ~= "" then
           request = util.copy(request)
-          request.controller = controller
+          request.agent = agent
         end
         return dialogs:show(request)
       end,
@@ -317,7 +320,13 @@ function M.wrap(dialogs, next_execute_tool)
   end
 end
 
-function M.new()
+function M.new(opts)
+  opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "dialog options must be an object")
+  assert(opts.report == nil or type(opts.report) == "function",
+    "dialog report must be a function")
   return setmetatable({
     _instance_id = tostring({}):gsub("table: ", ""),
     _state = {
@@ -326,6 +335,7 @@ function M.new()
       subscribers = {},
       next_subscriber = 0,
       next_dialog = 0,
+      report = opts.report or function() end,
     },
   }, Dialogs)
 end

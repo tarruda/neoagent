@@ -22,31 +22,37 @@ local function documentation()
     "Neoagent is composed from plain Lua values. Use the layer that matches the task:",
     "",
     "- Models implement `model:stream(opts)` and return cancellable Runs.",
-    "- `neoagent.agent.run(opts)` runs an explicit Model and toolset.",
+    "- `neoagent.agent_loop.run(opts)` runs an explicit Model and toolset.",
     "- `Session.new()` owns in-memory messages; persistence is injected.",
-    "- `neoagent.new(opts[, runtime])` creates an independent Controller.",
-    "- `neoagent.new_window(opts)` attaches named Controllers to one passive View.",
-    "- `neoagent.setup(opts)` creates the built-in Neo and Chat Controllers.",
+    "- `neoagent.profile_sessions` binds registered Profiles to Session headers.",
+    "- `neoagent.new(opts[, runtime])` creates an independent Agent.",
+    "- `neoagent.setup(opts)` creates Neo and Chat Profiles with zero Agents.",
     "",
-    "## Independent Controller",
+    "## Independent Agent",
     "",
     "```lua",
     "local neoagent = require(\"neoagent\")",
-    "local opts = neoagent.default():config()",
+    "local opts = require(\"neoagent.config\").get()",
+    "local session = require(\"neoagent.session\").new()",
     "opts.name = \"Review\"",
     "opts.tools = require(\"neoagent.tools\").read_only()",
     "opts.system_prompt = \"Review this workspace.\"",
     "",
-    "local review = neoagent.new(opts)",
-    "local window = neoagent.new_window({",
-    "  controllers = { neoagent.default(), review },",
+    "local review = neoagent.new(opts, {",
+    "  session = session,",
+    "  workspace = vim.fn.getcwd(),",
     "})",
-    "neoagent.set_default_window(window)",
     "```",
     "",
-    "Controller names are unique within a Window. Each Controller owns its Session, "
-      .. "model selection, toolset, draft, and active Run. A Window keeps inactive "
-      .. "Controller Runs alive.",
+    "Each Agent has opaque identity and owns one immutable Session binding, model selection, "
+      .. "toolset, Presenter, dialogs, and active Run. Direct Agents may remain "
+      .. "headless.",
+    "",
+    "Registered-Profile Sessions record `metadata.neoagent.profileId`. The "
+      .. "top-level Applet owns new, resume, fork, copy, live Session "
+      .. "claims, and foreground selection. Branching stays inside the Agent's Session. "
+      .. "`:NeoagentCycle` opens the switcher and `:NeoagentCopySession` creates "
+      .. "an independent Profile-selected copy.",
     "",
     "## Tools and execution",
     "",
@@ -60,20 +66,21 @@ local function documentation()
     "",
     "Tools may define `on_messages(messages, ctx)` to derive Session state and "
       .. "`render(opts)` to return semantic presentation data. "
-      .. "`controller:set_toolset(toolset)` replaces tools and their executor "
+      .. "`agent:set_toolset(toolset)` replaces tools and their executor "
       .. "between Runs.",
     "",
     "## Runtime policies and UI",
     "",
     "Workspace trust and sandboxing are explicit higher-level compositions. "
-      .. "The built-in Neo Controller uses both; custom Controllers receive them "
+      .. "The built-in Neo Agent uses both; custom Agents receive them "
       .. "through runtime injection and executor decoration.",
     "",
-    "A custom View is a passive consumer of Controller snapshots and updates. "
-      .. "The Window owns Controller selection and drafts. An explicit Renderer "
-      .. "turns copied semantic blocks into declarative content.",
+    "One Agent Applet owns its View and its draft, dialogs, focus, "
+      .. "scrolling, and provider visibility. The top-level Neoagent Applet "
+      .. "owns Profile drafts, Agent selection, and the switcher. An explicit "
+      .. "Renderer turns copied semantic blocks into declarative content.",
     "",
-    "Use `:help neoagent` for configuration, commands, method lists, and extension "
+    "Use `:help neoagent` for configuration, commands, method lists, and composition "
       .. "contracts. Read the relevant source before changing an integration.",
     "",
     "## Paths",
@@ -83,9 +90,12 @@ local function documentation()
     "- Vim help: " .. root .. "/doc/neoagent.txt",
     "- Architecture: " .. root .. "/architecture.md",
     "- Contributor guide: " .. root .. "/AGENTS.md",
-    "- Agent loop: " .. root .. "/lua/neoagent/agent.lua",
-    "- Controller: " .. root .. "/lua/neoagent/controller.lua",
-    "- Window: " .. root .. "/lua/neoagent/window.lua",
+    "- Agent Loop: " .. root .. "/lua/neoagent/agent_loop.lua",
+    "- Agent: " .. root .. "/lua/neoagent/agent.lua",
+    "- Neoagent Applet: " .. root .. "/lua/neoagent/applet.lua",
+    "- Agent Applet: " .. root .. "/lua/neoagent/agent_applet.lua",
+    "- Profiles: " .. root .. "/lua/neoagent/profiles.lua",
+    "- Profile Sessions: " .. root .. "/lua/neoagent/profile_sessions.lua",
     "- Configuration: " .. root .. "/lua/neoagent/config.lua",
     "- Tools: " .. root .. "/lua/neoagent/tools",
     "- View: " .. root .. "/lua/neoagent/ui.lua",
@@ -94,13 +104,17 @@ local function documentation()
   }, "\n")
 end
 
+local DESCRIPTION = table.concat({
+  "Read Neoagent's configuration and composition API map.",
+  "Use this only when the user asks about Neoagent itself, configuring or",
+  "extending Neoagent, its Lua APIs, tools, Agents, Views, models, sessions,",
+  "or UI. Do not call it for ordinary project work.",
+}, " ")
+
 local function new()
   return {
     name = "read_agent_documentation",
-    description = "Read Neoagent's configuration and extension API map. Use this only when "
-      .. "the user asks about Neoagent itself, configuring or extending "
-      .. "Neoagent, its Lua APIs, tools, Controllers, Views, models, sessions, "
-      .. "or UI. Do not call it for ordinary project work.",
+    description = DESCRIPTION,
     input_schema = {
       type = "object",
       properties = {},

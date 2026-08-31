@@ -282,9 +282,9 @@ describe("neoagent workspace trust", function()
       local policy = trust.new({
         path = directory .. "/status.json",
         dialogs = dialogs,
-        sandbox_status = status,
         session = {},
       })
+      policy:set_sandbox_status(status)
       assert.is_false(policy:request(target))
       assert(vim.wait(1000, function()
         return captured ~= nil and policy:is_trusted(target)
@@ -321,21 +321,15 @@ describe("neoagent workspace trust", function()
     assert.is_nil(checked)
     assert.are.equal("workspace_trust", check_err.kind)
 
-    local original_notify = vim.notify
     local default_notice
-    vim.notify = function(message, level)
-      default_notice = { message, level }
-    end
     local default_notifier = trust.new({
       path = invalid_path,
       dialogs = { show = function() error("must not prompt") end },
       session = {},
     })
     local default_requested = default_notifier:request(root)
-    vim.notify = original_notify
     assert.is_nil(default_requested)
-    assert.matches("workspace trust", default_notice[1]:lower())
-    assert.are.equal(vim.log.levels.ERROR, default_notice[2])
+    assert.is_nil(default_notice)
 
     local activation_path = directory .. "/activation.json"
     local activation = trust.new({

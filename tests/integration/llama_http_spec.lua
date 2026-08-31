@@ -1,7 +1,10 @@
 local llama = require("neoagent.providers.llama")
+local llama_catalog = require("neoagent.providers.llama.catalog")
 local llama_client = require("neoagent.providers.llama.client")
 local llama_server = require("tests.helpers.llama_server")
+local model_catalog = require("neoagent.model_catalog")
 local models = require("neoagent.models")
+local registry = require("neoagent.registry")
 
 local function wait(run, timeout)
   assert(vim.wait(timeout or 5000, function() return run:is_done() end))
@@ -12,12 +15,27 @@ local function ids(entries)
   return vim.tbl_map(function(entry) return entry.id end, entries)
 end
 
+local function block(snapshot, block_type, label)
+  for _, candidate in ipairs(snapshot.blocks or {}) do
+    if candidate.type == block_type
+        and (label == nil or candidate.label == label) then
+      return candidate
+    end
+  end
+end
+
 describe("llama.cpp router HTTP integration", function()
   local servers = {}
+  local runtimes = {}
 
   after_each(function()
+    for _, runtime in ipairs(runtimes) do
+      runtime.service:destroy()
+      runtime.catalog:destroy()
+    end
     for _, server in ipairs(servers) do server:stop() end
     servers = {}
+    runtimes = {}
   end)
 
   local function start()
@@ -34,6 +52,43 @@ describe("llama.cpp router HTTP integration", function()
       download_timeout_ms = 3000,
       poll_interval_ms = 10,
     })
+  end
+
+  local function runtime(server)
+    local definition = {
+      api = "openai-completions",
+      base_url = server.url .. "/v1",
+      auth_optional = true,
+      request_opts = registry.defaults()["llama.cpp"].request_opts,
+      catalog = {
+        ttl_ms = 5 * 60 * 1000,
+        discover = llama_catalog.discover,
+        transform_model = llama_catalog.transform,
+      },
+      models = {},
+      service_opts = {
+        wait_timeout_ms = 3000,
+        download_timeout_ms = 3000,
+        poll_interval_ms = 10,
+      },
+    }
+    local catalog = model_catalog.new({
+      provider_id = "llama.cpp",
+      provider = definition,
+      definition = definition.catalog,
+      models = definition.models,
+    })
+    local value = {
+      id = "llama.cpp",
+      definition = definition,
+      catalog = catalog,
+      service = llama.new(definition, {
+        catalog = catalog,
+        provider_id = "llama.cpp",
+      }),
+    }
+    runtimes[#runtimes + 1] = value
+    return value
   end
 
   it("discovers, loads, watches, and unloads router models through curl", function()
@@ -110,18 +165,12 @@ describe("llama.cpp router HTTP integration", function()
     local server = start()
     local value = client(server)
     local progress = {}
-    local service = llama.new({
-      api = "openai-completions",
-      base_url = server.url .. "/v1",
-      auth_optional = true,
-      models = {},
-    }, {
-      explicit = true,
-      startup = false,
-    })
-    assert.is_true(wait(service:refresh_catalog({ allow_network = true })).ok)
-    local dashboard_progress
+    local selected = runtime(server)
+    local service = selected.service
+    assert.is_true(wait(selected.catalog:refresh({ force = true })).ok)
+    local dashboard_progress, dashboard_updates = nil, 0
     local unsubscribe = service:subscribe(function(snapshot)
+      dashboard_updates = dashboard_updates + 1
       for _, candidate in ipairs(snapshot.blocks or {}) do
         if candidate.type == "progress"
             and candidate.label == "Downloading fake/downloaded:Q4_K_M"
@@ -161,82 +210,66 @@ describe("llama.cpp router HTTP integration", function()
     assert.is_not_nil(dashboard_progress)
     assert.are.equal("512 B / 1.00 KiB", dashboard_progress.detail)
     assert(vim.wait(1000, function()
-      for _, candidate in ipairs(service:state().blocks) do
-        if candidate.type == "activity" then
-          for _, entry in ipairs(candidate.entries) do
-            if entry.message == "Downloaded fake/downloaded:Q4_K_M" then
-              return true
-            end
-          end
-        end
-      end
-      return false
+      return block(service:state(), "progress",
+        "Downloading fake/downloaded:Q4_K_M") == nil
     end))
+    assert.are.equal("success",
+      block(service:state(), "field", "Endpoint").level)
+    assert.is_nil(block(service:state(), "activity"))
     assert(vim.wait(1000, function()
       return server:count_requests("POST", "/models") == 1
         and server:count_requests("GET", "/models?reload=1") == 1
     end))
 
+    local updates_before_failure = dashboard_updates
     assert.is_true(wait(value:download("fake/failing-download")).ok)
     assert(vim.wait(1000, function()
-      for _, candidate in ipairs(service:state().blocks) do
-        if candidate.type == "activity" then
-          for _, entry in ipairs(candidate.entries) do
-            if entry.message == "Download failed for fake/failing-download" then
-              return true
-            end
-          end
-        end
-      end
-      return false
+      return dashboard_updates > updates_before_failure
     end))
+    assert.is_nil(block(service:state(), "activity"))
     unsubscribe()
-    service:destroy()
   end)
 
   it("refreshes the dynamic catalog and streams inference through the router", function()
     local server = start()
-    local service = llama.new({
-      api = "openai-completions",
-      base_url = server.url .. "/v1",
-      auth_optional = true,
-      models = {},
-      service_opts = {
-        wait_timeout_ms = 3000,
-        download_timeout_ms = 3000,
-        poll_interval_ms = 10,
-      },
-    }, {
-      explicit = true,
-      startup = false,
-    })
+    local selected = runtime(server)
+    local service = selected.service
 
-    local refreshed = wait(service:refresh_catalog({ allow_network = true }))
+    local refreshed = wait(selected.catalog:refresh({ force = true }))
     assert.is_true(refreshed.ok)
-    assert.are.same({ "fake/loaded", "fake/failing", "fake/unloaded" },
-      ids(service:get_models()))
+    local discovered = vim.tbl_keys(selected.catalog:snapshot().models)
+    table.sort(discovered)
+    assert.are.same({ "fake/failing", "fake/loaded", "fake/unloaded" },
+      discovered)
 
     local configured = {
-      apis = {},
+      _apis = {},
       providers = {
         ["llama.cpp"] = {
           api = "openai-completions",
           base_url = server.url .. "/v1",
           auth_optional = true,
+          request_opts = selected.definition.request_opts,
           models = {},
         },
       },
     }
     local model = models.resolve("llama.cpp", "fake/loaded",
-      configured, nil, { ["llama.cpp"] = service })
+      configured, nil, { ["llama.cpp"] = selected })
     assert.are.same({ "text", "image" }, model.input)
     local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
       .. "AAAAC0lEQVR42mP8/x8AAusB9Wl5ZAAAAABJRU5ErkJggg=="
+    local inference_stats = {}
     local streamed = wait(model:stream({
       messages = { { role = "user", content = {
         { type = "text", text = "What is in this image?" },
         { type = "image", mimeType = "image/png", data = png },
       } } },
+      on_event = function(event)
+        if event.type == "inference_stats" then
+          inference_stats[#inference_stats + 1] = event
+        end
+      end,
     }))
     assert.is_true(streamed.ok)
     assert.are.equal("image accepted", streamed.text)
@@ -254,43 +287,34 @@ describe("llama.cpp router HTTP integration", function()
     local request = server:find_request("POST", "/v1/chat/completions")
     assert.are.equal("fake/loaded", request.body.model)
     assert.is_true(request.body.stream)
+    assert.is_true(request.body.timings_per_token)
+    assert.is_true(request.body.return_progress)
     assert.are.same({ include_usage = true }, request.body.stream_options)
+    assert.are.same({
+      type = "inference_stats",
+      generation_tokens_per_second = 50,
+    }, inference_stats[#inference_stats])
     assert.are.same({
       type = "image_url",
       image_url = { url = "data:image/png;base64," .. png },
     }, request.body.messages[1].content[2])
-
-    service:destroy()
   end)
 
   it("pushes implicitly loaded model progress from router SSE", function()
     local server = start()
-    local service = llama.new({
-      api = "openai-completions",
-      base_url = server.url .. "/v1",
-      auth_optional = true,
-      models = {},
-      service_opts = {
-        wait_timeout_ms = 3000,
-        download_timeout_ms = 3000,
-        poll_interval_ms = 10,
-      },
-    }, {
-      explicit = true,
-      startup = false,
-    })
-    assert.is_true(wait(service:refresh_catalog({ allow_network = true })).ok)
+    local selected = runtime(server)
+    local service = selected.service
+    assert.is_true(wait(selected.catalog:refresh({ force = true })).ok)
 
-    local visible_progress
+    local visible_progress, failed_progress
     local unsubscribe = service:subscribe(function(snapshot)
       for _, block in ipairs(snapshot.blocks or {}) do
         if block.type == "progress" and block.value == 0.25 then
-          local presentation = require("neoagent.ui.provider_presentation").render({
-            name = "llama.cpp",
-            state = snapshot,
-            operations = {},
-          }, { width = 48 })
-          visible_progress = table.concat(presentation.content.lines, "\n")
+          if block.label == "Loading fake/failing" then
+            failed_progress = vim.deepcopy(block)
+          else
+            visible_progress = vim.deepcopy(block)
+          end
         end
       end
     end)
@@ -299,7 +323,7 @@ describe("llama.cpp router HTTP integration", function()
     end))
 
     local configured = {
-      apis = {},
+      _apis = {},
       providers = {
         ["llama.cpp"] = {
           api = "openai-completions",
@@ -310,22 +334,25 @@ describe("llama.cpp router HTTP integration", function()
       },
     }
     local model = models.resolve("llama.cpp", "fake/unloaded",
-      configured, nil, { ["llama.cpp"] = service })
+      configured, nil, { ["llama.cpp"] = selected })
     local result = wait(model:stream({
       messages = { { role = "user", content = "hello" } },
     }))
     assert.is_true(result.ok)
     assert.are.equal("fake reply", result.text)
     assert(vim.wait(1000, function() return visible_progress ~= nil end))
-    assert.matches("Loading fake/unloaded", visible_progress)
-    assert.matches("25%%", visible_progress)
-    local final = table.concat(vim.tbl_map(function(block)
-      if block.type ~= "activity" then return "" end
-      return table.concat(vim.tbl_map(function(entry) return entry.message end,
-        block.entries), "\n")
-    end, service:state().blocks), "\n")
-    assert.matches("Loaded fake/unloaded", final)
-    assert.matches("Completed response · fake/unloaded", final)
+    assert.are.equal("Loading fake/unloaded", visible_progress.label)
+    assert.are.equal(0.25, visible_progress.value)
+    local settled = vim.wait(1000, function()
+      return block(service:state(), "progress", "Loading fake/unloaded") == nil
+        and block(service:state(), "field", "Last response") ~= nil
+    end)
+    assert(settled, vim.inspect(service:state()))
+    assert.are.equal("3 in · 4 out",
+      block(service:state(), "field", "Last response").value)
+    assert.are.equal("success",
+      block(service:state(), "field", "Endpoint").level)
+    assert.is_nil(block(service:state(), "activity"))
     assert.are.equal(0,
       server:count_requests("POST", "/models/load"))
 
@@ -333,19 +360,11 @@ describe("llama.cpp router HTTP integration", function()
     local failed = wait(client(server):load_and_wait("fake/failing", function() end))
     assert.is_false(failed.ok)
     assert(vim.wait(1000, function()
-      local messages = {}
-      for _, candidate in ipairs(service:state().blocks) do
-        if candidate.type == "activity" then
-          for _, entry in ipairs(candidate.entries) do
-            messages[entry.message] = true
-          end
-        end
-      end
-      return messages["Unloaded fake/unloaded"]
-        and messages["Model failed: fake/failing"]
+      return failed_progress ~= nil
+        and block(service:state(), "progress", "Loading fake/failing") == nil
     end))
+    assert.is_nil(block(service:state(), "activity"))
 
     unsubscribe()
-    service:destroy()
   end)
 end)

@@ -16,6 +16,16 @@ vim.env.XDG_STATE_HOME = root .. "/.test-data/state"
 vim.env.XDG_CACHE_HOME = root .. "/.test-data/cache"
 vim.opt.shadafile = "NONE"
 
+for _, name in ipairs({
+  "ANTHROPIC_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
+  "ZAI_API_KEY",
+}) do
+  vim.env[name] = nil
+end
+
 local clipboard_contents = {
   ["+"] = { {}, "v" },
   ["*"] = { {}, "v" },

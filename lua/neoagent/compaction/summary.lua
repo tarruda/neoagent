@@ -156,7 +156,8 @@ local function summarize(run, opts, messages, previous, instructions, suffix, ph
   model_options.on_event = function(event)
     if event.type == "text_delta" then
       run:emit({ type = "compaction_delta", phase = phase, text = event.text })
-    elseif event.type == "provider_status" then
+    elseif event.type == "provider_status"
+        or event.type == "inference_stats" then
       run:emit(event)
     end
   end
@@ -171,6 +172,8 @@ end
 function M.run(opts, system_prompt)
   assert(type(opts) == "table" and type(opts.preparation) == "table", "preparation is required")
   assert(type(opts.model) == "table" and type(opts.model.stream) == "function", "model is required")
+  assert(opts.report == nil or type(opts.report) == "function",
+    "report must be a function")
   return async.run(function(run)
     local preparation = opts.preparation
     local summary
@@ -203,7 +206,12 @@ function M.run(opts, system_prompt)
       tokens_before = preparation.tokens_before,
       usage = usage,
     }
-  end, { on_event = opts.on_event, on_done = opts.on_done, error_kind = "compaction" })
+  end, {
+    on_event = opts.on_event,
+    on_done = opts.on_done,
+    report = opts.report,
+    error_kind = "compaction",
+  })
 end
 
 return M

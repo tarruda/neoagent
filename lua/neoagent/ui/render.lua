@@ -1,74 +1,11 @@
+local Applet = require("applet")
 local markdown = require("neoagent.markdown")
 local util = require("neoagent.util")
 
 local M = {}
+local display = Applet.Pane.text
 local MAX_ANSI_SPANS = 512
 local MAX_ANSI_HIGHLIGHTS = 256
-
-local ansi_palette = {
-  0x000000, 0xcd0000, 0x00cd00, 0xcdcd00,
-  0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
-  0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00,
-  0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
-}
-local ansi_highlights = {}
-local ansi_highlight_names = {}
-
-local function blend_channel(top, background, alpha)
-  return math.floor(top * alpha + background * (1 - alpha))
-end
-
-local function codex_user_background()
-  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
-  if type(normal.bg) ~= "number" then return nil end
-  local red = math.floor(normal.bg / 0x10000) % 0x100
-  local green = math.floor(normal.bg / 0x100) % 0x100
-  local blue = normal.bg % 0x100
-  local light = 0.299 * red + 0.587 * green + 0.114 * blue > 128
-  local top, alpha = light and 0 or 255, light and 0.04 or 0.12
-  red = blend_channel(top, red, alpha)
-  green = blend_channel(top, green, alpha)
-  blue = blend_channel(top, blue, alpha)
-  return red * 0x10000 + green * 0x100 + blue
-end
-
-local function palette_rgb(index)
-  local configured = index < 16 and vim.g["terminal_color_" .. index] or nil
-  if type(configured) == "string" and configured ~= "" then
-    local value = vim.api.nvim_get_color_by_name(configured)
-    if value >= 0 then return value end
-  end
-  if index < 16 then return ansi_palette[index + 1] end
-  if index < 232 then
-    local value = index - 16
-    local levels = { 0, 95, 135, 175, 215, 255 }
-    local red = levels[math.floor(value / 36) + 1]
-    local green = levels[math.floor(value / 6) % 6 + 1]
-    local blue = levels[value % 6 + 1]
-    return red * 0x10000 + green * 0x100 + blue
-  end
-  local level = 8 + (index - 232) * 10
-  return level * 0x10000 + level * 0x100 + level
-end
-
-local function rgb_cterm(value)
-  local red = math.floor(value / 0x10000) % 0x100
-  local green = math.floor(value / 0x100) % 0x100
-  local blue = value % 0x100
-  return 16 + math.floor(red * 5 / 255 + 0.5) * 36
-    + math.floor(green * 5 / 255 + 0.5) * 6
-    + math.floor(blue * 5 / 255 + 0.5)
-end
-
-local function style_color(value)
-  if value == nil then return nil, nil end
-  if type(value) == "number" then return palette_rgb(value), value end
-  if type(value) ~= "string" then return nil, nil end
-  local red, green, blue = value:match("^#(%x%x)(%x%x)(%x%x)$")
-  if not red then return nil, nil end
-  local rgb = tonumber(red .. green .. blue, 16)
-  return rgb, rgb_cterm(rgb)
-end
 
 local function style_key(style)
   return table.concat({
@@ -77,42 +14,6 @@ local function style_key(style)
     style.underline and "1" or "", style.strikethrough and "1" or "",
     style.reverse and "1" or "",
   }, ":")
-end
-
-local function define_ansi_highlight(name, definition)
-  local attributes = vim.api.nvim_get_hl(0, {
-    name = definition.base,
-    link = false,
-  })
-  local foreground, foreground_cterm = style_color(definition.style.fg)
-  local background, background_cterm = style_color(definition.style.bg)
-  if foreground then
-    attributes.fg = foreground
-    attributes.ctermfg = foreground_cterm
-  end
-  if background then
-    attributes.bg = background
-    attributes.ctermbg = background_cterm
-  end
-  for _, attribute in ipairs({
-    "bold", "italic", "underline", "strikethrough", "reverse",
-  }) do
-    if definition.style[attribute] then attributes[attribute] = true end
-  end
-  vim.api.nvim_set_hl(0, name, attributes)
-end
-
-local function ansi_highlight(style, base)
-  local key = base .. ":" .. style_key(style)
-  local name = ansi_highlight_names[key]
-  if name then return name end
-  if vim.tbl_count(ansi_highlight_names) >= MAX_ANSI_HIGHLIGHTS then return base end
-  name = "NeoagentAnsi" .. tostring(vim.tbl_count(ansi_highlight_names) + 1)
-  local definition = { base = base, style = util.copy(style) }
-  ansi_highlight_names[key] = name
-  ansi_highlights[name] = definition
-  define_ansi_highlight(name, definition)
-  return name
 end
 
 local highlight_links = {
@@ -141,36 +42,37 @@ local highlight_links = {
   NeoagentDiffContext = "Comment",
 }
 
-local function define_highlights()
+local function highlight_definitions(palette)
+  local result = {}
   for name, link in pairs(highlight_links) do
-    vim.api.nvim_set_hl(0, name, { link = link, default = true })
+    result[name] = { link = link, default = true }
   end
   for name, value in pairs({
     NeoagentDialogAction = {
-      fg = vim.o.background == "light" and "#005f87" or "#00ffff",
-      ctermfg = vim.o.background == "light" and 24 or 6,
+      fg = palette:is_light() and "#005f87" or "#00ffff",
+      ctermfg = palette:is_light() and 24 or 6,
       bold = true,
     },
     NeoagentCodexToolError = {
-      fg = palette_rgb(1),
+      fg = palette:terminal(1),
       ctermfg = 1,
       bold = true,
     },
     NeoagentCodexToolSuccess = {
-      fg = palette_rgb(2),
+      fg = palette:terminal(2),
       ctermfg = 2,
       bold = true,
     },
     NeoagentCyan = {
-      fg = palette_rgb(6),
+      fg = palette:terminal(6),
       ctermfg = 6,
     },
     NeoagentGreen = {
-      fg = palette_rgb(2),
+      fg = palette:terminal(2),
       ctermfg = 2,
     },
     NeoagentRed = {
-      fg = palette_rgb(1),
+      fg = palette:terminal(1),
       ctermfg = 1,
     },
     NeoagentDialogTitle = { bold = true },
@@ -180,9 +82,9 @@ local function define_highlights()
     NeoagentMarkdownStrike = { strikethrough = true },
   }) do
     value.default = true
-    vim.api.nvim_set_hl(0, name, value)
+    result[name] = value
   end
-  local light = vim.o.background == "light"
+  local light = palette:is_light()
   for name, background in pairs(light and {
     NeoagentUserBackground = "#e8e8e8",
     NeoagentToolPendingBackground = "#e8e8f0",
@@ -194,15 +96,52 @@ local function define_highlights()
     NeoagentToolSuccessBackground = "#283228",
     NeoagentToolErrorBackground = "#3c2828",
   }) do
-    vim.api.nvim_set_hl(0, name, { bg = background, default = true })
+    result[name] = { bg = background, default = true }
   end
-  vim.api.nvim_set_hl(0, "NeoagentCodexUserBackground", {
-    bg = codex_user_background(),
+  local normal = palette:group("Normal")
+  local rgb = type(normal.bg) == "number" and palette:rgb(normal.bg) or nil
+  local luminance = rgb and 0.299 * rgb.red + 0.587 * rgb.green + 0.114 * rgb.blue or nil
+  local codex_background
+  if luminance then
+    local top, alpha = luminance > 128 and 0 or 0xffffff,
+      luminance > 128 and 0.04 or 0.12
+    codex_background = palette:blend(normal.bg, top, alpha)
+  end
+  result.NeoagentCodexUserBackground = {
+    bg = codex_background,
     default = true,
-  })
-  for name, definition in pairs(ansi_highlights) do
-    define_ansi_highlight(name, definition)
+  }
+  return result
+end
+
+local function ansi_highlight(theme, style, base)
+  local palette = theme:colors()
+  local definition = { base = base }
+  if type(style.fg) == "number" then
+    definition.fg, definition.ctermfg = palette:terminal(style.fg), style.fg
+  elseif type(style.fg) == "string" then
+    definition.fg = style.fg
   end
+  if type(style.bg) == "number" then
+    definition.bg, definition.ctermbg = palette:terminal(style.bg), style.bg
+  elseif type(style.bg) == "string" then
+    definition.bg = style.bg
+  end
+  for _, attribute in ipairs({
+    "bold", "italic", "underline", "strikethrough", "reverse",
+  }) do
+    if style[attribute] then definition[attribute] = true end
+  end
+  return theme:derive("ansi:" .. tostring(base) .. ":" .. style_key(style),
+    definition)
+end
+
+local function define_highlights()
+  Applet.Theme.new({
+    name = "NeoagentAnsi",
+    highlights = highlight_definitions,
+    max_derived_highlights = MAX_ANSI_HIGHLIGHTS,
+  }):define()
 end
 
 local function split_text(text)
@@ -215,18 +154,6 @@ local function content_text(content)
     if block.type == "text" then parts[#parts + 1] = block.text or "" end
   end
   return table.concat(parts, "\n")
-end
-
-local function image_notes(content)
-  local result = {}
-  if type(content) ~= "table" then return result end
-  for _, block in ipairs(content or {}) do
-    if block.type == "image" then
-      local bytes = math.floor(#(block.data or "") * 3 / 4)
-      result[#result + 1] = string.format("[image attachment: %s, approximately %d bytes]", block.mimeType or "unknown", bytes)
-    end
-  end
-  return result
 end
 
 local function rendered()
@@ -314,20 +241,10 @@ end
 
 local function fit_card_line(text, width)
   local available = width + 2
-  if vim.fn.strdisplaywidth(" " .. text .. " ") <= available then return text end
+  if display.width(" " .. text .. " ") <= available then return text end
   local ellipsis = string.rep(".", math.min(3, width))
-  local characters = vim.fn.strchars(text)
-  local low, high = 0, characters
-  while low < high do
-    local count = math.floor((low + high + 1) / 2)
-    local prefix = vim.fn.strcharpart(text, 0, count)
-    if vim.fn.strdisplaywidth(" " .. prefix .. ellipsis .. " ") <= available then
-      low = count
-    else
-      high = count - 1
-    end
-  end
-  local prefix = vim.fn.strcharpart(text, 0, low)
+  local prefix = display.truncate(text,
+    math.max(0, available - display.width(ellipsis) - 2), { marker = "" })
   return prefix .. ellipsis, #prefix
 end
 
@@ -824,7 +741,7 @@ local function parse_ansi(value)
   return table.concat(output), spans
 end
 
-local function output_lines(text, maximum, tail, group, ansi)
+local function output_lines(self, text, maximum, tail, group, ansi)
   local result = rendered()
   result.output_line_count = 0
   if text == nil or text == "" then return result end
@@ -845,7 +762,7 @@ local function output_lines(text, maximum, tail, group, ansi)
         line_spans[#line_spans + 1] = {
           col = span.col,
           end_col = math.min(span.end_col, #line),
-          group = ansi_highlight(span.style, line_group),
+          group = ansi_highlight(self.theme, span.style, line_group),
           priority = 110,
         }
       end
@@ -888,15 +805,19 @@ local function tool_output(self, block, args, full)
     if not full and self.policy.write_preview_lines then
       maximum = self.policy.write_preview_lines
     end
-    local result = output_lines(
+    local result = output_lines(self,
       args.content, maximum, false, self.policy.write_output_group())
     local path = args.path or args.file_path
     if self.policy.write_source_syntax then source_output(result, path) end
     return result
   elseif name == "edit" or name == "edit_file" then
-    local diff = message and message.details and message.details.diff
-    if diff and diff ~= "" then return output_lines(diff, maximum, false, "diff") end
-    if message and message.isError then return output_lines(value, maximum, false, "NeoagentError") end
+    local patch = message and message.details and message.details.patch
+    if patch and patch ~= "" then
+      return output_lines(self, patch, maximum, false, "diff")
+    end
+    if message and message.isError then
+      return output_lines(self, value, maximum, false, "NeoagentError")
+    end
     return rendered()
   elseif name == "read" or name == "read_file" then
     local syntax = full and self.policy.read_source_syntax
@@ -905,7 +826,7 @@ local function tool_output(self, block, args, full)
     if not syntax then
       group = self.policy.plain_output_group(message and message.isError)
     end
-    local result = output_lines(value, maximum, false, group)
+    local result = output_lines(self, value, maximum, false, group)
     local path = args.path or args.file_path
     local truncation = message and message.details
       and message.details.truncation
@@ -916,15 +837,15 @@ local function tool_output(self, block, args, full)
   elseif name == "shell" then
     local active = message or update
     local ansi = active and active.details and active.details.ansi
-    return output_lines(value, maximum, true,
+    return output_lines(self, value, maximum, true,
       self.policy.plain_output_group(message and message.isError), ansi)
   elseif name == "grep" or name == "find" then
-    return output_lines(value, maximum, false,
+    return output_lines(self, value, maximum, false,
       self.policy.plain_output_group(message and message.isError))
   elseif message and message.isError then
-    return output_lines(value, maximum, false, "NeoagentError")
+    return output_lines(self, value, maximum, false, "NeoagentError")
   end
-  return output_lines(value, maximum, false, "NeoagentToolOutput")
+  return output_lines(self, value, maximum, false, "NeoagentToolOutput")
 end
 
 local function format_token_count(value)
@@ -953,11 +874,6 @@ local function clip_head(content, maximum)
     if span.row < kept then highlights[#highlights + 1] = span end
   end
   content.highlights = highlights
-  local line_groups = {}
-  for row, group in pairs(content.line_groups) do
-    if row < kept then line_groups[row] = group end
-  end
-  content.line_groups = line_groups
   local message = string.format(
     "[... %d more line%s]", omitted, omitted == 1 and "" or "s")
   add_line(content, message, {
@@ -993,36 +909,10 @@ end
 
 local THINKING_MAX_LINES = 10
 
-local function trim_trailing_lines(content)
-  while #content.lines > 0 and content.lines[#content.lines] == "" do
-    table.remove(content.lines)
-  end
-end
-
-local function clip_tail(content, maximum)
-  local omitted = math.max(0, #content.lines - maximum)
-  if omitted == 0 then return 0 end
-  local highlights = {}
-  for _, span in ipairs(content.highlights) do
-    if span.row >= omitted then
-      highlights[#highlights + 1] = {
-        row = span.row - omitted,
-        col = span.col,
-        end_col = span.end_col,
-        group = span.group,
-        priority = span.priority,
-      }
-    end
-  end
-  content.lines = vim.list_slice(content.lines, omitted + 1, #content.lines)
-  content.highlights = highlights
-  return omitted
-end
-
-local function response_header(self, kind, text, omitted, expandable)
-  local words = select(2, (text or ""):gsub("%S+", ""))
-  local message = string.format("[%s: %d word%s",
-    kind, words, words == 1 and "" or "s")
+local function thinking_header(self, source, omitted, expandable)
+  local words = source:word_count()
+  local message = string.format("[thinking: %d word%s",
+    words, words == 1 and "" or "s")
   if omitted > 0 then
     local unit = omitted == 1 and "line" or "lines"
     message = message .. string.format(", %d %s above...", omitted, unit)
@@ -1033,18 +923,34 @@ local function response_header(self, kind, text, omitted, expandable)
 end
 
 local function assistant_content(self, block, full, width)
-  local content = markdown.render(block.text or "", { width = width })
-  trim_trailing_lines(content)
-  if not full then
-    block.header = response_header(
-      self, "text", block.text, 0, true)
+  local document = self:render_markdown(
+    "assistant", block.text or "", { width = width })
+  local finish = document:finish()
+  if full then
+    return {
+      markdown_document = document,
+      markdown_first = 1,
+      markdown_last = finish,
+    }
   end
-  return content
+  return document:slice(1, finish)
 end
 
 local function thinking_content(self, block, full, width)
-  local content = markdown.render(block.text or "", { width = width })
-  trim_trailing_lines(content)
+  local source = self:render_markdown(
+    "thinking", block.text or "", { width = width })
+  if full then
+    return {
+      markdown_document = source,
+      markdown_first = 1,
+      markdown_last = source:finish(),
+      markdown_groups = {
+        "NeoagentThinking",
+        "NeoagentMarkdownItalic",
+      },
+    }
+  end
+  local content, omitted = source:tail(THINKING_MAX_LINES)
   for row = 1, #content.lines do
     local length = #content.lines[row]
     if length > 0 then
@@ -1056,13 +962,8 @@ local function thinking_content(self, block, full, width)
       }
     end
   end
-  if not full then
-    local omitted = clip_tail(content, THINKING_MAX_LINES)
-    block.header = response_header(
-      self, "thinking", block.text, omitted, true)
-    block.resting_header = response_header(
-      self, "thinking", block.text, omitted, false)
-  end
+  block.header = thinking_header(self, source, omitted, true)
+  block.resting_header = thinking_header(self, source, omitted, false)
   return content
 end
 
@@ -1120,7 +1021,7 @@ local function command_output_content(self, block)
   if not active then return rendered() end
   local value = content_text(active.content)
   local ansi = active.details and active.details.ansi
-  local content = output_lines(value, nil, false,
+  local content = output_lines(self, value, nil, false,
     self.policy.plain_output_group(active.isError), ansi)
   if #content.lines == 0 then
     add_line(content, "(no output)", {
@@ -1174,18 +1075,13 @@ local function ordinary_tool_content(
   end
   add_line(content, title, spans)
   append_rendered(content, tool_output(self, block, args, full), true)
-  for _, note in ipairs(
-      block.message and image_notes(block.message.content) or {}) do
-    add_line(content, note, {
-      { col = 0, end_col = #note, group = "NeoagentMuted" },
-    })
-  end
   return content
 end
 
 local function presented_tool_content(self, block, args, options, presentation)
   if not presentation then
-    return ordinary_tool_content(self, block, args, options.full)
+    return ordinary_tool_content(
+      self, block, args, options.full)
   end
   if presentation.command then
     return command_tool_content(self, block, presentation)
@@ -1222,11 +1118,10 @@ local function card_content(self, block, options)
   options = options or {}
   local width = options.width or self:_content_width()
   if block.kind == "user" then
-    local content = markdown.render(block.text, { width = width, preserve_markers = true })
-    for _, note in ipairs(block.extra or image_notes(block.content)) do
-      add_line(content, note, { { col = 0, end_col = #note, group = "NeoagentMuted" } })
-    end
-    return content, self.policy.user_background()
+    return markdown.render(block.text, {
+      width = width,
+      preserve_markers = true,
+    }), self.policy.user_background()
   elseif block.kind == "compaction" then
     return compaction_content(self, block, options.full, width),
       self.policy.compaction_background()
@@ -1253,11 +1148,6 @@ local function insert_group_separator(content, width, index, side)
   for _, span in ipairs(content.highlights) do
     if span.row >= row then span.row = span.row + 1 end
   end
-  local groups = {}
-  for group_row, group in pairs(content.line_groups) do
-    groups[group_row >= row and group_row + 1 or group_row] = group
-  end
-  content.line_groups = groups
   local separators = {}
   for name, separator in pairs(content.separators or {}) do
     separators[name] = separator >= row and separator + 1 or separator
@@ -1307,7 +1197,7 @@ local function decorate_block(self, block, content, neighbors)
 end
 
 function M.block(self, block, neighbors)
-  local content, background = card_content(self, block)
+  local content, background = card_content(self, block, neighbors)
   if content then
     local width
     if content.wrap ~= true and (block.kind == "compaction" or (
@@ -1331,7 +1221,6 @@ function M.details(self, block, options)
   return card_content(self, block, options)
 end
 
+M.highlight_definitions = highlight_definitions
 M.define_highlights = define_highlights
-M.image_notes = image_notes
-
 return M

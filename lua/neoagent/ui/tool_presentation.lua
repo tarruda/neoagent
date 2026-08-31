@@ -1,6 +1,8 @@
+local Applet = require("applet")
 local util = require("neoagent.util")
 
 local M = {}
+local display = Applet.Pane.text
 local EDIT_PREVIEW_LINES = 10
 local compact_activities = {
   command = true,
@@ -15,11 +17,11 @@ end
 local function wrap_words(text, available)
   local result = {}
   available = math.max(1, available)
-  for _, source in ipairs(vim.split(text or "", "\n", { plain = true })) do
+  for _, source in ipairs(display.lines(text or "")) do
     local line = ""
     for word in source:gmatch("%S+") do
       local candidate = line == "" and word or line .. " " .. word
-      if line ~= "" and vim.fn.strdisplaywidth(candidate) > available then
+      if line ~= "" and display.width(candidate) > available then
         result[#result + 1] = line
         line = word
       else
@@ -36,9 +38,8 @@ local function wrap_characters(text, width)
   if text == "" then return { "" } end
   local result, current, current_width = {}, "", 0
   width = math.max(1, width)
-  for index = 0, vim.fn.strchars(text) - 1 do
-    local character = vim.fn.strcharpart(text, index, 1)
-    local character_width = vim.fn.strdisplaywidth(character)
+  for character in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+    local character_width = display.width(character)
     if current ~= "" and current_width + character_width > width then
       result[#result + 1] = current
       current, current_width = "", 0
@@ -100,8 +101,7 @@ local function plan_body(value, opts, codex)
             and item.status ~= "completed" then
         return nil
       end
-      local marker = codex
-          and (item.status == "completed" and "✔ " or "□ ")
+      local marker = codex and (item.status == "completed" and "✔ " or "□ ")
         or (item.status == "completed" and "[x] " or "[ ] ")
       local style = item.status == "completed" and { "muted", "strike" }
         or item.status == "in_progress"

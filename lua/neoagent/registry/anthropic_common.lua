@@ -1,106 +1,43 @@
 local util = require("neoagent.util")
+local efforts = require("neoagent.model_efforts")
 
 local M = {}
 
 local CACHE_CONTROL = { type = "ephemeral" }
 local INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
 
-local function budget_thinking(tokens)
-  return {
-    body = { thinking = {
-      type = "enabled",
-      budget_tokens = tokens,
-      display = "summarized",
-    } },
+local function effort_levels(levels)
+  local result = {}
+  for _, level in ipairs(levels) do
+    result[level] = { body = { output_config = { effort = level } } }
+  end
+  return result
+end
+
+function M.transform(model)
+  local result = {
+    id = model.id,
+    name = model.name,
+    hidden = model.hidden,
+    input = util.copy(model.input or { "text" }),
+    context_window = model.context_window,
+    max_output_tokens = model.max_output_tokens,
   }
-end
-
-local budget_profiles = {
-  off = { body = { thinking = { type = "disabled" } } },
-  minimal = budget_thinking(1024),
-  low = budget_thinking(2048),
-  medium = budget_thinking(8192),
-  high = budget_thinking(16384),
-}
-
-local function adaptive_profiles(efforts)
-  local result = {}
-  for _, effort in ipairs(efforts) do
-    result[effort] = { body = {
-      thinking = { type = "adaptive", display = "summarized" },
-      output_config = { effort = effort },
-    } }
+  local levels = model.reasoning_levels
+  if type(levels) == "table" and #levels > 0 then
+    result.thinking = model.thinking_type == "adaptive"
+      and efforts.anthropic_adaptive(levels) or effort_levels(levels)
   end
-  return result
-end
-
-local model_specs = {
-  ["claude-opus-5"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "xhigh", "max" },
-  },
-  ["claude-opus-4-8"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "xhigh", "max" },
-  },
-  ["claude-opus-4-7"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "xhigh", "max" },
-  },
-  ["claude-opus-4-6"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "max" },
-  },
-  ["claude-sonnet-5"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "xhigh", "max" },
-  },
-  ["claude-fable-5"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "xhigh", "max" },
-  },
-  ["claude-sonnet-4-6"] = {
-    context_window = 1000000,
-    max_output_tokens = 128000,
-    efforts = { "low", "medium", "high", "max" },
-  },
-  ["claude-haiku-4-5"] = { context_window = 200000, max_output_tokens = 64000 },
-  ["claude-haiku-4-5-20251001"] = { context_window = 200000, max_output_tokens = 64000 },
-  ["claude-opus-4-5"] = { context_window = 200000, max_output_tokens = 64000 },
-  ["claude-opus-4-5-20251101"] = { context_window = 200000, max_output_tokens = 64000 },
-  ["claude-sonnet-4-5"] = { context_window = 1000000, max_output_tokens = 64000 },
-  ["claude-sonnet-4-5-20250929"] = { context_window = 1000000, max_output_tokens = 64000 },
-  ["claude-opus-4-1"] = { context_window = 200000, max_output_tokens = 32000 },
-  ["claude-opus-4-1-20250805"] = { context_window = 200000, max_output_tokens = 32000 },
-}
-
-function M.models()
-  local result = {}
-  for id, spec in pairs(model_specs) do
-    result[id] = {
-      context_window = spec.context_window,
-      max_output_tokens = spec.max_output_tokens,
-      thinking = spec.efforts and adaptive_profiles(spec.efforts) or util.copy(budget_profiles),
+  if model.thinking_type == "enabled" then
+    result.request_opts = {
+      headers = { ["anthropic-beta"] = INTERLEAVED_THINKING },
     }
   end
   return result
 end
 
-local function cache_system(system_prompt, identity)
+local function cache_system(system_prompt)
   local result = {}
-  if identity then
-    result[#result + 1] = {
-      type = "text",
-      text = "You are Claude Code, Anthropic's official CLI for Claude.",
-      cache_control = util.copy(CACHE_CONTROL),
-    }
-  end
   if type(system_prompt) == "string" and system_prompt ~= "" then
     result[#result + 1] = {
       type = "text",
@@ -137,38 +74,15 @@ local function cache_tools(tools)
   return result
 end
 
-function M.request_opts(opts)
-  opts = opts or {}
+function M.request_opts()
   return function(context)
     local body = context.request.body
     local override = { messages = cache_messages(body.messages) }
     if body.tools then override.tools = cache_tools(body.tools) end
-    local identity = opts.claude_code_identity == true
-    local system = cache_system(context.system_prompt, identity)
+    local system = cache_system(context.system_prompt)
     if #system > 0 then override.system = system end
-    local headers
-    if identity then
-      headers = {
-        Accept = "application/json",
-        ["anthropic-beta"] = table.concat({
-          "claude-code-20250219",
-          "oauth-2025-04-20",
-          INTERLEAVED_THINKING,
-        }, ","),
-        ["anthropic-dangerous-direct-browser-access"] = "true",
-        ["User-Agent"] = "claude-cli/2.1.75",
-        ["x-app"] = "cli",
-      }
-    else
-      local spec = model_specs[context.model.id]
-      if spec and not spec.efforts then
-        headers = { ["anthropic-beta"] = INTERLEAVED_THINKING }
-      end
-    end
-    return { headers = headers or {}, body = override }
+    return { body = override }
   end
 end
-
-M.interleaved_thinking = INTERLEAVED_THINKING
 
 return M

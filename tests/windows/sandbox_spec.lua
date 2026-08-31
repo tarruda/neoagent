@@ -119,7 +119,7 @@ describe("neoagent Windows sandbox", function()
     local context = {
       context = {
         workspace = Workspace.new({ root = root, cwd = root }),
-        controller = "Windows sandbox",
+        agent = "Windows sandbox",
       },
     }
     local function command(argv)

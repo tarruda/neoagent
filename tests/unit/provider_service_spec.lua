@@ -12,9 +12,10 @@ describe("neoagent provider service", function()
     return {
       id = "fake",
       name = "Fake provider",
-      state = function() return { summary = "ready" } end,
+      state = function()
+        return { blocks = { { type = "status", text = "ready" } } }
+      end,
       operations = operations or {},
-      get_models = function() return {} end,
       subscribe = function() return function() end end,
       on_event = function() end,
       destroy = function() end,
@@ -29,13 +30,20 @@ describe("neoagent provider service", function()
     assert.are.equal(value, provider_service.validate(value))
     assert.are.same({}, provider_service.operations(service({})))
 
+    local invalid_method = service({})
+    invalid_method.subscribe = true
+    local validated, err = provider_service.validate(nil)
+    assert.is_nil(validated)
+    assert.are.equal("provider", err.kind)
+
     for _, invalid in ipairs({
-      nil, true, {}, service({ missing = { run = function() end } }),
+      true, {}, service({ missing = { run = function() end } }),
       service({ bad = { label = "", run = function() end } }),
       service({ bad = { label = "x", run = true } }),
       service({ bad = { label = "forged\nlabel", run = function() end } }),
+      invalid_method,
     }) do
-      local validated, err = provider_service.validate(invalid)
+      validated, err = provider_service.validate(invalid)
       assert.is_nil(validated)
       assert.are.equal("provider", err.kind)
     end
@@ -54,20 +62,6 @@ describe("neoagent provider service", function()
     assert.are.equal("first", metadata[1].description)
     assert.is_true(metadata[1].mutating)
     assert.is_nil(metadata[1].run)
-  end)
-
-  it("selects a declared initial console operation once", function()
-    local value = service({
-      refresh = {
-        label = "Refresh",
-        run = function() return async.run(function() return { ok = true } end) end,
-      },
-    })
-    value.open_operation = "refresh"
-
-    assert.are.equal("refresh", provider_service.take_open_operation(value))
-    assert.is_nil(provider_service.take_open_operation(value))
-    assert.is_nil(provider_service.take_open_operation(service({})))
   end)
 
   it("builds operation contexts and completes exactly once", function()
@@ -89,8 +83,6 @@ describe("neoagent provider service", function()
     local value = service(operations)
     local run = provider_service.run(value, "run", {
       args = "tail",
-      model = { provider = "fake", model = "model" },
-      agent_running = true,
       provider = {
         api = "fake",
         base_url = "http://localhost/v1",
@@ -105,8 +97,8 @@ describe("neoagent provider service", function()
     assert.are.equal("http://localhost/v1", seen.provider.config.base_url)
     assert.is_nil(seen.provider.config.api_key)
     assert.are.same({ tenant = "local" }, seen.provider.config.service_opts)
-    assert.are.same({ provider = "fake", model = "model" }, seen.model)
-    assert.is_true(seen.agent_running)
+    assert.is_nil(seen.model)
+    assert.is_nil(seen.agent_running)
     assert.is_function(seen.resolve_auth)
   end)
 
@@ -202,6 +194,60 @@ describe("neoagent provider service", function()
     provider_service.acquire(value)()
   end)
 
+  it("publishes shared service lease and operation changes", function()
+    local snapshots = {}
+    local reports = {}
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local pending
+    local value = service({
+      inspect = {
+        label = "Inspect",
+        run = function()
+          return async.run(function()
+            return async.await(function(done)
+              pending = done
+              return function() end
+            end)
+          end)
+        end,
+      },
+    })
+    local unsubscribe = provider_service.subscribe(value, function(snapshot)
+      snapshots[#snapshots + 1] = snapshot
+    end)
+    local unsubscribe_broken = provider_service.subscribe(value, function()
+      error("runtime listener failed " .. string.rep("x", 1024))
+    end, {
+      report = function(message, level)
+        reports[#reports + 1] = { message, level }
+      end,
+    })
+    local release = assert(provider_service.acquire(value))
+    assert.are.same({ users = 1, busy = false, mutating = false }, snapshots[1])
+    release()
+    assert.are.same({ users = 0, busy = false, mutating = false }, snapshots[2])
+    local run = assert(provider_service.run(value, "inspect"))
+    assert.are.same({ users = 0, busy = true, mutating = false }, snapshots[3])
+    pending.resolve({ ok = true })
+    assert.is_true(wait(run).ok)
+    assert.are.same({ users = 0, busy = false, mutating = false }, snapshots[4])
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+    assert.is_true(unsubscribe_broken())
+    assert(vim.wait(1000, function()
+      return #reports > 0 or #notifications > 0
+    end, 5))
+    vim.notify = original_notify
+    assert.matches("runtime subscriber failed", reports[1][1])
+    assert.are.equal(vim.log.levels.ERROR, reports[1][2])
+    assert.is_true(vim.fn.strchars(reports[1][1]) <= 570)
+    assert.are.same({}, notifications)
+  end)
+
   it("resolves provider auth through the supplied manager", function()
     local value = service({})
     local manager = {
@@ -262,16 +308,12 @@ describe("neoagent provider service", function()
   it("rejects invalid text, services, and operation metadata", function()
     for _, value in ipairs({
       { id = "", name = "x", state = function() return false end, operations = {} },
+      { id = "bad\tid", name = "x", state = function() return false end, operations = {} },
       { id = "x", name = "", state = function() return false end, operations = {} },
       { id = "x", name = string.rep("n", 129), state = function() return false end, operations = {} },
       { id = "x", name = "x", operations = {} },
       { id = "x", name = "x", state = function() return false end, operations = { {} } },
-      { id = "x", name = "x", state = function() return false end, operations = {}, get_models = true },
-      { id = "x", name = "x", state = function() return false end, operations = {}, open_operation = true },
-      { id = "x", name = "x", state = function() return false end, operations = {}, open_operation = "missing" },
-      { id = "x", name = "x", state = function() return false end, operations = {
-        mutate = { label = "Mutate", mutating = true, run = function() end },
-      }, open_operation = "mutate" },
+      { id = "x", name = "x", state = function() return false end, operations = {}, catalog = {} },
     }) do
       local validated, err = provider_service.validate(value)
       assert.is_nil(validated)
@@ -323,12 +365,24 @@ describe("neoagent provider service", function()
       args = string.rep("x", 16385),
     }))
     assert.is_nil(provider_service.run(value, "work", { args = "bad\nargs" }))
-    assert.is_nil(provider_service.run(value, "work", { model = {} }))
+    assert.is_true(wait(assert(provider_service.run(value, "work"))).ok)
     assert.is_nil(provider_service.run(value, "work", { interact = {} }))
     assert.is_nil(provider_service.run(value, "work", { interact = "bad" }))
     assert.is_nil(provider_service.run(value, "work", {
       interact = { select = function() end },
     }))
     assert.are.same({}, provider_service.public_config(nil))
+    assert.are.same({
+      api = "fake",
+      base_url = "http://localhost/v1",
+      service_opts = { tenant = "local" },
+      auth_optional = true,
+    }, provider_service.public_config({
+      api = "fake",
+      base_url = "http://localhost/v1",
+      service_opts = { tenant = "local" },
+      auth_optional = true,
+      api_key = "secret",
+    }))
   end)
 end)

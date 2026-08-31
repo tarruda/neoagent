@@ -119,12 +119,8 @@ end
 
 local function parse_authorization(value)
   value = util.trim(value or "")
-  local query = value:match("^[^?]+%?([^#]+)")
-  if query then return decode_fields(query) end
-  local code, state = value:match("^([^#]+)#(.+)$")
-  if code then return { code = code, state = state } end
-  if value:find("code=", 1, true) then return decode_fields(value) end
-  return { code = value ~= "" and value or nil }
+  local query = value:match("^https?://[^?]+%?([^#]+)")
+  return query and decode_fields(query) or {}
 end
 
 local function close_handle(handle)
@@ -298,7 +294,7 @@ function M.new(opts)
     else
       local input = await_prompt(interaction, {
         type = "manual_code",
-        message = "Paste the authorization code or redirect URL:",
+        message = "Paste the redirect URL:",
         placeholder = REDIRECT_URI,
       })
       local parsed = parse_authorization(input)

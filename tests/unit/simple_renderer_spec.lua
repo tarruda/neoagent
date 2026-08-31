@@ -1,48 +1,37 @@
+local Applet = require("applet")
 local protocol = require("neoagent.ui.renderer")
-
-local function content(text)
-  return {
-    lines = vim.split(tostring(text or ""), "\n", { plain = true }),
-  }
-end
 
 local simple_renderer = {
   name = "simple",
+  theme = Applet.Theme.new(),
 
   render_block = function(_, block)
-    return content(block.text or block.summary or block.name or block.kind)
+    return Applet.Pane.nodes.text({
+      key = "simple:block",
+      text = block.text or block.summary or block.name or block.kind,
+      wrap = "word",
+    })
   end,
 
   render_details = function(self, block)
     return self:render_block(block)
   end,
-
-  render_dialog = function(_, snapshot)
-    return {
-      content = content(snapshot.active.body),
-      title = " " .. snapshot.active.title .. " ",
-    }
-  end,
 }
 
+local function lines(node)
+  return assert(Applet.Pane.compile({
+    tree = node,
+    width = 40,
+    theme = simple_renderer.theme,
+  })).lines
+end
+
 describe("a minimal custom Renderer", function()
-  it("presents blocks, details, and dialogs as plain text", function()
+  it("returns native Pane content nodes for blocks and details", function()
     assert.are.equal(simple_renderer, protocol.validate(simple_renderer))
-    local block = assert(protocol.render_block(simple_renderer, {
-      kind = "assistant", text = "hello",
-    }))
-    assert.are.same({ "hello" }, block.lines)
-
-    local details = assert(protocol.render_details(simple_renderer, {
-      kind = "thinking", text = "first\nsecond",
-    }))
-    assert.are.same({ "first", "second" }, details.lines)
-
-    local dialog = assert(protocol.render_dialog(simple_renderer, {
-      active = { title = "Confirm", body = "Continue?" },
-      queue_count = 0,
-    }))
-    assert.are.same({ "Continue?" }, dialog.content.lines)
-    assert.are.equal(" Confirm ", dialog.title)
+    assert.are.same({ "hello" }, lines(assert(protocol.render_block(
+      simple_renderer, { kind = "assistant", text = "hello" }))))
+    assert.are.same({ "first", "second" }, lines(assert(protocol.render_details(
+      simple_renderer, { kind = "thinking", text = "first\nsecond" }))))
   end)
 end)

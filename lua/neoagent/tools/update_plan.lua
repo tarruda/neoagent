@@ -1,46 +1,38 @@
+local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
-local statuses = {
-  pending = true,
-  in_progress = true,
-  completed = true,
+local input_schema = {
+  type = "object",
+  properties = {
+    explanation = {
+      type = "string",
+      description = "Optional explanation for this plan update.",
+    },
+    plan = {
+      type = "array",
+      description = "The list of steps",
+      items = {
+        type = "object",
+        properties = {
+          step = { type = "string", description = "Task step text." },
+          status = {
+            type = "string",
+            enum = { "pending", "in_progress", "completed" },
+            description = "Step status.",
+          },
+        },
+        required = { "step", "status" },
+        additionalProperties = false,
+      },
+    },
+  },
+  required = { "plan" },
+  additionalProperties = false,
 }
 
 local function validate(arguments)
-  if type(arguments) ~= "table"
-      or next(arguments) ~= nil and util.is_list(arguments) then
-    error("update_plan arguments must be an object")
-  end
-  for key in pairs(arguments) do
-    if key ~= "explanation" and key ~= "plan" then
-      error("unsupported update_plan argument: " .. tostring(key))
-    end
-  end
-  if arguments.explanation ~= nil and arguments.explanation ~= vim.NIL
-      and type(arguments.explanation) ~= "string" then
-    error("explanation must be a string")
-  end
-  if not util.is_list(arguments.plan) then
-    error("plan must be a list")
-  end
-  for index, item in ipairs(arguments.plan) do
-    if type(item) ~= "table"
-        or next(item) ~= nil and util.is_list(item) then
-      error("plan item " .. index .. " must be an object")
-    end
-    for key in pairs(item) do
-      if key ~= "step" and key ~= "status" then
-        error("unsupported plan item " .. index .. " field: " .. tostring(key))
-      end
-    end
-    if type(item.step) ~= "string" then
-      error("plan item " .. index .. " step must be a string")
-    end
-    if not statuses[item.status] then
-      error("plan item " .. index
-        .. " status must be pending, in_progress, or completed")
-    end
-  end
+  local valid, message = tool_schema.validate(input_schema, arguments)
+  if not valid then error(message, 0) end
 end
 
 local function accepted(arguments)
@@ -104,34 +96,7 @@ local function new()
       "Provide an optional explanation and a list of plan items, each with a step and status.",
       "At most one step can be in_progress at a time.",
     }, "\n"),
-    input_schema = {
-      type = "object",
-      properties = {
-        explanation = {
-          type = "string",
-          description = "Optional explanation for this plan update.",
-        },
-        plan = {
-          type = "array",
-          description = "The list of steps",
-          items = {
-            type = "object",
-            properties = {
-              step = { type = "string", description = "Task step text." },
-              status = {
-                type = "string",
-                enum = { "pending", "in_progress", "completed" },
-                description = "Step status.",
-              },
-            },
-            required = { "step", "status" },
-            additionalProperties = false,
-          },
-        },
-      },
-      required = { "plan" },
-      additionalProperties = false,
-    },
+    input_schema = util.copy(input_schema),
     execute = function(arguments)
       validate(arguments)
       return {

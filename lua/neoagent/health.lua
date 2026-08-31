@@ -1,14 +1,11 @@
 local M = {}
 
-local function executable(name, required)
+local function executable(name)
   if vim.fn.executable(name) == 1 then
     vim.health.ok(name .. " is available")
     return true
-  elseif required then
-    vim.health.error(name .. " is required but was not found")
-  else
-    vim.health.warn(name .. " is unavailable; image resizing will be disabled")
   end
+  vim.health.error(name .. " is required but was not found")
   return false
 end
 
@@ -22,7 +19,7 @@ local function at_least(version, minimum)
 end
 
 local function curl()
-  if not executable("curl", true) then return end
+  if not executable("curl") then return end
   local output = vim.fn.system({ "curl", "--version" })
   local major, minor, patch = output:match("^curl%s+(%d+)%.(%d+)%.(%d+)")
   if vim.v.shell_error ~= 0 or not major then
@@ -36,43 +33,56 @@ end
 
 local function check_configuration()
   local configured = require("neoagent.config").get()
-  local manager = require("neoagent.auth").configured(configured)
-  local provider_services = require("neoagent.provider_services")
-  local services, service_err = provider_services.compose(configured, {
-    auth = manager,
-    startup = false,
-  })
-  if not services then error(service_err, 0) end
+  local applet, resources
   local ok, err = pcall(function()
+    local profiles, default_profile
+    local profile_recipes = require("neoagent.profiles")
+    profiles, default_profile, resources = profile_recipes.bundled(configured,
+      { startup = false })
+    applet = require("neoagent.applet").new({
+      profiles = profiles,
+      default_profile = default_profile,
+      resources = resources,
+    })
+    assert(#applet:agents() == 0,
+      "Profile composition must not construct Agents")
     local selected = configured.default_model
     if not selected then return end
-    local provider = configured.providers[selected.provider]
-    if not provider then
+    local runtime = resources.runtimes[selected.provider]
+    if not runtime then
       error("Unknown provider: " .. tostring(selected.provider), 0)
     end
-    local defined = type(provider.models[selected.model]) == "table"
-    local discovered = false
-    local service = services[selected.provider]
-    if service and type(service.get_models) == "function" then
-      local models = service:get_models()
-      for _, model in ipairs(models or {}) do
-        if type(model) == "table" and model.id == selected.model then
-          discovered = true
-          break
-        end
-      end
-    end
-    if not defined and not discovered
-        and service and type(service.refresh_catalog) == "function" then
+    local snapshot = runtime.catalog:snapshot()
+    if snapshot.models[selected.model] == nil
+        and type(runtime.definition.catalog.discover) == "function" then
       vim.health.warn("default model " .. selected.provider .. "/"
-        .. selected.model .. " awaits the dynamic provider catalog")
+        .. selected.model .. " awaits the " .. selected.provider
+        .. " provider catalog")
       return
     end
     require("neoagent.models").resolve(selected.provider, selected.model,
-      configured, manager, services)
+      configured, resources.auth, resources.runtimes)
   end)
-  provider_services.destroy(services)
+  if applet then applet:destroy()
+  elseif resources then resources:destroy() end
   if not ok then error(err, 0) end
+end
+
+local function check_images()
+  local images = require("neoagent.config").get().ui.images
+  if images == false then
+    vim.health.ok("terminal image display is disabled")
+    return
+  end
+  local diagnostics = require("applet").ImageSystem.diagnostics({
+    backend = images.backend,
+  })
+  for _, diagnostic in ipairs(diagnostics) do
+    local report = vim.health[diagnostic.level]
+    assert(type(report) == "function",
+      "unknown Applet image diagnostic level: " .. tostring(diagnostic.level))
+    report(diagnostic.message)
+  end
 end
 
 function M.check()
@@ -80,11 +90,17 @@ function M.check()
   if vim.fn.has("nvim-0.10") == 1 then vim.health.ok("Neovim 0.10+ detected")
   else vim.health.error("Neovim 0.10 or newer is required") end
   curl()
-  executable("rg", true)
-  executable("fd", true)
-  executable("magick", false)
+  executable("rg")
+  executable("fd")
+  check_images()
   local ok, err = pcall(check_configuration)
-  if ok then vim.health.ok("configuration is valid") else vim.health.error("configuration error: " .. tostring(err)) end
+  if ok then
+    vim.health.ok("configuration is valid")
+  else
+    local failure = require("neoagent.util").normalize_error(
+      err, "configuration")
+    vim.health.error("configuration error: " .. failure.message)
+  end
 end
 
 return M

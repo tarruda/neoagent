@@ -28,6 +28,9 @@ describe("neoagent.tools.truncate", function()
     assert.is_true(changed)
     assert.are.same({ "short", false }, { truncate.line("short", 5) })
     assert.are.same({ "éé... [truncated]", true }, { truncate.line("ééé", 2) })
+    assert.are.same({ "\195(... [truncated]", true }, {
+      truncate.line("\195(abc", 2),
+    })
   end)
 
   it("reports byte truncation and human-readable sizes", function()

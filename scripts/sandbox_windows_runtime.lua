@@ -1201,12 +1201,6 @@ local WFP = {
       name = "Neoagent offline bind IPv6",
     },
   },
-  LEGACY_FILTERS = {
-    guid("34fe434e-c64c-42b5-9461-f4497f85ba18"),
-    guid("1dd64f6f-c780-4e81-9aea-54be1fdded69"),
-    guid("ea83b36f-5cf5-48a1-9bbe-ca233a5316bb"),
-    guid("ab9499ea-cba4-4eb4-97f3-c52665523a83"),
-  },
 }
 
 function random_guid()
@@ -1299,11 +1293,6 @@ local function install_wfp(account_sid_string, filter_keys)
     condition[0].conditionValue.type = WIN32.WFP.SECURITY_DESCRIPTOR_TYPE
     condition[0].conditionValue.value.sd = user_blob
     local sublayer_key = WFP.SUBLAYER
-    for _, key in ipairs(WFP.LEGACY_FILTERS) do
-      wfp_ok(F.FwpmFilterDeleteByKey0(
-        engine[0], ffi.new("GUID[1]", key)),
-        "wfp-filter-delete", { WIN32.WFP.FILTER_NOT_FOUND, WIN32.WFP.NOT_FOUND })
-    end
     for index, item in ipairs(WFP.FILTERS) do
       local filter_key = guid(filter_keys[index])
       wfp_ok(F.FwpmFilterDeleteByKey0(
@@ -1808,7 +1797,7 @@ function cleanup_placeholder(record)
 end
 
 -- The state file is also a cleanup journal. Every temporary ACL and placeholder
--- is recorded before application, allowing this pass to revoke an interrupted
+-- is recorded before enforcement, allowing this pass to revoke an interrupted
 -- request on the next launch. File identities and private marker contents prove
 -- that a placeholder still belongs to this runtime before removal.
 local function recovery_cleanup(state)

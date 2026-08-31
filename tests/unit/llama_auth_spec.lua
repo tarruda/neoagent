@@ -30,7 +30,7 @@ describe("neoagent llama.cpp auth", function()
     local seen, restore = patch_client(transport)
     local method = auth.new()
     local prompts = {
-      { type = "text", value = "http://127.0.0.1:8080" },
+      { type = "text", value = "" },
     }
     local result = wait(method.login({
       prompt = function(prompt, done)
@@ -125,6 +125,30 @@ describe("neoagent llama.cpp auth", function()
     vim.env.LLAMA_BASE_URL = original_url
     assert.is_false(result.ok)
     assert.matches("API key is required", result.error.message)
+
+    local llama_client = require("neoagent.providers.llama.client")
+    local original_new = llama_client.new
+    llama_client.new = function()
+      return {
+        list = function()
+          return require("neoagent.async").run(function()
+            return { ok = false }
+          end)
+        end,
+      }
+    end
+    local ok, fallback = pcall(function()
+      return wait(method.login({
+        prompt = function(_, done)
+          done.resolve("http://127.0.0.1:8080")
+          return function() end
+        end,
+      }))
+    end)
+    llama_client.new = original_new
+    assert(ok, fallback)
+    assert.is_false(fallback.ok)
+    assert.matches("server check failed", fallback.error.message)
   end)
 
   it("derives request options and public metadata", function()

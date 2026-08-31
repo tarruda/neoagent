@@ -1,14 +1,15 @@
 local Session = require("neoagent.session")
 
 describe("neoagent.session", function()
-  it("rejects leaves and compactions targeting unknown entries", function()
+  it("rejects branches and compactions targeting unknown entries", function()
     local session = assert(Session.new())
-    local ok, err = session:append_entry("leaf", { targetId = "missing" })
+    local ok, err = session:move_to("missing")
     assert.is_nil(ok)
-    assert.matches("Invalid leaf", err.message)
-    ok, err = session:append_entry("compaction", {
+    assert.matches("Entry not found", err.message)
+    ok, err = session:append_compaction({
       firstKeptEntryId = "missing",
       summary = "compacted",
+      tokensBefore = 1,
     })
     assert.is_nil(ok)
     assert.matches("Invalid compaction", err.message)
@@ -38,6 +39,25 @@ describe("neoagent.session", function()
     assert.are.equal("hello", session:messages()[1].content)
   end)
 
+  it("associates model state with an accepted in-memory message", function()
+    local session = assert(Session.new())
+    assert(session:append({ role = "user", content = "first" }, {
+      model = { provider = "local", model = "coder" },
+      thinking_level = "high",
+    }))
+    assert.are.same({ provider = "local", model = "coder" },
+      session:state().model)
+    assert.are.equal("high", session:state().thinking_level)
+    assert.are.same({ "model_change", "thinking_level_change", "message" },
+      vim.tbl_map(function(entry) return entry.type end, session:entries()))
+
+    assert(session:append({ role = "user", content = "second" }, {
+      model = { provider = "local", model = "coder" },
+      thinking_level = "high",
+    }))
+    assert.are.equal(4, #session:entries())
+  end)
+
   it("keeps long in-memory append projection bounded", function()
     local session = assert(Session.new())
     local started = vim.uv.hrtime()
@@ -54,7 +74,12 @@ describe("neoagent.session", function()
     local appended
     local store = {
       load = function() return { { role = "user", content = "old" } } end,
-      append = function(_, message) appended = message return true end,
+      append = function(_, message)
+        appended = message
+        return true, nil, nil, {
+          type = "append", messages = { vim.deepcopy(message) },
+        }
+      end,
       metadata = function() return { id = "store" } end,
     }
     local session = assert(Session.new({ store = store }))
@@ -89,23 +114,27 @@ describe("neoagent.session", function()
     assert.are.equal("accepted", session:messages()[1].content)
   end)
 
-  it("reloads stores that return an unknown incremental projection", function()
+  it("rejects stores that return an unknown incremental projection", function()
     local loads = 0
     local store = {
       load = function()
         loads = loads + 1
-        if loads == 1 then return {} end
-        return { { role = "assistant", content = "reloaded" } }
+        return {}
       end,
       append = function()
-        return true, nil, { id = "entry" }, { type = "future" }
+        return true, nil, { id = "entry" }, {
+          type = "future",
+          messages = { { role = "assistant", content = "projection" } },
+        }
       end,
     }
     local session = assert(Session.new({ store = store }))
 
-    assert(session:append({ role = "assistant", content = "requested" }))
-    assert.are.equal(2, loads)
-    assert.are.equal("reloaded", session:messages()[1].content)
+    local ok, err = session:append({ role = "assistant", content = "requested" })
+    assert.is_nil(ok)
+    assert.matches("unknown projection", err.message)
+    assert.are.equal(1, loads)
+    assert.are.same({}, session:messages())
   end)
 
   it("does not add a message when storage rejects it", function()
@@ -149,7 +178,7 @@ describe("neoagent.session", function()
     assert.are.equal("hello", session:messages()[1].content)
   end)
 
-  it("branches in memory and projects Pi context entries", function()
+  it("branches in memory and projects the selected path", function()
     local session = assert(Session.new())
     local ok, _, first = session:append({ role = "user", content = "one" })
     assert(ok)
@@ -160,41 +189,26 @@ describe("neoagent.session", function()
     assert.are.same({ "one", "right" }, vim.tbl_map(function(message)
       return type(message.content) == "string" and message.content or message.content[1].text
     end, session:messages()))
-    assert(session:move_to(left.id, { summary = "Work from the other branch" }))
+    assert(session:move_to(left.id))
     assert.are.equal("left", session:messages()[2].content[1].text)
-    assert.are.equal("branchSummary", session:messages()[3].role)
-
-    assert(session:append_entry("custom_message", {
-      customType = "notice", content = "remember", display = true,
-    }))
     local context = assert(session:context_messages())
-    assert.matches("other branch", context[3].content[1].text)
-    assert.are.equal("remember", context[4].content[1].text)
-    assert.are.equal(7, #session:entries())
+    assert.are.equal("one", context[1].content)
+    assert.are.equal("left", context[2].content[1].text)
+    assert.are.equal(5, #session:entries())
   end)
 
-  it("owns labels, names, state, and compaction entries in memory", function()
+  it("owns state and compaction entries in memory", function()
     local session = assert(Session.new())
-    local _, _, first = session:append({ role = "user", content = "one" })
+    local _, _, first = session:append({ role = "user", content = "one" }, {
+      model = { provider = "openai", model = "gpt" },
+      thinking_level = "high",
+    })
     assert.are.equal(first.id, session:leaf_id())
-    assert(session:append_entry("model_change", { provider = "openai", modelId = "gpt" }))
-    assert(session:append_entry("thinking_level_change", { thinkingLevel = "high" }))
-    assert(session:append_entry("active_tools_change", { activeToolNames = { "read_file" } }))
-    assert(session:append_entry("label", { targetId = first.id, label = "Start" }))
-    assert(session:append_entry("session_info", { name = "  Example  " }))
-    assert.are.equal("Start", session:label(first.id))
-    assert.are.equal("Example", session:name())
-    assert(session:append_entry("session_info", { name = "" }))
-    assert.is_nil(session:name())
-    assert(session:append_entry("session_info", { name = "Again" }))
-    assert(session:append_entry("session_info", { name = vim.NIL }))
-    assert.is_nil(session:name())
     assert.are.same({
       model = { provider = "openai", model = "gpt" },
       thinking_level = "high",
-      active_tools = { "read_file" },
     }, session:state())
-    assert(session:append_entry("compaction", {
+    assert(session:append_compaction({
       summary = "earlier", firstKeptEntryId = first.id, tokensBefore = 20,
     }))
     assert.matches("earlier", session:context_messages()[1].content[1].text)
@@ -202,9 +216,6 @@ describe("neoagent.session", function()
     local ok, err = session:move_to("missing")
     assert.is_nil(ok)
     assert.matches("Entry not found", err.message)
-    ok, err = session:append_entry("label", { targetId = "missing", label = "bad" })
-    assert.is_nil(ok)
-    assert.matches("Invalid label", err.message)
   end)
 
   it("delegates the optional tree API to a capable store", function()
@@ -218,13 +229,16 @@ describe("neoagent.session", function()
       leaf_id = function() return "one" end,
       path = function(_, id) return { { id = id or "one" } } end,
       state = function() return { thinking_level = "low" } end,
-      label = function() return "label" end,
-      name = function() return "name" end,
-      append_entry = function(_, kind, values)
-        calls.entry = { kind, values }
-        return true, nil, { id = "two" }
+      append_compaction = function(_, values)
+        calls.compaction = values
+        return true, nil, { id = "two" }, {
+          type = "append", messages = {},
+        }
       end,
-      set_leaf = function(_, id) calls.leaf = id return true end,
+      set_leaf = function(_, id)
+        calls.leaf = id
+        return true, nil, nil, { type = "replace", messages = {} }
+      end,
       metadata = function() return { id = "stored" } end,
     }
     local session = assert(Session.new({ store = store }))
@@ -234,22 +248,15 @@ describe("neoagent.session", function()
     assert.are.equal("one", session:leaf_id())
     assert.are.equal("one", session:path()[1].id)
     assert.are.equal("low", session:state().thinking_level)
-    assert.are.equal("label", session:label("one"))
-    assert.are.equal("name", session:name())
-    assert(session:append_entry("custom", { customType = "x" }))
-    assert.are.same({ "custom", { customType = "x" } }, calls.entry)
+    assert(session:append_compaction({ summary = "done" }))
+    assert.are.same({ summary = "done" }, calls.compaction)
     assert(session:move_to("one"))
     assert.are.equal("one", calls.leaf)
   end)
 
   it("reports optional store failures without mutating cached messages", function()
-    local loads = 0
     local store = {
-      load = function()
-        loads = loads + 1
-        if loads == 1 then return {} end
-        return nil, { kind = "storage", message = "reload failed" }
-      end,
+      load = function() return {} end,
       append = function() return true end,
       context_messages = function() return nil, { kind = "storage", message = "context failed" } end,
     }
@@ -260,56 +267,109 @@ describe("neoagent.session", function()
     local ok
     ok, err = session:append({ role = "user", content = "lost" })
     assert.is_nil(ok)
-    assert.are.equal("reload failed", err.message)
+    assert.matches("invalid projection", err.message)
 
     session = assert(Session.new({ store = { load = function() return {} end, append = function() return true end } }))
-    ok, err = session:append_entry("custom", { customType = "x" })
+    ok, err = session:append_compaction({ summary = "x" })
     assert.is_nil(ok)
-    assert.matches("does not support session entries", err.message)
+    assert.matches("does not support compaction", err.message)
     ok, err = session:move_to(nil)
     assert.is_nil(ok)
     assert.matches("does not support branching", err.message)
   end)
 
-  it("returns structured reload errors after optional tree store mutations", function()
-    local appended = false
+  it("rejects missing projections after optional tree store mutations", function()
     local session = assert(Session.new({ store = {
-      load = function()
-        if appended then
-          return nil, { kind = "storage", message = "entry reload failed" }
-        end
-        return {}
-      end,
+      load = function() return {} end,
       append = function() return true end,
-      append_entry = function()
-        appended = true
+      append_compaction = function()
         return true, nil, { id = "entry" }
       end,
     } }))
-    local ok, err = session:append_entry("custom", { customType = "x" })
+    local ok, err = session:append_compaction({ summary = "x" })
     assert.is_nil(ok)
     assert.are.equal("storage", err.kind)
-    assert.are.equal("entry reload failed", err.message)
+    assert.matches("invalid projection", err.message)
     assert.are.same({}, session:messages())
 
-    local moved = false
     session = assert(Session.new({ store = {
-      load = function()
-        if moved then
-          return nil, { kind = "storage", message = "leaf reload failed" }
-        end
-        return {}
-      end,
+      load = function() return {} end,
       append = function() return true end,
       set_leaf = function()
-        moved = true
         return true
       end,
     } }))
     ok, err = session:move_to(nil)
     assert.is_nil(ok)
     assert.are.equal("storage", err.kind)
-    assert.are.equal("leaf reload failed", err.message)
+    assert.matches("invalid projection", err.message)
     assert.are.same({}, session:messages())
+  end)
+
+  it("rolls back atomic in-memory state journals", function()
+    local original_random = vim.uv.random
+    local function rejected_on(duplicate_call)
+      local session = assert(Session.new())
+      local calls = 0
+      vim.uv.random = function(bytes)
+        calls = calls + 1
+        local value = calls == duplicate_call and 1 or calls
+        return string.rep(string.char(value), bytes)
+      end
+      local ok, err = session:append({ role = "user", content = "atomic" }, {
+        model = { provider = "fake", model = "test" },
+        thinking_level = "high",
+      })
+      vim.uv.random = original_random
+      assert.is_nil(ok)
+      assert.matches("duplicate entry id", err.detail)
+      assert.are.same({}, session:entries())
+      assert.are.same({}, session:messages())
+    end
+    local ok, err = pcall(function()
+      rejected_on(2)
+      rejected_on(3)
+    end)
+    vim.uv.random = original_random
+    assert(ok, err)
+  end)
+
+  it("validates explicit journals, snapshots, stores, and identities", function()
+    local session, err = Session.new({ entries = false })
+    assert.is_nil(session)
+    assert.matches("entries must be an array", err.message)
+    session, err = Session.new({ entries = { { type = "invalid" } } })
+    assert.is_nil(session)
+    assert.matches("Invalid Session entries", err.message)
+    session, err = Session.new({ entries = {}, leaf_id = "missing" })
+    assert.is_nil(session)
+    assert.matches("active leaf", err.detail)
+    session, err = Session.new({ id = false })
+    assert.is_nil(session)
+    assert.matches("id must be", err.message)
+
+    local invalid_store = {
+      load = function() return {} end,
+      append = function() return true end,
+      entries = function() return false end,
+      leaf_id = function() return nil end,
+    }
+    session = assert(Session.new({ store = invalid_store }))
+    assert.are.equal(invalid_store, session:store())
+    local snapshot
+    snapshot, err = session:snapshot()
+    assert.is_nil(snapshot)
+    assert.matches("Invalid Session snapshot", err.message)
+
+    local mismatched_store = {
+      load = function() return {} end,
+      append = function() return true end,
+      entries = function() return {} end,
+      leaf_id = function() return "missing" end,
+    }
+    session = assert(Session.new({ store = mismatched_store }))
+    snapshot, err = session:snapshot()
+    assert.is_nil(snapshot)
+    assert.matches("active leaf", err.detail)
   end)
 end)

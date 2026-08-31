@@ -261,8 +261,8 @@ local function enrich_error(value)
 end
 
 local function retry_delay(err, attempt)
-  return err.retry_after_ms
-    or math.min(MAX_RETRY_DELAY_MS, INITIAL_RETRY_DELAY_MS * (2 ^ attempt))
+  return err.retry_after_ms or math.min(
+    MAX_RETRY_DELAY_MS, INITIAL_RETRY_DELAY_MS * (2 ^ attempt))
 end
 
 local function emit_diagnostic(self, call_opts, event_type, err, attempt, max_attempts, delay_ms)
@@ -317,8 +317,8 @@ local function wrap_stream(model, opts)
           if result.message then result.message.errorMessage = err.message end
           if err.kind == "cancelled" then return result end
 
-          local should_retry = err.retryable
-            and result.message == nil and attempt < max_retries
+          local should_retry = err.retryable and result.message == nil
+            and attempt < max_retries
           local wait = should_retry and retry_delay(err, attempt) or nil
           emit_diagnostic(self, call_opts,
             should_retry and "request_retry" or "request_failed",

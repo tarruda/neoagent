@@ -1,322 +1,277 @@
 local config = require("neoagent.config")
-local async = require("neoagent.async")
-local auth = require("neoagent.auth")
+local fs = require("neoagent.fs")
 local models = require("neoagent.models")
-local llama = require("neoagent.providers.llama")
-local fake_transport = require("tests.helpers.fake_transport")
+local provider_runtimes = require("neoagent.provider_runtimes")
+local state_store = require("neoagent.state_store")
 
-describe("neoagent dynamic model catalogs", function()
+describe("neoagent provider model catalogs", function()
   before_each(function() config._reset() end)
   after_each(function() config._reset() end)
 
-  local function service(models_list, get_models)
-    return {
-      id = "dynamic",
-      name = "Dynamic",
-      state = function() return false end,
-      operations = {},
-      get_models = get_models or function()
-        return models_list
-      end,
+  local function api_factory(resolved)
+    local model = {
+      api = resolved.api,
+      provider = resolved.provider_id,
+      id = resolved.model_id,
+      stream = function() end,
     }
+    for key, value in pairs(resolved.model) do model[key] = value end
+    return model
   end
 
-  local function configured(extra)
-    local result = {
+  local function configured(provider)
+    return config.setup({
       default_registry = false,
       default_model = { provider = "dynamic", model = "seed" },
-      providers = {
-        dynamic = {
-          api = "fake",
-          models = { seed = { context_window = 4000 } },
+      providers = { dynamic = provider },
+      _apis = { fake = api_factory },
+    })
+  end
+
+  local function runtime(provider, opts)
+    local value = configured(provider)
+    local runtimes, err = provider_runtimes.compose(value,
+      vim.tbl_extend("force", { startup = false }, opts or {}))
+    assert(runtimes, err and err.message)
+    return value, runtimes
+  end
+
+  it("resolves exclusively from the composed catalog snapshot", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+      models = { seed = { context_window = 4000 } },
+    })
+    local model = models.resolve(nil, nil, value, nil, runtimes)
+    assert.are.equal("seed", model.id)
+    assert.are.equal(4000, model.context_window)
+    assert.are.same({ "text" }, model.input)
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("restores cached OpenCode Go discoveries before the first selector read", function()
+    local directory = vim.fn.tempname()
+    local store = state_store.new({ directory = directory })
+    assert(store:write("opencode-go", {
+      version = 1,
+      validated_at = 1000,
+      models = { { id = "ox-alpha-free" } },
+    }))
+    local definition = require("neoagent.registry").defaults()["opencode-go"]
+    local value = config.setup({
+      default_registry = false,
+      providers = { ["opencode-go"] = definition },
+    })
+    local runtimes = assert(provider_runtimes.compose(value, {
+      startup = false,
+      store = store,
+    }))
+    local available = assert(models.available(value, {
+      has_credentials = function() return true end,
+    }, runtimes))
+    assert.is_true(vim.tbl_contains(available,
+      "opencode-go/ox-alpha-free"))
+    provider_runtimes.destroy(runtimes)
+    vim.fn.delete(directory, "rf")
+  end)
+
+  it("transforms discoveries and applies exact overrides and removals last", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = {
+        seed = {
+          { id = "seed", context_window = 4000 },
+          { id = "removed", context_window = 8000 },
         },
-      },
-      apis = {
-        fake = function(resolved)
-          local model = {
-            api = "fake",
-            provider = resolved.provider_id,
-            id = resolved.model_id,
-            stream = function() end,
-          }
-          for key, value in pairs(resolved.model or {}) do model[key] = value end
+        transform_model = function(model)
+          model.input = { "text", "image" }
+          model.context_window = model.context_window or 16000
           return model
         end,
       },
-    }
-    for key, value in pairs(extra or {}) do result[key] = value end
-    return result
-  end
-
-  local function wait(run)
-    assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
-  end
-
-  it("keeps static resolution unchanged without services", function()
-    config.setup(configured())
-    local model = models.resolve(nil, nil, nil, nil, {})
-    assert.are.equal("seed", model.id)
-    assert.are.equal(4000, model.context_window)
-  end)
-
-  it("merges discovered models under configured entries", function()
-    config.setup(configured({
-      providers = {
-        dynamic = {
-          api = "fake",
-          models = {
-            seed = { context_window = 4000 },
-            discovered = { context_window = 32000 },
-          },
-        },
+      models = {
+        seed = { context_window = 32000 },
+        added = { max_output_tokens = 2000 },
+        removed = false,
       },
-    }))
-    local services = {
-      dynamic = service({
-        { id = "discovered", context_window = 20000, max_output_tokens = 5 },
-        { id = "extra", context_window = 8000 },
-      }),
-    }
-    local resolved = models.resolve("dynamic", "discovered", nil, nil, services)
-    assert.are.equal(32000, resolved.context_window)
-    assert.are.equal(5, resolved.max_output_tokens)
-    assert.are.equal("extra", models.resolve("dynamic", "extra", nil, nil, services).id)
-    assert.are.same({
-      "dynamic/discovered",
-      "dynamic/extra",
-      "dynamic/seed",
-    }, models.available(nil, nil, services))
-  end)
-
-  it("applies provider service model wrappers and request timeouts", function()
-    config.setup(configured({
-      providers = {
-        dynamic = {
-          api = "openai-completions",
-          base_url = "http://127.0.0.1:8080/v1",
-          models = {
-            seed = { context_window = 4000, request_timeout_ms = 30000 },
-          },
-        },
-      },
-    }))
-    local wrapped = {}
-    local value = service({})
-    value.wrap_model = function(self, model)
-      wrapped[#wrapped + 1] = model
-      return model
-    end
-    local resolved = models.resolve("dynamic", "seed", nil, nil, {
-      dynamic = value,
     })
-    assert.are.equal(30000, resolved.timeout_ms)
+    assert.are.same({ "dynamic/added", "dynamic/seed" },
+      models.available(value, nil, runtimes))
+    local seed = models.resolve("dynamic", "seed", value, nil, runtimes)
+    assert.are.equal(32000, seed.context_window)
+    assert.are.same({ "text", "image" }, seed.input)
+    local added = models.resolve("dynamic", "added", value, nil, runtimes)
+    assert.are.equal(16000, added.context_window)
+    assert.are.equal(2000, added.max_output_tokens)
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("hides catalog entries without removing explicit resolution", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" }, { id = "hidden" } } },
+      models = { hidden = { hidden = true } },
+    })
+    assert.are.same({ "dynamic/seed" }, models.available(value, nil, runtimes))
+    assert.are.equal("hidden",
+      models.resolve("dynamic", "hidden", value, nil, runtimes).id)
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("wraps Models through the runtime service", function()
+    local wrapped = {}
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+      models = { seed = { request_timeout_ms = 30000 } },
+      service = function()
+        return {
+          id = "dynamic",
+          name = "Dynamic",
+          operations = {},
+          state = function() return false end,
+          wrap_model = function(_, model)
+            wrapped[#wrapped + 1] = model
+            return model
+          end,
+        }
+      end,
+    })
+    local resolved = models.resolve("dynamic", "seed", value, nil, runtimes)
+    assert.are.equal(30000, resolved.request_timeout_ms)
     assert.are.equal(1, #wrapped)
     assert.are.equal(resolved, wrapped[1])
+    provider_runtimes.destroy(runtimes)
   end)
 
-  it("applies authenticated llama timeouts from router state and calls", function()
-    local transport = fake_transport.new()
-    local function catalog(status)
-      return vim.json.encode({ data = { {
-        id = "owner/repo:Q4_K_M",
-        status = { value = status },
-        meta = { n_ctx = 32000 },
-      } } })
-    end
-    transport.fetches = {
-      { body = catalog("unloaded") },
-      { body = catalog("loaded") },
-    }
-    local definitions = {
-      qwen = {
-        hf_repo = "owner/repo",
-        quantization = "Q4_K_M",
-        request_timeout_ms = 45000,
-      },
-    }
-    local service = llama.new({
+  it("reports Codex diagnostic sink failures through its runtime", function()
+    local path = vim.fn.tempname()
+    assert(fs.write_all(path, "blocking file", "w"))
+    local reports = {}
+    local value, runtimes = runtime({
+      api = "openai-codex-responses",
+      base_url = "https://example.test",
+      diagnostics = { path = path .. "/codex.log" },
+      catalog = { seed = { { id = "seed" } } },
+    }, {
+      report = function(message, level)
+        reports[#reports + 1] = { message = message, level = level }
+      end,
+    })
+    local model = models.resolve("dynamic", "seed", value, nil, runtimes)
+
+    model._on_diagnostic({
+      type = "request_failed",
+      detail = "private response body",
+    })
+    model._on_diagnostic({ type = "request_failed" })
+
+    assert(vim.wait(1000, function() return #reports == 1 end))
+    assert.matches("diagnostic log failed", reports[1].message)
+    assert.not_matches("private response body", reports[1].message)
+    assert.are.equal(vim.log.levels.WARN, reports[1].level)
+    provider_runtimes.destroy(runtimes)
+    vim.fn.delete(path)
+  end)
+
+  it("keeps resolved Models independent from later catalog revisions", function()
+    local value, runtimes = runtime({
       api = "fake",
-      base_url = "http://127.0.0.1:8080/v1",
-      auth = "llama",
-      auth_optional = true,
-      models = definitions,
-    }, { transport = transport, startup = false })
-    assert(wait(service:refresh_catalog({ allow_network = true })).ok)
-    local seen = {}
-    config.setup({
-      default_registry = false,
-      default_model = { provider = "llama.cpp", model = "qwen" },
-      providers = {
-        ["llama.cpp"] = {
-          api = "fake",
-          base_url = "http://127.0.0.1:8080/v1",
-          auth = "llama",
-          auth_optional = true,
-          models = definitions,
-        },
-      },
-      apis = {
-        fake = function(resolved)
-          return {
-            api = "fake",
-            provider = resolved.provider_id,
-            id = resolved.model_id,
-            input = { "text" },
-            timeout_ms = resolved.model.request_timeout_ms,
-            stream = function(self, opts)
-              seen[#seen + 1] = opts.timeout_ms == nil
-                and self.timeout_ms or opts.timeout_ms
-              return async.run(function() return { ok = true } end, {
-                on_done = opts.on_done,
-              })
-            end,
-          }
-        end,
-      },
+      catalog = { seed = { { id = "seed", context_window = 4000 } } },
+      models = {},
     })
-    local manager = auth.new({
-      methods = {
-        llama = {
-          type = "api_key",
-          name = "llama.cpp",
-          login = function()
-            return { ok = true, credential = { type = "api_key", key = "key" } }
-          end,
-          request_opts = function()
-            return { headers = { Authorization = "Bearer key" } }
-          end,
-        },
-      },
-      store = {
-        read = function() return { type = "api_key", key = "key" } end,
-        write = function() return true end,
-      },
-    })
-    local resolved = models.resolve(
-      "llama.cpp", "qwen", nil, manager, { ["llama.cpp"] = service })
-    assert.are.equal(45000, resolved.timeout_ms)
-    assert(wait(resolved:stream({ messages = {} })).ok)
-    assert.is_false(seen[1])
-    assert(wait(resolved:stream({
-      messages = {}, timeout_ms = 9000,
-    })).ok)
-
-    assert(wait(service:refresh_catalog({
-      allow_network = true,
-      force = true,
-    })).ok)
-    assert(wait(resolved:stream({ messages = {} })).ok)
-    assert(wait(resolved:stream({ messages = {}, timeout_ms = 9000 })).ok)
-    assert(wait(resolved:stream({ messages = {}, timeout_ms = false })).ok)
-    assert.are.same({ false, 9000, 45000, 9000, false }, seen)
-    service:destroy()
-  end)
-
-  it("honors user removals over discovered models", function()
-    config.setup(configured({
-      providers = {
-        dynamic = {
-          api = "fake",
-          models = {
-            seed = { context_window = 4000 },
-            discovered = false,
-          },
-        },
-      },
+    local first = models.resolve("dynamic", "seed", value, nil, runtimes)
+    assert(runtimes.dynamic.catalog:publish_discoveries({
+      { id = "seed", context_window = 32000 },
+      { id = "new" },
     }))
-    local services = {
-      dynamic = service({
-        { id = "discovered", context_window = 20000 },
-        { id = "extra", context_window = 8000 },
-      }),
-    }
-    assert.has_error(function() models.resolve("dynamic", "discovered", nil, nil, services) end)
-    assert.are.same({
-      "dynamic/extra",
-      "dynamic/seed",
-    }, models.available(nil, nil, services))
+    local second = models.resolve("dynamic", "seed", value, nil, runtimes)
+    assert.are.equal(4000, first.context_window)
+    assert.are.equal(32000, second.context_window)
+    assert.are.equal("new",
+      models.resolve("dynamic", "new", value, nil, runtimes).id)
+    provider_runtimes.destroy(runtimes)
   end)
 
-  it("rejects failing or malformed discovered catalogs", function()
-    config.setup(configured())
-    for _, case in ipairs({
-      {
-        value = service({}, function() error("catalog boom") end),
-        pattern = "model catalog failed",
-      },
-      {
-        value = service({}, function() return "bad" end),
-        pattern = "model catalog must be a list",
-      },
-      {
-        value = service({ true, { id = 1 } }),
-        pattern = "entries must be objects",
-      },
-    }) do
-      local ok, err = pcall(models.resolve, "dynamic", "seed", nil, nil, {
-        dynamic = case.value,
-      })
-      assert.is_false(ok)
-      assert.are.equal("model", err.kind)
-      assert.matches(case.pattern, err.message)
-    end
+  it("publishes changing available-model snapshots until unsubscribed", function()
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+      models = {},
+    })
+    local publications = {}
+    local unsubscribe = models.subscribe_available(
+      value, nil, runtimes, function(choices, err)
+        assert.is_nil(err)
+        publications[#publications + 1] = choices
+      end)
+    assert.are.same({ "dynamic/seed" }, publications[1])
+    assert(runtimes.dynamic.catalog:publish_discoveries({
+      { id = "seed" }, { id = "new" },
+    }))
+    assert.are.same({ "dynamic/new", "dynamic/seed" }, publications[2])
+    assert(runtimes.dynamic.catalog:publish_discoveries({
+      { id = "new" }, { id = "seed" },
+    }))
+    assert.are.equal(2, #publications)
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+    assert(runtimes.dynamic.catalog:publish_discoveries({ { id = "later" } }))
+    assert.are.equal(2, #publications)
+    provider_runtimes.destroy(runtimes)
   end)
 
-  it("validates every dynamic model field and rejects duplicate ids", function()
-    config.setup(configured())
-    local cases = {
-      {
-        entries = { { id = "bad-input", input = {} } },
-        pattern = "input must be a non%-empty list",
-      },
-      {
-        entries = { { id = "bad-input", input = { "text", "text" } } },
-        pattern = "input must contain unique text or image entries",
-      },
-      {
-        entries = { { id = "bad-context", context_window = 1.5 } },
-        pattern = "context_window must be a positive integer",
-      },
-      {
-        entries = { { id = "bad-thinking", thinking = true } },
-        pattern = "thinking must be a table or false",
-      },
-      {
-        entries = { { id = "bad-api", api = "" } },
-        pattern = "api must be safe non%-empty text",
-      },
-      {
-        entries = { { id = "bad-options", request_opts = "invalid" } },
-        pattern = "request_opts must be a table or function",
-      },
-      {
-        entries = { { id = "same" }, { id = "same" } },
-        pattern = "duplicate dynamic model id same",
-      },
-    }
-    for _, case in ipairs(cases) do
-      local available, err = models.available(nil, nil, {
-        dynamic = service(case.entries),
-      })
-      assert.is_nil(available)
-      assert.are.equal("model", err.kind)
-      assert.matches(case.pattern, err.message)
-    end
+  it("rejects invalid candidates at the catalog boundary", function()
+    local value = configured({
+      api = "fake",
+      catalog = { seed = { { id = "seed", input = {} } } },
+      models = {},
+    })
+    local runtimes, err = provider_runtimes.compose(value, { startup = false })
+    assert.is_nil(runtimes)
+    assert.are.equal("provider", err.kind)
+    assert.matches("input must be a non%-empty list", err.detail.message)
+
+    value = configured({
+      api = "fake",
+      catalog = { seed = { {
+        id = "seed",
+        reasoning = true,
+        thinking = { high = {} },
+      } } },
+      models = {},
+    })
+    runtimes, err = provider_runtimes.compose(value, { startup = false })
+    assert.is_nil(runtimes)
+    assert.matches("mutually exclusive", err.detail.message)
   end)
 
-  it("retains removal sets across registry compositions", function()
+  it("retains exact removals and callback order across registry composition", function()
     local registry = require("neoagent.registry")
+    local order = {}
     local first = registry.compose({
       openai = {
-        api = "openai-responses",
-        base_url = "https://api.openai.com/v1",
         models = { ["gpt-4"] = false },
+        catalog = { transform_model = function(model)
+          if model.id == "gpt-4" then
+            assert.are.same({ "text" }, model.input)
+          end
+          order[#order + 1] = model.id
+          return model
+        end },
       },
     }, true)
-    assert.is_true(first.openai._model_removals["gpt-4"])
-    local second = registry.compose(first, false)
-    assert.is_true(second.openai._model_removals["gpt-4"])
-    assert.is_not_nil(second.openai.models["gpt-4-turbo"])
+    assert.is_false(first.openai.models["gpt-4"])
+    assert.is_function(first.openai.catalog.transform_model)
+    local value = config.setup({
+      default_registry = false,
+      providers = { openai = first.openai },
+    })
+    local runtimes = assert(provider_runtimes.compose(value, { startup = false }))
+    assert.is_nil(runtimes.openai.catalog:snapshot().models["gpt-4"])
+    assert.are.equal(vim.tbl_count(
+      runtimes.openai.catalog:snapshot().models) + 1, #order)
+    assert.is_true(vim.tbl_contains(order, "gpt-4"))
+    provider_runtimes.destroy(runtimes)
   end)
 end)

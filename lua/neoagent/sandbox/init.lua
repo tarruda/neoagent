@@ -53,10 +53,10 @@ function M.new(opts)
   return require("neoagent.sandbox.enforce").new(opts)
 end
 
-function M.info(controller)
-  local configured = controller
-  if type(controller) == "table" and type(controller.config) == "function" then
-    configured = controller:config()
+function M.info(agent)
+  local configured = agent
+  if type(agent) == "table" and type(agent.config) == "function" then
+    configured = agent:config()
   end
   configured = type(configured) == "table" and configured or {}
   local enabled = configured.sandbox
