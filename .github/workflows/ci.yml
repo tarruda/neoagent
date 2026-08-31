@@ -33,17 +33,48 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Install ImageMagick on stable
-        if: matrix.neovim == 'stable'
-        run: sudo apt-get install -y imagemagick
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run complete suite with coverage
+      - name: Run fast suite with coverage
         if: matrix.neovim == 'stable'
         run: make coverage
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
         run: make test
+
+  terminal-images:
+    name: terminal images (Linux, stable)
+    runs-on: ubuntu-24.04
+    env:
+      NVIM: nvim
+      PLENARY_DIR: ${{ github.workspace }}/.deps/plenary.nvim
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install terminal image test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl imagemagick konsole python3 tmux xauth xvfb
+          mkdir -p .deps/kitty
+          curl --fail --location --show-error --silent \
+            https://github.com/kovidgoyal/kitty/releases/download/v0.48.2/kitty-0.48.2-x86_64.txz \
+            --output "$RUNNER_TEMP/kitty.txz"
+          echo "967a1958e7fc67b495d279c0963bcd1a0482097151817ce6506fabc822689af7  $RUNNER_TEMP/kitty.txz" \
+            | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/kitty.txz" -C .deps/kitty
+          test -x .deps/kitty/bin/kitty
+          command -v import
+          command -v tmux
+          command -v konsole
+          command -v xvfb-run
+          echo "KITTY=$GITHUB_WORKSPACE/.deps/kitty/bin/kitty" >> "$GITHUB_ENV"
+      - name: Install pinned test dependencies
+        run: make deps
+      - name: Run terminal image suite
+        run: make test-terminal-images
 
   test-macos:
     name: test (macOS, stable)
@@ -59,10 +90,10 @@ jobs:
           neovim: true
           version: stable
       - name: Install system dependencies
-        run: brew install ripgrep fd imagemagick
+        run: brew install ripgrep fd
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run complete suite
+      - name: Run fast suite
         run: make test
 
   test-windows:
