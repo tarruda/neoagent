@@ -433,8 +433,9 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                     raise RuntimeError(
                         f"{name} reference image is outside the capture: "
                         f"{reference_bounds}")
-                expected_width = round(
-                    reference_layer["image"]["width"] * cells["width"])
+                expected_width = (
+                    reference_layer["image"]["width"]
+                    * screen_cells["width"])
                 if abs((right - left) - expected_width) > 1:
                     raise RuntimeError(
                         f"{name} reference image width is {right - left}px, "
