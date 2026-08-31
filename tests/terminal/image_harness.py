@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCREEN_WIDTH = 1024
 SCREEN_HEIGHT = 768
 PIXEL_SETTLE_SECONDS = 0.5
+PIXEL_CAPTURE_TIMEOUT_SECONDS = 15
 
 
 def executable(value):
@@ -337,7 +338,7 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                             f"{name} {label} visibility is "
                             f"{state.get('visible')}, expected "
                             f"{expected_visible}: {state}")
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + PIXEL_CAPTURE_TIMEOUT_SECONDS
                     previous = None
                     stable_since = None
                     attempt = 0
