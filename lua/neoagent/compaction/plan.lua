@@ -33,7 +33,7 @@ function M.usage_tokens(usage)
 end
 
 function M.estimate_tokens(message)
-  if message.role == "user" or message.role == "toolResult" or message.role == "custom" then
+  if message.role == "user" or message.role == "toolResult" then
     return math.ceil(content_chars(message.content) / 4)
   end
   if message.role == "assistant" then
@@ -50,10 +50,7 @@ function M.estimate_tokens(message)
     end
     return math.ceil(chars / 4)
   end
-  if message.role == "bashExecution" then
-    return math.ceil((#(message.command or "") + #(message.output or "")) / 4)
-  end
-  if message.role == "branchSummary" or message.role == "compactionSummary" then
+  if message.role == "compactionSummary" then
     return math.ceil(#(message.summary or "") / 4)
   end
   return 0
@@ -101,16 +98,13 @@ local function entry_message(entry)
 end
 
 local function is_cut_point(entry)
-  if entry.type == "branch_summary" or entry.type == "custom_message" then return true end
   if entry.type ~= "message" then return false end
   local role = entry.message.role
-  return role == "user" or role == "assistant" or role == "bashExecution"
-      or role == "custom" or role == "branchSummary" or role == "compactionSummary"
+  return role == "user" or role == "assistant"
 end
 
 local function is_turn_start(entry)
-  if entry.type == "branch_summary" or entry.type == "custom_message" then return true end
-  return entry.type == "message" and (entry.message.role == "user" or entry.message.role == "bashExecution")
+  return entry.type == "message" and entry.message.role == "user"
 end
 
 function M.find_turn_start(entries, entry_index, start_index)

@@ -1,13 +1,22 @@
 local config = require("neoagent.config")
 local ui = require("neoagent.ui")
+local Applet = require("applet")
+local renderers = require("neoagent.ui.renderers")
+local view_handles = require("tests.helpers.view_handles")
 
 local function text(view)
-  local lines = vim.api.nvim_buf_get_lines(view.transcript_buf, 0, -1, false)
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-    view.transcript_buf, view.namespace, 0, -1, { details = true }
-  )) do
-    for _, virtual in ipairs(mark[4].virt_lines or {}) do
-      lines[#lines + 1] = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, virtual))
+  local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(view, "transcript"), 0, -1, false)
+  for _, namespace in ipairs({
+    view.transcript.pane.namespace,
+    view.transcript and view.transcript.pane.virtual_namespace,
+  }) do
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      view_handles.buffer(view, "transcript"), namespace, 0, -1, { details = true }
+    )) do
+      for _, virtual in ipairs(mark[4].virt_lines or {}) do
+        lines[#lines + 1] = table.concat(vim.tbl_map(
+          function(chunk) return chunk[1] end, virtual))
+      end
     end
   end
   return table.concat(lines, "\n")
@@ -15,7 +24,7 @@ end
 
 local function has_line_group(view, name)
   local id = vim.api.nvim_get_hl_id_by_name(name)
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(view.transcript_buf, view.namespace, 0, -1, { details = true })) do
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(view_handles.buffer(view, "transcript"), view.transcript.pane.namespace, 0, -1, { details = true })) do
     local group = mark[4].line_hl_group
     if group == name or group == id then return true end
   end
@@ -23,19 +32,87 @@ local function has_line_group(view, name)
 end
 
 local function line_has_background(view, row)
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(view.transcript_buf, view.namespace, 0, -1, { details = true })) do
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(view_handles.buffer(view, "transcript"), view.transcript.pane.namespace, 0, -1, { details = true })) do
     if mark[2] == row and mark[4].line_hl_group then return true end
   end
   return false
 end
 
+local function feed(keys)
+  vim.api.nvim_feedkeys(
+    vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+end
+
+local function chrome_text(window, field)
+  local value = vim.api.nvim_win_get_config(window)[field] or ""
+  if type(value) == "string" then return value end
+  return table.concat(vim.tbl_map(function(chunk)
+    return type(chunk) == "table" and chunk[1] or chunk
+  end, value))
+end
+
+local function close_details(view)
+  local window = view_handles.window(view, "details")
+  assert.is_not_nil(window)
+  feed("<C-c>")
+  assert(vim.wait(1000, function()
+    return view_handles.window(view, "details") == nil and not vim.api.nvim_win_is_valid(window)
+  end))
+end
+
+local function continuation_cells(marker, glyph)
+  glyph = glyph or ">"
+  vim.api.nvim__inspect_cell(1, 0, 0)
+  vim.cmd("redraw!")
+  local matches = {}
+  for grid = 1, 512 do
+    local valid = pcall(vim.api.nvim__inspect_cell, grid, 0, 0)
+    if valid then
+      for row = 0, vim.o.lines - 1 do
+        local characters = {}
+        local glyph_col
+        for col = 0, vim.o.columns - 1 do
+          local ok, cell = pcall(
+            vim.api.nvim__inspect_cell, grid, row, col)
+          if not ok or not cell[1] then break end
+          characters[#characters + 1] = cell[1]
+          if cell[1] == glyph then glyph_col = col end
+        end
+        if glyph_col
+            and table.concat(characters):find(marker, 1, true) then
+          matches[#matches + 1] = {
+            grid = grid,
+            attributes = vim.api.nvim__inspect_cell(
+              grid, row, glyph_col)[2],
+          }
+        end
+      end
+    end
+  end
+  return matches
+end
+
 describe("neoagent.ui", function()
   local views = {}
   local normal_highlight
+  local nontext_highlight
+  local user_background_highlight
+  local tool_success_background_highlight
+  local showbreak
   before_each(function()
     normal_highlight = vim.api.nvim_get_hl(0, {
       name = "Normal", link = true,
     })
+    nontext_highlight = vim.api.nvim_get_hl(0, {
+      name = "NonText", link = true,
+    })
+    user_background_highlight = vim.api.nvim_get_hl(0, {
+      name = "NeoagentUserBackground", link = true,
+    })
+    tool_success_background_highlight = vim.api.nvim_get_hl(0, {
+      name = "NeoagentToolSuccessBackground", link = true,
+    })
+    showbreak = vim.o.showbreak
     config._reset()
     vim.o.columns = 120
     vim.o.lines = 40
@@ -45,6 +122,12 @@ describe("neoagent.ui", function()
     views = {}
     vim.cmd("silent! only")
     vim.api.nvim_set_hl(0, "Normal", normal_highlight)
+    vim.api.nvim_set_hl(0, "NonText", nontext_highlight)
+    vim.api.nvim_set_hl(0, "NeoagentUserBackground",
+      user_background_highlight)
+    vim.api.nvim_set_hl(0, "NeoagentToolSuccessBackground",
+      tool_success_background_highlight)
+    vim.o.showbreak = showbreak
   end)
 
   local function view(overrides, tools)
@@ -61,46 +144,20 @@ describe("neoagent.ui", function()
     return result
   end
 
-  it("calculates docked and centered sibling geometry", function()
-    local right = assert(ui.layout({ columns = 100, lines = 40, position = "right", margin = 1, input_height = 5, border = "rounded" }))
-    assert.are.equal(43, right.transcript.width)
-    assert.are.equal(54, right.transcript.col)
-    assert.are.equal(right.transcript.row + right.transcript.height + 2, right.input.row)
-    local top = assert(ui.layout({
-      columns = 100, lines = 40, position = "top", width = 0.5, height = 20,
-      margin = 1, input_height = 5, border = "rounded",
-    }))
-    assert.are.equal(48, top.transcript.width)
-    assert.are.equal(1, top.transcript.row)
-    local bottom = assert(ui.layout({
-      columns = 100, lines = 40, position = "bottom", width = 60, height = 20,
-      margin = 1, input_height = 5, border = "rounded",
-    }))
-    assert.are.equal(58, bottom.transcript.width)
-    assert.is_true(bottom.transcript.row > top.transcript.row)
-    local center = assert(ui.layout({
-      columns = 100, lines = 40, position = "center", margin = 1,
-      input_height = 7, border = "rounded",
-    }))
-    assert.are.equal(93, center.transcript.width)
-    assert.are.equal(2, center.transcript.col)
-    assert.are.equal(1, center.transcript.row)
-    assert.are.equal(7, center.input.height)
-    local too_small, err = ui.layout({ columns = 4, lines = 4, position = "right", margin = 1, input_height = 5, border = "rounded" })
-    assert.is_nil(too_small)
-    assert.matches("does not fit", err)
-  end)
-
   it("uses configured border characters in the transcript footer", function()
     local cases = {
-      { border = { "a", "b", "c", "d", "e", { "B", "NeoagentBorder" } }, expected = "B" },
+      { border = {
+        "a", "b", "c", "d", "e", { "B", "NeoagentBorder" }, "g", "h",
+      }, expected = "B" },
       { border = "double", expected = "═" },
       { border = "solid", expected = " " },
     }
     for _, case in ipairs(cases) do
       local result = view({ border = case.border })
+      assert(result:open())
       local border = {}
-      for _, chunk in ipairs(result:_transcript_footer(20)) do
+      for _, chunk in ipairs(vim.api.nvim_win_get_config(
+        view_handles.window(result, "transcript")).footer or {}) do
         if chunk[2] == "NeoagentBorder" then border[#border + 1] = chunk[1] end
       end
       local rendered = table.concat(border)
@@ -109,23 +166,64 @@ describe("neoagent.ui", function()
     end
   end)
 
-  it("builds a bounded input footer from configured mappings", function()
-    local result = view({ mappings = {
-      select_history = { "<C-r>", "<C-s>" },
-      resume_session = "<A-r>",
-      select_model = "<A-m>",
-      interrupt = false,
-    } })
-    assert.are.equal(" <C-r> history · <A-r> resume · <A-m> select model ",
-      result:_input_footer(80))
-    local narrow = result:_input_footer(18)
-    assert.is_true(vim.fn.strdisplaywidth(narrow) <= 18)
-    assert.matches("^ <C%-r>", narrow)
-    assert.is_not_nil(narrow:find("<C%-r> history"))
-    assert.is_nil(narrow:find("select model", 1, true))
+  it("shows one inference phase and retains generation speed while idle", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    local function footer()
+      return chrome_text(view_handles.window(result, "transcript"), "footer")
+    end
+
+    result:set_context({
+      state = "running",
+      inference_stats = { prompt_tokens_per_second = 73.75 },
+    })
+    assert(vim.wait(1000, function()
+      return footer():find("pp 73.8 t/s", 1, true) ~= nil
+        and footer():find("tg ", 1, true) == nil
+    end))
+
+    result:set_context({
+      inference_stats = {
+        prompt_tokens_per_second = 73.75,
+        generation_tokens_per_second = 48.07,
+      },
+    })
+    assert(vim.wait(1000, function()
+      return footer():find("tg 48.1 t/s", 1, true) ~= nil
+        and footer():find("pp ", 1, true) == nil
+    end))
+
+    result:set_context({ state = "idle" })
+    assert(vim.wait(1000, function()
+      return footer():find("Idle", 1, true) ~= nil
+        and footer():find("tg 48.1 t/s", 1, true) ~= nil
+        and footer():find("pp ", 1, true) == nil
+    end))
   end)
 
-  it("updates input mapping hints for the focused surface", function()
+  it("shows only the configured help mapping in the input footer", function()
+    local result = view({ mappings = {
+      help = { "g?", "<C-g>?" },
+    } })
+    assert(result:open())
+    assert.are.equal(" g? help ", chrome_text(view_handles.window(result, "input"), "footer"))
+    vim.o.columns = 12
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(vim.wait(1000, function()
+      return vim.fn.strdisplaywidth(chrome_text(view_handles.window(result, "input"), "footer"))
+        <= vim.api.nvim_win_get_width(view_handles.window(result, "input"))
+    end))
+
+    result.config.mappings.help = string.rep("g", 200)
+    result:_refresh_input_footer()
+    assert.is_true(vim.fn.strdisplaywidth(
+      chrome_text(view_handles.window(result, "input"), "footer")) < 200)
+
+    result.config.mappings.focus_input = false
+    assert.not_matches("Focus input", result:mapping_help())
+  end)
+
+  it("keeps the compact help footer across focused surfaces", function()
     local result = view({ position = "center" })
     result:set_messages({
       { role = "user", content = "first" },
@@ -135,38 +233,29 @@ describe("neoagent.ui", function()
     })
     assert(result:open())
     local function footer()
-      local value = vim.api.nvim_win_get_config(result.input_win).footer
+      local value = vim.api.nvim_win_get_config(view_handles.window(result, "input")).footer
       if type(value) == "table" then
         value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
       end
       return value
     end
-    assert(vim.wait(1000, function()
-      return footer()
-        == " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
-    end))
+    assert(vim.wait(1000, function() return footer() == " <C-g>? help " end))
 
     vim.cmd("stopinsert")
-    vim.api.nvim_exec_autocmds("InsertLeave", { buffer = result.input_buf })
-    assert(vim.wait(1000, function()
-      return footer()
-        == " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel "
-    end))
+    vim.api.nvim_exec_autocmds("InsertLeave", { buffer = view_handles.buffer(result, "input") })
+    assert(vim.wait(1000, function() return footer() == " <C-g>? help " end))
 
     result:focus_transcript()
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("first", 1, true) then row = index break end
     end
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
+      buffer = view_handles.buffer(result, "transcript"),
     })
-    assert(vim.wait(1000, function()
-      return footer()
-        == " <CR> details · <A-r> resume · <A-m> select model · <A-l> provider · <C-c> clear/cancel "
-    end))
+    assert(vim.wait(1000, function() return footer() == " <C-g>? help " end))
   end)
 
   it("opens ordinary focusable buffers and preserves the draft across close", function()
@@ -174,14 +263,14 @@ describe("neoagent.ui", function()
     local result = view({ position = "center" })
     assert(result:open())
     assert.is_true(result:is_open())
-    assert.are.equal(result.input_win, vim.api.nvim_get_current_win())
-    assert.are.equal("nofile", vim.bo[result.transcript_buf].buftype)
-    assert.is_false(vim.bo[result.transcript_buf].modifiable)
+    assert.are.equal(view_handles.window(result, "input"), vim.api.nvim_get_current_win())
+    assert.are.equal("nofile", vim.bo[view_handles.buffer(result, "transcript")].buftype)
+    assert.is_false(vim.bo[view_handles.buffer(result, "transcript")].modifiable)
     result:set_input("one\ntwo")
     result:focus_transcript()
-    assert.are.equal(result.transcript_win, vim.api.nvim_get_current_win())
+    assert.are.equal(view_handles.window(result, "transcript"), vim.api.nvim_get_current_win())
     result:focus_input()
-    assert.are.equal(result.input_win, vim.api.nvim_get_current_win())
+    assert.are.equal(view_handles.window(result, "input"), vim.api.nvim_get_current_win())
     result:close()
     assert.are.equal(origin, vim.api.nvim_get_current_win())
     assert.are.equal("one\ntwo", result:get_input())
@@ -189,9 +278,15 @@ describe("neoagent.ui", function()
     assert.are.equal("one\ntwo", result:get_input())
   end)
 
-  it("removes interaction tracking when destroyed", function()
+  it("bounds interaction tracking to the live Applet", function()
     local listener_count = vim.on_key()
     local result = view({ position = "center" })
+    assert.are.equal(listener_count, vim.on_key())
+    assert(result:open())
+    assert.are.equal(listener_count + 1, vim.on_key())
+    result:close()
+    assert.are.equal(listener_count, vim.on_key())
+    assert(result:open())
     assert.are.equal(listener_count + 1, vim.on_key())
     result:destroy()
     assert.are.equal(listener_count, vim.on_key())
@@ -200,19 +295,31 @@ describe("neoagent.ui", function()
   it("closes both windows when either one is closed externally", function()
     local result = view({ position = "center" })
     assert(result:open())
-    local transcript, input = result.transcript_win, result.input_win
+    local transcript, input = view_handles.window(result, "transcript"), view_handles.window(result, "input")
     vim.api.nvim_win_close(input, true)
     assert(vim.wait(1000, function()
       return not vim.api.nvim_win_is_valid(transcript) and not vim.api.nvim_win_is_valid(input)
-    end))
+    end), vim.inspect({
+      transcript_valid = vim.api.nvim_win_is_valid(transcript),
+      input_valid = vim.api.nvim_win_is_valid(input),
+      transcript_win = view_handles.window(result, "transcript"),
+      input_win = view_handles.window(result, "input"),
+      messages = vim.api.nvim_exec2("messages", { output = true }).output,
+    }))
     assert.is_false(result:is_open())
 
     assert(result:open())
-    transcript, input = result.transcript_win, result.input_win
+    transcript, input = view_handles.window(result, "transcript"), view_handles.window(result, "input")
     vim.api.nvim_win_close(transcript, true)
     assert(vim.wait(1000, function()
       return not vim.api.nvim_win_is_valid(transcript) and not vim.api.nvim_win_is_valid(input)
-    end))
+    end), vim.inspect({
+      transcript_valid = vim.api.nvim_win_is_valid(transcript),
+      input_valid = vim.api.nvim_win_is_valid(input),
+      transcript_win = view_handles.window(result, "transcript"),
+      input_win = view_handles.window(result, "input"),
+      messages = vim.api.nvim_exec2("messages", { output = true }).output,
+    }))
     assert.is_false(result:is_open())
   end)
 
@@ -254,7 +361,7 @@ describe("neoagent.ui", function()
       content = { { type = "thinking", thinking = "final private trace" } },
     } })
 
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     local transcript = text(result)
     assert.matches("historical visible answer", transcript)
     assert.not_matches("historical private trace", transcript)
@@ -275,9 +382,9 @@ describe("neoagent.ui", function()
       },
     } })
 
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     assert.are.same({ " considering ", "", " done ", "" },
-      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+      vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false))
   end)
 
   it("omits whitespace-only prose between thinking and tools", function()
@@ -292,9 +399,9 @@ describe("neoagent.ui", function()
       },
     } })
 
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     assert.are.same({ " considering ", "", "", "", " read x ", "", "" },
-      vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false))
+      vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false))
   end)
 
   it("clips thinking cards to the latest lines and reveals full traces", function()
@@ -311,7 +418,7 @@ describe("neoagent.ui", function()
       return transcript:find(" trace 14 ", 1, true) ~= nil
         and transcript:find(" trace 1 ", 1, true) == nil
     end))
-    local collapsed = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local collapsed = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.is_true(vim.tbl_contains(collapsed, " trace 14 "))
     assert.is_false(vim.tbl_contains(collapsed, " trace 1 "))
     assert.is_false(has_line_group(result, "NeoagentUserBackground"))
@@ -323,11 +430,11 @@ describe("neoagent.ui", function()
       if line:find("trace 14", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local badge
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
@@ -335,10 +442,10 @@ describe("neoagent.ui", function()
     end
     assert.are.equal("[thinking: 28 words, 4 lines above..., <CR> to expand]", badge)
     assert.is_true(result:show_card_details())
-    local details = vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false)
+    local details = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "details"), 0, -1, false)
     assert.is_true(vim.tbl_contains(details, "trace 1"))
     assert.is_true(vim.tbl_contains(details, "trace 14"))
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("shows the thinking badge only while hovered", function()
@@ -349,24 +456,24 @@ describe("neoagent.ui", function()
       { type = "thinking", thinking = table.concat(trace, "\n") },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     local function buffer_text()
       return table.concat(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false), "\n")
+        view_handles.buffer(result, "transcript"), 0, -1, false), "\n")
     end
     assert.is_nil(buffer_text():find("thinking:", 1, true))
     result:focus_transcript()
     local row
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     for index, line in ipairs(lines) do
       if line:find("trace 14", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local badge, badge_col
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then
@@ -376,14 +483,14 @@ describe("neoagent.ui", function()
       end
     end
     assert.are.equal("[thinking: 28 words, 4 lines above..., <CR> to expand]", badge)
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.are.equal(width - 1 - #badge, badge_col)
     assert.is_nil(buffer_text():find("thinking:", 1, true))
-    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local count = vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript"))
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         assert.is_nil(chunk[1]:find("[thinking:", 1, true))
@@ -414,9 +521,9 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function()
       return text(result):find("segment segment segment", 1, true) ~= nil
     end))
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.is_true(vim.tbl_contains(lines, " " .. long .. " "))
-    assert.is_true(vim.wo[result.transcript_win].wrap)
+    assert.is_true(vim.wo[view_handles.window(result, "transcript")].wrap)
   end)
 
   it("soft-wraps long user card lines", function()
@@ -427,8 +534,103 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function()
       return text(result):find("segment segment segment", 1, true) ~= nil
     end))
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.is_true(vim.tbl_contains(lines, " " .. long .. " "))
+  end)
+
+  it("uses each card background behind soft-wrap continuation glyphs", function()
+    vim.o.showbreak = "↪"
+    vim.api.nvim_set_hl(0, "Normal", {
+      fg = 0xffffff,
+      bg = 0x000000,
+    })
+    vim.api.nvim_set_hl(0, "NonText", {
+      fg = 0xffffff,
+      bg = 0x120034,
+    })
+    vim.api.nvim_set_hl(0, "NeoagentUserBackground", {
+      bg = 0x880022,
+    })
+    vim.api.nvim_set_hl(0, "NeoagentToolSuccessBackground", {
+      bg = 0x006622,
+    })
+    local result = view({ position = "center", wrap_cards = true })
+    result:set_messages({
+      {
+        role = "user",
+        content = string.rep("userwrap ", 20),
+      },
+      {
+        role = "assistant",
+        content = { {
+          type = "toolCall",
+          id = "wrapped-tool",
+          name = "read_file",
+          arguments = { path = "wrapped.txt" },
+        } },
+      },
+      {
+        role = "toolResult",
+        toolCallId = "wrapped-tool",
+        toolName = "read_file",
+        isError = false,
+        content = { {
+          type = "text",
+          text = string.rep("toolwrap ", 20),
+        } },
+      },
+    })
+    assert(result:open())
+    assert(result.transcript.pane:flush())
+    local user = assert(continuation_cells("userwrap", "↪")[1]).attributes
+    local tool = assert(continuation_cells("toolwrap", "↪")[1]).attributes
+    assert.are.equal(0xffffff, user.foreground)
+    assert.are.equal(0x880022, user.background)
+    assert.are.equal(0xffffff, tool.foreground)
+    assert.are.equal(0x006622, tool.background)
+  end)
+
+  it("uses the card background behind expanded soft-wrap continuations", function()
+    vim.o.showbreak = "↪"
+    vim.api.nvim_set_hl(0, "Normal", {
+      fg = 0xffffff,
+      bg = 0x000000,
+    })
+    vim.api.nvim_set_hl(0, "NonText", {
+      fg = 0xffffff,
+      bg = 0x120034,
+    })
+    vim.api.nvim_set_hl(0, "NeoagentUserBackground", {
+      bg = 0x880022,
+    })
+    local result = view({ position = "center", wrap_cards = true })
+    result:set_messages({ {
+      role = "user",
+      content = string.rep("expandedwrap ", 20),
+    } })
+    assert(result:open())
+    assert(result.transcript.pane:flush())
+    local transcript_grid = assert(
+      continuation_cells("expandedwrap", "↪")[1]).grid
+    result:focus_transcript()
+    local user_row
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
+      if line:find("expandedwrap", 1, true) then user_row = index break end
+    end
+    assert.is_not_nil(user_row)
+    vim.api.nvim_win_set_cursor(
+      view_handles.window(result, "transcript"), { user_row, 0 })
+    assert.is_true(result:show_card_details())
+    assert(result.details.pane:flush())
+    local details
+    for _, candidate in ipairs(continuation_cells("expandedwrap", "↪")) do
+      if candidate.grid ~= transcript_grid then details = candidate end
+    end
+    details = assert(details)
+    assert.are.equal(0xffffff, details.attributes.foreground)
+    assert.are.equal(0x880022, details.attributes.background)
+    close_details(result)
   end)
 
   it("places the bottom rule below a wrapped text card last line", function()
@@ -438,13 +640,13 @@ describe("neoagent.ui", function()
       { type = "text", text = "short\n" .. long },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local bottom
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("╰", 1, true) then bottom = chunk[1] end
@@ -476,16 +678,16 @@ describe("neoagent.ui", function()
       { type = "text", text = "content" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
     vim.api.nvim_feedkeys("i", "x", false)
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     assert.is_true(result:show_card_details())
-    assert.are.equal(result.details_win, vim.api.nvim_get_current_win())
+    assert.are.equal(view_handles.window(result, "details"), vim.api.nvim_get_current_win())
     vim.api.nvim_feedkeys("i", "x", false)
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("leaves Insert mode when read-only windows receive direct focus", function()
@@ -504,7 +706,7 @@ describe("neoagent.ui", function()
     end
   end)
 
-  it("badges complete text cards with word counts on hover", function()
+  it("shows text-card expansion below complete content without a word count", function()
     local result = view({ position = "center" })
     local response = {}
     for index = 1, 60 do response[index] = "response line " .. index end
@@ -512,20 +714,35 @@ describe("neoagent.ui", function()
       { type = "text", text = table.concat(response, "\n") },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
-    local badge_text
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
+    local hint_row
+    local decorations = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
-        if chunk[1]:find("[text:", 1, true) then badge_text = chunk[1] end
+        decorations[#decorations + 1] = chunk[1]
+        if chunk[1]:find("<CR> to expand", 1, true) then
+          hint_row = mark[2]
+        end
       end
     end
-    assert.are.equal(
-      "[text: 180 words, <CR> to expand]", badge_text)
+    local last_content_row
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(
+      view_handles.buffer(result, "transcript"), 0, -1, false
+    )) do
+      if line:find("response line 60", 1, true) then
+        last_content_row = row - 1
+      end
+    end
+    assert.is_not_nil(last_content_row)
+    assert.are.equal(last_content_row + 1, hint_row)
+    local decoration_text = table.concat(decorations)
+    assert.is_not_nil(decoration_text:find("<CR> to expand", 1, true))
+    assert.is_nil(decoration_text:find("word", 1, true))
   end)
 
   it("shows complete assistant cards and expands to unpadded text", function()
@@ -541,7 +758,7 @@ describe("neoagent.ui", function()
       return transcript:find(" response line 105 ", 1, true) ~= nil
         and transcript:find(" response line 1 ", 1, true) ~= nil
     end))
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.is_true(vim.tbl_contains(lines, " response line 105 "))
     assert.is_true(vim.tbl_contains(lines, " response line 1 "))
     result:focus_transcript()
@@ -550,12 +767,12 @@ describe("neoagent.ui", function()
       if line:find("response line 105", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
     assert.is_true(result:show_card_details())
-    local details = vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false)
+    local details = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "details"), 0, -1, false)
     assert.is_true(vim.tbl_contains(details, "response line 1"))
     assert.is_false(vim.tbl_contains(details, " response line 1 "))
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("keeps complete assistant cards after a height change", function()
@@ -575,7 +792,7 @@ describe("neoagent.ui", function()
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(vim.wait(1000, function()
       local transcript = text(result)
-      return vim.api.nvim_win_get_height(result.transcript_win) > 40
+      return vim.api.nvim_win_get_height(view_handles.window(result, "transcript")) > 40
         and transcript:find(" response line 1 ", 1, true) ~= nil
         and transcript:find(" response line 60 ", 1, true) ~= nil
     end))
@@ -603,15 +820,15 @@ describe("neoagent.ui", function()
     result:focus_transcript()
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("trace 2", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local badge
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
@@ -626,14 +843,14 @@ describe("neoagent.ui", function()
       { type = "thinking", thinking = string.rep("x", 300) .. "\nshort" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     local function buffer_text()
       return table.concat(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false), "\n")
+        view_handles.buffer(result, "transcript"), 0, -1, false), "\n")
     end
     local function outline_marks()
       return vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true })
     end
     assert.is_true(buffer_text():find("short", 1, true) ~= nil)
     assert.is_nil(buffer_text():find("thinking:", 1, true))
@@ -653,7 +870,7 @@ describe("neoagent.ui", function()
     assert.are.equal("[thinking: 2 words]", badge)
     assert.are.equal("...", ellipsis)
     assert.are.equal(badge_col, ellipsis_col)
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.are.equal(width - 1 - #badge, badge_col + 3)
     local borders = table.concat(vim.tbl_map(function(mark)
       return table.concat(vim.tbl_map(function(chunk) return chunk[1] end,
@@ -663,8 +880,8 @@ describe("neoagent.ui", function()
     assert.is_nil(borders:find("╰", 1, true))
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local hover_badge, hover_border
     for _, mark in ipairs(outline_marks()) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -694,22 +911,22 @@ describe("neoagent.ui", function()
       { type = "thinking", thinking = table.concat(trace, "\n") },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     local marks = vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true })
     assert.are.same({}, marks)
     result:focus_transcript()
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("trace 14", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local badge
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
@@ -730,11 +947,11 @@ describe("neoagent.ui", function()
         and transcript:find("thinking:", 1, true) == nil
     end))
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local badge, ellipsis
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then badge = chunk[1] end
@@ -753,13 +970,13 @@ describe("neoagent.ui", function()
       { type = "thinking", thinking = trace .. "\nline two" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     local function buffer_lines()
-      return vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+      return vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     end
     local function outline_marks()
       return vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1, { details = true })
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true })
     end
     result:focus_transcript()
     local first_row
@@ -771,8 +988,8 @@ describe("neoagent.ui", function()
     for _, line in ipairs(buffer_lines()) do
       assert.is_nil(line:find("thinking:", 1, true))
     end
-    vim.api.nvim_win_set_cursor(result.transcript_win, { first_row + 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first_row + 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local header, header_col, ellipsis, ellipsis_col
     for _, mark in ipairs(outline_marks()) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -786,7 +1003,7 @@ describe("neoagent.ui", function()
       end
     end
     assert.are.equal("[thinking: 20 words, <CR> to expand]", header)
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.are.equal(width - 1 - #header, header_col)
     assert.are.equal("...", ellipsis)
     assert.are.equal(header_col - 3, ellipsis_col)
@@ -803,9 +1020,9 @@ describe("neoagent.ui", function()
     for _, line in ipairs(buffer_lines()) do
       assert.is_nil(line:find("thinking:", 1, true))
     end
-    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local count = vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript"))
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     for _, mark in ipairs(outline_marks()) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         assert.is_nil(chunk[1]:find("thinking:", 1, true))
@@ -819,19 +1036,19 @@ describe("neoagent.ui", function()
       { type = "thinking", thinking = "line one\nline two" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
     local first_row
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     for row, line in ipairs(lines) do
       if line:find("line one", 1, true) then first_row = row - 1 break end
     end
     assert.is_not_nil(first_row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { first_row + 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first_row + 1, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local header, ellipsis
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
         if chunk[1]:find("[thinking:", 1, true) then header = chunk[1] end
@@ -884,7 +1101,7 @@ describe("neoagent.ui", function()
     assert.are.equal(1, select(2, transcript:gsub("write a.txt", "")))
     assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
     assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
-    local marks = vim.api.nvim_buf_get_extmarks(result.transcript_buf, result.namespace, 0, -1, {})
+    local marks = vim.api.nvim_buf_get_extmarks(view_handles.buffer(result, "transcript"), result.transcript.pane.namespace, 0, -1, {})
     assert.is_true(#marks >= 3)
   end)
 
@@ -917,12 +1134,13 @@ describe("neoagent.ui", function()
     } })
     assert(vim.wait(1000, function()
       local rendered = text(result)
-      return rendered:match("approximately 3 bytes") ~= nil and rendered:match("values=%[2 items%]") ~= nil
+      return rendered:find("Image · JPEG · 3 B", 1, true) ~= nil
+        and rendered:match("values=%[2 items%]") ~= nil
     end))
     local transcript = text(result)
     assert.matches("inspect it", transcript)
-    assert.matches("image attachment: image/png", transcript)
-    assert.matches("image attachment: image/jpeg", transcript)
+    assert.matches("Image · PNG", transcript)
+    assert.matches("Image · JPEG", transcript)
     assert.matches("1=one", transcript)
     assert.not_matches('"values"', transcript)
     assert.matches("read x", transcript)
@@ -957,7 +1175,7 @@ describe("neoagent.ui", function()
       { role = "toolResult", toolCallId = "find", toolName = "find", isError = false,
         content = { { type = "text", text = "src/a.lua" } } },
       { role = "toolResult", toolCallId = "edit", toolName = "edit_file", isError = false,
-        content = { { type = "text", text = "edited" } }, details = { diff = " context\n-old\n+new" } },
+        content = { { type = "text", text = "edited" } }, details = { patch = " context\n-old\n+new" } },
       { role = "toolResult", toolCallId = "edit-plain", toolName = "edit_file", isError = false,
         content = { { type = "text", text = "edited" } } },
       { role = "toolResult", toolCallId = "edit-error", toolName = "edit_file", isError = true,
@@ -977,7 +1195,7 @@ describe("neoagent.ui", function()
       "enabled=true", "nested={…}", "orphan result",
     }) do assert.matches(expected, transcript, expected) end
     assert.is_true(has_line_group(result, "NeoagentToolErrorBackground"))
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     local read_row, next_read_row
     for index, line in ipairs(lines) do
       if line:match("read file%.lua") then read_row = index - 1 end
@@ -1024,7 +1242,7 @@ describe("neoagent.ui", function()
     local function separator_count()
       local count = 0
       for _, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
         if line:find("────", 1, true) then count = count + 1 end
       end
       return count
@@ -1036,7 +1254,7 @@ describe("neoagent.ui", function()
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
     assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
 
-    assert.are.equal("codex", result:set_style("codex"))
+    assert.are.equal(renderers.codex, result:set_renderer(renderers.codex))
     assert(vim.wait(1000, function()
       return text(result):find("• read README.md", 1, true) ~= nil
     end))
@@ -1045,16 +1263,13 @@ describe("neoagent.ui", function()
     assert.is_false(has_line_group(result, "NeoagentUserBackground"))
     assert.is_false(has_line_group(result, "NeoagentToolSuccessBackground"))
 
-    assert.are.equal("pi", result:set_style("pi"))
+    assert.are.equal(renderers.pi, result:set_renderer(renderers.pi))
     assert(vim.wait(1000, function()
       return text(result):find("• read README.md", 1, true) == nil
     end))
     assert.are.equal(0, separator_count())
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
     assert.is_true(has_line_group(result, "NeoagentToolSuccessBackground"))
-    local selected, err = result:set_style("other")
-    assert.is_nil(selected)
-    assert.are.equal("transcript style must be pi or codex", err.message)
   end)
 
   it("renders through an injected Renderer and replaces it live", function()
@@ -1062,30 +1277,26 @@ describe("neoagent.ui", function()
     local function renderer(name, prefix)
       return {
         name = name,
-        define_highlights = function() calls[#calls + 1] = name .. ":highlights" end,
+        theme = Applet.Theme.new({ groups = {
+          muted = "Comment",
+          selected = "Visual",
+        } }),
         render_block = function(_, block, opts)
           calls[#calls + 1] = {
             name = name,
             block = block,
             opts = opts,
           }
-          return {
-            lines = { prefix .. ":" .. block.kind .. ":" .. (block.text or "") },
-            highlights = {},
-            line_groups = {},
-          }
+          return Applet.Pane.nodes.text({
+            key = name .. ":" .. block.key,
+            text = prefix .. ":" .. block.kind .. ":" .. (block.text or ""),
+          })
         end,
         render_details = function(_, block)
-          return {
-            lines = { "details:" .. block.kind },
-            highlights = {},
-            line_groups = {},
-          }
-        end,
-        render_dialog = function()
-          return {
-            content = { lines = { "dialog" }, highlights = {}, line_groups = {} },
-          }
+          return Applet.Pane.nodes.text({
+            key = name .. ":details:" .. block.key,
+            text = "details:" .. block.kind,
+          })
         end,
       }
     end
@@ -1156,7 +1367,7 @@ describe("neoagent.ui", function()
     end))
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local item, thinking, shell
     for index, line in ipairs(lines) do
       if line:find("Item 4", 1, true) then item = index end
@@ -1196,7 +1407,7 @@ describe("neoagent.ui", function()
 
     local function assert_separate(first_label, second_label)
       local lines = vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)
+        view_handles.buffer(result, "transcript"), 0, -1, false)
       local first, second
       for row, line in ipairs(lines) do
         if line:find(first_label, 1, true) then first = row end
@@ -1218,9 +1429,7 @@ describe("neoagent.ui", function()
     result:apply({ type = "message_end", message = {
       role = "assistant", content = calls,
     } })
-    assert(vim.wait(1000, function()
-      return not result.flush_pending
-    end))
+    result.transcript.pane:flush()
     assert_separate("• Running printf one", "• Running printf two")
 
     for _, call in ipairs(calls) do
@@ -1275,9 +1484,7 @@ describe("neoagent.ui", function()
         calls[1], calls[2],
       },
     } })
-    assert(vim.wait(1000, function()
-      return not result.flush_pending
-    end))
+    result.transcript.pane:flush()
     result:apply({ type = "tool_end", call = calls[2], message = {
       role = "toolResult", toolCallId = calls[2].id,
       toolName = "shell", isError = false,
@@ -1289,7 +1496,7 @@ describe("neoagent.ui", function()
 
     local function assert_order(first_label)
       local lines = vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)
+        view_handles.buffer(result, "transcript"), 0, -1, false)
       local prose, first, second, prose_count = nil, nil, nil, 0
       for row, line in ipairs(lines) do
         if line:find("Let me start by exploring", 1, true) then
@@ -1352,7 +1559,7 @@ describe("neoagent.ui", function()
         calls[1], calls[2],
       },
     } })
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
 
     for index = #calls, 1, -1 do
       local call = calls[index]
@@ -1473,7 +1680,7 @@ describe("neoagent.ui", function()
 
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("• Presented status", 1, true) then
         row = index - 1
         break
@@ -1482,7 +1689,7 @@ describe("neoagent.ui", function()
     assert.is_not_nil(row)
     local groups = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
       { row, 0 }, { row, -1 }, { details = true, hl_name = true }
     )) do
       if mark[4].hl_group then groups[mark[4].hl_group] = true end
@@ -1581,14 +1788,13 @@ describe("neoagent.ui", function()
 
     local function updating_line()
       for _, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
         if line:find("Updating plan", 1, true) then return line end
       end
     end
     assert(vim.wait(1000, function() return updating_line() ~= nil end))
     local initial = updating_line()
     assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
-    assert.is_table(result.blocks[1].card)
     assert(vim.wait(1000, function()
       local current = updating_line()
       return current ~= nil and current ~= initial
@@ -1645,7 +1851,7 @@ describe("neoagent.ui", function()
     end))
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.are.same({
       " • Updated Plan ",
       "    └ Implement in three focused phases. ",
@@ -1661,7 +1867,7 @@ describe("neoagent.ui", function()
     local function groups(row)
       local found = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace, { row, 0 }, { row, -1 },
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace, { row, 0 }, { row, -1 },
         { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then found[mark[4].hl_group] = true end
@@ -1707,7 +1913,7 @@ describe("neoagent.ui", function()
     end))
     local header_row, last_row, header_line
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("• Updated Plan", 1, true) then
         header_row, header_line = index - 1, line
       elseif line:find("Run local checks", 1, true) then
@@ -1718,13 +1924,13 @@ describe("neoagent.ui", function()
     assert.is_not_nil(last_row)
     result:focus_transcript()
     vim.api.nvim_win_set_cursor(
-      result.transcript_win, { header_row + 1, 0 })
+      view_handles.window(result, "transcript"), { header_row + 1, 0 })
     vim.api.nvim_exec_autocmds(
-      "CursorMoved", { buffer = result.transcript_buf })
+      "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
 
     local top, top_col, bottom, bottom_row, virtual_bottom
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace,
       0, -1, { details = true }
     )) do
       local details = mark[4]
@@ -1760,9 +1966,9 @@ describe("neoagent.ui", function()
     assert.is_nil(virtual_bottom)
     assert.are.equal(last_row + 1, bottom_row)
     assert.are.equal("", vim.api.nvim_buf_get_lines(
-      result.transcript_buf, bottom_row, bottom_row + 1, false)[1])
+      view_handles.buffer(result, "transcript"), bottom_row, bottom_row + 1, false)[1])
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, header_row, last_row + 1, false),
+      view_handles.buffer(result, "transcript"), header_row, last_row + 1, false),
       "      □ Run local checks "))
   end)
 
@@ -1810,35 +2016,33 @@ describe("neoagent.ui", function()
     end))
 
     local function card_rows(id)
-      local block
-      for _, candidate in ipairs(result.blocks) do
-        if candidate.call and candidate.call.id == id then
-          block = candidate
+      local label = id == "hover-plan" and "Inspect the plan"
+        or "• Ran printf"
+      local lines = vim.api.nvim_buf_get_lines(
+        view_handles.buffer(result, "transcript"), 0, -1, false)
+      local first, separator
+      for index, line in ipairs(lines) do
+        if not first and line:find(label, 1, true) then first = index - 1 end
+        if first and index - 1 > first and line:find("────", 1, true) then
+          separator = index - 1
           break
         end
       end
-      assert.is_not_nil(block)
-      local position = vim.api.nvim_buf_get_extmark_by_id(
-        result.transcript_buf, result.namespace, block.mark,
-        { details = true })
-      local first = position[1] + block.card.first
-      local last = position[1] + block.card.last
-      local separator = last + 1
-      assert.matches("────", vim.api.nvim_buf_get_lines(
-        result.transcript_buf, separator, separator + 1, false)[1])
+      assert.is_not_nil(first)
+      assert.is_not_nil(separator)
       return first, separator
     end
 
     local function assert_hover_replaces_separator(id)
       local first, separator = card_rows(id)
       result:focus_transcript()
-      vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
+      vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first + 1, 0 })
       vim.api.nvim_exec_autocmds(
-        "CursorMoved", { buffer = result.transcript_buf })
+        "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
 
       local virtual_bottom, overlay_row, overlay_text
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
         { details = true }
       )) do
         for _, line in ipairs(mark[4].virt_lines or {}) do
@@ -1857,7 +2061,7 @@ describe("neoagent.ui", function()
       assert.is_nil(virtual_bottom)
       assert.are.equal(separator, overlay_row)
       assert.are.equal(
-        vim.api.nvim_win_get_width(result.transcript_win),
+        vim.api.nvim_win_get_width(view_handles.window(result, "transcript")),
         vim.fn.strdisplaywidth(overlay_text))
     end
 
@@ -1866,11 +2070,11 @@ describe("neoagent.ui", function()
 
     local _, shell_separator = card_rows("hover-shell")
     vim.api.nvim_win_set_cursor(
-      result.transcript_win, { shell_separator + 3, 0 })
+      view_handles.window(result, "transcript"), { shell_separator + 3, 0 })
     vim.api.nvim_exec_autocmds(
-      "CursorMoved", { buffer = result.transcript_buf })
+      "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
       { details = true }
     )) do
       if mark[2] == shell_separator then
@@ -1880,7 +2084,7 @@ describe("neoagent.ui", function()
       end
     end
     assert.matches("────", vim.api.nvim_buf_get_lines(
-      result.transcript_buf, shell_separator,
+      view_handles.buffer(result, "transcript"), shell_separator,
       shell_separator + 1, false)[1])
   end)
 
@@ -1921,25 +2125,25 @@ describe("neoagent.ui", function()
       return text(result):find("• Ran printf", 1, true) ~= nil
     end))
 
-    local block = assert(vim.tbl_filter(function(candidate)
-      return candidate.call and candidate.call.id == "group-plan"
-    end, result.blocks)[1])
-    local position = vim.api.nvim_buf_get_extmark_by_id(
-      result.transcript_buf, result.namespace, block.mark,
-      { details = true })
-    local first = position[1] + block.card.first
-    local spacer = position[1] + block.card.last + 1
+    local first, spacer
+    for index, line in ipairs(vim.api.nvim_buf_get_lines(
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
+      if line:find("Inspect the workspace", 1, true) then first = index - 1 end
+      if line:find("Run a smoke check", 1, true) then spacer = index end
+    end
+    assert.is_not_nil(first)
+    assert.is_not_nil(spacer)
     assert.are.equal("", vim.api.nvim_buf_get_lines(
-      result.transcript_buf, spacer, spacer + 1, false)[1])
+      view_handles.buffer(result, "transcript"), spacer, spacer + 1, false)[1])
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first + 1, 0 })
     vim.api.nvim_exec_autocmds(
-      "CursorMoved", { buffer = result.transcript_buf })
+      "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
 
     local virtual_bottom, overlay_row
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
       { details = true }
     )) do
       for _, line in ipairs(mark[4].virt_lines or {}) do
@@ -1993,13 +2197,13 @@ describe("neoagent.ui", function()
 
     local active_row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("[ ] Use one card", 1, true) then active_row = index - 1 end
     end
     assert.is_not_nil(active_row)
     local active_groups = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
       { active_row, 0 }, { active_row, -1 },
       { details = true, hl_name = true }
     )) do
@@ -2009,7 +2213,7 @@ describe("neoagent.ui", function()
     assert.is_nil(active_groups.NeoagentCyan)
     assert.is_nil(active_groups.NeoagentMarkdownItalic)
 
-    assert.are.equal("codex", result:set_style("codex"))
+    assert.are.equal(renderers.codex, result:set_renderer(renderers.codex))
     assert(vim.wait(1000, function()
       return text(result):find("Updated Plan", 1, true) ~= nil
     end))
@@ -2049,7 +2253,7 @@ describe("neoagent.ui", function()
       { role = "toolResult", toolCallId = "edit-body",
         toolName = "edit_file", isError = false,
         content = { { type = "text", text = "Successfully edited existing.lua" } },
-        details = { diff = " context\n-old\n+new" } },
+        details = { patch = " context\n-old\n+new" } },
     })
     assert(result:open())
     assert(vim.wait(1000, function()
@@ -2071,7 +2275,7 @@ describe("neoagent.ui", function()
 
     local successful = {}
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("• Read README.md", 1, true)
           or line:find("• Written new.lua", 1, true)
           or line:find("• Edited existing.lua", 1, true) then
@@ -2082,7 +2286,7 @@ describe("neoagent.ui", function()
     for _, row in ipairs(successful) do
       local groups = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
         { row, 0 }, { row, -1 }, { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then groups[mark[4].hl_group] = true end
@@ -2113,8 +2317,6 @@ describe("neoagent.ui", function()
             "+line two changed",
             " line three",
           }, "\n"),
-          diff = "-line two\n+line two changed",
-          firstChangedLine = 2,
         },
       },
     })
@@ -2126,7 +2328,7 @@ describe("neoagent.ui", function()
     local lines = vim.tbl_map(function(line)
       return (line:gsub("%s+$", ""))
     end, vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false))
+      view_handles.buffer(result, "transcript"), 0, -1, false))
     assert.are.same({
       " • Edited existing.lua (+1 -1)",
       "    1  line one",
@@ -2139,7 +2341,7 @@ describe("neoagent.ui", function()
     local function groups(row)
       local found = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
         { row, 0 }, { row, -1 }, { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then found[mark[4].hl_group] = true end
@@ -2185,7 +2387,7 @@ describe("neoagent.ui", function()
     local function source_groups()
       local source_row
       for index, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
         if line:find("local value = true", 1, true) then
           source_row = index - 1
         end
@@ -2193,7 +2395,7 @@ describe("neoagent.ui", function()
       assert.is_not_nil(source_row)
       local groups = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
         { source_row, 0 }, { source_row, -1 },
         { details = true, hl_name = true }
       )) do
@@ -2204,7 +2406,7 @@ describe("neoagent.ui", function()
     local groups = source_groups()
     assert.is_nil(groups.NeoagentToolOutput)
 
-    assert.are.equal("pi", result:set_style("pi"))
+    assert.are.equal(renderers.pi, result:set_renderer(renderers.pi))
     assert(vim.wait(1000, function()
       return has_line_group(result, "NeoagentToolSuccessBackground")
     end))
@@ -2245,7 +2447,7 @@ describe("neoagent.ui", function()
 
     local header_row, source_row, omitted_row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false
+      view_handles.buffer(result, "transcript"), 0, -1, false
     )) do
       if line:find("• Writing /tmp/demo.lua", 1, true) then
         header_row = index - 1
@@ -2258,7 +2460,7 @@ describe("neoagent.ui", function()
     assert.is_not_nil(header_row)
     assert.is_not_nil(source_row)
     assert.is_not_nil(omitted_row)
-    vim.api.nvim_win_call(result.transcript_win, function()
+    vim.api.nvim_win_call(view_handles.window(result, "transcript"), function()
       assert.are.equal("", vim.fn.synIDattr(
         vim.fn.synID(header_row + 1, 3, true), "name"))
       assert.are.equal("luaStatement", vim.fn.synIDattr(
@@ -2277,12 +2479,12 @@ describe("neoagent.ui", function()
     end))
     local python_row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false
+      view_handles.buffer(result, "transcript"), 0, -1, false
     )) do
       if line:find("def greet():", 1, true) then python_row = index end
     end
     assert.is_not_nil(python_row)
-    vim.api.nvim_win_call(result.transcript_win, function()
+    vim.api.nvim_win_call(view_handles.window(result, "transcript"), function()
       assert.are.equal("luaStatement", vim.fn.synIDattr(
         vim.fn.synID(source_row, 2, true), "name"))
       assert.are.equal("pythonStatement", vim.fn.synIDattr(
@@ -2290,13 +2492,13 @@ describe("neoagent.ui", function()
     end)
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { header_row + 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { header_row + 1, 0 })
     assert.is_true(result:show_card_details())
     local details = table.concat(vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false), "\n")
+      view_handles.buffer(result, "details"), 0, -1, false), "\n")
     assert.matches("local four = 4", details)
     assert.matches("return four", details)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("scopes Codex write detail syntax to the file contents", function()
@@ -2323,7 +2525,7 @@ describe("neoagent.ui", function()
 
     local header_row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("• Written demo.lua", 1, true) then
         header_row = index - 1
       end
@@ -2331,12 +2533,12 @@ describe("neoagent.ui", function()
     assert.is_not_nil(header_row)
     result:focus_transcript()
     vim.api.nvim_win_set_cursor(
-      result.transcript_win, { header_row + 1, 0 })
+      view_handles.window(result, "transcript"), { header_row + 1, 0 })
     assert.is_true(result:show_card_details())
-    assert.are.equal("neoagent", vim.bo[result.details_buf].filetype)
+    assert.are.equal("neoagent", vim.bo[view_handles.buffer(result, "details")].filetype)
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false)
+      view_handles.buffer(result, "details"), 0, -1, false)
     local detail_header, source_row
     for index, line in ipairs(lines) do
       if line:find("• Written demo.lua", 1, true) then
@@ -2347,7 +2549,7 @@ describe("neoagent.ui", function()
     end
     assert.is_not_nil(detail_header)
     assert.is_not_nil(source_row)
-    vim.api.nvim_win_call(result.details_win, function()
+    vim.api.nvim_win_call(view_handles.window(result, "details"), function()
       local header = vim.fn.synIDattr(
         vim.fn.synID(detail_header, 3, true), "name")
       local source = vim.fn.synIDattr(
@@ -2355,7 +2557,7 @@ describe("neoagent.ui", function()
       assert.are.equal("", header)
       assert.are.equal("luaStatement", source)
     end)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("keeps source syntax from spilling comment styles across later cards", function()
@@ -2401,11 +2603,11 @@ describe("neoagent.ui", function()
 
     local done_row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("Done! plain text", 1, true) then done_row = index end
     end
     assert.is_not_nil(done_row)
-    vim.api.nvim_win_call(result.transcript_win, function()
+    vim.api.nvim_win_call(view_handles.window(result, "transcript"), function()
       assert.are.equal("", vim.fn.synIDattr(
         vim.fn.synID(done_row, 2, true), "name"))
     end)
@@ -2424,7 +2626,7 @@ describe("neoagent.ui", function()
     assert(result:open())
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local activity
     for index, line in ipairs(lines) do
       if line:find("• Running", 1, true) then activity = index break end
@@ -2451,7 +2653,7 @@ describe("neoagent.ui", function()
     assert(result:open())
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local activity
     for index, line in ipairs(lines) do
       if line:find("• Running printf", 1, true) then activity = index break end
@@ -2496,7 +2698,7 @@ describe("neoagent.ui", function()
     assert(result:open())
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local first
     for index, line in ipairs(lines) do
       if line:find("• Ran git status", 1, true) then first = index break end
@@ -2542,7 +2744,7 @@ describe("neoagent.ui", function()
     local plain_col = assert(lines[plain_index]:find("2", 1, true)) - 1
     local groups, normal_start, ansi_group = {}, nil, nil
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
       { first + 3, 0 }, { plain_row, -1 },
       { details = true, hl_name = true }
     )) do
@@ -2566,13 +2768,13 @@ describe("neoagent.ui", function()
     }).fg)
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { first, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first, 0 })
     assert.is_true(result:show_card_details())
     local details = table.concat(vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false), "\n")
+      view_handles.buffer(result, "details"), 0, -1, false), "\n")
     assert.matches("1\n2\n3\n4\n5\n6\n7\n8\n9\n10", details)
     assert.not_matches("… %+6 lines", details)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("collapses Codex search cards and expands their results", function()
@@ -2606,13 +2808,13 @@ describe("neoagent.ui", function()
     local function expand(label, expected)
       local row
       for index, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
         if line:find(label, 1, true) then row = index - 1 break end
       end
       assert.is_not_nil(row)
       local title_groups = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
         { row, 0 }, { row, -1 }, { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then
@@ -2621,12 +2823,12 @@ describe("neoagent.ui", function()
       end
       assert.is_true(title_groups.NeoagentCodexToolSuccess)
       result:focus_transcript()
-      vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+      vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row + 1, 0 })
       vim.api.nvim_exec_autocmds(
-        "CursorMoved", { buffer = result.transcript_buf })
+        "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
       local hint
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace,
         { row, 0 }, { row, -1 }, { details = true }
       )) do
         for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -2636,18 +2838,18 @@ describe("neoagent.ui", function()
       assert.are.equal("[<CR> to expand]", hint)
       assert.is_true(result:show_card_details())
       local details = table.concat(vim.api.nvim_buf_get_lines(
-        result.details_buf, 0, -1, false), "\n")
+        view_handles.buffer(result, "details"), 0, -1, false), "\n")
       assert.matches(expected, details)
       local groups = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.details_buf, result.namespace, 0, -1,
+        view_handles.buffer(result, "details"), result.details.pane.namespace, 0, -1,
         { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then groups[mark[4].hl_group] = true end
       end
       assert.is_true(groups.Normal)
       assert.is_nil(groups.NeoagentToolOutput)
-      result:_close_card_details(true)
+      close_details(result)
     end
 
     expand("• Searched needle", "lua/a%.lua:1:needle")
@@ -2680,7 +2882,7 @@ describe("neoagent.ui", function()
 
     local row, line
     for index, candidate in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if candidate:find("• Read src/", 1, true) then
         row, line = index - 1, candidate
         break
@@ -2689,16 +2891,16 @@ describe("neoagent.ui", function()
     assert.is_not_nil(row)
     assert.matches("%.%.%. $", line)
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row + 1, 0 })
     vim.api.nvim_exec_autocmds(
-      "CursorMoved", { buffer = result.transcript_buf })
+      "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
 
     local badge = "[<CR> to expand]"
-    local badge_col = vim.api.nvim_win_get_width(result.transcript_win)
+    local badge_col = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
       - 1 - vim.fn.strdisplaywidth(badge)
     local overlays = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace,
       { row, 0 }, { row, -1 }, { details = true }
     )) do
       local col = mark[4].virt_text_win_col
@@ -2711,7 +2913,7 @@ describe("neoagent.ui", function()
 
     assert.is_true(result:show_card_details())
     local details = vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false)
+      view_handles.buffer(result, "details"), 0, -1, false)
     assert.is_true(vim.tbl_contains(details, "local value = true"))
     assert.is_true(vim.tbl_contains(details, "return value"))
     local detail_header, source_row, continuation_row
@@ -2727,7 +2929,7 @@ describe("neoagent.ui", function()
     assert.is_not_nil(detail_header)
     assert.is_not_nil(source_row)
     assert.is_not_nil(continuation_row)
-    vim.api.nvim_win_call(result.details_win, function()
+    vim.api.nvim_win_call(view_handles.window(result, "details"), function()
       assert.are.equal("", vim.fn.synIDattr(
         vim.fn.synID(detail_header, 3, true), "name"))
       assert.are.equal("luaStatement", vim.fn.synIDattr(
@@ -2737,14 +2939,14 @@ describe("neoagent.ui", function()
     end)
     local groups = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.details_buf, result.namespace, 0, -1,
+        view_handles.buffer(result, "details"), result.details.pane.namespace, 0, -1,
       { details = true, hl_name = true }
     )) do
       if mark[4].hl_group then groups[mark[4].hl_group] = true end
     end
     assert.is_nil(groups.Normal)
     assert.is_nil(groups.NeoagentToolOutput)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("shows Codex shell previews with state-colored bullets", function()
@@ -2774,7 +2976,7 @@ describe("neoagent.ui", function()
     end))
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local rows = {}
     for index, line in ipairs(lines) do
       if line:find("• Running printf pending", 1, true) then
@@ -2794,7 +2996,7 @@ describe("neoagent.ui", function()
     local function groups(row)
       local found = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.namespace,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
         { row, 0 }, { row, -1 }, { details = true, hl_name = true }
       )) do
         if mark[4].hl_group then found[mark[4].hl_group] = true end
@@ -2817,25 +3019,16 @@ describe("neoagent.ui", function()
     assert.are.equal(0xcd0000, failure.fg)
     assert.is_true(failure.bold)
 
-    local cards = 0
-    for _, block in ipairs(result.blocks) do
-      if block.kind == "tool" then
-        cards = cards + 1
-        assert.is_table(block.card)
-      end
-    end
-    assert.are.equal(3, cards)
-
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, {
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), {
       rows.success + 1, 0,
     })
     assert.is_true(result:show_card_details())
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false), "plain red output"))
+      view_handles.buffer(result, "details"), 0, -1, false), "plain red output"))
     local detail_groups, ansi_group = {}, nil
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.details_buf, result.namespace, 0, -1,
+        view_handles.buffer(result, "details"), result.details.pane.namespace, 0, -1,
       { details = true, hl_name = true }
     )) do
       local group = mark[4].hl_group
@@ -2852,7 +3045,7 @@ describe("neoagent.ui", function()
     assert.are.equal(0xcd0000, vim.api.nvim_get_hl(0, {
       name = ansi_group, link = false,
     }).fg)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("shows inline expand hints for one-line pending Codex tools", function()
@@ -2872,7 +3065,7 @@ describe("neoagent.ui", function()
     result:focus_transcript()
 
     local lines = vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)
+      view_handles.buffer(result, "transcript"), 0, -1, false)
     local row
     for index, line in ipairs(lines) do
       if line:find("• Running true", 1, true) then
@@ -2881,16 +3074,16 @@ describe("neoagent.ui", function()
       end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row + 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row + 1, 0 })
     vim.api.nvim_exec_autocmds(
-      "CursorMoved", { buffer = result.transcript_buf })
+      "CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
 
     local badge = "[<CR> to expand]"
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     local badge_col = width - 1 - vim.fn.strdisplaywidth(badge)
     local overlays, decoration = {}, {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace,
       { row, 0 }, { row, -1 }, { details = true }
     )) do
       local col = mark[4].virt_text_win_col
@@ -2947,7 +3140,7 @@ describe("neoagent.ui", function()
 
     local colored
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.namespace, 0, -1,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.namespace, 0, -1,
       { details = true, hl_name = true }
     )) do
       if mark[4].hl_group and tostring(mark[4].hl_group):match("^NeoagentAnsi") then
@@ -3002,32 +3195,21 @@ describe("neoagent.ui", function()
     end))
   end)
 
-  it("reconstructs history, reports failures, and docks in place", function()
+  it("reconstructs current history, reports failures, and docks in place", function()
     local result = view({ position = "right" })
-    assert.are.equal(vim.o.columns - 2, result:_content_width())
     result:set_messages({
       { role = "user", content = "hello" },
       { role = "assistant", content = { { type = "text", text = "hi" } } },
-      { role = "branchSummary", summary = "returned branch context" },
-      { role = "custom", display = true, content = "visible checkpoint" },
-      { role = "custom", display = false, content = "hidden checkpoint" },
-      { role = "bashExecution", command = "make test", output = "failed", exitCode = 2 },
     })
     assert(result:open())
     assert(vim.wait(1000, function() return text(result):match("hello") ~= nil end))
-    local right = vim.api.nvim_win_get_config(result.transcript_win)
+    local right = vim.api.nvim_win_get_config(view_handles.window(result, "transcript"))
     result:set_position("left")
-    local left = vim.api.nvim_win_get_config(result.transcript_win)
+    local left = vim.api.nvim_win_get_config(view_handles.window(result, "transcript"))
     assert.is_true(left.col < right.col)
     result:finish({ ok = false, error = { kind = "model", message = "broken" } })
     assert(vim.wait(1000, function() return text(result):match("broken") ~= nil end))
     assert.matches("broken", text(result))
-    assert.matches("Branch context", text(result))
-    assert.matches("returned branch context", text(result))
-    assert.matches("visible checkpoint", text(result))
-    assert.not_matches("hidden checkpoint", text(result))
-    assert.matches("%$ make test", text(result))
-    assert.matches("failed", text(result))
   end)
 
   it("truncates card lines by default and recomputes them after resize", function()
@@ -3045,7 +3227,7 @@ describe("neoagent.ui", function()
 
     local function card_line()
       for _, line in ipairs(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false)) do
+        view_handles.buffer(result, "transcript"), 0, -1, false)) do
         if line:find("card content", 1, true) then return line end
       end
     end
@@ -3055,18 +3237,18 @@ describe("neoagent.ui", function()
       return line and line:find("... ", 1, true) ~= nil
     end))
     local initial_line = card_line()
-    local initial_width = vim.api.nvim_win_get_width(result.transcript_win)
+    local initial_width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.are.equal(initial_width, vim.fn.strdisplaywidth(initial_line))
     assert.matches("%.%.%. $", initial_line)
 
     vim.o.columns = 90
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(vim.wait(1000, function()
-      return vim.api.nvim_win_get_width(result.transcript_win) ~= initial_width
+      return vim.api.nvim_win_get_width(view_handles.window(result, "transcript")) ~= initial_width
         and card_line() ~= initial_line
     end))
     local resized_line = card_line()
-    local resized_width = vim.api.nvim_win_get_width(result.transcript_win)
+    local resized_width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.is_true(resized_width < initial_width)
     assert.are.equal(resized_width, vim.fn.strdisplaywidth(resized_line))
     assert.matches("%.%.%. $", resized_line)
@@ -3074,15 +3256,15 @@ describe("neoagent.ui", function()
     result:focus_transcript()
     local card_row
     for row, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line == resized_line then card_row = row break end
     end
     assert.is_not_nil(card_row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { card_row, 0 })
     assert.is_true(result:show_card_details())
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
-      result.details_buf, 0, -1, false), long))
-    result:_close_card_details(true)
+      view_handles.buffer(result, "details"), 0, -1, false), long))
+    close_details(result)
   end)
 
   it("allows configured card wrapping", function()
@@ -3092,11 +3274,11 @@ describe("neoagent.ui", function()
     assert(result:open())
     assert(vim.wait(1000, function()
       return vim.tbl_contains(vim.api.nvim_buf_get_lines(
-        result.transcript_buf, 0, -1, false), " " .. long .. " ")
+        view_handles.buffer(result, "transcript"), 0, -1, false), " " .. long .. " ")
     end))
     assert.is_true(vim.fn.strdisplaywidth(" " .. long .. " ")
-      > vim.api.nvim_win_get_width(result.transcript_win))
-    assert.is_true(vim.wo[result.transcript_win].wrap)
+      > vim.api.nvim_win_get_width(view_handles.window(result, "transcript")))
+    assert.is_true(vim.wo[view_handles.window(result, "transcript")].wrap)
   end)
 
   it("keeps read output compact while details show every returned line", function()
@@ -3112,7 +3294,7 @@ describe("neoagent.ui", function()
     })
     assert(result:open())
     assert(vim.wait(1000, function() return text(result):match("5 more lines") ~= nil end))
-    local collapsed = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local collapsed = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.is_true(vim.tbl_contains(collapsed, " line 10 "))
     assert.is_false(vim.tbl_contains(collapsed, " line 11 "))
     result:focus_transcript()
@@ -3121,12 +3303,12 @@ describe("neoagent.ui", function()
       if line:find("read README.md", 1, true) then title_row = row break end
     end
     assert.is_not_nil(title_row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { title_row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { title_row, 0 })
     assert.is_true(result:show_card_details())
     assert.is_true(vim.tbl_contains(
-      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "line 15"))
+      vim.api.nvim_buf_get_lines(view_handles.buffer(result, "details"), 0, -1, false), "line 15"))
     assert.matches("5 more lines", text(result))
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("shows bounded no-wrap compaction summaries and expands full details", function()
@@ -3156,32 +3338,36 @@ describe("neoagent.ui", function()
     assert.matches("retained suffix", text(result))
     assert.is_true(has_line_group(result, "NeoagentUserBackground"))
 
-    local block = assert(vim.tbl_filter(function(candidate)
-      return candidate.kind == "compaction"
-    end, result.blocks)[1])
-    local position = vim.api.nvim_buf_get_extmark_by_id(
-      result.transcript_buf, result.namespace, block.mark, { details = true })
-    local first = position[1] + block.card.first
-    local last = position[1] + block.card.last
+    local first, last
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+      view_handles.buffer(result, "transcript"), result.transcript.pane.namespace, 0, -1,
+      { details = true, hl_name = true })) do
+      if mark[4].line_hl_group == "NeoagentUserBackground" then
+        first = math.min(first or mark[2], mark[2])
+        last = math.max(last or mark[2], mark[2])
+      end
+    end
+    assert.is_not_nil(first)
+    assert.is_not_nil(last)
     assert.are.equal(20, last - first + 1)
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     for _, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, first, last + 1, false)) do
+      view_handles.buffer(result, "transcript"), first, last + 1, false)) do
       assert.is_true(vim.fn.strdisplaywidth(line) <= width)
     end
-    assert.are.equal(20, vim.api.nvim_win_text_height(result.transcript_win, {
+    assert.are.equal(20, vim.api.nvim_win_text_height(view_handles.window(result, "transcript"), {
       start_row = first, end_row = last,
     }).all)
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { first + 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { first + 1, 0 })
     assert.is_true(result:show_card_details())
     local details = table.concat(
-      vim.api.nvim_buf_get_lines(result.details_buf, 0, -1, false), "\n")
+      vim.api.nvim_buf_get_lines(view_handles.buffer(result, "details"), 0, -1, false), "\n")
     assert.matches("summary line 1", details)
     assert.matches("summary line 24", details)
     assert.not_matches("summary line 24", text(result))
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("outlines only the card beneath the focused transcript cursor", function()
@@ -3198,7 +3384,7 @@ describe("neoagent.ui", function()
     result:focus_transcript()
     local card_row, prose_row
     for row, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("outlined card", 1, true) then card_row = row end
       if line:find("plain prose", 1, true) then prose_row = row end
     end
@@ -3207,7 +3393,7 @@ describe("neoagent.ui", function()
     local function outline()
       local parts = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
       )) do
         for _, chunk in ipairs(mark[4].virt_text or {}) do
           parts[#parts + 1] = chunk[1]
@@ -3216,23 +3402,23 @@ describe("neoagent.ui", function()
       return table.concat(parts, "\n")
     end
 
-    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { card_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     assert.matches("╭", outline())
     assert.matches("╯", outline())
     assert.is_nil(outline():find("│", 1, true))
 
-    vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { prose_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     assert.matches("╭", outline())
     assert.matches("╯", outline())
     assert.is_nil(outline():find("│", 1, true))
 
-    vim.api.nvim_win_set_cursor(result.transcript_win, { prose_row + 3, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { prose_row + 3, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     assert.are.equal("", outline())
-    vim.api.nvim_win_set_cursor(result.transcript_win, { card_row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { card_row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     result:focus_input()
     assert(vim.wait(1000, function() return outline() == "" end))
   end)
@@ -3247,20 +3433,20 @@ describe("neoagent.ui", function()
         content = { { type = "text", text = "content" } } },
     })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("read x", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     local function expand_hints()
       local found = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1, { details = true }
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1, { details = true }
       )) do
         for _, chunk in ipairs(mark[4].virt_text or {}) do
           if chunk[1]:find("<CR> to expand", 1, true) then
@@ -3274,9 +3460,9 @@ describe("neoagent.ui", function()
     assert.are.equal(1, #bottom)
     assert.matches("^╰", bottom[1])
     assert.matches("╯$", bottom[1])
-    local count = vim.api.nvim_buf_line_count(result.transcript_buf)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { count, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = result.transcript_buf })
+    local count = vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript"))
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { count, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = view_handles.buffer(result, "transcript") })
     assert.are.equal(0, #expand_hints())
   end)
 
@@ -3291,12 +3477,12 @@ describe("neoagent.ui", function()
         arguments = { path = "x" } },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
     local function overlay_text()
       local chunks = {}
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        result.transcript_buf, result.card_namespace, 0, -1,
+        view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
         { details = true }
       )) do
         for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -3305,21 +3491,21 @@ describe("neoagent.ui", function()
       end
       return table.concat(chunks, "\n")
     end
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
+      buffer = view_handles.buffer(result, "transcript"),
     })
     assert.is_nil(overlay_text():find("to expand", 1, true))
     local tool_row
     for row, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false
+      view_handles.buffer(result, "transcript"), 0, -1, false
     )) do
       if line:find("read x", 1, true) then tool_row = row break end
     end
     assert.is_not_nil(tool_row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { tool_row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { tool_row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
+      buffer = view_handles.buffer(result, "transcript"),
     })
     assert.is_nil(overlay_text():find("to expand", 1, true))
   end)
@@ -3333,15 +3519,15 @@ describe("neoagent.ui", function()
       { type = "text", text = "response" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
+      buffer = view_handles.buffer(result, "transcript"),
     })
     local overlay = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
       { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -3353,56 +3539,33 @@ describe("neoagent.ui", function()
     assert.is_nil(value:find("<CR> to expand", 1, true))
   end)
 
-  it("uses singular word labels in response badges", function()
-    local result = view({ position = "center" })
-    result:set_messages({ { role = "assistant", content = {
-      { type = "text", text = "response" },
-    } } })
-    assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
-    result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
-    vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
-    })
-    local overlay = {}
-    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1,
-      { details = true }
-    )) do
-      for _, chunk in ipairs(mark[4].virt_text or {}) do
-        overlay[#overlay + 1] = chunk[1]
-      end
-    end
-    assert.is_not_nil(table.concat(overlay, "\n"):find(
-      "[text: 1 word, <CR> to expand]", 1, true))
-  end)
-
-  it("keeps response badges visible in narrow transcript windows", function()
+  it("keeps text-card bottom hints within narrow transcript windows", function()
     local result = view({ position = "center", width = 24 })
     result:set_messages({ { role = "assistant", content = {
       { type = "text", text = "response" },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
-      buffer = result.transcript_buf,
+      buffer = view_handles.buffer(result, "transcript"),
     })
-    local badge
+    local bottom
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      result.transcript_buf, result.card_namespace, 0, -1,
+      view_handles.buffer(result, "transcript"), result.transcript.pane.focus_namespace, 0, -1,
       { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
-        if chunk[1]:find("expand]", 1, true) then badge = chunk[1] end
+        if chunk[1]:find("to expand", 1, true) then bottom = chunk[1] end
       end
     end
-    assert.is_not_nil(badge)
-    assert.is_true(vim.fn.strdisplaywidth(badge)
-      <= vim.api.nvim_win_get_width(result.transcript_win) - 1)
-    assert.matches("to expand%]$", badge)
+    assert.is_not_nil(bottom)
+    assert.is_true(vim.fn.strdisplaywidth(bottom)
+      <= vim.api.nvim_win_get_width(view_handles.window(result, "transcript")))
+    assert.matches("^╰", bottom)
+    assert.matches("╯$", bottom)
+    assert.is_nil(bottom:find("word", 1, true))
   end)
 
   it("titles expanded cards by kind and wraps their content", function()
@@ -3416,19 +3579,19 @@ describe("neoagent.ui", function()
         content = { { type = "text", text = "content" } } },
     })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
     local function open_details(row)
-      vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+      vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
       assert.is_true(result:show_card_details())
-      return result.details_win
+      return view_handles.window(result, "details")
     end
     local function window_title(win)
       local chunks = vim.api.nvim_win_get_config(win).title or {}
       return table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
     end
     local thinking_row, tool_row
-    local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
     for index, line in ipairs(lines) do
       if line:find("trace", 1, true) then thinking_row = index end
       if line:find("read x", 1, true) then tool_row = index end
@@ -3438,11 +3601,11 @@ describe("neoagent.ui", function()
     local thinking_win = open_details(thinking_row)
     assert.matches("Thinking", window_title(thinking_win))
     assert.is_true(vim.wo[thinking_win].wrap)
-    result:_close_card_details(true)
+    close_details(result)
     local tool_win = open_details(tool_row)
     assert.matches("Tool call", window_title(tool_win))
     assert.is_true(vim.wo[tool_win].wrap)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("sizes card details to wrapped screen lines", function()
@@ -3451,18 +3614,18 @@ describe("neoagent.ui", function()
       { type = "text", text = string.rep("wrapped content ", 40) },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     assert.is_true(result:show_card_details())
     local text_height = vim.api.nvim_win_text_height(
-      result.details_win, {}).all
+      view_handles.window(result, "details"), {}).all
     local available = math.max(1,
       vim.o.lines - vim.o.cmdheight - 4)
     assert.is_true(text_height > 1)
     assert.are.equal(math.min(available, text_height),
-      vim.api.nvim_win_get_height(result.details_win))
-    result:_close_card_details(true)
+      vim.api.nvim_win_get_height(view_handles.window(result, "details")))
+    close_details(result)
   end)
 
   it("reflows open card details after an editor resize", function()
@@ -3471,31 +3634,31 @@ describe("neoagent.ui", function()
       { type = "text", text = string.rep("resized content ", 40) },
     } } })
     assert(result:open())
-    assert(vim.wait(1000, function() return not result.flush_pending end))
+    result.transcript.pane:flush()
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 1, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 1, 0 })
     assert.is_true(result:show_card_details())
-    local initial_width = vim.api.nvim_win_get_width(result.details_win)
+    local initial_width = vim.api.nvim_win_get_width(view_handles.window(result, "details"))
     vim.o.columns = 70
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(vim.wait(1000, function()
-      if not result.details_win
-          or not vim.api.nvim_win_is_valid(result.details_win) then
+      if not view_handles.window(result, "details")
+          or not vim.api.nvim_win_is_valid(view_handles.window(result, "details")) then
         return false
       end
-      local current = vim.api.nvim_win_get_config(result.details_win)
+      local current = vim.api.nvim_win_get_config(view_handles.window(result, "details"))
       return current.width < initial_width
         and current.col == math.max(0,
           math.floor((vim.o.columns - current.width) / 2))
     end))
-    local config = vim.api.nvim_win_get_config(result.details_win)
+    local config = vim.api.nvim_win_get_config(view_handles.window(result, "details"))
     assert.are.equal(math.max(0,
       math.floor((vim.o.columns - config.width) / 2)), config.col)
     local text_height = vim.api.nvim_win_text_height(
-      result.details_win, {}).all
+      view_handles.window(result, "details"), {}).all
     assert.are.equal(math.min(
       vim.o.lines - vim.o.cmdheight - 4, text_height), config.height)
-    result:_close_card_details(true)
+    close_details(result)
   end)
 
   it("refreshes streaming card details and cleans up an externally closed float", function()
@@ -3511,13 +3674,13 @@ describe("neoagent.ui", function()
     result:focus_transcript()
     local row
     for index, line in ipairs(vim.api.nvim_buf_get_lines(
-      result.transcript_buf, 0, -1, false)) do
+      view_handles.buffer(result, "transcript"), 0, -1, false)) do
       if line:find("$ long-running-command", 1, true) then row = index break end
     end
     assert.is_not_nil(row)
-    vim.api.nvim_win_set_cursor(result.transcript_win, { row, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { row, 0 })
     assert.is_true(result:show_card_details())
-    local window, buffer = result.details_win, result.details_buf
+    local window, buffer = view_handles.window(result, "details"), view_handles.buffer(result, "details")
     local output = {}
     for index = 1, 15 do output[index] = "streamed line " .. index end
     result:apply({
@@ -3530,8 +3693,8 @@ describe("neoagent.ui", function()
         :find("streamed line 15", 1, true) ~= nil
     end))
     assert.is_true(vim.api.nvim_win_get_height(window) > 1)
-    assert.are.equal(window, result.details_win)
-    assert.are.equal(buffer, result.details_buf)
+    assert.are.equal(window, view_handles.window(result, "details"))
+    assert.are.equal(buffer, view_handles.buffer(result, "details"))
     vim.api.nvim_win_set_cursor(window, { 8, 0 })
     output[#output + 1] = "streamed line 16"
     result:apply({
@@ -3547,7 +3710,7 @@ describe("neoagent.ui", function()
 
     vim.api.nvim_win_close(window, true)
     assert(vim.wait(1000, function()
-      return result.details_win == nil and result.details_buf == nil
+      return view_handles.window(result, "details") == nil and view_handles.buffer(result, "details") == nil
         and not vim.api.nvim_buf_is_valid(buffer)
     end))
   end)
@@ -3555,7 +3718,7 @@ describe("neoagent.ui", function()
   it("centers idle status before context information is available", function()
     local result = view({ position = "center" })
     assert(result:open())
-    local footer = vim.api.nvim_win_get_config(result.transcript_win).footer
+    local footer = vim.api.nvim_win_get_config(view_handles.window(result, "transcript")).footer
     local offset = 0
     local idle_offset
     for _, chunk in ipairs(footer) do
@@ -3565,7 +3728,7 @@ describe("neoagent.ui", function()
       end
       offset = offset + vim.fn.strdisplaywidth(chunk[1])
     end
-    local width = vim.api.nvim_win_get_width(result.transcript_win)
+    local width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     assert.are.equal(math.floor((width - vim.fn.strdisplaywidth(" Idle ")) / 2), idle_offset)
   end)
 
@@ -3603,47 +3766,52 @@ describe("neoagent.ui", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "user", content = "hello" } })
     assert(result:open())
-    assert.matches("NormalFloat:Normal", vim.wo[result.transcript_win].winhl)
-    assert.matches("NormalFloat:Normal", vim.wo[result.input_win].winhl)
+    assert.matches("NormalFloat:Normal", vim.wo[view_handles.window(result, "transcript")].winhl)
+    assert.matches("NormalFloat:Normal", vim.wo[view_handles.window(result, "input")].winhl)
     assert.is_not_nil(vim.api.nvim_get_hl(0, { name = "NeoagentUserBackground", link = false }).bg)
     result:set_context({
       state = "compacting",
       thinking = "high",
       context_usage = { used = 250, total = 1000, percent = 25 },
+      inference_stats = {
+        prompt_tokens_per_second = 73.75,
+        generation_tokens_per_second = 48.07,
+      },
       provider_status = "5h 80% left · weekly 60% left",
       steering = { "check the tests" },
     })
-    local title = vim.api.nvim_win_get_config(result.transcript_win).title
-    if type(title) == "table" then
-      title = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, title))
-    end
+    assert(vim.wait(1000, function()
+      return chrome_text(view_handles.window(result, "transcript"), "title")
+        == " no model · think: high "
+    end))
+    local title = chrome_text(view_handles.window(result, "transcript"), "title")
     assert.are.equal(" no model · think: high ", title)
     assert.matches("think: high", title)
     assert.is_nil(title:find("ctx ", 1, true))
     assert.is_nil(title:find("Neoagent", 1, true))
     assert.is_nil(title:find("compacting", 1, true))
     local function transcript_footer()
-      local value = vim.api.nvim_win_get_config(result.transcript_win).footer
+      local value = vim.api.nvim_win_get_config(view_handles.window(result, "transcript")).footer
       if type(value) == "table" then
         value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
       end
       return value
     end
     local function input_footer()
-      local value = vim.api.nvim_win_get_config(result.input_win).footer
+      local value = vim.api.nvim_win_get_config(view_handles.window(result, "input")).footer
       if type(value) == "table" then
         value = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, value))
       end
       return value
     end
-    local transcript_config = vim.api.nvim_win_get_config(result.transcript_win)
+    local transcript_config = vim.api.nvim_win_get_config(view_handles.window(result, "transcript"))
     assert.are.equal("left", transcript_config.footer_pos)
     local activity_border = transcript_config.footer[1][1]
     local accent_chunks = vim.tbl_filter(function(chunk)
       return chunk[2] == "NeoagentAccent"
     end, transcript_config.footer)
     assert.are.equal(1, #accent_chunks)
-    assert.are.equal(result.spinner_frames[result.spinner_frame], accent_chunks[1][1])
+    assert.is_true(vim.tbl_contains(result.spinner_frames, accent_chunks[1][1]))
     local footer_offset = 0
     local context_start
     local before_context = {}
@@ -3655,33 +3823,49 @@ describe("neoagent.ui", function()
       before_context[#before_context + 1] = chunk[1]
       footer_offset = footer_offset + vim.fn.strdisplaywidth(chunk[1])
     end
-    assert.are.equal(math.floor(vim.api.nvim_win_get_width(result.transcript_win) / 2), context_start)
+    assert.are.equal(math.floor(vim.api.nvim_win_get_width(view_handles.window(result, "transcript")) / 2), context_start)
     assert.matches("Compacting%.%.%. $", table.concat(before_context))
-    local narrow_footer = result:_transcript_footer(24)
-    local narrow_text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, narrow_footer))
+    local function resized_footer(columns, width)
+      vim.o.columns = columns
+      vim.api.nvim_exec_autocmds("VimResized", {})
+      assert(vim.wait(1000, function()
+        return vim.api.nvim_win_get_width(view_handles.window(result, "transcript")) == width
+          and vim.fn.strdisplaywidth(transcript_footer()) == width
+      end))
+      return transcript_footer()
+    end
+    local narrow_text = resized_footer(28, 24)
     assert.are.equal(24, vim.fn.strdisplaywidth(narrow_text))
     assert.matches("^…", narrow_text)
     assert.matches("…$", narrow_text)
-    local near_footer = result:_transcript_footer(32)
-    local near_text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, near_footer))
+    local near_text = resized_footer(36, 32)
     assert.are.equal(32, vim.fn.strdisplaywidth(near_text))
     assert.matches("Compacting%.%.%.", near_text)
-    local tiny_footer = result:_transcript_footer(1)
-    assert.are.equal("…", table.concat(vim.tbl_map(function(chunk) return chunk[1] end, tiny_footer)))
+    vim.o.columns = 120
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_win_get_width(view_handles.window(result, "transcript")) > 32
+        and transcript_footer():find("Compacting...", 1, true) ~= nil
+        and transcript_footer():find("ctx 250/1k (25.0%)", 1, true) ~= nil
+        and transcript_footer():find("tg 48.1 t/s", 1, true) ~= nil
+        and transcript_footer():find("pp ", 1, true) == nil
+        and vim.fn.strdisplaywidth(transcript_footer())
+          == vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
+    end))
     assert.matches("Compacting%.%.%.", transcript_footer())
     assert.is_nil(transcript_footer():find("think:", 1, true))
     assert.is_not_nil(transcript_footer():find(
       "ctx 250/1k (25.0%)", 1, true
     ))
+    assert.is_not_nil(transcript_footer():find("tg 48.1 t/s", 1, true))
+    assert.is_nil(transcript_footer():find("pp ", 1, true))
     assert.is_nil(transcript_footer():find("weekly 60% left", 1, true))
-    assert.are.equal(vim.api.nvim_win_get_width(result.transcript_win),
+    assert.are.equal(vim.api.nvim_win_get_width(view_handles.window(result, "transcript")),
       vim.fn.strdisplaywidth(transcript_footer()))
-    local input_config = vim.api.nvim_win_get_config(result.input_win)
+    local input_config = vim.api.nvim_win_get_config(view_handles.window(result, "input"))
     assert.is_nil(input_config.title)
     assert.are.equal("center", input_config.footer_pos)
-    assert.are.equal(
-      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
-      input_footer())
+    assert.are.equal(" <C-g>? help ", input_footer())
     assert(vim.wait(1000, function()
       return text(result):find("Steering: check the tests", 1, true) ~= nil
         and text(result):find("<A-Up> to edit queued messages", 1, true) ~= nil
@@ -3692,14 +3876,12 @@ describe("neoagent.ui", function()
     })
     result:set_context({ steering = {} })
     assert(vim.wait(1000, function()
-      local lines = vim.api.nvim_buf_get_lines(result.transcript_buf, 0, -1, false)
+      local lines = vim.api.nvim_buf_get_lines(view_handles.buffer(result, "transcript"), 0, -1, false)
       return vim.tbl_contains(lines, " check the tests ")
         and text(result):find("Steering:", 1, true) == nil
     end))
     result:set_context({ provider_status = false })
-    assert.are.equal(
-      " <C-r> history · <A-r> resume · <A-m> select model · <C-c> clear/cancel ",
-      input_footer())
+    assert.are.equal(" <C-g>? help ", input_footer())
     assert.is_nil(transcript_footer():find("5h 80% left", 1, true))
     assert.is_not_nil(transcript_footer():find("ctx 250/1k (25.0%)", 1, true))
     assert.matches("Compacting%.%.%.", transcript_footer())
@@ -3710,8 +3892,10 @@ describe("neoagent.ui", function()
       return current and current ~= first
     end))
     result:set_context({ state = "running" })
-    assert.matches("Working%.%.%.", transcript_footer())
-    assert.are.equal(activity_border, vim.api.nvim_win_get_config(result.transcript_win).footer[1][1])
+    assert(vim.wait(1000, function()
+      return transcript_footer():find("Working...", 1, true) ~= nil
+    end))
+    assert.are.equal(activity_border, vim.api.nvim_win_get_config(view_handles.window(result, "transcript")).footer[1][1])
     assert.is_nil(text(result):match("Working%.%.%."))
     result:set_context({ state = "idle", steering = {} })
     assert(vim.wait(1000, function()
@@ -3722,7 +3906,7 @@ describe("neoagent.ui", function()
         and footer_text:find("ctx 250/1k (25.0%)", 1, true) ~= nil
         and text(result):find("Steering:", 1, true) == nil
     end))
-    assert.are.equal(activity_border, vim.api.nvim_win_get_config(result.transcript_win).footer[1][1])
+    assert.are.equal(activity_border, vim.api.nvim_win_get_config(view_handles.window(result, "transcript")).footer[1][1])
   end)
 
   it("scrolls the transcript after submit and when leaving it", function()
@@ -3757,32 +3941,32 @@ describe("neoagent.ui", function()
     end
 
     local result, submissions = scrolling_view()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 2, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 2, 0 })
     submit(result)
     assert(vim.wait(1000, function() return submissions() == 1 end))
-    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
-      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+    assert.are.equal(vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript")),
+      vim.api.nvim_win_get_cursor(view_handles.window(result, "transcript"))[1])
 
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 3, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 3, 0 })
     result:focus_input()
-    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
-      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+    assert.are.equal(vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript")),
+      vim.api.nvim_win_get_cursor(view_handles.window(result, "transcript"))[1])
     result:close()
 
     local fixed, fixed_submissions = scrolling_view({
       scroll_on_submit = false,
       scroll_on_transcript_leave = false,
     })
-    vim.api.nvim_win_set_cursor(fixed.transcript_win, { 2, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(fixed, "transcript"), { 2, 0 })
     submit(fixed)
     assert(vim.wait(1000, function() return fixed_submissions() == 1 end))
-    assert.are.equal(2, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+    assert.are.equal(2, vim.api.nvim_win_get_cursor(view_handles.window(fixed, "transcript"))[1])
 
     fixed:focus_transcript()
-    vim.api.nvim_win_set_cursor(fixed.transcript_win, { 3, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(fixed, "transcript"), { 3, 0 })
     fixed:focus_input()
-    assert.are.equal(3, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+    assert.are.equal(3, vim.api.nvim_win_get_cursor(view_handles.window(fixed, "transcript"))[1])
   end)
 
   it("scrolls the transcript after it is hidden and shown again", function()
@@ -3799,18 +3983,18 @@ describe("neoagent.ui", function()
       assert(vim.wait(1000, function()
         return text(result):find("line 40", 1, true) ~= nil
       end))
-      vim.api.nvim_win_set_cursor(result.transcript_win, { line, 0 })
+      vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { line, 0 })
       result:close()
       assert(result:open())
       return result
     end
 
     local result = open_at_line(nil, 2)
-    assert.are.equal(vim.api.nvim_buf_line_count(result.transcript_buf),
-      vim.api.nvim_win_get_cursor(result.transcript_win)[1])
+    assert.are.equal(vim.api.nvim_buf_line_count(view_handles.buffer(result, "transcript")),
+      vim.api.nvim_win_get_cursor(view_handles.window(result, "transcript"))[1])
 
     local fixed = open_at_line({ scroll_on_reopen = false }, 3)
-    assert.are.equal(3, vim.api.nvim_win_get_cursor(fixed.transcript_win)[1])
+    assert.are.equal(3, vim.api.nvim_win_get_cursor(view_handles.window(fixed, "transcript"))[1])
   end)
 
   it("places auto UI over another editor window", function()
@@ -3821,7 +4005,7 @@ describe("neoagent.ui", function()
     local result = view({ position = "auto", margin = 1 })
     assert(result:open(origin))
     local other_pos = vim.api.nvim_win_get_position(other)
-    local cfg = vim.api.nvim_win_get_config(result.transcript_win)
+    local cfg = vim.api.nvim_win_get_config(view_handles.window(result, "transcript"))
     assert.is_true(cfg.col >= other_pos[2])
     assert.is_true(cfg.width <= vim.api.nvim_win_get_width(other))
   end)
@@ -3852,10 +4036,10 @@ describe("neoagent.ui", function()
     assert(result:open())
     assert(vim.wait(1000, function() return text(result):match("second line") ~= nil end))
     result:focus_transcript()
-    vim.api.nvim_win_set_cursor(result.transcript_win, { 2, 0 })
+    vim.api.nvim_win_set_cursor(view_handles.window(result, "transcript"), { 2, 0 })
     vim.cmd("normal! Vj")
     local mode = vim.api.nvim_get_mode().mode
-    local cursor = vim.api.nvim_win_get_cursor(result.transcript_win)
+    local cursor = vim.api.nvim_win_get_cursor(view_handles.window(result, "transcript"))
     local anchor = vim.fn.getpos("v")
     result:apply({ type = "text_delta", text = "streamed later" })
     local next_tick = false
@@ -3863,18 +4047,18 @@ describe("neoagent.ui", function()
     assert(vim.wait(1000, function() return next_tick end))
     assert.is_nil(text(result):match("streamed later"))
     assert.are.equal(mode, vim.api.nvim_get_mode().mode)
-    assert.are.same(cursor, vim.api.nvim_win_get_cursor(result.transcript_win))
+    assert.are.same(cursor, vim.api.nvim_win_get_cursor(view_handles.window(result, "transcript")))
     assert.are.same(anchor, vim.fn.getpos("v"))
 
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
     result:focus_input()
     vim.api.nvim_exec_autocmds("SafeState", {})
     assert(vim.wait(1000, function() return text(result):match("streamed later") ~= nil end))
-    local old_width = vim.api.nvim_win_get_width(result.transcript_win)
+    local old_width = vim.api.nvim_win_get_width(view_handles.window(result, "transcript"))
     vim.o.columns = 90
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(vim.wait(1000, function()
-      return vim.api.nvim_win_get_width(result.transcript_win) ~= old_width
+      return vim.api.nvim_win_get_width(view_handles.window(result, "transcript")) ~= old_width
     end))
   end)
 

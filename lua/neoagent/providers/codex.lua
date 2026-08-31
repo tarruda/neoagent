@@ -75,24 +75,6 @@ local function limit_label(limit, window)
   return duration .. " limit"
 end
 
-local function parse_limits(status)
-  local blocks = {}
-  for _, part in ipairs(vim.split(status, " · ", { plain = true })) do
-    local window, available = part:match("^(%S+)%s+(%d+%.?%d*)%% left$")
-    local percent = tonumber(available)
-    if window and window ~= "" and percent then
-      local label = window == "weekly" and "Weekly"
-        or window == "5h" and "5h" or window
-      blocks[#blocks + 1] = {
-        type = "limit",
-        label = label .. " limit",
-        remaining = math.max(0, math.min(1, percent / 100)),
-      }
-    end
-  end
-  return blocks
-end
-
 local function grouped_number(value)
   local digits = tostring(math.floor(value + 0.5))
   while true do
@@ -194,11 +176,7 @@ function M.new(opts, resources)
     timeout_ms = service_opts.timeout_ms,
     max_response_bytes = service_opts.max_response_bytes,
   })
-  local status = {
-    type = "status",
-    text = "Usage loads when this console opens",
-    level = "muted",
-  }
+  local status
   local connection_status
   local limits = {}
   local limit_order = {}
@@ -216,7 +194,8 @@ function M.new(opts, resources)
   local destroyed = false
   local active_runs = {}
   local refresh_run
-  local dashboard = provider_state.new({ blocks = { status } })
+  local report = resources.report or function() end
+  local dashboard = provider_state.new({ blocks = {} }, { report = report })
 
   local function has_account_data()
     return account ~= nil or #limit_order > 0 or credits ~= nil
@@ -321,7 +300,7 @@ function M.new(opts, resources)
     if destroyed then return end
     local ok, err = dashboard:push({ blocks = blocks() })
     if not ok then
-      vim.notify("neoagent Codex dashboard failed: "
+      report("neoagent Codex dashboard failed: "
         .. tostring(err and err.message or err), vim.log.levels.ERROR)
     end
   end
@@ -488,10 +467,10 @@ function M.new(opts, resources)
 
   local function refresh(ctx)
     if refresh_run and not refresh_run:is_done() then return refresh_run end
-    status = has_account_data() and status or {
-      type = "status", text = "Loading account usage", level = "muted",
-    }
-    publish()
+    if not has_account_data() and status then
+      status = nil
+      publish()
+    end
     local run = start_tracked(function()
       local result = client:usage(ctx):await()
       if result.ok == false then
@@ -534,7 +513,6 @@ function M.new(opts, resources)
   local service = {
     id = resources.provider_id or "openai-codex",
     name = "Codex",
-    open_operation = "refresh",
     operations = {},
   }
 
@@ -747,35 +725,12 @@ function M.new(opts, resources)
         if not checked_at then status = nil end
         publish()
       elseif text then
-        local parsed = parse_limits(text)
-        if #parsed > 0 then
-          for _, block in ipairs(parsed) do
-            local id = "legacy-" .. tostring(#limit_order + 1)
-            local window_minutes = block.label == "Weekly limit" and 10080
-              or block.label == "5h limit" and 300 or nil
-            local name
-            if not window_minutes then
-              name = block.label:gsub(" limit$", "")
-            end
-            limit_order[#limit_order + 1] = id
-            limits[id] = {
-              id = id,
-              name = name,
-              primary = {
-                remaining = block.remaining,
-                window_minutes = window_minutes,
-              },
-            }
-          end
-          if not checked_at then status = nil end
-        else
-          status = {
-            type = "status",
-            text = text,
-            level = text:lower():find("reconnect", 1, true)
-              and "warn" or "info",
-          }
-        end
+        status = {
+          type = "status",
+          text = text,
+          level = text:lower():find("reconnect", 1, true)
+            and "warn" or "info",
+        }
         publish()
       end
     elseif event.type == "usage" then
@@ -800,6 +755,5 @@ function M.new(opts, resources)
 end
 
 M.duration_label = duration_label
-M.parse_limits = parse_limits
 
 return M

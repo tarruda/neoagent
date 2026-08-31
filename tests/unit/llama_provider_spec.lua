@@ -1,12 +1,15 @@
 local async = require("neoagent.async")
 local llama = require("neoagent.providers.llama")
+local llama_catalog = require("neoagent.providers.llama.catalog")
+local model_catalog = require("neoagent.model_catalog")
 local models_module = require("neoagent.models")
-local provider_catalog = require("neoagent.provider_catalog")
 local provider_service = require("neoagent.provider_service")
 local fake_transport = require("tests.helpers.fake_transport")
 local util = require("neoagent.util")
 
 describe("neoagent llama.cpp Provider Service", function()
+  local catalogs = setmetatable({}, { __mode = "k" })
+
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end))
     return run:result()
@@ -24,19 +27,50 @@ describe("neoagent llama.cpp Provider Service", function()
     }, extra or {})
   end
 
-  local function service(transport, store, models, auth, catalog_cache)
-    return llama.new({
+  local function service(transport, store, models, auth, ttl_ms, report)
+    local provider = {
       api = "openai-completions",
       base_url = "http://127.0.0.1:8080/v1",
       auth_optional = true,
-      catalog_cache = catalog_cache,
       models = models or {},
-    }, {
+    }
+    local catalog_value = model_catalog.new({
+      provider_id = "llama.cpp",
+      provider = provider,
+      definition = {
+        ttl_ms = type(ttl_ms) == "number" and ttl_ms or 5 * 60 * 1000,
+        discover = llama_catalog.discover,
+        transform_model = llama_catalog.transform,
+      },
+      models = provider.models,
       store = store,
       transport = transport,
-      auth = auth,
-      explicit = true,
+      authentication = auth,
+      report = report,
     })
+    local value = llama.new(provider, {
+      catalog = catalog_value,
+      transport = transport,
+      auth = auth,
+      report = report,
+    })
+    catalogs[value] = catalog_value
+    return value
+  end
+
+  local function catalog_for(value)
+    return assert(catalogs[value], "test service has no model catalog")
+  end
+
+  local function catalog_models(value)
+    local result = vim.tbl_values(catalog_for(value):snapshot().models)
+    table.sort(result, function(left, right) return left.id < right.id end)
+    return result
+  end
+
+  local function catalog_refresh(value, opts)
+    opts = opts or {}
+    return catalog_for(value):refresh({ force = opts.force == true })
   end
 
   local function block(snapshot, block_type, label)
@@ -82,317 +116,71 @@ describe("neoagent llama.cpp Provider Service", function()
       }) },
     }
     local value = service(transport)
-    assert.are.same({}, value:get_models())
-    local refresh = value:refresh_models({
+    assert.are.same({}, catalog_models(value))
+    local refresh = catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     })
     wait(refresh)
-    local models = value:get_models()
-    assert.are.same({ "qwen3", "vision", "dolphin" },
+    local models = catalog_models(value)
+    assert.are.same({ "dolphin", "qwen3", "vision" },
       vim.tbl_map(function(entry) return entry.id end, models))
-    assert.are.same({ "text", "image" }, models[2].input)
-    assert.are.same({ "text" }, models[3].input)
+    assert.are.same({ "text", "image" }, models[3].input)
+    assert.are.same({ "text" }, models[1].input)
     local state = value:state()
-    assert.are.equal("Router ready", state.blocks[1].text)
-    assert.are.equal("http://127.0.0.1:8080", state.blocks[2].value)
+    local endpoint = block(state, "field", "Endpoint")
+    assert.are.equal("http://127.0.0.1:8080", endpoint.value)
+    assert.are.equal("success", endpoint.level)
+    assert.are.equal("qwen3, vision",
+      block(state, "field", "Loaded models").value)
+    assert.are.equal("3 available",
+      block(state, "field", "Models").value)
+    assert.is_nil(block(state, "field", "Events"))
+    assert.is_nil(block(state, "activity"))
     assert.is_nil(block(state, "list"))
   end)
 
-  it("restores the persisted catalog before network refresh", function()
-    local stored = {
-      models = { model("cached", "loaded") },
-      checked_at = 1,
-    }
+  it("bounds loaded model summaries", function()
+    local long_id = string.rep("a", 508) .. "é"
     local transport = fake_transport.new()
-    transport.fetches = {
-      { body = catalog({ model("fresh", "loaded") }) },
-    }
-    local store = {
-      read = function() return stored end,
-      write = function() return true end,
-      delete = function() return true end,
-    }
-    local value = service(transport, store)
-    local helper = provider_catalog.new({ service = value, store = store })
-    local first = wait(helper:refresh({ allow_network = false }))
-    assert.is_true(first.ok)
-    assert.are.same({ "cached" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+    transport.fetches = { { body = catalog({
+      model(long_id, "loaded"),
+      model("z", "loaded"),
+    }) } }
+    local value = service(transport)
 
-    local second = wait(helper:refresh({ allow_network = true }))
-    assert.is_true(second.ok)
-    assert.are.same({ "fresh" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+    local refreshed = wait(catalog_refresh(value, {
+      allow_network = true,
+      publish = function(publication) publication.update() return true end,
+    }))
+
+    assert.is_true(refreshed.ok)
+    assert.are.same({ long_id, "z" },
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
+    local loaded_models = block(value:state(), "field", "Loaded models").value
+    assert.is_true(util.is_valid_utf8(loaded_models))
+    assert.is_true(#loaded_models <= 512)
+    assert.are.equal("...", loaded_models:sub(-3))
   end)
 
-  it("starts live events when the console opens from a cached catalog", function()
+  it("reports when no router model is loaded", function()
     local transport = fake_transport.new()
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return {
-            ok = true,
-            configured = true,
-            request_opts = {
-              headers = { Authorization = "Bearer cached-router" },
-            },
-          }
-        end)
+    transport.fetches = { { body = catalog({
+      model("qwen3", "unloaded"),
+    }) } }
+    local value = service(transport)
+    assert(wait(catalog_refresh(value, {
+      allow_network = true,
+      publish = function(publication)
+        publication.update()
+        return true
       end,
-    }
-    local value = llama.new({
-      api = "openai-completions",
-      base_url = "http://127.0.0.1:8080/v1",
-      auth_optional = true,
-      models = {},
-    }, {
-      transport = transport,
-      auth = auth_manager,
-      startup = false,
-    })
-    assert(wait(value:refresh_models({
-      stored = {
-        models = { {
-          id = "cached",
-          status = { value = "unloaded" },
-          context_window = 32000,
-          meta = { size = 7 * 1024 * 1024 * 1024 },
-        } },
-        checked_at = 1,
-      },
-      allow_network = false,
-      publish = function(publication) publication.update() end,
     })).ok)
 
-    local unsubscribe = value:subscribe(function() end)
-    assert(vim.wait(1000, function() return #transport.requests == 1 end))
-    assert.are.equal("http://127.0.0.1:8080/models/sse",
-      transport.requests[1].url)
-    assert.are.equal("Bearer cached-router",
-      transport.requests[1].headers.Authorization)
-    unsubscribe()
-    value:destroy()
-  end)
-
-  it("fetches the catalog at construction when credentials exist", function()
-    local transport = fake_transport.new()
-    transport.fetches = {
-      { body = catalog({ model("startup", "loaded") }) },
-    }
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return {
-            ok = true,
-            configured = true,
-            request_opts = { headers = { Authorization = "Bearer local" } },
-            metadata = { server_url = "http://127.0.0.1:8080" },
-          }
-        end)
-      end,
-    }
-    local value = service(transport, nil, nil, auth_manager)
-    assert(vim.wait(1000, function() return #value:get_models() == 1 end))
-    assert.are.same({ "startup" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
-    assert.are.equal(1, #transport.fetch_requests)
-  end)
-
-  it("queries the router at startup when catalog caching is disabled", function()
-    local transport = fake_transport.new()
-    transport.fetches = {
-      { body = catalog({ model("fresh", "loaded") }) },
-    }
-    local stored = {
-      models = { model("cached", "loaded") },
-      checked_at = util.now_ms(),
-    }
-    local reads, writes = 0, 0
-    local store = {
-      read = function()
-        reads = reads + 1
-        return util.copy(stored)
-      end,
-      write = function(_, value)
-        writes = writes + 1
-        stored = util.copy(value)
-        return true
-      end,
-      delete = function() return true end,
-    }
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return {
-            ok = true,
-            configured = true,
-            request_opts = { headers = { Authorization = "Bearer local" } },
-            metadata = { server_url = "http://127.0.0.1:8080" },
-          }
-        end)
-      end,
-    }
-    local value = service(transport, store, nil, auth_manager, false)
-    assert(vim.wait(1000, function() return #value:get_models() == 1 end))
-    assert.are.same({ "fresh" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
-    assert.are.equal(0, reads)
-    assert.are.equal(0, writes)
-    assert.are.equal(1, #transport.fetch_requests)
-  end)
-
-  it("reuses the default short-lived llama.cpp catalog cache", function()
-    local transport = fake_transport.new()
-    local reads, writes = 0, 0
-    local store = {
-      read = function()
-        reads = reads + 1
-        return {
-          models = { {
-            id = "cached",
-            status = { value = "loaded" },
-            context_window = 32000,
-            meta = { size = 7 * 1024 * 1024 * 1024 },
-          } },
-          checked_at = util.now_ms(),
-        }
-      end,
-      write = function() writes = writes + 1 return true end,
-      delete = function() return true end,
-    }
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return { ok = true, configured = false }
-        end)
-      end,
-    }
-    local value = service(transport, store, nil, auth_manager, {
-      ttl_ms = 60 * 1000,
-    })
-    assert(vim.wait(1000, function() return #value:get_models() == 1 end))
-    assert.are.equal("cached", value:get_models()[1].id)
-    assert.are.equal(1, reads)
-    assert.are.equal(0, writes)
-    assert.are.equal(0, #transport.fetch_requests)
-  end)
-
-  it("persists the fresh catalog before opening the browser", function()
-    local transport = fake_transport.new()
-    local written
-    local store = {
-      read = function()
-        return {
-          models = { model("stale", "loaded") },
-          checked_at = util.now_ms(),
-        }
-      end,
-      write = function(_, _, value)
-        written = util.copy(value)
-        return true
-      end,
-      delete = function() return true end,
-    }
-    local value = service(transport, store)
-    local selected = browse(value, transport, {
-      model("created-by-client", "unloaded"),
-    })
-    assert.are.equal("created-by-client", selected.items[1].id)
-    assert.are.equal("created-by-client", written.models[1].id)
-  end)
-
-  it("skips the startup catalog fetch unless the provider is configured or the default model", function()
-    local transport = fake_transport.new()
-    transport.fetches = {
-      { body = catalog({ model("fresh", "loaded") }) },
-    }
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return {
-            ok = true,
-            configured = true,
-            request_opts = { headers = { Authorization = "Bearer local" } },
-            metadata = { server_url = "http://127.0.0.1:8080" },
-          }
-        end)
-      end,
-    }
-    local value = llama.new({
-      api = "openai-completions",
-      base_url = "http://127.0.0.1:8080/v1",
-      models = {},
-    }, {
-      transport = transport,
-      auth = auth_manager,
-      provider_id = "llama.cpp",
-    })
-    local fetched = vim.wait(200, function()
-      return #transport.fetch_requests > 0
-    end)
-    assert.is_false(fetched)
-    assert.are.same({}, value:get_models())
-
-    local defaulted = llama.new({
-      api = "openai-completions",
-      base_url = "http://127.0.0.1:8080/v1",
-      models = {},
-    }, {
-      transport = transport,
-      auth = auth_manager,
-      provider_id = "llama.cpp",
-      default_model = { provider = "llama.cpp", model = "qwen3" },
-    })
-    assert(vim.wait(1000, function() return #defaulted:get_models() == 1 end))
-    assert.are.same({ "fresh" },
-      vim.tbl_map(function(entry) return entry.id end, defaulted:get_models()))
-  end)
-
-  it("fetches the startup catalog anonymously when login is optional", function()
-    local transport = fake_transport.new()
-    transport.fetches = { { body = catalog({ model("anonymous", "loaded") }) } }
-    local optional
-    local auth_manager = {
-      resolve = function(_, _, opts)
-        optional = opts.optional
-        return async.run(function()
-          return {
-            ok = true,
-            configured = false,
-          }
-        end)
-      end,
-    }
-    local value = service(transport, nil, nil, auth_manager)
-    assert(vim.wait(1000, function() return #value:get_models() == 1 end))
-    assert.is_true(optional)
-    assert.are.equal("anonymous", value:get_models()[1].id)
-    assert.is_nil(transport.fetch_requests[1].headers.Authorization)
-  end)
-
-  it("publishes startup catalog failures", function()
-    local prefix = "Catalog refresh failed: "
-    local message = string.rep("a", 508 - #prefix)
-      .. "é" .. string.rep("b", 16)
-    local auth_manager = {
-      resolve = function()
-        return async.run(function()
-          return { ok = false, error = util.error("auth", message) }
-        end)
-      end,
-    }
-    local value = service(fake_transport.new(), nil, nil, auth_manager)
-    assert(vim.wait(1000, function()
-      local state = value:state()
-      return state.blocks[1].text == "Catalog unavailable"
-        and block(state, "activity") ~= nil
-    end))
-    assert.are.equal("Catalog unavailable", value:state().blocks[1].text)
-    local activity = block(value:state(), "activity").entries[1].message
-    assert.are.equal(prefix .. string.rep("a", 508 - #prefix) .. "...",
-      activity)
-    assert.is_true(util.is_valid_utf8(activity))
+    assert.are.equal("No model loaded",
+      block(value:state(), "field", "Loaded model").value)
+    assert.are.equal("1 available",
+      block(value:state(), "field", "Models").value)
   end)
 
   it("loads a selected model with progress and refresh", function()
@@ -433,7 +221,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert(result.ok, vim.inspect(result.error))
     assert.is_true(#progress >= 1)
     assert.are.same({ "dolphin", "qwen3" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("unloads a selected loaded model", function()
@@ -463,7 +251,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert(result.ok, vim.inspect(result.error))
     assert.is_true(#progress >= 1)
     assert.are.same({ "qwen3" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("cancels load and unload workflows from user choices", function()
@@ -537,7 +325,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert(result.ok, vim.inspect(result.error))
     assert.is_true(#progress >= 1)
     assert.are.same({ "owner/repo:Q4_K_M" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("formats context, size, and nonloaded descriptions", function()
@@ -554,7 +342,7 @@ describe("neoagent llama.cpp Provider Service", function()
       }) },
     }
     local value = service(transport)
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -577,7 +365,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.matches("server preset", by_id["preset-one"])
     assert.matches("models dir · loaded", by_id["dir-one"])
     local entries = {}
-    for _, entry in ipairs(value:get_models()) do entries[entry.id] = entry end
+    for _, entry in ipairs(catalog_models(value)) do entries[entry.id] = entry end
     assert.are.equal(16384, entries.unloadedctx.context_window)
   end)
 
@@ -601,10 +389,7 @@ describe("neoagent llama.cpp Provider Service", function()
       delete = function() return true end,
     }
     local value = service(transport, store)
-    local result = wait(provider_catalog.new({ service = value, store = store }):refresh({
-      allow_network = true,
-      force = true,
-    }))
+    local result = wait(catalog_refresh(value, { force = true }))
     assert(result.ok, vim.inspect(result.error))
     local encoded = vim.json.encode(persisted)
     assert.is_nil(encoded:find("super%-secret"))
@@ -612,7 +397,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.is_nil(encoded:find('"args"', 1, true))
     assert.is_nil(encoded:find('"preset"', 1, true))
     assert.are.equal(8192, persisted.models[1].context_window)
-    assert.are.equal(8192, value:get_models()[1].context_window)
+    assert.are.equal(8192, catalog_models(value)[1].context_window)
   end)
 
   it("subscribes listeners and isolates failures", function()
@@ -624,11 +409,11 @@ describe("neoagent llama.cpp Provider Service", function()
     local value = service(transport)
     local published
     local unsubscribe = value:subscribe(function(snapshot) published = snapshot end)
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -637,16 +422,50 @@ describe("neoagent llama.cpp Provider Service", function()
     unsubscribe()
 
     local notifications = {}
-    local original_notify = vim.notify
-    vim.notify = function(message) notifications[#notifications + 1] = message end
+    value = service(transport, nil, nil, nil, nil, function(message)
+      notifications[#notifications + 1] = message
+    end)
     value:subscribe(function() error("listener boom") end)
     transport.fetches[#transport.fetches + 1] = { body = catalog({ model("three", "loaded") }) }
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
-    vim.notify = original_notify
     assert.matches("listener boom", notifications[1])
+  end)
+
+  it("clears failed downloads and ignores unrelated router events", function()
+    local function event(kind, data, model_id)
+      return "data: " .. vim.json.encode({
+        model = model_id == nil and "owner/repo:Q4_K_M" or model_id,
+        event = kind,
+        data = data or {},
+      }) .. "\n\n"
+    end
+    local transport = fake_transport.new()
+    transport.responses = { { chunks = {
+      event("model_status", { status = "loading" }, ""),
+      event("download_progress", {
+        progress = { model = { done = 512, total = 1024 } },
+      }),
+      event("metadata_changed"),
+      event("download_failed", { error = "disk full" }),
+    } } }
+    local value = service(transport)
+    local snapshots = {}
+    local unsubscribe = value:subscribe(function(snapshot)
+      snapshots[#snapshots + 1] = snapshot
+    end)
+
+    assert(vim.wait(1000, function() return #snapshots >= 3 end))
+    assert.are.equal(3, #snapshots)
+    assert.are.equal(0.5,
+      block(snapshots[1], "progress", "Downloading owner/repo:Q4_K_M").value)
+    assert.is_nil(block(snapshots[2], "progress"))
+    assert.is_nil(block(snapshots[3], "progress"))
+
+    unsubscribe()
+    value:destroy()
   end)
 
   it("runs the refresh operation with resolved metadata", function()
@@ -655,7 +474,7 @@ describe("neoagent llama.cpp Provider Service", function()
       { body = catalog({ model("qwen3", "loaded") }) },
     }
     local value = service(transport)
-    local run = provider_service.run(value, "refresh", {
+    local run = provider_service.run(value, "reload", {
       resolve_auth = function()
         return async.run(function()
           return {
@@ -670,7 +489,7 @@ describe("neoagent llama.cpp Provider Service", function()
     local result = wait(run)
     assert(result.ok, vim.inspect(result.error))
     assert.are.same({ "qwen3" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
     assert.matches("/models%?reload=1", transport.fetch_requests[1].url)
     assert.are.equal("http://mac.lan.internal:8080",
       block(value:state(), "field", "Endpoint").value)
@@ -686,7 +505,7 @@ describe("neoagent llama.cpp Provider Service", function()
       }) },
     }
     local value = service(transport)
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -924,9 +743,10 @@ describe("neoagent llama.cpp Provider Service", function()
     transport.fetches = {
       { body = catalog({ model("qwen3", "loaded") }) },
       { body = catalog({ model("qwen3", "loaded") }) },
+      { body = catalog({ model("qwen3", "loaded") }) },
     }
     local value = service(transport)
-    local first = wait(provider_service.run(value, "refresh", {
+    local first = wait(provider_service.run(value, "reload", {
       resolve_auth = function()
         return async.run(function()
           return { ok = true, configured = true, metadata = { server_url = "" } }
@@ -935,12 +755,27 @@ describe("neoagent llama.cpp Provider Service", function()
     }))
     assert(first.ok, vim.inspect(first.error))
 
-    local second = wait(provider_service.run(value, "refresh", {
+    local second = wait(provider_service.run(value, "reload", {
       resolve_auth = function()
         return async.run(function() return { ok = true, configured = false } end)
       end,
     }))
     assert(second.ok, vim.inspect(second.error))
+
+    local third = wait(provider_service.run(value, "reload", {
+      resolve_auth = function()
+        return async.run(function()
+          return {
+            ok = true,
+            configured = true,
+            metadata = { server_url = "http://localhost:9090/v1" },
+          }
+        end)
+      end,
+    }))
+    assert(third.ok, vim.inspect(third.error))
+    assert.are.equal("http://localhost:9090",
+      block(value:state(), "field", "Endpoint").value)
   end)
 
   it("propagates non-cancel interaction failures", function()
@@ -969,7 +804,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.matches("interaction boom", result.error.message)
   end)
 
-  it("exposes the catalog refresh operation through the catalog helper", function()
+  it("refreshes its injected model catalog", function()
     local transport = fake_transport.new()
     transport.fetches = {
       { body = catalog({ model("qwen3", "loaded") }) },
@@ -980,35 +815,26 @@ describe("neoagent llama.cpp Provider Service", function()
       delete = function() return true end,
     }
     local value = service(transport, store)
-    local helper = provider_catalog.new({ service = value, store = store })
-    local result = wait(helper:refresh())
+    local result = wait(catalog_refresh(value))
     assert(result.ok, vim.inspect(result.error))
     assert.are.same({ "qwen3" },
-      vim.tbl_map(function(entry) return entry.id end, result.models))
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("validates model definitions at construction", function()
     assert.has_error(function()
-      llama.new({
+      local provider = {
         base_url = "http://127.0.0.1:8080/v1",
         models = {},
         service_opts = { poll_interval_ms = 0 },
-      })
+      }
+      llama.new(provider, { catalog = model_catalog.new({
+        provider_id = "llama.cpp",
+        provider = provider,
+        definition = {},
+        models = {},
+      }) })
     end, "llama.cpp service option poll_interval_ms must be a positive integer")
-    assert.has_error(function()
-      llama.new({
-        base_url = "http://127.0.0.1:8080/v1",
-        models = {},
-        catalog_cache = { ttl_ms = -1 },
-      })
-    end, "llama.cpp catalog_cache.ttl_ms must be a non-negative integer")
-    assert.has_error(function()
-      llama.new({
-        base_url = "http://127.0.0.1:8080/v1",
-        models = {},
-        catalog_cache = { unknown = true },
-      })
-    end, "unknown llama.cpp catalog cache option: unknown")
     assert.has_error(function()
       service(fake_transport.new(), nil, {
         qwen = { hf_repo = "missing-slash", quantization = "Q4_0" },
@@ -1045,11 +871,14 @@ describe("neoagent llama.cpp Provider Service", function()
         },
       })
     end, "llama.cpp model definition qwen: request_opts must be a table when the id aliases an HF source")
-    assert.has_error(function()
+    local ok, err = pcall(function()
       service(fake_transport.new(), nil, {
         qwen = { request_timeout_ms = "long" },
       })
-    end, "llama.cpp model definition qwen: request_timeout_ms must be a positive integer")
+    end)
+    assert.is_false(ok)
+    assert.are.equal("model", err.kind)
+    assert.matches("request_timeout_ms must be a positive integer", err.message)
   end)
 
   it("enriches catalog entries from model definitions", function()
@@ -1068,11 +897,11 @@ describe("neoagent llama.cpp Provider Service", function()
         request_opts = { body = { chat_template_kwargs = { enable_thinking = false } } },
       },
     })
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
-    local models = value:get_models()
+    local models = catalog_models(value)
     assert.are.same({ "owner/repo:Q4_0", "plain" },
       vim.tbl_map(function(entry) return entry.id end, models))
     assert.are.equal(65536, models[1].context_window)
@@ -1097,7 +926,7 @@ describe("neoagent llama.cpp Provider Service", function()
       zebra = { context_window = 4096 },
       alpha = { context_window = 4096 },
     })
-    local refreshed = wait(value:refresh_models({
+    local refreshed = wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication)
         publication.update()
@@ -1125,16 +954,16 @@ describe("neoagent llama.cpp Provider Service", function()
         context_window = 65536,
       },
     })
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
-    local models = value:get_models()
-    assert.are.same({ "qwen" },
+    local models = catalog_models(value)
+    assert.are.same({ "owner/repo:Q4_0", "qwen" },
       vim.tbl_map(function(entry) return entry.id end, models))
-    local alias = models[1]
+    local alias = models[2]
     assert.are.equal(65536, alias.context_window)
-    assert.are.same({ model = "owner/repo:Q4_0" }, alias.request_opts.body)
+    assert.is_nil(alias.request_opts)
 
     local items = browse(value, transport, {
       model("owner/repo:Q4_0", "loaded"),
@@ -1142,6 +971,166 @@ describe("neoagent llama.cpp Provider Service", function()
     local aliases = vim.tbl_filter(function(item) return item.id == "qwen" end, items)
     assert.are.equal(1, #aliases)
     assert.are.equal("owner/repo:Q4_0", aliases[1].description)
+  end)
+
+  it("routes call-specific request options through aliased Models", function()
+    local value = service(fake_transport.new(), nil, {
+      qwen = { hf_repo = "owner/repo", quantization = "Q4_0" },
+    })
+    local captured = {}
+    local inner = {
+      provider = "llama.cpp",
+      id = "qwen",
+      input = { "text" },
+      stream = function(_, opts)
+        captured[#captured + 1] = opts.request_opts
+        return async.run(function() return { ok = true } end)
+      end,
+    }
+    local wrapped = value:wrap_model(inner)
+    local seen_request
+    assert.is_true(wait(wrapped:stream({
+      request_opts = function(ctx)
+        seen_request = util.copy(ctx.request)
+        return { body = { temperature = 0.25 } }
+      end,
+    })).ok)
+    local resolved = captured[1]({
+      request = { body = { top_p = 0.9 } },
+    })
+    assert.are.same({ model = "owner/repo:Q4_0", top_p = 0.9 },
+      seen_request.body)
+    assert.are.same({ model = "owner/repo:Q4_0", temperature = 0.25 },
+      resolved.body)
+
+    assert.is_true(wait(wrapped:stream({
+      request_opts = { body = { temperature = 0.5 } },
+    })).ok)
+    assert.are.same({ model = "owner/repo:Q4_0", temperature = 0.5 },
+      captured[2].body)
+  end)
+
+  it("publishes watcher authentication and catalog request failures", function()
+    local auth = {
+      resolve = function()
+        return async.run(function()
+          return {
+            ok = false,
+            error = util.error("auth", "router login failed"),
+          }
+        end)
+      end,
+    }
+    local watched = service(fake_transport.new(), nil, nil, auth)
+    local unsubscribe = watched:subscribe(function() end)
+    assert(vim.wait(1000, function()
+      return block(watched:state(), "field", "Endpoint").level == "error"
+    end, 5))
+    unsubscribe()
+
+    local transport = fake_transport.new()
+    transport.fetches = {
+      {
+        status = 503,
+        body = vim.json.encode({ error = "router unavailable" }),
+      },
+    }
+    local failed = service(transport)
+    local result = wait(provider_service.run(failed, "reload", {
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = true, configured = false }
+        end)
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.matches("router unavailable", result.error.message)
+    assert.are.equal("error",
+      block(failed:state(), "field", "Endpoint").level)
+  end)
+
+  it("routes aliased load and unload operations to the router model id", function()
+    local router_id = "owner/repo:Q4_0"
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = catalog({ model(router_id, "unloaded") }) },
+      { body = "{}" },
+      { body = catalog({ model(router_id, "loaded") }) },
+      { body = catalog({ model(router_id, "loaded") }) },
+      { body = catalog({ model(router_id, "loaded") }) },
+      { body = "{}" },
+      { body = catalog({ model(router_id, "unloaded") }) },
+      { body = catalog({ model(router_id, "unloaded") }) },
+    }
+    local value = service(transport, nil, {
+      qwen = { hf_repo = "owner/repo", quantization = "Q4_0" },
+    })
+    local interaction = {
+      select = function() end,
+      input = function() end,
+      confirm = function(_, done) done.resolve(true) return function() end end,
+      progress = function() end,
+      notify = function() end,
+    }
+    local function context()
+      return {
+        args = "qwen",
+        interact = interaction,
+        resolve_auth = function()
+          return async.run(function()
+            return { ok = true, configured = false }
+          end)
+        end,
+      }
+    end
+
+    local loaded = wait(provider_service.run(value, "load", context()))
+    assert.is_true(loaded.ok)
+    local unloaded = wait(provider_service.run(value, "unload", context()))
+    assert.is_true(unloaded.ok)
+
+    assert.are.equal(router_id,
+      vim.json.decode(transport.fetch_requests[2].body).model)
+    assert.are.equal(router_id,
+      vim.json.decode(transport.fetch_requests[6].body).model)
+  end)
+
+  it("cancels a searched download from quantization selection", function()
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = vim.json.encode({ { id = "owner/repo", downloads = 10 } }) },
+      { body = vim.json.encode({
+        id = "owner/repo",
+        gated = false,
+        siblings = { { rfilename = "model-Q4_K_M.gguf", size = 1000 } },
+      }) },
+    }
+    local value = service(transport)
+    local selection = 0
+    local result = wait(provider_service.run(value, "download", {
+      args = "coding",
+      interact = {
+        select = function(_, done)
+          selection = selection + 1
+          done.resolve(selection == 1 and "owner/repo" or nil)
+          return function() end
+        end,
+        input = function() end,
+        confirm = function() end,
+        progress = function() end,
+        notify = function() end,
+      },
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = true, configured = false }
+        end)
+      end,
+    }))
+
+    assert.is_true(result.ok)
+    assert.is_true(result.cancelled)
+    assert.are.equal(2, selection)
+    assert.are.equal(2, #transport.fetch_requests)
   end)
 
   it("downloads defined models without a Hugging Face search", function()
@@ -1183,8 +1172,8 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.is_nil(transport.fetch_requests[1].url:find("/api/models%?"))
     local body = vim.json.decode(transport.fetch_requests[3].body)
     assert.are.equal("owner/repo:Q4_0", body.model)
-    assert.are.same({ "qwen" },
-      vim.tbl_map(function(entry) return entry.id end, value:get_models()))
+    assert.are.same({ "owner/repo:Q4_0", "qwen" },
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("downloads unquantized definitions from their configured repository", function()
@@ -1254,19 +1243,21 @@ describe("neoagent llama.cpp Provider Service", function()
         context_window = 65536,
       },
     })
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
-    local models = value:get_models()
-    assert.are.same({ "my-gemma", "qwen", "other.gguf" },
+    local models = catalog_models(value)
+    assert.are.same({
+      "my-gemma", "other.gguf", "owner/repo:Q4_0", "qwen",
+    },
       vim.tbl_map(function(entry) return entry.id end, models))
     assert.are.equal(32768, models[1].context_window)
     assert.are.same({ "text", "image" }, models[1].input)
     assert.is_nil(models[1].request_opts)
-    assert.are.equal(65536, models[2].context_window)
-    assert.are.same({ model = "owner/repo:Q4_0" }, models[2].request_opts.body)
-    assert.are.equal(32000, models[3].context_window)
+    assert.are.equal(32000, models[2].context_window)
+    assert.is_nil(models[3].context_window)
+    assert.are.equal(65536, models[4].context_window)
   end)
 
   it("preserves definition inference parameters through model resolution", function()
@@ -1283,7 +1274,7 @@ describe("neoagent llama.cpp Provider Service", function()
       },
     }
     local value = service(transport, nil, definitions)
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -1296,7 +1287,7 @@ describe("neoagent llama.cpp Provider Service", function()
           models = definitions,
         },
       },
-      apis = {
+      _apis = {
         ["openai-completions"] = function(resolved)
           captured = util.copy(resolved.model)
           return {
@@ -1307,9 +1298,15 @@ describe("neoagent llama.cpp Provider Service", function()
         end,
       },
     }
-    local model = models_module.resolve("llama.cpp", "qwen-test", configured, nil, {
-      ["llama.cpp"] = value,
-    })
+    local model = models_module.resolve(
+      "llama.cpp", "qwen-test", configured, nil, {
+        ["llama.cpp"] = {
+          id = "llama.cpp",
+          definition = configured.providers["llama.cpp"],
+          catalog = catalog_for(value),
+          service = value,
+        },
+      })
     assert.is_table(model)
     assert.are.equal("qwen-test", captured.id)
     assert.are.same({ enable_thinking = false },
@@ -1325,7 +1322,7 @@ describe("neoagent llama.cpp Provider Service", function()
     local value = service(transport, nil, {
       ["qwen-test"] = { request_timeout_ms = 60000 },
     })
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -1363,7 +1360,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.are.same({ "text_delta" }, events)
 
     transport.fetches = { { body = catalog({ model("qwen-test", "loaded") }) } }
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -1376,7 +1373,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.are.equal(before, #transport.fetch_requests)
 
     transport.fetches = { { body = catalog({ model("qwen-test", "loading") }) } }
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -1386,7 +1383,7 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.is_false(captured[3].timeout_ms)
 
     transport.fetches = { { body = catalog({}) } }
-    wait(value:refresh_models({
+    wait(catalog_refresh(value, {
       allow_network = true,
       publish = function(publication) publication.update() end,
     }))
@@ -1498,9 +1495,7 @@ describe("neoagent llama.cpp Provider Service", function()
     }
     local failed = wait(value:wrap_model(failed_model):stream({}))
     assert.is_false(failed.ok)
-    local activity = block(value:state(), "activity")
-    assert.matches("Request failed · failure",
-      activity.entries[#activity.entries].message)
+    assert.is_nil(block(value:state(), "activity"))
   end)
 
   it("renders defined load parameters as a router preset", function()
@@ -1512,7 +1507,13 @@ describe("neoagent llama.cpp Provider Service", function()
       qwen = {
         hf_repo = "owner/other",
         quantization = "Q8_0",
-        load = { threads = 8, flash_attn = false, cache_ram = "8G" },
+        load = {
+          threads = 8,
+          flash_attn = false,
+          zeta = 2,
+          cache_ram = "8G",
+          alpha = 1,
+        },
       },
       plain = { context_window = 4096 },
     })
@@ -1521,7 +1522,9 @@ describe("neoagent llama.cpp Provider Service", function()
       vim.tbl_map(function(row) return row.label end, rows))
     assert.are.equal("ctx 32768 · gpu-layers 99 · flash-attn", rows[1].description)
     assert.are.equal("configured model", rows[2].description)
-    assert.are.equal("owner/other:Q8_0 · threads 8 · no-flash-attn · cache-ram 8G", rows[3].description)
+    assert.are.equal(
+      "owner/other:Q8_0 · threads 8 · no-flash-attn · alpha 1 · cache-ram 8G · zeta 2",
+      rows[3].description)
 
     local run = provider_service.run(value, "preset", {
       resolve_auth = function()
@@ -1546,7 +1549,9 @@ describe("neoagent llama.cpp Provider Service", function()
       "hf-repo = owner/other:Q8_0",
       "t = 8",
       "flash-attn = off",
+      "alpha = 1",
       "cache-ram = 8G",
+      "zeta = 2",
       "",
     }, lines)
 

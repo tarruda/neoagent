@@ -434,6 +434,65 @@ class Handler(BaseHTTPRequestHandler):
                 "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
             },
         ]
+        if body.get("return_progress") is True:
+            chunks[1:1] = [
+                {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": None},
+                        "finish_reason": None,
+                    }],
+                    "prompt_progress": {"total": 3, "cache": 0, "processed": 1, "time_ms": 10},
+                    "timings": {
+                        "cache_n": 0,
+                        "prompt_n": 1,
+                        "prompt_ms": 0.001,
+                        "prompt_per_second": 1000000,
+                        "predicted_n": 0,
+                        "predicted_ms": 0,
+                        "predicted_per_second": 0,
+                    },
+                },
+                {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": None},
+                        "finish_reason": None,
+                    }],
+                    "prompt_progress": {"total": 3, "cache": 0, "processed": 3, "time_ms": 2000},
+                    "timings": {
+                        "cache_n": 0,
+                        "prompt_n": 3,
+                        "prompt_ms": 40,
+                        "prompt_per_second": 75,
+                        "predicted_n": 0,
+                        "predicted_ms": 0,
+                        "predicted_per_second": 0,
+                    },
+                },
+            ]
+        if body.get("timings_per_token") is True:
+            rates = (0, 40, 45, 50)
+            for predicted_n, (chunk, rate) in enumerate(
+                zip(chunks[-4:], rates), start=1
+            ):
+                chunk["timings"] = {
+                    "cache_n": 0,
+                    "prompt_n": 3,
+                    "prompt_ms": 40,
+                    "prompt_per_second": 75,
+                    "predicted_n": predicted_n,
+                    "predicted_ms": (
+                        (predicted_n - 1) * 1000 / rate + 1 if rate else 1
+                    ),
+                    "predicted_per_second": rate,
+                }
         payload = "".join(
             "data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n"
             for chunk in chunks

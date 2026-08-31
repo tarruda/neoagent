@@ -9,14 +9,27 @@ changes.
 - Keep it simple. Prefer a small explicit composition over a framework.
 - Less is more. Do not add an abstraction until a concrete use case requires
   it.
+- Fix problems at their ownership boundary. When a cohesive refactor or
+  rewrite produces a simpler foundation, choose it and leave the surrounding
+  design simpler as part of the same change.
 - Neoagent's foundation is an LLM and agent API. Sessions, persistence,
   Workspace, bundled tools, configuration, and UI are optional higher-level
   compositions.
-- Make every layer usable directly from ordinary Lua. Third-party plugins must
-  be able to replace Models, tools, executors, message owners, and UI without
-  patching global state.
+- Keep reusable layers callable directly from ordinary Lua. Add a public
+  replacement boundary only when a shipped composition or concrete integration
+  uses it. Test injection alone does not justify a public extension contract.
 - Prefer plain tables, functions, and constructors over registries, discovery,
   inheritance hierarchies, generic hook buses, or extension frameworks.
+- Before the project has users, keep one current data and configuration shape.
+  Remove superseded formats and migrations as part of the change that replaces
+  them. Do not preserve compatibility for unreleased behavior.
+- Add semantic versions, API versions, capability negotiation, or schema
+  migrations only when independently released components or existing user data
+  require them. Exact format markers used to reject unsafe persisted state or
+  coordinate separate runtime processes are allowed.
+- Keep test seams internal to the owning constructor or module. Do not publish
+  configuration, documentation, or nominal replacement APIs solely for test
+  doubles.
 - Do not introduce built-in approval or permission policy. Approval prompts,
   logging, sandbox delegation, and similar policy belong in an
   `execute_tool(tool, arguments, ctx)` decorator.
@@ -29,53 +42,103 @@ changes.
 ## Architectural invariants
 
 - `neoagent.api.*`, `neoagent.transport.*`, `neoagent.async`, and
-  `neoagent.agent` form the reusable core. They must not import configuration,
-  Sessions, storage, Workspace, bundled tools, the controller, or UI.
+  `neoagent.agent_loop` form the reusable core. They must not import
+  configuration, Sessions, storage, Workspace, bundled tools, Agents, or UI.
+- Async Runs retain the newest 32 copied callback diagnostics with sanitized
+  messages of at most 1024 characters. Reporters receive neutral records, and
+  unreported child diagnostics flow to their awaiting parent. Presentation is
+  an injected upper-layer policy.
 - A Model is an explicit value with `model:stream(opts)`. It uses named
   `on_event` and `on_done` options and returns a cancellable Run.
 - A Model declares accepted message modalities through `input`. Built-in API
   adapters replace unsupported image blocks in a request copy with explicit
   text placeholders; Sessions retain the original blocks.
-- `agent.run(opts)` receives its Model, messages, exact tools, executor, and
+- `agent_loop.run(opts)` receives its Model, messages, exact tools, executor, and
   context explicitly. It does not mutate input messages or resolve defaults.
 - Steering enters the core through an explicit `get_steering_messages`
-  callback and is consumed between assistant/tool turns. Each Controller owns
-  its pending steering queue; the Window restores queued text for editing.
+  callback and is consumed between assistant/tool turns. Each Agent owns
+  its pending steering queue; its Applet restores queued text for
+  editing.
 - `Session.new()` remains a no-argument, tool-free in-memory message owner. A
   store is optional and injected.
-- The passive View consumes messages and events. A Window owns one View,
-  selects an active Controller, and retains one input draft per Controller.
-  Attached Controllers have unique, non-empty names.
-- Each bundled View receives an explicit Renderer value. Renderer methods
-  consume copied semantic blocks, dialogs, focus state, and transient status
-  plus bounded presentation context and return declarative content. The View
-  owns buffers, windows, extmarks, mappings, focus, and scrolling. Pi and Codex
-  are bundled Renderer values.
-- Controllers compose configuration, model selection, Session, Workspace, and
-  Run. They publish transcript snapshots and updates while the Session retains
-  the complete active branch.
+- Model selection remains live state until an accepted user message journals
+  it with that message. The first accepted message in a new Session also
+  commits the Workspace/Profile preference; resumed Sessions restore their
+  active branch without changing that preference. One `RequestSelection`
+  value owns the configured, Workspace, live, and resolved request choices for
+  an Agent or Profile draft.
+- Neo and Chat are explicit Profile recipes. `setup()` creates the top-level
+  Neoagent Applet with zero Agents. Each interactive `ProfileDraft` has an
+  explicit Profile, canonical Workspace, retained Agent Applet, request
+  selection, staged options, and draft/provisional/bound/destroyed typestate.
+  It constructs its Agent atomically when its first message is accepted or a
+  persisted Session is selected. Pre-acceptance model and preparation failures
+  restore the exact draft value.
+- Every bundled Agent owns one permanent Agent Applet, and
+  every Agent Applet owns one View. The top-level Neoagent
+  Applet owns constructed Agents, retained Profile drafts,
+  foreground selection, the agent switcher, and one Provider Shell alongside
+  shared Provider Services and Authentication.
+- Agent identity is opaque and independent from its display label.
+  Closing an Agent Applet releases its visible surfaces while its
+  Agent and semantic presentation state remain alive.
+- A configured View owns one optional ImageSystem shared by transcript and
+  details Panes. ImageSystem owns prepared PNG resources and one complete
+  presentation per Pane. Panes submit complete visible placement plans, and
+  Kitty is the bundled persistent-placement backend. Backend failure destroys
+  backend-owned resources before ImageSystem clears its own resource maps.
+  Unavailable resources occupy only their compact fallback height.
+- Each bundled Agent View mounts one Pane per transcript, composer, dialog, or
+  details buffer in one Applet. The Provider Shell mounts provider selector and
+  detail Panes in its own Applet. Renderers consume copied semantic blocks and
+  bounded presentation context, return native Pane content Trees, and supply
+  an Applet Theme. Pane owns content compilation, extmarks, mappings, focus,
+  and scrolling; Applet owns layout, buffers, windows, and Hosts. Pi and Codex
+  are bundled Renderer values. Agent View topology is a pure mapping from one
+  complete submitted ViewState and the bounded Applet environment.
+- Applet mode policy owns native editing-mode classification and transition.
+  Mapping dispatch retains its originating editing intent through the callback
+  and applies the final focused Pane policy when the callback completes.
+- `require("applet")` is the Applet package entry point. It exports the concrete
+  Applet values consumed by Neoagent from this repository.
+- Applet broad observers and InteractionDomain key observers are active with
+  live presentation surfaces. Closed retained buffers keep bounded unload,
+  delete, and wipeout observation.
+- Pane and Applet borrow immutable submissions. Callers supply a new value,
+  affected subtree, or revision for every semantic change.
+- Agents compose configuration, model selection, Session, Workspace, and
+  Run. They own independent Presenter, Dialog, and attention state. They
+  publish monotonically revisioned transcript snapshots, copied updates, and
+  bounded activity while the Session retains the complete active branch.
+  Agent Applets hydrate from the newest revision and reject stale updates. The
+  Provider Shell owns provider selection, Authentication presentation,
+  operations, and progress outside Agent and Session ownership.
+- Provider Service runtime coordination is keyed by the concrete shared
+  service value. Model and compaction Runs hold shared-use leases; mutating
+  Provider Shell operations require exclusive access across every Agent using
+  that service. Provider operations receive no selected Model or Agent state.
 - Optional Tool `on_messages` hooks derive state from complete active
   conversation copies keyed by an opaque per-Session identity; the reusable
-  agent loop remains Session-independent. Optional Tool renderers flow
-  through the Window's active-tool resolver, and the selected Renderer
-  interprets their semantic presentations without matching tool names.
-- Controller Runs remain independent when a shared Window selects another
-  Controller. The command-facing default Window is replaceable; custom
-  Controllers and Windows must not mutate or depend on it.
+  Agent Loop remains Session-independent. Optional Tool renderers flow
+  through the owning Agent Applet's tool resolver, and Neoagent
+  components convert their semantic results into native Pane content nodes.
+- Background Agent Runs remain independent while another Agent
+  Applet is foreground. The command-facing Neoagent Applet owns command routing
+  and must not be mutated by independent Agents.
 - AGENTS.md and skill discovery are optional higher-level resource modules;
   reusable core layers do not depend on them.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
-  storage layer; the built-in Neo Controller may refresh an unmodified matching
+  storage layer; the built-in Neo Agent may refresh an unmodified matching
   buffer after a successful disk mutation.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
 - Thinking levels are model-declared request-option layers. The default
-  controller selects and displays a level; Models and `agent.run()` do not
+  Agent selects and displays a level; Models and `agent_loop.run()` do not
   interpret thinking semantics.
 - Authentication wraps Models at stream time through injected login methods
   and credential storage. OAuth flows and Models remain independent from the
-  command/UI adapter.
+  Provider Shell and command/UI adapter.
 - The provider/model registry explicitly composes built-in defaults with user
   overrides without affecting direct Model constructors.
 - Persist credentials atomically outside user configuration. Serialize login,
@@ -85,17 +148,22 @@ changes.
 - Neoagent-owned cross-process persistence composes `neoagent.file_lock` with
   token-validated release and bounded stale recovery. Windows sandbox state
   composes its per-directory named OS mutex.
-- Persistence remains compatible with the Pi v3 append-only tree format.
-  Opening Neovim or creating an empty Session must not create a session file.
-- Compaction receives its Session path and Model explicitly. Controllers own
+- Persistence stores the entry types Neoagent currently emits in one append-only
+  tree format. Opening Neovim or creating an empty Session must not create a
+  session file.
+- Publishing a persisted derived Session is authoritative. A later Agent
+  construction or activation failure reports the created Session path for
+  resume.
+- Compaction receives its Session path and Model explicitly. Agents own
   automatic compaction and overflow recovery.
 - Provider diagnostics are bounded and never contain credentials, request or
-  response bodies, or conversation content.
+  response bodies, or conversation content. Provider runtimes carry the
+  upper-layer reporter used to report each diagnostic sink failure once.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
-  callbacks from mutating newer controller state.
+  callbacks from mutating newer Agent state.
 - Runtime code has no Lua plugin dependencies. Curl, `rg`, and `fd` are runtime
-  executables; ImageMagick's `magick` is optional.
+  executables.
 
 ## Working in the repository
 
@@ -108,9 +176,16 @@ changes.
   behavior, and composition. Negative wording is appropriate only when it
   defines a current API guarantee, safety boundary, prohibition, or error.
 - Preserve unrelated user changes and generated local configuration.
-- Keep `README.md` focused on project presentation and concise setup. Document
-  complete public behavior in `doc/neoagent.txt` and implementation design in
-  `architecture.md`.
+- Keep `README.md` focused on project presentation and concise setup.
+  `doc/neoagent.txt` documents public configuration, APIs, and behavior needed
+  to use or extend the plugin. `architecture.md` documents stable ownership,
+  lifecycle, extension, and data-flow boundaries.
+- Give each passage a reader-facing purpose. Keep concrete, copyable examples,
+  and prefer real provider and model names when that makes an example useful.
+  Omit exhaustive inventories that merely mirror live data, incidental visual
+  styling, test implementation details, and repetition that adds no local
+  context. Repeat a fact when it makes a section self-contained; otherwise
+  link to its canonical reference.
 - Track multi-step implementation work in `TODO.md` when requested.
 - Do not weaken validation, cancellation, or coverage collection merely to
   make a test pass.
@@ -143,14 +218,13 @@ changes.
 For example:
 
 ```text
-feat(session): add Pi trees and context compaction
+feat(session): add session trees and context compaction
 
-Session and storage now own a Pi v3 append-only tree. Chat projects the
-active path into model context, and Controllers compose navigation,
-forks, and compaction while the reusable agent core remains independent.
+Session and storage own an append-only tree. Chat projects the active
+path into model context, and Agents compose navigation, forks, and
+compaction while the reusable Agent Loop remains independent.
 
-- Support every Pi v3 entry type, active leaves, labels, and linked
-  forks.
+- Support Neoagent message, selection, compaction, and leaf entries.
 - Add branch and fork APIs, commands, selectors, and input
   restoration.
 - Compact context automatically, manually, and after provider
@@ -189,17 +263,31 @@ make test-integration
 make test-ui
 ```
 
-Before completing a runtime change, run:
+Run the combined default suite during broader iteration and before completion:
+
+```sh
+make test
+```
+
+`make test` and `make test-fast` run the unit, integration, and UI suites
+without coverage or terminal-image tests. Integration tests start a Python
+mock OpenAI server on an ephemeral localhost port and exercise the real curl
+process. UI tests run isolated headless Neovim children and inspect buffers,
+windows, mappings, extmarks, modes, and callbacks rather than screenshots.
+
+Coverage and terminal-image tests run in CI. Run them locally only when the
+user explicitly requests them:
 
 ```sh
 make coverage
+make test-terminal-images
 ```
 
-`make test` runs all three suites without generating a report. Integration
-tests start a Python mock OpenAI server on an ephemeral localhost port and
-exercise the real curl process. UI tests run isolated headless Neovim children
-and inspect buffers, windows, mappings, extmarks, modes, and callbacks rather
-than screenshots.
+The Linux terminal-image CI job renders a real Applet through Kitty and
+Konsole under Xvfb. It inspects captured pixels for supported renderers and
+exercises selected tmux-hosted paths. It skips terminals whose Kitty graphics,
+tmux, or Xvfb/ImageMagick dependencies are absent; CI installs the complete
+set.
 
 All waits must be predicate-based and bounded. Clean up processes, timers,
 temporary directories, buffers, and windows in teardown paths.
@@ -247,15 +335,17 @@ close the disposable session when inspection is complete.
 
 ## Coverage and completion
 
-- Every shipped Lua file under `lua/neoagent/` and `plugin/` must appear in the
-  LuaCov report, including modules that normal tests would not otherwise load.
+- Every shipped Lua file under `lua/applet/`, `lua/neoagent/`, and `plugin/`
+  must appear in the LuaCov report, including modules that normal tests would
+  not otherwise load.
 - Aggregate shipped-plugin Lua line coverage must remain strictly greater than
-  99%.
+  99.5%.
 - For every bug report, first add a focused regression test and verify that it
   fails against the unmodified implementation for the reported reason. Then
   implement the fix and verify that the same test passes.
 - Add focused tests for behavior changes and regressions. Prefer meaningful
   protocol, lifecycle, and boundary tests over coverage-only assertions.
-- Do not claim completion until the full suite passes, the coverage checker
-  passes, health behavior remains valid, and public documentation matches the
-  implementation.
+- Do not claim completion until the relevant fast suites pass, health behavior
+  remains valid, and documentation affected by a public-contract or stable
+  architecture change is current. CI enforces the coverage thresholds and
+  terminal-image behavior.

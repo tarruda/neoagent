@@ -326,9 +326,9 @@ function M.switchable(toolset, settings, opts)
   return stable, runtime:status(), dialogs, runtime
 end
 
-function M.controller(configured, opts)
+function M.agent(configured, opts)
   assert(type(configured) == "table",
-    "sandbox Controller configuration is required")
+    "sandbox Agent configuration is required")
   opts = opts or {}
   local copied = util.copy(configured)
   local settings = copied.sandbox or { enabled = false }
@@ -343,9 +343,7 @@ function M.controller(configured, opts)
   copied._sandbox_status = status
   if not settings.enabled then return copied end
   if not toolset then
-    copied.view = require("neoagent.sandbox.view").warn_once(
-      copied.view, M.warning(copied.name or "Neo", status),
-      copied.name or "Neo")
+    copied._sandbox_warning = M.warning(copied.name or "Neo", status)
     return copied
   end
   copied.tools = toolset.tools

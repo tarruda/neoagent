@@ -203,6 +203,22 @@ describe("neoagent llama.cpp client", function()
     result = wait(value:load_and_wait("qwen3", function() end))
     assert.is_false(result.ok)
     assert.matches("code 7", result.error.message)
+
+    transport = fake_transport.new()
+    transport.fetches = {
+      { body = "{}" },
+      { body = vim.json.encode({ data = { {
+        id = "qwen3",
+        status = { value = "failed", failed = true },
+      } } }) },
+    }
+    value = client.new({
+      server_url = "http://127.0.0.1:8080",
+      transport = transport,
+    })
+    result = wait(value:load_and_wait("qwen3", function() end))
+    assert.is_false(result.ok)
+    assert.matches("Model failed to load", result.error.message)
   end)
 
   it("loads and waits through SSE loaded and error events", function()

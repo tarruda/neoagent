@@ -182,7 +182,7 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.is_nil(status.details.credits)
   end)
 
-  it("normalizes malformed Codex tool arguments for agent recovery", function()
+  it("normalizes malformed Codex tool arguments for Agent Loop recovery", function()
     local call = {
       type = "function_call", id = "fc", call_id = "call", name = "edit",
       arguments = "{",

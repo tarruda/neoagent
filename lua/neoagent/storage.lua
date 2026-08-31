@@ -8,7 +8,7 @@ local Store = {}
 Store.__index = Store
 
 local INDEX_FILENAME = "session-index.json"
-local INDEX_VERSION = 1
+local INDEX_VERSION = 3
 local INDEX_LOCK_TIMEOUT_MS = 15000
 local INDEX_LOCK_POLL_MS = 50
 local INDEX_LOCK_STALE_MS = 120000
@@ -78,6 +78,13 @@ local function index_entry(value)
   if type(value.parent_session) == "string" then
     result.parent_session = value.parent_session
   end
+  if value.attributes ~= nil then
+    if type(value.attributes) ~= "table"
+        or next(value.attributes) ~= nil and util.is_list(value.attributes) then
+      return nil
+    end
+    result.attributes = copy_metadata(value.attributes)
+  end
   return result
 end
 
@@ -102,11 +109,13 @@ local function read_index(path)
   return { version = INDEX_VERSION, sessions = sessions }
 end
 
-local function write_index(path, document)
+local function write_atomic(path, contents)
   local temporary = path .. "." .. random_id(8) .. ".tmp"
-  local ok, err = fs.write_all(temporary,
-    util.json_encode(document) .. "\n", "wx", 384)
-  if not ok then return nil, err end
+  local ok, err = fs.write_all(temporary, contents, "wx", 384)
+  if not ok then
+    vim.uv.fs_unlink(temporary)
+    return nil, err
+  end
   ok, err = vim.uv.fs_rename(temporary, path)
   if not ok then
     vim.uv.fs_unlink(temporary)
@@ -114,6 +123,10 @@ local function write_index(path, document)
   end
   vim.uv.fs_chmod(path, 384)
   return true
+end
+
+local function write_index(path, document)
+  return write_atomic(path, util.json_encode(document) .. "\n")
 end
 
 local function modify_index(path, modifier)
@@ -147,9 +160,6 @@ local function picker_text(value)
   value = type(value) == "string" and value or ""
   value = util.trim(value:gsub("[%c%s]+", " "))
   if value == "" then value = "(no messages)" end
-  if vim.fn.strchars(value) > 80 then
-    value = vim.fn.strcharpart(value, 0, 80) .. "…"
-  end
   return value
 end
 
@@ -206,40 +216,16 @@ function Store:leaf_id()
 end
 
 function Store:path(...)
-  local requested = select("#", ...) > 0 and select(1, ...) or self._leaf_id
+  local requested
+  if select("#", ...) > 0 then
+    requested = select(1, ...)
+  else
+    requested = self._leaf_id
+  end
   if requested == nil then requested = vim.NIL end
   local path, err = tree.indexed_path(self._by_id, requested)
   if not path then return nil, storage_error("Failed to build session path", err) end
   return path
-end
-
-function Store:find_entries(entry_type)
-  local result = {}
-  for _, entry in ipairs(self._entries) do
-    if entry.type == entry_type then result[#result + 1] = util.copy(entry) end
-  end
-  return result
-end
-
-function Store:label(id)
-  local label
-  for _, entry in ipairs(self._entries) do
-    if entry.type == "label" and entry.targetId == id then
-      label = is_null(entry.label) and nil or entry.label
-    end
-  end
-  return label
-end
-
-function Store:name()
-  local name
-  for _, entry in ipairs(self._entries) do
-    if entry.type == "session_info" then
-      name = type(entry.name) == "string" and util.trim(entry.name) or nil
-      if name == "" then name = nil end
-    end
-  end
-  return name
 end
 
 function Store:info()
@@ -276,7 +262,6 @@ function Store:info()
     path = self._path,
     id = self._id,
     cwd = self._cwd,
-    name = self:name(),
     parent_session = self._parent_session,
     created_at = self._timestamp,
     modified_at = modified_at or 0,
@@ -285,10 +270,21 @@ function Store:info()
   }
 end
 
-local function store_index_entry(store)
+local function store_index_entry(store, projector)
   local info = store:info()
-  local result = { text = picker_text(info.name or info.first_message) }
+  local result = { text = picker_text(info.first_message) }
   if store._parent_session then result.parent_session = store._parent_session end
+  local attributes = store._index_attributes
+  if projector then
+    local ok, value = pcall(projector, copy_metadata(store._metadata))
+    if ok and type(value) == "table"
+        and (next(value) == nil or not util.is_list(value)) then
+      attributes = value
+    else
+      attributes = vim.empty_dict()
+    end
+  end
+  if attributes ~= nil then result.attributes = copy_metadata(attributes) end
   return result
 end
 
@@ -317,64 +313,114 @@ function Store:state()
   return util.copy(self._state)
 end
 
-function Store:_append(entry_type, values, persist)
-  local entry = {
-    type = entry_type,
-    id = random_id(8),
-    parentId = self._leaf_id or vim.NIL,
-    timestamp = iso_time(util.now_ms()),
-  }
-  for key, value in pairs(values) do
-    if key ~= "type" and key ~= "id" and key ~= "parentId" and key ~= "timestamp" then
-      entry[key] = util.copy(value)
+local function prepare_entries(self, specs)
+  local entries, encoded = {}, {}
+  local by_id = setmetatable({}, { __index = self._by_id })
+  local parent_id = self._leaf_id
+  for index, spec in ipairs(specs) do
+    local entry = {
+      type = spec.type,
+      id = random_id(8),
+      parentId = parent_id or vim.NIL,
+      timestamp = iso_time(util.now_ms()),
+    }
+    for key, value in pairs(spec.values) do
+      if key ~= "type" and key ~= "id" and key ~= "parentId"
+          and key ~= "timestamp" then
+        entry[key] = util.copy(value)
+      end
     end
+    local valid, validation_err = tree.validate_entry(entry)
+    if not valid then
+      return nil, storage_error("Invalid " .. spec.type, validation_err)
+    end
+    if by_id[entry.id] then
+      return nil, storage_error("Invalid " .. spec.type,
+        "duplicate entry id")
+    end
+    local encoded_entry, encode_err = encode_session_value(entry, spec.type)
+    if not encoded_entry then return nil, encode_err end
+    local references, reference_err = tree.validate_references(entry, by_id)
+    if not references then
+      return nil, storage_error("Invalid " .. spec.type, reference_err)
+    end
+    entries[index], encoded[index] = entry, encoded_entry
+    by_id[entry.id] = entry
+    parent_id = entry.id
   end
-  local valid, validation_err = tree.validate_entry(entry)
-  if not valid then return nil, storage_error("Invalid " .. entry_type, validation_err) end
-  if self._by_id[entry.id] then
-    return nil, storage_error("Invalid " .. entry_type, "duplicate entry id")
-  end
-  local encoded_entry, encode_err = encode_session_value(entry, entry_type)
-  if not encoded_entry then return nil, encode_err end
+  return entries, encoded
+end
 
-  local references, reference_err = tree.validate_references(entry, self._by_id)
-  if not references then
-    return nil, storage_error("Invalid " .. entry_type, reference_err)
+local function session_header(self)
+  local header = {
+    type = "session",
+    version = 3,
+    id = self._id,
+    timestamp = self._timestamp,
+    cwd = self._cwd,
+  }
+  if self._parent_session then header.parentSession = self._parent_session end
+  if self._metadata then header.metadata = copy_metadata(self._metadata) end
+  return header
+end
+
+local function append_contents(encoded)
+  local contents = {}
+  for _, value in ipairs(encoded) do
+    contents[#contents + 1] = value
+    contents[#contents + 1] = "\n"
   end
+  return table.concat(contents)
+end
+
+local function merge_projection(current, projection)
+  if projection.type == "replace" then
+    return {
+      type = "replace",
+      messages = util.copy(projection.messages),
+    }
+  end
+  current = current or { type = "append", messages = {} }
+  vim.list_extend(current.messages, util.copy(projection.messages or {}))
+  return current
+end
+
+function Store:_append_many(specs, persist)
+  local entries, encoded_or_err = prepare_entries(self, specs)
+  if not entries then return nil, encoded_or_err end
+  local encoded = encoded_or_err
 
   if not self._persisted and not persist then
-    self._pending[#self._pending + 1] = entry
-    local committed, projection = commit_entry(self, entry)
-    if not committed then return nil, storage_error("Failed to update session", projection) end
-    return true, nil, util.copy(entry), projection
+    local combined
+    for _, entry in ipairs(entries) do
+      self._pending[#self._pending + 1] = entry
+      local committed, projection = commit_entry(self, entry)
+      if not committed then
+        return nil, storage_error("Failed to update session", projection)
+      end
+      combined = merge_projection(combined, projection)
+    end
+    return true, nil, util.copy(entries), combined
   end
 
   local first_persistence = not self._persisted
   if first_persistence then
-    local header = {
-      type = "session",
-      version = 3,
-      id = self._id,
-      timestamp = self._timestamp,
-      cwd = self._cwd,
-    }
-    if self._parent_session then header.parentSession = self._parent_session end
-    if self._metadata then header.metadata = copy_metadata(self._metadata) end
-    local encoded_header, header_err = encode_session_value(header, "session header")
+    local encoded_header, header_err = encode_session_value(
+      session_header(self), "session header")
     if not encoded_header then return nil, header_err end
-    local contents = { encoded_header, "\n" }
+    local contents = { encoded_header }
     for _, pending in ipairs(self._pending) do
-      local encoded_pending, pending_err = encode_session_value(pending, pending.type)
-      if not encoded_pending then return nil, pending_err end
-      contents[#contents + 1] = encoded_pending
-      contents[#contents + 1] = "\n"
+      local value, pending_err = encode_session_value(pending, pending.type)
+      if not value then return nil, pending_err end
+      contents[#contents + 1] = value
     end
-    contents[#contents + 1] = encoded_entry .. "\n"
+    vim.list_extend(contents, encoded)
     local ok, err = fs.mkdirp(vim.fs.dirname(self._path))
     if not ok then
       return nil, storage_error("Failed to create session directory", err)
     end
-    ok, err = fs.write_all(self._path, table.concat(contents), "wx", 384)
+    ok, err = write_atomic(
+      self._path, append_contents(contents))
     if not ok then
       return nil, storage_error("Failed to create session file", err)
     end
@@ -382,7 +428,7 @@ function Store:_append(entry_type, values, persist)
     self._pending = {}
   else
     local ok, err = session_lock(self._path):with(function()
-      return fs.write_all(self._path, encoded_entry .. "\n", "a", 384)
+      return fs.write_all(self._path, append_contents(encoded), "a", 384)
     end)
     if not ok then
       if type(err) == "table" and err.kind == "file_lock" then
@@ -391,32 +437,61 @@ function Store:_append(entry_type, values, persist)
       return nil, storage_error("Failed to append session entry", err)
     end
   end
-  local committed, projection = commit_entry(self, entry)
-  if not committed then return nil, storage_error("Failed to update session", projection) end
-  if first_persistence or entry_type == "session_info" then
-    update_store_index(self)
+
+  local combined
+  for _, entry in ipairs(entries) do
+    local committed, projection = commit_entry(self, entry)
+    if not committed then
+      return nil, storage_error("Failed to update session", projection)
+    end
+    combined = merge_projection(combined, projection)
   end
-  return true, nil, util.copy(entry), projection
+  if first_persistence then update_store_index(self) end
+  return true, nil, util.copy(entries), combined
 end
 
-function Store:append(message)
-  return self:_append("message", { message = message }, true)
+function Store:_append(entry_type, values, persist)
+  local ok, err, entries, projection = self:_append_many({ {
+    type = entry_type,
+    values = values,
+  } }, persist)
+  return ok, err, entries and entries[1], projection
 end
 
-function Store:append_model_change(provider, model_id)
-  return self:_append("model_change", { provider = provider, modelId = model_id }, false)
+local function same_model(left, right)
+  return type(left) == "table" and type(right) == "table"
+    and left.provider == right.provider and left.model == right.model
 end
 
-function Store:append_thinking_level_change(level)
-  return self:_append("thinking_level_change", { thinkingLevel = level }, false)
+function Store:append(message, state)
+  assert(state == nil or type(state) == "table"
+      and (next(state) == nil or not util.is_list(state)),
+    "message state must be an object")
+  local specs = {}
+  state = state or {}
+  if state.model ~= nil and not same_model(state.model, self._state.model) then
+    specs[#specs + 1] = {
+      type = "model_change",
+      values = {
+        provider = state.model.provider,
+        modelId = state.model.model,
+      },
+    }
+  end
+  if state.thinking_level ~= nil
+      and state.thinking_level ~= self._state.thinking_level then
+    specs[#specs + 1] = {
+      type = "thinking_level_change",
+      values = { thinkingLevel = state.thinking_level },
+    }
+  end
+  specs[#specs + 1] = { type = "message", values = { message = message } }
+  local ok, err, entries, projection = self:_append_many(specs, true)
+  return ok, err, entries and entries[#entries], projection
 end
 
-function Store:append_active_tools_change(names)
-  return self:_append("active_tools_change", { activeToolNames = names }, false)
-end
-
-function Store:append_entry(entry_type, values)
-  return self:_append(entry_type, values or {}, entry_type == "message")
+function Store:append_compaction(values)
+  return self:_append("compaction", values or {}, false)
 end
 
 function Store:set_leaf(id)
@@ -430,6 +505,11 @@ function M.new(opts)
   opts = opts or {}
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
+  assert(opts.index_attributes == nil
+      or type(opts.index_attributes) == "table"
+        and (next(opts.index_attributes) == nil
+          or not util.is_list(opts.index_attributes)),
+    "index_attributes must be an object")
   local cwd = fs.canonical(opts.cwd)
   local id = random_id(12)
   local now = util.now_ms()
@@ -448,9 +528,10 @@ function M.new(opts)
     _by_id = {},
     _pending = {},
     _leaf_id = nil,
-    _state = { model = nil, thinking_level = nil, active_tools = nil },
+    _state = { model = nil, thinking_level = nil },
     _parent_session = opts.parent_session,
     _metadata = copy_metadata(opts.metadata),
+    _index_attributes = copy_metadata(opts.index_attributes),
   }, Store)
 end
 
@@ -478,7 +559,8 @@ function M.open(path)
       or type(header.id) ~= "string" or header.id == ""
       or type(header.timestamp) ~= "string" or header.timestamp == ""
       or type(header.cwd) ~= "string" or header.cwd == "" then
-    return nil, storage_error("Invalid session at line 1", "expected pi session v3 header")
+    return nil, storage_error(
+      "Invalid session at line 1", "expected Neoagent session version 3 header")
   end
   if header.parentSession ~= nil and header.parentSession ~= vim.NIL
       and type(header.parentSession) ~= "string" then
@@ -510,9 +592,66 @@ function M.open(path)
     _state = {},
     _parent_session = header.parentSession ~= vim.NIL and header.parentSession or nil,
     _metadata = header.metadata ~= vim.NIL and header.metadata or nil,
+    _index_attributes = nil,
   }, Store)
   local rebuilt, rebuild_err = rebuild(store)
   if not rebuilt then return nil, storage_error("Failed to open session", rebuild_err) end
+  return store
+end
+
+function M.derive(snapshot, opts)
+  opts = opts or {}
+  if type(snapshot) ~= "table" or type(snapshot.entries) ~= "table"
+      or not util.is_list(snapshot.entries) then
+    return nil, storage_error("Failed to derive session",
+      "source snapshot is required")
+  end
+  assert(type(opts.directory) == "string" and opts.directory ~= "",
+    "directory is required")
+  assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
+  local entries = util.copy(snapshot.entries)
+  local validated, validation_err = tree.validate_entries(entries)
+  if not validated then
+    return nil, storage_error("Failed to derive session", validation_err)
+  end
+  if snapshot.leaf_id ~= validated.leaf_id then
+    return nil, storage_error("Failed to derive session",
+      "active leaf does not match the entry journal")
+  end
+  local store = M.new({
+    directory = opts.directory,
+    cwd = opts.cwd,
+    parent_session = opts.parent_session,
+    metadata = opts.metadata,
+    index_attributes = opts.index_attributes,
+  })
+  local encoded_header, header_err = encode_session_value(
+    session_header(store), "session header")
+  if not encoded_header then return nil, header_err end
+  local contents = { encoded_header }
+  for _, entry in ipairs(entries) do
+    local encoded_entry, entry_err = encode_session_value(entry, entry.type)
+    if not encoded_entry then return nil, entry_err end
+    contents[#contents + 1] = encoded_entry
+  end
+  local ok, err = fs.mkdirp(vim.fs.dirname(store._path))
+  if not ok then
+    return nil, storage_error("Failed to create session directory", err)
+  end
+  ok, err = write_atomic(
+    store._path, append_contents(contents))
+  if not ok then
+    return nil, storage_error("Failed to create derived session", err)
+  end
+  store._persisted = true
+  store._entries = entries
+  store._by_id = validated.by_id
+  store._leaf_id = validated.leaf_id
+  local rebuilt, rebuild_err = rebuild(store)
+  if not rebuilt then
+    return nil, storage_error("Failed to open derived session", rebuild_err)
+  end
+  update_store_index(store)
   return store
 end
 
@@ -531,7 +670,6 @@ function M.fork(source, opts)
   if not source_metadata.persisted then
     return nil, storage_error("Failed to fork session", "source session is not persisted")
   end
-  local cwd = opts.cwd or source_metadata.cwd
   local entries
   if opts.entry_id then
     local target = source:entry(opts.entry_id)
@@ -551,43 +689,24 @@ function M.fork(source, opts)
   end
 
   local validated, validation_err = tree.validate_entries(entries)
-  if not validated then return nil, storage_error("Failed to fork session", validation_err) end
-  local store = M.new({
+  if not validated then
+    return nil, storage_error("Failed to fork session", validation_err)
+  end
+  local store, err = M.derive({
+    entries = entries,
+    leaf_id = validated.leaf_id,
+  }, {
     directory = opts.directory,
-    cwd = cwd,
+    cwd = opts.cwd or source_metadata.cwd,
     parent_session = source_metadata.path,
     metadata = opts.metadata or source_metadata.data,
+    index_attributes = opts.index_attributes,
   })
-  local header = {
-    type = "session",
-    version = 3,
-    id = store._id,
-    timestamp = store._timestamp,
-    cwd = store._cwd,
-    parentSession = source_metadata.path,
-  }
-  if store._metadata then header.metadata = copy_metadata(store._metadata) end
-  local encoded_header, header_err = encode_session_value(header, "session header")
-  if not encoded_header then return nil, header_err end
-  local contents = { encoded_header, "\n" }
-  for _, entry in ipairs(entries) do
-    local encoded_entry, entry_err = encode_session_value(entry, entry.type)
-    if not encoded_entry then return nil, entry_err end
-    contents[#contents + 1] = encoded_entry
-    contents[#contents + 1] = "\n"
+  if not store then
+    err = util.normalize_error(err, "storage")
+    return nil, storage_error("Failed to fork session",
+      err.detail or err.message)
   end
-  local ok, err = fs.mkdirp(vim.fs.dirname(store._path))
-  if not ok then return nil, storage_error("Failed to create session directory", err) end
-  ok, err = fs.write_all(store._path, table.concat(contents), "wx", 384)
-  if not ok then return nil, storage_error("Failed to create forked session", err) end
-  store._persisted = true
-  store._entries = util.copy(entries)
-  local forked = assert(tree.validate_entries(store._entries))
-  store._by_id = forked.by_id
-  store._leaf_id = forked.leaf_id
-  local rebuilt, rebuild_err = rebuild(store)
-  if not rebuilt then return nil, storage_error("Failed to open forked session", rebuild_err) end
-  update_store_index(store)
   return store
 end
 
@@ -614,7 +733,11 @@ function M.list(directory, cwd)
   return paths
 end
 
-function M.list_sessions(directory, cwd)
+function M.list_sessions(directory, cwd, opts)
+  opts = opts or {}
+  assert(opts.index_attributes == nil
+      or type(opts.index_attributes) == "function",
+    "index_attributes must be a function")
   local workspace = require("neoagent.workspace_settings").new({
     directory = directory,
     root = cwd,
@@ -628,10 +751,10 @@ function M.list_sessions(directory, cwd)
     local filename = vim.fs.basename(path)
     present[filename] = true
     local value = indexed.sessions[filename]
-    if not value then
+    if not value or opts.index_attributes and value.attributes == nil then
       local store = M.open(path)
       if store then
-        value = store_index_entry(store)
+        value = store_index_entry(store, opts.index_attributes)
         repairs[filename] = value
       end
     end
@@ -640,6 +763,7 @@ function M.list_sessions(directory, cwd)
       sessions[#sessions + 1] = {
         path = path,
         parent_session = value.parent_session,
+        attributes = copy_metadata(value.attributes),
         text = value.text,
         modified_at = mtime_ms(stat),
       }
@@ -652,7 +776,11 @@ function M.list_sessions(directory, cwd)
   if next(repairs) or #stale > 0 then
     modify_index(index_path, function(values)
       for filename, value in pairs(repairs) do
-        if not values[filename] then values[filename] = value end
+        if values[filename] and value.attributes ~= nil then
+          values[filename].attributes = copy_metadata(value.attributes)
+        elseif not values[filename] then
+          values[filename] = value
+        end
       end
       for _, filename in ipairs(stale) do
         if not vim.uv.fs_stat(fs.join(workspace.sessions_directory, filename)) then

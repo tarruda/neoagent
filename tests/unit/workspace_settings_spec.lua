@@ -80,9 +80,24 @@ describe("neoagent workspace settings", function()
     assert.is_nil(value)
     assert.matches("encode", err.message)
 
+    local original_random = vim.uv.random
+    local random_calls = 0
+    vim.uv.random = function(...)
+      random_calls = random_calls + 1
+      if random_calls == 2 then return nil, "random unavailable" end
+      return original_random(...)
+    end
+    local called, written, write_err = pcall(
+      settings.write, settings, { valid = true })
+    vim.uv.random = original_random
+    assert(called)
+    assert.is_nil(written)
+    assert.matches("temporary file", write_err.message)
+
     local original_rename = vim.uv.fs_rename
     vim.uv.fs_rename = function() return nil, "denied" end
-    local called, written, write_err = pcall(settings.write, settings, { valid = true })
+    called, written, write_err = pcall(
+      settings.write, settings, { valid = true })
     vim.uv.fs_rename = original_rename
     assert(called)
     assert.is_nil(written)

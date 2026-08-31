@@ -1,4 +1,4 @@
-local agents = require("neoagent.agents")
+local agent_instructions = require("neoagent.agent_instructions")
 local fs = require("neoagent.fs")
 local skills = require("neoagent.skills")
 
@@ -40,7 +40,7 @@ describe("neoagent contextual resources", function()
     write(nested .. "/AGENTS.md", "module instructions")
     local not_file = directory(base .. "/not-a-file")
 
-    local result = agents.discover({
+    local result = agent_instructions.discover({
       cwd = nested,
       global_files = { global, not_file, global },
       project_filenames = { "AGENTS.md" },
@@ -54,12 +54,12 @@ describe("neoagent contextual resources", function()
     assert.are.equal(1, #result.diagnostics)
     assert.matches("not a file", result.diagnostics[1].message)
 
-    local prompt = agents.format(result.files)
+    local prompt = agent_instructions.format(result.files)
     assert.matches("ordered from broadest to most specific", prompt)
     assert.matches("A&amp;&quot;&apos;%.md", prompt)
     assert.is_nil(prompt:find("outside repository", 1, true))
-    assert.are.equal("", agents.format({}))
-    assert.has_error(function() agents.discover({}) end)
+    assert.are.equal("", agent_instructions.format({}))
+    assert.has_error(function() agent_instructions.discover({}) end)
   end)
 
   it("reports AGENTS.md read failures and supports paths outside a repository", function()
@@ -73,7 +73,7 @@ describe("neoagent contextual resources", function()
       if candidate == path then return nil, "denied" end
       return original(candidate)
     end
-    local ok, result = pcall(agents.discover, {
+    local ok, result = pcall(agent_instructions.discover, {
       cwd = nested,
       global_files = { path },
       project_filenames = {},

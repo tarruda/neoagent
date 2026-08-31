@@ -30,8 +30,9 @@ describe("neoagent.compaction", function()
     assert.are.equal(2, compaction.estimate_tokens({
       role = "assistant", content = { { type = "thinking", thinking = "12345678" } },
     }))
-    assert.are.equal(2, compaction.estimate_tokens({ role = "bashExecution", command = "abcd", output = "efgh" }))
-    assert.are.equal(2, compaction.estimate_tokens({ role = "branchSummary", summary = "12345678" }))
+    assert.are.equal(2, compaction.estimate_tokens({
+      role = "compactionSummary", summary = "12345678",
+    }))
     assert.are.equal(0, compaction.estimate_tokens({ role = "unknown" }))
   end)
 
@@ -99,7 +100,7 @@ describe("neoagent.compaction", function()
   end)
 
   it("adds messages after live provider usage to the context estimate", function()
-    local context = require("neoagent.controller.context")
+    local context = require("neoagent.agent.context")
     local messages = {
       { role = "assistant", content = { { type = "text", text = "answer" } } },
       { role = "user", content = "follow-up" },
@@ -189,6 +190,7 @@ describe("neoagent.compaction", function()
       events = {
         { type = "text_delta", text = "partial" },
         { type = "provider_status", text = "quota" },
+        { type = "inference_stats", generation_tokens_per_second = 40 },
       },
       result = { ok = false, error = { kind = "http", message = "unavailable" } },
     } })
@@ -201,10 +203,11 @@ describe("neoagent.compaction", function()
       model = model,
       on_event = function(event) events[#events + 1] = event end,
     })
-    assert(vim.wait(1000, function() return run:is_done() and #events == 2 end))
+    assert(vim.wait(1000, function() return run:is_done() and #events == 3 end))
     assert.is_false(run:result().ok)
     assert.are.equal("unavailable", run:result().error.message)
-    assert.are.same({ "compaction_delta", "provider_status" }, vim.tbl_map(function(event) return event.type end, events))
+    assert.are.same({ "compaction_delta", "provider_status", "inference_stats" },
+      vim.tbl_map(function(event) return event.type end, events))
 
     model = fake_model.new({ { result = { ok = true, text = "  " } } })
     run = compaction.run({

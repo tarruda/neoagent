@@ -163,20 +163,6 @@ describe("neoagent bundled tools", function()
 
   it("derives renderer-neutral edit rows from tool results", function()
     local tool = require("neoagent.tools.edit_file").new()
-    local legacy = assert(tool.render({
-      state = "success", arguments = { path = "legacy.lua" },
-      result = { details = {
-        diff = " context\n-old\n+new", firstChangedLine = 7,
-      } },
-    }))
-    assert.are.equal("edit", legacy.kind)
-    assert.are.equal("legacy.lua", legacy.path)
-    assert.are.same({
-      { kind = "context", number = 7, text = "context" },
-      { kind = "delete", number = 8, text = "old" },
-      { kind = "add", number = 8, text = "new" },
-    }, legacy.rows)
-
     local patch = table.concat({
       "@@ -1,8 +1,8 @@",
       " one", "-two", "+a long\tchanged line", " three", " four",
@@ -504,7 +490,7 @@ describe("neoagent bundled tools", function()
     vim.env.MYVIMRC = original
     local text = result.content[1].text
     assert.matches("# Neoagent API map", text)
-    assert.matches("Independent Controller", text)
+    assert.matches("Independent Agent", text)
     assert.matches("Tools and execution", text)
     assert.matches("Runtime policies and UI", text)
     assert.matches("architecture.md", text)
@@ -781,8 +767,6 @@ describe("neoagent bundled tools", function()
     assert.are.equal("\239\187\191", changed:sub(1, 3))
     assert.matches("ONE\r\nsmart quote\r\nlast", changed)
     assert.is_nil(changed:gsub("\r\n", ""):find("\n", 1, true))
-    assert.are.equal(1, result.details.firstChangedLine)
-    assert.matches("+ONE", result.details.diff)
     assert.is_true(#result.details.patch > 0)
   end)
 

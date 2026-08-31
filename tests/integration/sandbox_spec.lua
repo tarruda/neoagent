@@ -1,4 +1,4 @@
-local agent = require("neoagent.agent")
+local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local composition = require("neoagent.sandbox.composition")
 local fake_model = require("tests.helpers.fake_model")
@@ -133,7 +133,7 @@ describe("neoagent shared sandbox contract", function()
     vim.api.nvim_set_current_dir(workspace)
     context = {
       workspace = Workspace.new({ root = workspace, cwd = workspace }),
-      controller = "Sandbox integration",
+      agent = "Sandbox integration",
     }
   end)
 
@@ -204,7 +204,7 @@ describe("neoagent shared sandbox contract", function()
   end
 
   local function sandboxed_config(selected_tools, profile_callback)
-    configured = composition.controller({
+    configured = composition.agent({
       name = "Sandbox integration",
       tools = selected_tools,
       _tools_supplied = true,
@@ -288,7 +288,7 @@ describe("neoagent shared sandbox contract", function()
           { type = "text", text = "complete" },
         }) },
       })
-      local completed = wait(agent.run({
+      local completed = wait(agent_loop.run({
         model = model,
         messages = {},
         tools = options.tools,
@@ -532,7 +532,7 @@ describe("neoagent shared sandbox contract", function()
           { type = "text", text = "continued" },
         }) },
       })
-      local completed = wait(agent.run({
+      local completed = wait(agent_loop.run({
         model = model,
         messages = {},
         tools = options.tools,
@@ -630,7 +630,7 @@ describe("neoagent shared sandbox contract", function()
         vim.trim(discovered.stdout))
       local nested_context = {
         workspace = Workspace.new({ root = nested, cwd = nested }),
-        controller = "Nested sandbox integration",
+        agent = "Nested sandbox integration",
       }
       local active_profile = composition.default_profile({
         context = nested_context,
@@ -669,7 +669,7 @@ describe("neoagent shared sandbox contract", function()
       assert.are.equal(0, initialized.code, initialized.stderr)
       local nested_context = {
         workspace = Workspace.new({ root = nested, cwd = nested }),
-        controller = "Live sandbox integration",
+        agent = "Live sandbox integration",
       }
       local active_profile = composition.default_profile({
         context = nested_context,
@@ -1129,18 +1129,36 @@ describe("neoagent shared sandbox contract", function()
   sandbox_test("activates the built-in Neo composition from setup", function()
     package.loaded["neoagent"] = nil
     local neoagent = require("neoagent")
-    local controller = neoagent.setup({
-      workspace_trust = false,
-      sandbox = { enabled = true, profile = profile },
-      persistence = {
-        enabled = false,
-        workspace_settings = false,
-      },
-      agents = false,
-      skills = false,
-      compaction = false,
-    })
-    local options = controller:config()
+    local function configured(enabled)
+      local model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "ready" } }),
+      } })
+      return {
+        workspace_trust = false,
+        sandbox = { enabled = enabled, profile = profile },
+        persistence = {
+          enabled = false,
+          workspace_settings = false,
+        },
+        default_registry = false,
+        default_model = { provider = "fake", model = "test" },
+        providers = {
+          fake = { api = "fake-api", models = { test = {} } },
+        },
+        _apis = { ["fake-api"] = function() return model end },
+        agent_instructions = false,
+        skills = false,
+        compaction = false,
+      }
+    end
+    local function setup_agent(enabled)
+      local applet = neoagent.setup(configured(enabled))
+      assert.are.same({}, applet:agents())
+      wait(assert(applet:send("activate sandbox composition")))
+      return applet, assert(applet:default_agent())
+    end
+    local applet, agent = setup_agent(true)
+    local options = agent:config()
     assert.is_true(options.sandbox.enabled)
     assert.is_nil(options._sandbox_status)
     local sandbox_status = neoagent.sandbox_info()
@@ -1167,37 +1185,25 @@ describe("neoagent shared sandbox contract", function()
       assert.is_true(sandbox_status.capabilities.seatbelt)
       assert.matches("capability.seatbelt: yes", rendered, 1, true)
     end
-    assert.is_table(controller:get_toolset().tools[1]
+    assert.is_table(agent:get_toolset().tools[1]
       .input_schema.properties.options.properties.require_escalation)
-    local controllers = neoagent.default_window():controllers()
-    assert.are.equal("Neo", controllers[1]:config().name)
-    assert.are.equal("Chat", controllers[2]:config().name)
-    assert.is_false(controllers[2]:config().sandbox.enabled)
-    controller = neoagent.setup({
-      workspace_trust = false,
-      sandbox = { enabled = false, profile = profile },
-      persistence = {
-        enabled = false,
-        workspace_settings = false,
-      },
-      agents = false,
-      skills = false,
-      compaction = false,
-    })
-    assert.is_false(controller:config().sandbox.enabled)
+    assert.are.equal("Neo", agent:config().name)
+    assert.is_false(applet:profile("chat").config.sandbox.enabled)
+    applet, agent = setup_agent(false)
+    assert.is_false(agent:config().sandbox.enabled)
     assert.is_false(neoagent.sandbox_info().enabled)
-    local stable = controller:get_toolset()
+    local stable = agent:get_toolset()
     assert.is_table(stable.tools[1].input_schema.properties.options)
     sandbox_status = assert(neoagent.toggle_sandbox())
     assert.is_true(sandbox_status.active)
-    assert.is_false(controller:config().sandbox.enabled)
-    assert.are.same(stable.tools, controller:get_toolset().tools)
+    assert.is_false(agent:config().sandbox.enabled)
+    assert.are.same(stable.tools, agent:get_toolset().tools)
     assert.are.equal(stable.execute_tool,
-      controller:get_toolset().execute_tool)
+      agent:get_toolset().execute_tool)
     sandbox_status = assert(neoagent.toggle_sandbox())
     assert.is_false(sandbox_status.enabled)
-    assert.are.same(stable.tools, controller:get_toolset().tools)
+    assert.are.same(stable.tools, agent:get_toolset().tools)
     assert.are.equal(stable.execute_tool,
-      controller:get_toolset().execute_tool)
+      agent:get_toolset().execute_tool)
   end)
 end)

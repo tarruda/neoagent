@@ -2,7 +2,8 @@ local async = require("neoagent.async")
 local util = require("neoagent.util")
 
 local M = {}
-local RUNTIME_KEY = "_neoagent_provider_runtime"
+local default_runtimes = setmetatable({}, { __mode = "k" })
+local MAX_DIAGNOSTIC_CHARACTERS = 512
 
 local function failure(message)
   return nil, util.error("provider", message)
@@ -56,6 +57,21 @@ function M.validate(value)
   if type(value) ~= "table" or util.is_list(value) then
     return failure("Provider Service must be an object")
   end
+  local fields = {
+    destroy = true,
+    id = true,
+    name = true,
+    on_event = true,
+    operations = true,
+    state = true,
+    subscribe = true,
+    wrap_model = true,
+  }
+  for name in pairs(value) do
+    if not fields[name] then
+      return failure("unsupported Provider Service field " .. tostring(name))
+    end
+  end
   local ok, err = valid_text(value.id, "Provider Service id", 128)
   if not ok then return nil, err end
   ok, err = valid_text(value.name, "Provider Service name", 128)
@@ -71,23 +87,8 @@ function M.validate(value)
     local validated, validate_err = validate_operation(id, operation)
     if not validated then return nil, validate_err end
   end
-  if value.open_operation ~= nil then
-    local operation_id, operation_err = valid_text(
-      value.open_operation, "Provider Service open_operation", 128)
-    if not operation_id then return nil, operation_err end
-    local operation = value.operations[operation_id]
-    if not operation then
-      return failure("Provider Service " .. value.id
-        .. " open_operation must name an operation")
-    end
-    if operation.mutating == true then
-      return failure("Provider Service " .. value.id
-        .. " open_operation must be non-mutating")
-    end
-  end
   for _, method in ipairs({
-    "get_models", "refresh_models", "refresh_catalog", "subscribe",
-    "on_event", "destroy", "wrap_model",
+    "subscribe", "on_event", "destroy", "wrap_model",
   }) do
     if value[method] ~= nil and type(value[method]) ~= "function" then
       return failure("Provider Service " .. value.id .. " " .. method
@@ -121,12 +122,72 @@ function M.operations(service)
   return result
 end
 
+local function new_runtime()
+  return {
+    users = 0,
+    operation = nil,
+    listeners = {},
+    next_listener_id = 0,
+  }
+end
+
 local function runtime(service)
-  local value = rawget(service, RUNTIME_KEY)
-  if value then return value end
-  value = { users = 0, operation = nil }
-  rawset(service, RUNTIME_KEY, value)
+  local value = default_runtimes[service]
+  if not value then
+    value = new_runtime()
+    default_runtimes[service] = value
+  end
   return value
+end
+
+local function subscriber_failure(err)
+  local message = util.text_from_bytes(
+    util.normalize_error(err, "provider").message)
+  if vim.fn.strchars(message) > MAX_DIAGNOSTIC_CHARACTERS then
+    message = vim.fn.strcharpart(message, 0, MAX_DIAGNOSTIC_CHARACTERS)
+      .. "…"
+  end
+  return "neoagent: provider runtime subscriber failed: " .. message
+end
+
+local function publish_runtime(state)
+  local snapshot = {
+    users = state.users,
+    busy = state.operation ~= nil,
+    mutating = state.operation and state.operation.mutating == true or false,
+  }
+  for _, subscription in pairs(state.listeners) do
+    local ok, err = pcall(subscription.listener, util.copy(snapshot))
+    if not ok and subscription.report then
+      local message = subscriber_failure(err)
+      util.schedule(function()
+        pcall(subscription.report, message, vim.log.levels.ERROR)
+      end)
+    end
+  end
+end
+
+function M.subscribe(service, listener, opts)
+  service = M.assert(service)
+  assert(type(listener) == "function",
+    "Provider Service runtime listener must be a function")
+  opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "Provider Service runtime subscription options must be an object")
+  assert(opts.report == nil or type(opts.report) == "function",
+    "Provider Service runtime subscription report must be a function")
+  local state = runtime(service)
+  state.next_listener_id = state.next_listener_id + 1
+  local id = state.next_listener_id
+  state.listeners[id] = { listener = listener, report = opts.report }
+  local active = true
+  return function()
+    if not active then return false end
+    active = false
+    state.listeners[id] = nil
+    return true
+  end
 end
 
 function M.busy(service)
@@ -141,17 +202,6 @@ function M.operation_enabled(service, operation)
     and not (operation.mutating == true and state.users > 0)
 end
 
-function M.take_open_operation(service)
-  service = M.assert(service)
-  local state = runtime(service)
-  if state.opened or state.operation ~= nil
-      or service.open_operation == nil then
-    return nil
-  end
-  state.opened = true
-  return service.open_operation
-end
-
 function M.acquire(service)
   service = M.assert(service)
   local state = runtime(service)
@@ -159,11 +209,13 @@ function M.acquire(service)
     return failure("Cannot start a model run during a mutating provider operation")
   end
   state.users = state.users + 1
+  publish_runtime(state)
   local active = true
   return function()
     if not active then return false end
     active = false
     state.users = math.max(0, state.users - 1)
+    publish_runtime(state)
     return true
   end
 end
@@ -235,11 +287,6 @@ function M.run(service, operation_id, opts)
       or opts.args:find("[%z\1-\31\127]")) then
     return failure("provider operation args must be safe text of at most 16384 bytes")
   end
-  local model = opts.model
-  if model ~= nil and (type(model) ~= "table" or util.is_list(model)
-      or type(model.provider) ~= "string" or type(model.model) ~= "string") then
-    return failure("provider operation model must identify provider and model")
-  end
   local interact = opts.interact or M.no_interact()
   if type(interact) ~= "table" then
     return failure("provider operation interact must be a table")
@@ -252,6 +299,7 @@ function M.run(service, operation_id, opts)
 
   local token = { mutating = descriptor.mutating == true }
   state.operation = token
+  publish_runtime(state)
   local run = async.run(function()
     local ctx = {
       provider = {
@@ -260,8 +308,6 @@ function M.run(service, operation_id, opts)
         config = M.public_config(opts.provider or {}),
       },
       args = opts.args or "",
-      model = model and util.copy(model) or nil,
-      agent_running = opts.agent_running == true,
       resolve_auth = function()
         if type(opts.resolve_auth) == "function" then
           return opts.resolve_auth()
@@ -286,13 +332,19 @@ function M.run(service, operation_id, opts)
   end, {
     on_event = opts.on_event,
     on_done = function(result)
-      if state.operation == token then state.operation = nil end
+      if state.operation == token then
+        state.operation = nil
+        publish_runtime(state)
+      end
       if opts.on_done then opts.on_done(result) end
     end,
     error_kind = "provider",
   })
   token.run = run
-  if run:is_done() and state.operation == token then state.operation = nil end
+  if run:is_done() and state.operation == token then
+    state.operation = nil
+    publish_runtime(state)
+  end
   return run
 end
 

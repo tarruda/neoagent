@@ -5,7 +5,8 @@ describe("neoagent provider state", function()
     return {
       blocks = {
         { type = "status", text = "Router online", level = "success" },
-        { type = "field", label = "Endpoint", value = "127.0.0.1:8080" },
+        { type = "field", label = "Endpoint", value = "127.0.0.1:8080",
+          level = "success" },
         {
           type = "progress",
           label = "Downloading qwen3",
@@ -60,54 +61,53 @@ describe("neoagent provider state", function()
     assert.is_false(provider_state.normalize(false))
   end)
 
-  it("adapts the original snapshot shape into dashboard blocks", function()
-    local normalized, err = provider_state.normalize({
-      summary = "Connected",
-      fields = { { label = "Server", value = "localhost" } },
-      sections = {
-        { title = "Models", rows = { { label = "qwen3", detail = "loaded" } } },
-      },
-      activity = { { level = "warn", message = "Slow" } },
-    })
-    assert(normalized, err and err.message)
-    assert.are.same({
-      { type = "status", text = "Connected", level = "info" },
-      { type = "field", label = "Server", value = "localhost" },
-      {
-        type = "list",
-        title = "Models",
-        items = { { label = "qwen3", detail = "loaded" } },
-      },
-      {
-        type = "activity",
-        title = "Recent activity",
-        entries = { { level = "warn", message = "Slow" } },
-      },
-    }, normalized.blocks)
-  end)
-
-  it("rejects malformed snapshots and block types", function()
-    for _, value in ipairs({ nil, true, 1, "state" }) do
+  it("rejects pre-Service dashboard snapshot fields", function()
+    for _, value in ipairs({
+      { summary = "Connected" },
+      { fields = {} },
+      { sections = {} },
+      { activity = {} },
+    }) do
       local normalized, err = provider_state.normalize(value)
       assert.is_nil(normalized)
       assert.are.equal("provider", err.kind)
+      assert.matches("unsupported provider state field", err.message)
     end
-    local normalized, err = provider_state.normalize({
+  end)
+
+  it("rejects malformed snapshots and block types", function()
+    local normalized, err = provider_state.normalize(nil)
+    assert.is_nil(normalized)
+    assert.are.equal("provider", err.kind)
+    for _, value in ipairs({ true, 1, "state" }) do
+      normalized, err = provider_state.normalize(value)
+      assert.is_nil(normalized)
+      assert.are.equal("provider", err.kind)
+    end
+    normalized, err = provider_state.normalize({
       blocks = { { type = "gauge", label = "Mystery" } },
     })
     assert.is_nil(normalized)
     assert.matches("unknown provider block type", err.message)
 
-    for _, value in ipairs({
-      { fields = "invalid" },
-      { sections = { true } },
-      { activity = "invalid" },
-    }) do
-      local ok, legacy, legacy_err = pcall(provider_state.normalize, value)
-      assert.is_true(ok)
-      assert.is_nil(legacy)
-      assert.are.equal("provider", legacy_err.kind)
-    end
+  end)
+
+  it("rejects list-shaped blocks and object-shaped item collections", function()
+    local normalized, err = provider_state.normalize({
+      blocks = { { "status", "Ready" } },
+    })
+    assert.is_nil(normalized)
+    assert.matches("provider block must be an object", err.message)
+
+    normalized, err = provider_state.normalize({
+      blocks = { {
+        type = "list",
+        title = "Models",
+        items = { current = { label = "active" } },
+      } },
+    })
+    assert.is_nil(normalized)
+    assert.matches("provider list items must be a list", err.message)
   end)
 
   it("rejects control characters and invalid levels", function()
@@ -117,6 +117,10 @@ describe("neoagent provider state", function()
 
     value = valid()
     value.blocks[1].level = "debug"
+    assert.is_nil(provider_state.normalize(value))
+
+    value = valid()
+    value.blocks[2].level = "debug"
     assert.is_nil(provider_state.normalize(value))
 
     value = valid()
@@ -199,13 +203,12 @@ describe("neoagent provider state", function()
   end)
 
   it("isolates failing push subscribers", function()
-    local dashboard = provider_state.new({})
     local notifications = {}
-    local original_notify = vim.notify
-    vim.notify = function(message) notifications[#notifications + 1] = message end
+    local dashboard = provider_state.new({}, {
+      report = function(message) notifications[#notifications + 1] = message end,
+    })
     dashboard:subscribe(function() error("listener boom") end)
     assert(dashboard:push({ blocks = { { type = "status", text = "Ready" } } }))
-    vim.notify = original_notify
     assert.are.equal(1, #notifications)
     assert.matches("listener boom", notifications[1])
   end)

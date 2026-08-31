@@ -102,9 +102,9 @@ describe("OpenAI Codex subscription authentication", function()
       email = string.rep("a", 255),
       plan = string.rep("p", 65),
     }))
-    assert.are.same({ email = "legacy@example.com", plan = "Pro" },
+    assert.are.same({ email = "token@example.com", plan = "Pro" },
       method.public_metadata({ access = token("acct", {
-        profile_email = "legacy@example.com",
+        profile_email = "token@example.com",
         plan = "pro",
       }) }))
   end)
@@ -203,31 +203,6 @@ describe("OpenAI Codex subscription authentication", function()
     assert.are.same({ 0, 0, 0, 5000 }, sleeps)
     assert.is_truthy(http.requests[6].body:find(
       "redirect_uri=https%3a%2f%2fauth.openai.com%2fdeviceauth%2fcallback", 1, true))
-  end)
-
-  it("accepts Pi-compatible manual authorization code formats", function()
-    for _, format in ipairs({ "hash", "fields", "raw" }) do
-      local http = fake_http({ json(200, {
-        access_token = token("manual"), refresh_token = "refresh", expires_in = 1,
-      }) })
-      local events = {}
-      local method = codex.new({
-        http = http,
-        auth_base_url = "https://auth.test",
-        start_callback_server = function() return nil end,
-      })
-      local result = wait(method.login(interaction({
-        "browser",
-        function()
-          local state = events[1].url:match("[?&]state=([^&]+)")
-          if format == "hash" then return "manual-code#" .. state end
-          if format == "fields" then return "code=manual-code&state=" .. state end
-          return "manual-code"
-        end,
-      }, events)))
-      assert.is_true(result.ok)
-      assert.matches("code=manual%-code", http.requests[1].body)
-    end
   end)
 
   it("uses a cancellable timer while polling device authorization", function()

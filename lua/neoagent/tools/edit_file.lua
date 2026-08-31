@@ -73,9 +73,6 @@ end
 local function preserve_lines(original, normalized, replacements)
   local original_lines = vim.split(original, "\n", { plain = true })
   local normalized_lines = vim.split(normalized, "\n", { plain = true })
-  if #original_lines ~= #normalized_lines then
-    error("Cannot preserve fuzzy-matched lines")
-  end
   local spans = line_spans(normalized)
   local groups = {}
   for _, replacement in ipairs(replacements) do
@@ -138,26 +135,11 @@ local function apply(content, edits, path)
   return changed
 end
 
-local function first_changed(old, new)
-  local before, after = vim.split(old, "\n", { plain = true }), vim.split(new, "\n", { plain = true })
-  for index = 1, math.max(#before, #after) do
-    if before[index] ~= after[index] then return index end
-  end
-end
-
 local function diff_details(path, old, new)
   local ok, patch = pcall(vim.diff, old, new, { result_type = "unified", ctxlen = 4 })
   if not ok then patch = "--- " .. path .. "\n+++ " .. path end
-  local display = {}
-  for line in (patch .. "\n"):gmatch("(.-)\n") do
-    if line:sub(1, 1) == "+" and line:sub(1, 3) ~= "+++" or line:sub(1, 1) == "-" and line:sub(1, 3) ~= "---" then
-      display[#display + 1] = line
-    end
-  end
   return {
-    diff = table.concat(display, "\n"),
     patch = patch,
-    firstChangedLine = first_changed(old, new),
     changed_paths = { path },
   }
 end

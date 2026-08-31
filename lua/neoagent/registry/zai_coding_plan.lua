@@ -1,23 +1,22 @@
-local util = require("neoagent.util")
-local zai = require("neoagent.registry.zai")
+local common = require("neoagent.registry.zai_common")
 
-local models = {}
-for _, id in ipairs({
-  "glm-4.5-air",
-  "glm-4.7",
-  "glm-5-turbo",
-  "glm-5.1",
-  "glm-5.2",
-  "glm-5v-turbo",
-}) do
-  models[id] = util.copy(zai.models[id])
-end
+local ids = {
+  "glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2",
+  "glm-5.3", "glm-5.3-flash", "glm-5v-turbo",
+}
 
 return {
-  api = zai.api,
+  api = "openai-completions",
   base_url = "https://api.z.ai/api/coding/paas/v4",
-  api_key = zai.api_key,
-  auth = zai.auth,
-  request_opts = util.copy(zai.request_opts),
-  models = models,
+  api_key = function() return vim.env.ZAI_API_KEY end,
+  auth = "zai",
+  request_opts = { body = { stream_options = { include_usage = true } } },
+  catalog = {
+    ttl_ms = 14 * 24 * 60 * 60 * 1000,
+    seed = common.seed(ids),
+    discover = require("neoagent.providers.zai").discover_models,
+    transform_model = common.transform,
+  },
+  models = {},
+  service = require("neoagent.providers.zai").new,
 }

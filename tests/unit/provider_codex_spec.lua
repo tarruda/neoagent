@@ -61,49 +61,28 @@ describe("neoagent Codex provider service", function()
     })
   end
 
-  it("parses legacy response rate limits into semantic quota meters", function()
-    assert.are.same({
-      { type = "limit", label = "Weekly limit", remaining = 0.84 },
-      { type = "limit", label = "5h limit", remaining = 0.6 },
-    }, codex.parse_limits("weekly 84% left · 5h 60% left"))
-    assert.are.same({
-      { type = "limit", label = "custom limit", remaining = 0.12 },
-    }, codex.parse_limits("custom 12% left"))
-    assert.are.same({}, codex.parse_limits("Reconnecting… 2/3"))
+  it("labels structured quota windows", function()
     assert.are.equal("Usage", codex.duration_label(nil))
     assert.are.equal("1 day", codex.duration_label(1440))
     assert.are.equal("2 days", codex.duration_label(2880))
     assert.are.equal("2h", codex.duration_label(120))
     assert.are.equal("45m", codex.duration_label(45))
-
-    local service = codex.new()
-    service:on_event({
-      type = "provider_status",
-      text = "custom 12% left",
-    })
-    assert.are.equal(0.12,
-      block(service:state(), "limit", "custom usage limit").remaining)
   end)
 
   it("pushes structured quota meters and connection state from provider events", function()
     local service = codex.new({ base_url = "https://chatgpt.com/backend-api" })
     assert.are.equal("openai-codex", service.id)
     assert.are.equal("Codex", service.name)
-    assert.are.equal("refresh", service.open_operation)
     local operation_ids = vim.tbl_keys(service.operations)
     table.sort(operation_ids)
     assert.are.same({
       "activity", "redeem", "refresh", "reset_credits", "workspaces",
     }, operation_ids)
-    assert.are.same({
-      type = "status",
-      text = "Usage loads when this console opens",
-      level = "muted",
-    }, service:state().blocks[1])
+    assert.are.same({}, service:state().blocks)
 
     local initial, err = require("neoagent.provider_state").normalize(service:state())
     assert(initial, err and err.message)
-    assert.matches("Usage loads", initial.blocks[1].text)
+    assert.are.same({}, initial.blocks)
 
     local published
     local unsubscribe = service:subscribe(function(snapshot)
@@ -190,7 +169,7 @@ describe("neoagent Codex provider service", function()
     local service = codex.new()
     service:on_event({ type = "usage" })
     service:on_event({ type = "provider_status" })
-    assert.matches("Usage loads", service:state().blocks[1].text)
+    assert.are.same({}, service:state().blocks)
   end)
 
   it("ignores provider status that exceeds dashboard bounds", function()
@@ -204,7 +183,7 @@ describe("neoagent Codex provider service", function()
     })
     vim.notify = original_notify
     assert.are.equal(0, #notifications)
-    assert.matches("Usage loads", service:state().blocks[1].text)
+    assert.are.same({}, service:state().blocks)
   end)
 
   it("keeps startup, unavailable, and API-key states explicit", function()

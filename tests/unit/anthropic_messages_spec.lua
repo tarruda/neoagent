@@ -194,14 +194,6 @@ describe("neoagent.api.anthropic_messages", function()
     assert.are.equal("object", request.body.tools[1].input_schema.type)
     assert.are.same({ provider = true }, provider_opts.body.metadata)
 
-    local oauth_request = anthropic.new({
-      provider = "plan",
-      model = "test",
-      base_url = "http://localhost/v1",
-      api_key = "sk-ant-oat-test",
-    }):_request({ messages = {}, tools = {} })
-    assert.are.equal("Bearer sk-ant-oat-test", oauth_request.headers.Authorization)
-    assert.is_nil(oauth_request.headers["x-api-key"])
   end)
 
   it("downgrades images before encoding requests for text-only models", function()
@@ -232,7 +224,7 @@ describe("neoagent.api.anthropic_messages", function()
       request.body.messages[3].content[1].content)
   end)
 
-  it("normalizes malformed tool input for agent recovery", function()
+  it("normalizes malformed tool input for Agent Loop recovery", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
       event({
@@ -267,7 +259,7 @@ describe("neoagent.api.anthropic_messages", function()
       result.message.content[1].argumentsError)
   end)
 
-  it("normalizes non-object tool input for agent recovery", function()
+  it("normalizes non-object tool input for Agent Loop recovery", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
       event({

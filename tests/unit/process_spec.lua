@@ -200,6 +200,70 @@ describe("neoagent process runner", function()
     }, calls)
   end)
 
+  it("reports native Windows Job API failures and closes handles", function()
+    local windows = require("neoagent.process.windows")
+    local ffi = {
+      cdef = function() end,
+      new = function() return { BasicLimitInformation = {} } end,
+      sizeof = function() return 144 end,
+    }
+    local closed = {}
+    local mode = "create"
+    local kernel = {
+      GetLastError = function() return 5 end,
+      CreateJobObjectW = function()
+        if mode == "create" then return nil end
+        return "job"
+      end,
+      SetInformationJobObject = function()
+        return mode == "configure" and 0 or 1
+      end,
+      OpenProcess = function()
+        if mode == "open" then return nil end
+        return "process"
+      end,
+      AssignProcessToJobObject = function()
+        return mode == "assign" and 0 or 1
+      end,
+      TerminateJobObject = function()
+        return mode == "terminate" and 0 or 1
+      end,
+      CloseHandle = function(handle) closed[#closed + 1] = handle end,
+    }
+    local function create()
+      return windows.new({ native = { ffi = ffi, kernel = kernel } })
+    end
+
+    local tree, err = create()
+    assert.is_nil(tree)
+    assert.are.equal("Win32 error 5", err)
+    mode = "configure"
+    tree, err = create()
+    assert.is_nil(tree)
+    assert.are.equal("Win32 error 5", err)
+    assert.are.same({ "job" }, closed)
+
+    mode = "open"
+    tree = assert(create())
+    local attached, attach_err = tree:attach(42)
+    assert.is_nil(attached)
+    assert.are.equal("Win32 error 5", attach_err)
+    tree:close()
+
+    mode = "assign"
+    tree = assert(create())
+    attached, attach_err = tree:attach(42)
+    assert.is_nil(attached)
+    assert.are.equal("Win32 error 5", attach_err)
+    tree:close()
+
+    mode = "terminate"
+    tree = assert(create())
+    assert(tree:attach(42))
+    assert.is_false(tree:terminate())
+    tree:close()
+  end)
+
   it("reports process supervisor, spawn, and attachment setup failures", function()
     local tree_module = jit.os == "Windows"
       and "neoagent.process.windows" or "neoagent.process.posix"

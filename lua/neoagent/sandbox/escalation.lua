@@ -345,7 +345,7 @@ function Escalation:_candidate(tool, arguments)
 end
 
 function Escalation:_request(tool, arguments, escalation, ctx)
-  local controller = ctx and ctx.context and ctx.context.controller or "Neoagent"
+  local agent = ctx and ctx.context and ctx.context.agent or "Neoagent"
   local summary
   local ok, value = pcall(self._summarize, tool, arguments, ctx)
   if ok and type(value) == "string" and util.trim(value) ~= "" then
@@ -384,8 +384,9 @@ function Escalation:_request(tool, arguments, escalation, ctx)
   end
   return {
     placement = "transcript",
-    title = "Approval required · " .. bounded(controller, 128),
+    title = "Approval required · " .. bounded(agent, 128),
     body = table.concat(body, "\n"),
+    default_action = "deny",
     actions = actions,
   }, candidate
 end

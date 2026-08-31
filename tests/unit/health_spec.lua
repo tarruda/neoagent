@@ -3,6 +3,8 @@ local fs = require("neoagent.fs")
 describe("neoagent health", function()
   local original_health
   local original_path
+  local original_tmux
+  local original_term
   local roots = {}
   local messages
 
@@ -16,6 +18,8 @@ describe("neoagent health", function()
   before_each(function()
     original_health = vim.health
     original_path = vim.env.PATH
+    original_tmux = vim.env.TMUX
+    original_term = vim.env.TERM
     messages = { ok = {}, error = {}, warn = {}, start = {} }
     vim.health = {}
     for kind in pairs(messages) do
@@ -27,6 +31,8 @@ describe("neoagent health", function()
   after_each(function()
     vim.health = original_health
     vim.env.PATH = original_path
+    vim.env.TMUX = original_tmux
+    vim.env.TERM = original_term
     require("neoagent.config")._reset()
     for _, root in ipairs(roots) do vim.fn.delete(root, "rf") end
     roots = {}
@@ -38,6 +44,45 @@ describe("neoagent health", function()
     assert.are.same({ "neoagent" }, messages.start)
     assert.is_true(contains(messages.ok, "curl .- satisfies"))
     assert.is_true(contains(messages.ok, "^configuration is valid$"))
+  end)
+
+  it("reports Applet-owned image diagnostics", function()
+    local ImageSystem = require("applet").ImageSystem
+    local diagnostics = ImageSystem.diagnostics
+    ImageSystem.diagnostics = function(options)
+      assert.are.same({ backend = "kitty" }, options)
+      return {
+        { level = "ok", message = "applet image backend ready" },
+        { level = "warn", message = "applet image warning" },
+      }
+    end
+    local ok, err = pcall(function()
+      require("neoagent.config").setup({ persistence = { enabled = false } })
+      require("neoagent.health").check()
+      assert.is_true(contains(messages.ok, "applet image backend ready"))
+      assert.is_true(contains(messages.warn, "applet image warning"))
+    end)
+    ImageSystem.diagnostics = diagnostics
+    assert(ok, err)
+  end)
+
+  it("reports an unsupported Neovim and explicitly disabled images", function()
+    local original_has = vim.fn.has
+    vim.fn.has = function(feature)
+      if feature == "nvim-0.10" then return 0 end
+      return original_has(feature)
+    end
+    local ok, err = pcall(function()
+      require("neoagent.config").setup({
+        persistence = { enabled = false },
+        ui = { images = false },
+      })
+      require("neoagent.health").check()
+      assert.is_true(contains(messages.error, "Neovim 0.10 or newer"))
+      assert.is_true(contains(messages.ok, "terminal image display is disabled"))
+    end)
+    vim.fn.has = original_has
+    assert(ok, err)
   end)
 
   it("reports an old curl, missing tools, and an invalid resolved model", function()
@@ -55,7 +100,6 @@ describe("neoagent health", function()
     require("neoagent.health").check()
     assert.is_true(contains(messages.error, "too old"))
     assert.is_true(contains(messages.error, "rg is required"))
-    assert.is_true(contains(messages.warn, "magick"))
     assert.is_true(contains(messages.error, "configuration error"))
   end)
 
@@ -77,7 +121,27 @@ describe("neoagent health", function()
     assert.is_true(contains(messages.error, "could not determine"))
   end)
 
-  it("accepts a default model discovered by a provider service", function()
+  it("reports tmux image passthrough requirements", function()
+    local root = vim.fn.tempname()
+    roots[#roots + 1] = root
+    vim.fn.mkdir(root, "p")
+    local tmux = root .. "/tmux"
+    assert(fs.write_all(tmux, "#!/bin/sh\nprintf 'all\\n'\n", "w"))
+    assert(vim.uv.fs_chmod(tmux, 493))
+    vim.env.PATH = root
+    vim.env.TMUX = "/tmp/tmux"
+    vim.env.TERM = "tmux-256color"
+    require("neoagent.config").setup({ persistence = { enabled = false } })
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.ok,
+      "tmux passes terminal graphics through every pane"))
+    messages.warn = {}
+    assert(fs.write_all(tmux, "#!/bin/sh\nprintf 'on\\n'\n", "w"))
+    require("neoagent.health").check()
+    assert.is_true(contains(messages.warn, "allow%-passthrough all"))
+  end)
+
+  it("accepts a default model from a provider catalog seed", function()
     require("neoagent.config").setup({
       default_registry = false,
       default_model = { provider = "dynamic", model = "discovered" },
@@ -86,20 +150,12 @@ describe("neoagent health", function()
         dynamic = {
           api = "fake",
           models = {},
-          service = function()
-            return {
-              id = "dynamic",
-              name = "Dynamic",
-              state = function() return false end,
-              operations = {},
-              get_models = function()
-                return { { id = "discovered", context_window = 4096 } }
-              end,
-            }
-          end,
+          catalog = {
+            seed = { { id = "discovered", context_window = 4096 } },
+          },
         },
       },
-      apis = {
+      _apis = {
         fake = function()
           return { stream = function() end }
         end,
@@ -118,19 +174,10 @@ describe("neoagent health", function()
         dynamic = {
           api = "fake",
           models = {},
-          service = function()
-            return {
-              id = "dynamic",
-              name = "Dynamic",
-              state = function() return false end,
-              operations = {},
-              get_models = function() return {} end,
-              refresh_catalog = function() end,
-            }
-          end,
+          catalog = { discover = function() error("must not run") end },
         },
       },
-      apis = {
+      _apis = {
         fake = function()
           return { stream = function() end }
         end,
@@ -140,5 +187,28 @@ describe("neoagent health", function()
     assert.is_true(contains(messages.warn,
       "default model dynamic/pending awaits the dynamic provider catalog"))
     assert.is_true(contains(messages.ok, "^configuration is valid$"))
+  end)
+
+  it("contains Profile resource construction failures as health diagnostics", function()
+    require("neoagent.config").setup({
+      default_registry = false,
+      persistence = { enabled = false },
+      providers = {
+        broken = {
+          api = "fake",
+          models = {},
+          service = function() error("service construction exploded") end,
+        },
+      },
+      _apis = {
+        fake = function() return { stream = function() end } end,
+      },
+    })
+
+    local ok, err = pcall(require("neoagent.health").check)
+
+    assert(ok, err)
+    assert.is_true(contains(messages.error,
+      "Failed to construct provider service for broken"))
   end)
 end)

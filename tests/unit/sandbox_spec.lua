@@ -13,7 +13,7 @@ local function workspace(root)
 end
 
 local function context(root)
-  return { context = { workspace = workspace(root), controller = "Neo" } }
+  return { context = { workspace = workspace(root), agent = "Neo" } }
 end
 
 local function dialog_context(root, show, choose_pending)
@@ -62,16 +62,16 @@ describe("neoagent sandbox composition", function()
     return path
   end
 
-  it("keeps sandbox settings in setup while direct Controllers stay explicit", function()
+  it("validates sandbox settings while direct Agents stay explicit", function()
     local configured = require("neoagent.config").resolve({
-      sandbox = {
-        enabled = false,
-        future_policy = { paths = { "/example" } },
-      },
+      sandbox = { enabled = false },
     })
     assert.is_false(configured.sandbox.enabled)
-    assert.are.same({ paths = { "/example" } },
-      configured.sandbox.future_policy)
+    assert.has_error(function()
+      require("neoagent.config").resolve({
+        sandbox = { enabled = false, future_policy = true },
+      })
+    end, "unsupported sandbox setting: future_policy")
     assert.has_error(function()
       require("neoagent.config").resolve({ sandbox = false })
     end, "sandbox must be a table")
@@ -81,13 +81,15 @@ describe("neoagent sandbox composition", function()
       })
     end, "sandbox.enabled must be boolean")
 
-    local controller = require("neoagent.controller").new({
+    local agent = require("neoagent.agent").new({
       name = "Direct",
+      default_registry = false,
+      providers = {},
       sandbox = { enabled = true },
       tools = {},
     })
-    assert.is_true(controller:config().sandbox.enabled)
-    controller:destroy()
+    assert.is_true(agent:config().sandbox.enabled)
+    agent:destroy()
   end)
 
   it("validates profiles and resolves path precedence and canonical aliases", function()
@@ -420,7 +422,7 @@ describe("neoagent sandbox composition", function()
     assert.is_nil(original.tools[1].input_schema.properties.options)
 
     local composed, dialogs =
-      composition.controller(original, { platform = platform })
+      composition.agent(original, { platform = platform })
     assert.are.equal(1, checked)
     assert.is_table(dialogs)
     assert.are.equal("custom", composed.tools[1].name)
@@ -435,7 +437,7 @@ describe("neoagent sandbox composition", function()
     local disabled = util.copy(original)
     disabled.sandbox.enabled = false
     local untouched, broker =
-      require("neoagent.sandbox.composition").controller(
+      require("neoagent.sandbox.composition").agent(
         disabled, { platform = platform })
     assert.is_nil(broker)
     assert.are.equal(original.tools[1].execute,
@@ -449,7 +451,7 @@ describe("neoagent sandbox composition", function()
       end,
     }
     local selected_ok, selected_value = pcall(
-      require("neoagent.sandbox.composition").controller, original)
+      require("neoagent.sandbox.composition").agent, original)
     package.loaded["neoagent.sandbox.platform"] = dispatch_module
     assert.is_true(selected_ok)
     assert.is_function(selected_value.execute_tool)
@@ -503,7 +505,7 @@ describe("neoagent sandbox composition", function()
     assert.matches("require_escalation", toolset.system_prompt)
     assert.matches("denial", toolset.system_prompt)
 
-    local composed = composition.controller(original, {
+    local composed = composition.agent(original, {
       platform = platform,
     })
     assert.are.equal(toolset.system_prompt,
@@ -512,7 +514,7 @@ describe("neoagent sandbox composition", function()
     local disabled = util.copy(original)
     disabled.sandbox.enabled = false
     local untouched =
-      composition.controller(disabled, { platform = platform })
+      composition.agent(disabled, { platform = platform })
     assert.is_nil(untouched._sandbox_system_prompt)
   end)
 
@@ -574,34 +576,15 @@ describe("neoagent sandbox composition", function()
     assert.are.same(original_tools, stable.tools)
   end)
 
-  it("defers a failed activation warning to the requesting View", function()
-    local notifications = {}
-    local saved_notify = vim.notify
-    vim.notify = function(message, level)
-      notifications[#notifications + 1] = { message, level }
-    end
-    local opened = false
-    local view
+  it("publishes a failed activation warning for Agent presentation", function()
     local configured = {
       name = "Neo",
       sandbox = { enabled = true },
       tools = {},
       _tools_supplied = true,
-      view = function()
-        view = {
-          context = {},
-          set_context = function(self, value)
-            self.context = vim.tbl_extend(
-              "force", self.context, value)
-          end,
-          is_open = function() return opened end,
-          open = function() return opened and true or nil, "failed" end,
-        }
-        return view
-      end,
     }
     local composed, broker =
-      require("neoagent.sandbox.composition").controller(configured, {
+      require("neoagent.sandbox.composition").agent(configured, {
         status = {
           ok = false,
           stage = "probe",
@@ -609,21 +592,9 @@ describe("neoagent sandbox composition", function()
         },
       })
     assert.is_nil(broker)
-    assert.are.equal(0, #notifications)
-    view = composed.view({})
-    view:set_context({ name = "Chat" })
-    view:open()
-    assert.are.equal(0, #notifications)
-    opened = true
-    view:open()
-    assert.are.equal(0, #notifications)
-    view:set_context({ name = "Neo" })
-    assert.are.equal(1, #notifications)
+    assert.is_string(composed._sandbox_warning)
     assert.matches("tools will run without a sandbox",
-      notifications[1][1])
-    view:open()
-    assert.are.equal(1, #notifications)
-    vim.notify = saved_notify
+      composed._sandbox_warning)
   end)
 
   it("merges profile tables and calls profile callbacks with defaults", function()
@@ -681,7 +652,7 @@ describe("neoagent sandbox composition", function()
       tools = { require("neoagent.tools.read_file").new() },
       _tools_supplied = true,
     }
-    local composed = composition.controller(
+    local composed = composition.agent(
       configured, { platform = platform })
     assert.is_true(composed._sandbox_status.active)
     local value = composed.execute_tool(
@@ -712,7 +683,7 @@ describe("neoagent sandbox composition", function()
         output = "", timed_out = false,
       }
     end
-    composed = composition.controller(
+    composed = composition.agent(
       configured, { platform = platform })
     value = composed.execute_tool(
       composed.tools[1], {}, context(root))
@@ -723,20 +694,20 @@ describe("neoagent sandbox composition", function()
     end)
     assert.is_false(ok)
     assert.are.equal("Sandbox requires a workspace root", err.message)
-    local failed = composition.controller(configured, {
+    local failed = composition.agent(configured, {
       platform = {
         name = "broken",
         check = function() error("probe exploded") end,
       },
     })
-    assert.is_function(failed.view)
     assert.is_false(failed._sandbox_status.active)
     assert.are.equal("requirements", failed._sandbox_status.stage)
+    assert.is_string(failed._sandbox_warning)
   end)
 
   it("keeps a root workspace bounded to shared temporary writes", function()
     local seen_profile
-    local composed = require("neoagent.sandbox.composition").controller({
+    local composed = require("neoagent.sandbox.composition").agent({
       name = "Root",
       sandbox = { enabled = true },
       tools = { require("neoagent.tools.read_file").new() },

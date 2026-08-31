@@ -7,6 +7,59 @@ local Run = {}
 Run.__index = Run
 
 local cancelled_error = { kind = "cancelled", message = "Operation cancelled" }
+local MAX_DIAGNOSTICS = 32
+local MAX_DIAGNOSTIC_CHARACTERS = 1024
+local MAX_DIAGNOSTIC_SOURCE_BYTES = MAX_DIAGNOSTIC_CHARACTERS * 4
+
+local function diagnostic_message(value)
+  local rendered, message
+  local ok, result = pcall(tostring, value)
+  if ok then rendered = result
+  else rendered = "Callback failure could not be rendered" end
+  local source = rendered:sub(1, MAX_DIAGNOSTIC_SOURCE_BYTES)
+  message = util.text_from_bytes(source)
+  local truncated = #rendered > #source
+    or vim.fn.strchars(message) > MAX_DIAGNOSTIC_CHARACTERS
+  if truncated then
+    message = vim.fn.strcharpart(
+      message, 0, MAX_DIAGNOSTIC_CHARACTERS - 1) .. "…"
+  end
+  return message
+end
+
+function Run:_record_diagnostic(diagnostic)
+  diagnostic = util.copy(diagnostic)
+  if #self._diagnostics == MAX_DIAGNOSTICS then
+    table.remove(self._diagnostics, 1)
+  end
+  self._diagnostics[#self._diagnostics + 1] = diagnostic
+  if self._report then pcall(self._report, util.copy(diagnostic)) end
+  for listener in pairs(self._diagnostic_listeners) do
+    pcall(listener, util.copy(diagnostic))
+  end
+end
+
+function Run:_diagnose(phase, value)
+  self:_record_diagnostic({
+    kind = "callback",
+    phase = phase,
+    message = diagnostic_message(value),
+  })
+end
+
+function Run:_subscribe_diagnostics(listener)
+  self._diagnostic_listeners[listener] = true
+  for _, diagnostic in ipairs(self._diagnostics) do
+    pcall(listener, util.copy(diagnostic))
+  end
+  local active = true
+  return function()
+    if not active then return false end
+    active = false
+    self._diagnostic_listeners[listener] = nil
+    return true
+  end
+end
 
 local function schedule_drain(run)
   if run._drain_scheduled then
@@ -18,18 +71,20 @@ local function schedule_drain(run)
     while #run._callback_queue > 0 do
       local item = table.remove(run._callback_queue, 1)
       local ok, err = pcall(item.fn, item.value)
-      if not ok then
-        vim.notify("neoagent callback failed: " .. tostring(err), vim.log.levels.ERROR)
-      end
+      if not ok then run:_diagnose(item.phase, err) end
     end
   end)
 end
 
-function Run:_enqueue(fn, value)
+function Run:_enqueue(fn, value, phase)
   if not fn then
     return
   end
-  self._callback_queue[#self._callback_queue + 1] = { fn = fn, value = value }
+  self._callback_queue[#self._callback_queue + 1] = {
+    fn = fn,
+    value = value,
+    phase = phase,
+  }
   schedule_drain(self)
 end
 
@@ -37,13 +92,13 @@ function Run:emit(event)
   if self._completed then
     return false
   end
-  self:_enqueue(self._on_event, event)
+  self:_enqueue(self._on_event, event, "event")
   return true
 end
 
 function Run:_listen(fn)
   if self._completed then
-    self:_enqueue(fn, self._result)
+    self:_enqueue(fn, self._result, "listener")
   else
     self._listeners[#self._listeners + 1] = fn
   end
@@ -64,9 +119,9 @@ function Run:_finish(result)
     child._parents[self] = nil
   end
   self._children = {}
-  self:_enqueue(self._on_done, result)
+  self:_enqueue(self._on_done, result, "done")
   for _, listener in ipairs(self._listeners) do
-    self:_enqueue(listener, result)
+    self:_enqueue(listener, result, "listener")
   end
   self._listeners = {}
   return true
@@ -93,7 +148,8 @@ function Run:cancel()
   end
   for _, entry in ipairs(self._cancel_handlers) do
     if entry.active then
-      pcall(entry.fn)
+      local ok, err = pcall(entry.fn)
+      if not ok then self:_diagnose("cancel", err) end
       entry.active = false
     end
   end
@@ -117,6 +173,10 @@ function Run:result()
   return self._result
 end
 
+function Run:diagnostics()
+  return util.copy(self._diagnostics)
+end
+
 function Run:await()
   local parent = M.current()
   if not parent then
@@ -126,10 +186,16 @@ function Run:await()
     parent._children[self] = true
     self._parents[parent] = true
   end
+  local remove_diagnostic_listener
+  if parent ~= self and self._report == nil then
+    remove_diagnostic_listener = self:_subscribe_diagnostics(
+      function(diagnostic) parent:_record_diagnostic(diagnostic) end)
+  end
   return M.await(function(done)
     local current = M.current()
     if current and current._waiting then current._waiting.defer_cancel = true end
     self:_listen(function(result)
+      if remove_diagnostic_listener then remove_diagnostic_listener() end
       done.resolve(result)
     end)
     return function()
@@ -228,11 +294,16 @@ end
 function M.run(fn, opts)
   assert(type(fn) == "function", "async.run fn must be a function")
   opts = opts or {}
+  assert(opts.report == nil or type(opts.report) == "function",
+    "async.run report must be a function")
   local run = setmetatable({
     _on_event = opts.on_event,
     _on_done = opts.on_done,
     _error_kind = opts.error_kind or "tool",
+    _report = opts.report,
     _callback_queue = {},
+    _diagnostics = {},
+    _diagnostic_listeners = {},
     _listeners = {},
     _cancel_handlers = {},
     _children = setmetatable({}, { __mode = "k" }),

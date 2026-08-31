@@ -390,9 +390,8 @@ function Client:download_and_wait(model, on_progress)
           saw_downloading = true
           local progress = parse_download_progress(entry.status.progress)
           if progress then on_progress(progress) end
-        elseif finished
-            or (entry and (saw_downloading
-              or prior[model] ~= entry.status.value)) then
+        elseif finished or (entry and (saw_downloading
+            or prior[model] ~= entry.status.value)) then
           return {
             ok = true,
             value = await_ok(self:list({ reload = true })).value,
@@ -414,8 +413,8 @@ function M.new(opts)
   assert(type(opts.server_url) == "string" and opts.server_url ~= "",
     "llama.cpp server URL is required")
   local wait_timeout_ms = opts.wait_timeout_ms or WAIT_TIMEOUT_MS
-  local download_timeout_ms = opts.download_timeout_ms
-    or opts.wait_timeout_ms or DOWNLOAD_TIMEOUT_MS
+  local download_timeout_ms = opts.download_timeout_ms or opts.wait_timeout_ms
+    or DOWNLOAD_TIMEOUT_MS
   local poll_interval_ms = opts.poll_interval_ms or POLL_INTERVAL_MS
   assert(type(wait_timeout_ms) == "number" and wait_timeout_ms > 0,
     "llama.cpp wait_timeout_ms must be positive")

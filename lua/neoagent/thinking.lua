@@ -2,7 +2,9 @@ local util = require("neoagent.util")
 
 local M = {}
 
-local order = { "off", "minimal", "low", "medium", "high", "xhigh", "max" }
+local order = {
+  "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+}
 local known = {}
 for _, level in ipairs(order) do known[level] = true end
 
@@ -38,7 +40,6 @@ function M.clamp(model, level)
   for index = requested - 1, 1, -1 do
     if vim.tbl_contains(available, order[index]) then return order[index] end
   end
-  return available[1]
 end
 
 function M.next(model, level)
@@ -48,7 +49,6 @@ function M.next(model, level)
   for index, candidate in ipairs(available) do
     if candidate == current then return available[index % #available + 1] end
   end
-  return available[1]
 end
 
 function M.request_opts(model, level)

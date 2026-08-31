@@ -10,36 +10,89 @@ local defaults = {
   zai = require("neoagent.registry.zai"),
   ["zai-coding-plan"] = require("neoagent.registry.zai_coding_plan"),
   anthropic = require("neoagent.registry.anthropic"),
-  ["anthropic-plan"] = require("neoagent.registry.anthropic_plan"),
   ["opencode-go"] = require("neoagent.registry.opencode_go"),
   ["llama.cpp"] = {
     api = "openai-completions",
     base_url = "http://127.0.0.1:8080/v1",
     auth = "llama",
     auth_optional = true,
-    catalog_cache = { ttl_ms = 60 * 1000 },
+    request_opts = { body = {
+      return_progress = true,
+      timings_per_token = true,
+    } },
+    catalog = {
+      ttl_ms = 5 * 60 * 1000,
+      seed = {},
+      discover = require("neoagent.providers.llama.catalog").discover,
+      transform_model = require("neoagent.providers.llama.catalog").transform,
+    },
     models = {},
     service = require("neoagent.providers.llama").new,
   },
 }
 
 local function compose_models(base, user)
-  local removals = {}
-  if user == nil then return util.copy(base or {}), removals end
-  if user == false then return {}, removals end
-  assert(type(user) == "table", "provider models must be a table or false")
+  if user == nil then return util.copy(base or {}) end
+  assert(type(user) == "table"
+      and (next(user) == nil or not util.is_list(user)),
+    "provider models must be a keyed table")
   local result = util.copy(base or {})
   for id, model in pairs(user) do
     assert(type(id) == "string", "models must use string ids")
     if model == false then
-      result[id] = nil
-      removals[id] = true
+      result[id] = false
     else
       assert(type(model) == "table", "models must contain tables or false")
       result[id] = util.deep_merge(result[id], model)
     end
   end
-  return result, removals
+  return result
+end
+
+local function assert_transform(value)
+  assert(value == nil or type(value) == "function",
+    "provider catalog transform_model must be a function")
+  return value
+end
+
+local function transformed(transform, model, ctx)
+  if not transform then return util.copy(model) end
+  local result = transform(util.copy(model), util.copy(ctx))
+  if result == false then return false end
+  assert(type(result) == "table" and not util.is_list(result),
+    "provider catalog transform_model must return a model or false")
+  return util.copy(result)
+end
+
+local function compose_transform(base, user)
+  base = assert_transform(base)
+  user = assert_transform(user)
+  if not base then return user end
+  if not user then return base end
+  return function(model, ctx)
+    local current = transformed(base, model, ctx)
+    if current == false then return false end
+    return transformed(user, current, ctx)
+  end
+end
+
+local function compose_catalog(base, user)
+  base = base or {}
+  user = user or {}
+  assert(type(base) == "table"
+      and (next(base) == nil or not util.is_list(base)),
+    "provider catalog must be an object")
+  assert(type(user) == "table"
+      and (next(user) == nil or not util.is_list(user)),
+    "provider catalog must be an object")
+  local base_values = util.copy(base)
+  local user_values = util.copy(user)
+  base_values.transform_model = nil
+  user_values.transform_model = nil
+  local result = util.deep_merge(base_values, user_values)
+  result.transform_model = compose_transform(
+    base.transform_model, user.transform_model)
+  return result
 end
 
 function M.defaults()
@@ -55,19 +108,13 @@ function M.compose(user, include_defaults)
       result[id] = nil
     else
       assert(type(provider) == "table", "providers must contain tables or false")
-      local base = result[id]
+      local base = result[id] or {}
       local override = util.copy(provider)
       override.models = nil
+      override.catalog = nil
       result[id] = util.deep_merge(base, override)
-      local models, removals = compose_models(base and base.models, provider.models)
-      result[id].models = models
-      for _, source in ipairs({
-        base and base._model_removals or {},
-        override._model_removals or {},
-      }) do
-        for model_id in pairs(source) do removals[model_id] = true end
-      end
-      if next(removals) then result[id]._model_removals = removals end
+      result[id].models = compose_models(base.models, provider.models)
+      result[id].catalog = compose_catalog(base.catalog, provider.catalog)
     end
   end
   return result

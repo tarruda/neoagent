@@ -1,0 +1,210 @@
+{
+  "steps": [
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/deepseek/models",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": {
+          "object": "list",
+          "data": [
+            { "id": "deepseek-v4-pro", "object": "model" },
+            { "id": "deepseek-v5-preview", "object": "model" }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/deepseek/user/balance",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": {
+          "is_available": true,
+          "balance_infos": [
+            {
+              "currency": "USD",
+              "total_balance": "8.50",
+              "granted_balance": "1.00",
+              "topped_up_balance": "7.50"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/openai/models",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": { "object": "list", "data": [{ "id": "gpt-test" }] }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/openai/organization/usage/completions?start_time=1784678400&end_time=1787270400&bucket_width=1d&limit=31",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": { "status": 403, "json": { "error": "private" } }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/anthropic/models?limit=1000",
+        "headers": {
+          "x-api-key": "integration-key",
+          "anthropic-version": "2023-06-01"
+        }
+      },
+      "respond": {
+        "json": {
+          "data": [
+            {
+              "id": "claude-test",
+              "type": "model",
+              "max_input_tokens": 200000,
+              "max_tokens": 64000,
+              "capabilities": {
+                "image_input": { "supported": true },
+                "thinking": {
+                  "supported": true,
+                  "types": { "adaptive": { "supported": true } }
+                },
+                "effort": {
+                  "supported": true,
+                  "low": { "supported": true },
+                  "medium": { "supported": true },
+                  "high": { "supported": true }
+                }
+              }
+            }
+          ],
+          "has_more": true,
+          "first_id": "claude-test",
+          "last_id": "claude-test"
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/anthropic/models?limit=1000&after_id=claude-test",
+        "headers": {
+          "x-api-key": "integration-key",
+          "anthropic-version": "2023-06-01"
+        }
+      },
+      "respond": {
+        "json": {
+          "data": [{ "id": "claude-second", "type": "model" }],
+          "has_more": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/anthropic/organizations/usage_report/messages?starting_at=2026-07-22T00:00:00Z&ending_at=2026-08-21T00:00:00Z&bucket_width=1d&limit=31",
+        "headers": {
+          "x-api-key": "integration-key",
+          "anthropic-version": "2023-06-01"
+        }
+      },
+      "respond": { "status": 403, "json": { "error": "private" } }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/api/paas/v4/models",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": {
+          "object": "list",
+          "data": [
+            { "id": "glm-5.3", "object": "model" },
+            { "id": "glm-5.3-flash", "object": "model" }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/api/paas/v4/balance",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": {
+          "success": true,
+          "data": {
+            "total_balance": "20.00",
+            "available_balance": "18.68",
+            "currency": "USD"
+          }
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/api/coding/paas/v4/models",
+        "headers": { "authorization": "Bearer integration-key" }
+      },
+      "respond": {
+        "json": {
+          "object": "list",
+          "data": [
+            { "id": "glm-5.3", "object": "model" },
+            { "id": "glm-5.3-flash", "object": "model" }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "method": "GET",
+        "path": "/api/monitor/usage/quota/limit",
+        "headers": { "authorization": "integration-key" }
+      },
+      "respond": {
+        "json": {
+          "code": 200,
+          "success": true,
+          "data": {
+            "level": "max",
+            "limits": [
+              {
+                "type": "CREDIT_LIMIT",
+                "percentage": 25,
+                "currentValue": 7000,
+                "usage": 28000,
+                "remaining": 21000,
+                "nextResetTime": 1787270400000,
+                "unit": 3,
+                "number": 5
+              },
+              {
+                "type": "CREDIT_LIMIT",
+                "percentage": 10,
+                "currentValue": 14000,
+                "usage": 140000,
+                "remaining": 126000,
+                "nextResetTime": 1787875200000,
+                "unit": 6,
+                "number": 7
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
