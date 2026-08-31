@@ -164,7 +164,15 @@ local function normalized_block(value)
     local field_value, value_err = text(
       block.value, "field value", 512, false)
     if not field_value then return nil, value_err end
-    return { type = block_type, label = field_label, value = field_value }
+    local level, level_err = normalized_level(
+      block.level, "field level", "info")
+    if not level then return nil, level_err end
+    return {
+      type = block_type,
+      label = field_label,
+      value = field_value,
+      level = block.level ~= nil and level or nil,
+    }
   end
 
   if block_type == "progress" then
@@ -272,55 +280,17 @@ local function normalized_operation(value)
   }
 end
 
-local function legacy_blocks(source)
-  local blocks = {}
-  if source.summary ~= nil and source.summary ~= "" then
-    blocks[#blocks + 1] = {
-      type = "status", text = source.summary, level = "info",
-    }
-  end
-  local fields, fields_err = list(source.fields or {}, "provider fields")
-  if not fields then return nil, fields_err end
-  for _, field in ipairs(fields) do
-    local item, item_err = object(field, "provider field")
-    if not item then return nil, item_err end
-    blocks[#blocks + 1] = {
-      type = "field", label = item.label, value = item.value,
-    }
-  end
-  local sections, sections_err = list(
-    source.sections or {}, "provider sections")
-  if not sections then return nil, sections_err end
-  for _, section in ipairs(sections) do
-    local item, item_err = object(section, "provider section")
-    if not item then return nil, item_err end
-    blocks[#blocks + 1] = {
-      type = "list", title = item.title, items = item.rows,
-    }
-  end
-  local activity, activity_err = list(
-    source.activity or {}, "provider activity")
-  if not activity then return nil, activity_err end
-  if #activity > 0 then
-    blocks[#blocks + 1] = {
-      type = "activity",
-      title = "Recent activity",
-      entries = activity,
-    }
-  end
-  return blocks
-end
-
 function M.normalize(value)
   if value == false then return false end
   local source, err = object(value, "provider state")
   if not source then return nil, err end
-  local blocks = source.blocks
-  if blocks == nil then
-    local legacy_err
-    blocks, legacy_err = legacy_blocks(source)
-    if not blocks then return nil, legacy_err end
+  for field in pairs(source) do
+    if field ~= "blocks" and field ~= "operation" then
+      return nil, util.error("provider",
+        "unsupported provider state field: " .. tostring(field))
+    end
   end
+  local blocks = source.blocks or {}
   local block_list, blocks_err = list(blocks, "provider blocks")
   if not block_list then return nil, blocks_err end
   if #block_list > 64 then
@@ -347,7 +317,14 @@ function M.normalize_operation(value)
   return normalized_operation(value)
 end
 
-function M.new(initial)
+function M.new(initial, opts)
+  opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "provider dashboard options must be an object")
+  assert(opts.report == nil or type(opts.report) == "function",
+    "provider dashboard report must be a function")
+  local report = opts.report or function() end
   local snapshot, err = M.normalize(initial or {})
   assert(snapshot and snapshot ~= false,
     err and err.message or "provider dashboard state must be an object")
@@ -370,7 +347,7 @@ function M.new(initial)
       for _, listener in ipairs(listeners) do
         local ok, listener_err = pcall(listener, util.copy(published))
         if not ok then
-          vim.notify("neoagent provider subscriber failed: "
+          report("neoagent provider subscriber failed: "
             .. tostring(listener_err), vim.log.levels.ERROR)
         end
       end
