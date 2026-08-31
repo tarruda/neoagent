@@ -811,6 +811,11 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                     f"{lifecycle_artifact}, {bytes_artifact}\n"
                     + diagnostics(log, nvim_log, state_path))
             finally:
+                if tmux:
+                    subprocess.run(
+                        [tmux, "-L", socket, "kill-server"], cwd=ROOT,
+                        env=environment, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=2)
                 if process.poll() is None:
                     process.terminate()
                     try:
@@ -818,11 +823,6 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=2)
-                if tmux:
-                    subprocess.run(
-                        [tmux, "-L", socket, "kill-server"], cwd=ROOT,
-                        env=environment, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, timeout=2)
 
 
 def compare_layout_modes(label, native, pane):
