@@ -5,11 +5,11 @@ A hackable LLM and harness toolkit for Neovim.
 Neoagent streams conversations, reasoning, tool calls, and provider status in a
 floating Markdown UI. It includes coding tools, persistent sessions, multiple
 providers, and optional native sandboxing. Its Models, tools, Sessions,
-Controllers, Renderers, and Views are ordinary Lua values, so each layer can be
-used or replaced on its own.
+Agents, Profiles, Applets, Renderers, and Views are ordinary Lua
+values, so each layer can be used or replaced on its own.
 
-Requirements: Neovim 0.10+, curl 7.76+, `rg`, and `fd`. ImageMagick's `magick`
-is optional and enables image conversion.
+Requirements: Neovim 0.10+, curl 7.76+, `rg`, and `fd`. Terminal images use
+the Kitty graphics protocol.
 
 ## Setup
 
@@ -23,32 +23,38 @@ require("neoagent").setup({
   },
 })
 
-vim.keymap.set("n", "<leader>a", "<cmd>Neoagent<cr>", {
+vim.keymap.set("n", "<leader>a", "<Plug>(NeoagentToggle)", {
   desc = "Open Neoagent",
+})
+vim.keymap.set("n", "<leader>A", "<Plug>(NeoagentCycle)", {
+  desc = "Select a Neoagent Agent",
 })
 ```
 
-Authenticate with `:NeoagentLogin provider`, or set the provider's environment
-variable before starting Neovim:
+Open the Provider Shell with `:NeoagentProvider`, select a provider, and choose
+Log in. You can also set the provider's environment variable before starting
+Neovim:
 
-| Provider | Login name | Environment variable |
+| Provider | Provider ID | Environment variable |
 | --- | --- | --- |
 | OpenAI API | `openai` | `OPENAI_API_KEY` |
 | ChatGPT subscription | `openai-codex` | — |
 | Anthropic API | `anthropic` | `ANTHROPIC_API_KEY` |
-| Claude subscription | `anthropic-plan` | `ANTHROPIC_OAUTH_TOKEN` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
-| Z.AI | `zai` | `ZAI_API_KEY` |
+| Z.AI API | `zai` | `ZAI_API_KEY` |
+| Z.AI Plan | `zai-coding-plan` | `ZAI_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_API_KEY` |
-| llama.cpp | `llama` | — |
+| llama.cpp | `llama.cpp` | — |
 
-Stored credentials take precedence over environment variables. Remove one with
-`:NeoagentLogout provider`.
+Stored credentials take precedence over environment variables. The Provider
+Shell shows Log out for a stored credential; configured and environment
+credentials remain managed at their source. Both Z.AI provider IDs use the same
+stored API key.
 
-Use `:NeoagentModel` to choose another model and `:NeoagentProvider` to open
-the active provider's status and operations. The built-in `Neo` Controller is
-configured for coding; `Chat` is a tool-free conversation Controller. Switch
-between them with `:NeoagentCycle`.
+Use `:NeoagentModel` to choose another model. The Provider Shell exposes each
+provider's status, authentication, operations, and model-catalog refresh.
+Use `:NeoagentCycle` to switch between live Agents or start a Neo coding or
+Chat conversation.
 
 ## Trust and sandboxing
 
@@ -67,8 +73,7 @@ require("neoagent").setup({
 `:NeoagentToggleSandbox` changes the built-in Neo executor for the current
 editor, and `:NeoagentSandboxInfo` shows the active backend. Linux and Windows
 use bundled native runtimes; macOS uses `/usr/bin/sandbox-exec`. Windows
-sandboxing requires Neovim 0.12+ and one-time elevated setup. The sandbox
-implementation was ported from Codex CLI.
+sandboxing requires Neovim 0.12+ and one-time elevated setup.
 
 See `:help neoagent` for commands, configuration, and the Lua API.
 Implementation boundaries are described in [architecture.md](architecture.md).
