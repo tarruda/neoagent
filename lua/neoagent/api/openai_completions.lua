@@ -47,7 +47,12 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
   if system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
   end
+  local attachments = {}
   for _, message in ipairs(messages) do
+    if message.role ~= "toolResult" and #attachments > 0 then
+      vim.list_extend(result, attachments)
+      attachments = {}
+    end
     if message.role == "user" then
       result[#result + 1] = { role = "user", content = encode_content(message.content) }
     elseif message.role == "assistant" then
@@ -114,12 +119,13 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
             image_url = { url = "data:" .. image.mimeType .. ";base64," .. image.data },
           }
         end
-        result[#result + 1] = { role = "user", content = content }
+        attachments[#attachments + 1] = { role = "user", content = content }
       end
     else
       error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
     end
   end
+  vim.list_extend(result, attachments)
   return result
 end
 
@@ -166,6 +172,118 @@ local function usage_from(raw)
     totalTokens = raw.total_tokens or (input + output),
     cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
   }
+end
+
+local function positive_number(value)
+  if type(value) == "string" then value = tonumber(value) end
+  if type(value) ~= "number" or value <= 0 or value ~= value
+      or value == math.huge then
+    return nil
+  end
+  return value
+end
+
+local function nonnegative_number(value)
+  if type(value) == "string" then value = tonumber(value) end
+  if type(value) ~= "number" or value < 0 or value ~= value
+      or value == math.huge then
+    return nil
+  end
+  return value
+end
+
+local function tokens_per_second(tokens, duration, scale)
+  tokens = positive_number(tokens)
+  duration = positive_number(duration)
+  if not tokens or not duration then return nil end
+  return positive_number(tokens * (scale or 1) / duration)
+end
+
+local GENERATION_WINDOW_MS = 3000
+
+local function rolling_generation_rate(timings, state)
+  local tokens = nonnegative_number(timings.predicted_n)
+  local elapsed_ms = nonnegative_number(timings.predicted_ms)
+  if tokens == nil or elapsed_ms == nil then
+    return nil, false, tokens
+  end
+  local samples = state.generation_samples
+  local head = state.generation_head
+  local previous = samples[#samples]
+  if tokens <= 0 then
+    state.generation_samples = {}
+    state.generation_head = 1
+    return nil, true, tokens
+  end
+  if previous and (tokens < previous.tokens
+      or elapsed_ms < previous.elapsed_ms) then
+    samples = {}
+    state.generation_samples = samples
+    state.generation_head = 1
+    head = 1
+    previous = nil
+  end
+  if previous and tokens == previous.tokens then
+    return nil, true, tokens
+  end
+  samples[#samples + 1] = { tokens = tokens, elapsed_ms = elapsed_ms }
+  local cutoff = elapsed_ms - GENERATION_WINDOW_MS
+  while head < #samples and samples[head + 1].elapsed_ms <= cutoff do
+    head = head + 1
+  end
+  if head > 128 then
+    local retained = {}
+    for index = head, #samples do
+      retained[#retained + 1] = samples[index]
+    end
+    state.generation_samples = retained
+    samples = retained
+    head = 1
+  end
+  state.generation_head = head
+  local baseline = samples[head]
+  if baseline == samples[#samples] then return nil, true, tokens end
+  return tokens_per_second(tokens - baseline.tokens,
+    elapsed_ms - baseline.elapsed_ms, 1000), true, tokens
+end
+
+local function prompt_rate(chunk, timings)
+  local progress = type(chunk.prompt_progress) == "table"
+    and chunk.prompt_progress or nil
+  if progress then
+    local processed = nonnegative_number(progress.processed)
+    local cached = nonnegative_number(progress.cache) or 0
+    local elapsed_ms = nonnegative_number(progress.time_ms)
+    local tokens = processed and math.max(0, processed - cached) or nil
+    return tokens_per_second(tokens, elapsed_ms, 1000), elapsed_ms
+  end
+  local elapsed_ms = nonnegative_number(timings.prompt_ms)
+  return positive_number(timings.prompt_per_second)
+    or tokens_per_second(timings.prompt_n, elapsed_ms, 1000), elapsed_ms
+end
+
+local function inference_stats(chunk, state)
+  local timings = type(chunk.timings) == "table" and chunk.timings or {}
+  local generation, cumulative, generated =
+    rolling_generation_rate(timings, state)
+  if not cumulative then
+    generation = positive_number(timings.predicted_per_second)
+  end
+  if generation then
+    return {
+      type = "inference_stats",
+      generation_tokens_per_second = generation,
+    }
+  end
+  if generated and generated > 0 then return nil end
+  local prompt, elapsed_ms = prompt_rate(chunk, timings)
+  if prompt then
+    return {
+      type = "inference_stats",
+      elapsed_ms = elapsed_ms,
+      prompt_tokens_per_second = prompt,
+    }
+  end
 end
 
 local Model = {}
@@ -243,6 +361,8 @@ function Model:stream(opts)
       local finish_seen = false
       local done_seen = false
       local protocol_error
+      local last_inference_stats
+      local inference_state = { generation_samples = {}, generation_head = 1 }
 
       local function process_payload(payload)
         if payload == "[DONE]" then
@@ -259,6 +379,16 @@ function Model:stream(opts)
         if type(chunk.usage) == "table" then
           message.usage = usage_from(chunk.usage)
           run:emit({ type = "usage", usage = util.copy(message.usage) })
+        end
+        local stats = inference_stats(chunk, inference_state)
+        if stats and (not last_inference_stats
+            or stats.prompt_tokens_per_second
+              ~= last_inference_stats.prompt_tokens_per_second
+            or stats.generation_tokens_per_second
+              ~= last_inference_stats.generation_tokens_per_second
+            or stats.elapsed_ms ~= last_inference_stats.elapsed_ms) then
+          last_inference_stats = stats
+          run:emit(util.copy(stats))
         end
         local choice = type(chunk.choices) == "table" and chunk.choices[1] or nil
         if not choice then

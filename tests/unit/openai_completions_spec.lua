@@ -1,5 +1,6 @@
 local openai = require("neoagent.api.openai_completions")
-local agent = require("neoagent.agent")
+local agent_loop = require("neoagent.agent_loop")
+local async = require("neoagent.async")
 local fake_transport = require("tests.helpers.fake_transport")
 
 local function wait(run)
@@ -34,6 +35,109 @@ describe("neoagent.api.openai_completions", function()
     assert.is_truthy(fake.requests[1].body:find(
       '"function":{"description":"Echo","name":"echo","parameters":{}}', 1, true
     ))
+  end)
+
+  it("normalizes prompt progress and rolls generation timing over three seconds", function()
+    local fake = fake_transport.new({ {
+      chunks = {
+        'data: {"choices":[{"delta":{"content":null,"role":"assistant"}}],"prompt_progress":{"total":300,"cache":100,"processed":150,"time_ms":1000},"timings":{"prompt_n":50,"prompt_ms":1,"prompt_per_second":1000000,"predicted_n":0,"predicted_ms":0,"predicted_per_second":0}}\n\n',
+        'data: {"choices":[{"delta":{"content":null,"role":"assistant"}}],"prompt_progress":{"total":300,"cache":100,"processed":250,"time_ms":2000},"timings":{"prompt_n":150,"prompt_ms":2000,"prompt_per_second":75,"predicted_n":0,"predicted_ms":0,"predicted_per_second":0}}\n\n',
+        'data: {"choices":[{"delta":{"content":"a"}}],"timings":{"prompt_n":200,"prompt_ms":2500,"prompt_per_second":80,"predicted_n":1,"predicted_ms":1,"predicted_per_second":7}}\n\n',
+        'data: {"choices":[{"delta":{"content":"b"}}],"timings":{"prompt_n":200,"prompt_ms":2500,"prompt_per_second":80,"predicted_n":21,"predicted_ms":1001,"predicted_per_second":7}}\n\n',
+        'data: {"choices":[{"delta":{"content":"c"}}],"timings":{"prompt_n":200,"prompt_ms":2500,"prompt_per_second":80,"predicted_n":51,"predicted_ms":2001,"predicted_per_second":7}}\n\n',
+        'data: {"choices":[{"delta":{"content":"d"}}],"timings":{"prompt_n":200,"prompt_ms":2500,"prompt_per_second":80,"predicted_n":91,"predicted_ms":3001,"predicted_per_second":7}}\n\n',
+        'data: {"choices":[{"delta":{"content":"e"},"finish_reason":"stop"}],"timings":{"prompt_n":200,"prompt_ms":2500,"prompt_per_second":80,"predicted_n":141,"predicted_ms":4001,"predicted_per_second":7}}\n\n',
+      },
+    } })
+    local model = openai.new({
+      provider = "compatible",
+      model = "test",
+      base_url = "http://localhost/v1",
+      transport = fake,
+    })
+    local observed = {}
+    local function stream()
+      return wait(model:stream({
+        messages = {},
+        on_event = function(event)
+          if event.type == "inference_stats" then
+            observed[#observed + 1] = event
+          end
+        end,
+      }))
+    end
+
+    assert.is_true(stream().ok)
+    assert.are.same({
+      {
+        type = "inference_stats",
+        elapsed_ms = 1000,
+        prompt_tokens_per_second = 50,
+      },
+      {
+        type = "inference_stats",
+        elapsed_ms = 2000,
+        prompt_tokens_per_second = 75,
+      },
+      {
+        type = "inference_stats",
+        generation_tokens_per_second = 20,
+      },
+      {
+        type = "inference_stats",
+        generation_tokens_per_second = 25,
+      },
+      {
+        type = "inference_stats",
+        generation_tokens_per_second = 30,
+      },
+      {
+        type = "inference_stats",
+        generation_tokens_per_second = 40,
+      },
+    }, observed)
+  end)
+
+  it("resets and bounds rolling generation samples", function()
+    local chunks = {}
+    local function sample(tokens, elapsed_ms, content, finish_reason)
+      chunks[#chunks + 1] = "data: " .. vim.json.encode({
+        choices = { {
+          delta = { content = content or "x" },
+          finish_reason = finish_reason,
+        } },
+        timings = {
+          predicted_n = tokens,
+          predicted_ms = elapsed_ms,
+        },
+      }) .. "\n\n"
+    end
+    sample(10, 1000)
+    sample(5, 500)
+    for index = 1, 170 do
+      sample(5 + index, 500 + index * 100)
+    end
+    sample(176, 17600, "done", "stop")
+
+    local observed = {}
+    local model = openai.new({
+      provider = "compatible",
+      model = "rolling",
+      base_url = "http://localhost/v1",
+      transport = fake_transport.new({ { chunks = chunks } }),
+    })
+    local result = wait(model:stream({
+      messages = {},
+      on_event = function(event)
+        if event.type == "inference_stats" then
+          observed[#observed + 1] = event
+        end
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.is_true(#observed > 0)
+    assert.are.equal(10,
+      observed[#observed].generation_tokens_per_second)
   end)
 
   it("requests usage in streamed responses by default", function()
@@ -172,8 +276,8 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal([[{"alpha":{"first":1,"second":2},"path":"x.lua","zeta":true}]],
       request.body.messages[3].tool_calls[1]["function"].arguments)
     assert.are.equal("(see attached image)", request.body.messages[4].content)
-    assert.are.equal("data:image/jpeg;base64,BBBB", request.body.messages[5].content[2].image_url.url)
-    assert.are.equal("(no tool output)", request.body.messages[6].content)
+    assert.are.equal("(no tool output)", request.body.messages[5].content)
+    assert.are.equal("data:image/jpeg;base64,BBBB", request.body.messages[6].content[2].image_url.url)
     assert.are.equal("inspect", request.body.tools[1]["function"].name)
   end)
 
@@ -191,7 +295,48 @@ describe("neoagent.api.openai_completions", function()
     assert.are.equal("data:image/png;base64,AAAA", converted[2].content[2].image_url.url)
   end)
 
-  it("normalizes malformed tool arguments for recovery by the agent", function()
+  it("keeps parallel tool results contiguous before converted images", function()
+    local converted = openai._encode_messages({
+      { role = "assistant", content = {
+        { type = "toolCall", id = "c1", name = "read_file", arguments = {} },
+        { type = "toolCall", id = "c2", name = "read_file", arguments = {} },
+      } },
+      { role = "toolResult", toolCallId = "c1", content = {
+        { type = "text", text = "first" },
+        { type = "image", mimeType = "image/png", data = "AAAA" },
+      } },
+      { role = "toolResult", toolCallId = "c2", content = {
+        { type = "text", text = "second" },
+        { type = "image", mimeType = "image/png", data = "BBBB" },
+      } },
+    })
+
+    assert.are.same({ "assistant", "tool", "tool", "user", "user" },
+      vim.tbl_map(function(message) return message.role end, converted))
+    assert.are.equal("c1", converted[2].tool_call_id)
+    assert.are.equal("c2", converted[3].tool_call_id)
+    assert.are.equal("data:image/png;base64,AAAA",
+      converted[4].content[2].image_url.url)
+    assert.are.equal("data:image/png;base64,BBBB",
+      converted[5].content[2].image_url.url)
+  end)
+
+  it("flushes tool-result images before the following conversation turn", function()
+    local converted = openai._encode_messages({
+      { role = "toolResult", toolCallId = "c1", content = {
+        { type = "image", mimeType = "image/png", data = "AAAA" },
+      } },
+      { role = "user", content = "continue" },
+    })
+
+    assert.are.same({ "tool", "user", "user" },
+      vim.tbl_map(function(message) return message.role end, converted))
+    assert.are.equal("data:image/png;base64,AAAA",
+      converted[2].content[2].image_url.url)
+    assert.are.equal("continue", converted[3].content)
+  end)
+
+  it("normalizes malformed tool arguments for recovery by the Agent Loop", function()
     local fake = fake_transport.new({ { chunks = {
       "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bad\",\"arguments\":\"{\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
     } } })
@@ -220,7 +365,7 @@ describe("neoagent.api.openai_completions", function()
       base_url = "http://x",
       transport = fake,
     })
-    local result = wait(agent.run({
+    local result = wait(agent_loop.run({
       model = model,
       messages = { { role = "user", content = "Edit the file" } },
       tools = { {
@@ -244,7 +389,7 @@ describe("neoagent.api.openai_completions", function()
     assert.matches("valid JSON", retry.messages[3].content)
   end)
 
-  it("normalizes array tool arguments for recovery by the agent", function()
+  it("normalizes array tool arguments for recovery by the Agent Loop", function()
     local fake = fake_transport.new({ { chunks = {
       "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"edit\",\"arguments\":\"[]\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
     } } })
@@ -335,6 +480,21 @@ describe("neoagent.api.openai_completions", function()
     local result = wait(model:stream({ messages = {} }))
     assert.is_true(result.ok)
     assert.are.equal("length", result.message.stopReason)
+
+    local thrown_transport = {
+      request = function()
+        return async.run(function() error("transport exploded") end)
+      end,
+    }
+    local thrown_model = openai.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = thrown_transport,
+    })
+    local thrown = wait(thrown_model:stream({ messages = {} }))
+    assert.is_false(thrown.ok)
+    assert.matches("transport exploded", thrown.error.message)
   end)
 
   it("requires streamed tool calls to have ids and names", function()
