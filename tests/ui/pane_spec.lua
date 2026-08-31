@@ -238,7 +238,13 @@ describe("Pane buffer surfaces", function()
     end)
     assert.are.same({ "first", "second" }, vim.fn.getreg('"', 1, true))
 
-    vim.api.nvim_win_call(window(), function() vim.cmd("startinsert") end)
+    local started = vim.api.nvim_win_call(window(), function()
+      local ok, err = pcall(vim.cmd, "startinsert")
+      return { ok = ok, error = err }
+    end)
+    if not started.ok then
+      assert.matches("modifiable", tostring(started.error))
+    end
     vim.api.nvim_exec_autocmds("InsertEnter", { buffer = host.buffer })
     assert(vim.wait(1000, function()
       return vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i"

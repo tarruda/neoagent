@@ -346,8 +346,10 @@ local function write_decoration(
     options.hl_mode = "replace"
   end
   local line = region.lines[decoration.row + 1] or ""
-  local col = prefix
-    and continuation_col(context, line, decoration.col) or decoration.col
+  local col = decoration.col
+  if prefix then
+    col = continuation_col(context, line, decoration.col)
+  end
   return vim.api.nvim_buf_set_extmark(buffer, namespace,
     region.first + decoration.row, col, options)
 end

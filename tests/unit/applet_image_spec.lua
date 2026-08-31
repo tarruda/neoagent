@@ -372,7 +372,8 @@ describe("Applet images", function()
     local list_uis, get_chan_info =
       vim.api.nvim_list_uis, vim.api.nvim_get_chan_info
     local rpcrequest = vim.rpcrequest
-    local flags, attempts = 0x800, 0
+    local nonblocking = ({ Linux = 0x800, OSX = 0x4, BSD = 0x4 })[jit.os]
+    local flags, attempts = nonblocking, 0
     local interrupt, fail_write = true, false
     local fail_blocking, fail_restore = false, false
     local writes = {}
@@ -395,7 +396,7 @@ describe("Applet images", function()
       if command == 2 then return 0 end
       if command == 3 then return flags end
       if fail_blocking and value == 0 then return -1 end
-      if fail_restore and value == 0x800 then return -1 end
+      if fail_restore and value == nonblocking then return -1 end
       flags = value
       return 0
     end
@@ -423,7 +424,7 @@ describe("Applet images", function()
       assert.is_true(direct.available())
       assert.is_true(direct.write("payload"))
       assert.are.same({ { data = "payload", offset = 0, count = 7 } }, writes)
-      assert.are.equal(0x800, flags)
+      assert.are.equal(nonblocking, flags)
 
       fail_blocking, interrupt, attempts = true, false, 0
       local blocked, blocked_error = pcall(direct.write, "blocked")
