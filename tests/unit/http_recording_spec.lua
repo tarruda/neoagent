@@ -165,7 +165,7 @@ describe("neoagent HTTP recording", function()
       workspace_directory, "recordings", "2026-09-02-session-42"),
       "*.jsonl", false, true)
     local provider_paths = vim.fn.globpath(fs.join(
-      directory, "provider-recordings", "example", "2026-09-02"),
+      directory, "provider", "recordings", "example", "2026-09-02"),
       "*.jsonl", false, true)
     assert.are.equal(1, #workspace_paths)
     assert.are.equal(1, #provider_paths)
@@ -173,8 +173,9 @@ describe("neoagent HTTP recording", function()
       fs.join(directory, "workspaces"),
       workspace_directory,
       fs.join(workspace_directory, "recordings"),
-      fs.join(directory, "provider-recordings"),
-      fs.join(directory, "provider-recordings", "example"),
+      fs.join(directory, "provider"),
+      fs.join(directory, "provider", "recordings"),
+      fs.join(directory, "provider", "recordings", "example"),
     }) do
       assert.are.equal(448, require("bit").band(
         assert(vim.uv.fs_stat(path)).mode, 511))
@@ -1031,7 +1032,7 @@ else:
 
     local paths = files(directory, ".jsonl")
     assert.are.equal(1, #paths)
-    assert.matches("/provider%-recordings/llama/", paths[1])
+    assert.matches("/provider/recordings/llama/", paths[1])
     local parsed = records(paths[1])
     assert.is_nil(parsed[1].workspace)
     assert.are.equal("authentication", parsed[1].context.origin)

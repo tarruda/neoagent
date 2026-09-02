@@ -733,10 +733,11 @@ function Recorder:_start(operation, request, supplied_context)
     directories[#directories + 1] = workspaces_directory
     directories[#directories + 1] = workspace_directory
   else
-    local providers_directory = fs.join(
-      self._directory, "provider-recordings")
-    scope_directory = fs.join(providers_directory, provider)
-    directories[#directories + 1] = providers_directory
+    local provider_directory = fs.join(self._directory, "provider")
+    local recordings_directory = fs.join(provider_directory, "recordings")
+    scope_directory = fs.join(recordings_directory, provider)
+    directories[#directories + 1] = provider_directory
+    directories[#directories + 1] = recordings_directory
   end
   directories[#directories + 1] = scope_directory
   local day = os.date("!%Y-%m-%d", math.floor(now / 1000))

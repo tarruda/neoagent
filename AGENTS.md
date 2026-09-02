@@ -172,7 +172,8 @@ changes.
   optional, and absent credential precedence for each provider runtime.
   Account-scoped catalog fingerprints contain hashed credential identity and
   bounded JSON-safe `source_options`. Catalog snapshots expose configured and
-  effective persistence state.
+  effective persistence state. The normal composition stores catalog state
+  beneath `stdpath("state") .. "/neoagent/provider/state"`.
 - Optional Tool `on_messages` hooks derive state from complete active
   conversation copies keyed by an opaque per-Session identity; the reusable
   Agent Loop remains Session-independent. Optional Tool renderers flow
@@ -239,7 +240,7 @@ changes.
   writes one private, sortable exchange file. Workspace-owned exchanges reuse
   the basename-and-hash Workspace state directory and group recordings by date
   and Session ID; catalog, Authentication, and Provider Shell exchanges use
-  `provider-recordings/<provider>`. Private NDJSON staging closes before JSON
+  `provider/recordings/<provider>`. Private NDJSON staging closes before JSON
   publication or one final `yq` conversion. YAML-selected staging represents
   valid JSON bodies as native values with an explicit format marker; the final
   conversion translates the outer NDJSON documents only. HTTP credential

@@ -720,7 +720,7 @@ value is limited to 16 KiB and participates in the source fingerprint.
 Discovery with non-empty `service_opts` requires this callback.
 
 The normal Neoagent composition persists every catalog under
-`stdpath("state") .. "/neoagent/model-catalog"`. Cache records use one strict
+`stdpath("state") .. "/neoagent/provider/state"`. Cache records use one strict
 version-2 schema containing a source fingerprint, sparse discoveries,
 `validated_at`, and optional ETag or Last-Modified validators. The fingerprint
 covers API identity, normalized base URL, source ID and revision,
@@ -981,7 +981,7 @@ canonical root. A Workspace exchange without a Session ID uses `unscoped` as
 the final directory component. Catalog, Provider Shell, and Authentication
 exchanges have no Workspace owner and use: >text
 
-  <recording.directory>/provider-recordings/<provider>/<UTC-date>/
+  <recording.directory>/provider/recordings/<provider>/<UTC-date>/
 <
 An Authentication exchange without a provider identifier uses its
 authentication method as the provider directory; a fully unscoped transport

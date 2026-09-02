@@ -1221,7 +1221,7 @@ function M.new(opts, runtime)
       options, {
         auth = auth,
         store = require("neoagent.state_store").new({
-          directory = vim.fn.stdpath("state") .. "/neoagent/model-catalog",
+          directory = vim.fn.stdpath("state") .. "/neoagent/provider/state",
         }),
         report = report,
         transport = transport,

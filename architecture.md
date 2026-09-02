@@ -120,7 +120,7 @@ state synchronously and builds an effective snapshot before authentication or
 network work. `start()` refreshes missing or expired state and schedules future
 validation. Remote catalogs use a fourteen-day TTL; the local router catalog
 uses five minutes. The normal composition persists strict version-2 discovery
-records under `stdpath("state") .. "/neoagent/model-catalog"`. Every record
+records under `stdpath("state") .. "/neoagent/provider/state"`. Every record
 carries a fingerprint of its API, normalized base URL, discovery source and
 revision, Authentication method, and hashed safe account identity when the
 source is account-scoped. A source mismatch activates packaged and configured
@@ -778,7 +778,7 @@ Each HTTP exchange owns one mode-`0600` NDJSON staging file beneath a
 mode-`0700` hierarchy. Workspace-owned exchanges reuse the canonical
 basename-and-hash Workspace state directory and group its `recordings` child
 by UTC date and Session ID. Session-less Workspace exchanges use `unscoped`.
-Shared provider exchanges use `provider-recordings/<provider>`. The opening
+Shared provider exchanges use `provider/recordings/<provider>`. The opening
 record contains the credential-scrubbed request and correlation context.
 JSON-selected staging retains valid UTF-8 bodies as byte-faithful strings.
 YAML-selected staging decodes valid JSON bodies into native NDJSON values and

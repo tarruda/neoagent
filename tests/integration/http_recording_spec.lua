@@ -116,7 +116,7 @@ describe("HTTP recording integration", function()
 
     local paths = vim.fn.globpath(directory, "**/*.jsonl", false, true)
     assert.are.equal(1, #paths)
-    assert.matches("/provider%-recordings/openai%-codex/", paths[1])
+    assert.matches("/provider/recordings/openai%-codex/", paths[1])
     local content = assert(fs.read(paths[1]))
     assert.is_nil(content:find("integration-refresh", 1, true))
     assert.is_nil(content:find("integration-code", 1, true))

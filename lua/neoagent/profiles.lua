@@ -26,7 +26,7 @@ end
 
 local function catalog_store()
   return require("neoagent.state_store").new({
-    directory = vim.fn.stdpath("state") .. "/neoagent/model-catalog",
+    directory = vim.fn.stdpath("state") .. "/neoagent/provider/state",
   })
 end
 
