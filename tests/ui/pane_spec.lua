@@ -1149,6 +1149,50 @@ describe("Pane buffer surfaces", function()
       persistent_marks(incremental, incremental_host.buffer))
   end)
 
+  it("retains source syntax outside changes and redetects affected paths", function()
+    local value = pane({ key = "retained-source-syntax" })
+    local host = surface("applet-retained-source-syntax")
+    value:_connect(host)
+    local function content(source_text, source_revision, tail, tail_revision)
+      return {
+        root = ui.column({ key = "source-regions", children = {
+          ui.region({
+            key = "source", revision = source_revision,
+            child = ui.source({
+              key = "source:lua", path = "example.lua",
+              child = ui.text({ key = "source:text", text = source_text }),
+            }),
+          }),
+          ui.region({
+            key = "tail", revision = tail_revision,
+            child = ui.text({ key = "tail:text", text = tail }),
+          }),
+        } }),
+      }
+    end
+    value:update(content("local value = 1", 1, "before", 1))
+    assert(value:flush())
+
+    local filetype_match = vim.filetype.match
+    local matches = 0
+    vim.filetype.match = function(options)
+      matches = matches + 1
+      return filetype_match(options)
+    end
+    local ok, err = pcall(function()
+      value:update(content("local value = 1", 1, "after", 2))
+      assert(value:flush())
+      assert.are.equal(0, matches)
+      value:update(content("local value = 2", 2, "after", 2))
+      assert(value:flush())
+    end)
+    vim.filetype.match = filetype_match
+
+    assert(ok, err)
+    assert.are.equal(1, matches)
+    assert.are.equal(1, vim.b[host.buffer].applet_source_regions)
+  end)
+
   it("routes only declared menu mappings and keeps the cursor as selection", function()
     local choices = {}
     local value = pane({
@@ -1833,7 +1877,13 @@ describe("Pane buffer surfaces", function()
           error({ kind = "render", message = "semantic Applet failure" })
         end
         if state.invalid then return ui.text({ key = "", text = "bad" }) end
-        return ui.text({ key = "ok", text = state.text })
+        local node = ui.text({ key = "ok", text = state.text })
+        if state.source then
+          node = ui.source({
+            key = "source", language = "lua", child = node,
+          })
+        end
+        return node
       end,
       on_error = function(err) errors[#errors + 1] = err end,
     })
@@ -1863,7 +1913,7 @@ describe("Pane buffer surfaces", function()
     local source_adapter = require("applet.pane.source")
     local original_apply = source_adapter.apply
     source_adapter.apply = function() error("commit exploded") end
-    value:set_state({ text = "commit" })
+    value:set_state({ text = "commit", source = true })
     value:flush()
     source_adapter.apply = original_apply
     assert.are.equal("commit", errors[#errors].phase)
@@ -2798,12 +2848,13 @@ describe("Pane buffer surfaces", function()
 
   it("replaces changed images and retains stable presentations", function()
     local resources, presented = {}, {}
-    local placements = 0
+    local placements, requests, presentations = 0, 0, 0
     local active, signature = {}, nil
     local image_generation = 0
     local image_system = {
       subscribe = function() return function() end end,
       request = function(_, value)
+        requests = requests + 1
         local id = require("applet.image.source").identity(value)
         image_generation = value.revision
         resources[id] = {
@@ -2824,6 +2875,7 @@ describe("Pane buffer surfaces", function()
       end,
       set_references = function() end,
       present = function(_, _, presentation)
+        presentations = presentations + 1
         local next_signature = vim.inspect(presentation)
         if next_signature == signature then return false end
         signature = next_signature
@@ -2863,10 +2915,19 @@ describe("Pane buffer surfaces", function()
     value:flush()
     assert.are.equal(2, value.layout.image_generation)
     assert.are.equal(2, placements)
+    local stable_requests = requests
+    local stable_presentations = presentations
     value:update(content("two", 2))
     value:flush()
     assert.are.equal(0, #errors, vim.inspect(errors))
     assert.are.equal(2, placements)
+    assert.are.same({
+      requests = stable_requests,
+      presentations = stable_presentations,
+    }, {
+      requests = requests,
+      presentations = presentations,
+    })
 
     vim.api.nvim_win_set_height(image_window(), 1)
     value:flush()

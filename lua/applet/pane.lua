@@ -950,8 +950,9 @@ function Pane:_validate_actions(layout)
   if layout.edit then validate(layout.edit.on_change, "edit.on_change") end
 end
 
-function Pane:_prepare_images(tree)
+function Pane:_prepare_images(tree, images)
   if not self.image_system or not tree then return end
+  images = images or image_snapshot(self)
   local root = tree.type and tree or tree.root
   local requested, sources = {}, {}
   local paintable = surface_visible(self.surface)
@@ -995,18 +996,23 @@ function Pane:_prepare_images(tree)
   self.requested_image_references = requested
   self.deferred_images = not paintable and #sources > 0
   self.image_system:set_references(self, requested)
+  local resources = images.resources or {}
   if paintable then
     for _, source_value in ipairs(sources) do
       local identity, value = source_value.identity, source_value.value
-      local ok, _, err = pcall(
-        self.image_system.request, self.image_system, value)
-      if not ok then
-        self:_report("image", _, self.generation)
-      elseif err then
-        self.image_errors = self.image_errors or {}
-        if not self.image_errors[identity] then
-          self.image_errors[identity] = true
-          self:_report("image", err, self.generation)
+      if not resources[identity] then
+        local ok, resource, err = pcall(
+          self.image_system.request, self.image_system, value)
+        if not ok then
+          self:_report("image", resource, self.generation)
+        elseif err then
+          self.image_errors = self.image_errors or {}
+          if not self.image_errors[identity] then
+            self.image_errors[identity] = true
+            self:_report("image", err, self.generation)
+          end
+        elseif resource ~= nil then
+          resources[identity] = resource
         end
       end
     end
@@ -1157,7 +1163,7 @@ function Pane:_flush_requested()
     and not self.reconcile_state.unknown
     and not prepare_deferred_images
   if not retained then
-    self:_prepare_images(tree)
+    self:_prepare_images(tree, images)
     images = image_snapshot(self)
   end
   local compile_layout = retained and compile.reuse or compile.compile

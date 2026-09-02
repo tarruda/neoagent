@@ -1145,6 +1145,28 @@ local function apply_scene_content(
   state.runtime_scene = layout.scene
 end
 
+local function source_detection_content_changed(
+    layout, differences, changed_first)
+  if not differences.content then return false end
+  local function uses_content(range)
+    local language = type(range.language) == "string"
+      and range.language:match("^[%w_.-]+$") or nil
+    return not language and type(range.path) == "string" and range.path ~= ""
+  end
+  if layout.region_document and changed_first then
+    for index = changed_first, #layout.regions do
+      for _, range in ipairs(layout.regions[index].source_ranges or {}) do
+        if uses_content(range) then return true end
+      end
+    end
+    return false
+  end
+  for _, range in ipairs(layout.source_ranges or {}) do
+    if uses_content(range) then return true end
+  end
+  return false
+end
+
 function M.apply(opts)
   local surface, layout = assert(opts.surface), assert(opts.layout)
   local buffer, namespace = surface.buffer, assert(opts.namespace)
@@ -1154,6 +1176,7 @@ function M.apply(opts)
   local differences = opts.changes or M.changes(previous, layout)
   local document = layout.region_document
   local changed_first = document and document.changed_first or nil
+  local unknown = state.unknown == true
   local saved = save_view(surface, layout, previous, opts.cursor_namespace)
   local changes = {
     line_splices = 0,
@@ -1163,7 +1186,7 @@ function M.apply(opts)
   }
   local modifiable = vim.bo[buffer].modifiable
   local readonly = vim.bo[buffer].readonly
-  if state.unknown then
+  if unknown then
     vim.api.nvim_buf_clear_namespace(buffer, namespace, 0, -1)
     vim.api.nvim_buf_clear_namespace(buffer, opts.virtual_namespace, 0, -1)
     vim.api.nvim_buf_clear_namespace(buffer, opts.region_namespace, 0, -1)
@@ -1182,7 +1205,7 @@ function M.apply(opts)
       elseif state.unknown or not previous or differences.content then
         clear_scene_provider(state)
         local content_previous = previous
-        if state.unknown then content_previous = nil end
+        if unknown then content_previous = nil end
         state.content_result = replace_content(
           buffer, content_previous, layout, changes)
       else
@@ -1203,8 +1226,9 @@ function M.apply(opts)
       changes.extmark_writes = changes.extmark_writes
         + apply_virtuals(buffer, opts.virtual_namespace, layout)
     end
-    if not layout.scene and (not previous or state.content_result ~= "unchanged"
-        or differences.sources) then
+    if not layout.scene and (unknown or not previous or differences.sources
+        or source_detection_content_changed(
+          layout, differences, changed_first)) then
       source.apply(buffer, layout.source_ranges,
         opts.buffer_mode == "managed" and layout.lines
           or vim.api.nvim_buf_get_lines(buffer, 0, -1, false))
@@ -1215,8 +1239,8 @@ function M.apply(opts)
     if opts.window_changed or not previous or differences.chrome then
       apply_chrome(surface, layout, state)
     end
-    if opts.image_system and (opts.force_images or not previous
-        or differences.images or differences.content) then
+    if opts.image_system and (opts.force_images or unknown or not previous
+        or differences.images) then
       local presented
       changes.image_presentation_changes, presented = paint_images(
         surface, layout, state, opts.image_system,
