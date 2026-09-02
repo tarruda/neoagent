@@ -2407,8 +2407,7 @@ local function same_constraints(left, right)
 end
 
 local function same_region_base(constraints, ctx)
-  return constraints
-    and constraints.width == ctx.width
+  return constraints.width == ctx.width
     and constraints.height == ctx.height
     and constraints.extent == ctx.extent
     and constraints.theme_generation == (ctx.theme.generation or 0)

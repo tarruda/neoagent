@@ -48,27 +48,29 @@ local function retained_document_changes(previous, layout)
       else
         local shifted = left.first ~= right.first
           or left.last ~= right.last
-        changed.content = changed.content
-          or not util.equal(left.lines, right.lines)
-        changed.decorations = changed.decorations
-          or not util.equal(left.decorations, right.decorations)
+        local content_changed = not util.equal(left.lines, right.lines)
+        changed.content = changed.content or content_changed
+        local decorations_changed = not util.equal(
+          left.decorations, right.decorations)
           or shifted and (#left.decorations > 0 or #right.decorations > 0)
-        changed.interaction = changed.interaction
-          or not util.equal(left.targets, right.targets)
+        changed.decorations = changed.decorations or decorations_changed
+        local interaction_changed = not util.equal(left.targets, right.targets)
           or not util.equal(left.target_order, right.target_order)
           or not util.equal(left.hit_order, right.hit_order)
           or not util.equal(left.scopes, right.scopes)
           or shifted and (next(left.targets) ~= nil or next(right.targets) ~= nil
             or next(left.scopes) ~= nil or next(right.scopes) ~= nil)
-        changed.images = changed.images
-          or not util.equal(left.images, right.images)
+        changed.interaction = changed.interaction or interaction_changed
+        local images_changed = not util.equal(left.images, right.images)
           or shifted and (next(left.images) ~= nil or next(right.images) ~= nil)
-        changed.sources = changed.sources
-          or not util.equal(left.source_ranges, right.source_ranges)
+        changed.images = changed.images or images_changed
+        local sources_changed = not util.equal(
+          left.source_ranges, right.source_ranges)
           or shifted and (#left.source_ranges > 0 or #right.source_ranges > 0)
-        changed.virtuals = changed.virtuals
-          or not util.equal(left.virtuals, right.virtuals)
+        changed.sources = changed.sources or sources_changed
+        local virtuals_changed = not util.equal(left.virtuals, right.virtuals)
           or shifted and (#left.virtuals > 0 or #right.virtuals > 0)
+        changed.virtuals = changed.virtuals or virtuals_changed
         changed.regions = changed.regions or left.key ~= right.key or shifted
       end
     end
@@ -307,8 +309,8 @@ local function replace_content(buffer, old, new, changes)
     changes.full_rebuilds = changes.full_rebuilds + 1
     return "rebuild"
   end
-  local changed_first = new.region_document
-    and new.region_document.changed_first or nil
+  local document = new.region_document
+  local changed_first = document and document.changed_first or nil
   local retained_order = changed_first ~= nil
     and #old.regions == #new.regions
   if retained_order then
@@ -1150,8 +1152,8 @@ function M.apply(opts)
   local state = opts.state or {}
   local previous = state.layout
   local differences = opts.changes or M.changes(previous, layout)
-  local changed_first = layout.region_document
-    and layout.region_document.changed_first or nil
+  local document = layout.region_document
+  local changed_first = document and document.changed_first or nil
   local saved = save_view(surface, layout, previous, opts.cursor_namespace)
   local changes = {
     line_splices = 0,

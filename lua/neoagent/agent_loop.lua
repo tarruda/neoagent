@@ -139,10 +139,6 @@ function M.prepare(opts)
 end
 
 local function validate_arguments(tool, arguments)
-  if type(arguments) == "table" and next(arguments) == nil
-      and util.is_list(arguments) then
-    arguments = vim.empty_dict()
-  end
   local valid, message = tool_schema.validate({ type = "object" }, arguments)
   if not valid then return false, message end
   valid, message = tool_schema.validate(tool.input_schema or {}, arguments)
@@ -167,9 +163,6 @@ local function error_result(err)
     isError = true,
     details = err.detail and { detail = err.detail } or nil,
   }
-  local normalized = semantic_message.normalize_tool_result(result)
-  if normalized then return normalized end
-  result.details = nil
   return assert(semantic_message.normalize_tool_result(result))
 end
 
@@ -218,16 +211,6 @@ function M.run(opts)
             error(util.error(owner,
               "duplicate conversation toolCall id: " .. block.id), 0)
           end
-        end
-      elseif normalized.role == "toolResult" then
-        local name = pending_calls[normalized.toolCallId]
-        if name == nil then
-          error(util.error(owner, "toolResult references an unknown toolCall: "
-            .. normalized.toolCallId), 0)
-        end
-        if normalized.toolName ~= nil and normalized.toolName ~= name then
-          error(util.error(owner,
-            "toolResult toolName does not match its toolCall"), 0)
         end
       end
       return normalized

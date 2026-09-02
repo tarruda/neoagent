@@ -737,10 +737,9 @@ function M.new(opts)
           outer, activity, base, true, stream_retries)
       else
         local retry_settings = config.retry
-        local retry_limit = retry_settings.enabled
-            and retry_settings.max_retries or 0
-        local provider_limit = done.error
-          and tonumber(done.error.stream_max_retries)
+        local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0
+        local provider_limit = done.error and tonumber(
+          done.error.stream_max_retries)
         if provider_limit then
           retry_limit = math.min(retry_limit, provider_limit)
         end
@@ -1079,8 +1078,8 @@ function M.new(opts)
     local preparation, prepare_err = prepare_compaction()
     if not preparation then
       pcall(release)
-      local err = prepare_err
-        or util.error("compaction", "Nothing to compact")
+      local err = prepare_err or util.error(
+        "compaction", "Nothing to compact")
       opts.notify(err.message, vim.log.levels.WARN)
       return nil, err
     end

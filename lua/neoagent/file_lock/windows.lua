@@ -249,8 +249,8 @@ function Backend:open(path, mode)
   end
   local info = file_information(self.kernel, self.ffi, native)
   if not info then
-    local detail = "Win32 error "
-      .. tostring(tonumber(self.kernel.GetLastError()))
+    local detail = "Win32 error " .. tostring(
+      tonumber(self.kernel.GetLastError()))
     self.kernel.CloseHandle(native)
     return nil, backend_error("open",
       "Failed to inspect file lock", detail)

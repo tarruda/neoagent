@@ -416,12 +416,14 @@ function Model:stream(opts)
           run:emit({ type = "usage", usage = util.copy(message.usage) })
         end
         local stats = inference_stats(chunk, inference_state)
-        if stats and (not last_inference_stats
-            or stats.prompt_tokens_per_second
-              ~= last_inference_stats.prompt_tokens_per_second
-            or stats.generation_tokens_per_second
-              ~= last_inference_stats.generation_tokens_per_second
-            or stats.elapsed_ms ~= last_inference_stats.elapsed_ms) then
+        local stats_changed = false
+        if stats then
+          stats_changed = not last_inference_stats
+            or stats.prompt_tokens_per_second ~= last_inference_stats.prompt_tokens_per_second
+            or stats.generation_tokens_per_second ~= last_inference_stats.generation_tokens_per_second
+            or stats.elapsed_ms ~= last_inference_stats.elapsed_ms
+        end
+        if stats_changed then
           last_inference_stats = stats
           run:emit(util.copy(stats))
         end

@@ -683,8 +683,8 @@ function AgentApplet:_attempt_submission(text)
     end
     return nil, prepare_err
   end
-  local represented = self.input_submission_id
-      and self:_submission(self.input_submission_id) or nil
+  local represented = self.input_submission_id and self:_submission(
+    self.input_submission_id) or nil
   if represented and represented.agent == agent
       and represented.kind == "steering" then
     if agent:is_running() then return true end
@@ -745,8 +745,8 @@ function AgentApplet:_dequeue_steering()
   local view = self.view_value
   local current = self:_capture_input(view)
   local messages, ids = agent:dequeue_steering()
-  local represented = self.input_submission_id
-      and self:_submission(self.input_submission_id) or nil
+  local represented = self.input_submission_id and self:_submission(
+    self.input_submission_id) or nil
   if represented and current == represented.text then
     self.input_value = ""
     if view and not view.destroyed then pcall(view.set_input, view, "") end
