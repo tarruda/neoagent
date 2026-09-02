@@ -283,7 +283,7 @@ describe("neoagent bundled tools", function()
       }, ctx(workspace, nil, {
         fs = {
           mkdirp = function() return true end,
-          write_all = function() return false, "read-only" end,
+          atomic_replace = function() return false, "read-only" end,
         },
       }))
     end, "Could not write file")
@@ -324,6 +324,11 @@ describe("neoagent bundled tools", function()
       write_all = function(path, data, flags)
         operations[#operations + 1] = { "write", path, data }
         files[path] = flags == "a" and (files[path] or "") .. data or data
+        return true
+      end,
+      atomic_replace = function(path, data, policy)
+        operations[#operations + 1] = { "replace", path, data, policy }
+        files[path] = data
         return true
       end,
     }
@@ -768,6 +773,54 @@ describe("neoagent bundled tools", function()
     assert.matches("ONE\r\nsmart quote\r\nlast", changed)
     assert.is_nil(changed:gsub("\r\n", ""):find("\n", 1, true))
     assert.is_true(#result.details.patch > 0)
+  end)
+
+  it("atomically replaces user files under a regular-file policy", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local write = require("neoagent.tools.write_file")
+    local edit = require("neoagent.tools.edit_file")
+    local existing = root .. "/existing.txt"
+    local edited = root .. "/edited.txt"
+    assert(fs.write_all(existing, "old", "w", 420))
+    assert(fs.write_all(edited, "before", "w", 420))
+    assert(vim.uv.fs_chmod(existing, 384))
+    assert(vim.uv.fs_chmod(edited, 416))
+
+    execute(write, { path = "existing.txt", content = "new" }, ctx(workspace))
+    execute(edit, {
+      path = "edited.txt",
+      edits = { { oldText = "before", newText = "after" } },
+    }, ctx(workspace))
+
+    assert.are.equal("new", assert(fs.read(existing)))
+    assert.are.equal("after", assert(fs.read(edited)))
+    assert.are.equal(384, bit.band(assert(vim.uv.fs_stat(existing)).mode, 511))
+    assert.are.equal(416, bit.band(assert(vim.uv.fs_stat(edited)).mode, 511))
+
+    execute(write, { path = "created.txt", content = "created" }, ctx(workspace))
+    local created = root .. "/created.txt"
+    local created_mode = bit.band(assert(vim.uv.fs_stat(created)).mode, 511)
+    assert.are.equal(384, bit.band(created_mode, 384))
+    assert.are.equal(0, bit.band(created_mode, bit.bnot(420)))
+
+    local link = root .. "/link.txt"
+    assert(vim.uv.fs_symlink(existing, link))
+    assert.error_matches(function()
+      execute(write, { path = "link.txt", content = "blocked" }, ctx(workspace))
+    end, "symbolic link")
+    assert.are.equal("new", assert(fs.read(existing)))
+
+    local original_rename = vim.uv.fs_rename
+    vim.uv.fs_rename = function() return nil, "rename failed" end
+    local replaced, replace_err = pcall(execute, write, {
+      path = "existing.txt", content = "blocked",
+    }, ctx(workspace))
+    vim.uv.fs_rename = original_rename
+    assert.is_false(replaced)
+    assert.matches("rename failed", tostring(replace_err))
+    assert.are.equal("new", assert(fs.read(existing)))
+    assert.are.same({}, vim.fn.glob(existing .. ".*.tmp", false, true))
   end)
 
   it("rejects duplicate, overlapping, and no-op edits", function()

@@ -23,7 +23,10 @@ local function new()
       if not ok then
         error("Could not create parent directory for " .. path .. ": " .. tostring(err))
       end
-      ok, err = fs.write_all(absolute, content, "w", 420)
+      ok, err = fs.atomic_replace(absolute, content, {
+        preserve_mode = true,
+        new_mode = 420,
+      })
       if not ok then
         error("Could not write file " .. path .. ": " .. tostring(err))
       end

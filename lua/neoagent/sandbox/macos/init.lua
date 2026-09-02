@@ -194,6 +194,8 @@ function M.fs(request, services)
     path = request.path,
     flags = request.flags,
     mode = request.mode,
+    policy = request.policy,
+    suffix = request.suffix,
   })
   local configured = services.nvim or vim.v.progpath
   local nvim = executable(configured) or configured

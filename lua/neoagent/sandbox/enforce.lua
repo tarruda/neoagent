@@ -177,6 +177,9 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
       if operation == "write_all" then
         return raw.write_all(path, arguments.data, arguments.flags, arguments.mode)
       end
+      if operation == "atomic_replace" then
+        return raw.atomic_replace(path, arguments.data, arguments.policy)
+      end
     end
     local lexical, canonical = policy.resolve_path(ctx, path, self._paths)
     local required = operation == "read" and "read" or "write"
@@ -207,6 +210,8 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
       data = arguments and arguments.data,
       flags = arguments and arguments.flags,
       mode = arguments and arguments.mode,
+      policy = arguments and arguments.policy,
+      suffix = arguments and arguments.suffix,
     }, self._services)
   end
   return {
@@ -254,6 +259,19 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
         data = data,
         flags = flags,
         mode = mode,
+      })
+    end,
+    atomic_replace = function(path, data, selected_policy)
+      selected_policy = require("neoagent.fs")._normalize_atomic_policy(
+        selected_policy)
+      local bytes, random_err = vim.uv.random(16)
+      if not bytes then return nil, random_err end
+      return dispatch("atomic_replace", path, {
+        data = data,
+        policy = util.copy(selected_policy),
+        suffix = bytes:gsub(".", function(char)
+          return string.format("%02x", char:byte())
+        end),
       })
     end,
   }
