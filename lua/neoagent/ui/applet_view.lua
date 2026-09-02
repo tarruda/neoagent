@@ -5,6 +5,7 @@ local Input = require("neoagent.ui.panes.input")
 local presentation_surface = require("neoagent.ui.presentation_surface")
 local Transcript = require("neoagent.ui.panes.transcript")
 local protocol = require("neoagent.ui.renderer")
+local renderers = require("neoagent.ui.renderers")
 local util = require("neoagent.util")
 
 local layout = Applet.layout
@@ -158,6 +159,7 @@ function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
   local selected = opts.renderer or opts.config.renderer
+    or renderers.get(opts.config.style)
   protocol.assert(selected, "Applet UI Renderer")
   assert(selected.theme, "Applet UI Renderer requires a theme")
   local defined, define_err = protocol.define_highlights(selected)

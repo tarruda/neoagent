@@ -53,6 +53,41 @@ describe("Neoagent Applet boundaries", function()
     return value
   end
 
+  local function assert_semantic_sources_usable(value)
+    local presented
+    local detach_presenter = value:presenter():attach({
+      present = function(snapshot)
+        presented = snapshot
+        return true
+      end,
+    })
+    local presentation = value:presenter():notice({
+      prompt = "Usable Presenter",
+      body = "ready",
+    })
+    assert.is_table(presented.active)
+    assert(value:presenter():resolve(presented.active.id))
+    assert(vim.wait(1000, function() return presentation:is_done() end, 5))
+    assert.is_true(presentation:result().ok)
+    detach_presenter()
+
+    local dialog_snapshot
+    local detach_dialog = value:dialogs():subscribe(function(snapshot)
+      dialog_snapshot = snapshot
+    end)
+    local dialog = value:dialogs():show({
+      placement = "float",
+      title = "Usable Dialogs",
+      body = "ready",
+      actions = { { id = "done", label = "Done", key = "<CR>" } },
+    })
+    assert.is_table(dialog_snapshot.active)
+    assert(value:dialogs():choose(dialog_snapshot.active.id, "done"))
+    assert(vim.wait(1000, function() return dialog:is_done() end, 5))
+    assert.is_true(dialog:result().ok)
+    detach_dialog()
+  end
+
   it("reports unknown, unowned, and destroyed targets", function()
     local empty = NeoagentApplet.new({ profiles = {} })
     applets[#applets + 1] = empty
@@ -194,6 +229,141 @@ describe("Neoagent Applet boundaries", function()
     assert.are.equal(headless, owner:active_agent())
   end)
 
+  it("rolls back automatic Applet creation when activity registration fails", function()
+    local headless = agent(fake_model.new({}))
+    headless.subscribe_activity = function()
+      error("activity registration failed")
+    end
+
+    local ok, err = pcall(NeoagentApplet._from_agents, {
+      agents = { headless },
+    })
+
+    assert.is_false(ok)
+    assert.matches("activity registration failed", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(headless:presenter().destroyed)
+    assert_semantic_sources_usable(headless)
+  end)
+
+  it("restores a supplied unbound Applet after record validation fails", function()
+    local headless = agent(fake_model.new({}))
+    local configured = headless:config()
+    local surface = AgentApplet.new({
+      config = configured.ui,
+      persistence = configured.persistence,
+      label = "Supplied",
+      presenter = headless:presenter(),
+      dialogs = headless:dialogs(),
+    })
+    applets[#applets + 1] = surface
+    local get_session = headless.get_session
+    headless.get_session = function() return {} end
+
+    local ok, err = pcall(NeoagentApplet.new, {
+      agents = { { agent = headless, applet = surface } },
+    })
+    headless.get_session = get_session
+
+    assert.is_false(ok)
+    assert.matches("requires a Session", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(surface:is_destroyed())
+    assert.is_nil(surface:agent())
+    assert.is_nil(surface:owner())
+  end)
+
+  it("restores another owner's unbound Applet after claim rejection", function()
+    local headless = agent(fake_model.new({}))
+    local configured = headless:config()
+    local surface = AgentApplet.new({
+      config = configured.ui,
+      persistence = configured.persistence,
+      label = "Claimed",
+      presenter = headless:presenter(),
+      dialogs = headless:dialogs(),
+    })
+    applets[#applets + 1] = surface
+    local existing_owner = {}
+    assert.are.equal(surface, surface:claim(existing_owner, {}))
+
+    local ok, err = pcall(NeoagentApplet.new, {
+      agents = { { agent = headless, applet = surface } },
+    })
+
+    assert.is_false(ok)
+    assert.matches("already has an owner", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(surface:is_destroyed())
+    assert.is_nil(surface:agent())
+    assert.are.equal(existing_owner, surface:owner())
+  end)
+
+  it("restores every adoption when a later Agent cannot be registered", function()
+    local first = agent(fake_model.new({}))
+    local failing = agent(fake_model.new({}))
+    local unvisited = agent(fake_model.new({}))
+    local first_config = first:config()
+    local first_surface = AgentApplet.new({
+      config = first_config.ui,
+      persistence = first_config.persistence,
+      label = "First",
+      presenter = first:presenter(),
+      dialogs = first:dialogs(),
+    })
+    applets[#applets + 1] = first_surface
+    local unvisited_config = unvisited:config()
+    local unvisited_surface = AgentApplet.new({
+      config = unvisited_config.ui,
+      persistence = unvisited_config.persistence,
+      label = "Unvisited",
+      presenter = unvisited:presenter(),
+      dialogs = unvisited:dialogs(),
+      agent = unvisited,
+    })
+    applets[#applets + 1] = unvisited_surface
+    failing.subscribe_activity = function()
+      error("later registration failed")
+    end
+
+    local ok, err = pcall(NeoagentApplet.new, { agents = {
+      { agent = first, applet = first_surface },
+      failing,
+      unvisited,
+    } })
+
+    assert.is_false(ok)
+    assert.matches("later registration failed", err)
+    assert.is_false(first:is_destroyed())
+    assert.is_nil(first:applet())
+    assert.is_false(first_surface:is_destroyed())
+    assert.is_nil(first_surface:agent())
+    assert.is_nil(first_surface:owner())
+    assert.is_false(failing:is_destroyed())
+    assert.is_nil(failing:applet())
+    assert.is_false(unvisited:is_destroyed())
+    assert.are.equal(unvisited_surface, unvisited:applet())
+    assert.are.equal(unvisited, unvisited_surface:agent())
+    assert.is_nil(unvisited_surface:owner())
+  end)
+
+  it("restores a headless Agent after duplicate adoption is rejected", function()
+    local headless = agent(fake_model.new({}))
+
+    local ok, err = pcall(NeoagentApplet._from_agents, {
+      agents = { headless, headless },
+    })
+
+    assert.is_false(ok)
+    assert.matches("already registered", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert_semantic_sources_usable(headless)
+  end)
+
   it("rejects adoption while an Agent Applet has another owner", function()
     local headless = agent(fake_model.new({}))
     local first = NeoagentApplet.new({ agents = { headless } })
@@ -205,6 +375,9 @@ describe("Neoagent Applet boundaries", function()
     assert.is_false(ok)
     assert.matches("already has an owner", value)
     assert.are.equal(headless, first:default_agent())
+    assert.are.equal(first, headless:applet():owner())
+    assert.are.equal(headless, headless:applet():agent())
+    assert.is_false(headless:is_destroyed())
   end)
 
   it("releases retained Agent Applets for a later owner", function()

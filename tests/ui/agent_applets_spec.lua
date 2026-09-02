@@ -472,6 +472,43 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.equal("high", agent:get_thinking_level())
   end)
 
+  it("warns and falls back from unsafe Workspace model preferences", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({
+      agents = { neo = {
+        default_model = { provider = "", model = "bad\nmodel" },
+      } },
+    }))
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local ok, err = pcall(function()
+      setup(fake_model.new({}), {
+        persistence = {
+          enabled = true,
+          workspace_settings = true,
+          directory = directory,
+        },
+      })
+      assert(applet:toggle())
+    end)
+    vim.notify = original_notify
+
+    assert(ok, err)
+    assert.are.equal("fake/test", assert(applet:view()).context.model)
+    local warning = assert(vim.iter(notifications):find(function(entry)
+      return entry[1]:find("workspace default_model is invalid", 1, true)
+    end))
+    assert.are.equal(vim.log.levels.WARN, warning[2])
+  end)
+
   it("rejects an unsupported workspace setting without applying it", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory

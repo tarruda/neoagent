@@ -68,6 +68,7 @@ function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell UI config is required")
   local renderer = opts.renderer or opts.config.renderer
+    or require("neoagent.ui.renderers").get(opts.config.style)
   renderer_protocol.assert(renderer, "Provider Shell Renderer")
   local defined, err = renderer_protocol.define_highlights(renderer)
   assert(defined, err and err.message or "Provider Shell highlights failed")

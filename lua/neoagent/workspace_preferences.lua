@@ -1,4 +1,5 @@
 local thinking = require("neoagent.thinking")
+local model_config = require("neoagent.model_config")
 local util = require("neoagent.util")
 
 local M = {}
@@ -54,8 +55,8 @@ function M.scope(settings, defaults, name)
 
   local merged = util.deep_merge(defaults, accepted)
   if merged.default_model ~= nil and (type(merged.default_model) ~= "table"
-      or type(merged.default_model.provider) ~= "string"
-      or type(merged.default_model.model) ~= "string") then
+      or not model_config.safe_provider_id(merged.default_model.provider)
+      or not model_config.safe_id(merged.default_model.model)) then
     issues[#issues + 1] = "workspace default_model is invalid"
     accepted.default_model = nil
   end

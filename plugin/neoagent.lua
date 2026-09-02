@@ -40,6 +40,7 @@ end, {})
 vim.api.nvim_create_user_command("NeoagentToggleSandbox", function()
   require("neoagent").toggle_sandbox()
 end, {})
+-- One user-command argument preserves the complete raw tail, including spaces.
 vim.api.nvim_create_user_command("NeoagentCompact", function(opts)
   require("neoagent").compact(opts.args ~= "" and opts.args or nil)
 end, { nargs = "?" })
@@ -122,6 +123,7 @@ vim.api.nvim_create_user_command("NeoagentProvider", function(opts)
     shell:run(operation, args ~= "" and args or nil)
   end
 end, {
+  -- Provider operation arguments form one raw tail after the operation ID.
   nargs = "?",
   bang = true,
   complete = provider_operation_completion,

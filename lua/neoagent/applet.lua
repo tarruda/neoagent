@@ -68,19 +68,30 @@ local function create(opts)
     switcher_value = nil,
     destroyed = false,
   }, NeoagentApplet)
+  local adoptions = {}
   for _, entry in ipairs(opts.agents or {}) do
     local explicit = type(entry) == "table"
       and rawget(entry, "agent") ~= nil
-    local adopted, err = pcall(self._adopt, self,
+    local adopted, value, rollback, commit = pcall(self._adopt, self,
       explicit and entry.agent or entry,
       explicit and entry.applet or nil, {
         owned = explicit and entry.owned == true,
+        ui = explicit and entry.ui or nil,
+        view = explicit and entry.view or nil,
+        host = explicit and entry.host or nil,
       })
     if not adopted then
-      self:destroy()
-      error(err, 0)
+      for index = #adoptions, 1, -1 do
+        pcall(adoptions[index].rollback)
+      end
+      if self.resources and type(self.resources.destroy) == "function" then
+        pcall(self.resources.destroy, self.resources)
+      end
+      error(value, 0)
     end
+    adoptions[#adoptions + 1] = { rollback = rollback, commit = commit }
   end
+  for _, adoption in ipairs(adoptions) do adoption.commit() end
   if opts.active then
     local agent = type(opts.active) == "number"
       and self.agent_order[opts.active] or opts.active
@@ -458,6 +469,7 @@ function NeoagentApplet:_prepare_record(agent, applet, opts)
   assert(not self.session_claims[session_id],
     "Session is already owned by a live Agent: " .. session_id)
   local record = {
+    id = id,
     agent = agent,
     applet = applet,
     owned = opts.owned == true,
@@ -473,7 +485,7 @@ end
 
 function NeoagentApplet:_commit_record(record)
   local agent = record.agent
-  local id = agent:id()
+  local id = record.id
   self.agents_by_id[id] = agent
   self.agent_order[#self.agent_order + 1] = agent
   self.records[id] = record
@@ -484,30 +496,100 @@ end
 function NeoagentApplet:_adopt(agent, applet, opts)
   assert_agent(agent)
   opts = opts or {}
-  applet = applet or agent:applet()
-  if not applet then
-    local configured = agent:config()
-    applet = AgentApplet.new({
-      config = configured.ui,
-      persistence = configured.persistence,
-      profile_id = agent:profile_id(),
-      label = agent:label(),
-      presenter = agent:presenter(),
-      dialogs = agent:dialogs(),
-      agent = agent,
-      view = configured._view,
-    })
-  elseif not applet:agent() then
-    applet:bind(agent)
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "Agent adoption options must be an object")
+  local created_applet = false
+  local bound_here = false
+  local record
+  local claimed_here = false
+  local committed = false
+
+  local function remove_record()
+    if not committed or not record then return end
+    local id = record.id
+    if self.session_claims[record.session_id] == id then
+      self.session_claims[record.session_id] = nil
+    end
+    if self.agents_by_id[id] == agent then self.agents_by_id[id] = nil end
+    if self.records[id] == record then self.records[id] = nil end
+    for index, candidate in ipairs(self.agent_order) do
+      if candidate == agent then
+        table.remove(self.agent_order, index)
+        break
+      end
+    end
+    committed = false
   end
-  local record = self:_prepare_record(agent, applet, opts)
-  local claimed, err = pcall(
-    applet.claim, applet, self, self:_owner_callbacks())
-  if not claimed then
-    record.activity_unsubscribe()
-    error(err, 0)
+
+  local function rollback()
+    remove_record()
+    if claimed_here then pcall(applet.release, applet, self) end
+    claimed_here = false
+    if record and record.activity_unsubscribe then
+      pcall(record.activity_unsubscribe)
+      record.activity_unsubscribe = nil
+    end
+    if bound_here then pcall(applet.unbind, applet, agent) end
+    bound_here = false
+    if created_applet then pcall(applet.destroy, applet) end
+    created_applet = false
+    return true
   end
-  return self:_commit_record(record)
+
+  local ok, value = pcall(function()
+    applet = applet or agent:applet()
+    if not applet then
+      local configured = agent:config()
+      applet = AgentApplet.new({
+        config = util.deep_merge(configured.ui, opts.ui or {}),
+        persistence = configured.persistence,
+        profile_id = agent:profile_id(),
+        label = agent:label(),
+        presenter = agent:presenter(),
+        dialogs = agent:dialogs(),
+        view = opts.view or configured._view,
+        host = opts.host,
+      })
+      created_applet = true
+    end
+    assert(type(applet) == "table" and applet._neoagent_agent_applet,
+      "Agent adoption requires an Agent Applet")
+    local bound = applet:agent()
+    if not bound then
+      local bound_value, bind_err = applet:bind(agent)
+      if bound_value ~= agent then error(bind_err or bound_value, 0) end
+      bound_here = true
+    else
+      assert(bound == agent, "Agent Applet is bound to another Agent")
+    end
+    record = self:_prepare_record(agent, applet, opts)
+    local previous_owner = applet:owner()
+    local claimed, claim_err = applet:claim(
+      self, self:_owner_callbacks())
+    if claimed ~= applet then error(claim_err or claimed, 0) end
+    claimed_here = previous_owner ~= self
+    self:_commit_record(record)
+    committed = true
+    return agent
+  end)
+  if not ok then
+    rollback()
+    error(value, 0)
+  end
+
+  local settled = false
+  local function rollback_adoption()
+    if settled then return false end
+    settled = true
+    return rollback()
+  end
+  local function commit_adoption()
+    if settled then return false end
+    settled = true
+    return true
+  end
+  return value, rollback_adoption, commit_adoption
 end
 
 function NeoagentApplet:_activate(applet, agent)
@@ -1528,22 +1610,12 @@ function M._from_agents(opts)
   local entries = {}
   for _, agent in ipairs(opts.agents) do
     assert_agent(agent)
-    local applet = agent:applet()
-    if not applet then
-      local configured = agent:config()
-      applet = AgentApplet.new({
-        config = util.deep_merge(configured.ui, opts.ui or {}),
-        persistence = configured.persistence,
-        profile_id = agent:profile_id(),
-        label = agent:label(),
-        presenter = agent:presenter(),
-        dialogs = agent:dialogs(),
-        agent = agent,
-        view = opts._view or configured._view,
-        host = opts.host,
-      })
-    end
-    entries[#entries + 1] = { agent = agent, applet = applet }
+    entries[#entries + 1] = {
+      agent = agent,
+      ui = opts.ui,
+      view = opts._view,
+      host = opts.host,
+    }
   end
   local result = create({
     profiles = {},

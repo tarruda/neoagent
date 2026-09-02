@@ -5,6 +5,8 @@ local model_config = require("neoagent.model_config")
 
 local M = {}
 
+local renderer_styles = { codex = true, pi = true }
+
 local defaults = {
   default_registry = true,
   shell_timeout = 300,
@@ -424,7 +426,7 @@ local function validate(opts)
   if opts.ui.renderer ~= nil then
     require("neoagent.ui.renderer").assert(opts.ui.renderer, "ui.renderer")
   else
-    assert(require("neoagent.ui.renderers").get(opts.ui.style),
+    assert(renderer_styles[opts.ui.style],
       "ui.style must be pi or codex")
   end
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
@@ -492,8 +494,6 @@ function M.resolve(opts)
   end
   local configured = util.deep_merge(defaults, opts)
   configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
-  configured.ui.renderer = configured.ui.renderer
-    or require("neoagent.ui.renderers").get(configured.ui.style)
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
   return util.copy(configured)
