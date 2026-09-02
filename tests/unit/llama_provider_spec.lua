@@ -38,6 +38,8 @@ describe("neoagent llama.cpp Provider Service", function()
       provider_id = "llama.cpp",
       provider = provider,
       definition = {
+        source_id = "llama-cpp-test-models",
+        source_revision = 1,
         ttl_ms = type(ttl_ms) == "number" and ttl_ms or 5 * 60 * 1000,
         discover = llama_catalog.discover,
         transform_model = llama_catalog.transform,
@@ -979,6 +981,7 @@ describe("neoagent llama.cpp Provider Service", function()
     })
     local captured = {}
     local inner = {
+      api = "openai-completions",
       provider = "llama.cpp",
       id = "qwen",
       input = { "text" },
@@ -1291,6 +1294,12 @@ describe("neoagent llama.cpp Provider Service", function()
         ["openai-completions"] = function(resolved)
           captured = util.copy(resolved.model)
           return {
+            api = resolved.api,
+            provider = resolved.provider_id,
+            id = resolved.model_id,
+            input = util.copy(resolved.model.input or { "text" }),
+            context_window = resolved.model.context_window,
+            thinking = util.copy(resolved.model.thinking),
             stream = function()
               return async.run(function() return { ok = true } end)
             end,
@@ -1408,6 +1417,8 @@ describe("neoagent llama.cpp Provider Service", function()
 
     before = #transport.fetch_requests
     local plain = {
+      api = "openai-completions",
+      provider = "llama.cpp",
       id = "plain",
       input = { "text" },
       stream = function(_, opts)
@@ -1424,6 +1435,7 @@ describe("neoagent llama.cpp Provider Service", function()
     local value = service(fake_transport.new())
     local pending = {}
     local inner = {
+      api = "openai-completions",
       provider = "llama.cpp",
       id = "shared",
       input = { "text" },
@@ -1466,6 +1478,7 @@ describe("neoagent llama.cpp Provider Service", function()
   it("publishes streamed usage and request failures", function()
     local value = service(fake_transport.new())
     local usage_model = {
+      api = "openai-completions",
       provider = "llama.cpp",
       id = "usage",
       input = { "text" },
@@ -1484,6 +1497,7 @@ describe("neoagent llama.cpp Provider Service", function()
       block(value:state(), "field", "Last response").value)
 
     local failed_model = {
+      api = "openai-completions",
       provider = "llama.cpp",
       id = "failure",
       input = { "text" },

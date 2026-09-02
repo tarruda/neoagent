@@ -8,6 +8,7 @@ local Dialog = require("neoagent.ui.panes.dialog")
 local Input = require("neoagent.ui.panes.input")
 local view_handles = require("tests.helpers.view_handles")
 local Provider = require("neoagent.ui.panes.provider")
+local Providers = require("neoagent.ui.panes.providers")
 local Transcript = require("neoagent.ui.panes.transcript")
 
 local function uint32(value)
@@ -157,6 +158,31 @@ describe("neoagent Applet View composition", function()
     components[#components + 1] = dialog
     assert(dialog:set_text("prepared dialog input", cursor))
     assert.are.equal("prepared dialog input", dialog.input_value)
+  end)
+
+  it("updates retained Provider component configuration and themes", function()
+    local provider = Provider.new({
+      config = { mappings = {} },
+      callbacks = {},
+      theme = renderers.pi.theme,
+    })
+    components[#components + 1] = provider
+    provider:set_config(nil)
+    assert.are.same({}, provider.config)
+    assert.are.equal(provider.config, provider.state.config)
+    provider:set_theme(renderers.codex.theme)
+    assert.are.equal(renderers.codex.theme, provider.theme)
+    assert.are.equal(renderers.codex.theme, provider.pane.theme)
+
+    local providers = Providers.new({
+      config = { mappings = {} },
+      callbacks = {},
+      theme = renderers.pi.theme,
+    })
+    components[#components + 1] = providers
+    providers:set_theme(renderers.codex.theme)
+    assert.are.equal(renderers.codex.theme, providers.theme)
+    assert.are.equal(renderers.codex.theme, providers.pane.theme)
   end)
 
   it("connects transcript and editable input Panes to retained buffers", function()
@@ -590,14 +616,16 @@ describe("neoagent Applet View composition", function()
     value:set_messages(messages(2, 2))
     assert.is_true(value.transcript.pane:flush())
     assert(vim.wait(1000, function()
-      return images:_stats().prepared_resources == 2
+      local stats = images:_stats()
+      return stats.preparations == 2
+        and stats.prepared_resources == 1 and stats.releases == 1
     end))
     local prepared = {}
     for _, resource in pairs(images:snapshot().resources) do
       prepared[#prepared + 1] = { resource.width, resource.height }
     end
     table.sort(prepared, function(left, right) return left[1] < right[1] end)
-    assert.are.same({ { 1, 1 }, { 2, 2 } }, prepared)
+    assert.are.same({ { 2, 2 } }, prepared)
     images:destroy()
   end)
 
@@ -796,7 +824,7 @@ describe("neoagent Applet View composition", function()
     local after = details.pane:_stats()
 
     assert.is_true(#details.pane.layout.regions >= 3)
-    assert.is_true(after.region_reuses >= before.region_reuses + 2)
+    assert.are.equal(before.document_reuses + 1, after.document_reuses)
     assert.are.equal(before.region_compilations + 1,
       after.region_compilations)
     assert.is_true(details:text():find(
@@ -902,6 +930,8 @@ describe("neoagent Applet View composition", function()
     local after = value.transcript.pane:_stats()
     assert.is_true(after.renders <= before.renders + 2)
     assert.is_true(after.region_compilations <= before.region_compilations + 3)
+    assert.is_true(after.region_reuses <= before.region_reuses + 3)
+    assert.are.equal(before.document_reuses + 1, after.document_reuses)
     assert.is_true(after.line_splices <= before.line_splices + 2)
     assert.is_true(calls <= 3)
     assert.is_true(rawequal(stable_snapshot,
@@ -1179,7 +1209,22 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return value.dialog_component and value.dialog_component.pane.layout ~= nil
     end))
-    value.dialog_component:set_text("new")
+    value.dialog_component:set({
+      active = {
+        id = "input",
+        placement = "float",
+        title = "Input question",
+        body = "Tell me",
+        input = { label = "Answer", value = "reset", multiline = false },
+        actions = { { id = "send", key = "s", label = "Send" } },
+      },
+      queue_count = 1,
+    })
+    assert.are.equal("reset", value.dialog_component:text())
+    assert(value.dialog_component.pane:replace_text("new"))
+    assert.is_true(applet_input.dispatch_action(value.dialog_component.pane,
+      Applet.Pane.nodes.action("dialog.changed"), nil, 1, "i", 0, 0))
+    assert.are.equal("new", value.dialog_component.input_value)
     local dialog_target = value.dialog_component.pane.layout.targets
     assert.is_table(dialog_target)
     assert.is_true(applet_input.dispatch(value.dialog_component.pane, "i", "s"))

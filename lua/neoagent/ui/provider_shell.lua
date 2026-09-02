@@ -1,6 +1,7 @@
 local Applet = require("applet")
 local Provider = require("neoagent.ui.panes.provider")
 local Providers = require("neoagent.ui.panes.providers")
+local presentation_surface = require("neoagent.ui.presentation_surface")
 local renderer_protocol = require("neoagent.ui.renderer")
 local util = require("neoagent.util")
 
@@ -67,6 +68,7 @@ function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell UI config is required")
   local renderer = opts.renderer or opts.config.renderer
+    or require("neoagent.ui.renderers").get(opts.config.style)
   renderer_protocol.assert(renderer, "Provider Shell Renderer")
   local defined, err = renderer_protocol.define_highlights(renderer)
   assert(defined, err and err.message or "Provider Shell highlights failed")
@@ -135,6 +137,17 @@ function View.new(opts)
     on_error = opts.on_error,
     notify = opts.notify,
     open_uri = opts.open_uri,
+  })
+  presentation_surface.configure(self, {
+    submit = function() self:_submit() end,
+    flush = function() return self.applet:flush() end,
+    is_open = function() return self:is_open() end,
+    resolve = function(id, value)
+      return self.callbacks.presentation_resolve(id, value)
+    end,
+    cancel = function(id)
+      return self.callbacks.presentation_cancel(id)
+    end,
   })
   self.applet:set_state({ revision = 0 })
   return self
@@ -260,99 +273,19 @@ function View:set(snapshot, providers)
 end
 
 function View:_new_presentation_component(active)
-  return Applet.presentation.new({
-    key = "presentation",
-    filter_key = "presentation-filter",
-    results_key = "presentation-results",
-    request = active,
-    theme = self.applet_theme,
-    on_choose = function(value)
-      self.callbacks.presentation_resolve(active.id, value)
-    end,
-    on_cancel = function()
-      self.callbacks.presentation_cancel(active.id)
-    end,
-    on_error = self.on_error,
-  })
+  return presentation_surface.new_component(self, active)
 end
 
 function View:_ensure_presentation_component()
-  local active = self.presentation and self.presentation.active
-  if not active then return false end
-  local current = self.presentation_component
-  local editable = current and current:editable_pane() or nil
-  local results = current and current.pane or nil
-  if current and not current:is_destroyed()
-      and editable and not editable:is_destroyed()
-      and results and not results:is_destroyed() then
-    return false
-  end
-  if current then current:destroy() end
-  self.presentation_component = self:_new_presentation_component(active)
-  return true
+  return presentation_surface.ensure(self)
 end
 
 function View:_seed_presentation()
-  local component = self.presentation_component
-  local editable = component and component:editable_pane() or nil
-  if self.presentation_seed == nil or not editable
-      or not editable:is_editable() or not editable:is_connected() then
-    return false
-  end
-  local value = self.presentation_seed
-  self.presentation_seed = nil
-  component:set_text(value)
-  return true
+  return presentation_surface.seed(self)
 end
 
 function View:set_presentation(snapshot)
-  assert(snapshot == nil or type(snapshot) == "table",
-    "presentation snapshot must be a table")
-  snapshot = snapshot and util.copy(snapshot)
-    or { active = nil, queue_count = 0 }
-  local active = snapshot.active
-  if active then
-    assert(type(active.id) == "string" and active.id ~= ""
-        and (active.kind == "select" or active.kind == "input"
-          or active.kind == "notice"),
-      "presentation request is invalid")
-  end
-  local current = self.presentation and self.presentation.active
-  if current and active and current.id == active.id
-      and current.kind == active.kind then
-    if active.kind == "select" and self.presentation_component then
-      self.presentation_component:set_items(active.items)
-    end
-    self.presentation = snapshot
-    return true
-  end
-
-  local previous_snapshot = self.presentation
-  local previous_component = self.presentation_component
-  local next_component = active and self:_new_presentation_component(active)
-    or nil
-  self.presentation = active and snapshot or nil
-  self.presentation_component = next_component
-  self.presentation_seed = active and active.kind == "input"
-      and (active.default or "") or nil
-  self:_submit()
-  if self:is_open() then
-    local committed, err = self.applet:flush()
-    if not committed then
-      self.presentation = previous_snapshot
-      self.presentation_component = previous_component
-      self.presentation_seed = nil
-      self:_submit()
-      self.applet:flush()
-      if next_component then next_component:destroy() end
-      return nil, err
-    end
-    self:_seed_presentation()
-  end
-  if previous_component and not self:is_open() then
-    previous_component:destroy()
-  end
-  return true
+  return presentation_surface.set(self, snapshot)
 end
 
 function View:_pane_detached(key, default)
@@ -385,10 +318,7 @@ end
 
 function View:close()
   if self.destroyed or not self:is_open() then return false end
-  if self.presentation and self.presentation.active
-      and self.presentation.active.kind == "input" then
-    self.presentation_seed = self.presentation.active.default or ""
-  end
+  presentation_surface.retain_seed(self)
   self.applet:close()
   self.callbacks.close()
   return true
@@ -414,8 +344,7 @@ function View:destroy()
   if self.destroyed then return end
   self.destroyed = true
   self.applet:destroy()
-  if self.presentation_component then self.presentation_component:destroy() end
-  self.presentation, self.presentation_component = nil, nil
+  presentation_surface.destroy(self)
   self.provider:destroy()
   self.providers:destroy()
 end

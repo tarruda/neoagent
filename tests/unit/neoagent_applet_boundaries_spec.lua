@@ -1,5 +1,6 @@
 local NeoagentApplet = require("neoagent.applet")
 local AgentApplet = require("neoagent.agent_applet")
+local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local switcher_ui = require("tests.helpers.switcher")
 local util = require("neoagent.util")
@@ -53,6 +54,41 @@ describe("Neoagent Applet boundaries", function()
     return value
   end
 
+  local function assert_semantic_sources_usable(value)
+    local presented
+    local detach_presenter = value:presenter():attach({
+      present = function(snapshot)
+        presented = snapshot
+        return true
+      end,
+    })
+    local presentation = value:presenter():notice({
+      prompt = "Usable Presenter",
+      body = "ready",
+    })
+    assert.is_table(presented.active)
+    assert(value:presenter():resolve(presented.active.id))
+    assert(vim.wait(1000, function() return presentation:is_done() end, 5))
+    assert.is_true(presentation:result().ok)
+    detach_presenter()
+
+    local dialog_snapshot
+    local detach_dialog = value:dialogs():subscribe(function(snapshot)
+      dialog_snapshot = snapshot
+    end)
+    local dialog = value:dialogs():show({
+      placement = "float",
+      title = "Usable Dialogs",
+      body = "ready",
+      actions = { { id = "done", label = "Done", key = "<CR>" } },
+    })
+    assert.is_table(dialog_snapshot.active)
+    assert(value:dialogs():choose(dialog_snapshot.active.id, "done"))
+    assert(vim.wait(1000, function() return dialog:is_done() end, 5))
+    assert.is_true(dialog:result().ok)
+    detach_dialog()
+  end
+
   it("reports unknown, unowned, and destroyed targets", function()
     local empty = NeoagentApplet.new({ profiles = {} })
     applets[#applets + 1] = empty
@@ -81,6 +117,34 @@ describe("Neoagent Applet boundaries", function()
     assert.is_nil(destroyed)
     assert.matches("destroyed", destroyed_err.message)
     assert.is_nil(owner:_activate({}))
+  end)
+
+  it("rolls back every resource from failed draft construction", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("neo"))
+    local create_applet = profile.create_applet
+    local rejected
+    profile.create_applet = function(context)
+      local candidate, options = create_applet(context)
+      rejected = candidate
+      options.default_model = { provider = "", model = "unsafe/model" }
+      return candidate, options
+    end
+
+    local draft, err = owner:draft("neo")
+
+    assert.is_nil(draft)
+    assert.matches("provider", err.message)
+    assert.is_true(rejected:is_destroyed())
+    assert.is_nil(rejected:owner())
+    assert.is_nil(owner:retained_draft("neo"))
+    assert.is_nil(next(owner.drafts_by_key))
+    assert.is_nil(next(owner.drafts_by_applet))
+
+    profile.create_applet = create_applet
+    local retried = assert(owner:draft("neo"))
+    assert.are_not.equal(rejected, retried)
+    assert.are.equal(owner, retried:owner())
   end)
 
   it("destroys an invalid Agent returned by a Profile", function()
@@ -166,6 +230,141 @@ describe("Neoagent Applet boundaries", function()
     assert.are.equal(headless, owner:active_agent())
   end)
 
+  it("rolls back automatic Applet creation when activity registration fails", function()
+    local headless = agent(fake_model.new({}))
+    headless.subscribe_activity = function()
+      error("activity registration failed")
+    end
+
+    local ok, err = pcall(NeoagentApplet._from_agents, {
+      agents = { headless },
+    })
+
+    assert.is_false(ok)
+    assert.matches("activity registration failed", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(headless:presenter().destroyed)
+    assert_semantic_sources_usable(headless)
+  end)
+
+  it("restores a supplied unbound Applet after record validation fails", function()
+    local headless = agent(fake_model.new({}))
+    local configured = headless:config()
+    local surface = AgentApplet.new({
+      config = configured.ui,
+      persistence = configured.persistence,
+      label = "Supplied",
+      presenter = headless:presenter(),
+      dialogs = headless:dialogs(),
+    })
+    applets[#applets + 1] = surface
+    local get_session = headless.get_session
+    headless.get_session = function() return {} end
+
+    local ok, err = pcall(NeoagentApplet.new, {
+      agents = { { agent = headless, applet = surface } },
+    })
+    headless.get_session = get_session
+
+    assert.is_false(ok)
+    assert.matches("requires a Session", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(surface:is_destroyed())
+    assert.is_nil(surface:agent())
+    assert.is_nil(surface:owner())
+  end)
+
+  it("restores another owner's unbound Applet after claim rejection", function()
+    local headless = agent(fake_model.new({}))
+    local configured = headless:config()
+    local surface = AgentApplet.new({
+      config = configured.ui,
+      persistence = configured.persistence,
+      label = "Claimed",
+      presenter = headless:presenter(),
+      dialogs = headless:dialogs(),
+    })
+    applets[#applets + 1] = surface
+    local existing_owner = {}
+    assert.are.equal(surface, surface:claim(existing_owner, {}))
+
+    local ok, err = pcall(NeoagentApplet.new, {
+      agents = { { agent = headless, applet = surface } },
+    })
+
+    assert.is_false(ok)
+    assert.matches("already has an owner", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert.is_false(surface:is_destroyed())
+    assert.is_nil(surface:agent())
+    assert.are.equal(existing_owner, surface:owner())
+  end)
+
+  it("restores every adoption when a later Agent cannot be registered", function()
+    local first = agent(fake_model.new({}))
+    local failing = agent(fake_model.new({}))
+    local unvisited = agent(fake_model.new({}))
+    local first_config = first:config()
+    local first_surface = AgentApplet.new({
+      config = first_config.ui,
+      persistence = first_config.persistence,
+      label = "First",
+      presenter = first:presenter(),
+      dialogs = first:dialogs(),
+    })
+    applets[#applets + 1] = first_surface
+    local unvisited_config = unvisited:config()
+    local unvisited_surface = AgentApplet.new({
+      config = unvisited_config.ui,
+      persistence = unvisited_config.persistence,
+      label = "Unvisited",
+      presenter = unvisited:presenter(),
+      dialogs = unvisited:dialogs(),
+      agent = unvisited,
+    })
+    applets[#applets + 1] = unvisited_surface
+    failing.subscribe_activity = function()
+      error("later registration failed")
+    end
+
+    local ok, err = pcall(NeoagentApplet.new, { agents = {
+      { agent = first, applet = first_surface },
+      failing,
+      unvisited,
+    } })
+
+    assert.is_false(ok)
+    assert.matches("later registration failed", err)
+    assert.is_false(first:is_destroyed())
+    assert.is_nil(first:applet())
+    assert.is_false(first_surface:is_destroyed())
+    assert.is_nil(first_surface:agent())
+    assert.is_nil(first_surface:owner())
+    assert.is_false(failing:is_destroyed())
+    assert.is_nil(failing:applet())
+    assert.is_false(unvisited:is_destroyed())
+    assert.are.equal(unvisited_surface, unvisited:applet())
+    assert.are.equal(unvisited, unvisited_surface:agent())
+    assert.is_nil(unvisited_surface:owner())
+  end)
+
+  it("restores a headless Agent after duplicate adoption is rejected", function()
+    local headless = agent(fake_model.new({}))
+
+    local ok, err = pcall(NeoagentApplet._from_agents, {
+      agents = { headless, headless },
+    })
+
+    assert.is_false(ok)
+    assert.matches("already registered", err)
+    assert.is_false(headless:is_destroyed())
+    assert.is_nil(headless:applet())
+    assert_semantic_sources_usable(headless)
+  end)
+
   it("rejects adoption while an Agent Applet has another owner", function()
     local headless = agent(fake_model.new({}))
     local first = NeoagentApplet.new({ agents = { headless } })
@@ -177,6 +376,9 @@ describe("Neoagent Applet boundaries", function()
     assert.is_false(ok)
     assert.matches("already has an owner", value)
     assert.are.equal(headless, first:default_agent())
+    assert.are.equal(first, headless:applet():owner())
+    assert.are.equal(headless, headless:applet():agent())
+    assert.is_false(headless:is_destroyed())
   end)
 
   it("releases retained Agent Applets for a later owner", function()
@@ -452,7 +654,11 @@ describe("Neoagent Applet boundaries", function()
     configured.providers = { dynamic = {
       api = "fake-api",
       models = {},
-      catalog = { discover = function() error("catalog unavailable") end },
+      catalog = {
+        source_id = "dynamic-test-models",
+        source_revision = 1,
+        discover = function() error("catalog unavailable") end,
+      },
     } }
     local notifications = {}
     local original_notify = vim.notify
@@ -522,5 +728,242 @@ describe("Neoagent Applet boundaries", function()
       local selected = assert(owner:target_agent())
       assert(owner:record(selected).metadata.sandbox.trust)
     end
+  end)
+
+  it("validates every Profile Applet recipe result transactionally", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("neo"))
+    local create_applet = profile.create_applet
+
+    profile.create_applet = function()
+      return nil, "Profile Applet construction failed"
+    end
+    local draft, err = owner:draft("neo")
+    assert.is_nil(draft)
+    assert.matches("Profile Applet construction failed", err.message)
+
+    local rejected
+    profile.create_applet = function(context)
+      local candidate = create_applet(context)
+      rejected = candidate
+      return candidate, { "invalid options" }
+    end
+    draft, err = owner:draft("neo")
+    assert.is_nil(draft)
+    assert.matches("draft options must be an object", err.message)
+    assert.is_true(rejected:is_destroyed())
+
+    profile.create_applet = function(context)
+      local candidate, options = create_applet(context)
+      rejected = candidate
+      candidate.claim = function()
+        return nil, util.error("profile", "Applet claim failed")
+      end
+      return candidate, options
+    end
+    draft, err = owner:draft("neo")
+    assert.is_nil(draft)
+    assert.matches("Applet claim failed", err.message)
+    assert.is_true(rejected:is_destroyed())
+    assert.is_nil(next(owner.drafts_by_key))
+    assert.is_nil(next(owner.drafts_by_applet))
+    profile.create_applet = create_applet
+  end)
+
+  it("destroys shared resources when initial Agent adoption fails", function()
+    local headless = agent(fake_model.new({}))
+    headless.subscribe_activity = function()
+      error("resource adoption failed")
+    end
+    local resources = { destroyed = false }
+    function resources:destroy() self.destroyed = true end
+
+    local ok, err = pcall(NeoagentApplet.new, {
+      profiles = {},
+      agents = { { agent = headless } },
+      resources = resources,
+    })
+
+    assert.is_false(ok)
+    assert.matches("resource adoption failed", err)
+    assert.is_true(resources.destroyed)
+    assert.is_nil(headless:applet())
+  end)
+
+  it("rolls back draft binding when visibility or Session construction fails", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("neo"))
+    local draft = assert(owner:draft("neo"))
+    local profile_sessions = require("neoagent.profile_sessions")
+    local new_session = profile_sessions.new
+    profile_sessions.new = function()
+      return nil, util.error("storage", "Session construction failed")
+    end
+    local bound, err = owner:_bind_draft(profile, draft)
+    profile_sessions.new = new_session
+    assert.is_nil(bound)
+    assert.matches("Session construction failed", err.message)
+    assert.are.equal(draft, owner:retained_draft("neo"))
+
+    local is_open = draft.is_open
+    draft.is_open = function() error("visibility inspection failed") end
+    bound, err = owner:_bind_draft(profile, draft)
+    draft.is_open = is_open
+    assert.is_nil(bound)
+    assert.matches("visibility inspection failed", err.message)
+    assert.are.same({}, owner:agents())
+    assert.are.equal(draft, owner:retained_draft("neo"))
+  end)
+
+  it("contains every live draft model publication failure", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("neo"))
+    local draft = assert(owner:draft("neo"))
+    local presented = draft:presenter()
+    local select = presented.select
+    local selection
+    local update_count = 0
+    presented.select = function()
+      selection = async.run(function()
+        return async.await(function() end)
+      end)
+      return selection, function()
+        update_count = update_count + 1
+        if update_count == 1 then error("model update crashed") end
+        return nil, util.error("presentation", "model update rejected")
+      end
+    end
+    local models = require("neoagent.models")
+    local subscribe_available = models.subscribe_available
+    local publication
+    models.subscribe_available = function(_, _, _, callback)
+      publication = callback
+      return function() return true end
+    end
+
+    assert.is_true(owner:_select_unbound_model(profile, draft))
+    publication(nil, util.error("model", "catalog publication failed"))
+    publication({ "fake/test" })
+    publication({ "fake/test" })
+
+    selection:cancel()
+    assert(vim.wait(1000, function() return selection:is_done() end, 5))
+    presented.select = select
+    models.subscribe_available = subscribe_available
+    assert.are.equal(2, update_count)
+  end)
+
+  it("rejects resumed Sessions without an assigned Profile", function()
+    local owner = setup(fake_model.new({}))
+    local resumed, err = owner:_resume_opened({
+      session = { id = function() return "orphan-session" end },
+    })
+    assert.is_nil(resumed)
+    assert.matches("no assigned Profile", err.message)
+  end)
+
+  it("destroys a provisional draft and its ownership maps explicitly", function()
+    local configured = configuration(fake_model.new({}))
+    configured.workspace_trust = { path = vim.fn.tempname() }
+    configured.agent_instructions = {
+      global_files = {},
+      project_filenames = { "AGENTS.md" },
+    }
+    local owner = require("neoagent").setup(configured)
+    applets[#applets + 1] = owner
+    local draft = assert(owner:new("neo"))
+
+    local run, err = draft:send("Protected provisional work")
+    assert.is_nil(run)
+    assert.are.equal("workspace_trust", err.kind)
+    local selected = assert(owner:target_agent())
+    local record = assert(owner:record(selected))
+    local trust = assert(record.metadata.sandbox.trust)
+    local pending_message = draft.pending_message
+    draft.pending_message = function() return nil end
+    local prepare = selected.prepare
+    selected.prepare = function()
+      return nil, util.error("agent", "preparation after trust failed")
+    end
+    local notifications = {}
+    local notify = vim.notify
+    vim.notify = function(message) notifications[#notifications + 1] = message end
+    trust.notify(util.error("workspace_trust", "trust storage failed"))
+    trust.on_result({ ok = false })
+    trust.on_result({ ok = true })
+    vim.notify = notify
+    selected.prepare = prepare
+    draft.pending_message = pending_message
+    assert(vim.iter(notifications):any(function(message)
+      return message:match("trust storage failed") ~= nil
+    end))
+    assert(vim.iter(notifications):any(function(message)
+      return message:match("preparation after trust failed") ~= nil
+    end))
+
+    assert.is_true(owner:destroy_agent(selected))
+    assert.is_true(draft:is_destroyed())
+    assert.is_nil(next(owner.drafts_by_key))
+    assert.is_nil(next(owner.drafts_by_applet))
+  end)
+
+  it("contains bundled Profile construction failures", function()
+    local Presenter = require("neoagent.presenter")
+    local original_presenter_new = Presenter.new
+    local original_applet_new = AgentApplet.new
+    local created_presenter
+    Presenter.new = function(...)
+      created_presenter = original_presenter_new(...)
+      return created_presenter
+    end
+    AgentApplet.new = function() error("Profile Applet failed") end
+    local owner = setup(fake_model.new({}))
+    local draft, err = owner:draft("neo")
+    Presenter.new = original_presenter_new
+    AgentApplet.new = original_applet_new
+    assert.is_nil(draft)
+    assert.matches("Profile Applet failed", err.message)
+    assert.is_true(created_presenter.destroyed)
+
+    local provider_shell = require("neoagent.provider_shell")
+    local provider_runtimes = require("neoagent.provider_runtimes")
+    local shell_new = provider_shell.new
+    local destroy_runtimes = provider_runtimes.destroy
+    local destroyed = 0
+    provider_shell.new = function() error("Provider Shell failed") end
+    provider_runtimes.destroy = function(runtimes)
+      destroyed = destroyed + 1
+      return destroy_runtimes(runtimes)
+    end
+    local ok, setup_err = pcall(require("neoagent").setup,
+      configuration(fake_model.new({})))
+    provider_shell.new = shell_new
+    provider_runtimes.destroy = destroy_runtimes
+    assert.is_false(ok)
+    assert.matches("Provider Shell failed", setup_err)
+    assert.are.equal(1, destroyed)
+  end)
+
+  it("reports fallback model discovery failures on a retained draft", function()
+    local configured = configuration(fake_model.new({}))
+    configured.default_model = nil
+    local models = require("neoagent.models")
+    local first_available = models.first_available
+    models.first_available = function()
+      return nil, util.error("model", "fallback discovery failed", "offline")
+    end
+    local notifications = {}
+    local notify = vim.notify
+    vim.notify = function(message) notifications[#notifications + 1] = message end
+    local owner = require("neoagent").setup(configured)
+    applets[#applets + 1] = owner
+    local draft = assert(owner:draft("neo"))
+    models.first_available = first_available
+    vim.notify = notify
+    assert.is_table(draft)
+    assert(vim.iter(notifications):any(function(message)
+      return message:match("fallback discovery failed") ~= nil
+        and message:match("offline") ~= nil
+    end))
   end)
 end)

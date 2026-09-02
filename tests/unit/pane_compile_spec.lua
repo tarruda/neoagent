@@ -1483,6 +1483,75 @@ describe("Pane content Trees and compilation", function()
     assert.is_nil(cache.regions.stable)
   end)
 
+  it("retains revised document prefixes across suffix updates", function()
+    local cache = {}
+    local stats = {
+      region_compilations = 0,
+      region_reuses = 0,
+      document_reuses = 0,
+    }
+    local function document(tail, revision)
+      return {
+        root = ui.scope({
+          key = "document:scope",
+          child = ui.column({ key = "document", gap = 1, children = {
+            ui.region({
+              key = "first",
+              revision = 1,
+              child = ui.column({ key = "first:content", children = {
+                ui.text({ key = "first:text", text = "first" }),
+                ui.virtual({
+                  key = "first:status",
+                  lines = { { { text = "stable", style = "Comment" } } },
+                }),
+              } }),
+            }),
+            ui.region({
+              key = "second",
+              revision = 1,
+              child = ui.target({
+                key = "second:target",
+                child = ui.text({ key = "second:text", text = "second" }),
+              }),
+            }),
+            ui.region({
+              key = "tail",
+              revision = revision,
+              child = ui.text({ key = "tail:text", text = tail }),
+            }),
+          } }),
+        }),
+      }
+    end
+
+    local first = compile({
+      tree = document("old", 1), width = 40, cache = cache, stats = stats,
+    })
+    local second = compile({
+      tree = document("new\ntail", 2), previous = first,
+      width = 40, cache = cache, stats = stats,
+    })
+
+    assert.are.same({ "first", "", "second", "", "old" }, first.lines)
+    assert.are.same({ "first", "", "second", "", "new", "tail" },
+      second.lines)
+    assert.is_true(rawequal(first.regions[1], second.regions[1]))
+    assert.is_true(rawequal(first.regions[2], second.regions[2]))
+    assert.is_true(rawequal(first.virtuals[1], second.virtuals[1]))
+    assert.are.equal(3, second.region_document.changed_first)
+    assert.are.equal(1, stats.document_reuses)
+    assert.are.equal(4, stats.region_compilations)
+    assert.is_true(layout_changes(first, second).content)
+
+    local stable = compile({
+      tree = document("caller-owned replacement", 2), previous = second,
+      width = 40, cache = cache, stats = stats,
+    })
+    assert.is_true(rawequal(second.lines, stable.lines))
+    assert.are.same(second.lines, stable.lines)
+    assert.are.equal(2, stats.document_reuses)
+  end)
+
   it("retains immutable content for reused region fragments", function()
     local marker = "__cached_transcript_payload__"
     local cache = {}
@@ -1544,6 +1613,82 @@ describe("Pane content Trees and compilation", function()
     })
     assert.is_true(layout_changes(base, content).content)
     assert.is_true(layout_changes(base, content).any)
+  end)
+
+  it("classifies every changed semantic in a retained document suffix", function()
+    local function region(key, values)
+      return {
+        key = key,
+        first = values.first or 0,
+        last = values.last or 1,
+        lines = { values.text },
+        decorations = { { value = values.decoration } },
+        targets = { target = values.target },
+        target_order = { values.target },
+        hit_order = { values.target },
+        scopes = { scope = values.scope },
+        images = { image = values.image },
+        source_ranges = { { language = values.source } },
+        virtuals = { { lines = { values.virtual } } },
+      }
+    end
+    local stable = {
+      text = "stable",
+      decoration = "stable",
+      target = "stable",
+      scope = "stable",
+      image = "stable",
+      source = "stable",
+      virtual = "stable",
+    }
+    local previous = {
+      region_document = { shape = { kind = "column", gap = 0 } },
+      regions = {
+        region("changed", {
+          text = "before",
+          decoration = "before",
+          target = "before",
+          scope = "before",
+          image = "before",
+          source = "before",
+          virtual = "before",
+        }),
+        region("stable", stable),
+      },
+      edit = {},
+      chrome = {},
+      view = {},
+    }
+    local layout = {
+      region_document = {
+        shape = { kind = "column", gap = 0 },
+        changed_first = 1,
+      },
+      regions = {
+        region("changed", {
+          text = "after",
+          decoration = "after",
+          target = "after",
+          scope = "after",
+          image = "after",
+          source = "after",
+          virtual = "after",
+        }),
+        region("stable", stable),
+      },
+      edit = {},
+      chrome = {},
+      view = {},
+    }
+
+    local changed = layout_changes(previous, layout)
+    for _, key in ipairs({
+      "content", "decorations", "interaction", "images", "sources",
+      "virtuals",
+    }) do
+      assert.is_true(changed[key], key)
+    end
+    assert.is_true(changed.any)
   end)
 
   it("invalidates only cached regions that reference changed images", function()
@@ -2085,6 +2230,21 @@ describe("Pane content Trees and compilation", function()
       { "region is only", function() compile({ tree = ui.column({ key = "x", children = { ui.column({ key = "nested", children = { ui.region({ key = "r", child = ui.text({ key = "t", text = "x" }) }) } }) } }), width = 4 }) end },
       { "cannot mix", function() compile({ tree = ui.column({ key = "x", children = { ui.region({ key = "r", child = ui.text({ key = "t", text = "x" }) }), ui.text({ key = "plain", text = "x" }) } }), width = 4 }) end },
       { "must be unique", function() compile({ tree = ui.column({ key = "x", children = { ui.region({ key = "r", child = ui.text({ key = "a", text = "x" }) }), ui.region({ key = "r", child = ui.text({ key = "b", text = "x" }) }) } }), width = 4 }) end },
+      { "key.*must be non%-empty", function() compile({
+        tree = ui.region({
+          key = "",
+          child = ui.text({ key = "content", text = "x" }),
+        }),
+        width = 4,
+      }) end },
+      { "revision.*string or number", function() compile({
+        tree = ui.region({
+          key = "invalid-revision",
+          revision = {},
+          child = ui.text({ key = "content", text = "x" }),
+        }),
+        width = 4,
+      }) end },
       { "duplicate target", function() compile({ tree = ui.column({ key = "x", children = { ui.target({ key = "same", child = ui.text({ key = "a", text = "a" }) }), ui.target({ key = "same", child = ui.text({ key = "b", text = "b" }) }) } }), width = 4 }) end },
       { "focus: must be", function() compile({ tree = ui.target({ key = "x", focus = false, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
       { "following boundary", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 2, chunks = { { text = "x" } } } } }, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },

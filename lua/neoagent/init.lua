@@ -1,4 +1,3 @@
-local NeoagentApplet = require("neoagent.applet")
 local async = require("neoagent.async")
 local config = require("neoagent.config")
 local Agent = require("neoagent.agent")
@@ -8,10 +7,14 @@ local M = {}
 local positions = { "auto", "left", "right", "top", "bottom", "center" }
 local default_applet
 
+local function applet_type()
+  return require("neoagent.applet")
+end
+
 local function build_applet(configured, runtime)
   local profiles, default_profile, resources =
     require("neoagent.profiles").bundled(configured, runtime)
-  return NeoagentApplet.new({
+  return applet_type().new({
     profiles = profiles,
     default_profile = default_profile,
     resources = resources,
@@ -23,7 +26,7 @@ function M.new(opts, runtime)
 end
 
 function M._new_applet(opts)
-  return NeoagentApplet._from_agents(opts)
+  return applet_type()._from_agents(opts)
 end
 
 function M.applet()
@@ -67,7 +70,7 @@ function M._set_default(agent)
   if default_applet and not default_applet:is_destroyed() then
     previous = default_applet:default_agent()
   end
-  local replacement = NeoagentApplet._from_agents({
+  local replacement = applet_type()._from_agents({
     agents = { agent },
   })
   if default_applet then default_applet:destroy() end

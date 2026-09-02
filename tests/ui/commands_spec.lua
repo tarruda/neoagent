@@ -233,6 +233,7 @@ describe("neoagent commands", function()
   it("opens and operates the Provider Shell without constructing an Agent", function()
     local calls = 0
     local cancelled = 0
+    local operation_args
     local service = {
       id = "fake",
       name = "Fake provider",
@@ -245,8 +246,9 @@ describe("neoagent commands", function()
           complete = function()
             return { "second", "first" }
           end,
-          run = function()
+          run = function(ctx)
             calls = calls + 1
+            operation_args = ctx.args
             return require("neoagent.async").run(function()
               return { ok = true }
             end)
@@ -279,8 +281,9 @@ describe("neoagent commands", function()
       vim.fn.getcompletion("NeoagentProvider ", "cmdline"))
     assert.are.same({ "first", "second" },
       vim.fn.getcompletion("NeoagentProvider inspect ", "cmdline"))
-    vim.cmd("NeoagentProvider inspect")
+    vim.cmd("NeoagentProvider inspect first second")
     assert(vim.wait(1000, function() return calls == 1 end, 5))
+    assert.are.equal("first second", operation_args)
     local shell = applet:provider_shell()
     local function wait_enabled()
       for _, operation in ipairs(shell:operations()) do

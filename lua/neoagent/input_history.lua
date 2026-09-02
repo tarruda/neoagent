@@ -41,30 +41,21 @@ local function encode_history(self, history)
 end
 
 local function prepare_directory(self)
-  local existed = vim.uv.fs_stat(self.directory) ~= nil
-  local ok, err = fs.mkdirp(self.directory)
+  local ok, err = fs.ensure_private_directory(self.directory, 448)
   if not ok then return nil, history_error("Failed to create workspace directory", err) end
-  if not existed then vim.uv.fs_chmod(self.directory, 448) end
   return true
 end
 
 local function replace(self, history, encoded)
-  local bytes, random_err = vim.uv.random(8)
-  if not bytes then
-    return nil, history_error("Failed to create input history temporary file", random_err)
-  end
-  local suffix = bytes:gsub(".", function(char)
-    return string.format("%02x", char:byte())
-  end)
-  local temporary = self.path .. "." .. suffix .. ".tmp"
-  local ok, err = fs.write_all(temporary, encoded, "wx", 384)
-  if not ok then return nil, history_error("Failed to write input history", err) end
-  ok, err = vim.uv.fs_rename(temporary, self.path)
+  local ok, err, stage = fs.atomic_replace(
+    self.path, encoded, { mode = 384 })
   if not ok then
-    vim.uv.fs_unlink(temporary)
-    return nil, history_error("Failed to replace input history", err)
+    local action = stage == "temporary"
+        and "create input history temporary file"
+      or stage == "rename" and "replace input history"
+      or "write input history"
+    return nil, history_error("Failed to " .. action, err)
   end
-  vim.uv.fs_chmod(self.path, 384)
   return vim.list_slice(history, 1, self.limit)
 end
 

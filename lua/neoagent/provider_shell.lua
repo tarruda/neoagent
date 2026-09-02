@@ -1,5 +1,6 @@
 local Applet = require("applet")
 local async = require("neoagent.async")
+local provider_credentials = require("neoagent.provider_credentials")
 local provider_service = require("neoagent.provider_service")
 local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
@@ -31,25 +32,13 @@ local function feedback_level(level)
   return "info"
 end
 
-local function external_credential(provider)
-  local source = provider and provider.api_key
-  if source == nil then return false end
-  local ok, value = pcall(function()
-    return type(source) == "function" and source() or source
-  end)
-  if not ok then
-    return nil, util.error("auth",
-      "Failed to resolve the provider environment credential", value)
-  end
-  if type(value) ~= "string" or util.trim(value) == "" then return false end
-  return type(source) == "string" and "configured" or "environment"
-end
-
 local function valid_artifact(artifact)
   return type(artifact) == "table" and not util.is_list(artifact)
     and artifact.kind == "document"
     and type(artifact.name) == "string" and artifact.name ~= ""
     and #artifact.name <= 128 and util.is_valid_utf8(artifact.name)
+    and not artifact.name:find("[/\\]")
+    and not artifact.name:find("[%z\1-\31\127]")
     and type(artifact.filetype) == "string"
     and artifact.filetype:match("^[%w_.+-]*$") ~= nil
     and #artifact.filetype <= 64
@@ -79,11 +68,11 @@ function ProviderShell.new(opts)
     runtimes = opts.runtimes,
     selected_id = nil,
     operation = nil,
-    operation_run = nil,
-    operation_passive = false,
-    pending_provider_id = nil,
+    action = nil,
+    action_id = 0,
+    pending_transition = nil,
+    transition_revision = 0,
     pending_focus_provider_id = nil,
-    operation_id = 0,
     subscriptions = {},
     refresh_scheduled = false,
     presentation = nil,
@@ -93,6 +82,18 @@ function ProviderShell.new(opts)
     host_effects = opts.host_effects or Applet.host_effects,
     owns_presenter = opts.presenter == nil,
   }, ProviderShell)
+  for provider_id, runtime in pairs(self.runtimes) do
+    if runtime.credentials == nil then
+      local provider = self.config.providers[provider_id]
+        or runtime.definition or {}
+      runtime.credentials = provider_credentials.new({
+        provider_id = provider_id,
+        provider = provider,
+        authentication = self.auth,
+        method = self.config.auth.methods[provider.auth],
+      })
+    end
+  end
 
   local view_factory = opts.view or require("neoagent.ui.provider_shell").new
   self.view_value = view_factory({
@@ -144,6 +145,7 @@ function ProviderShell.new(opts)
     auth = opts.auth,
     runtimes = opts.runtimes,
     presenter = self.presenter_value,
+    refresh_after_auth_change = false,
     on_activity = function() self:_schedule_refresh() end,
   })
 
@@ -258,54 +260,16 @@ function ProviderShell:providers()
 end
 
 function ProviderShell:_auth_state(provider_id)
-  local provider = self.config.providers[provider_id]
-  local method_id = provider and provider.auth or nil
-  if not method_id then
-    return { usable = true, kind = "none" }
-  end
-  local method = self.config.auth.methods[method_id]
-  local optional = provider and provider.auth_optional == true or false
-  local stored, stored_err = self.auth:has_credentials(method_id)
-  if stored == nil then
-    return {
-      usable = optional,
-      kind = "error",
-      method_id = method_id,
-      method_name = method and method.name or method_id,
-      error = stored_err,
-    }
-  end
-  if stored then
-    return {
-      usable = true,
-      kind = "stored",
-      method_id = method_id,
-      method_name = method and method.name or method_id,
-    }
-  end
-  local external, external_err = external_credential(provider)
-  if external == nil then
-    return {
-      usable = optional,
-      kind = "error",
-      method_id = method_id,
-      method_name = method and method.name or method_id,
-      error = external_err,
-    }
-  end
-  if external then
-    return {
-      usable = true,
-      kind = external,
-      method_id = method_id,
-      method_name = method and method.name or method_id,
-    }
-  end
+  local runtime = self.runtimes[provider_id]
+  local selected = runtime and runtime.credentials:state()
+    or { usable = false, source = "error", error = util.error(
+      "auth", "Provider credential state is unavailable") }
   return {
-    usable = optional,
-    kind = optional and "optional" or "logged_out",
-    method_id = method_id,
-    method_name = method and method.name or method_id,
+    usable = selected.usable,
+    kind = selected.source,
+    method_id = selected.method_id,
+    method_name = selected.method_name,
+    error = util.copy(selected.error),
   }
 end
 
@@ -352,6 +316,187 @@ local function provider_authentication(auth)
   }
 end
 
+function ProviderShell:_auth_services(runtime, method_id)
+  local candidates = type(runtime.auth_services) == "table"
+      and runtime.auth_services or nil
+  local services, seen = {}, {}
+  for _, service in ipairs(candidates or {}) do
+    if type(service) == "table" and not seen[service] then
+      seen[service] = true
+      services[#services + 1] = service
+    end
+  end
+  if #services == 0 then
+    for provider_id, candidate in pairs(self.runtimes) do
+      local provider = self.config.providers[provider_id]
+      local service = type(candidate) == "table" and candidate.service or nil
+      if provider and provider.auth == method_id and service
+          and not seen[service] then
+        seen[service] = true
+        services[#services + 1] = service
+      end
+    end
+  end
+  table.sort(services, function(left, right)
+    return tostring(left.id) < tostring(right.id)
+  end)
+  return services
+end
+
+function ProviderShell:_authentication_enabled(runtime, method_id)
+  if self.action then return false end
+  for _, service in ipairs(self:_auth_services(runtime, method_id)) do
+    if not provider_service.operation_enabled(service, { mutating = true }) then
+      return false
+    end
+  end
+  return true
+end
+
+function ProviderShell:_begin_auth_coordination(runtime, method_id)
+  local tokens = {}
+  for _, service in ipairs(self:_auth_services(runtime, method_id)) do
+    local token, err = provider_service.begin_operation(service, {
+      mutating = true,
+    })
+    if not token then
+      for index = #tokens, 1, -1 do tokens[index]:finish() end
+      return nil, err
+    end
+    tokens[#tokens + 1] = token
+  end
+  local group = { active = true }
+  function group:finish()
+    if not self.active then return false end
+    self.active = false
+    for index = #tokens, 1, -1 do tokens[index]:finish() end
+    return true
+  end
+  return group
+end
+
+function ProviderShell:_refresh_method_catalogs(method_id, action)
+  if action.coordination then
+    action.coordination:finish()
+    action.coordination = nil
+  end
+  local result = self.authentication:refresh_catalogs(method_id):await()
+  if not result.ok and result.error.kind == "cancelled" then
+    error(result.error, 0)
+  end
+end
+
+function ProviderShell:_finish_action(action, result)
+  if action.finalized then return false end
+  action.finalized = true
+  if action.coordination then
+    pcall(action.coordination.finish, action.coordination)
+    action.coordination = nil
+  end
+  if self.action == action then self.action = nil end
+  if self.destroyed then return true end
+  local transition = self.pending_transition
+  if transition and transition.revision == self.transition_revision then
+    self.pending_transition = nil
+    self.selected_id = transition.provider_id
+    self.operation = nil
+    self.feedback = nil
+    self.pending_focus_provider_id = nil
+    self:_refresh()
+    if transition.action then
+      local started, start_err = self:_run(
+        transition.action.operation_id, transition.action.args, false)
+      if not started and start_err then
+        self:_notify(start_err.message, vim.log.levels.ERROR)
+      end
+    else
+      self:_request_focus_refresh()
+    end
+    return true
+  end
+  if action.operation then
+    local operation = self.operation and util.copy(self.operation)
+      or { id = action.operation.id, label = action.operation.label }
+    if type(result) == "table" and result.ok == true then
+      operation.state = "succeeded"
+      self:_open_artifact(result.artifact)
+    elseif type(result) == "table" and result.error
+        and result.error.kind == "cancelled" then
+      operation.state = "cancelled"
+    else
+      operation.state = "failed"
+      operation.detail = type(result) == "table" and result.error
+          and result.error.message or "Provider action failed"
+    end
+    self.operation = operation
+  end
+  self:_refresh()
+  self:_maybe_focus_refresh()
+  return true
+end
+
+function ProviderShell:_start_action(opts)
+  if self.action then
+    if opts.coordination then opts.coordination:finish() end
+    return nil, util.error("provider", "A provider action is already active")
+  end
+  self.action_id = self.action_id + 1
+  local action = {
+    id = self.action_id,
+    kind = opts.kind,
+    provider_id = opts.provider_id,
+    run = nil,
+    coordination = opts.coordination,
+    passive = opts.passive == true,
+    finalized = false,
+    operation = opts.operation,
+  }
+  self.action = action
+  if opts.operation then
+    self.operation = {
+      id = opts.operation.id,
+      label = opts.operation.label,
+      state = "running",
+      message = opts.operation.label,
+    }
+  else
+    self.operation = nil
+  end
+  self:_refresh()
+  local run
+  run = async.run(function()
+    local ok, child, err = pcall(opts.start, action)
+    if not ok then
+      error(util.normalize_error(child, opts.error_kind or "provider"), 0)
+    end
+    if not child then
+      error(util.normalize_error(err or "Provider action did not start",
+        opts.error_kind or "provider"), 0)
+    end
+    if type(child) ~= "table" or type(child.await) ~= "function"
+        or type(child.cancel) ~= "function"
+        or type(child.is_done) ~= "function"
+        or type(child.result) ~= "function" then
+      error(util.error(opts.error_kind or "provider",
+        "Provider action must return a Run"), 0)
+    end
+    local result = child:await()
+    if type(result) ~= "table" or type(result.ok) ~= "boolean" then
+      error(util.error(opts.error_kind or "provider",
+        "Provider action returned an invalid result"), 0)
+    end
+    if not result.ok then error(result.error, 0) end
+    if opts.after then opts.after(action, result) end
+    return result
+  end, {
+    error_kind = opts.error_kind or "provider",
+    on_done = function(result) self:_finish_action(action, result) end,
+  })
+  action.run = run
+  if run:is_done() then self:_finish_action(action, run:result()) end
+  return run
+end
+
 function ProviderShell:_service_state(service)
   local ok, value = pcall(service.state, service)
   if not ok then
@@ -381,7 +526,7 @@ function ProviderShell:_operations(runtime, auth)
         enabled = item.disabled ~= true,
       }
     end
-    local login = self.authentication:activity_kind() == "login"
+    local login = self.action and self.action.kind == "login"
     result[#result + 1] = {
       id = login and CANCEL_LOGIN or CANCEL_PRESENTATION,
       label = login and "Cancel login" or "Cancel",
@@ -393,15 +538,18 @@ function ProviderShell:_operations(runtime, auth)
   if activity == "login" or activity == "presentation" then
     return { { id = CANCEL_LOGIN, label = "Cancel login" } }
   end
-  if auth.kind == "logged_out" or auth.kind == "error" then
+  if (auth.kind == "logged_out" or auth.kind == "error")
+      and auth.method_id then
     return { {
       id = LOGIN,
       label = "Log in",
       description = auth.method_name,
-      enabled = activity == nil and self.operation_run == nil,
+      enabled = activity == nil
+        and self:_authentication_enabled(runtime, auth.method_id),
     } }
-  end
-  local blocked = activity ~= nil or self.operation_run ~= nil
+  elseif not auth.usable then return {} end
+  local blocked = activity ~= nil
+    or self.action ~= nil and not self.action.passive
   local operations = provider_service.operations(service)
   for _, operation in ipairs(operations) do
     operation.enabled = not blocked and provider_service.operation_enabled(
@@ -411,21 +559,24 @@ function ProviderShell:_operations(runtime, auth)
     id = REFRESH_CATALOG,
     label = "Refresh model catalog",
     description = "Discover the provider's current models",
-    enabled = not blocked,
+    enabled = not blocked and provider_service.operation_enabled(
+      service, { mutating = false }),
   })
   if auth.kind == "optional" then
     table.insert(operations, 1, {
       id = LOGIN,
       label = "Log in",
       description = auth.method_name,
-      enabled = not blocked,
+      enabled = not blocked
+        and self:_authentication_enabled(runtime, auth.method_id),
     })
   elseif auth.kind == "stored" then
     operations[#operations + 1] = {
       id = LOGOUT,
       label = "Log out",
       description = auth.method_name,
-      enabled = not blocked,
+      enabled = not blocked
+        and self:_authentication_enabled(runtime, auth.method_id),
     }
   end
   return operations
@@ -451,6 +602,17 @@ function ProviderShell:_snapshot()
     level = catalog.refresh.state == "failed" and "error"
       or catalog.stale and "warn" or "success",
   }
+  local persistence = catalog.persistence
+  if auth.usable and persistence and persistence.configured
+      and not persistence.enabled then
+    state.blocks[#state.blocks + 1] = {
+      type = "status",
+      text = "Model catalog cache is unavailable: "
+        .. (persistence.error and persistence.error.message
+          or "source identity is unavailable"),
+      level = "warn",
+    }
+  end
   if catalog.refresh.error then
     state.blocks[#state.blocks + 1] = {
       type = "status",
@@ -484,8 +646,8 @@ function ProviderShell:_snapshot()
 end
 
 function ProviderShell:_provider_list()
-  local blocked = (self.operation_run ~= nil and not self.operation_passive)
-    or self.authentication:is_active()
+  local blocked = (self.action ~= nil and not self.action.passive)
+    or (self.action == nil and self.authentication:is_active())
   local result = self:providers()
   for _, provider in ipairs(result) do
     local auth = self:_auth_state(provider.id)
@@ -498,9 +660,17 @@ end
 
 function ProviderShell:_refresh()
   if self.destroyed then return false end
-  local snapshot = self:_snapshot()
+  local built, snapshot = pcall(self._snapshot, self)
+  if not built then
+    self:_notify(util.normalize_error(snapshot, "provider").message,
+      vim.log.levels.ERROR)
+    return nil
+  end
   if not snapshot then return false end
-  local ok, err = self.view_value:set(snapshot, self:_provider_list())
+  local called, ok, err = pcall(function()
+    return self.view_value:set(snapshot, self:_provider_list())
+  end)
+  if not called then err, ok = ok, nil end
   if not ok and err then
     self:_notify(util.normalize_error(err, "ui").message,
       vim.log.levels.ERROR)
@@ -520,7 +690,7 @@ function ProviderShell:_bridge(kind, request, done)
   return function() tracked:cancel() end
 end
 
-function ProviderShell:_interact()
+function ProviderShell:_interact(action)
   return {
     select = function(options, done)
       local items = type(options) == "table" and options.items or nil
@@ -550,6 +720,7 @@ function ProviderShell:_interact()
       }, done)
     end,
     progress = function(snapshot)
+      if action and (action.finalized or self.action ~= action) then return end
       local normalized, err = provider_state.normalize_operation(snapshot)
       if not normalized then
         self:_notify("provider progress is invalid: "
@@ -593,19 +764,23 @@ function ProviderShell:select(provider_id)
       "Unknown provider: " .. tostring(provider_id))
   end
   if provider_id == self.selected_id
-      and self.pending_provider_id == nil then
+      and self.pending_transition == nil then
     return provider_id
   end
-  if self.authentication:is_active() then
+  if self.authentication:is_active() and not self.action then
     local err = util.error("provider",
       "Finish the active provider action before changing providers")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
-  if self.operation_run then
-    if self.operation_passive then
-      self.pending_provider_id = provider_id
-      self.operation_run:cancel()
+  if self.action then
+    if self.action.passive then
+      self.transition_revision = self.transition_revision + 1
+      self.pending_transition = {
+        provider_id = provider_id,
+        revision = self.transition_revision,
+      }
+      self.action.run:cancel()
       return provider_id
     end
     local err = util.error("provider",
@@ -614,7 +789,7 @@ function ProviderShell:select(provider_id)
     return nil, err
   end
   self.selected_id = provider_id
-  self.pending_provider_id = nil
+  self.pending_transition = nil
   self.operation = nil
   self.feedback = nil
   self:_refresh()
@@ -631,7 +806,8 @@ function ProviderShell:cycle(step)
   if #providers == 0 then
     return nil, util.error("provider", "No Provider Shell is available")
   end
-  local selected = self.pending_provider_id or self.selected_id
+  local selected = self.pending_transition
+      and self.pending_transition.provider_id or self.selected_id
   local index = 1
   for candidate, provider in ipairs(providers) do
     if provider.id == selected then
@@ -671,21 +847,45 @@ function ProviderShell:_run(operation_id, args, passive)
       return nil, util.error("auth",
         "Login is unavailable for the selected provider")
     end
+    local coordination, err = self:_begin_auth_coordination(
+      runtime, auth.method_id)
+    if not coordination then return nil, err end
     self.feedback = nil
-    local run, err = self.authentication:login(auth.method_id)
-    self:_refresh()
-    return run, err
+    return self:_start_action({
+      kind = "login",
+      error_kind = "auth",
+      provider_id = self.selected_id,
+      coordination = coordination,
+      start = function()
+        return self.authentication:login(auth.method_id)
+      end,
+      after = function(action)
+        self:_refresh_method_catalogs(auth.method_id, action)
+      end,
+    })
   elseif operation_id == LOGOUT then
     if auth.kind ~= "stored" then
       return nil, util.error("auth",
         "Logout is unavailable for the selected provider")
     end
+    local coordination, err = self:_begin_auth_coordination(
+      runtime, auth.method_id)
+    if not coordination then return nil, err end
     self.feedback = nil
-    local run, err = self.authentication:logout(auth.method_id)
-    self:_refresh()
-    return run, err
+    return self:_start_action({
+      kind = "logout",
+      error_kind = "auth",
+      provider_id = self.selected_id,
+      coordination = coordination,
+      start = function()
+        return self.authentication:logout(auth.method_id)
+      end,
+      after = function(action)
+        self:_refresh_method_catalogs(auth.method_id, action)
+      end,
+    })
   elseif operation_id == CANCEL_LOGIN then
-    local cancelled = self.authentication:cancel()
+    local cancelled = self:cancel()
     self:_refresh()
     return cancelled
   end
@@ -694,8 +894,8 @@ function ProviderShell:_run(operation_id, args, passive)
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
-  if self.operation_run or provider_service.busy(service) then
-    local err = util.error("provider", "A provider operation is already active")
+  if self.action then
+    local err = util.error("provider", "A provider action is already active")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
@@ -710,79 +910,48 @@ function ProviderShell:_run(operation_id, args, passive)
   end
   local provider = self.config.providers[self.selected_id]
   self.feedback = nil
-  self.operation_id = self.operation_id + 1
-  local token = self.operation_id
-  self.operation = {
-    id = operation_id,
-    label = descriptor.label,
-    state = "running",
-    message = descriptor.label,
-  }
-  self.operation_passive = passive == true
-  self:_refresh()
-  local function completed(result)
-    if self.destroyed or token ~= self.operation_id then return end
-    self.operation_run = nil
-    self.operation_passive = false
-    local pending_provider_id = self.pending_provider_id
-    if pending_provider_id then
-      self.pending_provider_id = nil
-      self.selected_id = pending_provider_id
-      self.operation = nil
-      self:_refresh()
-      self:_request_focus_refresh()
-      return
-    end
-    local operation = self.operation and util.copy(self.operation)
-      or { id = operation_id, label = descriptor.label }
-    if result.ok then
-      operation.state = "succeeded"
-      self:_open_artifact(result.artifact)
-    elseif result.error and result.error.kind == "cancelled" then
-      operation.state = "cancelled"
-    else
-      operation.state = "failed"
-      operation.detail = result.error and result.error.message or nil
-    end
-    self.operation = operation
-    self:_refresh()
+  local coordination
+  local coordination_err
+  if operation_id ~= REFRESH_CATALOG then
+    coordination, coordination_err = provider_service.begin_operation(
+      service, { mutating = descriptor.mutating == true })
+    if not coordination then return nil, coordination_err end
+  elseif not provider_service.operation_enabled(
+      service, { mutating = false }) then
+    return nil, util.error("provider",
+      "A mutating provider operation is already active")
   end
-  local operation_opts = {
-    args = args or "",
-    auth = self.auth,
-    auth_method = provider and provider.auth or nil,
-    optional_auth = provider and (provider.auth_optional == true
-      or provider.api_key ~= nil) or false,
-    provider = provider,
-    interact = self:_interact(),
-    on_done = completed,
-  }
-  local run, err
-  if operation_id == REFRESH_CATALOG then
-    run = async.run(function()
-      operation_opts.interact.progress({
+  local function start(action)
+    local interact = self:_interact(action)
+    if operation_id == REFRESH_CATALOG then
+      interact.progress({
         id = REFRESH_CATALOG,
         label = descriptor.label,
         state = "running",
         message = "Discovering models",
       })
-      local refreshed = runtime.catalog:refresh({ force = true }):await()
-      if refreshed.ok == false then error(refreshed.error, 0) end
-      return { ok = true }
-    end, { on_done = completed, error_kind = "provider" })
-  else
-    run, err = provider_service.run(service, operation_id, operation_opts)
+      return runtime.catalog:refresh({ force = true })
+    end
+    return provider_service.run(service, operation_id, {
+      args = args or "",
+      auth = self.auth,
+      auth_method = provider and provider.auth or nil,
+      optional_auth = provider and (provider.auth_optional == true
+        or provider.api_key ~= nil) or false,
+      provider = provider,
+      interact = interact,
+      coordination = coordination,
+    })
   end
-  if not run then
-    self.operation = nil
-    self.operation_passive = false
-    self:_refresh()
-    if err then self:_notify(err.message, vim.log.levels.ERROR) end
-    return nil, err
-  end
-  self.operation_run = run:is_done() and nil or run
-  if not self.operation_run then self.operation_passive = false end
-  return run
+  return self:_start_action({
+    kind = operation_id == REFRESH_CATALOG and "catalog" or "service",
+    error_kind = "provider",
+    provider_id = self.selected_id,
+    coordination = coordination,
+    passive = passive == true,
+    operation = { id = operation_id, label = descriptor.label },
+    start = start,
+  })
 end
 
 function ProviderShell:run(operation_id, args)
@@ -801,7 +970,7 @@ function ProviderShell:_maybe_focus_refresh()
     self.pending_focus_provider_id = nil
     return false
   end
-  if self.operation_run then
+  if self.action then
     if self.operation and self.operation.id == operation_id then
       self.pending_focus_provider_id = nil
       return true
@@ -809,7 +978,6 @@ function ProviderShell:_maybe_focus_refresh()
     return false
   end
   if self.authentication:is_active()
-      or provider_service.busy(service)
       or not self:_auth_state(provider_id).usable then return false end
   self.pending_focus_provider_id = nil
   return self:_run(operation_id, nil, true)
@@ -827,7 +995,7 @@ function ProviderShell:operations()
   local service = runtime.service
   local auth = self:_auth_state(self.selected_id)
   if not auth.usable then return {} end
-  local blocked = self.operation_run ~= nil or self.authentication:is_active()
+  local blocked = self.action ~= nil or self.authentication:is_active()
   local operations = provider_service.operations(service)
   for _, operation in ipairs(operations) do
     operation.enabled = not blocked and provider_service.operation_enabled(
@@ -837,7 +1005,8 @@ function ProviderShell:operations()
     id = REFRESH_CATALOG,
     label = "Refresh model catalog",
     description = "Discover the provider's current models",
-    enabled = not blocked,
+    enabled = not blocked and provider_service.operation_enabled(
+      service, { mutating = false }),
   })
   return operations
 end
@@ -898,14 +1067,32 @@ function ProviderShell:is_open()
 end
 
 function ProviderShell:cancel()
-  if self.operation_run then
-    self.operation_run:cancel()
+  if self.action and self.action.run then
+    self.action.run:cancel()
     return true
   end
   return self.authentication:cancel()
 end
 
 function ProviderShell:login(provider_id)
+  if self.destroyed then
+    return nil, util.error("provider", "Provider Shell is destroyed")
+  end
+  if provider_id and not self.runtimes[provider_id] then
+    return nil, util.error("provider",
+      "Unknown provider: " .. tostring(provider_id))
+  end
+  if self.action and self.action.passive then
+    local target = provider_id or self.selected_id
+    self.transition_revision = self.transition_revision + 1
+    self.pending_transition = {
+      provider_id = target,
+      action = { operation_id = LOGIN },
+      revision = self.transition_revision,
+    }
+    self.action.run:cancel()
+    return true
+  end
   if provider_id then
     local selected, err = self:select(provider_id)
     if not selected then return nil, err end
@@ -914,6 +1101,24 @@ function ProviderShell:login(provider_id)
 end
 
 function ProviderShell:logout(provider_id)
+  if self.destroyed then
+    return nil, util.error("provider", "Provider Shell is destroyed")
+  end
+  if provider_id and not self.runtimes[provider_id] then
+    return nil, util.error("provider",
+      "Unknown provider: " .. tostring(provider_id))
+  end
+  if self.action and self.action.passive then
+    local target = provider_id or self.selected_id
+    self.transition_revision = self.transition_revision + 1
+    self.pending_transition = {
+      provider_id = target,
+      action = { operation_id = LOGOUT },
+      revision = self.transition_revision,
+    }
+    self.action.run:cancel()
+    return true
+  end
   if provider_id then
     local selected, err = self:select(provider_id)
     if not selected then return nil, err end
@@ -922,11 +1127,13 @@ function ProviderShell:logout(provider_id)
 end
 
 function ProviderShell:cancel_login()
-  return self.authentication:cancel()
+  return self:cancel()
 end
 
 function ProviderShell:is_authenticating()
-  return self.authentication:is_active()
+  return (self.action ~= nil and (self.action.kind == "login"
+      or self.action.kind == "logout"))
+    or self.authentication:is_active()
 end
 
 function ProviderShell:presenter()
@@ -938,14 +1145,14 @@ function ProviderShell:view()
 end
 
 function ProviderShell:is_active()
-  return self.operation_run ~= nil or self.authentication:is_active()
+  return self.action ~= nil or self.authentication:is_active()
 end
 
 function ProviderShell:destroy()
   if self.destroyed then return end
   self.destroyed = true
-  self.operation_id = self.operation_id + 1
-  if self.operation_run then self.operation_run:cancel() end
+  self.action_id = self.action_id + 1
+  if self.action and self.action.run then self.action.run:cancel() end
   if self.presenter_unsubscribe then
     self.presenter_unsubscribe("Provider Shell was destroyed")
   end
@@ -955,9 +1162,7 @@ function ProviderShell:destroy()
   self.authentication:destroy()
   if self.owns_presenter then self.presenter_value:destroy() end
   self.view_value:destroy()
-  self.operation_run = nil
-  self.operation_passive = false
-  self.pending_provider_id = nil
+  self.pending_transition = nil
   self.pending_focus_provider_id = nil
   self.presentation = nil
   self.feedback = nil

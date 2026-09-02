@@ -77,9 +77,15 @@ local function mounted(record)
 end
 
 local function buffer_token(descriptor)
+  local transient = descriptor.lifecycle == "transient"
+  local sensitive = descriptor.buffer.sensitive == true
   return table.concat({
     tostring(descriptor.buffer.name),
     tostring(descriptor.buffer.uri),
+    tostring(descriptor.lifecycle),
+    tostring(transient and descriptor.mount_revision or nil),
+    tostring(sensitive),
+    tostring((transient or sensitive) and descriptor.pane or nil),
   }, "\0")
 end
 
@@ -404,8 +410,13 @@ function Applet:_prepare_records(frame)
       record = { key = key, applet = self }
       self.records[key] = record
     elseif record.descriptor and record.buffer_token ~= buffer_token(descriptor) then
-      if record.descriptor.pane.surface then record.descriptor.pane:_disconnect() end
+      local previous = record.descriptor
+      if previous.pane.surface then previous.pane:_disconnect() end
       record = { key = key, applet = self }
+      if previous.buffer.name == descriptor.buffer.name
+          and previous.buffer.uri == descriptor.buffer.uri then
+        record.buffer_name_generation = frame.generation
+      end
       self.records[key] = record
       self.measurements[key] = nil
     end

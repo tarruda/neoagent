@@ -70,6 +70,8 @@ local function create(opts)
   local value = setmetatable({
     backend = backend,
     backend_name = backend_name,
+    backend_generation = 0,
+    backend_destroyed = false,
     status = backend.available and "available" or "unavailable",
     generation = 0,
     resources = {},
@@ -97,9 +99,10 @@ local function create(opts)
     },
   }, ImageSystem)
   if backend.set_error_handler then
-    backend:set_error_handler(function(err)
+    local installed, install_err = pcall(backend.set_error_handler, backend, function(err)
       value:_backend_failure(err)
     end)
+    if not installed then value:_backend_failure(install_err) end
   end
   return value
 end
@@ -125,21 +128,50 @@ function ImageSystem:_changed()
   for callback in pairs(self.callbacks) do pcall(callback, self) end
 end
 
+function ImageSystem:_destroy_backend()
+  if self.backend_destroyed then return false end
+  self.backend_destroyed = true
+  pcall(self.backend.destroy, self.backend)
+  return true
+end
+
 function ImageSystem:_backend_failure(err)
   if self.destroyed or self.status == "unavailable" then return end
   self.status = "unavailable"
+  self.backend_generation = self.backend_generation + 1
   self.last_backend_error = tostring(err or "image backend failed")
   self.counters.backend_errors = self.counters.backend_errors + 1
   for id, operation in pairs(self.pending) do
     self.pending[id] = nil
     if operation.cancel then pcall(operation.cancel) end
   end
-  pcall(self.backend.destroy, self.backend)
+  self:_destroy_backend()
   self.resources = {}
   self.failures = {}
   self.presentations = {}
   self.cache_bytes = 0
   self:_changed()
+end
+
+function ImageSystem:_backend_call(method, ...)
+  if self.destroyed or self.status ~= "available"
+      or self.backend_destroyed then
+    return nil, false
+  end
+  local backend = self.backend
+  local generation = self.backend_generation
+  local ok, result = pcall(backend[method], backend, ...)
+  if not ok then
+    self:_backend_failure(result)
+    return nil, false
+  end
+  if self.destroyed or self.status ~= "available"
+      or self.backend ~= backend
+      or self.backend_generation ~= generation
+      or self.backend_destroyed then
+    return nil, false
+  end
+  return result, true
 end
 
 function ImageSystem:subscribe(callback)
@@ -180,12 +212,14 @@ function ImageSystem:_release_unused()
   end
   for id, resource in pairs(self.resources) do
     if not self:_wanted(id) then
+      local _, current = self:_backend_call("release", resource)
+      if not current then return false end
       self.resources[id] = nil
       self.cache_bytes = self.cache_bytes - resource.bytes
-      self.backend:release(resource)
       self.counters.releases = self.counters.releases + 1
     end
   end
+  return true
 end
 
 local function loaded_resource(id, resource, limits)
@@ -329,7 +363,9 @@ function ImageSystem:present(owner, value)
   end
   if not current and not next(presentation.slots)
       and #presentation.placements == 0 then return false end
-  self.backend:replace(owner, presentation.placements)
+  local _, current_generation = self:_backend_call(
+    "replace", owner, presentation.placements)
+  if not current_generation then return false end
   self.presentations[owner] = next(presentation.slots)
       and presentation or nil
   self.counters.presentation_changes =
@@ -341,15 +377,20 @@ end
 function ImageSystem:clear(owner)
   if self.destroyed or owner == nil then return false end
   local changed = self.presentations[owner] ~= nil
+  local backend_changed, current_generation = self:_backend_call("clear", owner)
   self.presentations[owner] = nil
   self.references[owner] = nil
-  local backend_changed = self.backend:clear(owner)
+  if not current_generation then return false end
   self:_release_unused()
   return changed or backend_changed == true
 end
 
 function ImageSystem:snapshot(owner)
-  local cells = self.backend:cell_dimensions()
+  local cells = { width = 1, height = 1 }
+  if self.status == "available" then
+    local selected, current_generation = self:_backend_call("cell_dimensions")
+    if current_generation and type(selected) == "table" then cells = selected end
+  end
   local resources = {}
   for key, value in pairs(self.resources) do
     resources[key] = resource_metadata(value)
@@ -368,7 +409,8 @@ end
 
 function ImageSystem:redraw(owner)
   if self.destroyed or self.status ~= "available" then return false end
-  return self.backend:redraw(owner) == true
+  local redrawn, current_generation = self:_backend_call("redraw", owner)
+  return current_generation and redrawn == true or false
 end
 
 function ImageSystem:_stats()
@@ -386,10 +428,11 @@ end
 function ImageSystem:destroy()
   if self.destroyed then return end
   self.destroyed = true
+  self.backend_generation = self.backend_generation + 1
   for _, operation in pairs(self.pending) do
     if operation.cancel then pcall(operation.cancel) end
   end
-  self.backend:destroy()
+  self:_destroy_backend()
   self.resources = {}
   self.pending = {}
   self.failures = {}

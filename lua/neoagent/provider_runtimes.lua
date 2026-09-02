@@ -1,4 +1,5 @@
 local model_catalog = require("neoagent.model_catalog")
+local provider_credentials = require("neoagent.provider_credentials")
 local provider_service = require("neoagent.provider_service")
 local util = require("neoagent.util")
 
@@ -29,10 +30,18 @@ local function destroy_values(runtimes, candidate)
   for _, runtime in pairs(runtimes) do
     if runtime.catalog then pcall(runtime.catalog.destroy, runtime.catalog) end
     local service = runtime.service
-    if type(service) == "table" and type(service.destroy) == "function"
-        and not services[service] then
+    if type(service) == "table" and not services[service] then
       services[service] = true
-      pcall(service.destroy, service)
+      local validated = provider_service.validate(service)
+      if validated then
+        provider_service.retire(service, function()
+          if type(service.destroy) == "function" then
+            pcall(service.destroy, service)
+          end
+        end)
+      elseif type(service.destroy) == "function" then
+        pcall(service.destroy, service)
+      end
     end
   end
   if type(candidate) == "table" and type(candidate.destroy) == "function"
@@ -51,8 +60,19 @@ function M.compose(configured, opts)
   assert(opts.report == nil or type(opts.report) == "function",
     "provider runtime report must be a function")
   local runtimes = {}
+  local provider_ids = vim.tbl_keys(configured.providers or {})
+  table.sort(provider_ids)
 
-  for provider_id, provider in pairs(configured.providers or {}) do
+  for _, provider_id in ipairs(provider_ids) do
+    local provider = configured.providers[provider_id]
+    local bound_service
+    local credentials = provider_credentials.new({
+      provider_id = provider_id,
+      provider = provider,
+      authentication = opts.auth,
+      method = configured.auth and configured.auth.methods
+          and configured.auth.methods[provider.auth] or nil,
+    })
     local ok, catalog = pcall(model_catalog.new, {
       provider_id = provider_id,
       provider = provider,
@@ -60,10 +80,17 @@ function M.compose(configured, opts)
       models = provider.models,
       store = opts.store,
       authentication = opts.auth,
+      credentials = credentials,
       transport = opts.transport,
       report = opts.report,
       now = opts.now,
       new_timer = opts.new_timer,
+      acquire_use = function()
+        if not bound_service then
+          return { release = function() return true end }
+        end
+        return provider_service.acquire_use(bound_service)
+      end,
     })
     if not ok then
       destroy_values(runtimes)
@@ -74,11 +101,14 @@ function M.compose(configured, opts)
       id = provider_id,
       definition = provider,
       catalog = catalog,
+      credentials = credentials,
       report = opts.report,
+      bind_service = function(service) bound_service = service end,
     }
   end
 
-  for provider_id, runtime in pairs(runtimes) do
+  for _, provider_id in ipairs(provider_ids) do
+    local runtime = runtimes[provider_id]
     local provider = runtime.definition
     local service = empty_service(provider_id)
     if type(provider.service) == "function" then
@@ -89,8 +119,7 @@ function M.compose(configured, opts)
         provider_id = provider_id,
         report = opts.report,
         ambient_api_key = function()
-          local source = provider.api_key
-          return type(source) == "function" and source() or source
+          return runtime.credentials:ambient_api_key()
         end,
       })
       if not ok then
@@ -112,6 +141,23 @@ function M.compose(configured, opts)
           .. tostring(validated.id))
     end
     runtime.service = validated
+    runtime.bind_service(validated)
+    runtime.bind_service = nil
+  end
+
+  local auth_groups = {}
+  for _, provider_id in ipairs(provider_ids) do
+    local runtime = runtimes[provider_id]
+    local method = runtime.definition.auth
+    if type(method) == "string" then
+      auth_groups[method] = auth_groups[method] or {}
+      auth_groups[method][#auth_groups[method] + 1] = runtime.service
+      runtime.auth_method = method
+    end
+  end
+  for _, runtime in pairs(runtimes) do
+    runtime.auth_services = runtime.auth_method
+        and auth_groups[runtime.auth_method] or {}
   end
 
   if opts.startup ~= false then

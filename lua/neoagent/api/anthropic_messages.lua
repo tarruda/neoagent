@@ -1,5 +1,7 @@
 local async = require("neoagent.async")
+local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
+local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
@@ -47,12 +49,33 @@ local function stop_reason(reason, details)
   error(util.error("model", "Provider stop_reason: " .. tostring(reason)), 0)
 end
 
-local function has_content(message)
-  return type(message) == "table" and type(message.content) == "table" and #message.content > 0
-end
-
 local function nonempty(value)
   return type(value) == "string" and value ~= ""
+end
+
+local function partial_message(message, blocks, err)
+  if type(message) ~= "table" then return nil end
+  local states = {}
+  for _, state in pairs(blocks or {}) do states[state.block] = state end
+  local candidate = util.copy(message)
+  candidate.content = {}
+  for _, block in ipairs(message.content or {}) do
+    local state = states[block]
+    local retained
+    if state and block.type == "text" and nonempty(block.text) then
+      retained = util.copy(block)
+    elseif state and block.type == "thinking" and nonempty(block.thinking) then
+      retained = util.copy(block)
+      if retained.thinkingSignature == "" then retained.thinkingSignature = nil end
+    elseif state and state.stopped and block.type == "toolCall"
+        and nonempty(block.id) and nonempty(block.name) then
+      retained = util.copy(block)
+    end
+    if retained then candidate.content[#candidate.content + 1] = retained end
+  end
+  candidate.stopReason = err.kind == "cancelled" and "aborted" or "error"
+  candidate.errorMessage = err.message
+  return semantic_message.normalize_partial_assistant(candidate)
 end
 
 local Model = {}
@@ -67,6 +90,7 @@ function Model:stream(opts)
   assert(type(opts.messages) == "table", "messages are required")
   local transport = self._transport
   local message
+  local blocks
   return async.run(function(run)
     local ok, outcome = pcall(function()
       local outgoing = self:_request(opts)
@@ -80,7 +104,7 @@ function Model:stream(opts)
         stopReason = "stop",
         timestamp = util.now_ms(),
       }
-      local blocks = {}
+      blocks = {}
       local message_start_seen = false
       local message_stop_seen = false
       local stop_seen = false
@@ -92,6 +116,9 @@ function Model:stream(opts)
 
       local function append_delta(state, field, value, event_type)
         if not nonempty(value) then return end
+        if not util.is_valid_utf8(value) then
+          error(util.error("protocol", "Anthropic delta must contain valid UTF-8"), 0)
+        end
         state.block[field] = state.block[field] .. value
         run:emit({ type = event_type, text = value })
       end
@@ -159,6 +186,10 @@ function Model:stream(opts)
           append_delta(state, "thinking", delta.thinking, "thinking_delta")
         elseif delta.type == "signature_delta" and state.block.type == "thinking" then
           if nonempty(delta.signature) then
+            if not util.is_valid_utf8(delta.signature) then
+              error(util.error("protocol",
+                "Anthropic thinking signature must contain valid UTF-8"), 0)
+            end
             state.block.thinkingSignature = state.block.thinkingSignature .. delta.signature
           end
         elseif delta.type == "input_json_delta" and state.block.type == "toolCall" then
@@ -275,14 +306,18 @@ function Model:stream(opts)
 
     if not ok then
       local err = util.normalize_error(outcome, "model")
-      local partial = has_content(message) and message or nil
-      if partial then
-        partial.stopReason = err.kind == "cancelled" and "aborted" or "error"
-        partial.errorMessage = err.message
-      end
+      local partial = partial_message(message, blocks, err)
       return { ok = false, message = partial, error = err }
     end
-    return { ok = true, message = outcome, text = util.text_content(outcome.content) }
+    local normalized, message_err = semantic_message.normalize(outcome)
+    if not normalized then
+      return {
+        ok = false,
+        error = util.error("model", "Invalid assistant message", message_err),
+      }
+    end
+    return { ok = true, message = normalized,
+      text = util.text_content(normalized.content) }
   end, {
     on_event = opts.on_event,
     on_done = opts.on_done,
@@ -301,7 +336,7 @@ function M.new(opts)
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do layers[#layers + 1] = layer end
   if opts.request_opts ~= nil then layers[#layers + 1] = opts.request_opts end
-  return setmetatable({
+  return model_contract.assert(setmetatable({
     api = "anthropic-messages",
     provider = opts.provider,
     id = opts.model,
@@ -314,7 +349,7 @@ function M.new(opts)
     _anthropic_version = "2023-06-01",
     _request_opts = layers,
     _transport = opts.transport or curl,
-  }, Model)
+  }, Model), "Anthropic Messages constructor")
 end
 
 M._encode_messages = request.encode_messages

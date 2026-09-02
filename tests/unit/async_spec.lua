@@ -33,6 +33,106 @@ describe("neoagent.async", function()
     assert.are.equal("cancelled", done_result.error.kind)
   end)
 
+  it("lets cancellation win until delivery and disposes produced values", function()
+    local pending
+    local delivered
+    local disposed = 0
+    local resource = {}
+    local run = async.run(function()
+      delivered = async.await(function(done) pending = done end)
+      return { ok = true }
+    end)
+    pending.resolve(resource, function(value)
+      assert.are.equal(resource, value)
+      disposed = disposed + 1
+    end)
+    run:cancel()
+
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.is_false(run:result().ok)
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_nil(delivered)
+    assert.are.equal(1, disposed)
+
+    local synchronous_delivered = false
+    run = async.run(function(self)
+      async.await(function(done)
+        done.resolve(resource, function() disposed = disposed + 1 end)
+        self:cancel()
+      end)
+      synchronous_delivered = true
+    end)
+    assert.is_true(run:is_done())
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(synchronous_delivered)
+    assert.are.equal(2, disposed)
+
+    pending = nil
+    run = async.run(function()
+      async.await(function(done) pending = done end)
+    end)
+    run:cancel()
+    pending.resolve(resource, function() disposed = disposed + 1 end)
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(3, disposed)
+  end)
+
+  it("owns late producer cancellation and disposer diagnostics", function()
+    local producer_cancellations = 0
+    local run = async.run(function(self)
+      async.await(function()
+        self:cancel()
+        return function()
+          producer_cancellations = producer_cancellations + 1
+        end
+      end)
+    end)
+    assert.is_true(run:is_done())
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(1, producer_cancellations)
+
+    local pending
+    run = async.run(function()
+      async.await(function(done) pending = done end)
+    end)
+    pending.resolve({}, function() error("dispose exploded") end)
+    run:cancel()
+    assert(vim.wait(1000, function()
+      return run:is_done() and #run:diagnostics() == 1
+    end))
+    assert.are.equal("dispose", run:diagnostics()[1].phase)
+    assert.matches("dispose exploded", run:diagnostics()[1].message)
+
+    run = async.run(function()
+      async.await(function(done) done.resolve({}, true) end)
+    end)
+    assert.is_true(run:is_done())
+    assert.is_false(run:result().ok)
+    assert.matches("disposer must be a function", run:result().error.message)
+  end)
+
+  it("compacts removed cancellation handlers while preserving order", function()
+    local called = {}
+    local run = async.run(function(self)
+      for index = 1, 2000 do
+        local remove = self:on_cancel(function()
+          called[#called + 1] = index
+        end)
+        if index % 10 ~= 0 then remove() end
+      end
+      async.await(function() end)
+    end)
+
+    run:cancel()
+
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal(200, #called)
+    for index, value in ipairs(called) do
+      assert.are.equal(index * 10, value)
+    end
+  end)
+
   it("registers and cancels awaited child runs", function()
     local child_cancelled = false
     local child = async.run(function()
@@ -109,6 +209,22 @@ describe("neoagent.async", function()
     assert.matches("event 9", bounded:diagnostics()[1].message)
   end)
 
+  it("drains large callback bursts in order", function()
+    local events = {}
+    local run = async.run(function(self)
+      for index = 1, 5000 do self:emit(index) end
+      return { ok = true }
+    end, {
+      on_event = function(index) events[#events + 1] = index end,
+      on_done = function() events[#events + 1] = "done" end,
+    })
+
+    assert(vim.wait(3000, function() return #events == 5001 end, 5))
+    assert.is_true(run:is_done())
+    for index = 1, 5000 do assert.are.equal(index, events[index]) end
+    assert.are.equal("done", events[5001])
+  end)
+
   it("bounds unrenderable callback failures", function()
     local diagnostics = {}
     local failure = setmetatable({}, {
@@ -125,6 +241,25 @@ describe("neoagent.async", function()
     assert.is_true(run:result().ok)
     assert.are.equal("Callback failure could not be rendered",
       diagnostics[1].message)
+  end)
+
+  it("settles unrenderable raised values after asynchronous delivery", function()
+    local pending
+    local failure = setmetatable({}, {
+      __tostring = function() error("render failed") end,
+    })
+    local run = async.run(function()
+      async.await(function(done) pending = done end)
+      error(failure, 0)
+    end, { error_kind = "async-test" })
+
+    pending.resolve(true)
+
+    assert(vim.wait(1000, function() return run:is_done() end, 5))
+    assert.is_false(run:result().ok)
+    assert.are.equal("async-test", run:result().error.kind)
+    assert.are.equal("Error value could not be rendered",
+      run:result().error.message)
   end)
 
   it("replays a child's callback diagnostics to a later awaiting parent", function()
@@ -170,6 +305,27 @@ describe("neoagent.async", function()
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.are.equal("cancel", run:diagnostics()[1].phase)
     assert.matches("cancel callback exploded", run:diagnostics()[1].message)
+  end)
+
+  it("runs handlers registered during cancellation immediately", function()
+    local late = 0
+    local run = async.run(function(self)
+      self:on_cancel(function()
+        local remove = self:on_cancel(function()
+          late = late + 1
+          error("late cancellation failed")
+        end)
+        assert.is_false(remove())
+      end)
+      async.await(function() end)
+    end)
+
+    run:cancel()
+
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal(1, late)
+    assert.matches("late cancellation failed", run:diagnostics()[1].message)
+    assert.is_false(run:_finish({ ok = true }))
   end)
 
   it("provides stable behavior after completion", function()

@@ -175,6 +175,7 @@ local function new()
       local fs = common.fs(ctx)
       local raw, err = fs.read(absolute)
       if not raw then error("Could not edit file " .. path .. ": " .. tostring(err)) end
+      local original_fingerprint = require("neoagent.fs").content_fingerprint(raw)
       local bom = raw:sub(1, 3) == "\239\187\191" and raw:sub(1, 3) or ""
       if bom ~= "" then raw = raw:sub(4) end
       local ending = raw:find("\r\n", 1, true) and "\r\n" or "\n"
@@ -182,7 +183,12 @@ local function new()
       local changed = apply(content, arguments.edits, path)
       local restored = ending == "\r\n" and changed:gsub("\n", "\r\n") or changed
       local ok
-      ok, err = fs.write_all(absolute, bom .. restored, "w", 420)
+      ok, err = fs.atomic_replace(absolute, bom .. restored, {
+        preserve_mode = true,
+        new_mode = 420,
+        require_existing = true,
+        expected_content_fingerprint = original_fingerprint,
+      })
       if not ok then error("Could not edit file " .. path .. ": " .. tostring(err)) end
       return {
         content = { { type = "text", text = string.format("Successfully replaced %d block(s) in %s.", #arguments.edits, path) } },

@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local semantic_message = require("neoagent.semantic_message")
 
 local M = {}
 
@@ -10,30 +11,157 @@ local function nonempty_string(value)
   return type(value) == "string" and value ~= ""
 end
 
+local function finite_nonnegative_integer(value)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and value >= 0 and value % 1 == 0
+end
+
+local function safe_text(value)
+  return nonempty_string(value) and #value <= 512
+    and util.is_valid_utf8(value)
+    and not value:find("[%z\1-\31\127]")
+end
+
+local function validate_request(request)
+  if request == nil then return true end
+  if type(request) ~= "table"
+      or (next(request) ~= nil and util.is_list(request)) then
+    return false, "message request must be an object"
+  end
+  for key in pairs(request) do
+    if key ~= "model" and key ~= "thinkingLevel" then
+      return false, "unsupported message request field: " .. tostring(key)
+    end
+  end
+  if request.model ~= nil then
+    local model = request.model
+    if type(model) ~= "table" or util.is_list(model)
+        or not safe_text(model.provider) or not safe_text(model.model) then
+      return false, "message request model requires provider and model"
+    end
+    for key in pairs(model) do
+      if key ~= "provider" and key ~= "model" then
+        return false, "unsupported message request model field: "
+          .. tostring(key)
+      end
+    end
+  end
+  local thinking_level = rawget(request, "thinkingLevel")
+  if thinking_level ~= nil and not is_null(thinking_level)
+      and not safe_text(thinking_level) then
+    return false,
+      "message request thinkingLevel must be safe non-empty text"
+  end
+  return true
+end
+
+function M.normalize_request_state(state)
+  state = state or {}
+  if type(state) ~= "table"
+      or (next(state) ~= nil and util.is_list(state)) then
+    return nil, "message state must be an object"
+  end
+  for key in pairs(state) do
+    if key ~= "model" and key ~= "thinking_level" then
+      return nil, "unsupported message state field: " .. tostring(key)
+    end
+  end
+  local request = {}
+  if state.model ~= nil then request.model = util.copy(state.model) end
+  local thinking_level = rawget(state, "thinking_level")
+  if thinking_level ~= nil then
+    request.thinkingLevel = thinking_level
+  end
+  local valid, err = validate_request(next(request) and request or nil)
+  if not valid then return nil, err end
+  return next(request) and request or nil
+end
+
+local function normalize_compaction_summary(message)
+  if type(message) ~= "table"
+      or (util.is_list(message) and next(message) ~= nil) then
+    return nil, "compaction summary must be an object"
+  end
+  for key in pairs(message) do
+    if key ~= "role" and key ~= "summary" and key ~= "tokensBefore"
+        and key ~= "timestamp" then
+      return nil, "compaction summary has unsupported field: "
+        .. tostring(key)
+    end
+  end
+  if message.role ~= "compactionSummary" then
+    return nil, "compaction summary role is required"
+  end
+  if not nonempty_string(message.summary)
+      or not util.is_valid_utf8(message.summary) then
+    return nil, "compaction summary must contain non-empty UTF-8 text"
+  end
+  if not finite_nonnegative_integer(message.tokensBefore) then
+    return nil, "compaction summary tokensBefore must be a non-negative integer"
+  end
+  if not finite_nonnegative_integer(message.timestamp) then
+    return nil, "compaction summary timestamp must be a non-negative integer"
+  end
+  return util.copy(message)
+end
+
+function M.normalize_projection_message(message)
+  if type(message) == "table" and message.role == "compactionSummary" then
+    return normalize_compaction_summary(message)
+  end
+  return semantic_message.normalize(message)
+end
+
+function M.normalize_projection(messages)
+  if type(messages) ~= "table" or not util.is_list(messages) then
+    return nil, "messages must be a list"
+  end
+  local result = {}
+  local segment = {}
+  local segment_start = 1
+  local function flush()
+    if #segment == 0 then return true end
+    local normalized, err = semantic_message.normalize_list(segment, {
+      index_offset = segment_start - 1,
+    })
+    if not normalized then return nil, err end
+    vim.list_extend(result, normalized)
+    segment = {}
+    return true
+  end
+  for index, message in ipairs(messages) do
+    if type(message) == "table" and message.role == "compactionSummary" then
+      local ok, err = flush()
+      if not ok then return nil, err end
+      local normalized
+      normalized, err = normalize_compaction_summary(message)
+      if not normalized then
+        return nil, "message " .. tostring(index) .. ": " .. err
+      end
+      result[#result + 1] = normalized
+      segment_start = index + 1
+    else
+      if #segment == 0 then segment_start = index end
+      segment[#segment + 1] = message
+    end
+  end
+  local ok, err = flush()
+  if not ok then return nil, err end
+  return result
+end
+
 local validators = {
   message = function(entry)
-    if type(entry.message) ~= "table" then return false, "message must be an object" end
-    if not nonempty_string(entry.message.role) then return false, "message role is required" end
-    if entry.message.content == nil then
-      return false, "message content is required"
-    end
-    return true
-  end,
-  model_change = function(entry)
-    if not nonempty_string(entry.provider) or not nonempty_string(entry.modelId) then
-      return false, "model changes require provider and modelId"
-    end
-    return true
-  end,
-  thinking_level_change = function(entry)
-    if not nonempty_string(entry.thinkingLevel) then
-      return false, "thinking level changes require thinkingLevel"
-    end
-    return true
+    local _, err = semantic_message.normalize(entry.message)
+    if err then return false, err end
+    return validate_request(entry.request)
   end,
   compaction = function(entry)
-    if not nonempty_string(entry.summary) or not nonempty_string(entry.firstKeptEntryId)
-        or type(entry.tokensBefore) ~= "number" then
+    if not nonempty_string(entry.summary)
+        or not util.is_valid_utf8(entry.summary)
+        or not nonempty_string(entry.firstKeptEntryId)
+        or not finite_nonnegative_integer(entry.tokensBefore) then
       return false, "compactions require summary, firstKeptEntryId, and tokensBefore"
     end
     return true
@@ -46,10 +174,31 @@ local validators = {
   end,
 }
 
+local entry_fields = {
+  message = {
+    type = true, id = true, parentId = true, timestamp = true,
+    message = true, request = true,
+  },
+  compaction = {
+    type = true, id = true, parentId = true, timestamp = true,
+    summary = true, firstKeptEntryId = true, tokensBefore = true,
+  },
+  leaf = {
+    type = true, id = true, parentId = true, timestamp = true,
+    targetId = true,
+  },
+}
+
 function M.validate_entry(entry)
   if type(entry) ~= "table" then return false, "entry must be an object" end
   if not nonempty_string(entry.type) or not validators[entry.type] then
     return false, "unsupported entry type: " .. tostring(entry.type)
+  end
+  for key in pairs(entry) do
+    if not entry_fields[entry.type][key] then
+      return false, "unsupported " .. entry.type .. " entry field: "
+        .. tostring(key)
+    end
   end
   if not nonempty_string(entry.id) then return false, "entry id is required" end
   if not is_null(entry.parentId) and not nonempty_string(entry.parentId) then
@@ -76,7 +225,87 @@ function M.validate_references(entry, by_id)
       return nil, "compaction first kept entry is not on the active path"
     end
   end
+  if entry.type == "message" then
+    local message = entry.message
+    local new_calls = {}
+    if message.role == "assistant" then
+      for _, block in ipairs(message.content) do
+        if block.type == "toolCall" then new_calls[block.id] = true end
+      end
+    end
+    local result_id = message.role == "toolResult"
+      and message.toolCallId or nil
+    local result_name = message.role == "toolResult"
+      and message.toolName or nil
+    local matched_result = result_id == nil
+    local current = is_null(entry.parentId) and nil or by_id[entry.parentId]
+    while current do
+      if current.type == "compaction" then break end
+      if current.type == "message" then
+        local ancestor = current.message
+        if ancestor.role == "toolResult"
+            and ancestor.toolCallId == result_id then
+          break
+        end
+        if ancestor.role == "assistant" then
+          for _, block in ipairs(ancestor.content) do
+            if block.type == "toolCall" then
+              if new_calls[block.id] then
+                return nil, "duplicate conversation toolCall id: " .. block.id
+              end
+              if block.id == result_id then
+                if result_name ~= nil and result_name ~= block.name then
+                  return nil, "toolResult toolName does not match its toolCall"
+                end
+                matched_result = true
+                break
+              end
+            end
+          end
+        end
+      end
+      if matched_result and next(new_calls) == nil then break end
+      current = is_null(current.parentId) and nil or by_id[current.parentId]
+    end
+    if not matched_result then
+      return nil, "toolResult references an unknown toolCall: "
+        .. tostring(result_id)
+    end
+  end
   return true
+end
+
+function M.prepare_entry(opts)
+  if type(opts) ~= "table" or util.is_list(opts) then
+    return nil, "entry preparation options must be an object"
+  end
+  local payload = opts.payload
+  if payload == nil then payload = {} end
+  if type(payload) ~= "table"
+      or next(payload) ~= nil and util.is_list(payload) then
+    return nil, "entry payload must be an object"
+  end
+  for _, name in ipairs({ "type", "id", "parentId", "timestamp" }) do
+    if rawget(payload, name) ~= nil then
+      return nil, "entry payload must not set protected field " .. name
+    end
+  end
+  local entry = {
+    type = opts.type,
+    id = opts.id,
+    parentId = opts.parent_id == nil and vim.NIL or opts.parent_id,
+    timestamp = opts.timestamp,
+  }
+  for key, value in pairs(payload) do entry[key] = util.copy(value) end
+  local valid, validation_err = M.validate_entry(entry)
+  if not valid then return nil, validation_err end
+  local by_id = opts.by_id
+  if by_id == nil then by_id = {} end
+  if type(by_id) ~= "table" then return nil, "entry index must be a table" end
+  if by_id[entry.id] then return nil, "duplicate entry id" end
+  local referenced, reference_err = M.validate_references(entry, by_id)
+  if not referenced then return nil, reference_err end
+  return util.copy(entry)
 end
 
 function M.validate_entries(entries)
@@ -227,11 +456,20 @@ function M.to_llm(messages)
 end
 
 local function apply_state(result, entry)
-  if entry.type == "model_change" then
-    result.model = { provider = entry.provider, model = entry.modelId }
-  elseif entry.type == "thinking_level_change" then
-    result.thinking_level = entry.thinkingLevel
-  elseif entry.type == "message" and entry.message.role == "assistant"
+  local request = entry.type == "message" and entry.request or nil
+  if request then
+    if request.model then result.model = util.copy(request.model) end
+    local thinking_level = rawget(request, "thinkingLevel")
+    if thinking_level ~= nil then
+      if is_null(thinking_level) then
+        result.thinking_level = nil
+      else
+        result.thinking_level = thinking_level
+      end
+    end
+  end
+  if entry.type == "message" and (not request or not request.model)
+      and entry.message.role == "assistant"
       and nonempty_string(entry.message.provider) and nonempty_string(entry.message.model) then
     result.model = { provider = entry.message.provider, model = entry.message.model }
   end

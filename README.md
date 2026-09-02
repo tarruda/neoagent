@@ -46,6 +46,10 @@ Neovim:
 | OpenCode Go | `opencode-go` | `OPENCODE_API_KEY` |
 | llama.cpp | `llama.cpp` | — |
 
+Claude Pro/Max access uses Anthropic's Claude Code product. Anthropic publishes
+no third-party subscription API or OAuth client contract, so Neoagent's
+`anthropic` provider uses the supported metered Messages API.
+
 Stored credentials take precedence over environment variables. The Provider
 Shell shows Log out for a stored credential; configured and environment
 credentials remain managed at their source. Both Z.AI provider IDs use the same

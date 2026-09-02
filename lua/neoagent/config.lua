@@ -1,8 +1,11 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
+local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 
 local M = {}
+
+local renderer_styles = { codex = true, pi = true }
 
 local defaults = {
   default_registry = true,
@@ -166,8 +169,12 @@ local provider_fields = {
 }
 
 local catalog_fields = {
+  account_scoped = true,
   discover = true,
   seed = true,
+  source_id = true,
+  source_options = true,
+  source_revision = true,
   ttl_ms = true,
   transform_model = true,
 }
@@ -221,7 +228,7 @@ local function validate(opts)
       "workspace_trust.path is required")
   end
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
-    "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
+    "default_thinking_level must be off, minimal, low, medium, high, xhigh, max, or ultra")
   if opts.default_model ~= nil then
     assert(type(opts.default_model) == "table", "default_model must be a table")
     assert(model_config.safe_provider_id(opts.default_model.provider),
@@ -279,6 +286,36 @@ local function validate(opts)
     assert(provider.catalog.discover == nil
         or type(provider.catalog.discover) == "function",
       "provider " .. id .. " catalog.discover must be a function")
+    assert(provider.catalog.source_options == nil
+        or type(provider.catalog.source_options) == "function",
+      "provider " .. id .. " catalog.source_options must be a function")
+    assert(not (provider.catalog.discover
+          and next(provider.service_opts or {}) ~= nil)
+        or type(provider.catalog.source_options) == "function",
+      "provider " .. id
+        .. " discovery with service_opts requires catalog.source_options")
+    local source_id = provider.catalog.source_id
+    local source_revision = provider.catalog.source_revision
+    assert(source_id == nil or type(source_id) == "string" and source_id ~= ""
+        and #source_id <= 256 and util.is_valid_utf8(source_id)
+        and not source_id:find("[%z\1-\31\127]"),
+      "provider " .. id .. " catalog.source_id must be safe text")
+    assert(source_revision == nil or type(source_revision) == "number"
+        and source_revision >= 1 and source_revision % 1 == 0
+        and source_revision < math.huge,
+      "provider " .. id
+        .. " catalog.source_revision must be a positive integer")
+    assert((source_id == nil) == (source_revision == nil),
+      "provider " .. id
+        .. " catalog source_id and source_revision must be supplied together")
+    assert(provider.catalog.discover == nil or source_id ~= nil,
+      "provider " .. id
+        .. " discovery requires catalog source_id and source_revision")
+    assert(provider.catalog.account_scoped == nil
+        or type(provider.catalog.account_scoped) == "boolean",
+      "provider " .. id .. " catalog.account_scoped must be boolean")
+    assert(provider.catalog.account_scoped ~= true or provider.auth ~= nil,
+      "provider " .. id .. " account-scoped catalog requires auth")
     assert(provider.catalog.transform_model == nil
         or type(provider.catalog.transform_model) == "function",
       "provider " .. id .. " catalog.transform_model must be a function")
@@ -347,6 +384,8 @@ local function validate(opts)
       "auth methods require login and request_opts")
     assert(method.public_metadata == nil or type(method.public_metadata) == "function",
       "auth method public_metadata must be a function")
+    assert(method.cache_identity == nil or type(method.cache_identity) == "function",
+      "auth method cache_identity must be a function")
     if method.type == "api_key" then
       assert(method.refresh == nil or type(method.refresh) == "function",
         "API key auth method refresh must be a function")
@@ -387,7 +426,7 @@ local function validate(opts)
   if opts.ui.renderer ~= nil then
     require("neoagent.ui.renderer").assert(opts.ui.renderer, "ui.renderer")
   else
-    assert(require("neoagent.ui.renderers").get(opts.ui.style),
+    assert(renderer_styles[opts.ui.style],
       "ui.style must be pi or codex")
   end
   local positions = { auto = true, left = true, right = true, top = true, bottom = true, center = true }
@@ -438,9 +477,8 @@ local function validate(opts)
         "UI mappings must be non-empty strings, non-empty lists, or false")
     end
   end
-  if opts.tools ~= nil then assert(type(opts.tools) == "table", "tools must be an array") end
+  agent_loop.validate_toolset(opts.tools or {}, opts.execute_tool)
   if opts.system_prompt ~= nil then assert(type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function", "system_prompt must be a string or function") end
-  if opts.execute_tool ~= nil then assert(type(opts.execute_tool) == "function", "execute_tool must be a function") end
   if opts._view ~= nil then
     assert(type(opts._view) == "function", "_view must be a function")
   end
@@ -456,8 +494,6 @@ function M.resolve(opts)
   end
   local configured = util.deep_merge(defaults, opts)
   configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
-  configured.ui.renderer = configured.ui.renderer
-    or require("neoagent.ui.renderers").get(configured.ui.style)
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
   return util.copy(configured)

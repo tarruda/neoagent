@@ -1,4 +1,5 @@
 local common = require("neoagent.registry.zai_common")
+local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local ids = {
   "glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v", "glm-4.6",
@@ -14,6 +15,10 @@ return {
   auth = "zai",
   request_opts = { body = { stream_options = { include_usage = true } } },
   catalog = {
+    source_id = "zai-api-models",
+    source_revision = 1,
+    source_options = no_source_options,
+    account_scoped = true,
     ttl_ms = 14 * 24 * 60 * 60 * 1000,
     seed = common.seed(ids),
     discover = require("neoagent.providers.zai").discover_models,

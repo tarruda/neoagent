@@ -17,6 +17,74 @@ local function same_region_geometry(left, right)
   return true
 end
 
+local function retained_document_changes(previous, layout)
+  local document = layout.region_document
+  local prior = previous.region_document
+  if not document or not prior
+      or not util.equal(document.shape, prior.shape) then
+    return nil
+  end
+  local changed = {
+    content = false,
+    decorations = false,
+    interaction = not util.equal(previous.edit, layout.edit),
+    images = false,
+    regions = false,
+    sources = false,
+    virtuals = false,
+  }
+  local first = document.changed_first
+  if first then
+    for index = first, math.max(#previous.regions, #layout.regions) do
+      local left, right = previous.regions[index], layout.regions[index]
+      if not left or not right then
+        changed.content = true
+        changed.decorations = true
+        changed.interaction = true
+        changed.images = true
+        changed.regions = true
+        changed.sources = true
+        changed.virtuals = true
+      else
+        local shifted = left.first ~= right.first
+          or left.last ~= right.last
+        local content_changed = not util.equal(left.lines, right.lines)
+        changed.content = changed.content or content_changed
+        local decorations_changed = not util.equal(
+          left.decorations, right.decorations)
+          or shifted and (#left.decorations > 0 or #right.decorations > 0)
+        changed.decorations = changed.decorations or decorations_changed
+        local interaction_changed = not util.equal(left.targets, right.targets)
+          or not util.equal(left.target_order, right.target_order)
+          or not util.equal(left.hit_order, right.hit_order)
+          or not util.equal(left.scopes, right.scopes)
+          or shifted and (next(left.targets) ~= nil or next(right.targets) ~= nil
+            or next(left.scopes) ~= nil or next(right.scopes) ~= nil)
+        changed.interaction = changed.interaction or interaction_changed
+        local images_changed = not util.equal(left.images, right.images)
+          or shifted and (next(left.images) ~= nil or next(right.images) ~= nil)
+        changed.images = changed.images or images_changed
+        local sources_changed = not util.equal(
+          left.source_ranges, right.source_ranges)
+          or shifted and (#left.source_ranges > 0 or #right.source_ranges > 0)
+        changed.sources = changed.sources or sources_changed
+        local virtuals_changed = not util.equal(left.virtuals, right.virtuals)
+          or shifted and (#left.virtuals > 0 or #right.virtuals > 0)
+        changed.virtuals = changed.virtuals or virtuals_changed
+        changed.regions = changed.regions or left.key ~= right.key or shifted
+      end
+    end
+  end
+  changed.scene = previous.scene ~= layout.scene
+  changed.chrome = not util.equal(previous.chrome, layout.chrome)
+  changed.view = not util.equal(previous.view, layout.view)
+  changed.any = changed.content or changed.decorations
+    or changed.interaction or changed.images or changed.regions
+    or changed.sources or changed.virtuals or changed.scene
+    or changed.chrome or changed.view
+  return changed
+end
+
 function M.changes(previous, layout)
   if not previous then
     return {
@@ -33,6 +101,8 @@ function M.changes(previous, layout)
       view = true,
     }
   end
+  local retained = retained_document_changes(previous, layout)
+  if retained then return retained end
   local changed = {
     content = not util.equal(previous.lines, layout.lines),
     decorations = not util.equal(previous.decorations, layout.decorations),
@@ -65,8 +135,28 @@ local function valid_window(surface)
   end
 end
 
+local function region_at(layout, row)
+  local regions = layout and layout.regions or {}
+  local first, last = 1, #regions
+  while first <= last do
+    local index = math.floor((first + last) / 2)
+    local region = regions[index]
+    if row < region.first then
+      last = index - 1
+    elseif row >= region.last then
+      first = index + 1
+    else
+      return { key = region.key, row = row - region.first, index = index }
+    end
+  end
+end
+
 local function target_at(layout, row, col)
-  for _, key in ipairs(layout and (layout.hit_order or layout.target_order) or {}) do
+  local region = layout and layout.region_document and region_at(layout, row)
+  local selected = region and layout.regions[region.index]
+  local order = selected and (selected.hit_order or selected.target_order)
+    or layout and (layout.hit_order or layout.target_order) or {}
+  for _, key in ipairs(order) do
     local target = layout.targets[key]
     for index, rect in ipairs(target and target.rectangles or {}) do
       if row >= rect.row and row < rect.row + rect.height
@@ -78,14 +168,6 @@ local function target_at(layout, row, col)
           col = col - rect.col,
         }
       end
-    end
-  end
-end
-
-local function region_at(layout, row)
-  for _, region in ipairs(layout and layout.regions or {}) do
-    if row >= region.first and row < region.last then
-      return { key = region.key, row = row - region.first }
     end
   end
 end
@@ -227,9 +309,21 @@ local function replace_content(buffer, old, new, changes)
     changes.full_rebuilds = changes.full_rebuilds + 1
     return "rebuild"
   end
-  if same_region_order(old, new) then
+  local document = new.region_document
+  local changed_first = document and document.changed_first or nil
+  local retained_order = changed_first ~= nil
+    and #old.regions == #new.regions
+  if retained_order then
+    for index = changed_first, #new.regions do
+      if old.regions[index].key ~= new.regions[index].key then
+        retained_order = false
+        break
+      end
+    end
+  end
+  if retained_order or same_region_order(old, new) then
     local changed = false
-    for index = #new.regions, 1, -1 do
+    for index = #new.regions, changed_first or 1, -1 do
       local previous, current = old.regions[index], new.regions[index]
       local old_first = index == 1 and 0 or old.regions[index - 1].last
       local new_first = index == 1 and 0 or new.regions[index - 1].last
@@ -427,15 +521,33 @@ local function reconcile_decorations(
 end
 
 local function sync_decorations(
-    buffer, namespace, state, previous, layout, context)
+    buffer, namespace, state, previous, layout, context, first)
   state.decoration_marks = state.decoration_marks or {}
-  local old = {}
-  for _, region in ipairs(previous and previous.regions or {}) do old[region.key] = region end
-  local active, writes = {}, 0
   local context_changed = not util.equal(
     state.continuation_context, context)
-  local retain = same_region_order(previous, layout) and not context_changed
-  for _, region in ipairs(layout.regions) do
+  if context_changed then first = nil end
+  local old = {}
+  local previous_regions = previous and previous.regions or {}
+  for index = first or 1, #previous_regions do
+    local region = previous_regions[index]
+    old[region.key] = region
+  end
+  local active, writes = {}, 0
+  local retain = not context_changed
+  if retain then
+    if first and #previous_regions == #layout.regions then
+      for index = first, #layout.regions do
+        if previous_regions[index].key ~= layout.regions[index].key then
+          retain = false
+          break
+        end
+      end
+    else
+      retain = same_region_order(previous, layout)
+    end
+  end
+  for index = first or 1, #layout.regions do
+    local region = layout.regions[index]
     active[region.key] = true
     local prior = old[region.key]
     if not prior or not retain or not util.equal(prior.lines, region.lines)
@@ -452,8 +564,9 @@ local function sync_decorations(
       writes = writes + count
     end
   end
-  for key, marks in pairs(state.decoration_marks) do
-    if not active[key] then
+  for key in pairs(old) do
+    local marks = state.decoration_marks[key]
+    if marks and not active[key] then
       delete_marks(buffer, namespace, marks)
       state.decoration_marks[key] = nil
     end
@@ -480,10 +593,14 @@ local function apply_virtuals(buffer, namespace, layout)
   return writes
 end
 
-local function sync_region_marks(buffer, namespace, state, layout)
+local function sync_region_marks(buffer, namespace, state, layout, first)
   state.region_marks = state.region_marks or {}
   local active, count = {}, 0
-  for _, region in ipairs(layout.regions) do
+  local previous = state.layout and state.layout.regions or {}
+  local old = {}
+  for index = first or 1, #previous do old[previous[index].key] = true end
+  for index = first or 1, #layout.regions do
+    local region = layout.regions[index]
     active[region.key] = true
     local mark = state.region_marks[region.key]
     if not mark or mark.first ~= region.first or mark.last ~= region.last then
@@ -511,8 +628,9 @@ local function sync_region_marks(buffer, namespace, state, layout)
       end
     end
   end
-  for key, mark in pairs(state.region_marks) do
-    if not active[key] then
+  for key in pairs(old) do
+    local mark = state.region_marks[key]
+    if mark and not active[key] then
       pcall(vim.api.nvim_buf_del_extmark, buffer, namespace, mark.id)
       state.region_marks[key] = nil
     end
@@ -1034,6 +1152,8 @@ function M.apply(opts)
   local state = opts.state or {}
   local previous = state.layout
   local differences = opts.changes or M.changes(previous, layout)
+  local document = layout.region_document
+  local changed_first = document and document.changed_first or nil
   local saved = save_view(surface, layout, previous, opts.cursor_namespace)
   local changes = {
     line_splices = 0,
@@ -1076,7 +1196,7 @@ function M.apply(opts)
         or not util.equal(state.continuation_context, continuation)) then
       changes.extmark_writes = changes.extmark_writes
         + sync_decorations(buffer, namespace, state, previous, layout,
-          continuation)
+          continuation, changed_first)
     end
     if not layout.scene and (not previous or state.content_result ~= "unchanged"
         or differences.virtuals) then
@@ -1090,7 +1210,8 @@ function M.apply(opts)
           or vim.api.nvim_buf_get_lines(buffer, 0, -1, false))
     end
     changes.extmark_writes = changes.extmark_writes
-      + sync_region_marks(buffer, opts.region_namespace, state, layout)
+      + sync_region_marks(buffer, opts.region_namespace, state, layout,
+        changed_first)
     if opts.window_changed or not previous or differences.chrome then
       apply_chrome(surface, layout, state)
     end

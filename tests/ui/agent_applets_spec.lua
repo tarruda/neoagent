@@ -31,7 +31,13 @@ describe("neoagent Agent-owned Applets", function()
       providers = {
         fake = { api = "fake-api", models = { test = {} } },
       },
-      _apis = { ["fake-api"] = function() return model end },
+      _apis = { ["fake-api"] = function(resolved)
+        model.api = model.api or resolved.api
+        model.provider = model.provider or resolved.provider_id
+        model.id = model.id or resolved.model_id
+        model.input = model.input or resolved.model.input or { "text" }
+        return model
+      end },
       tools = {},
       agent_instructions = false,
       skills = false,
@@ -173,6 +179,22 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.equal(draft, applet:agents()[1]:applet())
   end)
 
+  it("rolls back a provisional Agent when work fails before acceptance", function()
+    applet = neoagent._setup(configuration(fake_model.new({})), {
+      interaction = function() error("interaction failed before acceptance") end,
+    })
+    assert(applet:toggle())
+    local draft = applet:foreground_applet()
+
+    submit("retained until durable acceptance")
+
+    assert(vim.wait(1000, function()
+      return draft:agent() == nil and #applet:agents() == 0
+    end))
+    assert.are.equal("retained until durable acceptance", draft:get_input())
+    assert.is_nil(draft.binding_restore)
+  end)
+
   it("rolls back a failed Agent bind without consuming draft resources", function()
     setup(fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "created" } }),
@@ -193,6 +215,9 @@ describe("neoagent Agent-owned Applets", function()
 
     submit("retained through bind")
 
+    assert(vim.wait(1000, function()
+      return rejected ~= nil and rejected:is_destroyed()
+    end))
     assert.is_true(rejected:is_destroyed())
     assert.is_false(draft:is_destroyed())
     assert.is_nil(draft:agent())
@@ -205,7 +230,10 @@ describe("neoagent Agent-owned Applets", function()
     profile.create_agent = create_agent
     submit("retained through bind")
     assert(vim.wait(1000, function()
+      local accepted = applet:agents()[1]
+      local record = accepted and applet:record(accepted)
       return #applet:agents() == 1
+        and record and record.draft_rollback == nil
     end, 5))
     local accepted = applet:agents()[1]
     assert.are.equal(draft, accepted:applet())
@@ -442,6 +470,43 @@ describe("neoagent Agent-owned Applets", function()
     assert.is_table(agent:get_session())
     assert.are.equal("fake/remembered", agent:snapshot().context.model)
     assert.are.equal("high", agent:get_thinking_level())
+  end)
+
+  it("warns and falls back from unsafe Workspace model preferences", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({
+      agents = { neo = {
+        default_model = { provider = "", model = "bad\nmodel" },
+      } },
+    }))
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message, level }
+    end
+    local ok, err = pcall(function()
+      setup(fake_model.new({}), {
+        persistence = {
+          enabled = true,
+          workspace_settings = true,
+          directory = directory,
+        },
+      })
+      assert(applet:toggle())
+    end)
+    vim.notify = original_notify
+
+    assert(ok, err)
+    assert.are.equal("fake/test", assert(applet:view()).context.model)
+    local warning = assert(vim.iter(notifications):find(function(entry)
+      return entry[1]:find("workspace default_model is invalid", 1, true)
+    end))
+    assert.are.equal(vim.log.levels.WARN, warning[2])
   end)
 
   it("rejects an unsupported workspace setting without applying it", function()
@@ -982,6 +1047,22 @@ describe("neoagent Agent-owned Applets", function()
     local source = applet:active_agent()
     local source_snapshot = assert(source:get_session():snapshot())
     local profile = applet:profile("neo")
+    local create_applet = profile.create_applet
+    profile.create_applet = function()
+      error("derived draft construction failed")
+    end
+
+    local missing_draft, draft_err = applet:fork()
+
+    profile.create_applet = create_applet
+    assert.is_nil(missing_draft)
+    assert.is_true(draft_err.session_created)
+    assert.is_string(draft_err.session_path)
+    assert.matches("derived draft construction failed", draft_err.detail)
+    assert(vim.uv.fs_stat(draft_err.session_path))
+    assert(applet:resume(draft_err.session_path))
+    assert.are.equal(source, applet:select(source))
+
     local create_agent = profile.create_agent
     profile.create_agent = function() error("derived construction failed") end
 
@@ -1004,6 +1085,51 @@ describe("neoagent Agent-owned Applets", function()
 
     local resumed = assert(applet:resume(err.session_path))
     assert.are_not.equal(source:get_session():id(), resumed:get_session():id())
+  end)
+
+  it("reports and reuses a derived Agent after activation failure", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local response = fake_model.assistant({ {
+      type = "text", text = "source",
+    } })
+    response.message.provider = "fake"
+    response.message.model = "test"
+    setup(fake_model.new({ { result = response } }), {
+      persistence = { enabled = true, directory = directory },
+    })
+    assert(applet:toggle())
+    submit("durable activation source")
+    assert(vim.wait(1000, function()
+      local agent = applet:active_agent()
+      return agent and not agent:is_running()
+    end, 5))
+    local source = assert(applet:active_agent())
+    local activate = applet._activate
+    local registered
+    applet._activate = function(self, surface, agent)
+      if agent and agent ~= source then
+        registered = agent
+        error("derived activation exploded")
+      end
+      return activate(self, surface, agent)
+    end
+
+    local called, derived, err = pcall(applet.fork, applet)
+    applet._activate = activate
+
+    assert.is_true(called)
+    assert.is_nil(derived)
+    assert.matches("derived activation exploded", err.detail)
+    assert.is_true(err.session_created)
+    assert.is_string(err.session_path)
+    assert.are.equal(registered:id(), err.agent_id)
+    assert.is_false(registered:is_destroyed())
+    assert.are.equal(registered, applet:record(registered).agent)
+
+    local resumed = assert(applet:resume(err.session_path))
+    assert.are.equal(registered, resumed)
+    assert.are.equal(registered, applet:active_agent())
   end)
 
   it("retains Profile drafts independently for each Workspace", function()
@@ -1048,7 +1174,10 @@ describe("neoagent Agent-owned Applets", function()
 
     applet:send("sandboxed draft")
     assert(vim.wait(1000, function()
+      local agent = applet:agents()[1]
+      local record = agent and applet:record(agent)
       return #applet:agents() == 1
+        and record and record.draft_rollback == nil
     end, 5))
     local first = applet:agents()[1]
     assert.is_true(applet:record(first).metadata.sandbox.status.enabled)

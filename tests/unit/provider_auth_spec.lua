@@ -102,7 +102,7 @@ describe("neoagent provider auth metadata", function()
     end
   end)
 
-  it("validates public_metadata in configured auth methods", function()
+  it("validates metadata callbacks in configured auth methods", function()
     config.setup({
       default_registry = false,
       providers = {},
@@ -121,6 +121,18 @@ describe("neoagent provider auth metadata", function()
         auth = {
           path = "/tmp/auth.json",
           methods = { invalid = method("not a function") },
+        },
+      })
+    end)
+    assert.has_error(function()
+      local invalid = method(nil)
+      invalid.cache_identity = "not a function"
+      config.setup({
+        default_registry = false,
+        providers = {},
+        auth = {
+          path = "/tmp/auth.json",
+          methods = { invalid = invalid },
         },
       })
     end)

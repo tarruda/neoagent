@@ -55,7 +55,13 @@ describe("neoagent default agent", function()
       persistence = { enabled = false },
       default_model = { provider = "fake", model = "test" },
       providers = { fake = { api = "fake-api", models = { test = {} } } },
-      _apis = { ["fake-api"] = function() return model end },
+      _apis = { ["fake-api"] = function(resolved)
+        model.api = model.api or resolved.api
+        model.provider = model.provider or resolved.provider_id
+        model.id = model.id or resolved.model_id
+        model.input = model.input or resolved.model.input or { "text" }
+        return model
+      end },
       tools = {},
       agent_instructions = false,
       skills = false,
@@ -133,6 +139,34 @@ describe("neoagent default agent", function()
     return neoagent._setup(options, take_runtime(options))
   end
 
+  local function controlled_run(options, on_cancel)
+    local pending
+    local run = require("neoagent.async").run(function()
+      return require("neoagent.async").await(function(done)
+        pending = done
+        return function()
+          if on_cancel then on_cancel() end
+        end
+      end)
+    end, {
+      on_event = options.on_event,
+      on_done = options.on_done,
+      error_kind = "interaction",
+    })
+    options.complete = function(result) return pending.resolve(result) end
+    return run
+  end
+
+  local function completed_run(options, result)
+    return require("neoagent.async").run(function()
+      return vim.deepcopy(result)
+    end, {
+      on_event = options.on_event,
+      on_done = options.on_done,
+      error_kind = "interaction",
+    })
+  end
+
   it("composes a model, session, interaction, and passive UI", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hello" } }) } })
     setup_model(model)
@@ -143,6 +177,549 @@ describe("neoagent default agent", function()
     local lines = table.concat(vim.api.nvim_buf_get_lines(view_handles.buffer(current_view(), "transcript"), 0, -1, false), "\n")
     assert.matches(" hi ", lines)
     assert.matches(" hello ", lines)
+  end)
+
+  it("publishes a closed completion while direct callers retain Session", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local agent = setup_model(fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "done" } }),
+    } }), {
+      persistence = { enabled = true, directory = directory },
+    })
+    local finish
+    local unsubscribe = agent:subscribe(function(update)
+      if update.type == "finish" then finish = update.result end
+    end)
+
+    local run = assert(agent:send("retain bounded completion metadata"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and is_idle() and finish ~= nil
+    end))
+
+    assert.are.equal(agent:get_session(), run:result().session)
+    local expected = {
+      ok = true,
+      status = "succeeded",
+      message_count = 1,
+      stop_reason = "stop",
+      usage = {
+        input = 0,
+        output = 0,
+        cacheRead = 0,
+        cacheWrite = 0,
+        totalTokens = 0,
+      },
+    }
+    assert.are.same(expected, finish)
+    assert.are.same(expected, agent:snapshot().result)
+    unsubscribe()
+  end)
+
+  it("bounds retained completion errors and excludes provider owners", function()
+    local failure = fake_model.assistant({ {
+      type = "text", text = "partial",
+    } }, "error")
+    failure.ok = false
+    failure.error = {
+      kind = "provider",
+      message = string.rep("m", 2000),
+      detail = { message = string.rep("d", 2000), private = "hidden" },
+      response = { body = "private provider response" },
+      code = "overloaded",
+      status = 503,
+      retryable = false,
+    }
+    local agent = setup_model(fake_model.new({ { result = failure } }), {
+      retry = { enabled = false },
+    })
+
+    local run = assert(agent:send("fail with bounded metadata"))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+
+    assert.are.equal("private provider response",
+      run:result().error.response.body)
+    local completion = agent:snapshot().result
+    assert.are.equal("failed", completion.status)
+    assert.are.equal(1, completion.message_count)
+    assert.are.equal("error", completion.stop_reason)
+    assert.are.equal(513, vim.fn.strchars(completion.error.message))
+    assert.are.equal(1024, vim.fn.strchars(completion.error.detail))
+    assert.are.equal("overloaded", completion.error.code)
+    assert.are.equal(503, completion.error.status)
+    assert.is_false(completion.error.retryable)
+    assert.is_nil(completion.error.response)
+    assert.is_nil(completion.session)
+  end)
+
+  it("normalizes scalar completion details without retaining owners", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "provider",
+      message = "failed",
+      detail = 42,
+    }
+    local agent = setup_model(fake_model.new({ { result = failed } }), {
+      retry = { enabled = false },
+    })
+
+    local run = assert(agent:send("retain a scalar detail"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("42", agent:snapshot().result.error.detail)
+  end)
+
+  it("uses returned Run results instead of synchronous completion callbacks", function()
+    local returned
+    local captured
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function(options)
+        captured = options
+        options.on_done({
+          ok = false,
+          error = { kind = "interaction", message = "stale callback" },
+        })
+        returned = completed_run(options, { ok = true, new_messages = {} })
+        return returned
+      end,
+    })
+
+    local outer = assert(agent:send("complete synchronously"))
+    assert(vim.wait(1000, function() return returned ~= nil end))
+    assert.are_not.equal(returned, outer)
+    assert(vim.wait(1000, function()
+      return outer:is_done() and not agent:is_running()
+    end))
+
+    assert.is_true(returned:is_done())
+    assert.are.equal("succeeded", agent:snapshot().result.status)
+    captured.on_event({ type = "provider_status", text = "late" })
+    captured.on_done({
+      ok = false, error = { kind = "interaction", message = "late" },
+    })
+    vim.wait(20)
+    assert.is_false(agent:snapshot().context.provider_status)
+    assert.are.equal("succeeded", agent:snapshot().result.status)
+  end)
+
+  it("contains completion metadata projection failures", function()
+    local result = setmetatable({ ok = true, new_messages = {} }, {
+      __index = function(_, key)
+        if key == "usage" then error("completion usage failed") end
+        return nil
+      end,
+    })
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function(options)
+        return require("neoagent.async").run(function()
+          return result
+        end, {
+          on_event = options.on_event,
+          on_done = options.on_done,
+          error_kind = "interaction",
+        })
+      end,
+    })
+
+    local run = assert(agent:send("project hostile metadata"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.is_true(run:result().ok)
+    assert.are.equal("failed", agent:snapshot().result.status)
+    assert.matches("completion usage failed",
+      agent:snapshot().result.error.message)
+  end)
+
+  it("reports completion publication failures without losing cleanup", function()
+    local options
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function(value)
+        options = value
+        return controlled_run(value)
+      end,
+    })
+    local run = assert(agent:send("finish with a broken projection"))
+    assert(vim.wait(1000, function() return options ~= nil end))
+    local unsubscribe = agent:subscribe(function()
+      error("completion listener failed")
+    end)
+    local presenter = agent:presenter()
+    local notify = presenter.notify
+    presenter.notify = function()
+      error("completion notification failed")
+    end
+    options.complete({ ok = true, new_messages = {} })
+    assert(vim.wait(1000, function() return run:is_done() end))
+    presenter.notify = notify
+    unsubscribe()
+    assert(vim.wait(1000, function() return not agent:is_running() end))
+    assert.is_true(run:result().ok)
+  end)
+
+  it("contains malformed returned interaction Runs", function()
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function()
+        return {
+          cancel = function() end,
+          is_done = function() return true end,
+          result = function() return "invalid" end,
+        }
+      end,
+    })
+
+    local run = assert(agent:send("return malformed completion"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+
+    assert.is_false(run:result().ok)
+    assert.matches("invalid result", run:result().error.message)
+    assert.are.equal("failed", agent:snapshot().result.status)
+
+    agent = setup_model(fake_model.new({}), {
+      _interaction = function()
+        return {
+          cancel = function() end,
+          is_done = function() return false end,
+          result = function() end,
+        }
+      end,
+    })
+    run = assert(agent:send("return an unawaitable Run"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.matches("must return a Run", run:result().error.message)
+  end)
+
+  it("releases provider ownership when activity allocation fails", function()
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "recovered" } }),
+    } })
+    local agent = setup_model(model, {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+    })
+    assert.is_nil(agent:send(" \n "))
+    assert.are.equal(0, #model.requests)
+    assert.is_false(agent:is_running())
+
+    local async_module = require("neoagent.async")
+    local async_run = async_module.run
+    async_module.run = function(...)
+      local caller = debug.getinfo(2, "S")
+      if caller and caller.source:match("agent/run_lifecycle.lua$") then
+        error("activity allocation failed")
+      end
+      return async_run(...)
+    end
+    local called, run, err = pcall(agent.send, agent, "allocate activity")
+    async_module.run = async_run
+
+    assert(called, run)
+    assert.is_nil(run)
+    assert.matches("activity allocation failed", err.message)
+    assert.is_false(agent:is_running())
+    assert.are.same({ 1, 0 }, users)
+
+    run = assert(agent:send("try again"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.is_true(run:result().ok)
+    assert.are.equal("recovered",
+      agent:get_session():messages()[2].content[1].text)
+    unsubscribe()
+  end)
+
+  it("cancels a child when interaction installation or its parent is lost", function()
+    local child_cancelled = false
+    local agent
+    agent = setup_model(fake_model.new({}), {
+      _interaction = function(options)
+        local child = controlled_run(options, function()
+          child_cancelled = true
+        end)
+        assert.is_true(agent:stop())
+        return child
+      end,
+    })
+    local run = assert(agent:send("cancel during launch"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.is_true(child_cancelled)
+    assert.are.equal("cancelled", run:result().error.kind)
+
+    local original_messages
+    agent = setup_model(fake_model.new({}), {
+      _interaction = function(options)
+        local child = controlled_run(options, function()
+          child_cancelled = true
+        end)
+        local session = agent:get_session()
+        original_messages = session.messages
+        session.messages = function() error("transcript installation failed") end
+        return child
+      end,
+    })
+    child_cancelled = false
+    run = assert(agent:send("fail child installation"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    agent:get_session().messages = original_messages
+    assert.is_true(child_cancelled)
+    assert.matches("transcript installation failed", run:result().error.message)
+  end)
+
+  it("bounds accepted entry identities and reports failed provider release", function()
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local provider_service = require("neoagent.provider_service")
+    local acquire_use = provider_service.acquire_use
+    provider_service.acquire_use = function(selected)
+      local lease, err = acquire_use(selected)
+      if not lease then return nil, err end
+      return {
+        release = function()
+          lease:release()
+          return nil, require("neoagent.util").error(
+            "provider", "release confirmation failed")
+        end,
+      }
+    end
+    local accepted
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message = message, level = level }
+    end
+    local agent = setup_model(fake_model.new({}), {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+      _interaction = function(options)
+        options.on_accept({ id = "invalid\nentry" })
+        return completed_run(options, { ok = true, new_messages = {} })
+      end,
+    })
+    agent:subscribe(function(update)
+      if update.type == "submission_accepted" then accepted = update end
+    end)
+    local run = assert(agent:send("accept safely"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    provider_service.acquire_use = acquire_use
+    vim.notify = original_notify
+
+    assert.is_not_nil(accepted)
+    assert.is_nil(accepted.entry_id)
+    assert.is_true(vim.tbl_contains(vim.tbl_map(function(item)
+      return item.message:find("release confirmation failed", 1, true) ~= nil
+    end, notifications), true))
+  end)
+
+  it("reports busy manual lifecycle operations", function()
+    local options
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function(value)
+        options = value
+        return controlled_run(value)
+      end,
+    })
+    local run = assert(agent:send("remain active"))
+    assert(vim.wait(1000, function() return options ~= nil end))
+    local compacted = agent:compact("not yet")
+    assert.is_nil(compacted)
+    local resumed, err = agent:resubmit_steering(1)
+    assert.is_nil(resumed)
+    assert.are.equal("steering", err.kind)
+    assert.matches("busy", err.message)
+    options.complete({ ok = true, new_messages = {} })
+    assert(vim.wait(1000, function() return run:is_done() end))
+  end)
+
+  it("cancels preflight compaction before prompt acceptance", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({
+      directory = directory,
+      cwd = vim.fn.getcwd(),
+    })
+    assert(store:append({
+      role = "user", content = string.rep("old ", 30), timestamp = 1,
+    }, { model = { provider = "fake", model = "test" } }))
+    assert(store:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      provider = "fake", model = "test", stopReason = "stop", timestamp = 2,
+      usage = { totalTokens = 90 },
+    }))
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "unused" } }),
+    } })
+    model.context_window = 100
+    local compaction_started = false
+    local agent = setup_session(model, store, {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+      compaction = {
+        auto = true, reserve_tokens = 20, keep_recent_tokens = 10,
+      },
+      _compaction_run = function(options)
+        compaction_started = true
+        return controlled_run(options)
+      end,
+    })
+    local before = #agent:get_session():messages()
+
+    local run = assert(agent:send("must remain unaccepted"))
+    assert(vim.wait(1000, function() return compaction_started end))
+    assert.is_true(agent:stop())
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(0, #model.requests)
+    assert.are.equal(before, #agent:get_session():messages())
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
+  end)
+
+  it("releases its provider lease when post-compaction launch fails", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({
+      directory = directory,
+      cwd = vim.fn.getcwd(),
+    })
+    assert(store:append({
+      role = "user", content = string.rep("old ", 30), timestamp = 1,
+    }, { model = { provider = "fake", model = "test" } }))
+    assert(store:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      provider = "fake", model = "test", stopReason = "stop", timestamp = 2,
+      usage = { totalTokens = 90 },
+    }))
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local model = fake_model.new({})
+    model.context_window = 100
+    local agent = setup_session(model, store, {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+      compaction = {
+        auto = true, reserve_tokens = 20, keep_recent_tokens = 10,
+      },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = true,
+          summary = "checkpoint",
+          first_kept_entry_id = options.preparation.first_kept_entry_id,
+          tokens_before = options.preparation.tokens_before,
+        })
+      end,
+      _interaction = function() error("continuation launch failed") end,
+    })
+
+    local run = assert(agent:send("continue after compaction"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+
+    assert.is_false(run:result().ok)
+    assert.matches("continuation launch failed", run:result().error.message)
+    assert.are.equal("failed", agent:snapshot().result.status)
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
+  end)
+
+  it("releases manual compaction ownership after Agent destruction", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local store = require("neoagent.storage").new({
+      directory = directory,
+      cwd = vim.fn.getcwd(),
+    })
+    local appended, _, first = store:append({
+      role = "user", content = string.rep("old ", 30), timestamp = 1,
+    }, { model = { provider = "fake", model = "test" } })
+    assert(appended and first)
+    assert(store:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      provider = "fake", model = "test", stopReason = "stop", timestamp = 2,
+      usage = { totalTokens = 90 },
+    }))
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local started = false
+    local model = fake_model.new({})
+    model.context_window = 100
+    local agent = setup_session(model, store, {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+      compaction = {
+        auto = false, reserve_tokens = 20, keep_recent_tokens = 10,
+      },
+      _compaction_run = function(options)
+        started = true
+        return controlled_run(options)
+      end,
+    })
+    local run = assert(agent:compact("destroy this compaction"))
+    assert(vim.wait(1000, function() return started end))
+
+    agent:destroy()
+
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
   end)
 
   it("identifies the Agent and active Session in executor context", function()
@@ -237,7 +814,13 @@ describe("neoagent default agent", function()
       { result = fake_model.assistant({ { type = "text", text = "second" } }) },
       { result = fake_model.assistant({ { type = "text", text = "third" } }) },
     })
-    setup_model(model)
+    local agent = setup_model(model)
+    local accepted = {}
+    agent:subscribe(function(update)
+      if update.type == "submission_accepted" then
+        accepted[#accepted + 1] = vim.deepcopy(update)
+      end
+    end)
     local run = assert(neoagent.send("begin"))
     assert.is_true(neoagent.send("steer one"))
     assert.is_true(neoagent.steer("steer two"))
@@ -249,6 +832,76 @@ describe("neoagent default agent", function()
       vim.tbl_map(function(message) return message.role end, messages))
     assert.are.equal("steer one", model.requests[2].messages[3].content)
     assert.are.equal("steer two", model.requests[3].messages[5].content)
+    assert.are.same({ "begin", "steer one", "steer two" },
+      vim.tbl_map(function(update) return update.prompt end, accepted))
+    for index, update in ipairs(accepted) do
+      assert.are.equal(index, update.submission_id)
+      assert.is_string(update.entry_id)
+      assert.is_true(update.entry_id ~= "")
+      if index > 1 then
+        assert.is_true(accepted[index - 1].revision < update.revision)
+      end
+    end
+  end)
+
+  it("journals failed visible steering once when it is resubmitted", function()
+    local async = require("neoagent.async")
+    local pending
+    local model = {
+      api = "fake",
+      provider = "fake",
+      id = "test",
+      requests = {},
+    }
+    function model:stream(opts)
+      self.requests[#self.requests + 1] = vim.deepcopy(opts)
+      if #self.requests == 1 then
+        return async.run(function()
+          return async.await(function(done) pending = done end)
+        end, {
+          on_event = opts.on_event,
+          on_done = opts.on_done,
+          error_kind = "model",
+        })
+      end
+      local text = #self.requests == 2 and "second" or "duplicate"
+      return async.run(function()
+        return fake_model.assistant({ { type = "text", text = text } })
+      end, {
+        on_event = opts.on_event,
+        on_done = opts.on_done,
+        error_kind = "model",
+      })
+    end
+
+    setup_model(model)
+    assert(neoagent.open())
+    local first = assert(neoagent.send("begin"))
+    assert(vim.wait(1000, function() return pending ~= nil end, 5))
+    local view = current_view()
+    view:set_input("B")
+    assert.is_true(neoagent.send("B"))
+    assert.are.equal("", view:get_input())
+    pending.resolve({
+      ok = false,
+      error = { kind = "model", message = "first failed" },
+    })
+    assert(vim.wait(1000, function()
+      return first:is_done() and is_idle()
+        and view:get_input() == "B"
+        and vim.deep_equal(snapshot().context.steering, { "B" })
+    end, 5))
+
+    assert(neoagent.send(view:get_input()))
+    assert(vim.wait(1000, function()
+      return is_idle() and #model.requests >= 2
+        and vim.deep_equal(snapshot().context.steering, {})
+    end, 5))
+
+    assert.are.equal(2, #model.requests)
+    assert.are.same({ "user", "user", "assistant" },
+      vim.tbl_map(function(message) return message.role end,
+        neoagent.get_session():messages()))
   end)
 
   it("tracks model context usage, provider status, and inference speed", function()
@@ -278,7 +931,7 @@ describe("neoagent default agent", function()
     assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
     assert.are.same({ used = 250, total = 1000, percent = 25 },
       current_view().context.context_usage)
-    assert.are.equal("quota 70% left", current_view().context.provider_status)
+    assert.is_false(current_view().context.provider_status)
     assert.are.same({
       generation_tokens_per_second = 40,
     }, current_view().context.inference_stats)
@@ -330,11 +983,50 @@ describe("neoagent default agent", function()
     }, observed)
   end)
 
+  it("reuses context usage across streamed inference rates", function()
+    local model = fake_model.new({ {
+      events = {
+        { type = "inference_stats", generation_tokens_per_second = 40 },
+        { type = "inference_stats", generation_tokens_per_second = 45 },
+        { type = "inference_stats", generation_tokens_per_second = 50 },
+      },
+      result = fake_model.assistant({ { type = "text", text = "done" } }),
+    } })
+    model.context_window = 1000
+    local agent = setup_model(model)
+    local session = neoagent.get_session()
+    local context_messages = session.context_messages
+    local context_reads = 0
+    session.context_messages = function(...)
+      context_reads = context_reads + 1
+      return context_messages(...)
+    end
+    local reads = {}
+    agent:subscribe(function(update)
+      local stats = update.type == "context"
+        and update.context.inference_stats or nil
+      local rate = type(stats) == "table"
+        and stats.generation_tokens_per_second or nil
+      if rate and (not reads[#reads] or reads[#reads].rate ~= rate) then
+        reads[#reads + 1] = { rate = rate, count = context_reads }
+      end
+    end)
+
+    local run = assert(neoagent.send("measure"))
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+    assert.are.same({ 40, 45, 50 }, vim.tbl_map(function(value)
+      return value.rate
+    end, reads))
+    assert.are.equal(reads[1].count, reads[2].count)
+    assert.are.equal(reads[1].count, reads[3].count)
+  end)
+
   it("clears prompt processing speed when inference ends without generation timing", function()
     local model = fake_model.new({ {
       events = { {
         type = "inference_stats",
         prompt_tokens_per_second = 75,
+        elapsed_ms = 2000,
       } },
       result = fake_model.assistant({ { type = "text", text = "done" } }),
     } })
@@ -405,7 +1097,7 @@ describe("neoagent default agent", function()
     assert.is_true(compaction_card < retained)
     assert.are.equal("perform the large task", neoagent.get_session():messages()[1].content)
     assert.not_matches("perform the large task", transcript)
-    assert.are.equal("summary quota", current_view().context.provider_status)
+    assert.is_false(current_view().context.provider_status)
   end)
 
   it("continues a length-limited turn after automatic compaction", function()
@@ -478,7 +1170,7 @@ describe("neoagent default agent", function()
       return run:is_done() and is_idle() and #model.requests == 2
     end))
     assert.is_true(snapshot().result.ok)
-    assert.are.equal("length", snapshot().result.message.stopReason)
+    assert.are.equal("length", snapshot().result.stop_reason)
     assert.are.equal(3, #neoagent.get_session():messages())
   end)
 
@@ -550,6 +1242,162 @@ describe("neoagent default agent", function()
       return message.role == "user"
     end, messages)))
     assert.are.equal("compaction", neoagent.get_session():entries()[#neoagent.get_session():entries() - 1].type)
+  end)
+
+  it("propagates cancellation from context-overflow recovery", function()
+    local overflow = fake_model.assistant({}, "error")
+    overflow.ok = false
+    overflow.error = {
+      kind = "model",
+      message = "the request exceeds the available context size",
+    }
+    local model = fake_model.new({ { result = overflow } })
+    model.context_window = 100
+    local agent = setup_model(model, {
+      compaction = {
+        auto = false, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = false,
+          error = { kind = "cancelled", message = "compaction cancelled" },
+        })
+      end,
+    })
+    local session = agent:get_session()
+    assert(session:append({
+      role = "user", content = string.rep("old ", 30),
+    }))
+    assert(session:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      stopReason = "stop",
+    }))
+
+    local run = assert(agent:send("overflow"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(1, #model.requests)
+  end)
+
+  it("keeps the provider failure when overflow compaction fails", function()
+    local overflow = fake_model.assistant({}, "error")
+    overflow.ok = false
+    overflow.error = {
+      kind = "model",
+      message = "the request exceeds the available context size",
+    }
+    local model = fake_model.new({ { result = overflow } })
+    model.context_window = 100
+    local agent = setup_model(model, {
+      compaction = {
+        auto = false, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = false,
+          error = { kind = "compaction", message = "summary failed" },
+        })
+      end,
+    })
+    local session = agent:get_session()
+    assert(session:append({ role = "user", content = string.rep("old ", 30) }))
+    assert(session:append({
+      role = "assistant",
+      content = { { type = "text", text = string.rep("work ", 30) } },
+      stopReason = "stop",
+    }))
+
+    local run = assert(agent:send("overflow"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal(overflow.error.message, run:result().error.message)
+    assert.are.equal(1, #model.requests)
+  end)
+
+  it("keeps a length result when threshold compaction fails", function()
+    local limited = fake_model.assistant({ {
+      type = "text", text = string.rep("partial ", 20),
+    } }, "length")
+    limited.message.usage.totalTokens = 90
+    local model = fake_model.new({ { result = limited } })
+    model.context_window = 100
+    local compactions = 0
+    local agent = setup_model(model, {
+      compaction = {
+        auto = true, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        compactions = compactions + 1
+        return completed_run(options, {
+          ok = false,
+          error = { kind = "compaction", message = "summary unavailable" },
+        })
+      end,
+    })
+
+    local run = assert(agent:send("fill the context"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.is_true(run:result().ok)
+    assert.are.equal("length", run:result().message.stopReason)
+    assert.are.equal(1, compactions)
+  end)
+
+  it("returns cancelled length-recovery compaction", function()
+    local limited = fake_model.assistant({ {
+      type = "text", text = string.rep("partial ", 20),
+    } }, "length")
+    limited.message.usage.totalTokens = 90
+    local model = fake_model.new({ { result = limited } })
+    model.context_window = 100
+    local agent = setup_model(model, {
+      compaction = {
+        auto = true, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = false,
+          error = { kind = "cancelled", message = "stop compacting" },
+        })
+      end,
+    })
+
+    local run = assert(agent:send("fill then cancel"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("cancelled", run:result().error.kind)
+  end)
+
+  it("returns cancelled post-turn compaction", function()
+    local complete = fake_model.assistant({ {
+      type = "text", text = string.rep("answer ", 20),
+    } })
+    complete.message.usage.totalTokens = 90
+    local model = fake_model.new({ { result = complete } })
+    model.context_window = 100
+    local agent = setup_model(model, {
+      compaction = {
+        auto = true, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = false,
+          error = { kind = "cancelled", message = "stop compacting" },
+        })
+      end,
+    })
+
+    local run = assert(agent:send("finish then compact"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("cancelled", run:result().error.kind)
   end)
 
   it("cleans up when overflow recovery cannot reset the failed branch", function()
@@ -733,6 +1581,41 @@ describe("neoagent default agent", function()
     assert.is_false(snapshot().result.ok)
   end)
 
+  it("contains retry timer allocation failure", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "HTTP 503: overloaded",
+      retryable = true,
+      retry_after_ms = 1,
+    }
+    local agent = setup_model(fake_model.new({ { result = failed } }), {
+      retry = { enabled = true, max_retries = 1, base_delay_ms = 1 },
+    })
+    local new_timer = vim.uv.new_timer
+    vim.uv.new_timer = function(...)
+      local caller = debug.getinfo(2, "S")
+      if caller and caller.source:match("agent/run_lifecycle.lua$") then
+        return nil
+      end
+      return new_timer(...)
+    end
+    local run
+    local sent, send_err = pcall(function()
+      run = assert(agent:send("retry without a timer"))
+    end)
+    local completed = sent and vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end)
+    vim.uv.new_timer = new_timer
+    assert(sent, send_err)
+    assert(completed)
+
+    assert.is_false(run:result().ok)
+    assert.matches("Failed to create retry timer", run:result().error.message)
+  end)
+
   it("does not retry terminal HTTP transport failures", function()
     local failed = fake_model.assistant({}, "error")
     failed.ok = false
@@ -779,6 +1662,43 @@ describe("neoagent default agent", function()
     assert.are.equal(1, #model.requests)
     assert.are.equal("cancelled", snapshot().result.error.kind)
     assert.is_false(snapshot().context.provider_status)
+  end)
+
+  it("releases retry ownership when the Agent is destroyed", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "HTTP 503: overloaded",
+      retryable = true,
+      retry_after_ms = 10000,
+    }
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local agent = setup_model(fake_model.new({ { result = failed } }), {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+    })
+    local run = assert(agent:send("destroy during retry"))
+    assert(vim.wait(1000, function()
+      return agent:snapshot().context.provider_status == "Reconnecting… 1/3"
+    end))
+
+    agent:destroy()
+
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
   end)
 
   it("reports manual compaction model resolution failures", function()
@@ -830,6 +1750,57 @@ describe("neoagent default agent", function()
     assert.are.equal("compaction", checkpoint.type)
   end)
 
+  it("contains failed post-compaction projection and callback diagnostics", function()
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ {
+        type = "text", text = string.rep("answer ", 20),
+      } }),
+    } })
+    model.context_window = 100
+    local agent
+    local original_context_messages
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      notifications[#notifications + 1] = { message = message, level = level }
+    end
+    agent = setup_model(model, {
+      compaction = {
+        auto = false, reserve_tokens = 20, keep_recent_tokens = 5,
+      },
+      _compaction_run = function(options)
+        options.report({ phase = "compaction callback", message = "failed" })
+        local session = agent:get_session()
+        original_context_messages = session.context_messages
+        session.context_messages = function()
+          return nil, require("neoagent.util").error(
+            "storage", "projection unavailable")
+        end
+        return completed_run(options, {
+          ok = true,
+          summary = "checkpoint",
+          first_kept_entry_id = options.preparation.first_kept_entry_id,
+          tokens_before = options.preparation.tokens_before,
+        })
+      end,
+    })
+    local interaction = assert(agent:send("prepare a compactable turn"))
+    assert(vim.wait(1000, function() return interaction:is_done() end))
+    local run = assert(agent:compact())
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
+    agent:get_session().context_messages = original_context_messages
+    vim.notify = original_notify
+
+    assert.is_false(run:result().ok)
+    assert.matches("projection unavailable", run:result().error.message)
+    assert.is_true(vim.tbl_contains(vim.tbl_map(function(item)
+      return item.message:find(
+        "callback failed during compaction callback", 1, true) ~= nil
+    end, notifications), true))
+  end)
+
   it("recovers when a custom compaction runner cannot start", function()
     local assistant = fake_model.assistant({ {
       type = "text", text = string.rep("answer ", 20),
@@ -860,15 +1831,17 @@ describe("neoagent default agent", function()
         elseif attempts == 2 then
           return {}
         end
-        local run = { cancel = function() end }
         options.on_event({ type = "provider_status", text = "synchronous" })
         options.on_done({
+          ok = false,
+          error = { kind = "compaction", message = "stale callback" },
+        })
+        return completed_run(options, {
           ok = true,
           summary = "synchronous summary",
           first_kept_entry_id = options.preparation.first_kept_entry_id,
           tokens_before = options.preparation.tokens_before,
         })
-        return run
       end,
     })
 
@@ -885,15 +1858,15 @@ describe("neoagent default agent", function()
       kind = "compaction", message = "late failure",
     } })
 
-    local run, err = neoagent.compact()
-    assert.is_nil(run)
-    assert.are.equal("compaction", err.kind)
-    assert.matches("compaction.run must return a Run", err.message)
-    assert.is_true(is_idle())
+    local run = assert(neoagent.compact())
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+    assert.is_false(run:result().ok)
+    assert.matches("must return a Run", run:result().error.message)
     assert.are.equal(2, attempts)
 
-    assert(neoagent.compact())
-    assert.is_true(is_idle())
+    run = assert(neoagent.compact())
+    assert(vim.wait(1000, function() return run:is_done() and is_idle() end))
+    assert.is_true(run:result().ok)
     assert.are.equal(3, attempts)
     local entries = neoagent.get_session():entries()
     assert.are.equal("compaction", entries[#entries].type)
@@ -1075,15 +2048,15 @@ describe("neoagent default agent", function()
       skills = false,
       _interaction = function(options)
         captured = options
-        return { cancel = function()
-          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
-        end }
+        options.on_accept({ id = "accepted" })
+        return controlled_run(options)
       end,
     }
     neoagent._setup(configured, take_runtime(configured))
     assert(neoagent.open())
     assert.matches("^ Neo ·", window_title(view_handles.window(current_view(), "transcript")))
     assert(neoagent.send("inspect"))
+    assert(vim.wait(1000, function() return captured ~= nil end))
     assert.are.same({ "read_file", "write_file", "edit_file", "shell", "read_agent_documentation" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
     local shell = assert(vim.iter(captured.tools):find(function(tool)
@@ -1101,6 +2074,7 @@ describe("neoagent default agent", function()
     assert.is_nil(captured.system_prompt:find("Main documentation:", 1, true))
     assert.is_truthy(captured.system_prompt:find("Current working directory: " .. vim.fn.getcwd(), 1, true))
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, is_idle))
 
     local applet = neoagent.applet()
     assert(applet:new("chat"))
@@ -1109,12 +2083,16 @@ describe("neoagent default agent", function()
     end))
     assert.is_nil(neoagent.get_session())
     assert(neoagent.send("hello"))
+    assert(vim.wait(1000, function()
+      return captured ~= nil and captured.prompt == "hello"
+    end))
     assert.are.equal(2, #applet:agents())
     assert.are.equal("Chat", applet:active_agent():config().name)
     assert.are.same({}, captured.tools)
     assert.are.equal("", captured.system_prompt)
     assert.has_error(function() neoagent.setup({}) end)
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, is_idle))
     assert.are.equal("Neo", assert(applet:select(
       applet:agents()[1]:id())):config().name)
   end)
@@ -1140,13 +2118,13 @@ describe("neoagent default agent", function()
       tools = tools,
       _interaction = function(options)
         captured = options
-        return { cancel = function()
-          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
-        end }
+        options.on_accept({ id = "accepted" })
+        return controlled_run(options)
       end,
     }
     neoagent._setup(configured, take_runtime(configured))
     assert(neoagent.send("chat"))
+    assert(vim.wait(1000, function() return captured ~= nil end))
     assert.matches("You are Neo", captured.system_prompt)
     assert.are.same({ "read_file", "write_file", "edit_file", "shell" },
       vim.tbl_map(function(tool) return tool.name end, captured.tools))
@@ -1162,23 +2140,20 @@ describe("neoagent default agent", function()
       name = "host_tool",
       description = "Host tool",
       input_schema = { type = "object", properties = {} },
+      execute = function() error("unused") end,
     }
     local sandboxed = {
       name = "sandbox_tool",
       description = "Sandbox tool",
       input_schema = { type = "object", properties = {} },
+      execute = function() error("unused") end,
     }
     setup_model(fake_model.new({}), {
       tools = { host },
       execute_tool = host_execute,
       _interaction = function(options)
         calls[#calls + 1] = options
-        return { cancel = function()
-          options.on_done({
-            ok = false,
-            error = { kind = "cancelled", message = "cancelled" },
-          })
-        end }
+        return controlled_run(options)
       end,
     })
     local agent = neoagent.default()
@@ -1196,6 +2171,7 @@ describe("neoagent default agent", function()
     assert.are.equal(host_execute, agent:config().execute_tool)
 
     assert(neoagent.send("use sandbox tools"))
+    assert(vim.wait(1000, function() return calls[1] ~= nil end))
     assert.are.equal("sandbox_tool", calls[1].tools[1].name)
     assert.are.equal(sandbox_execute, calls[1].execute_tool)
     local changed, err = agent:set_toolset(previous)
@@ -1203,14 +2179,56 @@ describe("neoagent default agent", function()
     assert.are.equal("agent", err.kind)
     assert.are.equal("sandbox_tool", agent:get_toolset().tools[1].name)
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, function() return not agent:is_running() end))
 
     assert(agent:set_toolset(previous))
     assert(neoagent.send("use host tools"))
+    assert(vim.wait(1000, function() return calls[2] ~= nil end))
     assert.are.equal("host_tool", calls[2].tools[1].name)
     assert.are.equal(initial.execute_tool, calls[2].execute_tool)
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, function() return not agent:is_running() end))
     assert.has_error(function() agent:set_toolset({ tools = "invalid" }) end,
       "toolset.tools must be a list")
+    local stable = agent:get_toolset()
+    assert.has_error(function()
+      agent:set_toolset({ tools = { {
+        name = "incomplete",
+        description = "missing execution",
+        input_schema = {},
+      } } })
+    end, "tool[1].execute must be a function")
+    assert.are.same(stable.tools, agent:get_toolset().tools)
+  end)
+
+  it("releases a prepared provider lease when turn preparation fails", function()
+    local model = fake_model.new({})
+    local service = {
+      id = "fake",
+      name = "Fake",
+      state = function() return false end,
+      operations = {},
+    }
+    local options = model_options(model, {
+      system_prompt = function() error("prompt preparation failed") end,
+    })
+    local runtime = provider_runtime(
+      "fake", options.providers.fake, service)
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    local agent = neoagent.new(options, {
+      runtimes = { fake = runtime },
+    })
+    neoagent._set_default(agent)
+
+    local run, err = agent:send("must not be accepted")
+
+    assert.is_nil(run)
+    assert.matches("prompt preparation failed", err.message)
+    assert.are.same({}, agent:get_session():messages())
+    assert.are.same({ 1, 0 }, users)
+    unsubscribe()
   end)
 
   it("toggles built-in sandbox execution while Chat or Neo is active", function()
@@ -1238,12 +2256,8 @@ describe("neoagent default agent", function()
       execute_tool = host_execute,
       _interaction = function(options)
         interactions[#interactions + 1] = options
-        return { cancel = function()
-          options.on_done({
-            ok = false,
-            error = { kind = "cancelled", message = "cancelled" },
-          })
-        end }
+        options.on_accept({ id = "accepted-" .. #interactions })
+        return controlled_run(options)
       end,
     })
     local dispatch = require("neoagent.sandbox.platform")
@@ -1263,6 +2277,7 @@ describe("neoagent default agent", function()
       local window = neoagent.applet()
       assert(neoagent.open())
       assert(neoagent.send("switch execution without changing tools"))
+      assert(vim.wait(1000, function() return interactions[1] ~= nil end))
       local neo = window:agents()[1]
       local stable = neo:get_toolset()
       assert.is_table(stable.tools[1].input_schema.properties.options)
@@ -1285,9 +2300,11 @@ describe("neoagent default agent", function()
       assert.are.equal(stable.execute_tool,
         neo:get_toolset().execute_tool)
       assert.is_true(neoagent.stop())
+      assert(vim.wait(1000, function() return not neo:is_running() end))
 
       assert(window:new("chat"))
       assert(neoagent.send("chat stays tool-free"))
+      assert(vim.wait(1000, function() return interactions[2] ~= nil end))
       local chat = window:active_agent()
       assert.are.equal("Chat", chat:config().name)
       assert.are.same({}, chat:get_toolset().tools)
@@ -1295,6 +2312,7 @@ describe("neoagent default agent", function()
       assert.is_nil(toggled)
       assert.are.equal("sandbox", toggle_err.kind)
       assert.is_true(neoagent.stop())
+      assert(vim.wait(1000, function() return not chat:is_running() end))
 
       assert.are.equal(neo, window:select(neo))
       assert.is_true(neoagent.toggle_sandbox().active)
@@ -1315,15 +2333,12 @@ describe("neoagent default agent", function()
           properties = {},
           additionalProperties = false,
         },
+        execute = function() error("unused") end,
       } },
       _interaction = function(options)
         captured = options
-        return { cancel = function()
-          options.on_done({
-            ok = false,
-            error = { kind = "cancelled", message = "cancelled" },
-          })
-        end }
+        options.on_accept({ id = "accepted" })
+        return controlled_run(options)
       end,
     })
     local dispatch = require("neoagent.sandbox.platform")
@@ -1337,15 +2352,22 @@ describe("neoagent default agent", function()
     end
     local ok, err = pcall(function()
       assert(neoagent.send("inspect"))
+      assert(vim.wait(1000, function() return captured ~= nil end))
       local stable_prompt = captured.system_prompt
       assert.matches("Sandbox controls", stable_prompt)
       assert.matches("require_escalation", captured.system_prompt)
       assert.is_true(neoagent.stop())
+      assert(vim.wait(1000, is_idle))
 
+      local previous_capture = captured
       assert(neoagent.toggle_sandbox())
       assert(neoagent.send("inspect"))
+      assert(vim.wait(1000, function()
+        return captured ~= previous_capture
+      end))
       assert.are.equal(stable_prompt, captured.system_prompt)
       assert.is_true(neoagent.stop())
+      assert(vim.wait(1000, is_idle))
     end)
     dispatch.select = original_select
     assert(ok, err)
@@ -1360,6 +2382,7 @@ describe("neoagent default agent", function()
         properties = {},
         additionalProperties = false,
       },
+      execute = function() error("unused") end,
     }
     setup_bundled_model(fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "ready" } }),
@@ -1430,6 +2453,7 @@ describe("neoagent default agent", function()
         description = "Read a file",
         input_schema = { type = "object", properties = {} },
         capabilities = { read_files = true },
+        execute = function() error("unused") end,
       } },
       system_prompt = function(context)
         assert.are.equal(1, #context.agent_instructions)
@@ -1438,9 +2462,7 @@ describe("neoagent default agent", function()
       end,
       _interaction = function(options)
         captured = options
-        return { cancel = function()
-          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
-        end }
+        return controlled_run(options)
       end,
     })
     local notifications = {}
@@ -1452,6 +2474,7 @@ describe("neoagent default agent", function()
     vim.notify = original_notify
     assert(ok)
     assert(run)
+    assert(vim.wait(1000, function() return captured ~= nil end))
     assert.matches("missing YAML frontmatter", notifications[1].message)
     assert.are.equal(vim.log.levels.WARN, notifications[1].level)
     assert.matches("^Custom base for inspect", captured.system_prompt)
@@ -1461,7 +2484,9 @@ describe("neoagent default agent", function()
     assert.matches(vim.pesc(vim.uv.fs_realpath(skill_path)), captured.system_prompt)
     assert.is_nil(captured.system_prompt:find("PRIVATE SKILL BODY", 1, true))
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, is_idle))
 
+    local previous_capture = captured
     setup_model(fake_model.new({}), {
       agent_instructions = false,
       skills = { global_dirs = { skill_root }, project_dirs = {} },
@@ -1469,14 +2494,16 @@ describe("neoagent default agent", function()
       system_prompt = "Tool-free chat",
       _interaction = function(options)
         captured = options
-        return { cancel = function()
-          options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
-        end }
+        return controlled_run(options)
       end,
     })
     assert(neoagent.send("chat"))
+    assert(vim.wait(1000, function()
+      return captured ~= previous_capture and captured.prompt == "chat"
+    end))
     assert.are.equal("Tool-free chat", captured.system_prompt)
     assert.is_true(neoagent.stop())
+    assert(vim.wait(1000, is_idle))
   end)
 
   it("keeps the draft when an interaction rejects setup", function()
@@ -1484,8 +2511,10 @@ describe("neoagent default agent", function()
     assert(neoagent.open())
     local view = current_view()
     view:set_input("draft")
-    local run = neoagent.send("draft")
-    assert.is_nil(run)
+    local run = assert(neoagent.send("draft"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and is_idle()
+    end))
     assert.are.equal("draft", view:get_input())
     assert.are.equal(0, #neoagent.get_session():messages())
   end)
@@ -1495,15 +2524,19 @@ describe("neoagent default agent", function()
     setup_model(fake_model.new({}), {
       _interaction = function(options)
         calls[#calls + 1] = options
-        return { cancel = function() end }
+        if #calls == 1 then options.on_accept({ id = "accepted" }) end
+        return controlled_run(options)
       end,
     })
     assert(neoagent.send("begin"))
     assert.is_true(neoagent.send("queued"))
-    calls[1].on_done({ ok = true })
+    assert(vim.wait(1000, function() return calls[1] ~= nil end))
+    calls[1].complete({ ok = true })
     assert(vim.wait(1000, function() return #calls == 2 end))
     assert.are.equal("queued", calls[2].prompt)
-    calls[2].on_done({ ok = false, error = { kind = "cancelled", message = "done" } })
+    calls[2].complete({
+      ok = false, error = { kind = "cancelled", message = "done" },
+    })
   end)
 
   it("restores queued steering when a scheduled submission cannot start", function()
@@ -1511,18 +2544,48 @@ describe("neoagent default agent", function()
     setup_model(fake_model.new({}), {
       _interaction = function(options)
         calls[#calls + 1] = options
+        if #calls == 1 then options.on_accept({ id = "accepted" }) end
         if #calls > 1 then error("queued interaction failed") end
-        return { cancel = function() end }
+        return controlled_run(options)
       end,
     })
     assert(neoagent.send("begin"))
     assert.is_true(neoagent.send("queued"))
-    calls[1].on_done({ ok = true })
+    assert(vim.wait(1000, function() return calls[1] ~= nil end))
+    calls[1].complete({ ok = true })
     assert(vim.wait(1000, function()
       return #calls == 2 and is_idle()
         and vim.deep_equal(neoagent.default():snapshot().context.steering, { "queued" })
     end))
     assert.are.equal(2, #calls)
+  end)
+
+  it("restores claimed steering when submission preparation fails", function()
+    local calls = {}
+    local steering = {}
+    local agent = setup_model(fake_model.new({}), {
+      _interaction = function(options)
+        calls[#calls + 1] = options
+        if #calls == 1 then options.on_accept({ id = "accepted" }) end
+        return controlled_run(options)
+      end,
+    })
+    agent:subscribe(function(update)
+      if update.type == "context" then steering = update.context.steering end
+    end)
+    assert(agent:send("begin"))
+    assert.is_true(agent:send("queued"))
+    assert(vim.wait(1000, function() return calls[1] ~= nil end))
+    local session = agent:get_session()
+    local messages = session.messages
+    session.messages = function() error("conversation unavailable") end
+    calls[1].complete({ ok = true, new_messages = {} })
+    assert(vim.wait(1000, function()
+      return not agent:is_running()
+        and vim.deep_equal(steering, { "queued" })
+    end))
+    session.messages = messages
+    assert.are.equal(1, #calls)
   end)
 
   it("creates no persistent file merely by constructing or opening an Agent", function()
@@ -1680,7 +2743,11 @@ describe("neoagent default agent", function()
         dynamic = {
           api = "fake-api",
           models = {},
-          catalog = { discover = function() error("not started") end },
+          catalog = {
+            source_id = "dynamic-test-models",
+            source_revision = 1,
+            discover = function() error("not started") end,
+          },
         },
       },
       _apis = { ["fake-api"] = function(resolved)
@@ -1834,7 +2901,11 @@ describe("neoagent default agent", function()
         dynamic = {
           api = "fake-api",
           models = {},
-          catalog = { discover = function() error("not started") end },
+          catalog = {
+            source_id = "dynamic-test-models",
+            source_revision = 1,
+            discover = function() error("not started") end,
+          },
         },
       },
       _apis = {
@@ -2062,6 +3133,72 @@ describe("neoagent default agent", function()
     assert.are.equal("high", neoagent.get_thinking_level())
   end)
 
+  it("clears persisted thinking for an accepted non-thinking model", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({ agents = { Neo = {
+      default_model = { provider = "fake", model = "reasoning" },
+      default_thinking_level = "high",
+    } } }))
+    local models = {
+      reasoning = fake_model.new({}),
+      plain = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "plain" } }),
+      } }),
+    }
+    for id, model in pairs(models) do
+      model.provider, model.id = "fake", id
+    end
+    models.plain.responses[1].result.message.model = "plain"
+    local options = {
+      persistence = {
+        enabled = true,
+        workspace_settings = true,
+        directory = directory,
+      },
+      default_model = { provider = "fake", model = "reasoning" },
+      default_thinking_level = "high",
+      providers = { fake = { api = "fake-api", models = {
+        reasoning = { thinking = { high = {} } },
+        plain = {},
+      } } },
+      _apis = {
+        ["fake-api"] = function(resolved) return models[resolved.model_id] end,
+      },
+    }
+    local original = setup_model(models.reasoning, options)
+    assert(neoagent.open())
+    assert.are.equal("high", neoagent.get_thinking_level())
+    assert.are.equal(models.plain, neoagent.set_model("fake", "plain"))
+    assert.is_nil(neoagent.get_thinking_level())
+
+    local run = assert(neoagent.send("use plain"))
+    local session_path = neoagent.get_session():metadata().path
+    assert(vim.wait(1000, function() return run:is_done() end, 5))
+
+    local saved = assert(settings:load()).agents.Neo
+    assert.are.same({ provider = "fake", model = "plain" },
+      saved.default_model)
+    assert.is_nil(saved.default_thinking_level)
+    local stored = assert(require("neoagent.storage").open(session_path))
+    assert.is_nil(stored:state().thinking_level)
+    assert.are.equal(vim.NIL,
+      stored:entries()[1].request.thinkingLevel)
+
+    setup_model(models.plain, options)
+    original:destroy()
+    assert(neoagent.open())
+    assert.are.equal(models.plain, neoagent.get_model())
+    assert.is_nil(neoagent.get_thinking_level())
+    assert.are.equal(models.reasoning,
+      neoagent.set_model("fake", "reasoning"))
+    assert.are.equal("high", neoagent.get_thinking_level())
+  end)
+
   it("keeps live choices and accepted messages consistent across persistence failures", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -2086,7 +3223,7 @@ describe("neoagent default agent", function()
       local settings = original_settings_new(opts)
       local update = settings.update
       settings.update = function(self, values)
-        if fail_settings then return nil, save_error end
+        if fail_settings then error(save_error, 0) end
         return update(self, values)
       end
       return settings
@@ -2131,8 +3268,11 @@ describe("neoagent default agent", function()
       assert.are.equal(model, selected)
       assert.is_nil(err)
       run, err = agent:send("rejected")
-      assert.is_nil(run)
-      assert.are.equal(journal_error, err)
+      assert.is_nil(err)
+      assert(run)
+      assert(vim.wait(1000, function() return run:is_done() end, 5))
+      assert.is_false(run:result().ok)
+      assert.are.equal(journal_error.message, run:result().error.message)
       assert.are.same({ provider = "fake", model = "test" },
         agent:get_session():state().model)
 
@@ -2148,19 +3288,72 @@ describe("neoagent default agent", function()
   end)
   it("cancels an active interaction Run when destroyed", function()
     local cancelled = {}
+    local started = false
     setup_model(fake_model.new({}), {
-      _interaction = function()
-        return { cancel = function() cancelled.run = true end }
+      _interaction = function(options)
+        started = true
+        return controlled_run(options, function() cancelled.run = true end)
       end,
     })
     local agent = neoagent.default()
-    assert(agent:send("wait"))
+    local run = assert(agent:send("wait"))
+    assert(vim.wait(1000, function() return started end))
     assert.is_true(agent:is_running())
 
     agent:destroy()
 
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+    end))
     assert.are.same({ run = true }, cancelled)
     assert.is_false(agent:is_running())
+  end)
+
+  it("defers provider destruction until a cancelled Tool settles", function()
+    local service = {
+      id = "fake", name = "Fake", state = function() return false end,
+      operations = {},
+    }
+    local users = {}
+    local destroyed_with_users
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      service, function(value) users[#users + 1] = value.users end)
+    service.destroy = function()
+      destroyed_with_users = users[#users]
+    end
+    local model = fake_model.new({ { result = fake_model.assistant({ {
+      type = "toolCall", id = "wait", name = "wait", arguments = {},
+    } }, "toolUse") } })
+    local tool_started = false
+    local agent = setup_model(model, {
+      providers = { fake = {
+        api = "fake-api", models = { test = {} },
+        service = function() return service end,
+      } },
+      tools = { {
+        name = "wait", description = "Wait", input_schema = {},
+        execute = function()
+          tool_started = true
+          return require("neoagent.async").await(function()
+            return function() end
+          end)
+        end,
+      } },
+    })
+    local run = assert(agent:send("wait for the Tool"))
+    assert(vim.wait(1000, function()
+      return tool_started and users[#users] == 1
+    end))
+
+    agent:destroy()
+
+    assert(vim.wait(1000, function()
+      return run:is_done() and not agent:is_running()
+        and destroyed_with_users ~= nil
+    end))
+    assert.are.same({ 1, 0 }, users)
+    assert.are.equal(0, destroyed_with_users)
+    unsubscribe()
   end)
 
   it("reports model catalog enumeration failures", function()
@@ -2415,17 +3608,13 @@ describe("neoagent default agent", function()
       end,
       _interaction = function(options)
         interaction_options = options
-        return {
-          cancel = function()
-            cancelled = true
-            options.on_done({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
-          end,
-        }
+        return controlled_run(options, function() cancelled = true end)
       end,
     })
     assert(neoagent.open())
     assert.are.equal("before", neoagent.get_session():messages()[1].content)
     assert(neoagent.send("continue"))
+    assert(vim.wait(1000, function() return interaction_options ~= nil end))
     local messages = neoagent.get_session():messages()
     assert.are.equal(5, #messages)
     assert.are.equal("toolResult", messages[5].role)

@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local model_contract = require("neoagent.model")
 local responses = require("neoagent.api.openai_responses")
 local util = require("neoagent.util")
 
@@ -357,7 +358,7 @@ function M.new(opts)
   local model = responses.new(opts)
   model.api = "openai-codex-responses"
   wrap_stream(model, opts)
-  return model
+  return model_contract.assert(model, "OpenAI Codex Responses constructor")
 end
 
 M.rate_limit_status = rate_limit_status

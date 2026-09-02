@@ -1,6 +1,50 @@
 local tool_schema = require("neoagent.api.tool_schema")
 
 describe("neoagent.api.tool_schema", function()
+  it("validates complete schema definitions before request acceptance", function()
+    local source = {
+      type = "object",
+      properties = {
+        path = { type = "string", description = "Path" },
+        values = { type = "array", items = { type = "integer" },
+          minItems = 1 },
+      },
+      required = { "path" },
+      additionalProperties = false,
+    }
+    local normalized = assert(tool_schema.validate_definition(source))
+    normalized.properties.path.type = "number"
+    assert.are.equal("string", source.properties.path.type)
+
+    for _, invalid in ipairs({
+      { value = { type = "invented" }, pattern = "invalid" },
+      { value = { type = {} }, pattern = "non%-empty list" },
+      { value = { description = "\255" }, pattern = "UTF%-8 string" },
+      { value = { properties = { "value" } },
+        pattern = "properties must be an object" },
+      { value = { properties = { [true] = {} } },
+        pattern = "keys must be non%-empty strings" },
+      { value = { required = { value = true } },
+        pattern = "required must be a list" },
+      { value = { enum = {} }, pattern = "enum must be a non%-empty list" },
+      { value = { enum = { function() end } },
+        pattern = "enum must contain JSON values" },
+      { value = { minItems = -1 }, pattern = "non%-negative integer" },
+      { value = { properties = {} }, mutate = function(value)
+        value.properties.bad = value
+      end, pattern = "cycles" },
+      { value = { required = { "same", "same" } }, pattern = "unique" },
+      { value = { minItems = 2, maxItems = 1 }, pattern = "must not exceed" },
+      { value = { additionalProperties = "yes" }, pattern = "must be an object" },
+      { value = { unknown = true }, pattern = "unsupported field" },
+    }) do
+      if invalid.mutate then invalid.mutate(invalid.value) end
+      local value, err = tool_schema.validate_definition(invalid.value)
+      assert.is_nil(value)
+      assert.matches(invalid.pattern, err)
+    end
+  end)
+
   local schema = {
     type = "object",
     properties = {
@@ -51,7 +95,7 @@ describe("neoagent.api.tool_schema", function()
       enabled = 1,
       entries = {
         { name = 1, extra = true },
-        {},
+        vim.empty_dict(),
         { name = "third" },
         { name = "fourth" },
       },
@@ -95,10 +139,28 @@ describe("neoagent.api.tool_schema", function()
     valid, message = tool_schema.validate({
       type = "object",
       required = required,
-    }, {})
+    }, vim.empty_dict())
     assert.is_false(valid)
     assert.matches("field_20 is required", message)
     assert.is_nil(message:find("field_21 is required", 1, true))
     assert.matches("Further schema mismatches were omitted", message)
+
+    valid, message = tool_schema.validate({ type = "number" }, math.huge)
+    assert.is_false(valid)
+    assert.matches("must be a number", message)
+
+    valid, message = tool_schema.validate({
+      type = "object",
+      properties = { nested = { type = "object" } },
+    }, vim.json.decode([[{"nested":[]}]]))
+    assert.is_false(valid)
+    assert.matches("nested must be a JSON object", message)
+
+    valid, message = tool_schema.validate({
+      type = "object",
+      properties = { nested = { type = "array" } },
+    }, vim.json.decode([[{"nested":{}}]]))
+    assert.is_false(valid)
+    assert.matches("nested must be an array", message)
   end)
 end)

@@ -192,6 +192,7 @@ local O = {
   RDONLY = 0,
   WRONLY = 1,
   CREAT = 64,
+  EXCL = 128,
   TRUNC = 512,
   APPEND = 1024,
   NONBLOCK = 2048,
@@ -201,6 +202,25 @@ local O = {
   CLOEXEC = 524288,
   TMPFILE = 0x410000,
 }
+local function content_fingerprint(data)
+  local seeds = {
+    0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
+    0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
+  }
+  local parts = {}
+  for index, seed in ipairs(seeds) do
+    local hash = bit.tobit(seed)
+    for offset = 1, #data do
+      hash = bit.bxor(hash, data:byte(offset) + index - 1)
+      hash = bit.tobit(hash + bit.lshift(hash, 1)
+        + bit.lshift(hash, 4) + bit.lshift(hash, 7)
+        + bit.lshift(hash, 8) + bit.lshift(hash, 24))
+      hash = bit.bxor(hash, bit.rshift(hash, 13))
+    end
+    parts[index] = bit.tohex(hash, 8)
+  end
+  return table.concat(parts)
+end
 local SIG = {
   HUP = 1,
   INT = 2,
@@ -1794,6 +1814,167 @@ if init == 0 then
           end
         end
         C.close(fd)
+        finish(0)
+      elseif request.operation == "atomic_replace" then
+        local policy = request.policy
+        if type(policy) ~= "table" or vim.islist(policy)
+            or policy.mode == nil and policy.preserve_mode ~= true
+            or policy.preserve_mode == true and policy.new_mode == nil
+            or policy.expected_content_fingerprint ~= nil
+              and (type(policy.expected_content_fingerprint) ~= "string"
+                or not policy.expected_content_fingerprint:match(
+                  "^" .. string.rep("%x", 64) .. "$"))
+            or type(request.suffix) ~= "string" or #request.suffix ~= 32
+            or request.suffix:find("[^%x]") then
+          write_all(2, "invalid atomic replacement request\n")
+          finish(64)
+        end
+        local function observe(value)
+          return {
+            exists = value ~= nil,
+            type = value and value.type or nil,
+            device = value and value.dev or nil,
+            inode = value and value.ino or nil,
+            mode = value and type(value.mode) == "number"
+                and bit.band(value.mode, 511) or nil,
+          }
+        end
+        local function same_target(left, right)
+          return left.exists == right.exists and left.type == right.type
+            and left.device == right.device and left.inode == right.inode
+            and left.mode == right.mode
+        end
+        local stat, stat_err, stat_code = vim.uv.fs_lstat(request.path)
+        local target = observe(stat)
+        if not stat and stat_code ~= "ENOENT"
+            and not tostring(stat_err):find("ENOENT", 1, true) then
+          write_all(2, tostring(stat_err) .. "\n")
+          finish(74)
+        end
+        if stat and stat.type == "link" then
+          write_all(2, "target is a symbolic link\n")
+          finish(73)
+        end
+        if stat and stat.type ~= "file" then
+          write_all(2, "target is not a regular file\n")
+          finish(73)
+        end
+        if not stat and policy.require_existing then
+          write_all(2, "target must already exist\n")
+          finish(73)
+        end
+        local selected_mode = policy.mode
+          or stat and bit.band(stat.mode, 511) or policy.new_mode
+        if type(selected_mode) ~= "number" or selected_mode < 0
+            or selected_mode > 511 or selected_mode % 1 ~= 0 then
+          write_all(2, "invalid atomic replacement mode\n")
+          finish(64)
+        end
+        local temporary = request.path .. "." .. request.suffix .. ".tmp"
+        local fd = C.open(temporary,
+          bit.bor(O.WRONLY, O.CREAT, O.EXCL, O.CLOEXEC),
+          ffi.cast("unsigned int", selected_mode))
+        if fd < 0 then finish(73) end
+        local function cleanup()
+          C.close(fd)
+          C.unlinkat(AT_FDCWD, temporary, 0)
+        end
+        local buffer = ffi.new("char[65536]")
+        while true do
+          local count = C.read(0, buffer, 65536)
+          if count == 0 then break end
+          if count < 0 then
+            if ffi.errno() ~= E.EINTR then
+              cleanup()
+              finish(74)
+            end
+          elseif not write_all(fd, ffi.string(buffer, count)) then
+            cleanup()
+            finish(74)
+          end
+        end
+        if C.close(fd) ~= 0 then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          finish(74)
+        end
+        fd = -1
+        if (policy.mode ~= nil or stat and policy.preserve_mode == true)
+            and C.chmod(temporary, selected_mode) ~= 0 then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          finish(74)
+        end
+        local current, current_err, current_code =
+          vim.uv.fs_lstat(request.path)
+        if not current and current_code ~= "ENOENT"
+            and not tostring(current_err):find("ENOENT", 1, true) then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          write_all(2, tostring(current_err) .. "\n")
+          finish(74)
+        end
+        if current and current.type == "link" then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          write_all(2, "target became a symbolic link\n")
+          finish(73)
+        end
+        if current and current.type ~= "file" then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          write_all(2, "target is not a regular file\n")
+          finish(73)
+        end
+        if not current and policy.require_existing then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          write_all(2, "target must already exist\n")
+          finish(73)
+        end
+        if not same_target(target, observe(current)) then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          write_all(2, "target changed during preparation\n")
+          finish(73)
+        end
+        if policy.expected_content_fingerprint ~= nil then
+          if not target.exists then
+            C.unlinkat(AT_FDCWD, temporary, 0)
+            write_all(2, "expected target content is missing\n")
+            finish(73)
+          end
+          local held = C.open(request.path,
+            bit.bor(O.RDONLY, O.NOFOLLOW, O.CLOEXEC))
+          if held < 0 then
+            C.unlinkat(AT_FDCWD, temporary, 0)
+            finish(74)
+          end
+          local held_stat = vim.uv.fs_fstat(held)
+          local chunks = {}
+          while held_stat and true do
+            local count = C.read(held, buffer, 65536)
+            if count == 0 then break end
+            if count < 0 then
+              if ffi.errno() ~= E.EINTR then held_stat = nil break end
+            else
+              chunks[#chunks + 1] = ffi.string(buffer, count)
+            end
+          end
+          local after = held_stat and vim.uv.fs_fstat(held) or nil
+          C.close(held)
+          local latest = vim.uv.fs_lstat(request.path)
+          if not held_stat or not same_target(target, observe(held_stat))
+              or not same_target(target, observe(after))
+              or not same_target(target, observe(latest)) then
+            C.unlinkat(AT_FDCWD, temporary, 0)
+            write_all(2, "target changed during content verification\n")
+            finish(73)
+          end
+          if content_fingerprint(table.concat(chunks)):lower()
+              ~= policy.expected_content_fingerprint:lower() then
+            C.unlinkat(AT_FDCWD, temporary, 0)
+            write_all(2, "target content changed concurrently\n")
+            finish(73)
+          end
+        end
+        if C.renameat(AT_FDCWD, temporary, AT_FDCWD, request.path) ~= 0 then
+          C.unlinkat(AT_FDCWD, temporary, 0)
+          finish(74)
+        end
         finish(0)
       end
       finish(64)

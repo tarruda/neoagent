@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local fake_transport = require("tests.helpers.fake_transport")
+local model_catalog = require("neoagent.model_catalog")
 
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
@@ -319,8 +320,31 @@ describe("bundled model catalog sources", function()
   end)
 
   it("keeps the Codex cache when the account inventory is empty", function()
+    local provider = {
+      api = "openai-codex-responses",
+      base_url = "https://chatgpt.com/backend-api",
+      auth = "openai-codex",
+    }
+    local authentication = {
+      resolve = resolved_auth("oauth"),
+      cache_identity = function() return "safe-account-digest" end,
+    }
+    local definition = {
+      source_id = "openai-codex-models",
+      source_revision = 1,
+      account_scoped = true,
+      seed = { { id = "gpt-5.5" } },
+      discover = require("neoagent.providers.codex.catalog").discover,
+      transform_model = require("neoagent.registry.openai").transform_codex,
+    }
     local cached = {
-      version = 1,
+      version = 2,
+      source_fingerprint = assert(model_catalog.source_fingerprint({
+          provider_id = "openai-codex",
+          provider = provider,
+          authentication = authentication,
+          definition = definition,
+        })),
       validated_at = 1000,
       models = { { id = "gpt-5.5" } },
     }
@@ -335,20 +359,13 @@ describe("bundled model catalog sources", function()
     transport.fetches = { {
       body = vim.json.encode({ models = {} }),
     } }
-    local catalog = require("neoagent.model_catalog").new({
+    local catalog = model_catalog.new({
       provider_id = "openai-codex",
-      provider = {
-        base_url = "https://chatgpt.com/backend-api",
-        auth = "openai-codex",
-      },
-      authentication = { resolve = resolved_auth("oauth") },
+      provider = provider,
+      authentication = authentication,
       transport = transport,
       store = state,
-      definition = {
-        seed = { { id = "gpt-5.5" } },
-        discover = require("neoagent.providers.codex.catalog").discover,
-        transform_model = require("neoagent.registry.openai").transform_codex,
-      },
+      definition = definition,
     })
 
     local result = wait(catalog:refresh({ force = true }))

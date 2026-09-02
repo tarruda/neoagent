@@ -54,6 +54,8 @@ describe("neoagent.compaction", function()
 
   it("reports session histories that have no compactable prefix", function()
     assert.is_nil(compaction.prepare({}, { keep_recent_tokens = 20 }))
+    assert.are.same({ first_kept_index = 1, split_turn = false },
+      compaction.find_cut_point({ { type = "selection" } }, 1, 1, 1))
     local compacted = {
       type = "compaction", id = "c", parentId = vim.NIL, timestamp = "t",
       summary = "done", firstKeptEntryId = "u", tokensBefore = 10,
@@ -74,29 +76,47 @@ describe("neoagent.compaction", function()
     assert.are.equal("a2", repeated.first_kept_entry_id)
   end)
 
-  it("keeps metadata attached to the context selected for retention", function()
-    assert.are.same({ first_kept_index = 1, split_turn = false },
-      compaction.find_cut_point({
-        { type = "model_change" },
-        { type = "thinking_level_change" },
-      }, 1, 2, 10))
+  it("retains non-message records adjacent to a selected cut point", function()
+    local path = {
+      entry("u", nil, { role = "user", content = "request" }),
+      { type = "selection" },
+      { type = "selection" },
+      entry("a", "u", {
+        role = "assistant",
+        content = { { type = "text", text = "response" } },
+      }),
+    }
 
+    assert.are.same({
+      first_kept_index = 2,
+      turn_start_index = 1,
+      split_turn = true,
+    }, compaction.find_cut_point(path, 1, #path, 1))
+  end)
+
+  it("keeps request state attached to the message selected for retention", function()
+    local retained = entry("u2", "a1", {
+      role = "user", content = string.rep("x", 40),
+    })
+    retained.request = {
+      model = { provider = "fake", model = "test" },
+      thinkingLevel = "high",
+    }
     local path = {
       entry("u1", nil, { role = "user", content = "old request" }),
       entry("a1", "u1", {
         role = "assistant", content = { { type = "text", text = "old response" } },
       }),
-      { type = "model_change" },
-      entry("u2", "a1", { role = "user", content = string.rep("x", 40) }),
+      retained,
       entry("a2", "u2", {
         role = "assistant", content = { { type = "text", text = "done" } },
       }),
     }
     assert.are.same({
       first_kept_index = 3,
-      turn_start_index = 1,
-      split_turn = true,
+      split_turn = false,
     }, compaction.find_cut_point(path, 1, #path, 10))
+    assert.are.same(retained.request, path[3].request)
   end)
 
   it("adds messages after live provider usage to the context estimate", function()

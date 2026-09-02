@@ -1,7 +1,13 @@
 local config = require("neoagent.config")
+local model_contract = require("neoagent.model")
+local provider_credentials = require("neoagent.provider_credentials")
 local util = require("neoagent.util")
 
 local M = {}
+
+local function validated_model(value, owner)
+  return model_contract.assert(value, owner)
+end
 
 local function assert_runtimes(runtimes)
   assert(type(runtimes) == "table"
@@ -10,26 +16,17 @@ local function assert_runtimes(runtimes)
   return runtimes
 end
 
-local function usable(provider_id, provider, manager)
-  local available = true
-  if provider.auth then
-    local err
-    available, err = manager:has_credentials(provider.auth)
-    if available == nil then return nil, err end
-    if provider.auth_optional == true then available = true end
+local function credentials(provider_id, provider, configured, manager, runtime)
+  if manager == nil and runtime and runtime.credentials then
+    return runtime.credentials
   end
-  if provider.api_key ~= nil and (provider.auth == nil or not available) then
-    local ok, key = pcall(function()
-      return type(provider.api_key) == "function"
-          and provider.api_key() or provider.api_key
-    end)
-    if not ok then
-      return nil, util.error("model",
-        "Failed to resolve API key for " .. provider_id, key)
-    end
-    available = type(key) == "string" and util.trim(key) ~= ""
-  end
-  return available
+  return provider_credentials.new({
+    provider_id = provider_id,
+    provider = provider,
+    authentication = manager,
+    method = configured.auth and configured.auth.methods
+        and configured.auth.methods[provider.auth] or nil,
+  })
 end
 
 function M.available(configured, manager, runtimes)
@@ -39,9 +36,12 @@ function M.available(configured, manager, runtimes)
   local result = {}
   for provider_id, runtime in pairs(runtimes) do
     local provider = runtime.definition
-    local available, available_err = usable(provider_id, provider, manager)
-    if available == nil then return nil, available_err end
-    if available then
+    local credential_state = credentials(
+      provider_id, provider, configured, manager, runtime):state()
+    if credential_state.source == "error" then
+      return nil, credential_state.error
+    end
+    if credential_state.usable then
       for model_id, model in pairs(runtime.catalog:snapshot().models) do
         if model.hidden ~= true then
           result[#result + 1] = provider_id .. "/" .. model_id
@@ -160,6 +160,11 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes)
     model = util.copy(model),
     report = runtime.report,
   }
+  if provider.auth and manager == nil then
+    manager = require("neoagent.auth").configured(configured)
+  end
+  local provider_credential = credentials(
+    provider_id, provider, configured, manager, runtime)
   local factory = configured._apis[api]
   if not factory and api == "openai-completions" then
     factory = function(value)
@@ -179,38 +184,28 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes)
     end
   end
   if not factory then error("Unknown API: " .. tostring(api)) end
-  if provider.auth then
-    manager = manager or require("neoagent.auth").configured(configured)
-    if provider.api_key ~= nil then
-      local ambient = provider.api_key
-      resolved.provider.api_key = function()
-        local stored, err = manager:has_credentials(provider.auth)
-        if stored == nil then error(err, 0) end
-        if stored then return nil end
-        return type(ambient) == "function" and ambient() or ambient
-      end
+  if provider.api_key ~= nil then
+    resolved.provider.api_key = function()
+      return provider_credential:ambient_api_key()
     end
   end
-  local concrete = factory(resolved)
-  assert(type(concrete) == "table" and type(concrete.stream) == "function",
-    "API factory must return a Model")
+  local concrete = validated_model(factory(resolved), "API factory")
   if concrete.context_window == nil then
     concrete.context_window = resolved.model.context_window
-  end
-  if concrete.input == nil then
-    concrete.input = util.copy(resolved.model.input or { "text" })
   end
   if concrete.thinking == nil then
     concrete.thinking = util.copy(resolved.model.thinking)
   end
+  concrete = validated_model(concrete, "API factory")
   if provider.auth then
-    concrete = manager:wrap(concrete, provider.auth, {
+    concrete = validated_model(manager:wrap(concrete, provider.auth, {
       optional = provider.auth_optional == true or provider.api_key ~= nil,
-    })
+    }), "Authentication Model wrapper")
   end
   local service = runtime.service
   if type(service.wrap_model) == "function" then
-    concrete = service:wrap_model(concrete)
+    concrete = validated_model(service:wrap_model(concrete),
+      "Provider Service Model wrapper")
   end
   return concrete
 end

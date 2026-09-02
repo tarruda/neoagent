@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local tree = require("neoagent.session_tree")
+local semantic_message = require("neoagent.semantic_message")
 
 local M = {}
 local Session = {}
@@ -17,21 +18,16 @@ local function iso_time()
 end
 
 local function memory_append(self, entry_type, values)
-  local entry = {
+  local entry, err = tree.prepare_entry({
     type = entry_type,
     id = random_id(),
-    parentId = self._leaf_id or vim.NIL,
+    parent_id = self._leaf_id or vim.NIL,
     timestamp = iso_time(),
-  }
-  for key, value in pairs(values or {}) do entry[key] = util.copy(value) end
-  local valid, err = tree.validate_entry(entry)
-  if not valid then return nil, util.error("session", "Invalid " .. tostring(entry_type), err) end
-  if self._by_id[entry.id] then
-    return nil, util.error("session", "Invalid " .. tostring(entry_type), "duplicate entry id")
-  end
-  local references, reference_err = tree.validate_references(entry, self._by_id)
-  if not references then
-    return nil, util.error("session", "Invalid " .. tostring(entry_type), reference_err)
+    payload = values or {},
+    by_id = self._by_id,
+  })
+  if not entry then
+    return nil, util.error("session", "Invalid " .. tostring(entry_type), err)
   end
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
@@ -53,71 +49,76 @@ local function apply_store_projection(self, projection)
     return nil, util.error("storage", "Store returned an invalid projection")
   end
   if projection.type == "append" then
-    vim.list_extend(self._messages, util.copy(projection.messages))
+    local normalized = {}
+    local linked = false
+    for index, message in ipairs(projection.messages) do
+      local value, err = tree.normalize_projection_message(message)
+      if not value then
+        return nil, util.error("storage", "Store returned invalid messages",
+          "message " .. tostring(index) .. ": " .. err)
+      end
+      normalized[index] = value
+      if value.role == "toolResult" then
+        linked = true
+      elseif value.role == "assistant" then
+        for _, block in ipairs(value.content) do
+          if block.type == "toolCall" then linked = true break end
+        end
+      end
+    end
+    if linked then
+      local candidate = util.copy(self._messages)
+      vim.list_extend(candidate, normalized)
+      local complete, err = tree.normalize_projection(candidate)
+      if not complete then
+        return nil, util.error("storage", "Store returned invalid messages",
+          err)
+      end
+      self._messages = complete
+    else
+      vim.list_extend(self._messages, normalized)
+    end
     return true
   end
   if projection.type == "replace" then
-    self._messages = util.copy(projection.messages)
+    local normalized, err = tree.normalize_projection(projection.messages)
+    if not normalized then
+      return nil, util.error("storage", "Store returned invalid messages", err)
+    end
+    self._messages = normalized
     return true
   end
   return nil, util.error("storage", "Store returned an unknown projection")
 end
 
-local function same_model(left, right)
-  return type(left) == "table" and type(right) == "table"
-    and left.provider == right.provider and left.model == right.model
+local function requires_linkage_check(message)
+  if message.role == "toolResult" then return true end
+  if message.role ~= "assistant" then return false end
+  for _, block in ipairs(message.content) do
+    if block.type == "toolCall" then return true end
+  end
+  return false
 end
 
-local function restore_memory(self, entries, messages, leaf_id)
-  self._entries = entries
-  self._messages = messages
-  self._leaf_id = leaf_id
-  self._by_id = {}
-  for _, entry in ipairs(entries) do self._by_id[entry.id] = entry end
+local function validate_append_linkage(self, message)
+  if not requires_linkage_check(message) then return true end
+  local messages = util.copy(self._messages)
+  messages[#messages + 1] = message
+  local normalized, err = tree.normalize_projection(messages)
+  if not normalized then
+    return nil, util.error("session", "Invalid Session message", err)
+  end
+  return true
 end
 
 local function memory_append_message(self, message, state)
-  if state.model == nil and state.thinking_level == nil then
-    return memory_append(self, "message", { message = message })
+  local request, request_err = tree.normalize_request_state(state)
+  if request_err then
+    return nil, util.error("session", "Invalid message state", request_err)
   end
-  local stored = assert(self:state())
-  local model_changed = state.model ~= nil
-    and not same_model(state.model, stored.model)
-  local thinking_changed = state.thinking_level ~= nil
-    and state.thinking_level ~= stored.thinking_level
-  if not model_changed and not thinking_changed then
-    return memory_append(self, "message", { message = message })
-  end
-  local entries = util.copy(self._entries)
-  local messages = util.copy(self._messages)
-  local leaf_id = self._leaf_id
-  local function append_state(entry_type, values)
-    local ok, err = memory_append(self, entry_type, values)
-    if not ok then
-      restore_memory(self, entries, messages, leaf_id)
-      return nil, err
-    end
-    return true
-  end
-  if model_changed then
-    local ok, err = append_state("model_change", {
-      provider = state.model.provider,
-      modelId = state.model.model,
-    })
-    if not ok then return nil, err end
-  end
-  if thinking_changed then
-    local ok, err = append_state("thinking_level_change", {
-      thinkingLevel = state.thinking_level,
-    })
-    if not ok then return nil, err end
-  end
-  local ok, err, entry = memory_append(self, "message", { message = message })
-  if not ok then
-    restore_memory(self, entries, messages, leaf_id)
-    return nil, err
-  end
-  return true, nil, entry
+  local values = { message = message }
+  if request then values.request = request end
+  return memory_append(self, "message", values)
 end
 
 function Session:append(message, state)
@@ -125,7 +126,12 @@ function Session:append(message, state)
   assert(state == nil or type(state) == "table"
       and (next(state) == nil or not util.is_list(state)),
     "message state must be an object")
-  local copy = util.copy(message)
+  local copy, message_err = semantic_message.normalize(message)
+  if not copy then
+    return nil, util.error("session", "Invalid Session message", message_err)
+  end
+  local linked, linkage_err = validate_append_linkage(self, copy)
+  if not linked then return nil, linkage_err end
   state = util.copy(state or {})
   if self._store then
     local ok, err, entry, projection = self._store:append(copy, state)
@@ -147,7 +153,12 @@ function Session:context_messages()
   if self._store and type(self._store.context_messages) == "function" then
     local messages, err = self._store:context_messages()
     if not messages then return nil, util.normalize_error(err, "storage") end
-    return messages
+    local normalized, message_err = semantic_message.normalize_list(messages)
+    if not normalized then
+      return nil, util.error("storage", "Store returned invalid context",
+        message_err)
+    end
+    return normalized
   end
   if #self._entries > 0 then
     local path, err = self:path()
@@ -299,7 +310,12 @@ function M.new(opts)
     if not loaded then
       return nil, util.normalize_error(err, "storage")
     end
-    messages = util.copy(loaded)
+    local message_err
+    messages, message_err = tree.normalize_projection(loaded)
+    if not messages then
+      return nil, util.error("storage", "Store returned invalid messages",
+        message_err)
+    end
     if type(opts.store.metadata) == "function" then
       store_metadata = opts.store:metadata()
     end
@@ -325,11 +341,20 @@ function M.new(opts)
       return nil, util.error("session", "Invalid Session entries", path_err)
     end
     messages = tree.messages(path, false)
+    local normalized, message_err = tree.normalize_projection(messages)
+    if not normalized then
+      return nil, util.error("session", "Invalid Session entries", message_err)
+    end
+    messages = normalized
   elseif opts.messages ~= nil then
     if type(opts.messages) ~= "table" or not util.is_list(opts.messages) then
       return nil, util.error("session", "messages must be an array")
     end
-    messages = util.copy(opts.messages)
+    local message_err
+    messages, message_err = semantic_message.normalize_list(opts.messages)
+    if not messages then
+      return nil, util.error("session", "Invalid Session messages", message_err)
+    end
     for _, message in ipairs(messages) do
       local entry = {
         type = "message", id = random_id(), parentId = leaf_id or vim.NIL,

@@ -46,15 +46,17 @@ describe("neoagent input history", function()
     local history = history_module.new({ directory = directory, root = root })
     assert(history:add("first"))
     local lock_path = history.path .. ".lock"
-    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = lock_path,
+    }):acquire())
 
     local concurrent_done, concurrent_err
     vim.defer_fn(function()
       local written, write_err = require("neoagent.fs").write_all(
         history.path, '"first"\n"concurrent"\n')
-      local removed, remove_err = vim.uv.fs_unlink(lock_path)
-      concurrent_err = write_err or remove_err
-      concurrent_done = written and removed
+      local released, release_err = holder:release()
+      concurrent_err = write_err or release_err
+      concurrent_done = written and released
     end, 20)
 
     local updated = assert(history:add("local"))
@@ -86,9 +88,11 @@ describe("neoagent input history", function()
     assert.matches("replace", err.message)
 
     local original_random = vim.uv.random
-    vim.uv.random = function(size, ...)
-      if size == 8 then return nil, "entropy unavailable" end
-      return original_random(size, ...)
+    local random_calls = 0
+    vim.uv.random = function(...)
+      random_calls = random_calls + 1
+      if random_calls == 2 then return nil, "entropy unavailable" end
+      return original_random(...)
     end
     value, err = history:add("without random bytes")
     vim.uv.random = original_random

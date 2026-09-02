@@ -346,6 +346,58 @@ describe("neoagent Provider Shell", function()
     assert.is_true(mutation_cancelled)
   end)
 
+  it("orders provider selection before deferred authentication actions", function()
+    local refresh_cancellations = 0
+    local alpha = service("alpha", "Alpha", {
+      refresh = operation("Refresh", function()
+        return async.run(function()
+          return async.await(function(done)
+            return function()
+              refresh_cancellations = refresh_cancellations + 1
+              done.reject(async.cancelled_error)
+            end
+          end)
+        end)
+      end),
+    })
+    local beta = service("beta", "Beta")
+    local configured = config({
+      alpha = { api = "fake", models = {} },
+      beta = { api = "fake", models = {}, auth = "beta-key" },
+    }, "alpha")
+    configured.auth.methods["beta-key"] = {
+      name = "Beta key", type = "api_key",
+    }
+    local auth = authentication()
+    local value = shell({
+      config = configured,
+      auth = auth,
+      runtimes = { alpha = alpha, beta = beta },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert(value:open())
+    assert.is_true(value:is_active())
+    assert.is_true(value:login("beta"))
+    assert(vim.wait(1000, function()
+      return value:info().id == "beta"
+        and auth.credentials["beta-key"] == "api_key"
+        and not value:is_active()
+    end, 5))
+    assert.are.equal(1, refresh_cancellations)
+
+    assert.are.equal("alpha", value:select("alpha"))
+    assert.is_true(value:is_active())
+    assert.is_true(value:logout("beta"))
+    assert(vim.wait(1000, function()
+      return value:info().id == "beta"
+        and auth.credentials["beta-key"] == nil
+        and not value:is_active()
+    end, 5))
+    assert.are.equal(2, refresh_cancellations)
+  end)
+
   it("shows only valid login and logout actions for current auth state", function()
     local auth = authentication()
     local surface = view()
@@ -603,6 +655,33 @@ describe("neoagent Provider Shell", function()
     assert.are.equal("succeeded", info.state.operation.state)
   end)
 
+  it("reports disabled persistence for a usable catalog", function()
+    local value = shell({
+      config = config({ fake = {
+        api = "fake", models = {}, auth = "key", auth_optional = true,
+      } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = {
+        id = "fake",
+        definition = {
+          api = "fake", models = {}, auth = "key", auth_optional = true,
+        },
+        catalog = catalog({}, { persistence = {
+          configured = true,
+          enabled = false,
+          error = { kind = "auth", message = "identity unavailable" },
+        } }),
+        service = service("fake", "Fake"),
+      } },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    local blocks = value:info().state.blocks
+    assert.are.equal("warn", blocks[#blocks].level)
+    assert.matches("identity unavailable", blocks[#blocks].text)
+  end)
+
   it("shares model leases with shell operations and handles synchronous runs", function()
     local pending
     local managed = service("fake", "Fake", {
@@ -642,12 +721,182 @@ describe("neoagent Provider Shell", function()
     assert.is_false(available.mutate)
     local blocked, blocked_err = value:run("mutate")
     assert.is_nil(blocked)
-    assert.matches("active model run", blocked_err.message)
+    assert.matches("active provider use", blocked_err.message)
     local inspect = assert(value:run("inspect"))
     assert.is_true(wait(inspect).ok)
     assert.is_false(value:is_active())
     release()
     assert.is_table(pending)
+  end)
+
+  it("coordinates authentication across every Service sharing its method", function()
+    local alpha = service("alpha", "Alpha")
+    local beta = service("beta", "Beta")
+    local group = { alpha, beta }
+    local auth = authentication()
+    local value = shell({
+      config = config({
+        alpha = { api = "fake", models = {}, auth = "key" },
+        beta = { api = "fake", models = {}, auth = "key" },
+      }, "alpha"),
+      auth = auth,
+      runtimes = {
+        alpha = {
+          id = "alpha",
+          definition = { api = "fake", models = {}, auth = "key" },
+          catalog = catalog(),
+          service = alpha,
+          auth_method = "key",
+          auth_services = group,
+        },
+        beta = {
+          id = "beta",
+          definition = { api = "fake", models = {}, auth = "key" },
+          catalog = catalog(),
+          service = beta,
+          auth_method = "key",
+          auth_services = group,
+        },
+      },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+    local use = assert(provider_service.acquire_use(beta))
+
+    local run, err = value:login()
+    assert.is_nil(run)
+    assert.matches("active provider use", err.message)
+    assert.is_nil(auth.credentials.key)
+    assert.is_false(value:info().operations[1].enabled)
+    local alpha_use = assert(provider_service.acquire_use(alpha))
+    assert.is_true(alpha_use:release())
+
+    assert.is_true(use:release())
+    assert.is_true(wait(assert(value:login())).ok)
+    local second_use = assert(provider_service.acquire_use(beta))
+    run, err = value:logout()
+    assert.is_nil(run)
+    assert.matches("active provider use", err.message)
+    assert.are.equal("api_key", auth.credentials.key)
+    assert.is_true(second_use:release())
+    assert.is_true(wait(assert(value:logout())).ok)
+  end)
+
+  it("refreshes an ambient catalog after releasing logout coordination", function()
+    local auth = authentication({ key = "api_key" })
+    local managed = service("fake", "Fake")
+    local selected_catalog = catalog()
+    local refresh = selected_catalog.refresh
+    function selected_catalog:refresh(opts)
+      local lease, err = provider_service.acquire_use(managed)
+      assert(lease, err and err.message)
+      assert.is_true(lease:release())
+      return refresh(self, opts)
+    end
+    local value = shell({
+      config = config({ fake = {
+        api = "fake",
+        models = {},
+        auth = "key",
+        api_key = function() return "ambient-secret" end,
+      } }, "fake"),
+      auth = auth,
+      runtimes = { fake = {
+        id = "fake",
+        definition = {
+          api = "fake",
+          models = {},
+          auth = "key",
+          api_key = function() return "ambient-secret" end,
+        },
+        catalog = selected_catalog,
+        service = managed,
+        auth_services = { managed },
+      } },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert.is_true(wait(assert(value:logout())).ok)
+    assert.are.equal(1, selected_catalog.refreshes)
+    assert.are.equal("environment",
+      provider(value.view_value, "fake").authentication.source)
+  end)
+
+  it("cancels logout through the Shell action owner", function()
+    local auth = authentication({ key = "api_key" })
+    local cancelled = false
+    function auth:logout(_, opts)
+      return async.run(function()
+        return async.await(function(done)
+          return function()
+            cancelled = true
+            done.reject(async.cancelled_error)
+          end
+        end)
+      end, { on_done = opts.on_done, error_kind = "auth" })
+    end
+    local managed = service("fake", "Fake")
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {}, auth = "key" },
+      }, "fake"),
+      auth = auth,
+      runtimes = { fake = {
+        id = "fake",
+        definition = { api = "fake", models = {}, auth = "key" },
+        catalog = catalog(),
+        service = managed,
+        auth_method = "key",
+        auth_services = { managed },
+      } },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    local run = assert(value:logout())
+    assert.is_true(value:is_active())
+    assert.is_true(value:cancel())
+    assert.is_false(wait(run).ok)
+    assert.is_true(cancelled)
+    assert.is_false(value:is_active())
+  end)
+
+  it("contains malformed authentication action constructors", function()
+    local auth = authentication()
+    local managed = service("fake", "Fake")
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {}, auth = "key" },
+      }, "fake"),
+      auth = auth,
+      runtimes = { fake = {
+        id = "fake",
+        definition = { api = "fake", models = {}, auth = "key" },
+        catalog = catalog(),
+        service = managed,
+        auth_method = "key",
+        auth_services = { managed },
+      } },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    auth.login = function() error("login construction failed") end
+    local thrown = assert(value:login())
+    assert.is_false(wait(thrown).ok)
+    assert.matches("login construction failed", thrown:result().error.message)
+    assert.is_false(value:is_active())
+    local use = assert(provider_service.acquire_use(managed))
+    assert.is_true(use:release())
+
+    auth.login = function() return {} end
+    local malformed = assert(value:login())
+    assert.is_false(wait(malformed).ok)
+    assert.matches("must return a Run", malformed:result().error.message)
+    assert.is_false(value:is_active())
+    use = assert(provider_service.acquire_use(managed))
+    assert.is_true(use:release())
   end)
 
   it("projects progress and opens bounded operation artifacts", function()
@@ -951,6 +1200,10 @@ describe("neoagent Provider Shell", function()
     assert.is_nil(value:_refresh())
     assert.matches("surface failed",
       presented.notifications[#presented.notifications].message)
+    surface.set = function() error("surface exploded") end
+    assert.is_nil(value:_refresh())
+    assert.matches("surface exploded",
+      presented.notifications[#presented.notifications].message)
   end)
 
   it("cancels login actions and reports provider adapter failures", function()
@@ -1220,5 +1473,204 @@ describe("neoagent Provider Shell", function()
     assert.is_nil(value.pending_focus_provider_id)
     finish.resolve({ ok = true })
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
+  end)
+
+  it("contains malformed provider action contracts", function()
+    local value = shell({
+      config = config({ fake = { api = "fake", models = {} } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+    local first = value:_start_action({
+      kind = "logout",
+      provider_id = "fake",
+      start = function()
+        return async.run(function() return async.await(function() end) end)
+      end,
+    })
+    assert.is_true(value:is_authenticating())
+    local coordination = { finished = false }
+    function coordination:finish() self.finished = true return true end
+    local duplicate, duplicate_err = value:_start_action({
+      kind = "service", provider_id = "fake", coordination = coordination,
+      start = function() error("unused") end,
+    })
+    assert.is_nil(duplicate)
+    assert.matches("already active", duplicate_err.message)
+    assert.is_true(coordination.finished)
+    first:cancel()
+    assert.is_false(wait(first).ok)
+
+    local cases = {
+      {
+        start = function()
+          return nil, util.error("provider", "action did not start")
+        end,
+        message = "action did not start",
+      },
+      {
+        start = function() return {} end,
+        message = "must return a Run",
+      },
+      {
+        start = function()
+          return async.run(function() return "invalid result" end)
+        end,
+        message = "invalid result",
+      },
+    }
+    for _, case in ipairs(cases) do
+      local result = wait(value:_start_action({
+        kind = "service", provider_id = "fake", start = case.start,
+      }))
+      assert.is_false(result.ok)
+      assert.matches(case.message, result.error.message)
+    end
+  end)
+
+  it("contains credential, snapshot, and runtime coordination failures", function()
+    local presented = presenter()
+    local managed = service("fake", "Fake")
+    local selected_catalog = catalog({}, {
+      persistence = {
+        configured = true,
+        enabled = false,
+        error = { kind = "auth", message = "identity unavailable" },
+      },
+    })
+    local selected_runtime = {
+      id = "fake",
+      definition = { api = "fake", models = {} },
+      catalog = selected_catalog,
+      service = managed,
+    }
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {} },
+        other = { api = "fake", models = {} },
+      }, "fake"),
+      auth = authentication(),
+      runtimes = {
+        fake = selected_runtime,
+        other = service("other", "Other"),
+      },
+      presenter = presented,
+      view = function() return view() end,
+    })
+    assert.is_false(value:_auth_state("missing").usable)
+    assert(vim.iter(value:info().state.blocks):any(function(block)
+      return block.type == "status"
+        and block.text:match("identity unavailable") ~= nil
+    end))
+
+    local is_active = value.authentication.is_active
+    value.authentication.is_active = function() return true end
+    local selected, select_err = value:select("other")
+    value.authentication.is_active = is_active
+    assert.is_nil(selected)
+    assert.matches("Finish the active provider action", select_err.message)
+
+    local token = assert(provider_service.begin_operation(managed, {
+      mutating = true,
+    }))
+    local refreshed, refresh_err = value:run("neoagent.catalog.refresh")
+    assert.is_nil(refreshed)
+    assert.matches("mutating provider operation", refresh_err.message)
+    assert.is_true(token:finish())
+
+    local schedule_refresh = value._schedule_refresh
+    value._schedule_refresh = function() error("runtime refresh failed") end
+    token = assert(provider_service.begin_operation(managed, {
+      mutating = false,
+    }))
+    assert(vim.wait(1000, function()
+      return vim.iter(presented.notifications):any(function(notification)
+        return notification.message:match("runtime subscriber failed") ~= nil
+      end)
+    end, 5))
+    assert.is_true(token:finish())
+    value._schedule_refresh = schedule_refresh
+
+    selected_catalog.snapshot = function() error("snapshot failed") end
+    assert.is_nil(value:_refresh())
+    assert(vim.iter(presented.notifications):any(function(notification)
+      return notification.message:match("snapshot failed") ~= nil
+    end))
+
+    value:destroy()
+    local login, login_err = value:login()
+    assert.is_nil(login)
+    assert.matches("destroyed", login_err.message)
+    local logout, logout_err = value:logout()
+    assert.is_nil(logout)
+    assert.matches("destroyed", logout_err.message)
+  end)
+
+  it("reports a deferred authentication action that becomes unavailable", function()
+    local surface = view()
+    local presented = presenter()
+    local refresh = operation("Refresh", function()
+      return async.run(function()
+        return async.await(function(done)
+          return function() done.reject(async.cancelled_error) end
+        end)
+      end)
+    end)
+    local value = shell({
+      config = config({
+        alpha = { api = "fake", models = {} },
+        beta = { api = "fake", models = {} },
+      }, "alpha"),
+      auth = authentication(),
+      runtimes = {
+        alpha = service("alpha", "Alpha", { refresh = refresh }),
+        beta = service("beta", "Beta"),
+      },
+      presenter = presented,
+      view = function() return surface end,
+    })
+
+    assert(value:open())
+    assert.is_true(value:is_active())
+    assert.is_true(value:login("beta"))
+    assert(vim.wait(1000, function()
+      return value:info().id == "beta" and not value:is_active()
+    end, 5))
+    assert(vim.iter(presented.notifications):any(function(notification)
+      return notification.message:match("Login is unavailable") ~= nil
+    end))
+  end)
+
+  it("propagates provider selection failures from logout", function()
+    local finish
+    local value = shell({
+      config = config({
+        alpha = { api = "fake", models = {} },
+        beta = { api = "fake", models = {} },
+      }, "alpha"),
+      auth = authentication(),
+      runtimes = {
+        alpha = service("alpha", "Alpha"),
+        beta = service("beta", "Beta"),
+      },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+    local active = value:_start_action({
+      kind = "logout", provider_id = "alpha",
+      start = function()
+        return async.run(function()
+          return async.await(function(done) finish = done end)
+        end)
+      end,
+    })
+    assert.is_true(value:is_authenticating())
+    local logged_out, err = value:logout("beta")
+    assert.is_nil(logged_out)
+    assert.matches("active provider action", err.message)
+    finish.resolve({ ok = true })
+    assert.is_true(wait(active).ok)
   end)
 end)

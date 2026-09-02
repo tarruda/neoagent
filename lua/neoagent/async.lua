@@ -9,22 +9,15 @@ Run.__index = Run
 local cancelled_error = { kind = "cancelled", message = "Operation cancelled" }
 local MAX_DIAGNOSTICS = 32
 local MAX_DIAGNOSTIC_CHARACTERS = 1024
-local MAX_DIAGNOSTIC_SOURCE_BYTES = MAX_DIAGNOSTIC_CHARACTERS * 4
+local CALLBACK_COMPACT_THRESHOLD = 256
+local CANCEL_COMPACT_THRESHOLD = 64
 
 local function diagnostic_message(value)
-  local rendered, message
-  local ok, result = pcall(tostring, value)
-  if ok then rendered = result
-  else rendered = "Callback failure could not be rendered" end
-  local source = rendered:sub(1, MAX_DIAGNOSTIC_SOURCE_BYTES)
-  message = util.text_from_bytes(source)
-  local truncated = #rendered > #source
-    or vim.fn.strchars(message) > MAX_DIAGNOSTIC_CHARACTERS
-  if truncated then
-    message = vim.fn.strcharpart(
-      message, 0, MAX_DIAGNOSTIC_CHARACTERS - 1) .. "…"
-  end
-  return message
+  return util.safe_message(value, {
+    fallback = "Callback failure could not be rendered",
+    max_characters = MAX_DIAGNOSTIC_CHARACTERS,
+    max_source_bytes = MAX_DIAGNOSTIC_CHARACTERS * 4,
+  })
 end
 
 function Run:_record_diagnostic(diagnostic)
@@ -62,17 +55,29 @@ function Run:_subscribe_diagnostics(listener)
 end
 
 local function schedule_drain(run)
-  if run._drain_scheduled then
-    return
-  end
+  if run._drain_scheduled then return end
   run._drain_scheduled = true
   util.schedule(function()
-    run._drain_scheduled = false
-    while #run._callback_queue > 0 do
-      local item = table.remove(run._callback_queue, 1)
+    while run._callback_head <= #run._callback_queue do
+      local item = run._callback_queue[run._callback_head]
+      run._callback_queue[run._callback_head] = false
+      run._callback_head = run._callback_head + 1
       local ok, err = pcall(item.fn, item.value)
       if not ok then run:_diagnose(item.phase, err) end
+      local length = #run._callback_queue
+      if run._callback_head > CALLBACK_COMPACT_THRESHOLD
+          and run._callback_head > length / 2 then
+        local compacted = {}
+        for index = run._callback_head, length do
+          compacted[#compacted + 1] = run._callback_queue[index]
+        end
+        run._callback_queue = compacted
+        run._callback_head = 1
+      end
     end
+    run._callback_queue = {}
+    run._callback_head = 1
+    run._drain_scheduled = false
   end)
 end
 
@@ -124,17 +129,44 @@ function Run:_finish(result)
     self:_enqueue(listener, result, "listener")
   end
   self._listeners = {}
+  for _, entry in ipairs(self._cancel_handlers) do entry.active = false end
+  self._cancel_handlers = {}
+  self._inactive_cancel_handlers = 0
+  return true
+end
+
+function Run:_compact_cancel_handlers()
+  local inactive = self._inactive_cancel_handlers
+  local handlers = self._cancel_handlers
+  if self._cancelling or inactive < CANCEL_COMPACT_THRESHOLD
+      or inactive * 2 < #handlers then
+    return false
+  end
+  local compacted = {}
+  for _, entry in ipairs(handlers) do
+    if entry.active then compacted[#compacted + 1] = entry end
+  end
+  self._cancel_handlers = compacted
+  self._inactive_cancel_handlers = 0
   return true
 end
 
 function Run:on_cancel(fn)
-  if self._completed then
-    return function() end
+  assert(type(fn) == "function", "cancel handler must be a function")
+  if self._completed then return function() return false end end
+  if self._cancelled then
+    local ok, err = pcall(fn)
+    if not ok then self:_diagnose("cancel", err) end
+    return function() return false end
   end
   local entry = { fn = fn, active = true }
   self._cancel_handlers[#self._cancel_handlers + 1] = entry
   return function()
+    if not entry.active then return false end
     entry.active = false
+    self._inactive_cancel_handlers = self._inactive_cancel_handlers + 1
+    self:_compact_cancel_handlers()
+    return true
   end
 end
 
@@ -146,6 +178,7 @@ function Run:cancel()
   for child in pairs(self._children) do
     child:cancel()
   end
+  self._cancelling = true
   for _, entry in ipairs(self._cancel_handlers) do
     if entry.active then
       local ok, err = pcall(entry.fn)
@@ -153,10 +186,12 @@ function Run:cancel()
       entry.active = false
     end
   end
+  self._cancelling = false
+  self._cancel_handlers = {}
+  self._inactive_cancel_handlers = 0
   local waiting = self._waiting
-  if waiting and not waiting.settled and not waiting.defer_cancel then
-    waiting.reject(cancelled_error)
-  elseif not self._co or coroutine.status(self._co) == "dead" then
+  if waiting and waiting.cancel_wait then waiting.cancel_wait() end
+  if not waiting and (not self._co or coroutine.status(self._co) == "dead") then
     self:_finish({ ok = false, error = cancelled_error })
   end
 end
@@ -192,8 +227,6 @@ function Run:await()
       function(diagnostic) parent:_record_diagnostic(diagnostic) end)
   end
   return M.await(function(done)
-    local current = M.current()
-    if current and current._waiting then current._waiting.defer_cancel = true end
     self:_listen(function(result)
       if remove_diagnostic_listener then remove_diagnostic_listener() end
       done.resolve(result)
@@ -240,30 +273,83 @@ function M.await(start)
     error(cancelled_error, 0)
   end
 
-  local waiting = { settled = false, yielded = false }
-  local function settle(ok, value)
-    if waiting.settled or run._completed then
-      return
+  local waiting = { state = "pending", yielded = false }
+  local schedule_delivery
+
+  local function diagnose(phase, fn, value)
+    local ok, err = pcall(fn, value)
+    if not ok then run:_diagnose(phase, err) end
+  end
+
+  local function dispose(value, disposer)
+    if disposer then diagnose("dispose", disposer, value) end
+  end
+
+  local function cancel_producer()
+    if waiting.cancel_invoked or not waiting.cancel_producer then return end
+    waiting.cancel_invoked = true
+    diagnose("cancel", waiting.cancel_producer)
+  end
+
+  local function cancel_wait()
+    if waiting.state == "cancelled" or waiting.state == "delivered" then
+      return false
     end
-    waiting.settled = true
+    local previous = waiting.state
+    waiting.state = "cancelled"
+    if previous == "pending" then
+      waiting.cancel_pending = true
+      cancel_producer()
+    else
+      local value, disposer = waiting.value, waiting.disposer
+      waiting.value, waiting.disposer = nil, nil
+      dispose(value, disposer)
+    end
+    if waiting.yielded then schedule_delivery() end
+    return true
+  end
+
+  local function settle(ok, value, disposer)
+    if disposer ~= nil and type(disposer) ~= "function" then
+      ok = false
+      value = util.error("async", "await disposer must be a function")
+      disposer = nil
+    end
+    if waiting.state == "cancelled" then
+      if ok then dispose(value, disposer) end
+      return false
+    end
+    if waiting.state ~= "pending" or run._completed then return false end
+    waiting.state = "settled"
     waiting.ok = ok
     waiting.value = value
-    if waiting.remove_cancel then
-      waiting.remove_cancel()
-    end
-    if waiting.yielded then
-      util.schedule(function()
-        resume_run(run, ok, value)
-      end)
-    end
+    waiting.disposer = ok and disposer or nil
+    if waiting.yielded then schedule_delivery() end
+    return true
   end
-  waiting.resolve = function(value)
-    settle(true, value)
+  waiting.resolve = function(value, disposer)
+    return settle(true, value, disposer)
   end
   waiting.reject = function(err)
-    settle(false, err)
+    return settle(false, err)
   end
+  waiting.cancel_wait = cancel_wait
   run._waiting = waiting
+  waiting.remove_cancel = run:on_cancel(cancel_wait)
+
+  schedule_delivery = function()
+    if waiting.delivery_scheduled or not waiting.yielded
+        or waiting.state == "pending" then
+      return
+    end
+    waiting.delivery_scheduled = true
+    util.schedule(function()
+      if run._completed then return end
+      if run._cancelled then cancel_wait() end
+      resume_run(run)
+      waiting.delivery_scheduled = false
+    end)
+  end
 
   local ok, cancel_or_error = pcall(start, {
     resolve = waiting.resolve,
@@ -271,20 +357,30 @@ function M.await(start)
   })
   if not ok then
     waiting.reject(cancel_or_error)
-  elseif type(cancel_or_error) == "function" and not waiting.settled then
-    waiting.remove_cancel = run:on_cancel(cancel_or_error)
+  elseif type(cancel_or_error) == "function" then
+    waiting.cancel_producer = cancel_or_error
+    if waiting.cancel_pending then cancel_producer() end
   end
 
-  local resolved, value
-  if waiting.settled then
-    resolved, value = waiting.ok, waiting.value
-  else
+  if waiting.state == "pending" then
     waiting.yielded = true
-    resolved, value = coroutine.yield()
+    coroutine.yield()
   end
+  if run._cancelled then cancel_wait() end
+  local state = waiting.state
+  local resolved, value = waiting.ok, waiting.value
+  if state == "settled" then
+    waiting.state = "delivered"
+    state = "delivered"
+    waiting.disposer = nil
+  end
+  if waiting.remove_cancel then waiting.remove_cancel() end
   if run._waiting == waiting then
     run._waiting = nil
   end
+  waiting.value = nil
+  if state == "cancelled" then error(cancelled_error, 0) end
+  assert(state == "delivered", "async await resumed before settlement")
   if not resolved then
     error(util.normalize_error(value, "cancelled"), 0)
   end
@@ -302,10 +398,12 @@ function M.run(fn, opts)
     _error_kind = opts.error_kind or "tool",
     _report = opts.report,
     _callback_queue = {},
+    _callback_head = 1,
     _diagnostics = {},
     _diagnostic_listeners = {},
     _listeners = {},
     _cancel_handlers = {},
+    _inactive_cancel_handlers = 0,
     _children = setmetatable({}, { __mode = "k" }),
     _parents = setmetatable({}, { __mode = "k" }),
     _completed = false,

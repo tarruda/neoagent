@@ -47,29 +47,51 @@ local function encoded_settings(settings)
   return settings, encoded
 end
 
+local function object(value)
+  return type(value) == "table"
+    and (next(value) == nil or not util.is_list(value))
+end
+
+local function merge_patch(current, patch)
+  local result = util.copy(current or {})
+  for key, value in pairs(patch or {}) do
+    if value == vim.NIL then
+      result[key] = nil
+    elseif object(value) and object(result[key]) then
+      result[key] = merge_patch(result[key], value)
+    else
+      result[key] = util.copy(value)
+    end
+  end
+  return result
+end
+
+local function prune_agent_scopes(settings)
+  local agents = settings.agents
+  if not object(agents) then return settings end
+  for name, scope in pairs(agents) do
+    if object(scope) and next(scope) == nil then agents[name] = nil end
+  end
+  if next(agents) == nil then settings.agents = nil end
+  return settings
+end
+
 local function prepare_directory(self)
-  local existed = vim.uv.fs_stat(self.directory) ~= nil
-  local ok, err = fs.mkdirp(self.directory)
+  local ok, err = fs.ensure_private_directory(self.directory, 448)
   if not ok then return nil, settings_error("Failed to create workspace directory", err) end
-  if not existed then vim.uv.fs_chmod(self.directory, 448) end
   return true
 end
 
 local function replace(self, settings, encoded)
-  local bytes, random_err = vim.uv.random(8)
-  if not bytes then
-    return nil, settings_error("Failed to create workspace settings temporary file", random_err)
-  end
-  local suffix = bytes:gsub(".", function(char) return string.format("%02x", char:byte()) end)
-  local temporary = self.settings_path .. "." .. suffix .. ".tmp"
-  local ok, err = fs.write_all(temporary, encoded .. "\n", "wx", 384)
-  if not ok then return nil, settings_error("Failed to write workspace settings", err) end
-  ok, err = vim.uv.fs_rename(temporary, self.settings_path)
+  local ok, err, stage = fs.atomic_replace(
+    self.settings_path, encoded .. "\n", { mode = 384 })
   if not ok then
-    vim.uv.fs_unlink(temporary)
-    return nil, settings_error("Failed to replace workspace settings", err)
+    local action = stage == "temporary"
+        and "create workspace settings temporary file"
+      or stage == "rename" and "replace workspace settings"
+      or "write workspace settings"
+    return nil, settings_error("Failed to " .. action, err)
   end
-  vim.uv.fs_chmod(self.settings_path, 384)
   return util.copy(settings)
 end
 
@@ -102,7 +124,8 @@ function Settings:update(patch)
   return with_lock(self, function()
     local current, read_err = self:load()
     if not current then return nil, read_err end
-    local normalized, encoded, encode_err = encoded_settings(util.deep_merge(current, patch))
+    local merged = prune_agent_scopes(merge_patch(current, patch))
+    local normalized, encoded, encode_err = encoded_settings(merged)
     if not normalized then return nil, encode_err end
     return replace(self, normalized, encoded)
   end)

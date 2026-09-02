@@ -21,6 +21,10 @@ describe("neoagent upper-layer request selection", function()
       } } },
       _apis = { fake = function(resolved)
         return {
+          api = resolved.api,
+          provider = resolved.provider_id,
+          id = resolved.model_id,
+          input = vim.deepcopy(resolved.model.input or { "text" }),
           stream = function() end,
           thinking = vim.deepcopy(resolved.model.thinking),
         }
@@ -123,12 +127,43 @@ describe("neoagent upper-layer request selection", function()
       runtimes = runtimes(unsupported_config),
     })
     assert(unsupported:resolve())
+    assert.is_nil(unsupported:snapshot().thinking_level)
+    assert.are.equal(vim.NIL,
+      unsupported:snapshot({ persisted = true }).thinking_level)
     resolved, resolve_err = unsupported:set_thinking_level("high")
     assert.is_nil(resolved)
     assert.matches("not supported", resolve_err.message)
     resolved, resolve_err = unsupported:cycle_thinking_level()
     assert.is_nil(resolved)
     assert.matches("does not support thinking", resolve_err.message)
+  end)
+
+  it("contains resolution and binding failures without changing state", function()
+    local configured = configuration()
+    local provider_runtimes = runtimes(configured)
+    local selection = RequestSelection.new({
+      config = configured,
+      runtimes = provider_runtimes,
+    })
+    local original = assert(selection:resolve())
+    local original_thinking = selection:thinking_level()
+    provider_runtimes.fake.service.wrap_model = function(_, model)
+      model.input = { "image" }
+      return model
+    end
+
+    local resolved, err
+    local ok = pcall(function()
+      resolved, err = selection:select("fake", "two")
+    end)
+
+    assert.is_true(ok)
+    assert.is_nil(resolved)
+    assert.matches("include text", err.message)
+    assert.are.same({ provider = "fake", model = "one" },
+      selection:model_selection())
+    assert.are.equal(original, selection:model())
+    assert.are.equal(original_thinking, selection:thinking_level())
   end)
 
   it("moves one ProfileDraft transactionally through its typestates", function()

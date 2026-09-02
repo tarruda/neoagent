@@ -459,6 +459,7 @@ local WIN32 = {
     FILE_NOT_FOUND = 2,
     PATH_NOT_FOUND = 3,
     ACCESS_DENIED = 5,
+    INVALID_PARAMETER = 87,
     BROKEN_PIPE = 109,
     ALREADY_EXISTS = 183,
     PIPE_BUSY = 231,
@@ -1662,6 +1663,7 @@ local function validate_spec(spec, directory)
           read = true,
           write_all = true,
           mkdirp = true,
+          atomic_replace = true,
         })[spec.fs.operation] then
       failure("specification-fs", 0)
     end
@@ -2806,6 +2808,26 @@ local function direct_read(path)
   return table.concat(chunks)
 end
 
+local function content_fingerprint(data)
+  local seeds = {
+    0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
+    0x27d4eb2f, 0x165667b1, 0xd3a2646c, 0xfd7046c5,
+  }
+  local parts = {}
+  for index, seed in ipairs(seeds) do
+    local hash = bit.tobit(seed)
+    for offset = 1, #data do
+      hash = bit.bxor(hash, data:byte(offset) + index - 1)
+      hash = bit.tobit(hash + bit.lshift(hash, 1)
+        + bit.lshift(hash, 4) + bit.lshift(hash, 7)
+        + bit.lshift(hash, 8) + bit.lshift(hash, 24))
+      hash = bit.bxor(hash, bit.rshift(hash, 13))
+    end
+    parts[index] = bit.tohex(hash, 8)
+  end
+  return table.concat(parts)
+end
+
 local function direct_write(path, data, flags)
   local disposition, append = WIN32.FILE.CREATE_ALWAYS, false
   if flags == "a" then
@@ -2831,6 +2853,93 @@ local function direct_write(path, data, flags)
   end
   close_handle(handle)
   return ok, err
+end
+
+local function direct_atomic_replace(path, data, policy, suffix)
+  if type(policy) ~= "table" or vim.islist(policy)
+      or policy.mode == nil and policy.preserve_mode ~= true
+      or policy.preserve_mode == true and policy.new_mode == nil
+      or policy.expected_content_fingerprint ~= nil
+        and (type(policy.expected_content_fingerprint) ~= "string"
+          or not policy.expected_content_fingerprint:match("^" .. string.rep("%x", 64) .. "$"))
+      or type(suffix) ~= "string" or #suffix ~= 32
+      or suffix:find("[^%x]") then
+    return nil, WIN32.ERROR.INVALID_PARAMETER
+  end
+  local attributes, attributes_err = file_attributes(path)
+  local target_identity
+  if attributes then
+    if bit.band(attributes, WIN32.FILE.ATTRIBUTE_REPARSE_POINT) ~= 0
+        or bit.band(attributes, WIN32.FILE.ATTRIBUTE_DIRECTORY) ~= 0 then
+      return nil, WIN32.ERROR.ACCESS_DENIED
+    end
+    target_identity, attributes_err = path_identity(path)
+    if not target_identity then return nil, attributes_err end
+  elseif attributes_err ~= WIN32.ERROR.FILE_NOT_FOUND
+      and attributes_err ~= WIN32.ERROR.PATH_NOT_FOUND then
+    return nil, attributes_err
+  elseif policy.require_existing then
+    return nil, WIN32.ERROR.FILE_NOT_FOUND
+  end
+
+  local temporary = path .. "." .. suffix .. ".tmp"
+  local written, write_err = direct_write(temporary, data, "wx")
+  if not written then
+    K.DeleteFileW(wide(temporary))
+    return nil, write_err
+  end
+  local current, current_err = file_attributes(path)
+  local current_identity
+  if current then
+    if bit.band(current, WIN32.FILE.ATTRIBUTE_REPARSE_POINT) ~= 0
+        or bit.band(current, WIN32.FILE.ATTRIBUTE_DIRECTORY) ~= 0 then
+      K.DeleteFileW(wide(temporary))
+      return nil, WIN32.ERROR.ACCESS_DENIED
+    end
+    current_identity, current_err = path_identity(path)
+    if not current_identity then
+      K.DeleteFileW(wide(temporary))
+      return nil, current_err
+    end
+  elseif current_err ~= WIN32.ERROR.FILE_NOT_FOUND
+      and current_err ~= WIN32.ERROR.PATH_NOT_FOUND then
+    K.DeleteFileW(wide(temporary))
+    return nil, current_err
+  elseif policy.require_existing then
+    K.DeleteFileW(wide(temporary))
+    return nil, WIN32.ERROR.FILE_NOT_FOUND
+  end
+  local changed = attributes ~= current
+    or attributes ~= nil and not same_identity(target_identity, current_identity)
+  if changed then
+    K.DeleteFileW(wide(temporary))
+    return nil, WIN32.ERROR.ACCESS_DENIED
+  end
+  if policy.expected_content_fingerprint ~= nil then
+    if not target_identity then
+      K.DeleteFileW(wide(temporary))
+      return nil, WIN32.ERROR.FILE_NOT_FOUND
+    end
+    local contents, read_err = direct_read(path)
+    local latest, identity_err = path_identity(path)
+    if not contents or not same_identity(target_identity, latest) then
+      K.DeleteFileW(wide(temporary))
+      return nil, read_err or identity_err or WIN32.ERROR.ACCESS_DENIED
+    end
+    if content_fingerprint(contents):lower()
+        ~= policy.expected_content_fingerprint:lower() then
+      K.DeleteFileW(wide(temporary))
+      return nil, WIN32.ERROR.ACCESS_DENIED
+    end
+  end
+  if K.MoveFileExW(wide(temporary), wide(path),
+      bit.bor(WIN32.FILE.MOVE_REPLACE_EXISTING,
+        WIN32.FILE.MOVE_WRITE_THROUGH)) == 0 then
+    local err = last_error()
+    K.DeleteFileW(wide(temporary))
+    return nil, err
+  end
+  return true
 end
 
 local function direct_mkdirp(path)
@@ -2879,6 +2988,9 @@ local function fs_operation(spec, stdin, output_handle, token)
       return direct_read(spec.fs.path)
     elseif operation == "write_all" then
       return direct_write(spec.fs.path, stdin, spec.fs.flags)
+    elseif operation == "atomic_replace" then
+      return direct_atomic_replace(
+        spec.fs.path, stdin, spec.fs.policy, spec.fs.suffix)
     else
       return direct_mkdirp(spec.fs.path)
     end

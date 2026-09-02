@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local M = {}
 
@@ -21,6 +22,10 @@ local defaults = {
       timings_per_token = true,
     } },
     catalog = {
+      source_id = "llama-cpp-models",
+      source_revision = 1,
+      source_options = no_source_options,
+      account_scoped = true,
       ttl_ms = 5 * 60 * 1000,
       seed = {},
       discover = require("neoagent.providers.llama.catalog").discover,
@@ -85,6 +90,15 @@ local function compose_catalog(base, user)
   assert(type(user) == "table"
       and (next(user) == nil or not util.is_list(user)),
     "provider catalog must be an object")
+  if user.discover ~= nil and user.discover ~= base.discover then
+    assert(type(user.source_id) == "string" and user.source_id ~= ""
+        and user.source_revision ~= nil,
+      "a configured catalog discover callback requires source_id and source_revision")
+  end
+  if user.source_id ~= nil or user.source_revision ~= nil then
+    assert(user.source_id ~= nil and user.source_revision ~= nil,
+      "catalog source_id and source_revision must be configured together")
+  end
   local base_values = util.copy(base)
   local user_values = util.copy(user)
   base_values.transform_model = nil

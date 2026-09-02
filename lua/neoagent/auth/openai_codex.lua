@@ -384,6 +384,11 @@ function M.new(opts)
         return { ok = true, credential = credential(value, current) }
       end, { error_kind = "auth" })
     end,
+    cache_identity = function(current)
+      local fallback = token_metadata(current and current.access)
+      return type(current.accountId) == "string" and current.accountId ~= ""
+          and current.accountId or fallback.account_id
+    end,
     public_metadata = public_metadata,
     request_opts = function(current)
       if type(current.accountId) ~= "string" or current.accountId == "" then

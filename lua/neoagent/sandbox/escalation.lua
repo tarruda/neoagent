@@ -542,7 +542,9 @@ function Escalation:_elevated_context(ctx)
     end
   end
   local filesystem = {}
-  for _, name in ipairs({ "create_temp", "read", "mkdirp", "write_all" }) do
+  for _, name in ipairs({
+    "create_temp", "read", "mkdirp", "write_all", "atomic_replace",
+  }) do
     local method = name
     filesystem[method] = function(...)
       require_active()

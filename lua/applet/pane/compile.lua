@@ -2196,7 +2196,18 @@ local function normalize_regions(root)
     wrappers[#wrappers + 1] = root
     root = root.child
   end
-  if root.type == "region" then return { root }, wrappers end
+  local shape = { wrappers = {} }
+  for index, wrapper in ipairs(wrappers) do
+    shape.wrappers[index] = {
+      key = wrapper.key,
+      modal = wrapper.modal == true,
+      bindings = wrapper.bindings or {},
+    }
+  end
+  if root.type == "region" then
+    shape.kind = "region"
+    return { root }, wrappers, 0, shape
+  end
   if root.type == "column" then
     local has_region, has_other = false, false
     for _, child in ipairs(root.children or {}) do
@@ -2205,9 +2216,72 @@ local function normalize_regions(root)
     if has_region and has_other then
       fail("tree.root.children", "cannot mix region and non-region nodes")
     end
-    if has_region then return root.children, wrappers, root.gap or 0 end
+    if has_region then
+      shape.kind = "column"
+      shape.key = root.key
+      shape.gap = root.gap or 0
+      return root.children, wrappers, root.gap or 0, shape
+    end
   end
   return nil, wrappers
+end
+
+local function retained_prefix(previous, count)
+  local value = fragment()
+  value.regions = {}
+  if count == 0 then return value end
+
+  local boundary = previous.regions[count].last
+  for index = 1, boundary do value.lines[index] = previous.lines[index] end
+  for row, intervals in pairs(previous.coverage or {}) do
+    if row < boundary then value.coverage[row] = intervals end
+  end
+
+  value.targets = util.copy(previous.targets)
+  value.scopes = util.copy(previous.scopes)
+  value.images = util.copy(previous.images)
+  for key, scope in pairs(value.scopes) do
+    if scope.root then value.scopes[key] = nil end
+  end
+  for index = count + 1, #previous.regions do
+    local region = previous.regions[index]
+    for key in pairs(region.targets or {}) do value.targets[key] = nil end
+    for key in pairs(region.scopes or {}) do value.scopes[key] = nil end
+    for key in pairs(region.images or {}) do value.images[key] = nil end
+  end
+
+  for _, key in ipairs(previous.target_order or {}) do
+    if value.targets[key] then value.target_order[#value.target_order + 1] = key end
+  end
+  for _, key in ipairs(previous.hit_order or previous.target_order or {}) do
+    if value.targets[key] then value.hit_order[#value.hit_order + 1] = key end
+  end
+
+  local decoration_count = #previous.decorations
+  local source_count = #previous.source_ranges
+  local virtual_count = #previous.virtuals
+  for index = count + 1, #previous.regions do
+    local region = previous.regions[index]
+    decoration_count = decoration_count - #(region.decorations or {})
+    source_count = source_count - #(region.source_ranges or {})
+    virtual_count = virtual_count - #(region.virtuals or {})
+  end
+  for index = 1, decoration_count do
+    value.decorations[index] = previous.decorations[index]
+  end
+  for index = 1, source_count do
+    value.source_ranges[index] = previous.source_ranges[index]
+  end
+  for index = 1, virtual_count do
+    value.virtuals[index] = previous.virtuals[index]
+  end
+  for index = 1, count do value.regions[index] = previous.regions[index] end
+  return value
+end
+
+local function count_document_reuse(stats)
+  if not stats then return end
+  stats.document_reuses = (stats.document_reuses or 0) + 1
 end
 
 local function add_root_scopes(value, wrappers)
@@ -2232,8 +2306,8 @@ local function add_root_scopes(value, wrappers)
       key = wrapper.key,
       parent = index > 1 and wrappers[index - 1].key or nil,
       modal = wrapper.modal == true,
-      root = index == 1,
-      rectangles = index == 1 and {} or content_rectangles(value),
+      root = true,
+      rectangles = {},
       bindings = bindings,
     }
     for key, scope in pairs(value.scopes) do
@@ -2330,6 +2404,13 @@ local function same_constraints(left, right)
     and left.extent == right.extent
     and left.theme_generation == right.theme_generation
     and util.equal(left.images, right.images)
+end
+
+local function same_region_base(constraints, ctx)
+  return constraints.width == ctx.width
+    and constraints.height == ctx.height
+    and constraints.extent == ctx.extent
+    and constraints.theme_generation == (ctx.theme.generation or 0)
 end
 
 presentation_rows = function(value)
@@ -2533,6 +2614,9 @@ function M.reuse(opts)
   value.chrome = compile_chrome(tree.chrome, theme)
   value.view = compile_view(tree, value.targets)
   value.edit = compile_edit(tree)
+  if previous.region_document then
+    value.region_document = { shape = previous.region_document.shape }
+  end
   return value
 end
 
@@ -2605,43 +2689,120 @@ function M.compile(opts)
     retained_scene_root = retained_scene_root,
     stats = stats,
   }
-  local explicit, wrappers, gap = normalize_regions(tree.root)
+  local explicit, wrappers, gap, document_shape = normalize_regions(tree.root)
   local value = fragment()
   value.regions = {}
   if explicit then
     gap = integer(gap or 0, "tree.root.gap", 0)
     local region_keys = {}
     local active_cache = {}
+    local all_revised = true
     for index, region in ipairs(explicit) do
-      local path = ("tree.root.regions[%d]"):format(index)
-      require_value(util.nonempty_string(region.key), path .. ".key", "must be non-empty")
-      require_value(not region_keys[region.key], path .. ".key", "must be unique")
+      if not util.nonempty_string(region.key) then
+        fail(("tree.root.regions[%d].key"):format(index), "must be non-empty")
+      end
+      if region_keys[region.key] then
+        fail(("tree.root.regions[%d].key"):format(index), "must be unique")
+      end
       region_keys[region.key] = true
+      active_cache[region.key] = true
       if region.revision ~= nil then
         local kind = type(region.revision)
-        require_value(kind == "string" or kind == "number", path .. ".revision",
-          "must be a string or number")
+        if kind ~= "string" and kind ~= "number" then
+          fail(("tree.root.regions[%d].revision"):format(index),
+            "must be a string or number")
+        end
+      else
+        all_revised = false
       end
-      local child, cache_entry
+    end
+
+    local previous = opts.previous
+    local can_retain = all_revised and extent == "document" and cache
+      and type(previous) == "table"
+      and type(previous.region_document) == "table"
+      and util.equal(previous.region_document.shape, document_shape)
+    local stable_prefix = 0
+    local retaining = can_retain
+    local prepared = {}
+    for index, region in ipairs(explicit) do
       local cached = cache and cache.regions[region.key]
       local dependencies, dependencies_keys
+      local constraints, reusable
       if cached and cached.revision == region.revision
           and cached.dependency_keys then
         dependencies_keys = cached.dependency_keys
-        dependencies = resolve_image_dependencies(dependencies_keys, images)
+        if not next(dependencies_keys) and cached.constraints
+            and cached.constraints.images == false
+            and same_region_base(cached.constraints, ctx)
+            and cached.fragment ~= nil then
+          constraints = cached.constraints
+          reusable = true
+        else
+          dependencies = resolve_image_dependencies(dependencies_keys, images)
+        end
       else
         dependencies = {}
         image_dependencies(region.child, images, dependencies, {})
         dependencies_keys = dependency_keys(dependencies)
       end
-      local constraints = region_constraints(ctx, dependencies)
-      if region.revision ~= nil and cached
+      if not constraints then
+        constraints = region_constraints(ctx, dependencies)
+        reusable = region.revision ~= nil and cached
           and cached.revision == region.revision
           and same_constraints(cached.constraints, constraints)
-          and cached.fragment then
-        child = cached.fragment
-        cache_entry = cached
-        for image_key in pairs(cached.image_keys) do
+          and cached.fragment ~= nil
+      end
+      local prior = retaining and previous.regions[index] or nil
+      if prior and prior.key == region.key
+          and prior.revision == region.revision and reusable then
+        stable_prefix = index
+      else
+        retaining = false
+        prepared[index] = {
+          region = region,
+          cached = cached,
+          constraints = constraints,
+          dependencies_keys = dependencies_keys,
+          reusable = reusable,
+        }
+      end
+    end
+
+    if can_retain and stable_prefix == #explicit
+        and #previous.regions == #explicit then
+      count_document_reuse(stats)
+      for key in pairs(cache.regions) do
+        if not active_cache[key] then cache.regions[key] = nil end
+      end
+      value = util.copy(previous)
+      value.chrome = compile_chrome(tree.chrome, theme)
+      value.view = compile_view(tree, value.targets)
+      value.edit = compile_edit(tree)
+      value.width, value.height, value.extent = width, height, extent
+      value.theme_generation = theme.generation or 0
+      value.image_generation = images.generation or 0
+      value.image_cell_width = images.cell_width
+      value.image_cell_height = images.cell_height
+      value.region_document = { shape = document_shape }
+      return value
+    end
+
+    if can_retain and stable_prefix > 0 then
+      value = retained_prefix(previous, stable_prefix)
+      count_document_reuse(stats)
+      for image_key in pairs(value.images) do ctx.image_keys[image_key] = true end
+    end
+
+    for index = stable_prefix + 1, #explicit do
+      local descriptor = prepared[index]
+      local region = descriptor.region
+      local path = ("tree.root.regions[%d]"):format(index)
+      local child, cache_entry
+      if descriptor.reusable then
+        child = descriptor.cached.fragment
+        cache_entry = descriptor.cached
+        for image_key in pairs(descriptor.cached.image_keys) do
           require_value(not ctx.image_keys[image_key], path,
             ("duplicate image key %q"):format(image_key))
           ctx.image_keys[image_key] = true
@@ -2661,15 +2822,14 @@ function M.compile(opts)
         if region.revision ~= nil and cache then
           cache_entry = {
             revision = region.revision,
-            constraints = constraints,
+            constraints = descriptor.constraints,
             fragment = child,
             image_keys = util.copy(region_ctx.image_keys),
-            dependency_keys = dependencies_keys,
+            dependency_keys = descriptor.dependencies_keys,
           }
           cache.regions[region.key] = cache_entry
         end
       end
-      active_cache[region.key] = true
       local first = append_region(value, child, gap, cache_entry)
       local region_value = {
         key = region.key,
@@ -2680,6 +2840,8 @@ function M.compile(opts)
         decorations = child.decorations,
         coverage = child.coverage,
         targets = child.targets,
+        target_order = child.target_order,
+        hit_order = child.hit_order,
         scopes = child.scopes,
         images = child.images,
         source_ranges = child.source_ranges,
@@ -2693,6 +2855,10 @@ function M.compile(opts)
       end
     end
     add_root_scopes(value, wrappers)
+    value.region_document = all_revised and {
+      shape = document_shape,
+      changed_first = stable_prefix + 1,
+    } or nil
   else
     if stats then stats.region_compilations = stats.region_compilations + 1 end
     local child = compile_node(tree.root, ctx, "tree.root")
@@ -2707,6 +2873,8 @@ function M.compile(opts)
       decorations = value.decorations,
       coverage = value.coverage,
       targets = value.targets,
+      target_order = value.target_order,
+      hit_order = value.hit_order,
       scopes = value.scopes,
       images = value.images,
       source_ranges = value.source_ranges,

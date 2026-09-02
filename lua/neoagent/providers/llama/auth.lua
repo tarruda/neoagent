@@ -85,6 +85,10 @@ function M.new()
       if not value then return nil end
       return { server_url = value }
     end,
+    cache_identity = function(credential)
+      local value = server_url(credential) or DEFAULT_SERVER_URL
+      return tostring(#value) .. ":" .. value .. ":" .. credential.key
+    end,
   }
 end
 

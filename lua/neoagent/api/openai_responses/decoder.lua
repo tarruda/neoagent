@@ -48,6 +48,7 @@ function M.new(model, emit)
   }
   local slots = {}
   local finished = {}
+  local block_indexes = {}
   local reasoning = {}
   local item_indexes = {}
   local next_index = 0
@@ -71,11 +72,13 @@ function M.new(model, emit)
     if item.type == "reasoning" then
       local block = { type = "thinking", thinking = "", index = index }
       message.content[#message.content + 1] = block
+      block_indexes[block] = index
       slots[index] = { type = "thinking", block = block }
     elseif item.type == "message" then
       local block = { type = "text", text = "", index = index }
       if type(item.phase) == "string" and item.phase ~= "" then block.phase = item.phase end
       message.content[#message.content + 1] = block
+      block_indexes[block] = index
       slots[index] = { type = "text", block = block }
     elseif item.type == "function_call" then
       local call_id = item.call_id or ""
@@ -87,6 +90,7 @@ function M.new(model, emit)
         arguments = vim.empty_dict(),
       }
       message.content[#message.content + 1] = block
+      block_indexes[block] = index
       slots[index] = { type = "toolCall", block = block, raw = item.arguments or "" }
       emit({
         type = "tool_call_delta",
@@ -99,6 +103,10 @@ function M.new(model, emit)
   end
 
   local function append_delta(slot, value, field, event_type, event_fields)
+    if not util.is_valid_utf8(value) then
+      error(util.error("protocol",
+        "OpenAI Responses delta must contain valid UTF-8"), 0)
+    end
     local previous = slot.block[field]
     local delta = value:sub(1, #previous) == previous and value:sub(#previous + 1) or ""
     slot.block[field] = value
@@ -194,6 +202,10 @@ function M.new(model, emit)
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "thinking" and type(event.delta) == "string" then
+        if not util.is_valid_utf8(event.delta) then
+          error(util.error("protocol",
+            "OpenAI Responses thinking delta must contain valid UTF-8"), 0)
+        end
         if event.type == "response.reasoning_summary_text.delta" then
           local summary_index = type(event.summary_index) == "number" and event.summary_index or nil
           local changed = summary_index ~= nil and slot.summary_index ~= nil
@@ -223,6 +235,10 @@ function M.new(model, emit)
       index = register_index(index, item_id)
       local slot = slots[index]
       if slot and slot.type == "text" and type(event.delta) == "string" then
+        if not util.is_valid_utf8(event.delta) then
+          error(util.error("protocol",
+            "OpenAI Responses text delta must contain valid UTF-8"), 0)
+        end
         slot.block.text = slot.block.text .. event.delta
         emit({ type = "text_delta", text = event.delta, index = index, phase = slot.block.phase })
       end
@@ -265,6 +281,16 @@ function M.new(model, emit)
     message = message,
     process = process_payload,
     is_terminal = function() return terminal end,
+    partial = function()
+      local candidate = util.copy(message)
+      candidate.content = {}
+      for _, block in ipairs(message.content) do
+        if finished[block_indexes[block]] then
+          candidate.content[#candidate.content + 1] = util.copy(block)
+        end
+      end
+      return candidate
+    end,
   }
 end
 

@@ -3,6 +3,7 @@ local rules = require("neoagent.model_rules")
 local util = require("neoagent.util")
 
 local M = {}
+local no_source_options = require("neoagent.model_catalog.source").no_options
 local CLOUD_TTL_MS = 14 * 24 * 60 * 60 * 1000
 
 local function response_thinking(levels)
@@ -198,6 +199,10 @@ M.openai = {
   api_key = function() return vim.env.OPENAI_API_KEY end,
   auth = "openai",
   catalog = {
+    source_id = "openai-models",
+    source_revision = 1,
+    source_options = no_source_options,
+    account_scoped = true,
     ttl_ms = CLOUD_TTL_MS,
     seed = openai_seed,
     discover = require("neoagent.providers.openai").discover_models,
@@ -212,6 +217,10 @@ M["openai-codex"] = {
   base_url = "https://chatgpt.com/backend-api",
   auth = "openai-codex",
   catalog = {
+    source_id = "openai-codex-models",
+    source_revision = 1,
+    source_options = no_source_options,
+    account_scoped = true,
     ttl_ms = CLOUD_TTL_MS,
     discover = require("neoagent.providers.codex.catalog").discover,
     transform_model = transform_codex,
@@ -219,7 +228,5 @@ M["openai-codex"] = {
   models = {},
   service = require("neoagent.providers.codex").new,
 }
-
-M.discoveries = discoveries
 
 return M

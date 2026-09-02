@@ -1,4 +1,5 @@
 local config = require("neoagent.config")
+local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")
 local provider_service = require("neoagent.provider_service")
@@ -166,19 +167,20 @@ function M.from_config(options, runtime)
       or runtime.session == nil,
     session_selection_pending = runtime.commit_workspace_preference == true
       or runtime.session == nil,
-    run = nil,
+    activity = nil,
     live_usage = nil,
+    context_usage_cache = nil,
     provider_status = nil,
     inference_stats = nil,
     provider_runtimes = runtime.runtimes or {},
     provider_id = nil,
     provider_unsubscribes = {},
-    provider_usage_release = nil,
     presentation_runs = {},
     destroy_runtimes = runtime.destroy_runtimes,
     pending_events = {},
     publication_revision = 0,
-    steering = {},
+    steering = require("neoagent.agent.steering").new(),
+    next_submission_id = 0,
     last_result = nil,
     listeners = {},
     next_listener_id = 0,
@@ -187,7 +189,6 @@ function M.from_config(options, runtime)
     attention = {},
     last_activity = nil,
     run_id = 0,
-    status = "idle",
     destroyed = false,
     pending_warning = options._sandbox_warning,
     toolset = {
@@ -342,6 +343,14 @@ function M.from_config(options, runtime)
     state.provider_id = nil
   end
 
+  local function activity_state()
+    local activity = state.activity
+    if not activity or activity.phase == "finalizing" then return "idle" end
+    if activity.phase == "compacting" then return "compacting" end
+    if activity.phase == "stopping" then return "stopping" end
+    return "running"
+  end
+
   local function activity_snapshot()
     local attention = state.attention.dialog or state.attention.presentation
     if attention then
@@ -351,12 +360,12 @@ function M.from_config(options, runtime)
         attention = util.copy(attention),
       }
     end
-    local working = state.status ~= "idle"
-      or state.run ~= nil
+    local status = activity_state()
+    local working = status ~= "idle"
     if working then
       return {
         state = "working",
-        detail = state.provider_status or state.status,
+        detail = state.provider_status or status,
         attention = false,
       }
     end
@@ -509,10 +518,9 @@ function M.from_config(options, runtime)
       state.workspace_model_pending = false
       return true
     end
-    local saved, err = save_workspace_settings({
-      default_model = selected,
-      default_thinking_level = level,
-    })
+    local patch = { default_model = selected }
+    patch.default_thinking_level = level == nil and vim.NIL or level
+    local saved, err = save_workspace_settings(patch)
     if not saved then return nil, err end
     state.workspace_model_pending = false
     return true
@@ -644,6 +652,7 @@ function M.from_config(options, runtime)
       "toolset.tools must be a list")
     assert(value.execute_tool == nil or type(value.execute_tool) == "function",
       "toolset.execute_tool must be a function")
+    agent_loop.validate_toolset(value.tools, value.execute_tool)
     assert(value.system_prompt == nil or type(value.system_prompt) == "string",
       "toolset.system_prompt must be a string")
     return {
@@ -671,6 +680,29 @@ function M.from_config(options, runtime)
     end
   end
 
+  local function context_usage()
+    local session = state.session
+    local model = state.request_selection:model()
+    local leaf = session and session:leaf_id() or nil
+    local cache = state.context_usage_cache
+    if cache and cache.session == session and cache.leaf == leaf
+        and cache.model == model
+        and cache.context_window == (model and model.context_window or nil)
+        and cache.live_usage == state.live_usage then
+      return util.copy(cache.value)
+    end
+    local value = context_metrics.display(session, model, state.live_usage)
+    state.context_usage_cache = {
+      session = session,
+      leaf = leaf,
+      model = model,
+      context_window = model and model.context_window or nil,
+      live_usage = state.live_usage,
+      value = util.copy(value),
+    }
+    return value
+  end
+
   local function context()
     return {
       name = options.name or false,
@@ -678,12 +710,11 @@ function M.from_config(options, runtime)
       thinking = state.request_selection:thinking_level() or false,
       workspace = state.workspace and state.workspace.root or nil,
       position = preferences().ui_position,
-      state = state.status,
-      context_usage = context_metrics.display(state.session,
-        state.request_selection:model(), state.live_usage),
+      state = activity_state(),
+      context_usage = context_usage(),
       provider_status = state.provider_status or false,
       inference_stats = state.inference_stats or false,
-      steering = vim.tbl_map(function(message) return message.text end, state.steering),
+      steering = state.steering:texts(),
     }
   end
 
@@ -798,10 +829,10 @@ function M.from_config(options, runtime)
     compaction_run = runtime.compaction_run,
     acquire_provider = function()
       local service = model_service()
-      if not service then return function() end end
-      local release, err = provider_service.acquire(service)
-      if not release then error(err, 0) end
-      return release
+      if not service then return function() return true end end
+      local lease, err = provider_service.acquire_use(service)
+      if not lease then error(err, 0) end
+      return function() return lease:release() end
     end,
   })
 
@@ -813,14 +844,7 @@ function M.from_config(options, runtime)
         report(warning, vim.log.levels.WARN)
       end
       if not state.workspace then activate_workspace(workspace_root) end
-      if workspace_trust then
-        local trusted = workspace_trust:is_trusted(state.workspace.root)
-        if not trusted then
-          workspace_trust:request(state.workspace.root)
-          update_context()
-          return
-        end
-      end
+      if workspace_trust then require_workspace_trust(state.workspace.root) end
       local selected = state.request_selection:candidate()
       if selected then
         if configured_catalog_pending(selected) then
@@ -837,7 +861,9 @@ function M.from_config(options, runtime)
     end)
     if not ok then
       err = util.normalize_error(err, "agent")
-      notify(err.message, vim.log.levels.ERROR)
+      if err.pending ~= true then
+        notify(err.message, vim.log.levels.ERROR)
+      end
       return nil, err
     end
     return true
@@ -853,6 +879,10 @@ function M.from_config(options, runtime)
 
   function agent:dequeue_steering()
     return runs.dequeue_steering()
+  end
+
+  function agent:resubmit_steering(id)
+    return runs.resubmit_steering(id)
   end
 
   function agent:compact(instructions)
@@ -897,7 +927,7 @@ function M.from_config(options, runtime)
       notify(trust_err.message, vim.log.levels.ERROR)
       return nil, trust_err
     end
-    if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
+    if state.activity then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local choices, err = require("neoagent.models").available(
       options, auth_manager, state.provider_runtimes)
     if not choices then
@@ -916,7 +946,7 @@ function M.from_config(options, runtime)
   end
 
   function agent:set_model(provider_id, model_id)
-    if state.run then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
+    if state.activity then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local trusted, trust_err = pcall(require_workspace_trust)
     if not trusted then
       trust_err = util.normalize_error(trust_err, "workspace_trust")
@@ -947,7 +977,7 @@ function M.from_config(options, runtime)
   end
 
   function agent:set_thinking_level(level)
-    if state.run then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
+    if state.activity then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
     local selected, err = state.request_selection:set_thinking_level(level)
     if not selected then
       notify(err.message, err.message:match("not supported")
@@ -959,7 +989,7 @@ function M.from_config(options, runtime)
   end
 
   function agent:cycle_thinking_level()
-    if state.run then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
+    if state.activity then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
     local ok, model = pcall(ensure_model)
     if not ok then notify(util.normalize_error(model, "model").message, vim.log.levels.ERROR) return nil end
     local level, err = state.request_selection:cycle_thinking_level()
@@ -1101,7 +1131,7 @@ function M.from_config(options, runtime)
   end
 
   function agent:set_toolset(value)
-    if state.run then
+    if state.activity then
       local err = util.error("agent",
         "Cannot change tools while the agent is running")
       notify(err.message, vim.log.levels.WARN)
@@ -1118,23 +1148,22 @@ function M.from_config(options, runtime)
 
   function agent:config() return util.copy(options) end
   function agent:presenter() return presenter end
-  function agent:is_running() return state.run ~= nil end
+  function agent:is_running() return state.activity ~= nil end
   function agent:is_destroyed() return state.destroyed end
 
   function agent:destroy()
     if state.destroyed then return end
     state.destroyed = true
-    state.run_id = state.run_id + 1
-    if state.run then state.run:cancel() end
+    local activity = state.activity
+    if activity and activity.run then activity.run:cancel() end
     for _, run in pairs(state.presentation_runs) do run:cancel() end
-    if state.provider_usage_release then state.provider_usage_release() end
     unbind_provider()
-    local destroy_runtimes = state.destroy_runtimes
-    state.destroy_runtimes = nil
-    if destroy_runtimes then pcall(destroy_runtimes) end
-    state.run = nil
+    if not activity then
+      local destroy_runtimes = state.destroy_runtimes
+      state.destroy_runtimes = nil
+      if destroy_runtimes then pcall(destroy_runtimes) end
+    end
     state.presentation_runs = {}
-    state.provider_usage_release = nil
     local applet = state.applet
     state.applet = nil
     if applet then pcall(applet.destroy, applet) end

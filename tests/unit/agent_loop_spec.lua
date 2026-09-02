@@ -1,5 +1,14 @@
-local agent_loop = require("neoagent.agent_loop")
+local core_agent_loop = require("neoagent.agent_loop")
 local fake_model = require("tests.helpers.fake_model")
+local util = require("neoagent.util")
+
+local agent_loop = setmetatable({
+  run = function(opts)
+    local call = vim.tbl_extend("force", {}, opts)
+    call.commit_message = call.commit_message or function() return true end
+    return core_agent_loop.run(call)
+  end,
+}, { __index = core_agent_loop })
 
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
@@ -7,6 +16,45 @@ local function wait(run)
 end
 
 describe("neoagent.agent_loop", function()
+  it("requires an authoritative message command", function()
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "unused" } }),
+    } })
+    assert.has_error(function()
+      core_agent_loop.run({ model = model, messages = {} })
+    end, "commit_message must be a function")
+  end)
+
+  it("prepares one owned immutable turn value", function()
+    local messages = { { role = "user", content = "hello", timestamp = 1 } }
+    local options = { nested = { value = true } }
+    local tool = {
+      name = "echo",
+      description = "Echo text",
+      input_schema = { type = "object", properties = {
+        text = { type = "string" },
+      } },
+      execute = function() end,
+    }
+    local prepared = agent_loop.prepare({
+      model = fake_model.new({}),
+      messages = messages,
+      tools = { tool },
+      model_options = options,
+      commit_message = function() return true end,
+    })
+
+    messages[1].content = "changed"
+    tool.input_schema.properties.text.type = "number"
+    options.nested.value = false
+
+    assert.are.equal("hello", prepared.messages[1].content)
+    assert.are.equal("string",
+      prepared.tool_schemas[1].input_schema.properties.text.type)
+    assert.is_true(prepared.model_options.nested.value)
+    assert.are.equal(prepared.tools[1], prepared.tool_lookup.echo)
+  end)
+
   it("runs a tool-free model without mutating messages", function()
     local messages = { { role = "user", content = "hello", timestamp = 1 } }
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hi" } }) } })
@@ -15,6 +63,99 @@ describe("neoagent.agent_loop", function()
     assert.are.equal("hi", result.text)
     assert.are.equal(1, #messages)
     assert.are.equal(1, #result.new_messages)
+  end)
+
+  it("commits owned copies to an ordinary in-memory message owner", function()
+    local source = fake_model.assistant({ { type = "text", text = "answer" } })
+    local model = fake_model.new({ { result = source } })
+    local owner = {}
+    local result = wait(core_agent_loop.run({
+      model = model,
+      messages = {},
+      commit_message = function(message)
+        owner[#owner + 1] = message
+        message.content[1].text = "owner mutation"
+        return true
+      end,
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("owner mutation", owner[1].content[1].text)
+    assert.are.equal("answer", result.message.content[1].text)
+    assert.are.equal("answer", source.message.content[1].text)
+  end)
+
+  it("contains thrown commits and malformed committed observations", function()
+    local function run(commit_message)
+      return wait(core_agent_loop.run({
+        model = fake_model.new({ {
+          result = fake_model.assistant({ { type = "text", text = "answer" } }),
+        } }),
+        messages = {},
+        commit_message = commit_message,
+      }))
+    end
+
+    local result = run(function() error("commit crashed") end)
+    assert.is_false(result.ok)
+    assert.matches("commit crashed", result.error.message)
+    assert.are.equal("answer", result.message.content[1].text)
+    assert.are.same({}, result.new_messages)
+
+    for _, observation in ipairs({
+      "invalid",
+      { role = "assistant", content = { { type = "text", text = "other" } } },
+      { role = "assistant", content = { { type = "text", text = "answer" } },
+        _neoagent_entry_id = "bad\nentry" },
+    }) do
+      result = run(function() return true, nil, observation end)
+      assert.is_false(result.ok)
+      assert.matches("commit_message observation", result.error.message)
+      assert.are.equal(1, #result.new_messages)
+      assert.is_nil(result.message)
+    end
+
+    result = run(function(message)
+      message._neoagent_entry_id = "bad\nentry"
+      return true, nil, message
+    end)
+    assert.is_false(result.ok)
+    assert.matches("entry id is invalid", result.error.message)
+    assert.are.equal(1, #result.new_messages)
+  end)
+
+  it("rejects invalid Model roles and duplicate calls before effects", function()
+    local duplicate = fake_model.assistant({ {
+      type = "toolCall", id = "call-1", name = "echo", arguments = {},
+    } }, "toolUse")
+    local model = fake_model.new({ { result = duplicate } })
+    local executed = false
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {
+        { role = "assistant", content = { {
+          type = "toolCall", id = "call-1", name = "echo", arguments = {},
+        } } },
+        { role = "toolResult", toolCallId = "call-1", toolName = "echo",
+          content = {} },
+      },
+      tools = { {
+        name = "echo", description = "Echo", input_schema = {},
+        execute = function() executed = true end,
+      } },
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("model", result.error.kind)
+    assert.matches("duplicate conversation toolCall", result.error.message)
+    assert.is_false(executed)
+
+    model = fake_model.new({ {
+      result = { ok = true,
+        message = { role = "user", content = "invalid" } },
+    } })
+    result = wait(agent_loop.run({ model = model, messages = {} }))
+    assert.is_false(result.ok)
+    assert.matches("assistant message is required", result.error.message)
   end)
 
   it("executes requested tools sequentially and emits ordered messages", function()
@@ -55,6 +196,157 @@ describe("neoagent.agent_loop", function()
     }, events)
   end)
 
+  it("stops dependent work at every failed message commit", function()
+    local storage_error = { kind = "storage", message = "journal failed" }
+    local executed = false
+    local model = fake_model.new({ { result = fake_model.assistant({ {
+      type = "toolCall", id = "call", name = "effect", arguments = {},
+    } }, "toolUse") } })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "effect", description = "effect", input_schema = {},
+        execute = function() executed = true end,
+      } },
+      commit_message = function() return nil, storage_error end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("journal failed", result.error.message)
+    assert.is_false(executed)
+    assert.are.equal(1, #model.requests)
+
+    executed = false
+    local commits = 0
+    model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "call", name = "effect", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "late" } }) },
+    })
+    result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "effect", description = "effect", input_schema = {},
+        execute = function()
+          executed = true
+          return { content = { { type = "text", text = "changed" } } }
+        end,
+      } },
+      commit_message = function()
+        commits = commits + 1
+        if commits == 2 then return nil, storage_error end
+        return true
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.is_true(executed)
+    assert.are.equal(1, #result.new_messages)
+    assert.are.equal("toolResult", result.message.role)
+    assert.are.equal(1, #model.requests)
+
+    commits = 0
+    local steering = { { role = "user", content = "redirect" } }
+    local acknowledgement
+    model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "late" } }) },
+    })
+    result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      get_steering_messages = function()
+        local messages = steering
+        steering = {}
+        return messages, function(committed)
+          acknowledgement = committed
+        end
+      end,
+      commit_message = function()
+        commits = commits + 1
+        if commits == 2 then return nil, storage_error end
+        return true
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.is_false(acknowledgement)
+    assert.are.equal("user", result.message.role)
+    assert.are.equal(1, #model.requests)
+  end)
+
+  it("publishes committed observations in authoritative order", function()
+    local order = {}
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "call", name = "echo", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local next_id = 0
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "echo", description = "Echo", input_schema = {},
+        execute = function()
+          order[#order + 1] = "execute"
+          return { content = { { type = "text", text = "echoed" } } }
+        end,
+      } },
+      commit_message = function(message)
+        next_id = next_id + 1
+        order[#order + 1] = "commit:" .. message.role
+        local observed = vim.deepcopy(message)
+        observed._neoagent_entry_id = "entry-" .. next_id
+        return true, nil, observed
+      end,
+      on_event = function(event)
+        if event.type == "tool_end" or event.type == "message_end" then
+          order[#order + 1] = event.type .. ":"
+            .. event.message._neoagent_entry_id
+        end
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert(vim.wait(1000, function() return #order == 8 end))
+    assert.are.same({
+      "commit:assistant", "execute", "commit:toolResult",
+      "message_end:entry-1", "tool_end:entry-2", "message_end:entry-2",
+      "commit:assistant", "message_end:entry-3",
+    }, order)
+  end)
+
+  it("stops observation and effects when cancellation follows commit", function()
+    local commits, observations, executed = 0, 0, false
+    local model = fake_model.new({ { result = fake_model.assistant({ {
+      type = "toolCall", id = "call", name = "effect", arguments = {},
+    } }, "toolUse") } })
+    local run = agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "effect", description = "Effect", input_schema = {},
+        execute = function() executed = true end,
+      } },
+      commit_message = function()
+        commits = commits + 1
+        require("neoagent.async").current():cancel()
+        return true
+      end,
+      on_event = function(event)
+        if event.type == "message_end" then observations = observations + 1 end
+      end,
+    })
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal(1, commits)
+    assert.are.equal(0, observations)
+    assert.is_false(executed)
+    assert.are.equal(1, #model.requests)
+  end)
+
   it("injects queued steering messages between assistant turns", function()
     local model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "first" } }) },
@@ -78,6 +370,77 @@ describe("neoagent.agent_loop", function()
     assert.are.same({ "assistant", "user", "assistant" },
       vim.tbl_map(function(message) return message.role end, result.new_messages))
     assert.are.equal("change direction", model.requests[2].messages[3].content)
+  end)
+
+  it("acknowledges steering immediately after its durable commit", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "second" } }) },
+    })
+    local acknowledgement
+    local commits = 0
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "begin", timestamp = 1 } },
+      get_steering_messages = function()
+        if acknowledgement ~= nil then return {} end
+        return { {
+          role = "user", content = "redirect", timestamp = 2,
+        } }, function(committed, observation)
+          acknowledgement = {
+            committed = committed,
+            observed = observation and observation._neoagent_entry_id,
+            commits = commits,
+          }
+        end
+      end,
+      commit_message = function(message)
+        commits = commits + 1
+        local observed = vim.deepcopy(message)
+        observed._neoagent_entry_id = "entry-" .. commits
+        return true, nil, observed
+      end,
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.same({
+      committed = true,
+      observed = "entry-2",
+      commits = 2,
+    }, acknowledgement)
+  end)
+
+  it("keeps steering acknowledged when cancellation follows commit", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "first" } }) },
+      { result = fake_model.assistant({ { type = "text", text = "unused" } }) },
+    })
+    local run
+    local acknowledged
+    local offered = false
+    run = agent_loop.run({
+      model = model,
+      messages = { { role = "user", content = "begin", timestamp = 1 } },
+      get_steering_messages = function()
+        if offered then return {} end
+        offered = true
+        return { {
+          role = "user", content = "redirect", timestamp = 2,
+        } }, function(committed)
+          acknowledged = committed
+        end
+      end,
+      commit_message = function(message)
+        if message.role == "user" then run:cancel() end
+        return true
+      end,
+    })
+    local result = wait(run)
+
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", result.error.kind)
+    assert.is_true(acknowledged)
+    assert.are.equal(1, #model.requests)
   end)
 
   it("turns unknown tools into error results", function()
@@ -121,9 +484,115 @@ describe("neoagent.agent_loop", function()
     assert.is_true(result.new_messages[2].isError)
     assert.matches("valid UTF%-8", result.new_messages[2].content[1].text)
     assert.is_true(result.new_messages[3].isError)
-    assert.matches("string value", result.new_messages[3].content[1].text)
+    assert.matches("must be a string", result.new_messages[3].content[1].text)
     assert.is_true(require("neoagent.util").is_valid_utf8(
       model.requests[2].messages[2].content[1].text))
+    assert.are.equal("recovered", result.text)
+  end)
+
+  it("normalizes empty argument lists and unsafe executor details", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "empty", name = "empty", arguments = {} },
+        { type = "toolCall", id = "detail", name = "detail", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "empty", description = "empty", input_schema = { type = "object" },
+        execute = function(arguments)
+      assert.is_false(util.is_list(arguments))
+          return { content = { { type = "text", text = "empty object" } } }
+        end,
+      }, {
+        name = "detail", description = "detail", input_schema = { type = "object" },
+        execute = function()
+          error(util.error("tool", "safe message", "bad\255detail"), 0)
+        end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("empty object", result.new_messages[2].content[1].text)
+    assert.is_true(result.new_messages[3].isError)
+    assert.are.equal("safe message", result.new_messages[3].content[1].text)
+    assert.are.same({ detail = "bad\\xFFdetail" },
+      result.new_messages[3].details)
+  end)
+
+  it("contains steering acknowledgement failures after durable commit", function()
+    local offered = false
+    local result = wait(agent_loop.run({
+      model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "first" } }),
+      } }),
+      messages = {},
+      get_steering_messages = function()
+        if offered then return {} end
+        offered = true
+        return { { role = "user", content = "redirect" } }, function()
+          error("acknowledgement failed")
+        end
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.matches("acknowledgement failed", result.error.message)
+    assert.are.equal(1, #result.new_messages)
+  end)
+
+  it("contains commit failure for a partial failed Model response", function()
+    local result = wait(core_agent_loop.run({
+      model = fake_model.new({ {
+        result = {
+          ok = false,
+          error = { kind = "transport", message = "stream failed" },
+          message = {
+            role = "assistant",
+            content = { { type = "text", text = "partial" } },
+          },
+        },
+      } }),
+      messages = {},
+      commit_message = function()
+        return nil, { kind = "storage", message = "partial commit failed" }
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.matches("partial commit failed", result.error.message)
+    assert.are.equal("partial", result.message.content[1].text)
+  end)
+
+  it("sanitizes executor failures before persisting an error result", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "c1", name = "broken", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local detail = {}
+    detail.self = detail
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "broken",
+        description = "Broken executor",
+        input_schema = {},
+        execute = function()
+          error({ kind = "tool", message = "bad\255message", detail = detail }, 0)
+        end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.is_true(result.new_messages[2].isError)
+    assert.matches("bad\\xFFmessage", result.new_messages[2].content[1].text)
+    assert.is_nil(result.new_messages[2].details)
     assert.are.equal("recovered", result.text)
   end)
 
@@ -132,14 +601,16 @@ describe("neoagent.agent_loop", function()
       { result = fake_model.assistant({
         { type = "toolCall", id = "c1", name = "preview", arguments = {} },
         { type = "toolCall", id = "c2", name = "bad_final", arguments = {} },
+        { type = "toolCall", id = "c3", name = "missing_mime", arguments = {} },
       }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
     })
     local events = {}
+    local final_image
     local function image(fields)
       return vim.tbl_extend("force", {
         type = "image",
-        data = "encoded-png",
+        data = "aW1hZ2U=",
         mimeType = "image/png",
       }, fields or {})
     end
@@ -156,6 +627,8 @@ describe("neoagent.agent_loop", function()
             image({ id = "preview" }),
             image({ id = "preview", revision = 1, data = false }),
             image({ id = "preview", revision = 1, mimeType = false }),
+            { type = "image", data = "dW50eXBlZA==",
+              id = "untyped", revision = 1 },
             image({ id = false, revision = 1 }),
             image({ id = "", revision = 1 }),
             image({ id = "bad\nidentity", revision = 1 }),
@@ -178,9 +651,14 @@ describe("neoagent.agent_loop", function()
             image({ id = "duplicate", revision = 2 }),
           } })
           ctx.on_update({ content = {
-            image({ id = "preview", revision = "frame-1" }),
+            image({ id = "preview", revision = "frame-1",
+              mimeType = "IMAGE/PNG" }),
           } })
-          return { content = { { type = "image", data = "immutable-image" } } }
+          final_image = image({
+            data = "aW1tdXRhYmxlLWltYWdl",
+            mimeType = "IMAGE/PNG",
+          })
+          return { content = { final_image } }
         end,
       }, {
         name = "bad_final",
@@ -191,16 +669,29 @@ describe("neoagent.agent_loop", function()
             image({ id = "final", revision = math.huge }),
           } }
         end,
+      }, {
+        name = "missing_mime",
+        description = "missing image MIME type",
+        input_schema = { type = "object" },
+        execute = function()
+          return { content = { {
+            type = "image", data = "dW50eXBlZC1pbWFnZQ==",
+          } } }
+        end,
       } },
       on_event = function(event) events[#events + 1] = event end,
     }))
 
     assert.is_true(result.ok)
     assert.is_false(result.new_messages[2].isError)
-    assert.are.same({ type = "image", data = "immutable-image" },
-      result.new_messages[2].content[1])
+    assert.are.same({
+      type = "image", data = "aW1tdXRhYmxlLWltYWdl", mimeType = "image/png",
+    }, result.new_messages[2].content[1])
+    assert.are.equal("IMAGE/PNG", final_image.mimeType)
     assert.is_true(result.new_messages[3].isError)
     assert.matches("finite", result.new_messages[3].content[1].text)
+    assert.is_true(result.new_messages[4].isError)
+    assert.matches("mimeType", result.new_messages[4].content[1].text)
     assert(vim.wait(1000, function()
       local count = 0
       for _, event in ipairs(events) do
@@ -214,6 +705,7 @@ describe("neoagent.agent_loop", function()
     end
     assert.are.equal("preview", update.id)
     assert.are.equal("frame-1", update.revision)
+    assert.are.equal("image/png", update.mimeType)
   end)
 
   it("forwards model events and preserves partial failed responses", function()
@@ -239,7 +731,9 @@ describe("neoagent.agent_loop", function()
     local late_update
     local model = fake_model.new({
       { result = fake_model.assistant({
-        { type = "toolCall", id = "a", name = "invalid_args", arguments = { "not", "an", "object" } },
+        { type = "toolCall", id = "a", name = "invalid_args",
+          arguments = vim.empty_dict(),
+          argumentsError = "Tool arguments are not a JSON object" },
         { type = "toolCall", id = "b", name = "missing_result", arguments = {} },
         { type = "toolCall", id = "c", name = "bad_block", arguments = {} },
         { type = "toolCall", id = "d", name = "throws", arguments = {} },
@@ -454,7 +948,7 @@ describe("neoagent.agent_loop", function()
           ctx.on_update({ content = { {
             type = "image",
             mimeType = "image/png",
-            data = "frame-one",
+            data = "ZnJhbWUtb25l",
             id = "preview",
             revision = 1,
           } } })
@@ -478,7 +972,7 @@ describe("neoagent.agent_loop", function()
     late_update({ content = { {
       type = "image",
       mimeType = "image/png",
-      data = "frame-two",
+      data = "ZnJhbWUtdHdv",
       id = "preview",
       revision = 2,
     } } })

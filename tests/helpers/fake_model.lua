@@ -8,6 +8,7 @@ function M.new(responses)
     api = "fake",
     provider = "fake",
     id = "fake",
+    input = { "text" },
     requests = {},
     responses = responses or {},
   }

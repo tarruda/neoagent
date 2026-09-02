@@ -1,5 +1,6 @@
 local anthropic = require("neoagent.api.anthropic_messages")
 local fake_transport = require("tests.helpers.fake_transport")
+local util = require("neoagent.util")
 
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
@@ -371,6 +372,41 @@ describe("neoagent.api.anthropic_messages", function()
     assert.are.equal("cut off", result.message.content[1].text)
   end)
 
+  it("retains meaningful thinking and omits an open Tool call on failure", function()
+    local fake = fake_transport.new({ {
+      chunks = {
+        message_start(),
+        event({
+          type = "content_block_start",
+          index = 0,
+          content_block = { type = "thinking", thinking = "" },
+        }),
+        event({
+          type = "content_block_delta",
+          index = 0,
+          delta = { type = "thinking_delta", thinking = "working" },
+        }),
+        event({
+          type = "content_block_start",
+          index = 1,
+          content_block = {
+            type = "tool_use", id = "call", name = "read", input = {},
+          },
+        }),
+      },
+      error = { kind = "transport", message = "connection lost" },
+    } })
+    local result = wait(anthropic.new({
+      provider = "p", model = "m", base_url = "http://x", transport = fake,
+    }):stream({ messages = {} }))
+
+    assert.is_false(result.ok)
+    assert.are.equal(1, #result.message.content)
+    assert.are.equal("thinking", result.message.content[1].type)
+    assert.are.equal("working", result.message.content[1].thinking)
+    assert.is_nil(result.message.content[1].thinkingSignature)
+  end)
+
   it("accepts redacted thinking, pings, and citation deltas", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
@@ -559,6 +595,115 @@ describe("neoagent.api.anthropic_messages", function()
     end
   end)
 
+  it("retains completed Tool calls when a later stream event fails", function()
+    local fake = fake_transport.new({ { chunks = {
+      message_start(),
+      event({
+        type = "content_block_start",
+        index = 0,
+        content_block = {
+          type = "tool_use",
+          id = "call_1",
+          name = "inspect",
+          input = { path = "x.lua" },
+        },
+      }),
+      event({ type = "content_block_stop", index = 0 }),
+      event({ type = "future_event" }),
+    } } })
+    local result = wait(anthropic.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake,
+    }):stream({ messages = {} }))
+
+    assert.is_false(result.ok)
+    assert.are.equal("inspect", result.message.content[1].name)
+    assert.are.same({ path = "x.lua" }, result.message.content[1].arguments)
+  end)
+
+  it("rejects non-UTF-8 Anthropic deltas and thinking signatures", function()
+    local original = util.is_valid_utf8
+    util.is_valid_utf8 = function(value)
+      return value ~= "invalid" and original(value)
+    end
+    local ok, results = pcall(function()
+      local cases = {
+        {
+          message_start(),
+          event({
+            type = "content_block_start",
+            index = 0,
+            content_block = { type = "text", text = "" },
+          }),
+          event({
+            type = "content_block_delta",
+            index = 0,
+            delta = { type = "text_delta", text = "invalid" },
+          }),
+        },
+        {
+          message_start(),
+          event({
+            type = "content_block_start",
+            index = 0,
+            content_block = { type = "thinking", thinking = "" },
+          }),
+          event({
+            type = "content_block_delta",
+            index = 0,
+            delta = { type = "signature_delta", signature = "invalid" },
+          }),
+        },
+      }
+      return vim.tbl_map(function(chunks)
+        return wait(anthropic.new({
+          provider = "p",
+          model = "m",
+          base_url = "http://x",
+          transport = fake_transport.new({ { chunks = chunks } }),
+        }):stream({ messages = {} }))
+      end, cases)
+    end)
+    util.is_valid_utf8 = original
+    assert.is_true(ok, results)
+    for _, result in ipairs(results) do
+      assert.is_false(result.ok)
+      assert.matches("valid UTF%-8", result.error.message)
+    end
+  end)
+
+  it("contains a final Anthropic message rejected by the semantic boundary", function()
+    local semantic = require("neoagent.semantic_message")
+    local normalize = semantic.normalize
+    semantic.normalize = function(message)
+      if type(message) == "table" and message.role == "assistant" then
+        return nil, "semantic rejection"
+      end
+      return normalize(message)
+    end
+    local result = wait(anthropic.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake_transport.new({ { chunks = {
+        message_start(),
+        event({
+          type = "message_delta",
+          delta = { stop_reason = "end_turn" },
+          usage = { output_tokens = 0 },
+        }),
+        event({ type = "message_stop" }),
+      } } }),
+    }):stream({ messages = {} }))
+    semantic.normalize = normalize
+
+    assert.is_false(result.ok)
+    assert.matches("Invalid assistant message", result.error.message)
+    assert.matches("semantic rejection", result.error.detail)
+  end)
+
   it("maps Anthropic completion stop reasons", function()
     for reason, expected in pairs({
       end_turn = "stop",
@@ -596,13 +741,13 @@ describe("neoagent.api.anthropic_messages", function()
       { opts = { request_opts = function() return nil end }, message = "table" },
       {
         opts = { messages = { { role = "system", content = "unexpected" } } },
-        message = "Unsupported message role",
+        message = "unsupported message role",
       },
       {
         opts = { messages = { { role = "assistant", content = {
           { type = "toolCall", id = "c1", name = "bad", arguments = "bad" },
         } } } },
-        message = "Tool arguments",
+        message = "toolCall arguments",
       },
     }
     for _, case in ipairs(cases) do
@@ -619,6 +764,19 @@ describe("neoagent.api.anthropic_messages", function()
       assert.is_false(result.ok)
       assert.matches(case.message, result.error.message)
       assert.are.equal(0, #fake.requests)
+    end
+
+    for _, messages in ipairs({
+      { { role = "system", content = "unexpected" } },
+      { { role = "assistant", content = { {
+        type = "toolCall",
+        id = "call",
+        name = "inspect",
+        arguments = { "array" },
+      } } } },
+    }) do
+      local encoded = pcall(anthropic._encode_messages, messages)
+      assert.is_false(encoded)
     end
   end)
 end)

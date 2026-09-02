@@ -33,52 +33,82 @@ changes.
 - Do not introduce built-in approval or permission policy. Approval prompts,
   logging, sandbox delegation, and similar policy belong in an
   `execute_tool(tool, arguments, ctx)` decorator.
-- When a provider offers metered API and subscription or coding-plan access,
-  support both compositions.
+- Support metered API and subscription or coding-plan compositions when the
+  provider documents a third-party integration surface for each access mode.
 - Do not hardcode machine-specific paths. Executables and test dependencies
   must come from `PATH`, Make variables, environment variables, or
   repository-relative dependency directories.
 
 ## Architectural invariants
 
-- `neoagent.api.*`, `neoagent.transport.*`, `neoagent.async`, and
-  `neoagent.agent_loop` form the reusable core. They must not import
+- `neoagent.api.*`, `neoagent.transport.*`, `neoagent.async`,
+  `neoagent.semantic_message`, and `neoagent.agent_loop` form the reusable
+  core. They must not import
   configuration, Sessions, storage, Workspace, bundled tools, Agents, or UI.
+- Direct headless Agent construction loads semantic presentation and host
+  effects on demand. Top-level Applet, Pane, layout, image, and bundled
+  Renderer modules materialize with UI composition.
 - Async Runs retain the newest 32 copied callback diagnostics with sanitized
   messages of at most 1024 characters. Reporters receive neutral records, and
   unreported child diagnostics flow to their awaiting parent. Presentation is
-  an injected upper-layer policy.
-- A Model is an explicit value with `model:stream(opts)`. It uses named
-  `on_event` and `on_done` options and returns a cancellable Run.
+  an injected upper-layer policy. Error normalization is total over arbitrary
+  Lua values and returns owned metatable-free structured errors.
+- Async awaits distinguish pending, settled, delivered, and cancelled handoff
+  states. Cancellation wins until delivery. A produced resource is delivered
+  once or disposed once, and callback queues and inactive cancellation handlers
+  are compacted incrementally.
+- A Model is a validated explicit value with safe `api`, `provider`, and `id`,
+  declared input modalities, and `model:stream(opts)`. It uses named `on_event`
+  and `on_done` options and returns a cancellable Run.
 - A Model declares accepted message modalities through `input`. Built-in API
   adapters replace unsupported image blocks in a request copy with explicit
   text placeholders; Sessions retain the original blocks.
-- `agent_loop.run(opts)` receives its Model, messages, exact tools, executor, and
-  context explicitly. It does not mutate input messages or resolve defaults.
+- `agent_loop.run(opts)` receives its Model, messages, exact tools,
+  `commit_message`, executor, and context explicitly. Its pure preparation
+  validates and copies the complete turn synchronously. It commits every
+  generated message before dependent tools, steering, or Model turns. It does
+  not mutate input messages or resolve defaults.
 - Steering enters the core through an explicit `get_steering_messages`
-  callback and is consumed between assistant/tool turns. Each Agent owns
-  its pending steering queue; its Applet restores queued text for
-  editing.
+  callback and is consumed between assistant/tool turns. An optional
+  acknowledgement settles one offered message immediately after durable
+  commit. Each Agent owns its pending steering queue and assigns opaque
+  submission identities; its Applet restores and clears composer text by
+  identity.
 - `Session.new()` remains a no-argument, tool-free in-memory message owner. A
-  store is optional and injected.
+  store is optional and injected. Persistent user, assistant, and Tool-result
+  messages share one canonical validator; the Session tree separately owns its
+  internal compaction-summary projection.
 - Model selection remains live state until an accepted user message journals
   it with that message. The first accepted message in a new Session also
   commits the Workspace/Profile preference; resumed Sessions restore their
   active branch without changing that preference. One `RequestSelection`
   value owns the configured, Workspace, live, and resolved request choices for
-  an Agent or Profile draft.
+  an Agent or Profile draft. Model factories and every Authentication or
+  Provider Service wrapper return a validated Model, and resolution plus
+  RequestSelection binding is one protected state transition. Session request
+  omission preserves thinking state, while `vim.NIL` journals JSON null and
+  clears it. Workspace update tombstones delete scoped preferences.
 - Neo and Chat are explicit Profile recipes. `setup()` creates the top-level
   Neoagent Applet with zero Agents. Each interactive `ProfileDraft` has an
   explicit Profile, canonical Workspace, retained Agent Applet, request
   selection, staged options, and draft/provisional/bound/destroyed typestate.
   It constructs its Agent atomically when its first message is accepted or a
-  persisted Session is selected. Pre-acceptance model and preparation failures
-  restore the exact draft value.
+  persisted Session is selected. Pre-acceptance model, trust, preparation,
+  interaction, and Run failures restore the exact draft value without
+  overwriting newer top-level selection state.
 - Every bundled Agent owns one permanent Agent Applet, and
   every Agent Applet owns one View. The top-level Neoagent
   Applet owns constructed Agents, retained Profile drafts,
   foreground selection, the agent switcher, and one Provider Shell alongside
   shared Provider Services and Authentication.
+- Direct Agent adoption owns Applet creation, binding, activity registration,
+  claim, and record publication as one transaction. Construction failure
+  restores every visited Agent and Applet in reverse. Agent Applets own
+  semantic sources they construct and borrow supplied Presenter and Dialog
+  sources.
+- View construction and Agent binding publish only after complete snapshot,
+  context, composer, dialog, and presentation hydration. Failed candidates are
+  destroyed while semantic composer state and retryable draft ownership remain.
 - Agent identity is opaque and independent from its display label.
   Closing an Agent Applet releases its visible surfaces while its
   Agent and semantic presentation state remain alive.
@@ -87,15 +117,23 @@ changes.
   presentation per Pane. Panes submit complete visible placement plans, and
   Kitty is the bundled persistent-placement backend. Backend failure destroys
   backend-owned resources before ImageSystem clears its own resource maps.
+  ImageSystem commits backend-call results only while their backend generation
+  remains current.
   Unavailable resources occupy only their compact fallback height.
+- Transient Applet buffer identity includes its mount revision, sensitivity,
+  and Pane generation. Replacing a sensitive mount allocates a fresh buffer and
+  disposes the prior buffer while its sensitive descriptor remains attached.
 - Each bundled Agent View mounts one Pane per transcript, composer, dialog, or
   details buffer in one Applet. The Provider Shell mounts provider selector and
   detail Panes in its own Applet. Renderers consume copied semantic blocks and
   bounded presentation context, return native Pane content Trees, and supply
   an Applet Theme. Pane owns content compilation, extmarks, mappings, focus,
   and scrolling; Applet owns layout, buffers, windows, and Hosts. Pi and Codex
-  are bundled Renderer values. Agent View topology is a pure mapping from one
-  complete submitted ViewState and the bounded Applet environment.
+  are bundled Renderer values. Transcript presentation owns width-based reflow
+  and truncation. Expanded details retain complete logical rows; text and
+  thinking details use native window wrapping, while tool details use nowrap.
+  Agent View topology is a pure mapping from one complete submitted ViewState
+  and the bounded Applet environment.
 - Applet mode policy owns native editing-mode classification and transition.
   Mapping dispatch retains its originating editing intent through the callback
   and applies the final focused Pane policy when the callback completes.
@@ -106,17 +144,35 @@ changes.
   delete, and wipeout observation.
 - Pane and Applet borrow immutable submissions. Callers supply a new value,
   affected subtree, or revision for every semantic change.
+- Pane retains the longest unchanged prefix of an explicit revised region
+  document and compiles, discovers images, and reconciles from its first
+  affected region.
 - Agents compose configuration, model selection, Session, Workspace, and
-  Run. They own independent Presenter, Dialog, and attention state. They
+  one authoritative activity Run. The outer Run owns preflight compaction,
+  interactions, retries, continuations, cancellation, and its provider lease.
+  Agents own independent Presenter, Dialog, and attention state. They
   publish monotonically revisioned transcript snapshots, copied updates, and
   bounded activity while the Session retains the complete active branch.
+  Retained completion values contain bounded scalar metadata and no Session,
+  Store, Model, Run, Presenter, or UI owner graph. Submission acceptance is a
+  separate update published after the user message is journaled.
   Agent Applets hydrate from the newest revision and reject stale updates. The
   Provider Shell owns provider selection, Authentication presentation,
   operations, and progress outside Agent and Session ownership.
 - Provider Service runtime coordination is keyed by the concrete shared
   service value. Model and compaction Runs hold shared-use leases; mutating
   Provider Shell operations require exclusive access across every Agent using
-  that service. Provider operations receive no selected Model or Agent state.
+  that service. An operation token has one manual owner or one Run owner and
+  releases its registered runtime record once. Login and logout acquire
+  exclusive access across every Service
+  sharing their Authentication method, release exclusivity, and refresh every
+  usable affected catalog. Provider operations receive no selected Model or
+  Agent state.
+- One `ProviderCredentials` value owns stored, configured, environment,
+  optional, and absent credential precedence for each provider runtime.
+  Account-scoped catalog fingerprints contain hashed credential identity and
+  bounded JSON-safe `source_options`. Catalog snapshots expose configured and
+  effective persistence state.
 - Optional Tool `on_messages` hooks derive state from complete active
   conversation copies keyed by an opaque per-Session identity; the reusable
   Agent Loop remains Session-independent. Optional Tool renderers flow
@@ -129,7 +185,12 @@ changes.
   reusable core layers do not depend on them.
 - Bundled file tools operate only on disk. Loaded Neovim buffers are not a tool
   storage layer; the built-in Neo Agent may refresh an unmodified matching
-  buffer after a successful disk mutation.
+  buffer after a successful disk mutation. Writes replace regular files through
+  same-directory temporaries, preserve existing modes, reject symbolic-link
+  targets, and create new files with mode `0644` subject to process policy.
+  Every backend matches target existence, identity, and permission mode before
+  rename and removes the temporary on any mismatch or inspection error. Edits
+  also match the content fingerprint observed during their read.
 - `request_opts` is the sole built-in request customization mechanism. It may
   be a table or callback and recursively merges provider, model, then call
   layers across `url`, `headers`, and `body`.
@@ -146,14 +207,29 @@ changes.
   Credential directories created by the store use mode `0700`; files use mode
   `0600`. Never log API keys, access tokens, or refresh tokens.
 - Neoagent-owned cross-process persistence composes `neoagent.file_lock` with
-  token-validated release and bounded stale recovery. Windows sandbox state
-  composes its per-directory named OS mutex.
+  stable regular lock files, kernel-owned advisory handles, pathname identity,
+  and token-validated release. Process death releases kernel ownership. Windows
+  file locks own one native Win32 file handle through identity verification,
+  token I/O, unlocking, and close. Windows sandbox state composes its
+  per-directory named OS mutex.
 - Persistence stores the entry types Neoagent currently emits in one append-only
   tree format. Opening Neovim or creating an empty Session must not create a
   session file.
+- A persisted message owns its optional model and thinking request state in one
+  JSONL record. An absent thinking field preserves branch state and JSON null
+  clears it. First persistence binds the candidate identity returned by atomic
+  replacement before confirming its published pathname. A failed ownership or
+  close confirmation commits the published entry once and makes the Store
+  unusable. Existing-file appends record the locked pre-size and restore it
+  through the same verified regular-file handle after any failed or
+  unverifiable write. Path identity loss, failed rollback, failed handle close,
+  or failed lock release confirmation makes that Store unusable. Opening a
+  Store reads and truncates an incomplete final record through one verified
+  handle under the same lock.
 - Publishing a persisted derived Session is authoritative. A later Agent
   construction or activation failure reports the created Session path for
-  resume.
+  resume. An Agent registered before activation failure retains the live
+  Session claim for that resume.
 - Compaction receives its Session path and Model explicitly. Agents own
   automatic compaction and overflow recovery.
 - Provider diagnostics are bounded and never contain credentials, request or
@@ -161,7 +237,9 @@ changes.
   upper-layer reporter used to report each diagnostic sink failure once.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
-  callbacks from mutating newer Agent state.
+  callbacks from mutating newer Agent state. Agent destruction retains activity
+  cleanup ownership until child settlement, provider release, and deferred
+  runtime destruction complete.
 - Runtime code has no Lua plugin dependencies. Curl, `rg`, and `fd` are runtime
   executables.
 

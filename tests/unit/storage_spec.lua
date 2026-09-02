@@ -7,11 +7,17 @@ local tree = require("neoagent.session_tree")
 local original_mkdirp = fs.mkdirp
 local original_read = fs.read
 local original_write_all = fs.write_all
+local original_atomic_replace = fs.atomic_replace
+local original_truncate = fs.truncate
+local original_open_regular = fs.open_regular
 local original_file_lock_new = file_lock.new
 local original_entry_messages = tree.entry_messages
 local original_tree_messages = tree.messages
 local original_indexed_path = tree.indexed_path
+local original_uv_open = vim.uv.fs_open
+local original_uv_write = vim.uv.fs_write
 local original_rename = vim.uv.fs_rename
+local original_json_encode = vim.json.encode
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -24,6 +30,14 @@ local function index_path(store)
     "session-index.json")
 end
 
+local function intercept_regular(callback)
+  fs.open_regular = function(path, ...)
+    local file, err, code = original_open_regular(path, ...)
+    if file then callback(file, path) end
+    return file, err, code
+  end
+end
+
 describe("neoagent.storage", function()
   local dirs = {}
 
@@ -31,11 +45,17 @@ describe("neoagent.storage", function()
     fs.mkdirp = original_mkdirp
     fs.read = original_read
     fs.write_all = original_write_all
+    fs.atomic_replace = original_atomic_replace
+    fs.truncate = original_truncate
+    fs.open_regular = original_open_regular
     file_lock.new = original_file_lock_new
     tree.entry_messages = original_entry_messages
     tree.messages = original_tree_messages
     tree.indexed_path = original_indexed_path
+    vim.uv.fs_open = original_uv_open
+    vim.uv.fs_write = original_uv_write
     vim.uv.fs_rename = original_rename
+    vim.json.encode = original_json_encode
     for _, path in ipairs(dirs) do
       vim.fn.delete(path, "rf")
     end
@@ -54,7 +74,7 @@ describe("neoagent.storage", function()
     assert.is_nil(vim.uv.fs_stat(path))
     assert.is_nil(vim.uv.fs_stat(workspace_directory))
     local temporary
-    fs.write_all = function(target, ...)
+    vim.uv.fs_open = function(target, ...)
       if target:find(".jsonl.", 1, true)
           and target:sub(-4) == ".tmp" then
         temporary = target
@@ -62,20 +82,24 @@ describe("neoagent.storage", function()
         assert.is_not_nil(published)
         assert.is_nil(vim.uv.fs_stat(published))
       end
-      return original_write_all(target, ...)
+      return original_uv_open(target, ...)
     end
     assert(session:append({ role = "user", content = "hello", timestamp = 1 }, {
       model = { provider = "openai", model = "gpt-test" },
       thinking_level = "high",
     }))
-    fs.write_all = original_write_all
+    vim.uv.fs_open = original_uv_open
     assert.is_not_nil(temporary)
     assert.is_nil(vim.uv.fs_stat(temporary))
     assert.is_not_nil(vim.uv.fs_stat(path))
     local lines = vim.fn.readfile(path)
-    assert.are.equal("model_change", vim.json.decode(lines[2]).type)
-    assert.are.equal("thinking_level_change", vim.json.decode(lines[3]).type)
-    assert.are.equal("message", vim.json.decode(lines[4]).type)
+    local accepted = vim.json.decode(lines[2])
+    assert.are.equal("message", accepted.type)
+    assert.are.same({
+      model = { provider = "openai", model = "gpt-test" },
+      thinkingLevel = "high",
+    }, accepted.request)
+    assert.are.equal(2, #lines)
     local reopened = assert(storage.open(path))
     assert.are.same(store:state(), reopened:state())
     assert.are.equal("hello", reopened:load()[1].content)
@@ -112,10 +136,11 @@ describe("neoagent.storage", function()
       reopened:state().model)
     assert.are.equal("low", reopened:state().thinking_level)
 
-    fs.write_all = function(target, ...)
-      if target == path then return nil, "blocked append" end
-      return original_write_all(target, ...)
-    end
+    intercept_regular(function(file, target)
+      if target == path then
+        file.append = function() return nil, "blocked append" end
+      end
+    end)
     local ok, err = store:append({
       role = "user", content = "not committed", timestamp = 2,
     }, {
@@ -130,7 +155,7 @@ describe("neoagent.storage", function()
       reopened:state().model)
     assert.are.equal("low", reopened:state().thinking_level)
 
-    fs.write_all = original_write_all
+    fs.open_regular = original_open_regular
     assert(store:append({ role = "user", content = "second", timestamp = 3 }, {
       model = { provider = "openai", model = "gpt-next" },
       thinking_level = "high",
@@ -140,6 +165,16 @@ describe("neoagent.storage", function()
     assert.are.same({ provider = "openai", model = "gpt-next" },
       reopened:state().model)
     assert.are.equal("high", reopened:state().thinking_level)
+
+    assert(store:append({ role = "user", content = "plain", timestamp = 4 }, {
+      model = { provider = "openai", model = "plain" },
+      thinking_level = vim.NIL,
+    }))
+    reopened = assert(storage.open(path))
+    assert.is_nil(reopened:state().thinking_level)
+    assert.are.equal(vim.NIL,
+      reopened:entries()[3].request.thinkingLevel)
+    assert.matches('"thinkingLevel":null', assert(fs.read(path)))
   end)
 
   it("writes and resumes the current JSONL session", function()
@@ -222,6 +257,11 @@ describe("neoagent.storage", function()
     })
     assert.is_nil(ok)
     assert.matches("thinkingLevel", err.detail)
+    ok, err = store:append({ role = "user", content = "x" }, {
+      unknown = true,
+    })
+    assert.is_nil(ok)
+    assert.matches("unsupported message state field", err.detail)
     assert.is_nil(vim.uv.fs_stat(store:metadata().path))
   end)
 
@@ -250,7 +290,7 @@ describe("neoagent.storage", function()
     local ok, err = session:append({ role = "user", content = "bad\255text" })
 
     assert.is_nil(ok)
-    assert.are.equal("storage", err.kind)
+    assert.are.equal("session", err.kind)
     assert.matches("valid UTF%-8", err.detail)
     assert.are.equal(0, #session:messages())
     assert.is_nil(vim.uv.fs_stat(store:metadata().path))
@@ -273,6 +313,9 @@ describe("neoagent.storage", function()
         detail = "expected Neoagent session version 3" },
       { lines = { vim.json.encode(vim.tbl_extend("force", header, { parentSession = 42 })) },
         detail = "parentSession must be a string" },
+      { lines = { vim.json.encode(vim.tbl_extend("force", header, {
+        unknown = true,
+      })) }, detail = "unsupported session header field" },
       { lines = { vim.json.encode({
         type = "session", version = 3, id = "session", timestamp = "time", cwd = directory, metadata = { 1 },
       }) }, detail = "metadata must be an object" },
@@ -319,19 +362,386 @@ describe("neoagent.storage", function()
     assert.are.equal(0, #store:entries())
 
     fs.mkdirp = original_mkdirp
-    fs.write_all = function() return nil, "disk full" end
+    vim.uv.fs_write = function() return nil, "disk full" end
     ok, err = store:append({ role = "user", content = "first" })
     assert.is_nil(ok)
     assert.matches("create session file", err.message)
     assert.are.equal(0, #store:entries())
 
-    fs.write_all = original_write_all
+    vim.uv.fs_write = original_uv_write
     assert(store:append({ role = "user", content = "first" }))
-    fs.write_all = function() return nil, "disk full" end
+    intercept_regular(function(file)
+      file.append = function() return nil, "disk full" end
+    end)
     ok, err = store:append({ role = "assistant", content = {} })
     assert.is_nil(ok)
     assert.matches("append session entry", err.message)
     assert.are.equal(1, #store:entries())
+  end)
+
+  it("binds first persistence to the atomic replacement identity", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local path = store:metadata().path
+    local detached = path .. ".created"
+    local successor = "successor must remain unchanged"
+    fs.atomic_replace = function(target, ...)
+      local result = { original_atomic_replace(target, ...) }
+      if result[1] and target == path then
+        assert(vim.uv.fs_rename(path, detached))
+        assert(original_write_all(path, successor, "wx", 384))
+      end
+      return unpack(result)
+    end
+
+    assert(store:append({ role = "user", content = "first" }))
+    fs.atomic_replace = original_atomic_replace
+
+    assert.are.equal(1, #store:entries())
+    local ok, err = store:append({ role = "user", content = "blocked" })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.are.equal(successor, assert(original_read(path)))
+    assert.matches('"content":"first"', assert(original_read(detached)))
+  end)
+
+  it("commits and poisons an unconfirmed first persistence", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local path = store:metadata().path
+    local session = assert(Session.new({ store = store }))
+    fs.open_regular = function(target, ...)
+      if target == path then return nil, "inspection failed", "open" end
+      return original_open_regular(target, ...)
+    end
+
+    assert(session:append({ role = "user", content = "committed" }))
+    fs.open_regular = original_open_regular
+
+    assert.are.equal(1, #store:entries())
+    assert.are.equal("committed", session:messages()[1].content)
+    local before = assert(original_read(path))
+    local ok, err = session:append({ role = "user", content = "blocked" })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.are.equal(before, assert(original_read(path)))
+    assert.matches('"content":"committed"', before)
+  end)
+
+  it("commits and poisons when creation handle close is unconfirmed", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    local path = store:metadata().path
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      local close = file.close
+      file.close = function(self)
+        assert(close(self))
+        return nil, "close confirmation failed", "close"
+      end
+    end)
+
+    assert(store:append({ role = "user", content = "committed" }))
+    fs.open_regular = original_open_regular
+
+    assert.are.equal(1, #store:entries())
+    local before = assert(original_read(path))
+    local ok, err = store:append({ role = "user", content = "blocked" })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.matches("close confirmation failed", err.detail)
+    assert.are.equal(before, assert(original_read(path)))
+  end)
+
+  it("rolls back every failed subsequent append before releasing its lock", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first", timestamp = 1 }, {
+      model = { provider = "openai", model = "gpt-test" },
+      thinking_level = "low",
+    }))
+    local path = store:metadata().path
+
+    local failures = {
+      {
+        pattern = "partial append",
+        write = function(file, append, data, offset)
+          assert(append(file,
+            data:sub(1, math.max(1, math.floor(#data / 2))), offset))
+          return nil, "partial append"
+        end,
+      },
+      {
+        pattern = "close failed",
+        write = function(file, append, data, offset)
+          assert(append(file, data, offset))
+          return nil, "close failed"
+        end,
+      },
+      {
+        pattern = "append crashed",
+        write = function(file, append, data, offset)
+          assert(append(file, data:sub(1, 1), offset))
+          error("append crashed")
+        end,
+      },
+    }
+    for index, failure in ipairs(failures) do
+      local before = assert(original_read(path))
+      local entry_count = #store:entries()
+      intercept_regular(function(file, target)
+        if target ~= path then return end
+        local append = file.append
+        file.append = function(self, data, offset)
+          return failure.write(self, append, data, offset)
+        end
+      end)
+
+      local ok, err = store:append({
+        role = "user", content = "failed " .. index, timestamp = index + 1,
+      }, {
+        model = { provider = "openai", model = "gpt-" .. index },
+        thinking_level = "high",
+      })
+      fs.open_regular = original_open_regular
+
+      assert.is_nil(ok)
+      assert.matches(failure.pattern, err.detail)
+      assert.are.equal(before, assert(original_read(path)))
+      assert.are.equal(entry_count, #store:entries())
+      assert(store:append({
+        role = "assistant",
+        content = { { type = "text", text = "recovered " .. index } },
+        timestamp = index + 10,
+      }))
+    end
+
+    local reopened = assert(storage.open(path))
+    assert.are.same(store:entries(), reopened:entries())
+    assert.are.same(store:state(), reopened:state())
+  end)
+
+  it("rolls back a replaced Session through its original handle", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first" }))
+    local path = store:metadata().path
+    local detached = path .. ".detached"
+    local before = assert(original_read(path))
+    local successor = "successor must remain unchanged"
+
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      local append = file.append
+      file.append = function(self, data, offset)
+        assert(append(self, data:sub(1, 1), offset))
+        assert(vim.uv.fs_rename(path, detached))
+        assert(original_write_all(path, successor, "wx", 384))
+        return nil, "append failed after replacement"
+      end
+    end)
+
+    local ok, err = store:append({ role = "user", content = "failed" })
+    fs.open_regular = original_open_regular
+
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.are.equal(successor, assert(original_read(path)))
+    assert.are.equal(before, assert(original_read(detached)))
+    assert.are.equal(1, #store:entries())
+  end)
+
+  it("poisons a Store when append rollback cannot be confirmed", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first" }))
+    local path = store:metadata().path
+    local append_attempts = 0
+    intercept_regular(function(file, target)
+      if target == path then
+        local append = file.append
+        file.append = function(self, data, offset)
+          append_attempts = append_attempts + 1
+          assert(append(self, data:sub(1, 1), offset))
+          return nil, "append failed"
+        end
+        file.truncate = function(_, size)
+          assert.is_number(size)
+          return nil, "truncate failed"
+        end
+      end
+    end)
+
+    local ok, err = store:append({
+      role = "assistant", content = { { type = "text", text = "lost" } },
+    })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.matches("append failed", err.detail)
+    assert.matches("truncate failed", err.detail)
+    assert.are.equal(1, append_attempts)
+    local poisoned = vim.deepcopy(err)
+
+    fs.open_regular = original_open_regular
+    ok, err = store:append({ role = "user", content = "blocked" })
+    assert.is_nil(ok)
+    assert.are.same(poisoned, err)
+    local moved, move_err = store:set_leaf("missing")
+    assert.is_nil(moved)
+    assert.are.same(poisoned, move_err)
+    assert.are.equal(1, append_attempts)
+    assert.are.equal(1, #store:entries())
+  end)
+
+  it("poisons a Store when post-truncate size confirmation fails", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first" }))
+    local path = store:metadata().path
+    local before = assert(original_read(path))
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      local append = file.append
+      file.append = function(self, data, offset)
+        assert(append(self, data:sub(1, 1), offset))
+        return nil, "append failed"
+      end
+      local truncate = file.truncate
+      file.truncate = function(self, size)
+        assert(truncate(self, size))
+        return nil, "post-truncate stat failed"
+      end
+    end)
+
+    local ok, err = store:append({ role = "user", content = "failed" })
+
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.matches("post%-truncate stat failed", err.detail)
+    assert.are.equal(before, assert(original_read(path)))
+    assert.are.equal(1, #store:entries())
+  end)
+
+  it("commits once and poisons after append lock release failure", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first" }))
+    local path = store:metadata().path
+    local release_error = {
+      kind = "file_lock", code = "ownership", message = "release failed",
+      detail = "lock ownership was lost",
+    }
+    file_lock.new = function()
+      return {
+        acquire = function()
+          return { release = function() return nil, release_error end }
+        end,
+        with = function(_, callback)
+          assert(callback())
+          return nil, release_error
+        end,
+      }
+    end
+
+    assert(store:append({ role = "assistant",
+      content = { { type = "text", text = "committed" } } }))
+    assert.are.equal(2, #store:entries())
+    local ok, err = store:append({ role = "user", content = "blocked" })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.matches("lock ownership was lost", err.detail)
+
+    file_lock.new = original_file_lock_new
+    local reopened = assert(storage.open(path))
+    assert.are.equal(2, #reopened:entries())
+    assert.are.equal("committed", reopened:load()[2].content[1].text)
+  end)
+
+  it("poisons after rollback succeeds but lock release fails", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "first" }))
+    local path = store:metadata().path
+    local before = assert(original_read(path))
+    intercept_regular(function(file, target)
+      if target == path then
+        local append = file.append
+        file.append = function(self, data, offset)
+          assert(append(self, data:sub(1, 1), offset))
+          return nil, "append failed"
+        end
+      end
+    end)
+    local release_error = {
+      kind = "file_lock", code = "ownership", message = "release failed",
+      detail = "lock ownership was lost",
+    }
+    file_lock.new = function()
+      return {
+        acquire = function()
+          return { release = function() return nil, release_error end }
+        end,
+        with = function(_, callback)
+          callback()
+          return nil, release_error
+        end,
+      }
+    end
+
+    local ok, err = store:append({ role = "user", content = "failed" })
+    assert.is_nil(ok)
+    assert.matches("unusable", err.message)
+    assert.matches("lock ownership was lost", err.detail)
+    assert.are.equal(before, assert(original_read(path)))
+    assert.are.equal(1, #store:entries())
+  end)
+
+  it("recovers an incomplete final JSONL record while opening", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "complete" }))
+    local path = store:metadata().path
+    local complete = assert(original_read(path))
+    assert(original_write_all(path, '{"type":"message"', "a", 384))
+
+    local reopened = assert(storage.open(path))
+
+    assert.are.equal(complete, assert(original_read(path)))
+    assert.are.equal("complete", reopened:load()[1].content)
+    assert.are.equal(1, #reopened:entries())
+
+    local incomplete_header = directory .. "/incomplete-header.jsonl"
+    assert(original_write_all(incomplete_header, vim.json.encode({
+      type = "session", version = 3, id = "incomplete", timestamp = "time",
+      cwd = directory,
+    }), "w", 384))
+    local missing, err = storage.open(incomplete_header)
+    assert.is_nil(missing)
+    assert.matches("no complete JSONL record", err.detail)
+
+    local unrecoverable = directory .. "/unrecoverable.jsonl"
+    assert(original_write_all(unrecoverable,
+      complete .. '{"type":"message"', "w", 384))
+    intercept_regular(function(file, target)
+      if target == unrecoverable then
+        file.truncate = function() return nil, "truncate denied" end
+      end
+    end)
+    missing, err = storage.open(unrecoverable)
+    fs.open_regular = original_open_regular
+    assert.is_nil(missing)
+    assert.matches("failed to recover incomplete final record", err.detail)
+    assert.matches("truncate denied", err.detail)
   end)
 
   it("preserves file-lock diagnostics for append and open failures", function()
@@ -341,19 +751,21 @@ describe("neoagent.storage", function()
     assert(store:append({ role = "user", content = "first" }))
     local path = store:metadata().path
     file_lock.new = function()
+      local err = {
+        kind = "file_lock",
+        message = "lock failed",
+        detail = "lock ownership was lost",
+      }
       return {
+        acquire = function() return nil, err end,
         with = function()
-          return nil, {
-            kind = "file_lock",
-            message = "lock failed",
-            detail = "lock ownership was lost",
-          }
+          return nil, err
         end,
       }
     end
 
     local appended, append_err = store:append({
-      role = "assistant", content = "second",
+      role = "assistant", content = { { type = "text", text = "second" } },
     })
     assert.is_nil(appended)
     assert.are.equal("lock ownership was lost", append_err.detail)
@@ -420,13 +832,12 @@ describe("neoagent.storage", function()
     assert(ok)
     assert(store:append_compaction({
       summary = "Old work", firstKeptEntryId = first.id, tokensBefore = 100,
-      usage = { totalTokens = 3 },
     }))
 
     local reopened = assert(storage.open(store:metadata().path))
     assert.are.equal("/tmp/parent.jsonl", reopened:metadata().parent_session)
     assert.are.same({ owner = "test" }, reopened:metadata().data)
-    assert.are.equal(4, #reopened:entries())
+    assert.are.equal(2, #reopened:entries())
     assert.are.same({
       model = { provider = "openai", model = "gpt-test" },
       thinking_level = "high",
@@ -476,15 +887,16 @@ describe("neoagent.storage", function()
     }, document)
 
     local index_writes = 0
-    fs.write_all = function(target, ...)
+    fs.atomic_replace = function(target, ...)
       if target:find("session-index.json", 1, true) then
         index_writes = index_writes + 1
       end
-      return original_write_all(target, ...)
+      return original_atomic_replace(target, ...)
     end
-    assert(store:append({ role = "assistant", content = "answer", timestamp = 2 }))
+    assert(store:append({ role = "assistant",
+      content = { { type = "text", text = "answer" } }, timestamp = 2 }))
     assert.are.equal(0, index_writes)
-    fs.write_all = original_write_all
+    fs.atomic_replace = original_atomic_replace
 
     data = assert(fs.read(path))
     document = vim.json.decode(data)
@@ -515,10 +927,9 @@ describe("neoagent.storage", function()
     assert(vim.uv.fs_unlink(path))
 
     local session_reads = 0
-    fs.read = function(target, ...)
+    intercept_regular(function(_, target)
       if target:sub(-6) == ".jsonl" then session_reads = session_reads + 1 end
-      return original_read(target, ...)
-    end
+    end)
     assert.are.equal(2, #storage.list_sessions(directory, directory))
     assert.are.equal(2, session_reads)
     assert.is_not_nil(vim.uv.fs_stat(path))
@@ -579,23 +990,22 @@ describe("neoagent.storage", function()
     }, repaired.sessions)
   end)
 
-  it("waits for index writers and recovers abandoned index locks", function()
+  it("waits for index writers and accepts unowned stable lock files", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local first = storage.new({ directory = directory, cwd = directory })
     local path = index_path(first)
     assert(fs.mkdirp(vim.fs.dirname(path)))
-    assert(fs.write_all(path .. ".lock", "active", "wx", 384))
-    vim.defer_fn(function() vim.uv.fs_unlink(path .. ".lock") end, 20)
+    local holder = assert(require("neoagent.file_lock").new({
+      path = path .. ".lock",
+    }):acquire())
+    vim.defer_fn(function() assert(holder:release()) end, 20)
     assert(first:append({ role = "user", content = "waited" }))
 
     local second = storage.new({ directory = directory, cwd = directory })
-    assert(fs.write_all(path .. ".lock", "abandoned", "wx", 384))
-    local old = os.time() - 180
-    assert(vim.uv.fs_utime(path .. ".lock", old, old))
     assert(second:append({ role = "user", content = "recovered" }))
 
-    assert.is_nil(vim.uv.fs_stat(path .. ".lock"))
+    assert.is_not_nil(vim.uv.fs_stat(path .. ".lock"))
     local data = assert(original_read(path))
     local document = vim.json.decode(data)
     local texts = {}
@@ -611,27 +1021,33 @@ describe("neoagent.storage", function()
     local ok, _, first = store:append({ role = "user", content = "first" })
     assert(ok)
     local path = store:metadata().path
-    assert(fs.write_all(path .. ".lock", "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = path .. ".lock",
+    }):acquire())
     local external = {
       type = "message",
       id = "external-entry",
       parentId = first.id,
       timestamp = "2020-01-01T00:00:00.000Z",
-      message = { role = "assistant", content = "external" },
+      message = { role = "assistant",
+        content = { { type = "text", text = "external" } } },
     }
     local concurrent_done = false
     vim.defer_fn(function()
       assert(fs.write_all(path, vim.json.encode(external) .. "\n", "a", 384))
-      assert(vim.uv.fs_unlink(path .. ".lock"))
+      assert(holder:release())
       concurrent_done = true
     end, 20)
 
-    assert(store:append({ role = "assistant", content = "local" }))
+    assert(store:append({ role = "assistant",
+      content = { { type = "text", text = "local" } } }))
     assert(vim.wait(1000, function() return concurrent_done end))
     local lines = vim.split(assert(fs.read(path)), "\n",
       { plain = true, trimempty = true })
-    assert.are.equal("external", vim.json.decode(lines[#lines - 1]).message.content)
-    assert.are.equal("local", vim.json.decode(lines[#lines]).message.content)
+    assert.are.equal("external",
+      vim.json.decode(lines[#lines - 1]).message.content[1].text)
+    assert.are.equal("local",
+      vim.json.decode(lines[#lines]).message.content[1].text)
   end)
 
   it("keeps session persistence independent from disposable index writes", function()
@@ -639,17 +1055,17 @@ describe("neoagent.storage", function()
     dirs[#dirs + 1] = directory
     local store = storage.new({ directory = directory, cwd = directory })
     local path = index_path(store)
-    fs.write_all = function(target, ...)
+    vim.uv.fs_open = function(target, ...)
       if target:find("session-index.json", 1, true) then
         return nil, "index unavailable"
       end
-      return original_write_all(target, ...)
+      return original_uv_open(target, ...)
     end
 
     assert(store:append({ role = "user", content = "authoritative" }))
     assert.is_not_nil(vim.uv.fs_stat(store:metadata().path))
     assert.is_nil(vim.uv.fs_stat(path))
-    fs.write_all = original_write_all
+    vim.uv.fs_open = original_uv_open
 
     local listed = storage.list_sessions(directory, directory)
     assert.are.equal("authoritative", listed[1].text)
@@ -663,7 +1079,7 @@ describe("neoagent.storage", function()
     local path = index_path(store)
     assert(fs.mkdirp(vim.fs.dirname(path)))
     assert(fs.write_all(path, vim.json.encode({
-      version = 1,
+      version = 3,
       sessions = {
         ["value.jsonl"] = false,
         ["parent.jsonl"] = { text = "parent", parent_session = 42 },
@@ -673,9 +1089,9 @@ describe("neoagent.storage", function()
     assert.are.same({}, storage.list_sessions(directory, directory))
 
     local temporary
-    fs.write_all = function(target, ...)
+    vim.uv.fs_open = function(target, ...)
       if target:sub(-4) == ".tmp" then temporary = target end
-      return original_write_all(target, ...)
+      return original_uv_open(target, ...)
     end
     vim.uv.fs_rename = function() return nil, "rename unavailable" end
     local ok, err = store:append({ role = "user", content = "atomic" })
@@ -692,7 +1108,9 @@ describe("neoagent.storage", function()
     local path = index_path(parent)
     local ready_path = directory .. "/child-ready"
     assert(fs.mkdirp(vim.fs.dirname(path)))
-    assert(fs.write_all(path .. ".lock", "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = path .. ".lock",
+    }):acquire())
 
     local script = string.format(
       "local fs=require('neoagent.fs');"
@@ -707,7 +1125,7 @@ describe("neoagent.storage", function()
     assert(vim.wait(30000, function()
       return vim.uv.fs_stat(ready_path) ~= nil
     end, 10), "child did not reach index lock contention")
-    vim.defer_fn(function() assert(vim.uv.fs_unlink(path .. ".lock")) end, 20)
+    vim.defer_fn(function() assert(holder:release()) end, 20)
     assert(parent:append({ role = "user", content = "parent" }))
     local result = child:wait(15000)
     assert.are.equal(0, result.code, vim.inspect(result))
@@ -752,9 +1170,15 @@ describe("neoagent.storage", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local source = storage.new({ directory = directory, cwd = directory })
-    local _, _, first = source:append({ role = "user", content = "first" })
+    local _, _, first = source:append({ role = "user", content = "first" }, {
+      model = { provider = "fake", model = "reasoning" },
+      thinking_level = "high",
+    })
     local _, _, answer = source:append({ role = "assistant", content = {} })
-    local _, _, second = source:append({ role = "user", content = "second" })
+    local _, _, second = source:append({ role = "user", content = "second" }, {
+      model = { provider = "fake", model = "plain" },
+      thinking_level = vim.NIL,
+    })
     assert(source:append({ role = "assistant", content = {} }))
 
     local before = assert(storage.fork(source, {
@@ -765,11 +1189,13 @@ describe("neoagent.storage", function()
       return message.role == "user" and message.content or message.role
     end, before:load()))
     assert.are.equal(answer.id, before:leaf_id())
+    assert.are.equal("high", before:state().thinking_level)
 
     local at = assert(storage.fork(source:metadata().path, {
       directory = directory, entry_id = second.id, position = "at",
     }))
     assert.are.equal("second", at:load()[3].content)
+    assert.is_nil(at:state().thinking_level)
     local missing, err = storage.fork(source, { directory = directory, entry_id = "missing" })
     assert.is_nil(missing)
     assert.matches("entry not found", err.detail)
@@ -787,6 +1213,7 @@ describe("neoagent.storage", function()
     local full = assert(storage.fork(source, { directory = directory, metadata = { fork = true } }))
     assert.are.equal(#source:entries(), #full:entries())
     assert.are.same({ fork = true }, full:metadata().data)
+    assert.is_nil(full:state().thinking_level)
     assert.is_not_nil(first.id)
   end)
 
@@ -841,5 +1268,129 @@ describe("neoagent.storage", function()
     assert.is_nil(forked)
     assert.matches("fork directory unavailable", err.detail)
     assert.matches("fork", err.message)
+  end)
+
+  it("rejects encoded Session values that are not valid UTF-8", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    vim.json.encode = function() return "invalid\255json" end
+
+    local ok, err = store:append({ role = "user", content = "valid" })
+
+    vim.json.encode = original_json_encode
+    assert.is_nil(ok)
+    assert.matches("valid UTF%-8", err.detail)
+    assert.is_nil(vim.uv.fs_stat(store:metadata().path))
+  end)
+
+  it("contains every held Session handle inspection failure", function()
+    local function persisted()
+      local directory = tempdir()
+      dirs[#dirs + 1] = directory
+      local store = storage.new({ directory = directory, cwd = directory })
+      assert(store:append({ role = "user", content = "first" }))
+      return store, store:metadata().path
+    end
+
+    local store, path = persisted()
+    fs.open_regular = function(target, ...)
+      if target == path then
+        return nil, "open ownership failed", "ownership"
+      end
+      return original_open_regular(target, ...)
+    end
+    local ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("open ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target == path then
+        file.stat = function()
+          return nil, "stat ownership failed", "ownership"
+        end
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("stat ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      local stat = file.stat
+      local calls = 0
+      file.stat = function(self)
+        calls = calls + 1
+        if calls == 1 then return stat(self) end
+        return nil, "post-append ownership failed", "ownership"
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("post%-append ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      file.append = function() return nil, "append failed" end
+      local close = file.close
+      file.close = function(self)
+        assert(close(self))
+        return nil, string.rep("close confirmation failed ", 100)
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("handle close failed", err.detail)
+    assert.is_true(vim.fn.strchars(err.detail) <= 1200)
+  end)
+
+  it("contains incremental projection failures before and after persistence", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    tree.indexed_path = function() return nil, "pending projection failed" end
+    local ok, err = store:set_leaf(nil)
+    tree.indexed_path = original_indexed_path
+    assert.is_nil(ok)
+    assert.matches("pending projection failed", err.detail)
+
+    assert(store:append({ role = "user", content = "persisted" }))
+    tree.indexed_path = function() return nil, "persisted projection failed" end
+    ok, err = store:set_leaf(nil)
+    tree.indexed_path = original_indexed_path
+    assert.is_nil(ok)
+    assert.matches("persisted projection failed", err.detail)
+  end)
+
+  it("rejects a derived Session whose published identity cannot be inspected", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    fs.atomic_replace = function(...)
+      local result = { original_atomic_replace(...) }
+      if result[1] then
+        fs.open_regular = function()
+          return nil, "derived identity unavailable"
+        end
+      end
+      return unpack(result)
+    end
+
+    local derived, err = storage.derive({ entries = {}, leaf_id = nil }, {
+      directory = directory,
+      cwd = directory,
+    })
+
+    fs.atomic_replace = original_atomic_replace
+    fs.open_regular = original_open_regular
+    assert.is_nil(derived)
+    assert.matches("Failed to inspect derived session", err.message)
+    assert.matches("derived identity unavailable", err.detail)
   end)
 end)

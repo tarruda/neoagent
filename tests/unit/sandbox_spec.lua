@@ -260,6 +260,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal(paths.key("C:\\Ärea"), paths.key("c:\\ärea"))
     assert.are.equal(paths.environment_key("Ärea"),
       paths.environment_key("äREA"))
+    assert.has_error(function() paths.normalize("") end)
     assert.has_error(function() paths.normalize("C:relative") end)
     assert.has_error(function() paths.normalize("\\\\server") end)
     assert.has_error(function() paths.normalize("\\\\.\\PhysicalDrive0") end)
@@ -1218,6 +1219,22 @@ describe("neoagent sandbox execution", function()
     }
     local value = execute(read, { path = "file" }, context(root))
     assert.matches(root, value.content[1].text, 1, true)
+    value = execute({
+      execute = function(_, ctx)
+        assert(ctx.fs.atomic_replace(root .. "/file", "changed", {
+          preserve_mode = true,
+          new_mode = 420,
+        }))
+        return { content = { { type = "text", text = "replaced" } } }
+      end,
+    }, {}, context(root))
+    assert.are.equal("replaced", value.content[1].text)
+    local replacement = calls[#calls]
+    assert.are.equal("atomic_replace", replacement.operation)
+    assert.are.equal("changed", replacement.data)
+    assert.are.same({ preserve_mode = true, new_mode = 420 },
+      replacement.policy)
+    assert.are.equal(32, #replacement.suffix)
     local denied = execute({
       execute = function(_, ctx)
         ctx.fs.write_all(protected .. "/config", "x")
@@ -1256,6 +1273,11 @@ describe("neoagent sandbox execution", function()
     assert.are.same({ PATH = "/bin", TEST_SANDBOX = "yes" },
       process_request.env)
     assert.has_error(function() retained.fs.read(root) end)
+    assert.has_error(function()
+      retained.fs.atomic_replace(root .. "/file", "late", {
+        preserve_mode = true, new_mode = 420,
+      })
+    end)
     assert.has_error(function() retained.process({ "true" }) end)
   end)
 
@@ -1278,6 +1300,10 @@ describe("neoagent sandbox execution", function()
       end,
       write_all = function(path)
         raw_calls[#raw_calls + 1] = "write:" .. path
+        return true
+      end,
+      atomic_replace = function(path)
+        raw_calls[#raw_calls + 1] = "replace:" .. path
         return true
       end,
     }
@@ -1305,6 +1331,9 @@ describe("neoagent sandbox execution", function()
       execute = function(_, ctx)
         local path = assert(ctx.fs.create_temp("spill-"))
         assert(ctx.fs.write_all(path, "data", "a", 384))
+        assert(ctx.fs.atomic_replace(path, "replacement", {
+          preserve_mode = true, new_mode = 420,
+        }))
         assert.are.equal("temporary", ctx.fs.read(path))
         assert(ctx.fs.mkdirp(vim.fs.joinpath(root, "directory")))
         return { content = { { type = "text", text = "ok" } } }
@@ -1314,6 +1343,7 @@ describe("neoagent sandbox execution", function()
     assert.are.same({
       "create_temp:" .. root,
       "write:" .. temporary,
+      "replace:" .. temporary,
       "read:" .. temporary,
       "platform:mkdirp",
     }, raw_calls)

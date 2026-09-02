@@ -69,6 +69,31 @@ local function framed_process(events, host)
   end
 end
 
+local function runtime_function(path, name, boundary, environment)
+  local source = assert(fs.read(path))
+  local marker = "local function " .. name .. "("
+  local first = source:find(marker, 1, true)
+  local selected
+  if first then
+    local last = assert(source:find(boundary, first, true))
+    selected = source:sub(first, last - 1)
+      .. "\nreturn " .. name
+  else
+    assert.are.equal("atomic_replace", name)
+    local inline = '      elseif request.operation == "atomic_replace" then'
+    first = assert(source:find(inline, 1, true))
+    first = assert(source:find("\n", first, true)) + 1
+    local last = assert(source:find(
+      "\n      end\n      finish(64)", first, true))
+    selected = "return function(request)\n"
+      .. source:sub(first, last - 1) .. "\nend"
+  end
+  local chunk, load_err = loadstring(selected, "@" .. path .. ":" .. name)
+  assert(chunk, load_err)
+  setfenv(chunk, setmetatable(environment, { __index = _G }))
+  return chunk()
+end
+
 describe("neoagent sandbox platform adapters", function()
   local paths = {}
   local cleanups = {}
@@ -216,6 +241,206 @@ describe("neoagent sandbox platform adapters", function()
       assert.are.equal("error", terminal.type)
       assert.are.equal("specification-json", terminal.stage)
     end)
+
+  it("rejects Linux atomic replacement second-inspection errors", function()
+    local path = "/workspace/file"
+    local suffix = string.rep("a", 32)
+    local temporary = path .. "." .. suffix .. ".tmp"
+
+    local linux_lstats, linux_unlinks, linux_renames = 0, {}, 0
+    local linux_exit
+    local linux = runtime_function(
+      "scripts/sandbox_linux_runtime.lua", "atomic_replace",
+      "\n-- Validate every value", {
+        vim = {
+          islist = vim.islist,
+          uv = {
+            fs_lstat = function()
+              linux_lstats = linux_lstats + 1
+              if linux_lstats == 1 then
+                return { type = "file", mode = 420 }
+              end
+              return nil, "inspection denied", "EACCES"
+            end,
+          },
+        },
+        bit = bit,
+        ffi = {
+          cast = function(_, value) return value end,
+          new = function() return {} end,
+          string = function(buffer, count)
+            return buffer.data:sub(1, count)
+          end,
+          errno = function() return 0 end,
+        },
+        C = {
+          open = function() return 10 end,
+          read = function(_, buffer)
+            if buffer.data then return 0 end
+            buffer.data = "payload"
+            return #buffer.data
+          end,
+          close = function() return 0 end,
+          chmod = function() return 0 end,
+          unlinkat = function(_, value)
+            linux_unlinks[#linux_unlinks + 1] = value
+            return 0
+          end,
+          renameat = function()
+            linux_renames = linux_renames + 1
+            return 0
+          end,
+        },
+        O = { WRONLY = 1, CREAT = 64, EXCL = 128, CLOEXEC = 524288 },
+        E = { EINTR = 4 },
+        AT_FDCWD = -100,
+        write_all = function() return true end,
+        missing = function(err, code)
+          return code == "ENOENT"
+            or type(err) == "string" and err:find("ENOENT", 1, true)
+              ~= nil
+        end,
+        finish = function(code)
+          linux_exit = code
+          error("exit", 0)
+        end,
+      })
+    local linux_ok = pcall(linux, {
+      path = path,
+      suffix = suffix,
+      policy = { mode = 420 },
+    })
+    assert.is_false(linux_ok)
+    assert.are.equal(74, linux_exit)
+    assert.are.same({ temporary }, linux_unlinks)
+    assert.are.equal(0, linux_renames)
+  end)
+
+  it("rejects macOS atomic replacement second-inspection errors", function()
+    local path = "/workspace/file"
+    local suffix = string.rep("a", 32)
+    local temporary = path .. "." .. suffix .. ".tmp"
+    local mac_lstats, mac_unlinks, mac_renames = 0, {}, 0
+    local mac_failure
+    local macos = runtime_function(
+      "scripts/sandbox_macos_runtime.lua", "atomic_replace",
+      "\nlocal function filesystem_request", {
+        vim = {
+          islist = vim.islist,
+          uv = {
+            fs_lstat = function()
+              mac_lstats = mac_lstats + 1
+              if mac_lstats == 1 then
+                return { type = "file", mode = 420 }
+              end
+              return nil, "inspection denied", "EACCES"
+            end,
+            fs_open = function() return 10 end,
+            fs_write = function(_, data) return #data end,
+            fs_close = function() return true end,
+            fs_chmod = function() return true end,
+            fs_unlink = function(value)
+              mac_unlinks[#mac_unlinks + 1] = value
+              return true
+            end,
+            fs_rename = function()
+              mac_renames = mac_renames + 1
+              return true
+            end,
+          },
+        },
+        bit = bit,
+        target_observation = function(stat)
+          return {
+            exists = stat ~= nil,
+            type = stat and stat.type or nil,
+            device = stat and stat.dev or nil,
+            inode = stat and stat.ino or nil,
+            mode = stat and stat.mode or nil,
+          }
+        end,
+        same_target = function(left, right)
+          return left.exists == right.exists and left.type == right.type
+            and left.device == right.device and left.inode == right.inode
+            and left.mode == right.mode
+        end,
+        missing = function(err, code)
+          return code == "ENOENT"
+            or type(err) == "string" and err:find("ENOENT", 1, true)
+              ~= nil
+        end,
+        fail = function(message)
+          mac_failure = message
+          error("exit", 0)
+        end,
+      })
+    local mac_ok = pcall(macos, {
+      path = path,
+      suffix = suffix,
+      policy = { mode = 420 },
+    }, "payload")
+    assert.is_false(mac_ok)
+    assert.are.equal("inspection denied", mac_failure)
+    assert.are.same({ temporary }, mac_unlinks)
+    assert.are.equal(0, mac_renames)
+  end)
+
+  it("keeps Windows atomic replacement second inspection fail-closed", function()
+    local path = "/workspace/file"
+    local suffix = string.rep("a", 32)
+    local temporary = path .. "." .. suffix .. ".tmp"
+    local windows_lstats, windows_deletes, windows_moves = 0, {}, 0
+    local windows = runtime_function(
+      "scripts/sandbox_windows_runtime.lua", "direct_atomic_replace",
+      "\nlocal function direct_mkdirp", {
+        vim = { islist = vim.islist },
+        bit = bit,
+        WIN32 = {
+          ERROR = {
+            INVALID_PARAMETER = 87,
+            FILE_NOT_FOUND = 2,
+            PATH_NOT_FOUND = 3,
+            ACCESS_DENIED = 5,
+          },
+          FILE = {
+            ATTRIBUTE_REPARSE_POINT = 1024,
+            ATTRIBUTE_DIRECTORY = 16,
+            MOVE_REPLACE_EXISTING = 1,
+            MOVE_WRITE_THROUGH = 8,
+          },
+        },
+        file_attributes = function()
+          windows_lstats = windows_lstats + 1
+          if windows_lstats == 1 then return 0 end
+          return nil, 5
+        end,
+        path_identity = function()
+          return { volume = 1, high = 0, low = 1 }
+        end,
+        same_identity = function(left, right)
+          return left and right and left.volume == right.volume
+            and left.high == right.high and left.low == right.low
+        end,
+        direct_write = function() return true end,
+        wide = function(value) return value end,
+        K = {
+          DeleteFileW = function(value)
+            windows_deletes[#windows_deletes + 1] = value
+            return 1
+          end,
+          MoveFileExW = function()
+            windows_moves = windows_moves + 1
+            return 1
+          end,
+        },
+      })
+    local windows_ok, windows_err = windows(
+      path, "payload", { mode = 420 }, suffix)
+    assert.is_nil(windows_ok)
+    assert.are.equal(5, windows_err)
+    assert.are.same({ temporary }, windows_deletes)
+    assert.are.equal(0, windows_moves)
+  end)
 
   it("resolves a configured Linux Neovim command through PATH", function()
     local command = vim.fs.basename(vim.fn.exepath("nvim"))

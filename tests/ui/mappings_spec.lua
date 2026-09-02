@@ -180,10 +180,11 @@ describe("neoagent UI mappings", function()
     local result = ui.new({
       config = config.setup({ ui = {
         position = "center",
-        mappings = { card_raw = { "R", "r" } },
       } }).ui,
     })
-    local thinking = "# Trace\n\n*reason*"
+    local thinking = "# Trace\n\n"
+      .. string.rep("exact-streamed-thinking ", 40)
+      .. "stream-end"
     local response = "**Answer**\n\n- item"
     result:set_messages({
       { role = "assistant", content = {
@@ -235,11 +236,14 @@ describe("neoagent UI mappings", function()
         return view_handles.window(result, "details") and vim.api.nvim_win_is_valid(view_handles.window(result, "details"))
       end))
       assert.are_not.equal(raw, details())
-      assert.matches("R raw", title())
-      feed("R")
-      assert(vim.wait(1000, function() return details() == raw end))
-      assert.matches("R rendered", title())
-      feed("R")
+      assert.matches("r raw", title())
+      feed("r")
+      assert(vim.wait(1000, function() return result.details.raw end))
+      assert(result.details.pane:flush())
+      assert.are.equal(raw, details())
+      assert.is_true(vim.wo[view_handles.window(result, "details")].wrap)
+      assert.matches("r rendered", title())
+      feed("r")
       assert(vim.wait(1000, function() return details() ~= raw end))
       feed("<C-c>")
       assert(vim.wait(1000, function() return view_handles.window(result, "details") == nil end))

@@ -180,12 +180,140 @@ function M.error(kind, message, detail)
   return err
 end
 
-function M.normalize_error(err, kind)
-  if type(err) == "table" and type(err.kind) == "string" and type(err.message) == "string" then
-    return err
+local function utf8_prefix(value, maximum)
+  local index, characters = 1, 0
+  while index <= #value and characters < maximum do
+    index = index + (utf8_sequence_length(value, index) or 1)
+    characters = characters + 1
   end
-  return M.error(kind or "tool", tostring(err))
+  return value:sub(1, index - 1), index <= #value
 end
+
+function M.safe_message(value, opts)
+  opts = type(opts) == "table" and opts or {}
+  local maximum = type(opts.max_characters) == "number"
+      and opts.max_characters >= 1 and opts.max_characters ~= math.huge
+      and math.floor(opts.max_characters) or 1024
+  local maximum_bytes = type(opts.max_source_bytes) == "number"
+      and opts.max_source_bytes >= 1 and opts.max_source_bytes ~= math.huge
+      and math.floor(opts.max_source_bytes)
+      or maximum * 4
+  local fallback = type(opts.fallback) == "string"
+      and opts.fallback or "Error value could not be rendered"
+  local rendered_ok, rendered = pcall(tostring, value)
+  if not rendered_ok or type(rendered) ~= "string" then rendered = fallback end
+  local source = rendered:sub(1, maximum_bytes)
+  local message = M.text_from_bytes(source)
+  local truncated = #rendered > #source
+  local _, character_truncated = utf8_prefix(message, maximum)
+  truncated = truncated or character_truncated
+  if truncated then
+    message = utf8_prefix(message, math.max(0, maximum - 1)) .. "…"
+  end
+  return message
+end
+
+local MAX_ERROR_DEPTH = 8
+local MAX_ERROR_TABLES = 64
+local MAX_ERROR_KEYS = 256
+local MAX_ERROR_STRING_CHARACTERS = 1024
+
+local function plain_error_scalar(value, key)
+  if value == vim.NIL then return vim.NIL end
+  local value_type = type(value)
+  if value_type == "string" then
+    return M.safe_message(value, {
+      max_characters = key and 128 or MAX_ERROR_STRING_CHARACTERS,
+      max_source_bytes = key and 512 or MAX_ERROR_STRING_CHARACTERS * 4,
+    })
+  end
+  if value_type == "number" then
+    if value == value and value ~= math.huge and value ~= -math.huge then
+      return value
+    end
+    return nil
+  end
+  if value_type == "boolean" then return value end
+  return nil
+end
+
+local function plain_error_copy(value, state, depth)
+  local scalar = plain_error_scalar(value, false)
+  if scalar ~= nil or value == vim.NIL then return scalar end
+  if type(value) ~= "table" or depth >= MAX_ERROR_DEPTH
+      or state.active[value] or state.seen[value] then
+    return nil
+  end
+  state.tables = state.tables + 1
+  if state.tables > MAX_ERROR_TABLES then return nil end
+  state.active[value] = true
+  state.seen[value] = true
+  local result = {}
+  local cursor
+  local had_entries = false
+  while state.keys < (state.key_limit or MAX_ERROR_KEYS) do
+    local advanced, key, child = pcall(next, value, cursor)
+    if not advanced or key == nil then break end
+    had_entries = true
+    cursor = key
+    local copied_key = plain_error_scalar(key, true)
+    if copied_key ~= nil then
+      local copied_child = plain_error_copy(child, state, depth + 1)
+      if copied_child ~= nil or child == vim.NIL then
+        result[copied_key] = copied_child
+        state.keys = state.keys + 1
+      end
+    end
+  end
+  state.active[value] = nil
+  if had_entries and next(result) == nil then return nil end
+  return result
+end
+
+function M.normalize_error(err, kind)
+  if type(err) == "table"
+      and type(rawget(err, "kind")) == "string"
+      and type(rawget(err, "message")) == "string" then
+    local copy_state = {
+      active = {},
+      seen = {},
+      tables = 0,
+      keys = 0,
+      key_limit = MAX_ERROR_KEYS - 18,
+    }
+    local copied_ok, copied = pcall(
+      plain_error_copy, err, copy_state, 0)
+    if not copied_ok or type(copied) ~= "table" then copied = {} end
+    copied.kind = M.safe_message(rawget(err, "kind"), {
+      fallback = kind or "tool",
+      max_characters = 64,
+      max_source_bytes = 256,
+    })
+    copied.message = M.safe_message(rawget(err, "message"))
+    local priority_state = {
+      active = {},
+      seen = {},
+      tables = 0,
+      keys = copy_state.keys,
+      key_limit = MAX_ERROR_KEYS - 2,
+    }
+    for _, name in ipairs({
+      "code", "status", "retry_after_ms", "retryable",
+      "provider_status", "provider_status_details", "stream_max_retries",
+    }) do
+      local selected = rawget(err, name)
+      local safe = plain_error_copy(selected, priority_state, 0)
+      if safe ~= nil or selected == vim.NIL then copied[name] = safe end
+    end
+    return copied
+  end
+  return M.error(kind or "tool", M.safe_message(err))
+end
+
+M.MAX_ERROR_DEPTH = MAX_ERROR_DEPTH
+M.MAX_ERROR_TABLES = MAX_ERROR_TABLES
+M.MAX_ERROR_KEYS = MAX_ERROR_KEYS
+M.MAX_ERROR_STRING_CHARACTERS = MAX_ERROR_STRING_CHARACTERS
 
 function M.schedule(fn)
   vim.schedule(fn)

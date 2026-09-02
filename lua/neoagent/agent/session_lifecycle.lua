@@ -77,7 +77,7 @@ function M.new(opts)
   end
 
   function lifecycle.branch(entry_id)
-    if state.run then
+    if state.activity then
       opts.notify("cannot change branches while the agent is running",
         vim.log.levels.WARN)
       return nil
@@ -88,7 +88,8 @@ function M.new(opts)
       return nil, err
     end
     state.live_usage, state.provider_status, state.inference_stats = nil, nil, nil
-    state.pending_events, state.steering, state.last_result = {}, {}, nil
+    state.pending_events, state.last_result = {}, nil
+    state.steering:clear()
     local stored
     stored, err = state.session:state()
     if not stored then return nil, err end

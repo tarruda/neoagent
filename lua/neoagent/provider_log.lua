@@ -33,13 +33,7 @@ end
 
 local function prepare_directory(path)
   local directory = vim.fs.dirname(path)
-  local existed = vim.uv.fs_stat(directory) ~= nil
-  local ok, result = pcall(vim.fn.mkdir, directory, "p", 448)
-  if not ok or result == 0 and not vim.uv.fs_stat(directory) then
-    return nil, ok and "failed to create diagnostic log directory" or result
-  end
-  if not existed then pcall(vim.uv.fs_chmod, directory, 448) end
-  return true
+  return fs.ensure_private_directory(directory, 448)
 end
 
 local function append(path, encoded)

@@ -738,8 +738,8 @@ function M.new(opts, resources)
   -- The wrapper publishes inference lifecycle events and removes transport
   -- deadlines while the local router starts a requested model.
   function service:wrap_model(model)
-    assert(type(model) == "table" and type(model.stream) == "function",
-      "provider model wrapper requires a Model")
+    model = require("neoagent.model").assert(
+      model, "llama.cpp input Model")
     local router_id = definitions[model.id]
       and definitions[model.id].router_id or model.id
     local wrapped = {
@@ -826,7 +826,8 @@ function M.new(opts, resources)
     end
     wrapped._llama_service = service
     wrapped._llama_router_id = router_id
-    return wrapped
+    return require("neoagent.model").assert(
+      wrapped, "llama.cpp Model wrapper")
   end
 
   publish_catalog = function(current, server_url)

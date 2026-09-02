@@ -1,7 +1,7 @@
 local fs = require("neoagent.fs")
 local profile_sessions = require("neoagent.profile_sessions")
 local storage = require("neoagent.storage")
-local original_write_all = fs.write_all
+local original_atomic_replace = fs.atomic_replace
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -13,7 +13,7 @@ describe("neoagent.profile_sessions", function()
   local directories = {}
 
   after_each(function()
-    fs.write_all = original_write_all
+    fs.atomic_replace = original_atomic_replace
     for _, path in ipairs(directories) do vim.fn.delete(path, "rf") end
     directories = {}
   end)
@@ -143,7 +143,8 @@ describe("neoagent.profile_sessions", function()
       role = "user", content = "question", timestamp = 1,
     })
     local _, _, assistant = source:append({
-      role = "assistant", content = "answer", timestamp = 2,
+      role = "assistant", content = { { type = "text", text = "answer" } },
+      timestamp = 2,
     })
     local derived, err = profile_sessions.derive(source, {
       kind = "invalid",
@@ -233,13 +234,21 @@ describe("neoagent.profile_sessions", function()
       thinking_level = "high",
     })
     local _, _, left = source:append({
-      role = "assistant", content = "left", timestamp = 2,
+      role = "assistant", content = { { type = "text", text = "left" } },
+      timestamp = 2,
     })
     assert(source:move_to(first.id))
     assert(source:append({
-      role = "assistant", content = "right", timestamp = 3,
+      role = "assistant", content = { { type = "text", text = "right" } },
+      timestamp = 3,
     }))
     assert(source:move_to(left.id))
+    assert(source:append({
+      role = "user", content = "plain", timestamp = 4,
+    }, {
+      model = { provider = "fake", model = "plain" },
+      thinking_level = vim.NIL,
+    }))
     local before = source:snapshot()
 
     local copy = assert(profile_sessions.derive(source, {
@@ -262,11 +271,13 @@ describe("neoagent.profile_sessions", function()
       sourceSessionId = source:id(),
       sourceProfileId = "neo",
     }, metadata.neoagent.derivation)
-    assert.are.equal("source", copy:state().model.model)
+    assert.are.equal("plain", copy:state().model.model)
+    assert.is_nil(copy:state().thinking_level)
 
     local reopened = assert(profile_sessions.open(copy:metadata().path))
     assert.are.same(copy:entries(), reopened.session:entries())
     assert.are.equal(copy:leaf_id(), reopened.session:leaf_id())
+    assert.is_nil(reopened.session:state().thinking_level)
   end)
 
   it("derives between persisted and in-memory Session compositions", function()
@@ -280,7 +291,8 @@ describe("neoagent.profile_sessions", function()
       role = "user", content = "first", timestamp = 1,
     })
     assert(source:append({
-      role = "assistant", content = "answer", timestamp = 2,
+      role = "assistant", content = { { type = "text", text = "answer" } },
+      timestamp = 2,
     }))
 
     local fork = assert(profile_sessions.derive(source, {
@@ -316,12 +328,12 @@ describe("neoagent.profile_sessions", function()
     }))
     assert(source:append({ role = "user", content = "source", timestamp = 1 }))
     local before = assert(source:snapshot())
-    fs.write_all = function(target, ...)
+    fs.atomic_replace = function(target, ...)
       if target:find(".jsonl.", 1, true)
-          and target:sub(-4) == ".tmp" then
-        return nil, "blocked derived document"
+          or target:sub(-6) == ".jsonl" then
+        return nil, "blocked derived document", "write"
       end
-      return original_write_all(target, ...)
+      return original_atomic_replace(target, ...)
     end
 
     local derived, err = profile_sessions.derive(source, {
