@@ -1002,12 +1002,14 @@ It then publishes one final file:
   `format = "json"`   Publish `.jsonl` without invoking `yq`.
 
 YAML conversion invokes `yq` once with the closed NDJSON staging file as its
-input. Valid JSON request and response bodies become native YAML values and
-carry `body_format = "json"`; other text bodies remain strings. A YAML
-recording consists of ordered YAML documents and requires compatible `yq` for
-machine replay. A JSON recording remains newline-delimited JSON and has no
-`yq` dependency. A conversion failure retains the staging file for inspection.
-Directories created by the recorder use mode `0700`; files use mode `0600`.
+input. YAML-selected staging stores valid JSON request and response bodies as
+native values with `body_format = "json"`; `yq` converts the outer NDJSON
+documents without reparsing those bodies. Other text bodies remain strings. A
+YAML recording consists of ordered YAML documents and requires compatible
+`yq` for machine replay. A JSON recording remains newline-delimited JSON and
+has no `yq` dependency. A conversion failure retains the staging file for
+inspection. Directories created by the recorder use mode `0700`; files use
+mode `0600`.
 
 Authentication values, API keys, access and refresh tokens, OAuth client
 identifiers and codes, passwords, cookies, private keys, credential-bearing
@@ -1020,13 +1022,13 @@ credential-bearing headers are `*`.
 
 Model request bodies bypass content sanitation. Ordinary response bodies also
 bypass content sanitation, including credential-shaped text returned as model
-output. NDJSON staging and JSON recordings store valid UTF-8 bodies
-byte-for-byte. YAML recordings represent valid JSON bodies structurally and
-retain other valid UTF-8 bodies as strings. Other bodies use lossless base64
-with `body_encoding = "base64"`. Recordings therefore retain prompts, tool
-schemas and results, images, generated text, provider payloads, and other
-private interaction content. Treat the directory as sensitive and remove
-captures when they are no longer needed.
+output. JSON-selected staging and JSON recordings store valid UTF-8 bodies
+byte-for-byte. YAML-selected staging and YAML recordings represent valid JSON
+bodies structurally and retain other valid UTF-8 bodies as strings. Other
+bodies use lossless base64 with `body_encoding = "base64"`. Recordings
+therefore retain prompts, tool schemas and results, images, generated text,
+provider payloads, and other private interaction content. Treat the directory
+as sensitive and remove captures when they are no longer needed.
 
 Recording failures are reported without request or response content and do
 not change the provider request result. A `.partial.ndjson` file identifies an

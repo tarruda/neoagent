@@ -11,12 +11,6 @@ local FILE_MODE = 384 -- 0600
 local FORMAT_VERSION = 1
 local DIAGNOSTIC_LIMIT = 1024
 local global_sequence = 0
-local YQ_EXPRESSION = [[
-((select(.type == "exchange" and .request.body_format == "json")
-    .request.body),
-  (select(.type == "response_body" and .body_format == "json")
-    .body)) |= from_json
-]]
 
 local sensitive_keys = {
   access = true,
@@ -353,17 +347,18 @@ local function exact_body_state(state)
   return vim.base64.encode(state.body), "base64"
 end
 
-local function body_format(body, headers, encoding)
+local function json_body(body, headers, encoding)
   if encoding ~= nil or type(body) ~= "string" or body == ""
       or not util.is_valid_utf8(body) then
-    return nil
+    return nil, false
   end
   local first = body:match("^%s*(.)")
   if not content_type(headers):find("json", 1, true)
       and first ~= "{" and first ~= "[" then
-    return nil
+    return nil, false
   end
-  return pcall(vim.json.decode, body) and "json" or nil
+  local ok, decoded = pcall(vim.json.decode, body)
+  return decoded, ok
 end
 
 local function sensitive_url_key(key, authentication)
@@ -629,9 +624,7 @@ local function default_yq()
         and major ~= nil
     end,
     convert = function(path, done)
-      return vim.system({
-        "yq", "-p=json", "-o=yaml", "-P", YQ_EXPRESSION, path,
-      }, {
+      return vim.system({ "yq", "-p=json", "-o=yaml", "-P", ".", path }, {
         text = false,
       }, function(result)
         if result.code == 0 and type(result.stdout) == "string" then
@@ -715,6 +708,12 @@ function Recorder:_start(operation, request, supplied_context)
     recorded_body, body_redacted = sanitize_body_state(
       request_body, secrets, authentication)
   end
+  local decoded_request, request_is_json = json_body(
+    recorded_body, request.headers, body_encoding)
+  local persisted_request_body = recorded_body
+  if self._format == "yaml" and request_is_json then
+    persisted_request_body = decoded_request
+  end
   global_sequence = global_sequence + 1
   local sequence = global_sequence
   local now = math.floor(self._now())
@@ -787,10 +786,9 @@ function Recorder:_start(operation, request, supplied_context)
         tostring(request.method or "POST"), secrets)),
       url = sanitized_url,
       headers = sanitized_headers,
-      body = recorded_body,
+      body = persisted_request_body,
       body_encoding = body_encoding,
-      body_format = body_format(
-        recorded_body, request.headers, body_encoding),
+      body_format = request_is_json and "json" or nil,
       body_bytes = request_body.absent and 0 or #request_body.body,
       redacted = body_redacted or nil,
       timeout_ms = request.timeout_ms,
@@ -961,12 +959,18 @@ function Recorder:_finish(exchange, result, operation)
   else
     body, body_encoding = exact_body_state(response_body)
   end
+  local decoded_response, response_is_json = json_body(
+    body, response.headers, body_encoding)
+  local persisted_response_body = body
+  if self._format == "yaml" and response_is_json then
+    persisted_response_body = decoded_response
+  end
   self:_append(exchange, {
     type = "response_body",
     at_us = settled_at,
-    body = body,
+    body = persisted_response_body,
     body_encoding = body_encoding,
-    body_format = body_format(body, response.headers, body_encoding),
+    body_format = response_is_json and "json" or nil,
     bytes = #raw_body,
     redacted = redacted or nil,
   })

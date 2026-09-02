@@ -264,7 +264,7 @@ else:
     if not ok then error(err, 0) end
   end)
 
-  it("renders JSON request and response bodies as native YAML", function()
+  it("renders JSON bodies with legal escapes as native YAML", function()
     if vim.fn.executable("yq") ~= 1 then return end
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
@@ -277,7 +277,8 @@ else:
     local http = recording:transport(transport(nil, {
       ok = true,
       status = 200,
-      body = '{"result":{"text":"readable response"}}',
+      body = '{"link":"https:\\/\\/example.test\\/result",'
+        .. '"result":{"text":"readable response"}}',
       headers = { ["Content-Type"] = "application/json" },
     }), {
       workspace = workspace,
@@ -287,7 +288,8 @@ else:
     assert.is_true(wait(http.fetch({ request = {
       url = "https://example.test/yaml",
       headers = { ["Content-Type"] = "application/json" },
-      body = '{"model":"readable","messages":[{"role":"user"}]}',
+      body = '{"callback":"https:\\/\\/example.test\\/done",'
+        .. '"model":"readable","messages":[{"role":"user"}]}',
     } })).ok)
     local malformed = recording:transport(transport(nil, {
       ok = true,
@@ -332,9 +334,11 @@ else:
     assert.are.equal("!!map", vim.trim(request_type.stdout))
     assert.are.equal("!!map", vim.trim(response_type.stdout))
     local content = assert(fs.read(path))
-    assert.matches("body:%s*\n%s+model: readable", content)
-    assert.matches("body:%s*\n%s+result:%s*\n%s+text: readable response",
+    assert.matches("body:%s*\n%s+callback: https://example%.test/done",
       content)
+    assert.matches("%s+model: readable", content)
+    assert.matches("%s+result:%s*\n%s+text: readable response", content)
+    assert.matches("%s+link: https://example%.test/result", content)
     local malformed_type = vim.system({
       "yq", "eval-all",
       'select(.type == "exchange") | .request.body | type', malformed_path,
