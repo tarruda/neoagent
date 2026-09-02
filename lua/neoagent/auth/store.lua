@@ -9,7 +9,6 @@ Store.__index = Store
 local DELETE = {}
 local DEFAULT_LOCK_TIMEOUT_MS = 30000
 local DEFAULT_LOCK_POLL_MS = 50
-local DEFAULT_LOCK_STALE_MS = 120000
 
 local function failure(message, detail)
   return util.error("auth", message, detail)
@@ -27,19 +26,17 @@ local function credential_lock_error(err, releasing)
   return failure("Failed to acquire credential lock", err.detail or err.message)
 end
 
-function Store:_file_lock(refresh)
+function Store:_file_lock()
   return file_lock.new({
     path = self.path .. ".lock",
     timeout_ms = self.lock_timeout_ms,
     poll_ms = self.lock_poll_ms,
-    stale_ms = self.lock_stale_ms,
-    refresh_ms = refresh and self.lock_refresh_ms or nil,
   })
 end
 
 function Store:_lock()
   local ok, lease = pcall(function()
-    return self:_file_lock(true):acquire_async()
+    return self:_file_lock():acquire_async()
   end)
   if not ok then error(credential_lock_error(lease, false), 0) end
   return function()
@@ -82,34 +79,27 @@ end
 
 function Store:_write_all(values)
   local directory = vim.fs.dirname(self.path)
-  local directory_exists = vim.uv.fs_stat(directory) ~= nil
   local ok, err
-  ok, err = fs.mkdirp(directory)
+  ok, err = fs.ensure_private_directory(directory, 448)
   if not ok then return nil, failure("Failed to create credential directory", err) end
-  if not directory_exists then vim.uv.fs_chmod(directory, 448) end
-  local bytes, random_err = vim.uv.random(8)
-  if not bytes then return nil, failure("Failed to create credential temporary file", random_err) end
-  local suffix = bytes:gsub(".", function(char) return string.format("%02x", char:byte()) end)
-  local temporary = self.path .. "." .. suffix .. ".tmp"
   local encoded = next(values) == nil and vim.empty_dict() or values
-  ok, err = fs.write_all(temporary, vim.json.encode(encoded) .. "\n", "wx", 384)
-  if not ok then return nil, failure("Failed to write credentials", err) end
-  ok, err = vim.uv.fs_rename(temporary, self.path)
+  local stage
+  ok, err, stage = fs.atomic_replace(
+    self.path, vim.json.encode(encoded) .. "\n", { mode = 384 })
   if not ok then
-    vim.uv.fs_unlink(temporary)
-    return nil, failure("Failed to replace credentials", err)
+    local action = stage == "temporary" and "create credential temporary file"
+      or (stage == "write" or stage == "mode") and "write credentials"
+      or "replace credentials"
+    return nil, failure("Failed to " .. action, err)
   end
-  vim.uv.fs_chmod(self.path, 384)
   return true
 end
 
 function Store:write(id, credential)
   local directory = vim.fs.dirname(self.path)
-  local existed = vim.uv.fs_stat(directory) ~= nil
-  local created, create_err = fs.mkdirp(directory)
+  local created, create_err = fs.ensure_private_directory(directory, 448)
   if not created then return nil, failure("Failed to create credential directory", create_err) end
-  if not existed then vim.uv.fs_chmod(directory, 448) end
-  local result, err = self:_file_lock(false):with(function()
+  local result, err = self:_file_lock():with(function()
     local values, read_err = self:_read_all()
     if not values then return nil, read_err end
     values[id] = util.copy(credential)
@@ -132,10 +122,8 @@ function Store:modify(id, fn)
   assert(type(fn) == "function", "credential modifier is required")
   return async.run(function()
     local directory = vim.fs.dirname(self.path)
-    local existed = vim.uv.fs_stat(directory) ~= nil
-    local created, create_err = fs.mkdirp(directory)
+    local created, create_err = fs.ensure_private_directory(directory, 448)
     if not created then error(failure("Failed to create credential directory", create_err), 0) end
-    if not existed then vim.uv.fs_chmod(directory, 448) end
     local release = self:_lock()
     local ok, result = pcall(function()
       local values, read_err = self:_read_all()
@@ -179,14 +167,10 @@ function M.new(path, opts)
     opts.lock_timeout_ms or DEFAULT_LOCK_TIMEOUT_MS, "lock_timeout_ms")
   local lock_poll_ms = positive_integer(
     opts.lock_poll_ms or DEFAULT_LOCK_POLL_MS, "lock_poll_ms")
-  local lock_stale_ms = positive_integer(
-    opts.lock_stale_ms or DEFAULT_LOCK_STALE_MS, "lock_stale_ms")
   return setmetatable({
     path = fs.normalize(path),
     lock_timeout_ms = lock_timeout_ms,
     lock_poll_ms = lock_poll_ms,
-    lock_stale_ms = lock_stale_ms,
-    lock_refresh_ms = math.max(1, math.floor(lock_stale_ms / 4)),
   }, Store)
 end
 

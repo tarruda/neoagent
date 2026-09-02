@@ -20,7 +20,6 @@ local function lock(path)
     path = path .. ".lock",
     timeout_ms = 15000,
     poll_ms = 50,
-    stale_ms = 120000,
   })
 end
 
@@ -60,29 +59,19 @@ function Store:read(id)
 end
 
 function Store:write(id, entry)
+  if self.directory_error then return nil, util.copy(self.directory_error) end
   local path = self:path(id)
   local encoded, err = encode(entry)
   if not encoded then return nil, err end
   local lease, lock_err = lock(path):acquire()
   if not lease then return nil, lock_err end
   return lease:run(function()
-    local temporary = path .. "." .. (vim.uv.random(8):gsub(".", function(char)
-      return string.format("%02x", char:byte())
-    end)) .. ".tmp"
-    local written, write_err = fs.write_all(temporary, encoded .. "\n", "wx", FILE_MODE)
-    if not written then return nil, write_err end
-    local renamed, rename_err = vim.uv.fs_rename(temporary, path)
-    if not renamed then
-      vim.uv.fs_unlink(temporary)
-      return nil, rename_err
-    end
-    local chmodded, chmod_err = vim.uv.fs_chmod(path, FILE_MODE)
-    if not chmodded then return nil, chmod_err end
-    return true
+    return fs.atomic_replace(path, encoded .. "\n", { mode = FILE_MODE })
   end)
 end
 
 function Store:delete(id)
+  if self.directory_error then return nil, util.copy(self.directory_error) end
   local path = self:path(id)
   local lease, lock_err = lock(path):acquire()
   if not lease then return nil, lock_err end
@@ -100,14 +89,14 @@ function M.new(opts)
   assert(type(opts.directory) == "string" and opts.directory ~= "",
     "state store directory is required")
   local directory = fs.normalize(opts.directory)
-  -- Construction never fails on read-only or otherwise unwritable state
-  -- directories: reads and writes report their own errors, so startup
-  -- composition stays available. The restrictive mode is applied
-  -- best-effort when the directory exists or can be created.
-  if fs.mkdirp(directory) then
-    pcall(vim.uv.fs_chmod, directory, DIRECTORY_MODE)
-  end
-  return setmetatable({ directory = directory }, Store)
+  local prepared, prepare_err = fs.ensure_private_directory(
+    directory, DIRECTORY_MODE)
+  return setmetatable({
+    directory = directory,
+    directory_error = not prepared and util.error(
+      "state_store", "failed to prepare private state directory", prepare_err)
+      or nil,
+  }, Store)
 end
 
 return M

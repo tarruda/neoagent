@@ -186,8 +186,8 @@ describe("neoagent workspace trust", function()
 
     local write_dir = directory("write")
     vim.fn.mkdir(write_dir, "p")
-    result = patch(fs, "write_all", function()
-      return nil, "write denied"
+    result = patch(fs, "atomic_replace", function()
+      return nil, "write denied", "write"
     end, function()
       return wait(trust.new_store(write_dir .. "/trust.json"):trust(root))
     end)
@@ -231,10 +231,21 @@ describe("neoagent workspace trust", function()
 
     local release_dir = directory("release")
     vim.fn.mkdir(release_dir, "p")
-    local original_unlink = vim.uv.fs_unlink
-    result = patch(vim.uv, "fs_unlink", function(path)
-      if path:sub(-5) == ".lock" then return nil, "EACCES" end
-      return original_unlink(path)
+    local posix = require("neoagent.file_lock.posix")
+    local original_backend_new = posix.new
+    result = patch(posix, "new", function(...)
+      local backend = original_backend_new(...)
+      local open = backend.open
+      backend.open = function(owner, ...)
+        local handle, open_err = open(owner, ...)
+        if handle then
+          handle.release = function()
+            return nil, { code = "release", message = "unlock failed" }
+          end
+        end
+        return handle, open_err
+      end
+      return backend
     end, function()
       return wait(trust.new_store(release_dir .. "/trust.json"):trust(root))
     end)
@@ -244,20 +255,21 @@ describe("neoagent workspace trust", function()
     local lock_dir = directory("timeout")
     vim.fn.mkdir(lock_dir, "p")
     local lock_path = lock_dir .. "/trust.json.lock"
-    assert(fs.write_all(lock_path, "", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = lock_path,
+    }):acquire())
     local blocked = trust.new_store(lock_dir .. "/trust.json"):trust(root)
     assert(vim.wait(4000, function() return blocked:is_done() end, 10))
     assert.is_false(blocked:result().ok)
     assert.matches("Timed out", blocked:result().error.message)
 
-    vim.uv.fs_unlink(lock_path)
-    assert(fs.write_all(lock_path, "", "wx", 384))
     local cancelled = trust.new_store(lock_dir .. "/trust.json"):trust(root)
     vim.wait(100)
     assert.is_false(cancelled:is_done())
     cancelled:cancel()
     assert(vim.wait(1000, function() return cancelled:is_done() end, 5))
     assert.are.equal("cancelled", cancelled:result().error.kind)
+    assert(holder:release())
   end)
 
   it("reports effective sandbox status and prompt preparation failures", function()
@@ -435,7 +447,7 @@ describe("neoagent workspace trust", function()
       trust.key("c:\\repo", "Windows"))
   end)
 
-  it("merges serialized updates and recovers stale locks", function()
+  it("merges serialized updates through one stable lock", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/trust.json"
     local first = vim.fn.tempname()
@@ -445,9 +457,6 @@ describe("neoagent workspace trust", function()
     vim.fn.mkdir(first, "p")
     vim.fn.mkdir(second, "p")
     local store = trust.new_store(path)
-    assert(require("neoagent.fs").write_all(path .. ".lock", "", "wx", 384))
-    local old = os.time() - 121
-    assert(vim.uv.fs_utime(path .. ".lock", old, old))
 
     local one = store:trust(first)
     local two = store:trust(second)
@@ -456,6 +465,6 @@ describe("neoagent workspace trust", function()
     local expected = { trust.target(first), trust.target(second) }
     table.sort(expected)
     assert.are.same(expected, assert(store:list()))
-    assert.is_nil(vim.uv.fs_stat(path .. ".lock"))
+    assert.is_not_nil(vim.uv.fs_stat(path .. ".lock"))
   end)
 end)

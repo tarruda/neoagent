@@ -42,15 +42,17 @@ describe("neoagent workspace settings", function()
     local settings = settings_module.new({ directory = directory, root = root })
     assert(settings:write({ first = true }))
     local lock_path = settings.settings_path .. ".lock"
-    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = lock_path,
+    }):acquire())
 
     local concurrent_done, concurrent_err
     vim.defer_fn(function()
       local written, write_err = require("neoagent.fs").write_all(
         settings.settings_path, vim.json.encode({ first = true, concurrent = true }) .. "\n")
-      local removed, remove_err = vim.uv.fs_unlink(lock_path)
-      concurrent_err = write_err or remove_err
-      concurrent_done = written and removed
+      local released, release_err = holder:release()
+      concurrent_err = write_err or release_err
+      concurrent_done = written and released
     end, 20)
 
     local updated = assert(settings:update({ local_update = true }))
@@ -58,6 +60,37 @@ describe("neoagent workspace settings", function()
     assert.is_nil(concurrent_err)
     assert.are.same({ first = true, concurrent = true, local_update = true }, updated)
     assert.are.same(updated, assert(settings:load()))
+  end)
+
+  it("deletes tombstoned settings and prunes empty Agent scopes", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    local settings = settings_module.new({ directory = directory, root = root })
+    assert(settings:write({ agents = {
+      Neo = {
+        default_model = { provider = "fake", model = "thinking" },
+        default_thinking_level = "high",
+      },
+      Chat = { default_thinking_level = "low" },
+    } }))
+
+    local updated = assert(settings:update({ agents = { Neo = {
+      default_thinking_level = vim.NIL,
+    } } }))
+    assert.is_nil(updated.agents.Neo.default_thinking_level)
+    assert.are.same({ provider = "fake", model = "thinking" },
+      updated.agents.Neo.default_model)
+    assert.are.equal("low", updated.agents.Chat.default_thinking_level)
+
+    updated = assert(settings:update({ agents = {
+      Neo = { default_model = vim.NIL },
+      Chat = vim.NIL,
+    } }))
+    assert.is_nil(updated.agents)
+    local encoded = assert(require("neoagent.fs").read(settings.settings_path))
+    assert.is_nil(encoded:find("null", 1, true))
   end)
 
   it("reports malformed and non-object settings", function()

@@ -39,6 +39,32 @@ describe("neoagent.session", function()
     assert.are.equal("hello", session:messages()[1].content)
   end)
 
+  it("validates Tool-result linkage before append", function()
+    local session = assert(Session.new())
+    local ok, err = session:append({
+      role = "toolResult",
+      toolCallId = "missing",
+      content = {},
+    })
+    assert.is_nil(ok)
+    assert.matches("unknown toolCall", err.detail)
+    assert.are.same({}, session:messages())
+
+    assert(session:append({ role = "assistant", content = { {
+      type = "toolCall", id = "call-1", name = "read", arguments = {},
+    } } }))
+    assert(session:append({
+      role = "toolResult", toolCallId = "call-1", toolName = "read",
+      content = {},
+    }))
+    ok, err = session:append({ role = "assistant", content = { {
+      type = "toolCall", id = "call-1", name = "read", arguments = {},
+    } } })
+    assert.is_nil(ok)
+    assert.matches("duplicate conversation toolCall", err.detail)
+    assert.are.equal(2, #session:messages())
+  end)
+
   it("associates model state with an accepted in-memory message", function()
     local session = assert(Session.new())
     assert(session:append({ role = "user", content = "first" }, {
@@ -48,14 +74,60 @@ describe("neoagent.session", function()
     assert.are.same({ provider = "local", model = "coder" },
       session:state().model)
     assert.are.equal("high", session:state().thinking_level)
-    assert.are.same({ "model_change", "thinking_level_change", "message" },
+    assert.are.same({
+      model = { provider = "local", model = "coder" },
+      thinkingLevel = "high",
+    }, session:entries()[1].request)
+    assert.are.same({ "message" },
       vim.tbl_map(function(entry) return entry.type end, session:entries()))
 
     assert(session:append({ role = "user", content = "second" }, {
       model = { provider = "local", model = "coder" },
       thinking_level = "high",
     }))
-    assert.are.equal(4, #session:entries())
+    assert.are.equal(2, #session:entries())
+    assert.are.same(session:entries()[1].request,
+      session:entries()[2].request)
+
+    local ok, err = session:append({ role = "user", content = "invalid" }, {
+      unknown = true,
+    })
+    assert.is_nil(ok)
+    assert.matches("unsupported message state field", err.detail)
+    assert.are.equal(2, #session:entries())
+  end)
+
+  it("clears thinking state only through an explicit tombstone", function()
+    local session = assert(Session.new())
+    local _, _, thinking = session:append({
+      role = "user", content = "thinking",
+    }, {
+      model = { provider = "local", model = "reasoning" },
+      thinking_level = "high",
+    })
+    assert(thinking)
+    assert(session:append({ role = "assistant", content = { {
+      type = "text", text = "done",
+    } } }))
+    assert(session:append({ role = "user", content = "preserve" }, {
+      model = { provider = "local", model = "reasoning" },
+    }))
+    assert.are.equal("high", session:state().thinking_level)
+    local _, _, cleared = session:append({
+      role = "user", content = "clear",
+    }, {
+      model = { provider = "local", model = "plain" },
+      thinking_level = vim.NIL,
+    })
+    assert(cleared)
+
+    assert.is_nil(session:state().thinking_level)
+    assert.are.equal(vim.NIL,
+      session:entries()[4].request.thinkingLevel)
+    assert(session:move_to(thinking.id))
+    assert.are.equal("high", session:state().thinking_level)
+    assert(session:move_to(cleared.id))
+    assert.is_nil(session:state().thinking_level)
   end)
 
   it("keeps long in-memory append projection bounded", function()
@@ -93,7 +165,9 @@ describe("neoagent.session", function()
     local loads = 0
     local projection = {
       type = "append",
-      messages = { { role = "assistant", content = "accepted" } },
+      messages = { { role = "assistant", content = {
+        { type = "text", text = "accepted" },
+      } } },
     }
     local store = {
       load = function()
@@ -105,13 +179,15 @@ describe("neoagent.session", function()
       end,
     }
     local session = assert(Session.new({ store = store }))
-    local ok, _, entry = session:append({ role = "assistant", content = "requested" })
+    local ok, _, entry = session:append({ role = "assistant", content = {
+      { type = "text", text = "requested" },
+    } })
 
     assert(ok)
     assert.are.equal("entry", entry.id)
     assert.are.equal(1, loads)
-    projection.messages[1].content = "changed"
-    assert.are.equal("accepted", session:messages()[1].content)
+    projection.messages[1].content[1].text = "changed"
+    assert.are.equal("accepted", session:messages()[1].content[1].text)
   end)
 
   it("rejects stores that return an unknown incremental projection", function()
@@ -124,13 +200,17 @@ describe("neoagent.session", function()
       append = function()
         return true, nil, { id = "entry" }, {
           type = "future",
-          messages = { { role = "assistant", content = "projection" } },
+          messages = { { role = "assistant", content = {
+            { type = "text", text = "projection" },
+          } } },
         }
       end,
     }
     local session = assert(Session.new({ store = store }))
 
-    local ok, err = session:append({ role = "assistant", content = "requested" })
+    local ok, err = session:append({ role = "assistant", content = {
+      { type = "text", text = "requested" },
+    } })
     assert.is_nil(ok)
     assert.matches("unknown projection", err.message)
     assert.are.equal(1, loads)
@@ -171,6 +251,52 @@ describe("neoagent.session", function()
     session, err = Session.new({ messages = "not an array" })
     assert.is_nil(session)
     assert.matches("array", err.message)
+
+    for _, invalid in ipairs({
+      {
+        messages = { { role = "system", content = "unsupported" } },
+        detail = "message 1: unsupported message role: system",
+      },
+      {
+        messages = { { role = "user" } },
+        detail = "message 1: message content is required",
+      },
+      {
+        messages = { { role = "assistant", content = "invalid" } },
+        detail = "message 1: assistant content must be a block list",
+      },
+      {
+        messages = { { role = "user", content = {
+          { type = "video", data = "invalid" },
+        } } },
+        detail = "message 1: content block 1: unsupported content block: video",
+      },
+      {
+        messages = { { role = "user", content = {
+          { type = "image", data = "aW1hZ2U=" },
+        } } },
+        detail = "message 1: content block 1: image mimeType is required",
+      },
+      {
+        messages = { { role = "assistant", content = {
+          { type = "toolCall", name = "missing_id", arguments = {} },
+        } } },
+        detail = "message 1: content block 1: toolCall id is required",
+      },
+      {
+        messages = { { role = "toolResult", content = {} } },
+        detail = "message 1: toolResult toolCallId is required",
+      },
+      { messages = {
+        { role = "user", content = "valid prefix" },
+        { role = "assistant" },
+      }, detail = "message 2: message content is required" },
+    }) do
+      session, err = Session.new({ messages = invalid.messages })
+      assert.is_nil(session)
+      assert.matches("Invalid Session messages", err.message)
+      assert.are.equal(invalid.detail, err.detail)
+    end
 
     local initial = { { role = "user", content = "hello" } }
     session = assert(Session.new({ messages = initial }))
@@ -216,6 +342,44 @@ describe("neoagent.session", function()
     local ok, err = session:move_to("missing")
     assert.is_nil(ok)
     assert.matches("Entry not found", err.message)
+  end)
+
+  it("rejects protected compaction fields identically with a Store", function()
+    for _, field in ipairs({ "type", "id", "parentId", "timestamp" }) do
+      local directory = vim.fn.tempname()
+      local memory = assert(Session.new())
+      local stored = assert(Session.new({
+        store = require("neoagent.storage").new({
+          directory = directory,
+          cwd = directory,
+        }),
+      }))
+      local _, _, memory_first = memory:append({
+        role = "user", content = "first",
+      })
+      local _, _, stored_first = stored:append({
+        role = "user", content = "first",
+      })
+      local memory_values = {
+        summary = "summary",
+        firstKeptEntryId = memory_first.id,
+        tokensBefore = 1,
+        [field] = "forged",
+      }
+      local stored_values = {
+        summary = "summary",
+        firstKeptEntryId = stored_first.id,
+        tokensBefore = 1,
+        [field] = "forged",
+      }
+      local memory_ok, memory_err = memory:append_compaction(memory_values)
+      local stored_ok, stored_err = stored:append_compaction(stored_values)
+      assert.is_nil(memory_ok)
+      assert.is_nil(stored_ok)
+      assert.are.equal(memory_err.detail, stored_err.detail)
+      assert.matches("protected field " .. field, memory_err.detail)
+      vim.fn.delete(directory, "rf")
+    end
   end)
 
   it("delegates the optional tree API to a capable store", function()
@@ -304,34 +468,6 @@ describe("neoagent.session", function()
     assert.are.equal("storage", err.kind)
     assert.matches("invalid projection", err.message)
     assert.are.same({}, session:messages())
-  end)
-
-  it("rolls back atomic in-memory state journals", function()
-    local original_random = vim.uv.random
-    local function rejected_on(duplicate_call)
-      local session = assert(Session.new())
-      local calls = 0
-      vim.uv.random = function(bytes)
-        calls = calls + 1
-        local value = calls == duplicate_call and 1 or calls
-        return string.rep(string.char(value), bytes)
-      end
-      local ok, err = session:append({ role = "user", content = "atomic" }, {
-        model = { provider = "fake", model = "test" },
-        thinking_level = "high",
-      })
-      vim.uv.random = original_random
-      assert.is_nil(ok)
-      assert.matches("duplicate entry id", err.detail)
-      assert.are.same({}, session:entries())
-      assert.are.same({}, session:messages())
-    end
-    local ok, err = pcall(function()
-      rejected_on(2)
-      rejected_on(3)
-    end)
-    vim.uv.random = original_random
-    assert(ok, err)
   end)
 
   it("validates explicit journals, snapshots, stores, and identities", function()

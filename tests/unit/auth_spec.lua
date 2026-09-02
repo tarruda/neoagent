@@ -323,17 +323,19 @@ describe("neoagent provider authentication", function()
     local path = directory .. "/auth.json"
     local lock_path = path .. ".lock"
     assert(require("neoagent.fs").mkdirp(directory))
-    assert(require("neoagent.fs").write_all(lock_path, "", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = lock_path,
+    }):acquire())
     local store = store_module.new(path, {
       lock_timeout_ms = 30,
       lock_poll_ms = 5,
-      lock_stale_ms = 120000,
     })
     local timed_out = wait(store:modify("plan", function()
       return { type = "api_key", key = "unexpected" }
     end))
     assert.is_false(timed_out.ok)
     assert.matches("Timed out acquiring credential lock", timed_out.error.message)
+    assert(holder:release())
 
     local original_open = vim.uv.fs_open
     vim.uv.fs_open = function(candidate, ...)
@@ -350,17 +352,18 @@ describe("neoagent provider authentication", function()
     vim.fn.delete(directory, "rf")
   end)
 
-  it("renews active credential locks during long mutations", function()
+  it("holds credential locks through long mutations", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/auth.json"
     local lock_path = path .. ".lock"
     local store = store_module.new(path, {
       lock_timeout_ms = 500,
       lock_poll_ms = 5,
-      lock_stale_ms = 50,
     })
     assert(store:write("count", { value = 0 }))
+    local entered = false
     local first = store:modify("count", function(current)
+      entered = true
       async.await(function(done)
         local timer = vim.defer_fn(function() done.resolve(true) end, 100)
         return function() pcall(vim.fn.timer_stop, timer) end
@@ -368,13 +371,7 @@ describe("neoagent provider authentication", function()
       current.value = current.value + 1
       return current
     end)
-    assert(vim.wait(100, function() return vim.uv.fs_stat(lock_path) ~= nil end, 5))
-    local old = os.time() - 121
-    assert(vim.uv.fs_utime(lock_path, old, old))
-    assert(vim.wait(100, function()
-      local stat = vim.uv.fs_stat(lock_path)
-      return stat and stat.mtime.sec > old
-    end, 5))
+    assert(vim.wait(100, function() return entered end, 5))
     local second = store:modify("count", function(current)
       current.value = current.value + 1
       return current
@@ -391,15 +388,17 @@ describe("neoagent provider authentication", function()
     local lock_path = path .. ".lock"
     local store = store_module.new(path)
     assert(store:write("first", { value = 1 }))
-    assert(require("neoagent.fs").write_all(lock_path, "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = lock_path,
+    }):acquire())
 
     local concurrent_done, concurrent_err
     vim.defer_fn(function()
       local written, write_err = require("neoagent.fs").write_all(path,
         vim.json.encode({ first = { value = 1 }, concurrent = { value = 2 } }) .. "\n")
-      local removed, remove_err = vim.uv.fs_unlink(lock_path)
-      concurrent_err = write_err or remove_err
-      concurrent_done = written and removed
+      local released, release_err = holder:release()
+      concurrent_err = write_err or release_err
+      concurrent_done = written and released
     end, 20)
 
     assert(store:write("local", { value = 3 }))
@@ -425,17 +424,17 @@ describe("neoagent provider authentication", function()
     local bit = require("bit")
     assert.are.equal(384, bit.band(vim.uv.fs_stat(path).mode, 511))
     assert.are.equal(448, bit.band(vim.uv.fs_stat(vim.fs.dirname(path)).mode, 511))
-    assert(require("neoagent.fs").write_all(path .. ".lock", "", "wx", 384))
-    local old = os.time() - 121
-    assert(vim.uv.fs_utime(path .. ".lock", old, old))
     assert.is_true(wait(store:modify("stale", function() return { recovered = true } end)).ok)
     assert.is_true(store:read("stale").recovered)
 
-    assert(require("neoagent.fs").write_all(path .. ".lock", "", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = path .. ".lock",
+    }):acquire())
     local cancelled = store:modify("cancelled", function() return { written = true } end)
+    vim.wait(20)
     cancelled:cancel()
     assert.are.equal("cancelled", wait(cancelled).error.kind)
-    vim.uv.fs_unlink(path .. ".lock")
+    assert(holder:release())
     local first = store:modify("count", function(current)
       async.await(function(done)
         local timer = vim.defer_fn(function() done.resolve(true) end, 20)
@@ -472,5 +471,29 @@ describe("neoagent provider authentication", function()
     assert.is_nil(value)
     assert.are.equal("auth", err.kind)
     vim.fn.delete(directory, "rf")
+  end)
+
+  it("stops credential writes when a new private directory cannot be secured", function()
+    local root = vim.fn.tempname()
+    local directory = root .. "/credentials"
+    local path = directory .. "/auth.json"
+    local chmod = vim.uv.fs_chmod
+    vim.uv.fs_chmod = function(candidate, ...)
+      if candidate == directory then return nil, "chmod denied" end
+      return chmod(candidate, ...)
+    end
+    local store = store_module.new(path)
+    local ok, err = store:write("key", {
+      type = "api_key", key = "secret",
+    })
+    vim.uv.fs_chmod = chmod
+
+    assert.is_nil(ok)
+    assert.matches("credential directory", err.message)
+    assert.matches("chmod denied", err.detail)
+    assert.is_nil(vim.uv.fs_stat(path))
+    assert.are.same({}, vim.fn.glob(path .. ".*.tmp", false, true))
+    assert.is_nil(vim.uv.fs_stat(path .. ".lock"))
+    vim.fn.delete(root, "rf")
   end)
 end)

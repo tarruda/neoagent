@@ -11,14 +11,12 @@ local INDEX_FILENAME = "session-index.json"
 local INDEX_VERSION = 3
 local INDEX_LOCK_TIMEOUT_MS = 15000
 local INDEX_LOCK_POLL_MS = 50
-local INDEX_LOCK_STALE_MS = 120000
 
 local function session_lock(path)
   return file_lock.new({
     path = path .. ".lock",
     timeout_ms = INDEX_LOCK_TIMEOUT_MS,
     poll_ms = INDEX_LOCK_POLL_MS,
-    stale_ms = INDEX_LOCK_STALE_MS,
   })
 end
 
@@ -109,24 +107,10 @@ local function read_index(path)
   return { version = INDEX_VERSION, sessions = sessions }
 end
 
-local function write_atomic(path, contents)
-  local temporary = path .. "." .. random_id(8) .. ".tmp"
-  local ok, err = fs.write_all(temporary, contents, "wx", 384)
-  if not ok then
-    vim.uv.fs_unlink(temporary)
-    return nil, err
-  end
-  ok, err = vim.uv.fs_rename(temporary, path)
-  if not ok then
-    vim.uv.fs_unlink(temporary)
-    return nil, err
-  end
-  vim.uv.fs_chmod(path, 384)
-  return true
-end
-
 local function write_index(path, document)
-  return write_atomic(path, util.json_encode(document) .. "\n")
+  return fs.atomic_replace(path, util.json_encode(document) .. "\n", {
+    mode = 384,
+  })
 end
 
 local function modify_index(path, modifier)
@@ -135,7 +119,6 @@ local function modify_index(path, modifier)
       path = path .. ".lock",
       timeout_ms = INDEX_LOCK_TIMEOUT_MS,
       poll_ms = INDEX_LOCK_POLL_MS,
-      stale_ms = INDEX_LOCK_STALE_MS,
     }):with(function()
       local document = read_index(path)
       modifier(document.sessions)
@@ -313,42 +296,21 @@ function Store:state()
   return util.copy(self._state)
 end
 
-local function prepare_entries(self, specs)
-  local entries, encoded = {}, {}
-  local by_id = setmetatable({}, { __index = self._by_id })
-  local parent_id = self._leaf_id
-  for index, spec in ipairs(specs) do
-    local entry = {
-      type = spec.type,
-      id = random_id(8),
-      parentId = parent_id or vim.NIL,
-      timestamp = iso_time(util.now_ms()),
-    }
-    for key, value in pairs(spec.values) do
-      if key ~= "type" and key ~= "id" and key ~= "parentId"
-          and key ~= "timestamp" then
-        entry[key] = util.copy(value)
-      end
-    end
-    local valid, validation_err = tree.validate_entry(entry)
-    if not valid then
-      return nil, storage_error("Invalid " .. spec.type, validation_err)
-    end
-    if by_id[entry.id] then
-      return nil, storage_error("Invalid " .. spec.type,
-        "duplicate entry id")
-    end
-    local encoded_entry, encode_err = encode_session_value(entry, spec.type)
-    if not encoded_entry then return nil, encode_err end
-    local references, reference_err = tree.validate_references(entry, by_id)
-    if not references then
-      return nil, storage_error("Invalid " .. spec.type, reference_err)
-    end
-    entries[index], encoded[index] = entry, encoded_entry
-    by_id[entry.id] = entry
-    parent_id = entry.id
+local function prepare_entry(self, entry_type, values)
+  local entry, validation_err = tree.prepare_entry({
+    type = entry_type,
+    id = random_id(8),
+    parent_id = self._leaf_id or vim.NIL,
+    timestamp = iso_time(util.now_ms()),
+    payload = values or {},
+    by_id = self._by_id,
+  })
+  if not entry then
+    return nil, storage_error("Invalid " .. entry_type, validation_err)
   end
-  return entries, encoded
+  local encoded, encode_err = encode_session_value(entry, entry_type)
+  if not encoded then return nil, encode_err end
+  return entry, encoded
 end
 
 local function session_header(self)
@@ -373,34 +335,157 @@ local function append_contents(encoded)
   return table.concat(contents)
 end
 
-local function merge_projection(current, projection)
-  if projection.type == "replace" then
-    return {
-      type = "replace",
-      messages = util.copy(projection.messages),
-    }
+local function bounded_error(value)
+  local err = util.normalize_error(value, "storage")
+  local detail = ""
+  if err.detail ~= nil then
+    local ok, rendered = pcall(tostring, err.detail)
+    detail = ": " .. (ok and rendered or "unprintable detail")
   end
-  current = current or { type = "append", messages = {} }
-  vim.list_extend(current.messages, util.copy(projection.messages or {}))
-  return current
+  local text = util.text_from_bytes(err.message .. detail)
+  if vim.fn.strchars(text) > 1024 then
+    text = vim.fn.strcharpart(text, 0, 1023) .. "…"
+  end
+  return text
 end
 
-function Store:_append_many(specs, persist)
-  local entries, encoded_or_err = prepare_entries(self, specs)
-  if not entries then return nil, encoded_or_err end
+local function poison(self, message, detail)
+  if not self._unusable then
+    self._unusable = storage_error(message, detail)
+  end
+  return util.copy(self._unusable)
+end
+
+local function packed(...)
+  return { n = select("#", ...), ... }
+end
+
+local function safe_call(fn, ...)
+  local result = packed(pcall(fn, ...))
+  if not result[1] then return nil, result[2] end
+  return unpack(result, 2, result.n)
+end
+
+local function append_existing(self, contents)
+  local lock = session_lock(self._path)
+  local lease, acquire_err = safe_call(lock.acquire, lock)
+  if not lease then return nil, acquire_err end
+
+  local committed = false
+  local rollback_failed
+  local ownership_failed
+  local close_failed
+  local append_err
+  local file, open_err, open_code = safe_call(
+    fs.open_regular, self._path, {
+      identity = self._file_identity,
+      mode = 384,
+    })
+  if not file then
+    append_err = open_err
+    if open_code == "ownership" then ownership_failed = open_err end
+  else
+    local before, inspect_err, inspect_code = safe_call(file.stat, file)
+    if not before or type(before.size) ~= "number" then
+      append_err = inspect_err or "session handle is not a regular file"
+      if inspect_code == "ownership" then ownership_failed = append_err end
+    else
+      local written, write_err = safe_call(
+        file.append, file, contents, before.size)
+      if written then
+        local after, after_err, after_code = safe_call(file.stat, file)
+        local current, current_err, current_code = safe_call(
+          file.verify_path, file)
+        if after and after.size == before.size + #contents and current then
+          committed = true
+        else
+          append_err = after_err or current_err
+            or "session append has an unexpected size"
+          if after_code == "ownership" or current_code == "ownership" then
+            ownership_failed = append_err
+          end
+        end
+      else
+        append_err = write_err
+      end
+      if not committed then
+        local rolled_back, rollback_err = safe_call(
+          file.truncate, file, before.size)
+        if not rolled_back then rollback_failed = rollback_err end
+        local current, current_err, current_code = safe_call(
+          file.verify_path, file)
+        if not current and current_code == "ownership" then
+          ownership_failed = current_err
+        end
+      end
+    end
+    local closed, close_err = safe_call(file.close, file)
+    if not closed then close_failed = close_err end
+  end
+
+  local released, release_err = safe_call(lease.release, lease)
+  if not released then
+    local err = poison(self,
+      "Session Store is unusable after append lock release failed",
+      bounded_error(release_err))
+    if committed then return true, err end
+    return nil, err
+  end
+  if rollback_failed or ownership_failed or close_failed then
+    local details = {
+      committed and "append committed"
+        or "append failed: " .. bounded_error(append_err),
+    }
+    if rollback_failed then
+      details[#details + 1] = "rollback failed: "
+        .. bounded_error(rollback_failed)
+    end
+    if ownership_failed then
+      details[#details + 1] = "path ownership failed: "
+        .. bounded_error(ownership_failed)
+    end
+    if close_failed then
+      details[#details + 1] = "handle close failed: "
+        .. bounded_error(close_failed)
+    end
+    local err = poison(self,
+      "Session Store is unusable after an unconfirmed append",
+      table.concat(details, "; "))
+    if committed then return true, err end
+    return nil, err
+  end
+  if committed then return true end
+  return nil, append_err
+end
+
+local function inspect_session_file(path, identity)
+  local file, open_err = fs.open_regular(path, {
+    identity = identity,
+    mode = 384,
+  })
+  if not file then return nil, open_err end
+  local current, current_err = file:verify_path()
+  local confirmed_identity = current and file:identity() or nil
+  local closed, close_err = file:close()
+  if not closed then return nil, close_err end
+  if not current then return nil, current_err end
+  return confirmed_identity
+end
+
+function Store:_append(entry_type, values, persist)
+  if self._unusable then return nil, util.copy(self._unusable) end
+  local entry, encoded_or_err = prepare_entry(self, entry_type, values)
+  if not entry then return nil, encoded_or_err end
   local encoded = encoded_or_err
 
   if not self._persisted and not persist then
-    local combined
-    for _, entry in ipairs(entries) do
-      self._pending[#self._pending + 1] = entry
-      local committed, projection = commit_entry(self, entry)
-      if not committed then
-        return nil, storage_error("Failed to update session", projection)
-      end
-      combined = merge_projection(combined, projection)
+    self._pending[#self._pending + 1] = entry
+    local committed, projection = commit_entry(self, entry)
+    if not committed then
+      table.remove(self._pending)
+      return nil, storage_error("Failed to update session", projection)
     end
-    return true, nil, util.copy(entries), combined
+    return true, nil, util.copy(entry), projection
   end
 
   local first_persistence = not self._persisted
@@ -414,23 +499,30 @@ function Store:_append_many(specs, persist)
       if not value then return nil, pending_err end
       contents[#contents + 1] = value
     end
-    vim.list_extend(contents, encoded)
+    contents[#contents + 1] = encoded
     local ok, err = fs.mkdirp(vim.fs.dirname(self._path))
     if not ok then
       return nil, storage_error("Failed to create session directory", err)
     end
-    ok, err = write_atomic(
-      self._path, append_contents(contents))
+    local identity
+    ok, identity = fs.atomic_replace(
+      self._path, append_contents(contents), { mode = 384 })
     if not ok then
-      return nil, storage_error("Failed to create session file", err)
+      return nil, storage_error("Failed to create session file", identity)
     end
+    self._file_identity = util.copy(identity)
     self._persisted = true
     self._pending = {}
+    local confirmed, identity_err = inspect_session_file(
+      self._path, self._file_identity)
+    if not confirmed then
+      poison(self, "Session Store is unusable after unconfirmed creation",
+        bounded_error(identity_err))
+    end
   else
-    local ok, err = session_lock(self._path):with(function()
-      return fs.write_all(self._path, append_contents(encoded), "a", 384)
-    end)
+    local ok, err = append_existing(self, encoded .. "\n")
     if not ok then
+      if self._unusable then return nil, util.copy(self._unusable) end
       if type(err) == "table" and err.kind == "file_lock" then
         err = err.detail or err.message
       end
@@ -438,56 +530,23 @@ function Store:_append_many(specs, persist)
     end
   end
 
-  local combined
-  for _, entry in ipairs(entries) do
-    local committed, projection = commit_entry(self, entry)
-    if not committed then
-      return nil, storage_error("Failed to update session", projection)
-    end
-    combined = merge_projection(combined, projection)
+  local committed, projection = commit_entry(self, entry)
+  if not committed then
+    return nil, storage_error("Failed to update session", projection)
   end
-  if first_persistence then update_store_index(self) end
-  return true, nil, util.copy(entries), combined
-end
-
-function Store:_append(entry_type, values, persist)
-  local ok, err, entries, projection = self:_append_many({ {
-    type = entry_type,
-    values = values,
-  } }, persist)
-  return ok, err, entries and entries[1], projection
-end
-
-local function same_model(left, right)
-  return type(left) == "table" and type(right) == "table"
-    and left.provider == right.provider and left.model == right.model
+  if first_persistence and not self._unusable then update_store_index(self) end
+  return true, nil, util.copy(entry), projection
 end
 
 function Store:append(message, state)
   assert(state == nil or type(state) == "table"
       and (next(state) == nil or not util.is_list(state)),
     "message state must be an object")
-  local specs = {}
-  state = state or {}
-  if state.model ~= nil and not same_model(state.model, self._state.model) then
-    specs[#specs + 1] = {
-      type = "model_change",
-      values = {
-        provider = state.model.provider,
-        modelId = state.model.model,
-      },
-    }
-  end
-  if state.thinking_level ~= nil
-      and state.thinking_level ~= self._state.thinking_level then
-    specs[#specs + 1] = {
-      type = "thinking_level_change",
-      values = { thinkingLevel = state.thinking_level },
-    }
-  end
-  specs[#specs + 1] = { type = "message", values = { message = message } }
-  local ok, err, entries, projection = self:_append_many(specs, true)
-  return ok, err, entries and entries[#entries], projection
+  local request, request_err = tree.normalize_request_state(state)
+  if request_err then return nil, storage_error("Invalid message", request_err) end
+  local values = { message = message }
+  if request then values.request = request end
+  return self:_append("message", values, true)
 end
 
 function Store:append_compaction(values)
@@ -495,6 +554,7 @@ function Store:append_compaction(values)
 end
 
 function Store:set_leaf(id)
+  if self._unusable then return nil, util.copy(self._unusable) end
   if id ~= nil and not self._by_id[id] then
     return nil, storage_error("Failed to move session leaf", "entry not found: " .. tostring(id))
   end
@@ -529,16 +589,55 @@ function M.new(opts)
     _pending = {},
     _leaf_id = nil,
     _state = { model = nil, thinking_level = nil },
+    _file_identity = nil,
     _parent_session = opts.parent_session,
     _metadata = copy_metadata(opts.metadata),
     _index_attributes = copy_metadata(opts.index_attributes),
   }, Store)
 end
 
+local function read_session_file(path)
+  local file, open_err = fs.open_regular(path, { mode = 384 })
+  if not file then return nil, open_err end
+  local function failure(err)
+    local closed, close_err = file:close()
+    return nil, closed and err or close_err
+  end
+  local data, read_err = file:read_all()
+  if not data then return failure(read_err) end
+  if data:sub(-1) ~= "\n" then
+    local boundary
+    for index = #data, 1, -1 do
+      if data:byte(index) == 10 then
+        boundary = index
+        break
+      end
+    end
+    if not boundary then
+      return failure("session contains no complete JSONL record")
+    end
+    local recovered, recovery_err = file:truncate(boundary)
+    if not recovered then
+      return failure("failed to recover incomplete final record: "
+        .. tostring(recovery_err))
+    end
+    data = data:sub(1, boundary)
+  end
+  local current, current_err = file:verify_path()
+  if not current then return failure(current_err) end
+  local identity = file:identity()
+  local closed, close_err = file:close()
+  if not closed then return nil, close_err end
+  return data, identity
+end
+
 function M.open(path)
   path = fs.normalize(path)
-  local data, read_err = session_lock(path):with(function() return fs.read(path) end)
+  local data, identity_or_err = session_lock(path):with(function()
+    return read_session_file(path)
+  end)
   if not data then
+    local read_err = identity_or_err
     if type(read_err) == "table" and read_err.kind == "file_lock" then
       read_err = read_err.detail or read_err.message
     end
@@ -561,6 +660,16 @@ function M.open(path)
       or type(header.cwd) ~= "string" or header.cwd == "" then
     return nil, storage_error(
       "Invalid session at line 1", "expected Neoagent session version 3 header")
+  end
+  local header_fields = {
+    type = true, version = true, id = true, timestamp = true, cwd = true,
+    parentSession = true, metadata = true,
+  }
+  for key in pairs(header) do
+    if not header_fields[key] then
+      return nil, storage_error("Invalid session at line 1",
+        "unsupported session header field: " .. tostring(key))
+    end
   end
   if header.parentSession ~= nil and header.parentSession ~= vim.NIL
       and type(header.parentSession) ~= "string" then
@@ -590,6 +699,7 @@ function M.open(path)
     _pending = {},
     _leaf_id = validated.leaf_id,
     _state = {},
+    _file_identity = identity_or_err,
     _parent_session = header.parentSession ~= vim.NIL and header.parentSession or nil,
     _metadata = header.metadata ~= vim.NIL and header.metadata or nil,
     _index_attributes = nil,
@@ -638,11 +748,18 @@ function M.derive(snapshot, opts)
   if not ok then
     return nil, storage_error("Failed to create session directory", err)
   end
-  ok, err = write_atomic(
-    store._path, append_contents(contents))
+  local identity
+  ok, identity = fs.atomic_replace(
+    store._path, append_contents(contents), { mode = 384 })
   if not ok then
-    return nil, storage_error("Failed to create derived session", err)
+    return nil, storage_error("Failed to create derived session", identity)
   end
+  local confirmed, identity_err = inspect_session_file(store._path, identity)
+  if not confirmed then
+    return nil, storage_error(
+      "Failed to inspect derived session", identity_err)
+  end
+  store._file_identity = util.copy(identity)
   store._persisted = true
   store._entries = entries
   store._by_id = validated.by_id

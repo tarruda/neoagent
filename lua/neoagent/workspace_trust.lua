@@ -12,7 +12,6 @@ local process_session = {}
 
 local DIRECTORY_MODE = 448
 local FILE_MODE = 384
-local LOCK_STALE_MS = 120000
 local LOCK_TIMEOUT_MS = 3000
 
 local function failure(message, detail)
@@ -150,7 +149,6 @@ function Store:_lock()
     path = self.path .. ".lock",
     timeout_ms = LOCK_TIMEOUT_MS,
     poll_ms = 50,
-    stale_ms = LOCK_STALE_MS,
     mode = FILE_MODE,
   })
   local ok, lease = pcall(function() return lock:acquire_async() end)
@@ -162,30 +160,16 @@ function Store:_lock()
   end
 end
 
-local function random_suffix()
-  local bytes, err = vim.uv.random(8)
-  if not bytes then return nil, err end
-  return (bytes:gsub(".", function(char)
-    return string.format("%02x", char:byte())
-  end))
-end
-
 function Store:_write_all(trusted)
-  local suffix, random_err = random_suffix()
-  if not suffix then
-    return nil, failure("Failed to create workspace trust temporary file", random_err)
-  end
-  local temporary = self.path .. "." .. suffix .. ".tmp"
   local document = { version = 1, trusted = util.copy(trusted) }
-  local written, write_err = fs.write_all(
-    temporary, util.json_encode(document) .. "\n", "wx", FILE_MODE)
+  local written, write_err, stage = fs.atomic_replace(
+    self.path, util.json_encode(document) .. "\n", { mode = FILE_MODE })
   if not written then
-    return nil, failure("Failed to write workspace trust store", write_err)
-  end
-  local replaced, replace_err = vim.uv.fs_rename(temporary, self.path)
-  if not replaced then
-    vim.uv.fs_unlink(temporary)
-    return nil, failure("Failed to replace workspace trust store", replace_err)
+    local action = stage == "temporary"
+        and "create workspace trust temporary file"
+      or stage == "rename" and "replace workspace trust store"
+      or "write workspace trust store"
+    return nil, failure("Failed to " .. action, write_err)
   end
   return true
 end
@@ -193,16 +177,10 @@ end
 function Store:_modify(cwd, remove)
   return async.run(function()
     local directory = vim.fs.dirname(self.path)
-    local existed = vim.uv.fs_stat(directory) ~= nil
-    local created, create_err = fs.mkdirp(directory)
+    local created, create_err = fs.ensure_private_directory(
+      directory, DIRECTORY_MODE)
     if not created then
       error(failure("Failed to create workspace trust directory", create_err), 0)
-    end
-    if not existed then
-      local secured, secure_err = vim.uv.fs_chmod(directory, DIRECTORY_MODE)
-      if not secured then
-        error(failure("Failed to secure workspace trust directory", secure_err), 0)
-      end
     end
 
     local release = self:_lock()

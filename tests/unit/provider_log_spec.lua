@@ -97,13 +97,15 @@ describe("neoagent provider diagnostics", function()
     assert(fs.mkdirp(directory))
     local path = directory .. "/codex.log"
     assert(fs.write_all(path, vim.json.encode({ type = "existing" }) .. "\n", "w"))
-    assert(fs.write_all(path .. ".lock", "held", "wx", 384))
+    local holder = assert(require("neoagent.file_lock").new({
+      path = path .. ".lock",
+    }):acquire())
 
     local concurrent_done = false
     vim.defer_fn(function()
       assert(fs.write_all(path,
         vim.json.encode({ type = "concurrent" }) .. "\n", "a", 384))
-      assert(vim.uv.fs_unlink(path .. ".lock"))
+      assert(holder:release())
       concurrent_done = true
     end, 20)
 
