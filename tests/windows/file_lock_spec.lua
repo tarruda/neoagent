@@ -17,8 +17,8 @@ describe("neoagent Windows file locks", function()
 
     local lease = assert(file_lock.new({ path = path }):acquire())
     local held = assert(vim.uv.fs_lstat(path))
-    local first_token = assert(fs.read(path))
     assert(lease:release())
+    local first_token = assert(fs.read(path))
 
     local released = assert(vim.uv.fs_lstat(path))
     assert.are.equal(held.dev, released.dev)
@@ -26,7 +26,7 @@ describe("neoagent Windows file locks", function()
     assert.are.equal(first_token, assert(fs.read(path)))
 
     lease = assert(file_lock.new({ path = path }):acquire())
-    assert.is_not.equal(first_token, assert(fs.read(path)))
     assert(lease:release())
+    assert.is_not.equal(first_token, assert(fs.read(path)))
   end)
 end)

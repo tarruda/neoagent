@@ -97,6 +97,74 @@ describe("neoagent semantic messages", function()
     end
   end)
 
+  it("rejects every malformed canonical scalar and JSON boundary", function()
+    local cases = {
+      { value = { role = "assistant", content = { {
+        type = "text", text = "value", index = -1,
+      } } }, pattern = "non%-negative integer" },
+      { value = { role = "assistant", content = { {
+        type = "thinking", thinking = "\255",
+      } } }, pattern = "UTF%-8 string" },
+      { value = { role = "assistant", content = { {
+        type = "thinking", thinking = "value", redacted = "yes",
+      } } }, pattern = "redacted must be a boolean" },
+      { value = { role = "user", content = { {
+        type = "image", data = "aW1hZ2U=", mimeType = "text/plain",
+      } } }, pattern = "image media type" },
+      { value = { role = "assistant", content = {}, timestamp = -1 },
+        pattern = "timestamp must be a non%-negative integer" },
+      { value = { role = "assistant", content = {}, errorMessage = false },
+        pattern = "errorMessage must be a UTF%-8 string" },
+      { value = { role = "assistant", content = {},
+        usage = { cost = { input = -1 } } },
+        pattern = "cost input must be a non%-negative finite number" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        isError = "yes" }, pattern = "isError must be a boolean" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        details = { text = "\255" } }, pattern = "valid UTF%-8" },
+      { value = { role = "toolResult", toolCallId = "call", content = {},
+        details = { [true] = "value" } }, pattern = "object keys" },
+    }
+    for _, case in ipairs(cases) do
+      local normalized, err = semantic_message.normalize(case.value)
+      assert.is_nil(normalized)
+      assert.matches(case.pattern, err)
+    end
+
+    local normalized, err = semantic_message.normalize_image(false)
+    assert.is_nil(normalized)
+    assert.matches("image block is required", err)
+    normalized, err = semantic_message.normalize_list(vim.empty_dict())
+    assert.is_nil(normalized)
+    assert.matches("messages must be a list", err)
+  end)
+
+  it("retains meaningful partial assistant output with empty signatures", function()
+    local normalized = assert(semantic_message.normalize_partial_assistant({
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "reason", thinkingSignature = "" },
+        { type = "text", text = "answer", textSignature = "" },
+      },
+    }))
+    assert.is_nil(normalized.content[1].thinkingSignature)
+    assert.is_nil(normalized.content[2].textSignature)
+    assert.is_nil(semantic_message.normalize_partial_assistant(false))
+  end)
+
+  it("rejects incomplete and ill-typed Tool results", function()
+    for _, case in ipairs({
+      { result = false, pattern = "content blocks" },
+      { result = {}, pattern = "content blocks" },
+      { result = { content = {}, is_error = "yes" },
+        pattern = "error state must be a boolean" },
+    }) do
+      local normalized, err = semantic_message.normalize_tool_result(case.result)
+      assert.is_nil(normalized)
+      assert.matches(case.pattern, err)
+    end
+  end)
+
   it("separates transient image requirements from persistent images", function()
     local direct = assert(semantic_message.normalize_image({
       type = "image", data = "ZGlyZWN0", mimeType = "IMAGE/PNG",

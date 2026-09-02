@@ -190,6 +190,9 @@ describe("neoagent ModelCatalog", function()
     local cases = {
       function() error("private-source-value") end,
       function() return { callback = function() end } end,
+      function() return { number = math.huge } end,
+      function() return setmetatable({}, {}) end,
+      function() return { [true] = "value" } end,
       function()
         local value = {}
         value.self = value
@@ -206,6 +209,48 @@ describe("neoagent ModelCatalog", function()
       assert.is_nil(fingerprint)
       assert.are.equal("provider", err.kind)
       assert.not_matches("private%-source%-value", err.message)
+    end
+  end)
+
+  it("rejects unavailable, failing, and unsafe account identities", function()
+    local function fingerprint(authentication)
+      return model_catalog.source_fingerprint({
+        provider_id = "account",
+        provider = { auth = "plan" },
+        definition = discovery({ account_scoped = true }),
+        authentication = authentication,
+      })
+    end
+    local explicit = util.error("auth", "identity lookup unavailable")
+    for _, case in ipairs({
+      {
+        authentication = nil,
+        pattern = "identity is unavailable",
+      },
+      {
+        authentication = {
+          cache_identity = function() error("private identity failure") end,
+        },
+        pattern = "identity failed",
+      },
+      {
+        authentication = {
+          cache_identity = function() return nil, explicit end,
+        },
+        pattern = "identity lookup unavailable",
+      },
+      {
+        authentication = {
+          cache_identity = function() return "bad\nidentity" end,
+        },
+        pattern = "identity is invalid",
+      },
+    }) do
+      local value, err = fingerprint(case.authentication)
+      assert.is_nil(value)
+      assert.are.equal("auth", err.kind)
+      assert.matches(case.pattern, err.message)
+      assert.not_matches("private identity failure", err.message)
     end
   end)
 
@@ -1187,6 +1232,28 @@ describe("neoagent ModelCatalog", function()
     assert.are.equal("ambient-key", seen.api_key)
     catalog:destroy()
 
+    local credential_key
+    catalog = model_catalog.new({
+      provider_id = "credentials",
+      provider = {
+        api_key = function() error("provider key fallback must not run") end,
+      },
+      credentials = {
+        ambient_api_key = function() return "credential-key" end,
+      },
+      definition = {
+        discover = function(ctx)
+          return async.run(function()
+            credential_key = ctx.resolve_api_key()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      },
+    })
+    assert.is_true(wait(catalog:refresh()).ok)
+    assert.are.equal("credential-key", credential_key)
+    catalog:destroy()
+
     local configured = model_catalog.new({
       provider_id = "configured",
       provider = {
@@ -1370,5 +1437,205 @@ describe("neoagent ModelCatalog", function()
     local published, err = static:publish_discoveries({ { id = "late" } })
     assert.is_nil(published)
     assert.matches("destroyed", err.message)
+  end)
+
+  it("contains unavailable cache identities and bounded cache diagnostics", function()
+    local reports = {}
+    local state = store(cache({
+      validated_at = 1000,
+      models = { { id = "cached" } },
+    }))
+    local catalog = model_catalog.new({
+      provider_id = "account",
+      provider = { auth = "plan" },
+      authentication = {
+        cache_identity = function() return nil end,
+        resolve = function()
+          return async.run(function() return { ok = true } end)
+        end,
+      },
+      store = state,
+      report = function(message) reports[#reports + 1] = message end,
+      definition = discovery({
+        account_scoped = true,
+        seed = { { id = "seed" } },
+      }),
+    })
+    assert.are.equal("seed", catalog:snapshot().models.seed.id)
+    assert.matches("source identity is unavailable", reports[1])
+    catalog:destroy()
+
+    reports = {}
+    state = store()
+    function state:read()
+      return nil, util.error("state_store", string.rep("x", 4096))
+    end
+    catalog = model_catalog.new({
+      provider_id = "bounded",
+      store = state,
+      report = function(message) reports[#reports + 1] = message end,
+    })
+    assert.is_true(vim.fn.strchars(reports[1]) < 1200)
+    catalog:destroy()
+
+    reports = {}
+    state = store(cache({
+      validated_at = 1000,
+      models = { { id = "cached" } },
+    }))
+    state.value.source_fingerprint = "invalid"
+    catalog = model_catalog.new({
+      provider_id = "example",
+      store = state,
+      report = function(message) reports[#reports + 1] = message end,
+      definition = discovery({ seed = { { id = "seed" } } }),
+    })
+    assert.are.equal("seed", catalog:snapshot().models.seed.id)
+    assert.matches("invalid model catalog cache", reports[1])
+    catalog:destroy()
+  end)
+
+  it("refreshes changed authentication sources and contains reset failures", function()
+    local listener
+    local identity = "first"
+    local discoveries = 0
+    local fail_transform = false
+    local authentication = {
+      cache_identity = function() return identity end,
+      subscribe = function(_, _, callback)
+        listener = callback
+        return function() return true end
+      end,
+      resolve = function()
+        return async.run(function() return { ok = true, request_opts = {} } end)
+      end,
+    }
+    local catalog = model_catalog.new({
+      provider_id = "account",
+      provider = { auth = "plan" },
+      authentication = authentication,
+      definition = discovery({
+        account_scoped = true,
+        seed = { { id = "seed" } },
+        transform_model = function(model)
+          if fail_transform then error("reset transform failed") end
+          return model
+        end,
+        discover = function()
+          discoveries = discoveries + 1
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      }),
+    })
+    assert.is_true(catalog:start())
+    assert(vim.wait(1000, function() return discoveries == 1 end))
+    identity = "second"
+    listener({ kind = "refresh" })
+    assert(vim.wait(1000, function() return discoveries == 2 end))
+
+    fail_transform = true
+    identity = "third"
+    listener({ kind = "login" })
+    assert.matches("Model transform failed",
+      catalog:snapshot().refresh.error.message)
+    catalog:destroy()
+  end)
+
+  it("validates use leases and reports release and callback failures", function()
+    for _, acquire_use in ipairs({
+      function() return nil end,
+      function() error("lease acquisition failed") end,
+    }) do
+      local catalog = model_catalog.new({
+        provider_id = "lease",
+        acquire_use = acquire_use,
+        definition = discovery({ discover = function() end }),
+      })
+      local result = wait(catalog:refresh())
+      assert.is_false(result.ok)
+      assert.are.equal("provider", result.error.kind)
+      catalog:destroy()
+    end
+
+    local reports = {}
+    local catalog = model_catalog.new({
+      provider_id = "release",
+      acquire_use = function()
+        return { release = function() return nil, "release failed" end }
+      end,
+      report = function(message) reports[#reports + 1] = message end,
+      definition = discovery({
+        discover = function()
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      }),
+    })
+    local result = wait(catalog:refresh({
+      on_done = function() error("completion callback failed") end,
+    }))
+    assert.is_true(result.ok)
+    assert(vim.iter(reports):any(function(message)
+      return message:match("failed to release model catalog use") ~= nil
+    end))
+    assert(vim.iter(reports):any(function(message)
+      return message:match("callback failed") ~= nil
+    end))
+    catalog:destroy()
+  end)
+
+  it("resolves provider keys and cancels superseded discovery generations", function()
+    local seen_key
+    local catalog
+    catalog = model_catalog.new({
+      provider_id = "keyed",
+      provider = { api_key = function() return "ambient-key" end },
+      definition = discovery({
+        discover = function(ctx)
+          return async.run(function()
+            seen_key = ctx.resolve_api_key()
+            catalog:publish_discoveries({ { id = "superseding" } })
+            return { ok = true, models = { { id = "late" } } }
+          end)
+        end,
+      }),
+    })
+    local result = wait(catalog:refresh())
+    assert.are.equal("ambient-key", seen_key)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("superseding", catalog:snapshot().models.superseding.id)
+    assert.is_nil(catalog:snapshot().models.late)
+    catalog:destroy()
+  end)
+
+  it("resets inventory when an account fingerprint changes before refresh", function()
+    local identity = "first"
+    local credentials = {
+      cache_identity = function() return identity end,
+      ambient_api_key = function() return nil end,
+    }
+    local catalog = model_catalog.new({
+      provider_id = "account",
+      provider = { auth = "plan" },
+      credentials = credentials,
+      definition = discovery({
+        account_scoped = true,
+        seed = { { id = "seed" } },
+        discover = function()
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      }),
+    })
+    assert.is_true(wait(catalog:refresh()).ok)
+    identity = "second"
+    assert.is_true(wait(catalog:refresh()).ok)
+    assert.are.equal("remote", catalog:snapshot().models.remote.id)
+    catalog:destroy()
   end)
 end)

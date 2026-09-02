@@ -218,10 +218,46 @@ describe("neoagent provider service", function()
     local exclusive = assert(provider_service.begin_operation(value, {
       mutating = true,
     }))
+    local concurrent, concurrent_err = provider_service.begin_operation(value, {
+      mutating = true,
+    })
+    assert.is_nil(concurrent)
+    assert.matches("already active", concurrent_err.message)
     local unavailable, unavailable_err = provider_service.acquire_use(value)
     assert.is_nil(unavailable)
     assert.matches("mutating provider operation", unavailable_err.message)
     assert.is_true(exclusive:finish())
+  end)
+
+  it("rejects forged operation tokens and releases startup failures", function()
+    local value = service({
+      work = {
+        label = "Work",
+        run = function()
+          return async.run(function() return { ok = true } end)
+        end,
+      },
+    })
+    local coordination = assert(provider_service.begin_operation(value, {
+      mutating = false,
+    }))
+    local forged = {}
+    for key, item in pairs(coordination) do forged[key] = item end
+    local run, err = provider_service.run(value, "work", {
+      coordination = forged,
+    })
+    assert.is_nil(run)
+    assert.matches("coordination token is invalid", err.message)
+    assert.is_true(coordination:finish())
+
+    local original_run = async.run
+    async.run = function() error("outer Run construction failed") end
+    run, err = provider_service.run(value, "work")
+    async.run = original_run
+    assert.is_nil(run)
+    assert.matches("Failed to construct provider operation Run", err.message)
+    assert.matches("outer Run construction failed", err.message)
+    assert.is_false(provider_service.busy(value))
   end)
 
   it("lets one Run consume an operation token", function()

@@ -240,19 +240,28 @@ describe("neoagent.fs", function()
     vim.uv.fs_lstat = function() return vim.deepcopy(observed) end
     vim.uv.fs_open = function() return 7 end
     vim.uv.fs_fstat = function() return vim.deepcopy(observed) end
+
     vim.uv.fs_close = function() return true end
 
     local file = assert(fs.open_regular("session", { mode = 384 }))
     vim.uv.fs_fstat = function() return nil, "stat failed" end
-    local value, err = file:stat()
+    local value, err, code = file:stat()
     assert.is_nil(value)
     assert.are.equal("stat failed", err)
+    vim.uv.fs_fstat = function() return vim.deepcopy(observed) end
+
+    vim.uv.fs_fstat = function()
+      return { type = "file", dev = 1, ino = 3, size = 6 }
+    end
+    value, err, code = file:stat()
+    assert.is_nil(value)
+    assert.matches("handle identity changed", err)
+    assert.are.equal("ownership", code)
     vim.uv.fs_fstat = function() return vim.deepcopy(observed) end
 
     vim.uv.fs_lstat = function()
       return { type = "file", dev = 1, ino = 3, size = 6 }
     end
-    local code
     value, err, code = file:verify_path()
     assert.is_nil(value)
     assert.matches("identity changed", err)
@@ -298,6 +307,17 @@ describe("neoagent.fs", function()
     assert.is_nil(value)
     assert.are.equal("close failed", err)
     assert.are.equal("close", code)
+
+    local closes = 0
+    vim.uv.fs_close = function() closes = closes + 1 return true end
+    vim.uv.fs_fstat = function()
+      return { type = "file", dev = 1, ino = 3, size = 6 }
+    end
+    value, err, code = fs.open_regular("session", { mode = 384 })
+    assert.is_nil(value)
+    assert.matches("identity changed during open", err)
+    assert.are.equal("ownership", code)
+    assert.are.equal(1, closes)
 
     vim.uv.fs_lstat = function() return { type = "link" } end
     value, err, code = fs.open_regular("session", { mode = 384 })
@@ -459,6 +479,23 @@ describe("neoagent.fs", function()
       return nil, "candidate close failed"
     end
     rejected("candidate close failed")
+
+    vim.uv.fs_close = original.close
+    vim.uv.fs_fstat = function(fd)
+      local stat = assert(original.fstat(fd))
+      stat.dev = stat.dev + 1
+      return stat
+    end
+    local candidate_inspections = 0
+    vim.uv.fs_lstat = function(path)
+      local stat, err, code = original.lstat(path)
+      if path ~= target and stat then
+        candidate_inspections = candidate_inspections + 1
+        if candidate_inspections > 1 then stat.dev = stat.dev + 1 end
+      end
+      return stat, err, code
+    end
+    rejected("candidate identity changed")
   end)
 
   it("rejects symlinks and cleans temporary files after rename failure", function()
@@ -620,10 +657,12 @@ describe("neoagent.fs", function()
     assert.are.equal("original", assert(fs.read(target)))
     assert(original.chmod(target, 384))
 
+    local retained = assert(original.open(target, "r", 384))
     err = race(function()
       assert(original.unlink(target))
       assert(fs.write_all(target, "successor", "wx", 384))
     end)
+    assert(original.close(retained))
     assert.matches("target changed", err)
     assert.are.equal("successor", assert(fs.read(target)))
 
@@ -637,6 +676,81 @@ describe("neoagent.fs", function()
     })
     assert.matches("content changed", err)
     assert.are.equal("concurrent", assert(fs.read(target)))
+  end)
+
+  it("detects every target change while fingerprinting replacement content", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+    local target = vim.fs.joinpath(directory, "target.txt")
+    assert(fs.write_all(target, "original", "w", 384))
+    local expected = fs.content_fingerprint("original")
+
+    local function rejected(stage)
+      local verification_fd
+      local target_inspections = 0
+      local verification_stats = 0
+      vim.uv.fs_open = function(path, flags, mode)
+        local fd, err = original.open(path, flags, mode)
+        if path == target and flags == "r" then verification_fd = fd end
+        return fd, err
+      end
+      vim.uv.fs_fstat = function(fd)
+        local stat, err = original.fstat(fd)
+        if fd == verification_fd then
+          verification_stats = verification_stats + 1
+          if stage == "initial identity" and verification_stats == 1
+              or stage == "confirmed identity" and verification_stats == 2 then
+            stat.ino = stat.ino + 1
+          end
+        end
+        return stat, err
+      end
+      vim.uv.fs_lstat = function(path)
+        local stat, err, code = original.lstat(path)
+        if path == target then
+          target_inspections = target_inspections + 1
+          if target_inspections == 3 then
+            if stage == "final inspection" then
+              return nil, "final inspection denied", "EACCES"
+            elseif stage == "final identity" then
+              stat.ino = stat.ino + 1
+            end
+          end
+        end
+        return stat, err, code
+      end
+      local ok, err, code = fs.atomic_replace(target, "replacement", {
+        preserve_mode = true,
+        new_mode = 420,
+        expected_content_fingerprint = expected,
+      })
+      vim.uv.fs_open = original.open
+      vim.uv.fs_fstat = original.fstat
+      vim.uv.fs_lstat = original.lstat
+      assert.is_nil(ok)
+      assert.are.equal("target_changed", code)
+      assert.matches(stage == "final inspection" and "inspection denied"
+        or "content verification", err)
+      assert.are.same({}, vim.fn.glob(target .. ".*.tmp", false, true))
+    end
+
+    for _, stage in ipairs({
+      "initial identity", "confirmed identity", "final inspection",
+      "final identity",
+    }) do
+      rejected(stage)
+    end
+
+    local missing = vim.fs.joinpath(directory, "missing.txt")
+    local ok, err, code = fs.atomic_replace(missing, "replacement", {
+      mode = 384,
+      expected_content_fingerprint = expected,
+    })
+    assert.is_nil(ok)
+    assert.are.equal("target_changed", code)
+    assert.matches("content is missing", err)
+    assert.are.same({}, vim.fn.glob(missing .. ".*.tmp", false, true))
   end)
 
   it("verifies newly created private directory permissions", function()
@@ -661,5 +775,35 @@ describe("neoagent.fs", function()
     vim.uv.fs_chmod = original.chmod
     assert.is_nil(prepared)
     assert.matches("chmod denied", err)
+
+    vim.uv.fs_lstat = function()
+      return nil, "inspection denied", "EACCES"
+    end
+    prepared, err = fs.ensure_private_directory("denied", 448)
+    assert.is_nil(prepared)
+    assert.matches("inspection denied", err)
+
+    local inspections = 0
+    vim.uv.fs_lstat = function()
+      inspections = inspections + 1
+      if inspections == 1 then return nil, "ENOENT", "ENOENT" end
+      return { type = "file", mode = 448 }
+    end
+    vim.fn.mkdir = function() return 1 end
+    prepared, err = fs.ensure_private_directory("changed", 448)
+    assert.is_nil(prepared)
+    assert.matches("not a directory", err)
+
+    inspections = 0
+    vim.uv.fs_lstat = function()
+      inspections = inspections + 1
+      if inspections == 1 then return nil, "ENOENT", "ENOENT" end
+      if inspections == 2 then return { type = "directory", mode = 448 } end
+      return { type = "directory", mode = 420 }
+    end
+    vim.uv.fs_chmod = function() return true end
+    prepared, err = fs.ensure_private_directory("wrong-mode", 448)
+    assert.is_nil(prepared)
+    assert.matches("unexpected permission mode", err)
   end)
 end)

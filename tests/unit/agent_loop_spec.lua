@@ -1,5 +1,6 @@
 local core_agent_loop = require("neoagent.agent_loop")
 local fake_model = require("tests.helpers.fake_model")
+local util = require("neoagent.util")
 
 local agent_loop = setmetatable({
   run = function(opts)
@@ -113,6 +114,14 @@ describe("neoagent.agent_loop", function()
       assert.are.equal(1, #result.new_messages)
       assert.is_nil(result.message)
     end
+
+    result = run(function(message)
+      message._neoagent_entry_id = "bad\nentry"
+      return true, nil, message
+    end)
+    assert.is_false(result.ok)
+    assert.matches("entry id is invalid", result.error.message)
+    assert.are.equal(1, #result.new_messages)
   end)
 
   it("rejects invalid Model roles and duplicate calls before effects", function()
@@ -479,6 +488,83 @@ describe("neoagent.agent_loop", function()
     assert.is_true(require("neoagent.util").is_valid_utf8(
       model.requests[2].messages[2].content[1].text))
     assert.are.equal("recovered", result.text)
+  end)
+
+  it("normalizes empty argument lists and unsafe executor details", function()
+    local model = fake_model.new({
+      { result = fake_model.assistant({
+        { type = "toolCall", id = "empty", name = "empty", arguments = {} },
+        { type = "toolCall", id = "detail", name = "detail", arguments = {} },
+      }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      tools = { {
+        name = "empty", description = "empty", input_schema = { type = "object" },
+        execute = function(arguments)
+      assert.is_false(util.is_list(arguments))
+          return { content = { { type = "text", text = "empty object" } } }
+        end,
+      }, {
+        name = "detail", description = "detail", input_schema = { type = "object" },
+        execute = function()
+          error(util.error("tool", "safe message", "bad\255detail"), 0)
+        end,
+      } },
+    }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("empty object", result.new_messages[2].content[1].text)
+    assert.is_true(result.new_messages[3].isError)
+    assert.are.equal("safe message", result.new_messages[3].content[1].text)
+    assert.are.same({ detail = "bad\\xFFdetail" },
+      result.new_messages[3].details)
+  end)
+
+  it("contains steering acknowledgement failures after durable commit", function()
+    local offered = false
+    local result = wait(agent_loop.run({
+      model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "first" } }),
+      } }),
+      messages = {},
+      get_steering_messages = function()
+        if offered then return {} end
+        offered = true
+        return { { role = "user", content = "redirect" } }, function()
+          error("acknowledgement failed")
+        end
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.matches("acknowledgement failed", result.error.message)
+    assert.are.equal(1, #result.new_messages)
+  end)
+
+  it("contains commit failure for a partial failed Model response", function()
+    local result = wait(core_agent_loop.run({
+      model = fake_model.new({ {
+        result = {
+          ok = false,
+          error = { kind = "transport", message = "stream failed" },
+          message = {
+            role = "assistant",
+            content = { { type = "text", text = "partial" } },
+          },
+        },
+      } }),
+      messages = {},
+      commit_message = function()
+        return nil, { kind = "storage", message = "partial commit failed" }
+      end,
+    }))
+
+    assert.is_false(result.ok)
+    assert.matches("partial commit failed", result.error.message)
+    assert.are.equal("partial", result.message.content[1].text)
   end)
 
   it("sanitizes executor failures before persisting an error result", function()

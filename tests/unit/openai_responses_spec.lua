@@ -474,6 +474,89 @@ describe("neoagent.api.openai_responses", function()
       assert.matches(case.message, result.error.message)
       assert.are.equal(0, #fake.requests)
     end
+
+    local encoded, encode_err = pcall(responses._encode_messages, { {
+      role = "system",
+      content = "unexpected",
+    } })
+    assert.is_false(encoded)
+    assert.matches("Unsupported message role",
+      util.normalize_error(encode_err).message)
+  end)
+
+  it("rejects non-UTF-8 provider deltas at every response boundary", function()
+    local original = util.is_valid_utf8
+    util.is_valid_utf8 = function(value)
+      return value ~= "invalid" and original(value)
+    end
+    local ok, results = pcall(function()
+      local cases = {
+        { event({
+          type = "response.output_item.done",
+          output_index = 0,
+          item = { type = "message", id = "message", content = {
+            { type = "output_text", text = "invalid" },
+          } },
+        }) },
+        {
+          event({
+            type = "response.output_item.added",
+            output_index = 0,
+            item = { type = "reasoning", id = "reasoning" },
+          }),
+          event({
+            type = "response.reasoning_text.delta",
+            output_index = 0,
+            delta = "invalid",
+          }),
+        },
+        {
+          event({
+            type = "response.output_item.added",
+            output_index = 0,
+            item = { type = "message", id = "message", content = util.list() },
+          }),
+          event({
+            type = "response.output_text.delta",
+            output_index = 0,
+            delta = "invalid",
+          }),
+        },
+      }
+      return vim.tbl_map(function(chunks)
+        return wait(model(fake_transport.new({ { chunks = chunks } })):stream({
+          messages = {},
+        }))
+      end, cases)
+    end)
+    util.is_valid_utf8 = original
+    assert.is_true(ok, results)
+    for _, result in ipairs(results) do
+      assert.is_false(result.ok)
+      assert.matches("valid UTF%-8", result.error.message)
+    end
+  end)
+
+  it("contains a final response rejected by the semantic boundary", function()
+    local semantic = require("neoagent.semantic_message")
+    local normalize = semantic.normalize
+    semantic.normalize = function(message)
+      if type(message) == "table" and message.role == "assistant" then
+        return nil, "semantic rejection"
+      end
+      return normalize(message)
+    end
+    local result = wait(model(fake_transport.new({ { chunks = {
+      event({
+        type = "response.completed",
+        response = { status = "completed", output = util.list() },
+      }),
+    } } })):stream({ messages = {} }))
+    semantic.normalize = normalize
+
+    assert.is_false(result.ok)
+    assert.matches("Invalid assistant message", result.error.message)
+    assert.matches("semantic rejection", result.error.detail)
   end)
 
   it("requires final function calls to have ids and names", function()

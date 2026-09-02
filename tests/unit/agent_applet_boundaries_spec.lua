@@ -231,6 +231,9 @@ describe("Agent Applet boundaries", function()
     value.history_stores.root = store
 
     assert.are.same({}, value:input_history())
+    local recorded, record_err = value:_record_history("unsaved entry")
+    assert.is_nil(recorded)
+    assert.matches("save failed", record_err.message)
     assert(value:send("remember this"))
     store.load = function() return { "first", "second" } end
     assert(value:open())
@@ -241,6 +244,27 @@ describe("Agent Applet boundaries", function()
       return record.view:get_input() == "second"
         and (record.view.focused or 0) > 0
     end, 5))
+  end)
+
+  it("destroys construction after an initial Agent binding failure", function()
+    local owned_agent = agent()
+    local subscribe = owned_agent.subscribe
+    owned_agent.subscribe = function() error("initial binding failed") end
+    local ok, err = pcall(function()
+      AgentApplet.new({
+        config = { style = "codex", position = "center" },
+        persistence = { enabled = false },
+        label = "Failed",
+        presenter = owned_agent:presenter(),
+        dialogs = owned_agent:dialogs(),
+        agent = owned_agent,
+      })
+    end)
+    owned_agent.subscribe = subscribe
+
+    assert.is_false(ok)
+    assert.matches("initial binding failed", err)
+    assert.is_nil(owned_agent:applet())
   end)
 
   it("contains unsupported semantic surfaces and hydration failures", function()
@@ -693,6 +717,18 @@ describe("Agent Applet boundaries", function()
     })
     assert.are.equal("new", record.view.context.model)
 
+    value:_apply({
+      revision = revision + 1,
+      type = "context",
+      context = {
+        workspace = owned_agent:get_workspace(),
+        model = "new",
+        position = "left",
+      },
+    })
+    assert.are.equal("left", value.position)
+    assert.are.equal("left", record.view.position)
+
     assert(value:_hydrate({
       revision = 0,
       messages = {},
@@ -701,6 +737,282 @@ describe("Agent Applet boundaries", function()
       result = nil,
     }))
     assert.are.equal("new", record.view.context.model)
+  end)
+
+  it("hydrates a retained headless Agent snapshot safely", function()
+    local value = applet({})
+    local broken = {
+      is_destroyed = function() return false end,
+      snapshot = function() error("headless snapshot failed") end,
+    }
+    value.agent_value = broken
+    local hydrated, err = value:_hydrate()
+    assert.is_nil(hydrated)
+    assert.matches("headless snapshot failed", err.message)
+
+    broken.snapshot = function()
+      return {
+        revision = 3,
+        messages = {},
+        context = { workspace = "headless", position = "right" },
+        events = {},
+        result = nil,
+      }
+    end
+    assert(value:_hydrate())
+    assert.are.equal(3, value.agent_snapshot.revision)
+    assert.are.equal("headless", value.workspace_root)
+    assert.are.equal("right", value.position)
+    value.agent_value = nil
+  end)
+
+  it("contains submission restoration and steering dequeue failures", function()
+    local record = {}
+    local running = false
+    local fake_agent = {
+      is_destroyed = function() return false end,
+      set_attention = function() end,
+      prepare = function() return true end,
+      snapshot = function()
+        return {
+          revision = 0,
+          messages = {},
+          context = { workspace = "root" },
+          events = {},
+          result = nil,
+        }
+      end,
+      is_running = function() return running end,
+      send = function()
+        return { id = "run" }, nil, 7, "steering"
+      end,
+      resubmit_steering = function()
+        return nil, util.error("model", "resubmission rejected")
+      end,
+      dequeue_steering = function()
+        return { "queued" }, { 7 }
+      end,
+    }
+    local value = applet({ view = view_factory(record) })
+    value.agent_value = fake_agent
+    assert(value:open())
+    record.view.input = "queued"
+    value.input_value = "queued"
+    record.view.set_input = function()
+      return nil, util.error("ui", "input clear rejected")
+    end
+    local run, err = value:send("queued")
+    assert(run, err and err.message)
+    assert.are.equal(7, value.input_submission_id)
+
+    record.view.set_input = function(view, text)
+      view.input = text
+      return true
+    end
+    local resumed, resume_err = value:send("queued")
+    assert.is_nil(resumed)
+    assert.matches("resubmission rejected", resume_err.message)
+
+    value:_queue_submission(fake_agent, "queued", false, 7, "steering")
+    value.input_value = "queued"
+    record.view.input = "queued"
+    assert.are.same({ "queued" },
+      record.view.callbacks.on_dequeue_steering())
+    assert.are.equal("", value.input_value)
+    assert.are.equal("", record.view.input)
+
+    value.pending_submission = "pending trust"
+    local trusted, trust_err = value:trust_submission_result({
+      ok = false,
+      error = util.error("workspace_trust", "trust rejected"),
+    })
+    assert.is_nil(trusted)
+    assert.matches("trust rejected", trust_err.message)
+  end)
+
+  it("contains presentation and submission boundary failures", function()
+    local value = applet({})
+    value.presentation = { active = { kind = "select", prompt = "Choose" } }
+    local shown, shown_err = value:_set_view_presentation({
+      set_presentation = function()
+        return nil, util.error("ui", "presentation failed")
+      end,
+    })
+    assert.is_nil(shown)
+    assert.matches("presentation failed", shown_err.message)
+
+    local prepare_error = util.error("model", "preparation rejected")
+    local fake_agent = {
+      is_destroyed = function() return false end,
+      prepare = function() return nil, prepare_error end,
+      is_running = function() return false end,
+      resubmit_steering = function()
+        return nil, util.error("steering", "submission expired")
+      end,
+      send = function()
+        return { id = "run" }, nil, 8, "turn"
+      end,
+    }
+    value.presentation = nil
+    value.agent_value = fake_agent
+    local run, err = value:send("prepare this")
+    assert.is_nil(run)
+    assert.are.equal(prepare_error, err)
+
+    fake_agent.prepare = function() return true end
+    value:_queue_submission(fake_agent, "queued", false, 7, "steering")
+    run, err = value:send("queued")
+    assert(run, err and err.message)
+    assert.is_nil(value:_submission(7))
+
+    local trust_error = util.error(
+      "workspace_trust", "trust is pending")
+    trust_error.pending = true
+    fake_agent.send = function() return nil, trust_error end
+    run, err = value:send("await trust")
+    assert.is_nil(run)
+    assert.are.equal(trust_error, err)
+    assert.are.equal("await trust", value:pending_message())
+    value.agent_value = nil
+  end)
+
+  it("rejects unsupported semantic surfaces during View construction", function()
+    local dialog_record = {}
+    local dialog_value = applet({
+      view = view_factory(dialog_record, { omit_dialog = true }),
+    })
+    dialog_value.dialog = {
+      active = { id = 1, kind = "dialog", title = "Question" },
+    }
+    local opened, err = dialog_value:open()
+    assert.is_nil(opened)
+    assert.matches("does not support dialogs", err.message)
+    assert.is_true(dialog_record.view.destroyed)
+
+    local presentation_record = {}
+    local presentation_value = applet({
+      view = view_factory(presentation_record, { omit_presentation = true }),
+    })
+    presentation_value.presentation = {
+      active = { id = 1, kind = "select", prompt = "Choose" },
+    }
+    opened, err = presentation_value:open()
+    assert.is_nil(opened)
+    assert.matches("does not support semantic presentations", err.message)
+    assert.is_true(presentation_record.view.destroyed)
+  end)
+
+  it("rehydrates a newer publication that arrives during View construction", function()
+    local record = {}
+    local value
+    local base_factory = view_factory(record)
+    local factory = function(options)
+      local view = base_factory(options)
+      local set_context = view.set_context
+      view.set_context = function(self, context)
+        set_context(self, context)
+        value.agent_snapshot = {
+          revision = 2,
+          messages = {},
+          context = { workspace = "new", model = "new" },
+          events = {},
+          result = nil,
+        }
+        return true
+      end
+      return view
+    end
+    value = applet({ view = factory })
+    value.agent_value = {
+      is_destroyed = function() return false end,
+      label = function() return "Agent" end,
+      set_attention = function() return true end,
+      prepare = function() return true end,
+    }
+    value.agent_snapshot = {
+      revision = 1,
+      messages = {},
+      context = { workspace = "old", model = "old" },
+      events = {},
+      result = nil,
+    }
+
+    assert(value:open())
+    assert.are.equal(2, value.agent_snapshot.revision)
+    assert.are.equal("new", record.view.context.model)
+    value.agent_value = nil
+  end)
+
+  it("orders pre-bind publications after the newest retained snapshot", function()
+    local value = applet({})
+    value.agent_snapshot = {
+      revision = 5,
+      messages = {},
+      context = { workspace = "retained", model = "retained" },
+      events = {},
+      result = nil,
+    }
+    local fake_agent = {
+      _neoagent_agent = true,
+      is_destroyed = function() return false end,
+      presenter = function() return value:presenter() end,
+      dialogs = function() return value:dialogs() end,
+      subscribe = function(_, callback)
+        callback({
+          type = "context",
+          revision = 6,
+          context = { workspace = "queued", model = "queued" },
+        })
+        return function() end
+      end,
+      snapshot = function()
+        return {
+          revision = 3,
+          messages = {},
+          context = { workspace = "stale", model = "stale" },
+          events = {},
+          result = nil,
+        }
+      end,
+      attach_applet = function(_, selected) return selected end,
+      detach_applet = function() return true end,
+      set_attention = function() return true end,
+      label = function() return "Agent" end,
+    }
+
+    assert.are.equal(fake_agent, value:bind(fake_agent))
+    assert.are.equal(6, value.agent_snapshot.revision)
+    assert.are.equal("queued", value.agent_snapshot.context.model)
+    assert.are.equal(fake_agent, value:unbind(fake_agent))
+  end)
+
+  it("destroys an invalidated View and reports Agent detach failure", function()
+    local owned_agent = agent()
+    local record = {}
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = view_factory(record),
+    })
+    assert(value:bind(owned_agent))
+    assert(value:open())
+    record.view.set_messages = function()
+      return nil, util.error("ui", "message clearing failed")
+    end
+    local detach_applet = owned_agent.detach_applet
+    owned_agent.detach_applet = function()
+      error("detach exploded")
+    end
+
+    local detached, err = value:unbind(owned_agent)
+
+    assert.are.equal(owned_agent, detached)
+    assert.matches("detach exploded", err.message)
+    assert.is_true(record.view.destroyed)
+    assert.is_nil(value:view())
+    assert.is_nil(value:agent())
+    owned_agent.detach_applet = detach_applet
+    assert(owned_agent:detach_applet(value))
   end)
 
   it("selects models and reports workspace trust failures", function()

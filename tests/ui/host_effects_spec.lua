@@ -110,6 +110,21 @@ describe("Applet host effects", function()
       end
     end
 
+    local orphan
+    vim.api.nvim_buf_set_lines = function(buffer)
+      orphan = buffer
+      vim.bo[buffer].bufhidden = "hide"
+      error("detached content failed")
+    end
+    opened, err = effects.open_document({
+      name = "detached-rollback", filetype = "text", content = "value",
+    })
+    vim.api.nvim_buf_set_lines = original_set_lines
+    assert.is_nil(opened)
+    assert.matches("detached content failed", err)
+    assert.is_not_nil(orphan)
+    assert.is_false(vim.api.nvim_buf_is_valid(orphan))
+
     local release = effects.on_exit(function() end)
     local autocmds = vim.api.nvim_get_autocmds({ event = "VimLeavePre" })
     local found = false

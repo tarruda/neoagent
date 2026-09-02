@@ -346,6 +346,39 @@ describe("neoagent provider authentication", function()
     assert.matches("safe non%-empty text", err.message)
   end)
 
+  it("validates cache identity credentials and exposes revisions", function()
+    local storage = memory_store({ plan = {
+      access = "access",
+      refresh = "refresh",
+      expires = 500,
+      accountId = "account",
+    } })
+    local selected = method({
+      cache_identity = function()
+        error("identity failed")
+      end,
+    })
+    local manager = auth.new({
+      methods = { plan = selected },
+      store = storage,
+      now = function() return 100 end,
+    })
+
+    assert.are.equal(0, manager:revision("plan"))
+    local identity, err = manager:cache_identity("plan")
+    assert.is_nil(identity)
+    assert.matches("cache_identity failed", err.message)
+
+    storage.values.plan = { expires = "invalid" }
+    identity, err = manager:cache_identity("plan")
+    assert.is_nil(identity)
+    assert.matches("Stored credential is invalid", err.message)
+    identity, err = manager:derive_cache_identity("plan", {})
+    assert.is_nil(identity)
+    assert.matches("Credential is invalid", err.message)
+    assert.has_error(function() manager:revision("missing") end)
+  end)
+
   it("reports missing, malformed, and failed credentials", function()
     local storage = memory_store()
     local manager = auth.new({ methods = { plan = method() }, store = storage })
@@ -447,6 +480,56 @@ describe("neoagent provider authentication", function()
     assert.is_false(denied.ok)
     assert.matches("Failed to acquire credential lock", denied.error.message)
     assert.matches("EACCES", denied.error.detail)
+    vim.fn.delete(directory, "rf")
+  end)
+
+  it("reports credential replacement stages and lock release failures", function()
+    local directory = vim.fn.tempname()
+    local path = directory .. "/auth.json"
+    local store = store_module.new(path)
+    local fs = require("neoagent.fs")
+    local atomic_replace = fs.atomic_replace
+    local stages = { "temporary", "write", "mode", "rename" }
+    local failures = {}
+    local patched, patch_err = pcall(function()
+      fs.atomic_replace = function()
+        local stage = table.remove(stages, 1)
+        return nil, stage .. " denied", stage
+      end
+      for _ = 1, 4 do
+        local written, err = store:write("plan", {
+          type = "api_key", key = "secret",
+        })
+        failures[#failures + 1] = { written = written, err = err }
+      end
+    end)
+    fs.atomic_replace = atomic_replace
+    assert(patched, patch_err)
+
+    assert.is_nil(failures[1].written)
+    assert.matches("temporary file", failures[1].err.message)
+    assert.matches("write credentials", failures[2].err.message)
+    assert.matches("write credentials", failures[3].err.message)
+    assert.matches("replace credentials", failures[4].err.message)
+
+    store._file_lock = function()
+      return {
+        with = function()
+          return nil, {
+            kind = "file_lock",
+            code = "release",
+            message = "release failed",
+            detail = "unlock denied",
+          }
+        end,
+      }
+    end
+    local written, err = store:write("plan", {
+      type = "api_key", key = "secret",
+    })
+    assert.is_nil(written)
+    assert.matches("release credential lock", err.message)
+    assert.are.equal("unlock denied", err.detail)
     vim.fn.delete(directory, "rf")
   end)
 

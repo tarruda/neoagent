@@ -592,6 +592,7 @@ describe("neoagent Codex provider service", function()
   it("reports terminal redemption outcomes and preserves refresh failures", function()
     local transport = fake_transport.new()
     transport.fetches = {
+      { status = 500, body = [[{"error":"private redeem body"}]] },
       { body = [[{"code":"no_credit"}]] },
       { body = [[{"code":"nothing_to_reset"}]] },
       { body = [[{"code":"unexpected"}]] },
@@ -603,6 +604,12 @@ describe("neoagent Codex provider service", function()
     })
 
     local result = wait(operation(service, "redeem"))
+    assert.is_false(result.ok)
+    assert.matches("request failed", block(service:state(), "status").text)
+    assert.is_nil(vim.inspect(service:state()):find(
+      "private redeem body", 1, true))
+
+    result = wait(operation(service, "redeem"))
     assert.is_false(result.ok)
     assert.matches("No reset credit", result.error.message)
     result = wait(operation(service, "redeem"))
@@ -618,7 +625,7 @@ describe("neoagent Codex provider service", function()
     assert.matches("request failed", block(service:state(), "status").text)
     assert.is_nil(vim.inspect(service:state()):find("private usage body", 1, true))
 
-    for index = 1, 4 do
+    for index = 1, 5 do
       local body = vim.json.decode(transport.fetch_requests[index].body)
       assert.matches("^neoagent%-%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x"
         .. "%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$", body.redeem_request_id)

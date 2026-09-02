@@ -209,23 +209,27 @@ describe("neoagent file locks", function()
     local handle = {
       try_acquire = function()
         calls[#calls + 1] = "try"
+        if config.acquire_throw then error(config.acquire_throw) end
         if config.busy then return false end
         if config.acquire_error then return nil, config.acquire_error end
         return true
       end,
       prepare = function()
         calls[#calls + 1] = "prepare"
+        if config.prepare_error then return nil, config.prepare_error end
         return true
       end,
       write_token = function()
         calls[#calls + 1] = "write"
+        if config.write_error then return nil, config.write_error end
         return true
       end,
       verify_token = function()
         calls[#calls + 1] = "verify"
         config.verifies = (config.verifies or 0) + 1
-        if config.verify_error and config.verifies > 1 then
-          return nil, config.verify_error
+        if config.verify_initial_error
+            or config.verify_error and config.verifies > 1 then
+          return nil, config.verify_initial_error or config.verify_error
         end
         return true
       end,
@@ -316,12 +320,266 @@ describe("neoagent file locks", function()
     assert.are.equal("lock", err.code)
   end)
 
+  it("contains backend construction, initialization, and timer failures", function()
+    local lock_path = path()
+    local original_mkdirp = fs.mkdirp
+    fs.mkdirp = function() return nil, "directory denied" end
+    local lease, err = file_lock.new({ path = lock_path }):acquire()
+    fs.mkdirp = original_mkdirp
+    assert.is_nil(lease)
+    assert.are.equal("open", err.code)
+
+    for _, case in ipairs({
+      { prepare_error = "prepare failed" },
+      { write_error = "write failed" },
+      { verify_initial_error = "verify failed" },
+      { prepare_error = "prepare failed", release_error = "unlock failed" },
+      { prepare_error = "prepare failed", close_error = "close failed" },
+    }) do
+      local calls = fake_backend(case)
+      lease, err = file_lock.new({ path = lock_path }):acquire()
+      assert.is_nil(lease)
+      assert.are.equal("initialize", err.code)
+      assert.is_true(vim.tbl_contains(calls, "release"))
+      assert.is_true(vim.tbl_contains(calls, "close"))
+    end
+
+    local calls = fake_backend({ busy = true, close_error = "close failed" })
+    lease, err = file_lock.new({
+      path = lock_path, timeout_ms = 1, poll_ms = 1,
+    }):acquire()
+    assert.is_nil(lease)
+    assert.are.equal("release", err.code)
+    assert.are.equal("close", calls[#calls])
+
+    fake_backend({ acquire_throw = "acquire crashed" })
+    lease, err = file_lock.new({ path = lock_path }):acquire()
+    assert.is_nil(lease)
+    assert.are.equal("acquire", err.code)
+
+    local original_timer = vim.uv.new_timer
+    fake_backend({ busy = true })
+    vim.uv.new_timer = function() return nil end
+    local run = async.run(function()
+      file_lock.new({ path = lock_path }):acquire_async()
+    end, { error_kind = "file_lock" })
+    vim.uv.new_timer = original_timer
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("acquire", result.error.code)
+
+    fake_backend({ acquire_throw = "async acquire crashed" })
+    run = async.run(function()
+      file_lock.new({ path = lock_path }):acquire_async()
+    end, { error_kind = "file_lock" })
+    result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("acquire", result.error.code)
+
+    posix.new = function() error("backend unavailable") end
+    lease, err = file_lock.new({ path = lock_path }):acquire()
+    assert.is_nil(lease)
+    assert.are.equal("unavailable", err.code)
+    assert.not_matches("backend unavailable", err.message)
+  end)
+
+  it("selects platform backends and reports unavailable platforms", function()
+    local original_os = jit.os
+    local original_require = _G.require
+    local windows_name = "neoagent.file_lock.windows"
+    local original_windows = package.loaded[windows_name]
+    local ok, outcome = pcall(function()
+      local selected_backend = { platform = "windows" }
+      package.loaded[windows_name] = {
+        new = function() return selected_backend end,
+      }
+      jit.os = "Windows"
+      assert.are.equal(selected_backend,
+        file_lock.new({ path = path() }).backend)
+
+      jit.os = "Plan9"
+      local lease, err = file_lock.new({ path = path() }):acquire()
+      assert.is_nil(lease)
+      assert.are.equal("unavailable", err.code)
+      assert.matches("Plan9", err.message)
+
+      jit.os = "Linux"
+      _G.require = function(name)
+        if name == "neoagent.file_lock.posix" then
+          error("POSIX backend cannot be loaded")
+        end
+        return original_require(name)
+      end
+      lease, err = file_lock.new({ path = path() }):acquire()
+      assert.is_nil(lease)
+      assert.are.equal("unavailable", err.code)
+      assert.matches("backend is unavailable", err.message)
+    end)
+    jit.os = original_os
+    _G.require = original_require
+    package.loaded[windows_name] = original_windows
+    assert.is_true(ok, outcome)
+  end)
+
   it("rejects removed and malformed options", function()
     local lock_path = path()
     assert.has_error(function() file_lock.new({ path = lock_path, stale_ms = 1 }) end)
     assert.has_error(function() file_lock.new({ path = lock_path, refresh_ms = 1 }) end)
     assert.has_error(function() file_lock.new({ path = lock_path, mode = 512 }) end)
     assert.has_error(function() file_lock.new({ path = lock_path, poll_ms = 0 }) end)
+  end)
+
+  it("reports POSIX ownership, token, and descriptor failures", function()
+    local identity = { type = "file", dev = 1, ino = 2, mode = 384 }
+    local contents = "token"
+    local failures = {}
+    local closes = 0
+    local ffi = {
+      cdef = function() end,
+      errno = function() return failures.errno or 5 end,
+      C = {},
+    }
+    local C = {
+      flock = function(_, operation)
+        if operation == 8 and failures.unlock then return -1 end
+        if operation ~= 8 and failures.lock then return -1 end
+        return 0
+      end,
+    }
+    local uv = {
+      fs_lstat = function()
+        if failures.lstat then
+          return nil, failures.lstat.message, failures.lstat.code
+        end
+        return vim.deepcopy(identity)
+      end,
+      fs_open = function() return 9 end,
+      fs_fstat = function()
+        if failures.fstat then return nil, "held stat failed" end
+        return vim.deepcopy(identity)
+      end,
+      fs_fchmod = function()
+        if failures.chmod then return nil, "chmod failed" end
+        return true
+      end,
+      fs_ftruncate = function()
+        if failures.truncate then return nil, "truncate failed" end
+        contents = ""
+        return true
+      end,
+      fs_write = function(_, value)
+        if failures.write then return nil, "write failed" end
+        if failures.short_write then return #value - 1 end
+        contents = value
+        return #value
+      end,
+      fs_fsync = function()
+        if failures.sync then return nil, "sync failed" end
+        return true
+      end,
+      fs_read = function()
+        if failures.read then return nil, "read failed" end
+        return contents
+      end,
+      fs_close = function()
+        closes = closes + 1
+        if failures.close then return nil, "close failed" end
+        return true
+      end,
+    }
+    local backend = posix.new({ ffi = ffi, C = C, uv = uv })
+    local function open()
+      failures = {}
+      identity = { type = "file", dev = 1, ino = 2, mode = 384 }
+      return assert(backend:open("state.lock", 384))
+    end
+    local function rejected(method, code, pattern)
+      local handle = open()
+      local value, err = method(handle)
+      assert.is_nil(value)
+      assert.are.equal(code, err.code)
+      assert.matches(pattern, err.message)
+      failures.close = nil
+      assert(handle:close())
+    end
+
+    rejected(function(handle)
+      failures.fstat = true
+      return handle:prepare(384)
+    end, "ownership", "inspect held")
+    rejected(function(handle)
+      failures.lstat = { message = "ENOENT", code = "ENOENT" }
+      return handle:prepare(384)
+    end, "ownership", "disappeared")
+    rejected(function(handle)
+      failures.lstat = { message = "inspection denied", code = "EACCES" }
+      return handle:prepare(384)
+    end, "ownership", "inspect file lock path")
+    rejected(function(handle)
+      failures.chmod = true
+      return handle:prepare(384)
+    end, "mode", "secure")
+    rejected(function(handle)
+      identity.mode = 420
+      return handle:prepare(384)
+    end, "mode", "unexpected permission")
+    rejected(function(handle)
+      failures.truncate = true
+      return handle:write_token("token")
+    end, "write", "truncate")
+    rejected(function(handle)
+      failures.short_write = true
+      return handle:write_token("token")
+    end, "write", "write file lock token")
+    rejected(function(handle)
+      failures.sync = true
+      return handle:write_token("token")
+    end, "write", "sync")
+    rejected(function(handle)
+      failures.read = true
+      return handle:verify_token("token")
+    end, "release", "read held")
+    rejected(function(handle)
+      contents = "another"
+      return handle:verify_token("token")
+    end, "ownership", "ownership changed")
+    rejected(function(handle)
+      assert(handle:try_acquire())
+      failures.unlock = true
+      return handle:release()
+    end, "release", "unlock")
+    rejected(function(handle)
+      failures.close = true
+      return handle:close()
+    end, "release", "close")
+
+    local handle = open()
+    failures.lock = true
+    failures.errno = 5
+    local acquired, err = handle:try_acquire()
+    assert.is_nil(acquired)
+    assert.are.equal("lock", err.code)
+    assert.matches("flock error 5", err.detail)
+    assert(handle:close())
+
+    failures = {}
+    identity.type = "directory"
+    local opened
+    opened, err = backend:open("state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("target", err.code)
+    failures.lstat = { message = "inspection denied", code = "EACCES" }
+    opened, err = backend:open("state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("open", err.code)
+
+    failures = { fstat = true }
+    identity = { type = "file", dev = 1, ino = 2, mode = 384 }
+    local before = closes
+    opened, err = backend:open("state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("ownership", err.code)
+    assert.are.equal(before + 1, closes)
   end)
 
   it("owns Windows locks through one native file handle", function()
@@ -335,7 +593,10 @@ describe("neoagent file locks", function()
         if name == "unsigned long[1]" then return { [0] = 0 } end
         return { QuadPart = 0 }
       end,
-      cast = function(_, value) return value end,
+      cast = function(_, value)
+        if failures.cast then error("cast failed") end
+        return value
+      end,
       string = function(buffer, size)
         return (buffer.value or ""):sub(1, size)
       end,
@@ -353,18 +614,26 @@ describe("neoagent file locks", function()
         return disposition == 4 and 10 or 11
       end,
       MultiByteToWideChar = function(_, _, path, size, encoded)
-        if failures.encode then return 0 end
+        if failures.encode or failures.encode_second and encoded then return 0 end
         if encoded then encoded.path = path:sub(1, size) end
         return size
       end,
       CloseHandle = function(native)
         calls[#calls + 1] = "close:" .. native
-        if failures.close then return 0 end
+        if failures.close or failures.identity_close and native == 11 then
+          return 0
+        end
         return 1
       end,
       GetFileInformationByHandle = function(native, info)
-        if failures.information then return 0 end
-        info.dwFileAttributes = attributes
+        if failures.information
+            or failures.held_information and native == 10
+            or failures.current_information and native == 11 then
+          return 0
+        end
+        info.dwFileAttributes = native == 10
+            and (failures.held_attributes or attributes)
+          or (failures.current_attributes or attributes)
         info.dwVolumeSerialNumber = 1
         info.nFileIndexHigh = 0
         info.nFileIndexLow = native == 10 and 7 or identity
@@ -450,6 +719,12 @@ describe("neoagent file locks", function()
     assert.are.equal("open", err.code)
     failures.encode = nil
 
+    failures.encode_second = true
+    opened, err = backend:open("C:\\state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("open", err.code)
+    failures.encode_second = nil
+
     failures.open = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
@@ -473,6 +748,74 @@ describe("neoagent file locks", function()
     assert.is_nil(opened)
     assert.are.equal("ownership", err.code)
     failures.verify_open = nil
+
+    failures.cast = true
+    failures.open = true
+    opened, err = backend:open("C:\\state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("open", err.code)
+    failures.open = nil
+    failures.cast = nil
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.held_information = true
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("held file lock", err.message)
+    failures.held_information = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.held_attributes = 1024
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("not a regular file", err.message)
+    failures.held_attributes = nil
+    assert(handle:close())
+
+    local reject_encoding = false
+    local encoding_backend = windows.new({
+      ffi = ffi,
+      kernel = kernel,
+      uv = uv,
+      encode_path = function(path)
+        if reject_encoding then return nil, "encoding rejected" end
+        return { path = path }
+      end,
+    })
+    handle = assert(encoding_backend:open("C:\\state.lock", 384))
+    reject_encoding = true
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("encode file lock path", err.message)
+    reject_encoding = false
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.verify_open = true
+    failures.error = 2
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("disappeared", err.message)
+    failures.verify_open = nil
+    failures.error = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.current_information = true
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("path identity", err.message)
+    failures.current_information = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.identity_close = true
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("identity handle", err.message)
+    failures.identity_close = nil
+    assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
     failures.chmod = true
@@ -516,6 +859,14 @@ describe("neoagent file locks", function()
     assert.is_nil(verified)
     assert.are.equal("release", err.code)
     failures.read = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    assert(handle:write_token("token"))
+    contents = "another owner"
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.matches("ownership changed", err.message)
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))

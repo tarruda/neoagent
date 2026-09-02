@@ -107,6 +107,13 @@ describe("OpenAI Codex subscription authentication", function()
         profile_email = "token@example.com",
         plan = "pro",
       }) }))
+    assert.are.equal("explicit", method.cache_identity({
+      accountId = "explicit", access = token("fallback"),
+    }))
+    assert.are.equal("fallback", method.cache_identity({
+      access = token("fallback"),
+    }))
+    assert.is_nil(method.cache_identity({}))
   end)
 
   it("extracts account display metadata from the OAuth ID token", function()
@@ -216,6 +223,24 @@ describe("OpenAI Codex subscription authentication", function()
     })
     local result = wait(method.login(interaction({ "device_code" }, {})))
     assert.is_true(result.ok)
+
+    local pending_http = fake_http({
+      json(200, {
+        device_auth_id = "pending", user_code = "WAIT", interval = 60,
+      }),
+    })
+    method = codex.new({
+      http = pending_http,
+      auth_base_url = "https://auth.test",
+    })
+    local run = method.login(interaction({ "device_code" }, {}))
+    assert(vim.wait(1000, function()
+      return #pending_http.requests == 1 and not run:is_done()
+    end))
+    run:cancel()
+    result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", result.error.kind)
   end)
 
   it("reports provider, selection, token, and credential failures", function()

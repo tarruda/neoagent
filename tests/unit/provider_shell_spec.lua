@@ -1474,4 +1474,203 @@ describe("neoagent Provider Shell", function()
     finish.resolve({ ok = true })
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
   end)
+
+  it("contains malformed provider action contracts", function()
+    local value = shell({
+      config = config({ fake = { api = "fake", models = {} } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+    local first = value:_start_action({
+      kind = "logout",
+      provider_id = "fake",
+      start = function()
+        return async.run(function() return async.await(function() end) end)
+      end,
+    })
+    assert.is_true(value:is_authenticating())
+    local coordination = { finished = false }
+    function coordination:finish() self.finished = true return true end
+    local duplicate, duplicate_err = value:_start_action({
+      kind = "service", provider_id = "fake", coordination = coordination,
+      start = function() error("unused") end,
+    })
+    assert.is_nil(duplicate)
+    assert.matches("already active", duplicate_err.message)
+    assert.is_true(coordination.finished)
+    first:cancel()
+    assert.is_false(wait(first).ok)
+
+    local cases = {
+      {
+        start = function()
+          return nil, util.error("provider", "action did not start")
+        end,
+        message = "action did not start",
+      },
+      {
+        start = function() return {} end,
+        message = "must return a Run",
+      },
+      {
+        start = function()
+          return async.run(function() return "invalid result" end)
+        end,
+        message = "invalid result",
+      },
+    }
+    for _, case in ipairs(cases) do
+      local result = wait(value:_start_action({
+        kind = "service", provider_id = "fake", start = case.start,
+      }))
+      assert.is_false(result.ok)
+      assert.matches(case.message, result.error.message)
+    end
+  end)
+
+  it("contains credential, snapshot, and runtime coordination failures", function()
+    local presented = presenter()
+    local managed = service("fake", "Fake")
+    local selected_catalog = catalog({}, {
+      persistence = {
+        configured = true,
+        enabled = false,
+        error = { kind = "auth", message = "identity unavailable" },
+      },
+    })
+    local selected_runtime = {
+      id = "fake",
+      definition = { api = "fake", models = {} },
+      catalog = selected_catalog,
+      service = managed,
+    }
+    local value = shell({
+      config = config({
+        fake = { api = "fake", models = {} },
+        other = { api = "fake", models = {} },
+      }, "fake"),
+      auth = authentication(),
+      runtimes = {
+        fake = selected_runtime,
+        other = service("other", "Other"),
+      },
+      presenter = presented,
+      view = function() return view() end,
+    })
+    assert.is_false(value:_auth_state("missing").usable)
+    assert(vim.iter(value:info().state.blocks):any(function(block)
+      return block.type == "status"
+        and block.text:match("identity unavailable") ~= nil
+    end))
+
+    local is_active = value.authentication.is_active
+    value.authentication.is_active = function() return true end
+    local selected, select_err = value:select("other")
+    value.authentication.is_active = is_active
+    assert.is_nil(selected)
+    assert.matches("Finish the active provider action", select_err.message)
+
+    local token = assert(provider_service.begin_operation(managed, {
+      mutating = true,
+    }))
+    local refreshed, refresh_err = value:run("neoagent.catalog.refresh")
+    assert.is_nil(refreshed)
+    assert.matches("mutating provider operation", refresh_err.message)
+    assert.is_true(token:finish())
+
+    local schedule_refresh = value._schedule_refresh
+    value._schedule_refresh = function() error("runtime refresh failed") end
+    token = assert(provider_service.begin_operation(managed, {
+      mutating = false,
+    }))
+    assert(vim.wait(1000, function()
+      return vim.iter(presented.notifications):any(function(notification)
+        return notification.message:match("runtime subscriber failed") ~= nil
+      end)
+    end, 5))
+    assert.is_true(token:finish())
+    value._schedule_refresh = schedule_refresh
+
+    selected_catalog.snapshot = function() error("snapshot failed") end
+    assert.is_nil(value:_refresh())
+    assert(vim.iter(presented.notifications):any(function(notification)
+      return notification.message:match("snapshot failed") ~= nil
+    end))
+
+    value:destroy()
+    local login, login_err = value:login()
+    assert.is_nil(login)
+    assert.matches("destroyed", login_err.message)
+    local logout, logout_err = value:logout()
+    assert.is_nil(logout)
+    assert.matches("destroyed", logout_err.message)
+  end)
+
+  it("reports a deferred authentication action that becomes unavailable", function()
+    local surface = view()
+    local presented = presenter()
+    local refresh = operation("Refresh", function()
+      return async.run(function()
+        return async.await(function(done)
+          return function() done.reject(async.cancelled_error) end
+        end)
+      end)
+    end)
+    local value = shell({
+      config = config({
+        alpha = { api = "fake", models = {} },
+        beta = { api = "fake", models = {} },
+      }, "alpha"),
+      auth = authentication(),
+      runtimes = {
+        alpha = service("alpha", "Alpha", { refresh = refresh }),
+        beta = service("beta", "Beta"),
+      },
+      presenter = presented,
+      view = function() return surface end,
+    })
+
+    assert(value:open())
+    assert.is_true(value:is_active())
+    assert.is_true(value:login("beta"))
+    assert(vim.wait(1000, function()
+      return value:info().id == "beta" and not value:is_active()
+    end, 5))
+    assert(vim.iter(presented.notifications):any(function(notification)
+      return notification.message:match("Login is unavailable") ~= nil
+    end))
+  end)
+
+  it("propagates provider selection failures from logout", function()
+    local finish
+    local value = shell({
+      config = config({
+        alpha = { api = "fake", models = {} },
+        beta = { api = "fake", models = {} },
+      }, "alpha"),
+      auth = authentication(),
+      runtimes = {
+        alpha = service("alpha", "Alpha"),
+        beta = service("beta", "Beta"),
+      },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+    local active = value:_start_action({
+      kind = "logout", provider_id = "alpha",
+      start = function()
+        return async.run(function()
+          return async.await(function(done) finish = done end)
+        end)
+      end,
+    })
+    assert.is_true(value:is_authenticating())
+    local logged_out, err = value:logout("beta")
+    assert.is_nil(logged_out)
+    assert.matches("active provider action", err.message)
+    finish.resolve({ ok = true })
+    assert.is_true(wait(active).ok)
+  end)
 end)

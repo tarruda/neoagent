@@ -227,6 +227,20 @@ describe("neoagent provider runtime composition", function()
     assert.are.equal(1, destroyed)
   end)
 
+  it("destroys malformed Services retained by a partial runtime", function()
+    local destroyed = 0
+    local runtimes = {
+      partial = {
+        service = {
+          destroy = function() destroyed = destroyed + 1 end,
+        },
+      },
+    }
+
+    assert.is_true(provider_runtimes.destroy(runtimes))
+    assert.are.equal(1, destroyed)
+  end)
+
   it("groups shared authentication Services and waits to destroy them", function()
     local destroyed = 0
     local configured = { providers = {

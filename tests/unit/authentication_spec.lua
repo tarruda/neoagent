@@ -206,6 +206,28 @@ describe("neoagent Authentication coordinator", function()
       } },
       invalid = { catalog = { refresh = function() return false end } },
       crashed = { catalog = { refresh = function() error("refresh crashed") end } },
+      bad_credentials = {
+        credentials = { state = function() error("credential inspection failed") end },
+        catalog = { refresh = function() error("must not refresh") end },
+      },
+      error_credentials = {
+        credentials = { state = function()
+          return {
+            usable = false,
+            source = "error",
+            error = util.error("auth", "credential state failed"),
+          }
+        end },
+        catalog = { refresh = function() error("must not refresh") end },
+      },
+      invalid_result = {
+        credentials = { state = function()
+          return { usable = true, source = "stored" }
+        end },
+        catalog = { refresh = function()
+          return async.run(function() return "invalid result" end)
+        end },
+      },
       unrelated = { catalog = { refresh = function() error("must not run") end } },
     }
     local value = authentication({
@@ -219,6 +241,9 @@ describe("neoagent Authentication coordinator", function()
         rejected = { auth = "alpha" },
         invalid = { auth = "alpha" },
         crashed = { auth = "alpha" },
+        bad_credentials = { auth = "alpha" },
+        error_credentials = { auth = "alpha" },
+        invalid_result = { auth = "alpha" },
         unrelated = { auth = "zulu" },
       }),
       runtimes = runtimes,
@@ -250,6 +275,9 @@ describe("neoagent Authentication coordinator", function()
     assert.matches(
       "failed to refresh crashed catalog after authentication change", text)
     assert.matches("failed to refresh rejected catalog: refresh rejected", text)
+    assert.matches("failed to inspect bad_credentials credentials", text)
+    assert.matches("credential state failed", text)
+    assert.matches("catalog returned an invalid result", text)
     assert.is_true(vim.tbl_contains(activity, true))
     assert.is_true(vim.tbl_contains(activity, false))
 
@@ -795,5 +823,43 @@ describe("neoagent Authentication coordinator", function()
     assert(logging_in:login("test"))
     logging_in:destroy()
     assert(vim.wait(1000, function() return login_cancelled end, 5))
+  end)
+
+  it("cancels tracked catalog refresh and rejects malformed logout Runs", function()
+    local cancelled = false
+    local selected_manager = manager({
+      credentials = {
+        { id = "test", name = "Test login", type = "oauth" },
+      },
+    })
+    local value = authentication({
+      auth = selected_manager,
+      config = config(nil, { dynamic = { auth = "test" } }),
+      runtimes = { dynamic = {
+        credentials = { state = function()
+          return { usable = true, source = "stored" }
+        end },
+        catalog = { refresh = function()
+          return async.run(function()
+            return async.await(function()
+              return function() cancelled = true end
+            end)
+          end)
+        end },
+      } },
+    })
+    local refresh = value:refresh_catalogs("test")
+    assert.is_true(value:is_active())
+    assert.is_true(value:cancel())
+    assert(vim.wait(1000, function()
+      return refresh:is_done() and cancelled and not value:is_active()
+    end, 5))
+    assert.are.equal("cancelled", refresh:result().error.kind)
+
+    selected_manager.logout = function() return {} end
+    local ok, err = pcall(value.logout, value, "test")
+    assert.is_false(ok)
+    assert.matches("logout must return a Run", err.message)
+    assert.is_false(value:is_active())
   end)
 end)

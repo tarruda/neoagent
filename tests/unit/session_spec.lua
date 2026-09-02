@@ -137,8 +137,10 @@ describe("neoagent.session", function()
       assert(session:append({ role = "user", content = "message " .. index, timestamp = index }))
     end
     local elapsed_ms = (vim.uv.hrtime() - started) / 1000000
+    local maximum_ms = vim.env.NEOAGENT_COVERAGE == "1" and 4000 or 2000
 
-    assert.is_true(elapsed_ms < 2000, string.format("linear appends took %.0f ms", elapsed_ms))
+    assert.is_true(elapsed_ms < maximum_ms,
+      string.format("linear appends took %.0f ms", elapsed_ms))
     assert.are.equal(2000, #session:messages())
   end)
 
@@ -215,6 +217,80 @@ describe("neoagent.session", function()
     assert.matches("unknown projection", err.message)
     assert.are.equal(1, loads)
     assert.are.same({}, session:messages())
+  end)
+
+  it("rejects malformed Store message projections at every boundary", function()
+    local session, err = Session.new({ store = {
+      load = function() return { { role = "user" } } end,
+      append = function() return true end,
+    } })
+    assert.is_nil(session)
+    assert.matches("Store returned invalid messages", err.message)
+
+    local function loaded_store(projection)
+      return {
+        load = function() return {} end,
+        append = function() return true, nil, nil, projection end,
+      }
+    end
+    session = assert(Session.new({ store = loaded_store({
+      type = "append", messages = { { role = "user" } },
+    }) }))
+    local ok
+    ok, err = session:append({ role = "user", content = "request" })
+    assert.is_nil(ok)
+    assert.matches("Store returned invalid messages", err.message)
+
+    session = assert(Session.new({ store = loaded_store({
+      type = "append", messages = { {
+        role = "toolResult", toolCallId = "missing", toolName = "read",
+        content = {}, timestamp = 1,
+      } },
+    }) }))
+    ok, err = session:append({ role = "user", content = "request" })
+    assert.is_nil(ok)
+    assert.matches("unknown toolCall", err.detail)
+
+    session = assert(Session.new({ store = loaded_store({
+      type = "replace", messages = { { role = "assistant" } },
+    }) }))
+    ok, err = session:append({ role = "user", content = "request" })
+    assert.is_nil(ok)
+    assert.matches("Store returned invalid messages", err.message)
+
+    session = assert(Session.new({ store = {
+      load = function() return {} end,
+      append = function() return true end,
+      context_messages = function() return { { role = "user" } } end,
+    } }))
+    local context
+    context, err = session:context_messages()
+    assert.is_nil(context)
+    assert.matches("Store returned invalid context", err.message)
+  end)
+
+  it("contains invalid indexed and projected entry dependencies", function()
+    local tree = require("neoagent.session_tree")
+    local entry = {
+      type = "message", id = "entry", parentId = vim.NIL,
+      timestamp = "2026-01-01T00:00:00.000Z",
+      message = { role = "user", content = "valid" },
+    }
+    local indexed_path = tree.indexed_path
+    tree.indexed_path = function() return nil, "path dependency failed" end
+    local session, err = Session.new({ entries = { entry } })
+    tree.indexed_path = indexed_path
+    assert.is_nil(session)
+    assert.matches("path dependency failed", err.detail)
+
+    local normalize_projection = tree.normalize_projection
+    tree.normalize_projection = function()
+      return nil, "projection dependency failed"
+    end
+    session, err = Session.new({ entries = { entry } })
+    tree.normalize_projection = normalize_projection
+    assert.is_nil(session)
+    assert.matches("projection dependency failed", err.detail)
   end)
 
   it("does not add a message when storage rejects it", function()

@@ -60,6 +60,10 @@ describe("neoagent.session_tree", function()
       }),
       base("message", {
         message = { role = "user", content = "x" },
+        request = { "array" },
+      }),
+      base("message", {
+        message = { role = "user", content = "x" },
         request = { unknown = true },
       }),
       base("message", {
@@ -243,5 +247,71 @@ describe("neoagent.session_tree", function()
     } })
     assert.is_nil(invalid)
     assert.matches("tokensBefore", err)
+  end)
+
+  it("rejects malformed request, projection, and preparation boundaries", function()
+    local invalid_state, state_err = tree.normalize_request_state({ "array" })
+    assert.is_nil(invalid_state)
+    assert.matches("state must be an object", state_err)
+
+    local invalid_projection, projection_err = tree.normalize_projection({ value = true })
+    assert.is_nil(invalid_projection)
+    assert.matches("messages must be a list", projection_err)
+
+    local array_summary = setmetatable({ "array" }, {
+      __index = { role = "compactionSummary" },
+    })
+    local role_reads = 0
+    local changing_summary = setmetatable({
+      summary = "valid",
+      tokensBefore = 1,
+      timestamp = 1,
+    }, {
+      __index = function(_, key)
+        if key ~= "role" then return nil end
+        role_reads = role_reads + 1
+        return role_reads == 1 and "compactionSummary" or nil
+      end,
+    })
+    local summaries = {
+      array_summary,
+      changing_summary,
+      { "array" },
+      { role = "compactionSummary", summary = "valid", tokensBefore = 1,
+        timestamp = 1, unknown = true },
+      { role = "user", summary = "valid", tokensBefore = 1, timestamp = 1 },
+      { role = "compactionSummary", summary = "", tokensBefore = 1,
+        timestamp = 1 },
+      { role = "compactionSummary", summary = "valid", tokensBefore = 1,
+        timestamp = -1 },
+    }
+    for _, summary in ipairs(summaries) do
+      local normalized, err = tree.normalize_projection_message(summary)
+      assert.is_nil(normalized)
+      assert.is_string(err)
+    end
+
+    local prepared, prepare_err = tree.prepare_entry(false)
+    assert.is_nil(prepared)
+    assert.matches("options must be an object", prepare_err)
+    prepared, prepare_err = tree.prepare_entry({
+      type = "leaf", id = "leaf", parent_id = vim.NIL,
+      timestamp = "2026-01-01T00:00:00.000Z", payload = { "array" },
+    })
+    assert.is_nil(prepared)
+    assert.matches("payload must be an object", prepare_err)
+    assert.are.same({}, tree.entry_messages(base("leaf", { targetId = vim.NIL })))
+  end)
+
+  it("rejects Tool results without an ancestor call", function()
+    local result = base("message", {
+      message = {
+        role = "toolResult", toolCallId = "missing", toolName = "read",
+        content = {}, timestamp = 1,
+      },
+    })
+    local validated, err = tree.validate_entries({ result })
+    assert.is_nil(validated)
+    assert.matches("unknown toolCall", err)
   end)
 end)

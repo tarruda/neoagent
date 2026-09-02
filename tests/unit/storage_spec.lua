@@ -17,6 +17,7 @@ local original_indexed_path = tree.indexed_path
 local original_uv_open = vim.uv.fs_open
 local original_uv_write = vim.uv.fs_write
 local original_rename = vim.uv.fs_rename
+local original_json_encode = vim.json.encode
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -54,6 +55,7 @@ describe("neoagent.storage", function()
     vim.uv.fs_open = original_uv_open
     vim.uv.fs_write = original_uv_write
     vim.uv.fs_rename = original_rename
+    vim.json.encode = original_json_encode
     for _, path in ipairs(dirs) do
       vim.fn.delete(path, "rf")
     end
@@ -1077,7 +1079,7 @@ describe("neoagent.storage", function()
     local path = index_path(store)
     assert(fs.mkdirp(vim.fs.dirname(path)))
     assert(fs.write_all(path, vim.json.encode({
-      version = 1,
+      version = 3,
       sessions = {
         ["value.jsonl"] = false,
         ["parent.jsonl"] = { text = "parent", parent_session = 42 },
@@ -1266,5 +1268,129 @@ describe("neoagent.storage", function()
     assert.is_nil(forked)
     assert.matches("fork directory unavailable", err.detail)
     assert.matches("fork", err.message)
+  end)
+
+  it("rejects encoded Session values that are not valid UTF-8", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    vim.json.encode = function() return "invalid\255json" end
+
+    local ok, err = store:append({ role = "user", content = "valid" })
+
+    vim.json.encode = original_json_encode
+    assert.is_nil(ok)
+    assert.matches("valid UTF%-8", err.detail)
+    assert.is_nil(vim.uv.fs_stat(store:metadata().path))
+  end)
+
+  it("contains every held Session handle inspection failure", function()
+    local function persisted()
+      local directory = tempdir()
+      dirs[#dirs + 1] = directory
+      local store = storage.new({ directory = directory, cwd = directory })
+      assert(store:append({ role = "user", content = "first" }))
+      return store, store:metadata().path
+    end
+
+    local store, path = persisted()
+    fs.open_regular = function(target, ...)
+      if target == path then
+        return nil, "open ownership failed", "ownership"
+      end
+      return original_open_regular(target, ...)
+    end
+    local ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("open ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target == path then
+        file.stat = function()
+          return nil, "stat ownership failed", "ownership"
+        end
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("stat ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      local stat = file.stat
+      local calls = 0
+      file.stat = function(self)
+        calls = calls + 1
+        if calls == 1 then return stat(self) end
+        return nil, "post-append ownership failed", "ownership"
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("post%-append ownership failed", err.detail)
+
+    store, path = persisted()
+    intercept_regular(function(file, target)
+      if target ~= path then return end
+      file.append = function() return nil, "append failed" end
+      local close = file.close
+      file.close = function(self)
+        assert(close(self))
+        return nil, string.rep("close confirmation failed ", 100)
+      end
+    end)
+    ok, err = store:append({ role = "user", content = "blocked" })
+    fs.open_regular = original_open_regular
+    assert.is_nil(ok)
+    assert.matches("handle close failed", err.detail)
+    assert.is_true(vim.fn.strchars(err.detail) <= 1200)
+  end)
+
+  it("contains incremental projection failures before and after persistence", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    tree.indexed_path = function() return nil, "pending projection failed" end
+    local ok, err = store:set_leaf(nil)
+    tree.indexed_path = original_indexed_path
+    assert.is_nil(ok)
+    assert.matches("pending projection failed", err.detail)
+
+    assert(store:append({ role = "user", content = "persisted" }))
+    tree.indexed_path = function() return nil, "persisted projection failed" end
+    ok, err = store:set_leaf(nil)
+    tree.indexed_path = original_indexed_path
+    assert.is_nil(ok)
+    assert.matches("persisted projection failed", err.detail)
+  end)
+
+  it("rejects a derived Session whose published identity cannot be inspected", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    fs.atomic_replace = function(...)
+      local result = { original_atomic_replace(...) }
+      if result[1] then
+        fs.open_regular = function()
+          return nil, "derived identity unavailable"
+        end
+      end
+      return unpack(result)
+    end
+
+    local derived, err = storage.derive({ entries = {}, leaf_id = nil }, {
+      directory = directory,
+      cwd = directory,
+    })
+
+    fs.atomic_replace = original_atomic_replace
+    fs.open_regular = original_open_regular
+    assert.is_nil(derived)
+    assert.matches("Failed to inspect derived session", err.message)
+    assert.matches("derived identity unavailable", err.detail)
   end)
 end)

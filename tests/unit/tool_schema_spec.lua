@@ -18,6 +18,18 @@ describe("neoagent.api.tool_schema", function()
 
     for _, invalid in ipairs({
       { value = { type = "invented" }, pattern = "invalid" },
+      { value = { type = {} }, pattern = "non%-empty list" },
+      { value = { description = "\255" }, pattern = "UTF%-8 string" },
+      { value = { properties = { "value" } },
+        pattern = "properties must be an object" },
+      { value = { properties = { [true] = {} } },
+        pattern = "keys must be non%-empty strings" },
+      { value = { required = { value = true } },
+        pattern = "required must be a list" },
+      { value = { enum = {} }, pattern = "enum must be a non%-empty list" },
+      { value = { enum = { function() end } },
+        pattern = "enum must contain JSON values" },
+      { value = { minItems = -1 }, pattern = "non%-negative integer" },
       { value = { properties = {} }, mutate = function(value)
         value.properties.bad = value
       end, pattern = "cycles" },

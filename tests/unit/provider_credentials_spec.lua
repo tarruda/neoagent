@@ -87,4 +87,86 @@ describe("neoagent provider credential ownership", function()
     assert.is_false(ok)
     assert.matches("environment credential", err.message)
   end)
+
+  it("fails closed when stored credential inspection is unavailable", function()
+    local unavailable = ProviderCredentials.new({
+      provider_id = "example",
+      provider = { auth = "key" },
+    }):state()
+    assert.is_false(unavailable.usable)
+    assert.matches("Authentication is unavailable", unavailable.error.message)
+
+    local thrown = credentials({ auth = "key" }, {
+      throw = "private credential failure",
+    }):state()
+    assert.is_false(thrown.usable)
+    assert.matches("Failed to inspect stored credentials", thrown.error.message)
+    assert.not_matches("private credential failure", thrown.error.message)
+  end)
+
+  it("derives account cache identities from every effective source", function()
+    local function value(provider, manager)
+      return ProviderCredentials.new({
+        provider_id = "example",
+        provider = provider,
+        authentication = manager,
+      })
+    end
+    local identity, err = value({}, {}):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("identity is unavailable", err.message)
+
+    identity, err = value({ auth = "key" }, nil):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("identity is unavailable", err.message)
+
+    local stored = { has_credentials = function() return true end }
+    identity, err = value({ auth = "key" }, stored):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("identity is unavailable", err.message)
+
+    stored.cache_identity = function() error("private identity failure") end
+    identity, err = value({ auth = "key" }, stored):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("identity failed", err.message)
+    assert.not_matches("private identity failure", err.message)
+
+    stored.cache_identity = function()
+      return nil, { kind = "auth", message = "explicit identity failure" }
+    end
+    identity, err = value({ auth = "key" }, stored):cache_identity()
+    assert.is_nil(identity)
+    assert.are.equal("explicit identity failure", err.message)
+
+    local ambient = {
+      has_credentials = function() return false end,
+      derive_cache_identity = function(_, method_id, credential)
+        assert.are.equal("key", method_id)
+        assert.are.equal("ambient", credential.key)
+        return "derived-identity"
+      end,
+    }
+    identity = assert(value({ auth = "key", api_key = "ambient" },
+      ambient):cache_identity())
+    assert.are.equal("derived-identity", identity)
+    assert.is_string(assert(value({ auth = "key", auth_optional = true },
+      ambient):cache_identity()))
+
+    ambient.derive_cache_identity = function()
+      error("private derivation failure")
+    end
+    identity, err = value({ auth = "key", api_key = "ambient" },
+      ambient):cache_identity()
+    assert.is_nil(identity)
+    assert.matches("identity failed", err.message)
+    assert.not_matches("private derivation failure", err.message)
+
+    ambient.derive_cache_identity = function()
+      return nil, { kind = "auth", message = "explicit derivation failure" }
+    end
+    identity, err = value({ auth = "key", api_key = "ambient" },
+      ambient):cache_identity()
+    assert.is_nil(identity)
+    assert.are.equal("explicit derivation failure", err.message)
+  end)
 end)

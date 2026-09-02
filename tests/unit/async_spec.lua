@@ -307,6 +307,27 @@ describe("neoagent.async", function()
     assert.matches("cancel callback exploded", run:diagnostics()[1].message)
   end)
 
+  it("runs handlers registered during cancellation immediately", function()
+    local late = 0
+    local run = async.run(function(self)
+      self:on_cancel(function()
+        local remove = self:on_cancel(function()
+          late = late + 1
+          error("late cancellation failed")
+        end)
+        assert.is_false(remove())
+      end)
+      async.await(function() end)
+    end)
+
+    run:cancel()
+
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal(1, late)
+    assert.matches("late cancellation failed", run:diagnostics()[1].message)
+    assert.is_false(run:_finish({ ok = true }))
+  end)
+
   it("provides stable behavior after completion", function()
     local run = async.run(function() end)
     assert.is_true(run:is_done())

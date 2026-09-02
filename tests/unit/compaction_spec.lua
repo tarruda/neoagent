@@ -54,6 +54,8 @@ describe("neoagent.compaction", function()
 
   it("reports session histories that have no compactable prefix", function()
     assert.is_nil(compaction.prepare({}, { keep_recent_tokens = 20 }))
+    assert.are.same({ first_kept_index = 1, split_turn = false },
+      compaction.find_cut_point({ { type = "selection" } }, 1, 1, 1))
     local compacted = {
       type = "compaction", id = "c", parentId = vim.NIL, timestamp = "t",
       summary = "done", firstKeptEntryId = "u", tokensBefore = 10,
@@ -72,6 +74,24 @@ describe("neoagent.compaction", function()
     }
     local repeated = assert(compaction.prepare(path, { keep_recent_tokens = 1 }))
     assert.are.equal("a2", repeated.first_kept_entry_id)
+  end)
+
+  it("retains non-message records adjacent to a selected cut point", function()
+    local path = {
+      entry("u", nil, { role = "user", content = "request" }),
+      { type = "selection" },
+      { type = "selection" },
+      entry("a", "u", {
+        role = "assistant",
+        content = { { type = "text", text = "response" } },
+      }),
+    }
+
+    assert.are.same({
+      first_kept_index = 2,
+      turn_start_index = 1,
+      split_turn = true,
+    }, compaction.find_cut_point(path, 1, #path, 1))
   end)
 
   it("keeps request state attached to the message selected for retention", function()

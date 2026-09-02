@@ -260,6 +260,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal(paths.key("C:\\Ärea"), paths.key("c:\\ärea"))
     assert.are.equal(paths.environment_key("Ärea"),
       paths.environment_key("äREA"))
+    assert.has_error(function() paths.normalize("") end)
     assert.has_error(function() paths.normalize("C:relative") end)
     assert.has_error(function() paths.normalize("\\\\server") end)
     assert.has_error(function() paths.normalize("\\\\.\\PhysicalDrive0") end)

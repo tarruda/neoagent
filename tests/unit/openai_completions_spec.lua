@@ -522,4 +522,98 @@ describe("neoagent.api.openai_completions", function()
     local result = wait(model:stream({ messages = {}, request_opts = { headers = {}, body = {} } }))
     assert.is_true(result.ok)
   end)
+
+  it("contains unsupported history and retains partial thinking failures", function()
+    local encoded, encode_err = pcall(openai._encode_messages, { {
+      role = "system",
+      content = "unexpected",
+    } })
+    assert.is_false(encoded)
+    assert.matches("Unsupported message role",
+      require("neoagent.util").normalize_error(encode_err).message)
+
+    local model = openai.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake_transport.new({ { chunks = {
+        'data: {"choices":[{"delta":{"reasoning_content":"partial"}}]}\n\n',
+      } } }),
+    })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("partial", result.message.content[1].thinking)
+    assert.are.equal("error", result.message.stopReason)
+  end)
+
+  it("suppresses unchanged cumulative token samples", function()
+    local observed = {}
+    local model = openai.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake_transport.new({ { chunks = {
+        'data: {"choices":[],"timings":{"predicted_n":2,"predicted_ms":1000}}\n\n',
+        'data: {"choices":[],"timings":{"predicted_n":2,"predicted_ms":2000}}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"predicted_n":5,"predicted_ms":4000}}\n\n',
+      } } }),
+    })
+    local result = wait(model:stream({
+      messages = {},
+      on_event = function(event)
+        if event.type == "inference_stats" then
+          observed[#observed + 1] = event
+        end
+      end,
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal(1, #observed)
+    assert.are.equal(1, observed[1].generation_tokens_per_second)
+  end)
+
+  it("rejects non-UTF-8 provider deltas at the protocol boundary", function()
+    local original_decode = vim.json.decode
+    for _, delta in ipairs({
+      { content = "bad\255text" },
+      { reasoning_content = "bad\255thinking" },
+    }) do
+      vim.json.decode = function()
+        return { choices = { { delta = delta, finish_reason = "stop" } } }
+      end
+      local model = openai.new({
+        provider = "p",
+        model = "m",
+        base_url = "http://x",
+        transport = fake_transport.new({ { chunks = { "data: {}\n\n" } } }),
+      })
+      local result = wait(model:stream({ messages = {} }))
+      vim.json.decode = original_decode
+      assert.is_false(result.ok)
+      assert.matches("valid UTF%-8", result.error.message)
+    end
+  end)
+
+  it("contains a final assistant message rejected by the semantic boundary", function()
+    local semantic = require("neoagent.semantic_message")
+    local normalize = semantic.normalize
+    semantic.normalize = function(message)
+      if type(message) == "table" and message.role == "assistant" then
+        return nil, "semantic rejection"
+      end
+      return normalize(message)
+    end
+    local model = openai.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake_transport.new({ { chunks = {
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      } } }),
+    })
+    local result = wait(model:stream({ messages = {} }))
+    semantic.normalize = normalize
+    assert.is_false(result.ok)
+    assert.matches("Invalid assistant message", result.error.message)
+    assert.matches("semantic rejection", result.error.detail)
+  end)
 end)

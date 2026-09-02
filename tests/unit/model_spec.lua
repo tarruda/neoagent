@@ -39,6 +39,7 @@ describe("neoagent runtime Models", function()
       model({ input = { "text", "text" } }),
       model({ context_window = math.huge }),
       model({ timeout_ms = 0 }),
+      model({ thinking = { {} } }),
       model({ thinking = { future = {} } }),
       model({ thinking = { high = "yes" } }),
     }) do
