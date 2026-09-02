@@ -248,6 +248,104 @@ describe("neoagent provider authentication", function()
     assert.are.equal("Bearer fresh", result.request_opts.headers.Authorization)
   end)
 
+  it("publishes secret-free account identity revisions", function()
+    local storage = memory_store()
+    local selected = method({
+      cache_identity = function(credential)
+        return credential.accountId
+      end,
+      refresh = function()
+        return async.run(function()
+          return { ok = true, credential = {
+            access = "fresh",
+            refresh = "rotated",
+            expires = 500,
+            accountId = "account-two",
+          } }
+        end)
+      end,
+    })
+    local manager = auth.new({
+      methods = { plan = selected },
+      store = storage,
+      now = function() return 100 end,
+    })
+    local revisions = {}
+    local unsubscribe = manager:subscribe("plan", function(event)
+      revisions[#revisions + 1] = event
+    end)
+
+    assert.is_nil(manager:cache_identity("plan"))
+    assert.is_true(wait(manager:login("plan", {
+      prompt = function(_, done) done.resolve("token") end,
+    })).ok)
+    local identity = assert(manager:cache_identity("plan"))
+    assert.matches("^[0-9a-f]+$", identity)
+    assert.are.equal(64, #identity)
+    assert.is_nil(identity:find("account", 1, true))
+    assert.are.equal("login", revisions[1].kind)
+    assert.are.equal(1, revisions[1].revision)
+
+    storage.values.plan.expires = 100
+    assert.is_true(wait(manager:resolve("plan")).ok)
+    assert.are.equal("refresh", revisions[2].kind)
+    assert.are.equal(2, revisions[2].revision)
+    assert.are_not.equal(identity, manager:cache_identity("plan"))
+
+    assert.is_true(wait(manager:logout("plan")).ok)
+    assert.are.equal("logout", revisions[3].kind)
+    assert.are.equal(3, revisions[3].revision)
+    assert.is_nil(manager:cache_identity("plan"))
+    assert.is_true(unsubscribe())
+    assert.is_false(unsubscribe())
+  end)
+
+  it("derives the same hashed identity for stored and ambient API keys", function()
+    local api_key = require("neoagent.auth.api_key").new({
+      name = "Example API key",
+    })
+    local storage = memory_store({ key = {
+      type = "api_key",
+      key = "api-secret",
+    } })
+    local manager = auth.new({ methods = { key = api_key }, store = storage })
+
+    local stored = assert(manager:cache_identity("key"))
+    local ambient = assert(manager:derive_cache_identity("key", {
+      type = "api_key",
+      key = "api-secret",
+    }))
+    local different = assert(manager:derive_cache_identity("key", {
+      type = "api_key",
+      key = "other-secret",
+    }))
+
+    assert.are.equal(stored, ambient)
+    assert.are_not.equal(stored, different)
+    assert.are.equal(64, #stored)
+    assert.is_nil(stored:find("secret", 1, true))
+  end)
+
+  it("rejects unsafe account cache identities", function()
+    local selected = method({
+      cache_identity = function() return "account\nsecret" end,
+    })
+    local manager = auth.new({
+      methods = { plan = selected },
+      store = memory_store({ plan = {
+        access = "access",
+        refresh = "refresh",
+        expires = 500,
+        accountId = "account",
+      } }),
+      now = function() return 100 end,
+    })
+
+    local identity, err = manager:cache_identity("plan")
+    assert.is_nil(identity)
+    assert.matches("safe non%-empty text", err.message)
+  end)
+
   it("reports missing, malformed, and failed credentials", function()
     local storage = memory_store()
     local manager = auth.new({ methods = { plan = method() }, store = storage })

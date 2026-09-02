@@ -1,8 +1,10 @@
 local config = require("neoagent.config")
 local fs = require("neoagent.fs")
+local model_catalog = require("neoagent.model_catalog")
 local models = require("neoagent.models")
 local provider_runtimes = require("neoagent.provider_runtimes")
 local state_store = require("neoagent.state_store")
+local util = require("neoagent.util")
 
 describe("neoagent provider model catalogs", function()
   before_each(function() config._reset() end)
@@ -13,6 +15,7 @@ describe("neoagent provider model catalogs", function()
       api = resolved.api,
       provider = resolved.provider_id,
       id = resolved.model_id,
+      input = util.copy(resolved.model.input or { "text" }),
       stream = function() end,
     }
     for key, value in pairs(resolved.model) do model[key] = value end
@@ -52,12 +55,17 @@ describe("neoagent provider model catalogs", function()
   it("restores cached OpenCode Go discoveries before the first selector read", function()
     local directory = vim.fn.tempname()
     local store = state_store.new({ directory = directory })
+    local definition = require("neoagent.registry").defaults()["opencode-go"]
     assert(store:write("opencode-go", {
-      version = 1,
+      version = 2,
+      source_fingerprint = assert(model_catalog.source_fingerprint({
+        provider_id = "opencode-go",
+        provider = definition,
+        definition = definition.catalog,
+      })),
       validated_at = 1000,
       models = { { id = "ox-alpha-free" } },
     }))
-    local definition = require("neoagent.registry").defaults()["opencode-go"]
     local value = config.setup({
       default_registry = false,
       providers = { ["opencode-go"] = definition },
@@ -120,6 +128,14 @@ describe("neoagent provider model catalogs", function()
 
   it("wraps Models through the runtime service", function()
     local wrapped = {}
+    local replacement = {
+      api = "fake",
+      provider = "dynamic",
+      id = "seed",
+      input = { "text" },
+      request_timeout_ms = 30000,
+      stream = function() end,
+    }
     local value, runtimes = runtime({
       api = "fake",
       catalog = { seed = { { id = "seed" } } },
@@ -132,7 +148,7 @@ describe("neoagent provider model catalogs", function()
           state = function() return false end,
           wrap_model = function(_, model)
             wrapped[#wrapped + 1] = model
-            return model
+            return replacement
           end,
         }
       end,
@@ -140,7 +156,83 @@ describe("neoagent provider model catalogs", function()
     local resolved = models.resolve("dynamic", "seed", value, nil, runtimes)
     assert.are.equal(30000, resolved.request_timeout_ms)
     assert.are.equal(1, #wrapped)
-    assert.are.equal(resolved, wrapped[1])
+    assert.are.equal(replacement, resolved)
+    assert.are_not.equal(resolved, wrapped[1])
+    provider_runtimes.destroy(runtimes)
+  end)
+
+  it("rejects failed Provider Service Model wrappers", function()
+    local cases = {
+      function() error("wrapper exploded") end,
+      function() return nil end,
+      function() return {} end,
+    }
+    for _, wrap_model in ipairs(cases) do
+      local value, runtimes = runtime({
+        api = "fake",
+        catalog = { seed = { { id = "seed" } } },
+        service = function()
+          return {
+            id = "dynamic",
+            name = "Dynamic",
+            operations = {},
+            state = function() return false end,
+            wrap_model = wrap_model,
+          }
+        end,
+      })
+
+      local ok, err = pcall(
+        models.resolve, "dynamic", "seed", value, nil, runtimes)
+
+      assert.is_false(ok)
+      assert.matches("wrapper", tostring(err):lower())
+      provider_runtimes.destroy(runtimes)
+    end
+  end)
+
+  it("validates Authentication Model wrappers", function()
+    local cases = {
+      {
+        wrap = function() error("authentication exploded") end,
+        message = "authentication exploded",
+      },
+      {
+        wrap = function() return nil end,
+        message = "Authentication Model wrapper",
+      },
+      {
+        wrap = function() return {} end,
+        message = "Authentication Model wrapper",
+      },
+    }
+    for _, case in ipairs(cases) do
+      local value, runtimes = runtime({
+        api = "fake",
+        catalog = { seed = { { id = "seed" } } },
+      })
+      runtimes.dynamic.definition.auth = "test"
+      local ok, err = pcall(models.resolve,
+        "dynamic", "seed", value, { wrap = case.wrap }, runtimes)
+
+      assert.is_false(ok)
+      assert.matches(case.message, tostring(err))
+      provider_runtimes.destroy(runtimes)
+    end
+
+    local value, runtimes = runtime({
+      api = "fake",
+      catalog = { seed = { { id = "seed" } } },
+    })
+    runtimes.dynamic.definition.auth = "test"
+    local replacement = {
+      api = "fake", provider = "dynamic", id = "seed",
+      input = { "text" }, stream = function() end,
+    }
+    local resolved = models.resolve("dynamic", "seed", value, {
+      wrap = function() return replacement end,
+    }, runtimes)
+    assert.are.equal(replacement, resolved)
     provider_runtimes.destroy(runtimes)
   end)
 

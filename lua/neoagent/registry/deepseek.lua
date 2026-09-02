@@ -1,4 +1,5 @@
 local metadata = require("neoagent.providers.deepseek.model_metadata")
+local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local seed = {}
 for _, id in ipairs({
@@ -18,6 +19,10 @@ return {
   api_key = function() return vim.env.DEEPSEEK_API_KEY end,
   auth = "deepseek",
   catalog = {
+    source_id = "deepseek-models",
+    source_revision = 1,
+    source_options = no_source_options,
+    account_scoped = true,
     ttl_ms = 14 * 24 * 60 * 60 * 1000,
     seed = seed,
     discover = require("neoagent.providers.deepseek").discover_models,

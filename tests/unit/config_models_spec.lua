@@ -35,6 +35,19 @@ local function wait(run)
   return run:result()
 end
 
+local function runtime_model(resolved, overrides)
+  local value = {
+    api = resolved.api,
+    provider = resolved.provider_id,
+    id = resolved.model_id,
+    input = vim.deepcopy(resolved.model.input or { "text" }),
+    context_window = resolved.model.context_window,
+    thinking = vim.deepcopy(resolved.model.thinking),
+    stream = function() end,
+  }
+  return vim.tbl_extend("force", value, overrides or {})
+end
+
 describe("neoagent configuration and model resolution", function()
   local original_openai_key
   local original_deepseek_key
@@ -79,7 +92,7 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(128000, model.context_window)
   end)
 
-  it("composes every built-in provider through a Provider Service", function()
+  it("composes supported built-in providers through Provider Services", function()
     config.setup({})
     local configured = config.get()
     for _, id in ipairs({
@@ -156,7 +169,7 @@ describe("neoagent configuration and model resolution", function()
       providers = { custom = { api = "mine", models = { one = { value = 1, context_window = 4096 } } } },
       _apis = { mine = function(resolved)
         seen = resolved
-        return { stream = function() end }
+        return runtime_model(resolved)
       end },
     })
     local model = models.resolve("custom", "one")
@@ -183,11 +196,11 @@ describe("neoagent configuration and model resolution", function()
       _apis = {
         ["default-wire"] = function(resolved)
           selected[#selected + 1] = resolved.api
-          return { api = "default-wire", stream = function() end }
+          return runtime_model(resolved, { api = "default-wire" })
         end,
         ["alternate-wire"] = function(resolved)
           selected[#selected + 1] = resolved.api
-          return { api = "alternate-wire", stream = function() end }
+          return runtime_model(resolved, { api = "alternate-wire" })
         end,
       },
     })
@@ -211,8 +224,8 @@ describe("neoagent configuration and model resolution", function()
         },
       },
       _apis = {
-        mine = function()
-          return { stream = function() end }
+        mine = function(resolved)
+          return runtime_model(resolved)
         end,
       },
       auth = { methods = {
@@ -614,7 +627,7 @@ describe("neoagent configuration and model resolution", function()
         models = { model = {} },
       } },
       _apis = { fake = function(resolved)
-        local model = { api = "fake", provider = resolved.provider_id, id = resolved.model_id }
+        local model = runtime_model(resolved, { api = "fake" })
         function model:stream(opts)
           return async.run(function()
             local key = resolved.provider.api_key()
@@ -676,8 +689,9 @@ describe("neoagent configuration and model resolution", function()
     } } })
     local available, err = models.available()
     assert.is_nil(available)
-    assert.are.equal("model", err.kind)
-    assert.matches("key failed", err.detail)
+    assert.are.equal("auth", err.kind)
+    assert.matches("environment credential", err.message)
+    assert.not_matches("key failed", err.message)
   end)
 
   it("validates geometry and configured identifiers", function()
@@ -744,6 +758,23 @@ describe("neoagent configuration and model resolution", function()
         catalog = { unknown = true },
       } } })
     end)
+    assert.has_error(function()
+      config.setup({ providers = { openai = {
+        catalog = { discover = function() end },
+      } } })
+    end)
+    assert.has_error(function()
+      config.setup({ providers = { openai = {
+        catalog = { source_id = "configured-models" },
+      } } })
+    end)
+    assert.are.equal("configured-models", config.setup({
+      providers = { openai = { catalog = {
+        source_id = "configured-models",
+        source_revision = 1,
+        discover = function() end,
+      } } },
+    }).providers.openai.catalog.source_id)
     assert.has_error(function()
       config.setup({ default_registry = false, providers = {
         ["../outside"] = { api = "custom", models = {} },

@@ -62,6 +62,7 @@ describe("llama.cpp router HTTP integration", function()
       request_opts = registry.defaults()["llama.cpp"].request_opts,
       catalog = {
         ttl_ms = 5 * 60 * 1000,
+        source_options = require("neoagent.model_catalog.source").no_options,
         discover = llama_catalog.discover,
         transform_model = llama_catalog.transform,
       },

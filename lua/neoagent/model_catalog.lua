@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local catalog_source = require("neoagent.model_catalog.source")
 local model_config = require("neoagent.model_config")
 local util = require("neoagent.util")
 
@@ -11,13 +12,18 @@ local RETRY_BASE_MS = 30 * 1000
 local RETRY_MAX_MS = 60 * 60 * 1000
 local MAX_DIAGNOSTIC_CHARACTERS = 1024
 local DEFINITION_FIELDS = {
+  account_scoped = true,
   discover = true,
   seed = true,
+  source_id = true,
+  source_options = true,
+  source_revision = true,
   transform_model = true,
   ttl_ms = true,
 }
 local CACHE_FIELDS = {
   models = true,
+  source_fingerprint = true,
   validated_at = true,
   validator = true,
   version = true,
@@ -65,12 +71,23 @@ local function validator(value)
   return next(result) and result or nil
 end
 
-local function cache_record(provider_id, value)
+local function cache_record(provider_id, value, expected_fingerprint)
   if type(value) ~= "table" or util.is_list(value) then return nil end
   for key in pairs(value) do
     if not CACHE_FIELDS[key] then return nil end
   end
-  if value.version ~= 1 then return nil end
+  if value.version ~= 2 then return nil end
+  if type(value.source_fingerprint) ~= "string"
+      or not value.source_fingerprint:match("^[0-9a-f]+$")
+      or #value.source_fingerprint ~= 64 then
+    return nil
+  end
+  if expected_fingerprint == nil then
+    return nil, "source identity is unavailable"
+  end
+  if value.source_fingerprint ~= expected_fingerprint then
+    return nil, "source does not match the current provider"
+  end
   local timestamp = value.validated_at
   if not finite_timestamp(timestamp) then return nil end
   local models = model_config.normalize_discoveries(provider_id, value.models)
@@ -82,16 +99,6 @@ local function cache_record(provider_id, value)
     validated_at = timestamp,
     validator = selected_validator,
   }
-end
-
-local function source_projection(provider)
-  local result = {}
-  for _, key in ipairs({
-    "api", "base_url", "auth", "auth_optional", "service_opts",
-  }) do
-    if provider[key] ~= nil then result[key] = util.copy(provider[key]) end
-  end
-  return result
 end
 
 local function callback_error(provider_id, model_id, value)
@@ -207,7 +214,8 @@ end
 
 function Catalog:_cache_value()
   return {
-    version = 1,
+    version = 2,
+    source_fingerprint = self._source_fingerprint,
     validated_at = self._validated_at,
     validator = util.copy(self._validator),
     models = util.copy(self._discoveries),
@@ -215,7 +223,11 @@ function Catalog:_cache_value()
 end
 
 function Catalog:_persist()
-  if not self._store then return nil end
+  if not self._store or self._definition.source_id == nil then return nil end
+  if not self._source_fingerprint then
+    return util.copy(self._persistence_error or util.error(
+      "provider", "Model catalog source identity is unavailable"))
+  end
   local called, saved, err = pcall(
     self._store.write, self._store, self._provider_id, self:_cache_value())
   if called and saved then return nil end
@@ -225,6 +237,56 @@ function Catalog:_persist()
   end
   return self:_report_diagnostic("failed to persist " .. self._provider_id
     .. " model catalog", failure)
+end
+
+function Catalog:_refresh_source_fingerprint()
+  local fingerprint, err = catalog_source.fingerprint({
+    provider_id = self._provider_id,
+    provider = self._provider,
+    definition = self._definition,
+    authentication = self._auth,
+    credentials = self._credentials,
+  })
+  self._source_fingerprint = fingerprint
+  self._persistence_error = self._store and self._definition.source_id
+      and not fingerprint and util.copy(err) or nil
+  return fingerprint, err
+end
+
+function Catalog:_reset_inventory(message)
+  self._validated_at = nil
+  self._validator = nil
+  self._last_error = nil
+  local source = #self._seed > 0 and "packaged"
+    or next(self._overrides) and "configured" or "empty"
+  local published, err = self:_publish(self._seed, {
+    allow_empty = true,
+    validator = nil,
+    validator_set = true,
+    source = source,
+  })
+  if not published then
+    self:_diagnose(message or "failed to reset model catalog source", err)
+  end
+  return published, err
+end
+
+function Catalog:_auth_changed(event)
+  if self._destroyed then return end
+  local previous = self._source_fingerprint
+  local current = self:_refresh_source_fingerprint()
+  if event.kind == "refresh" and current == previous then return end
+  self._generation = self._generation + 1
+  self:_cancel_timer()
+  if self._active and not self._active:is_done() then self._active:cancel() end
+  self._active = nil
+  self:_reset_inventory(
+    "failed to reset model catalog after authentication change")
+  if event.kind == "refresh" and self._started then
+    util.schedule(function()
+      if not self._destroyed then self:refresh({ force = true }) end
+    end)
+  end
 end
 
 function Catalog:_cancel_timer()
@@ -291,6 +353,9 @@ function Catalog:_resolve_auth()
 end
 
 function Catalog:_resolve_api_key()
+  if self._credentials then
+    return self._credentials:ambient_api_key()
+  end
   local source = self._provider.api_key
   if type(source) == "function" then return source() end
   return source
@@ -310,6 +375,11 @@ function Catalog:snapshot()
       state = self._active and not self._active:is_done()
           and "refreshing" or self._last_error and "failed" or "idle",
       error = util.copy(self._last_error),
+    },
+    persistence = {
+      configured = self._store ~= nil and self._definition.source_id ~= nil,
+      enabled = self._store ~= nil and self._source_fingerprint ~= nil,
+      error = util.copy(self._persistence_error),
     },
   }
 end
@@ -363,16 +433,33 @@ function Catalog:refresh(opts)
       return { ok = true, changed = false, snapshot = self:snapshot() }
     end, { on_done = opts.on_done, error_kind = "provider" })
   end
+  local acquired, lease, lease_err = pcall(self._acquire_use)
+  if not acquired or type(lease) ~= "table"
+      or type(lease.release) ~= "function" then
+    local err = acquired and lease_err or lease
+    if acquired and err == nil then
+      err = util.error("provider", "Model catalog use lease is invalid")
+    end
+    return async.run(function()
+      error(util.normalize_error(err, "provider"), 0)
+    end, { on_done = opts.on_done, error_kind = "provider" })
+  end
   self:_cancel_timer()
   self._generation = self._generation + 1
   local generation = self._generation
   if self._active and not self._active:is_done() then self._active:cancel() end
+  local previous_fingerprint = self._source_fingerprint
+  local generation_fingerprint = self:_refresh_source_fingerprint()
+  if generation_fingerprint ~= previous_fingerprint
+      and (generation_fingerprint ~= nil or previous_fingerprint ~= nil) then
+    self:_reset_inventory()
+  end
   local previous = util.copy(self._discoveries)
   local run
   run = async.run(function()
     local source_run = self._discover({
       provider_id = self._provider_id,
-      provider = source_projection(self._provider),
+      provider = catalog_source.provider_projection(self._provider),
       transport = self._transport,
       validator = util.copy(self._validator),
       force = opts.force == true,
@@ -417,6 +504,13 @@ function Catalog:refresh(opts)
       selected = discovered.models
     end
     local timestamp = self._now()
+    local latest_fingerprint, fingerprint_err =
+      self:_refresh_source_fingerprint()
+    if latest_fingerprint ~= generation_fingerprint then
+      self:_reset_inventory()
+      error(fingerprint_err or util.error("provider",
+        "Model catalog source changed during discovery"), 0)
+    end
     local next_validator
     if discovered.validator ~= nil then
       next_validator = validator(discovered.validator)
@@ -450,6 +544,11 @@ function Catalog:refresh(opts)
         .. ": " .. diagnostic.message, vim.log.levels.ERROR)
     end,
     on_done = function(result)
+      local released, value, release_err = pcall(lease.release, lease)
+      if not released or value ~= true then
+        self:_report_diagnostic("failed to release model catalog use",
+          released and release_err or value, vim.log.levels.ERROR)
+      end
       if generation == self._generation then
         local was_active = run ~= nil and self._active == run
         if was_active then self._active = nil end
@@ -510,6 +609,8 @@ function Catalog:destroy()
   if self._active and not self._active:is_done() then self._active:cancel() end
   self._active = nil
   self._listeners = {}
+  if self._auth_unsubscribe then pcall(self._auth_unsubscribe) end
+  self._auth_unsubscribe = nil
   return true
 end
 
@@ -531,13 +632,40 @@ function M.new(opts)
     "ModelCatalog ttl_ms must be a positive integer")
   assert(definition.discover == nil or type(definition.discover) == "function",
     "ModelCatalog discover must be a function")
+  assert(definition.source_id == nil or type(definition.source_id) == "string"
+      and definition.source_id ~= "" and #definition.source_id <= 256
+      and util.is_valid_utf8(definition.source_id)
+      and not definition.source_id:find("[%z\1-\31\127]"),
+    "ModelCatalog source_id must be safe non-empty text")
+  assert(definition.source_revision == nil
+      or type(definition.source_revision) == "number"
+      and definition.source_revision >= 1
+      and definition.source_revision % 1 == 0
+      and definition.source_revision < math.huge,
+    "ModelCatalog source_revision must be a positive integer")
+  assert((definition.source_id == nil) == (definition.source_revision == nil),
+    "ModelCatalog source_id and source_revision must be supplied together")
+  assert(definition.account_scoped == nil
+      or type(definition.account_scoped) == "boolean",
+    "ModelCatalog account_scoped must be a boolean")
+  assert(definition.account_scoped ~= true or definition.source_id ~= nil,
+    "ModelCatalog account_scoped requires source identity")
+  assert(not (opts.store and definition.discover)
+      or definition.source_id ~= nil,
+    "persisted ModelCatalog discovery requires source identity")
   assert(definition.transform_model == nil
       or type(definition.transform_model) == "function",
     "ModelCatalog transform_model must be a function")
+  assert(definition.source_options == nil
+      or type(definition.source_options) == "function",
+    "ModelCatalog source_options must be a function")
   local provider = opts.provider or {}
   assert(type(provider) == "table"
       and (next(provider) == nil or not util.is_list(provider)),
     "ModelCatalog provider must be an object")
+  assert(not (definition.discover and next(provider.service_opts or {}) ~= nil)
+      or type(definition.source_options) == "function",
+    "ModelCatalog discovery with service_opts requires source_options")
   assert(opts.store == nil or type(opts.store) == "table"
       and type(opts.store.read) == "function"
       and type(opts.store.write) == "function",
@@ -560,6 +688,8 @@ function M.new(opts)
   local self = setmetatable({
     _provider_id = opts.provider_id,
     _provider = util.copy(provider),
+    _definition = util.copy(definition),
+    _seed = util.copy(definition.seed or {}),
     _discover = definition.discover,
     _transform = definition.transform_model,
     _overrides = overrides,
@@ -572,7 +702,11 @@ function M.new(opts)
         end, { error_kind = "auth" })
       end,
     },
+    _credentials = opts.credentials,
     _transport = opts.transport,
+    _acquire_use = opts.acquire_use or function()
+      return { release = function() return true end }
+    end,
     _report = opts.report or function() end,
     _now = opts.now or util.now_ms,
     _new_timer = opts.new_timer or vim.uv.new_timer,
@@ -588,24 +722,36 @@ function M.new(opts)
     _listeners = {},
     _started = false,
     _destroyed = false,
+    _auth_unsubscribe = nil,
+    _source_fingerprint = nil,
+    _persistence_error = nil,
   }, Catalog)
   assert(type(self._auth) == "table"
       and type(self._auth.resolve) == "function",
     "ModelCatalog authentication manager is invalid")
+  assert(self._credentials == nil
+      or type(self._credentials) == "table"
+        and type(self._credentials.ambient_api_key) == "function",
+    "ModelCatalog ProviderCredentials value is invalid")
   assert(type(self._now) == "function", "ModelCatalog now must be a function")
   assert(type(self._new_timer) == "function",
     "ModelCatalog new_timer must be a function")
+  assert(type(self._acquire_use) == "function",
+    "ModelCatalog acquire_use must be a function")
+  self:_refresh_source_fingerprint()
 
   local restored
   if self._store then
     local ok, value, read_err = pcall(
       self._store.read, self._store, self._provider_id)
     if ok and value then
-      restored = cache_record(self._provider_id, value)
+      local reason
+      restored, reason = cache_record(
+        self._provider_id, value, self._source_fingerprint)
       if not restored then
         self:_diagnose("ignored invalid model catalog cache for "
-          .. self._provider_id,
-          util.error("state_store", "cache record is invalid"))
+          .. self._provider_id, util.error("state_store",
+            reason or "cache record is invalid"))
       elseif self._discover and #restored.models == 0 then
         self:_diagnose("ignored empty model catalog cache for "
           .. self._provider_id,
@@ -638,10 +784,16 @@ function M.new(opts)
     })
   end
   if not published then error(publish_err, 0) end
+  if type(provider.auth) == "string"
+      and type(self._auth.subscribe) == "function" then
+    self._auth_unsubscribe = self._auth:subscribe(provider.auth,
+      function(event) self:_auth_changed(event) end)
+  end
   return self
 end
 
 M.Catalog = Catalog
 M.DEFAULT_TTL_MS = DEFAULT_TTL_MS
+M.source_fingerprint = catalog_source.fingerprint
 
 return M

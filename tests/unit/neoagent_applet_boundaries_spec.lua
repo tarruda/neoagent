@@ -452,7 +452,11 @@ describe("Neoagent Applet boundaries", function()
     configured.providers = { dynamic = {
       api = "fake-api",
       models = {},
-      catalog = { discover = function() error("catalog unavailable") end },
+      catalog = {
+        source_id = "dynamic-test-models",
+        source_revision = 1,
+        discover = function() error("catalog unavailable") end,
+      },
     } }
     local notifications = {}
     local original_notify = vim.notify

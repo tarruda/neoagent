@@ -156,8 +156,15 @@ describe("neoagent health", function()
         },
       },
       _apis = {
-        fake = function()
-          return { stream = function() end }
+        fake = function(resolved)
+          return {
+            api = resolved.api,
+            provider = resolved.provider_id,
+            id = resolved.model_id,
+            input = resolved.model.input or { "text" },
+            context_window = resolved.model.context_window,
+            stream = function() end,
+          }
         end,
       },
     })
@@ -174,7 +181,11 @@ describe("neoagent health", function()
         dynamic = {
           api = "fake",
           models = {},
-          catalog = { discover = function() error("must not run") end },
+          catalog = {
+            source_id = "dynamic-test-models",
+            source_revision = 1,
+            discover = function() error("must not run") end,
+          },
         },
       },
       _apis = {
@@ -186,6 +197,39 @@ describe("neoagent health", function()
     require("neoagent.health").check()
     assert.is_true(contains(messages.warn,
       "default model dynamic/pending awaits the dynamic provider catalog"))
+    assert.is_true(contains(messages.ok, "^configuration is valid$"))
+  end)
+
+  it("warns when a usable catalog cannot derive cache identity", function()
+    require("neoagent.config").setup({
+      default_registry = false,
+      providers = {
+        dynamic = {
+          api = "fake",
+          auth = "custom",
+          api_key = "ambient-secret",
+          models = {},
+          catalog = {
+            source_id = "dynamic-test-models",
+            source_revision = 1,
+            account_scoped = true,
+            seed = { { id = "seed" } },
+            discover = function() error("must not run") end,
+          },
+        },
+      },
+      auth = { methods = { custom = {
+        name = "Custom",
+        type = "api_key",
+        login = function() end,
+        request_opts = function() return {} end,
+      } } },
+    })
+
+    require("neoagent.health").check()
+
+    assert.is_true(contains(messages.warn,
+      "dynamic model catalog cache is unavailable"))
     assert.is_true(contains(messages.ok, "^configuration is valid$"))
   end)
 

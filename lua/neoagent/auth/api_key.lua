@@ -36,6 +36,9 @@ function M.new(opts)
       if opts.request_opts then return opts.request_opts(credential) end
       return { headers = { Authorization = "Bearer " .. credential.key } }
     end,
+    cache_identity = function(credential)
+      return credential.key
+    end,
   }
 end
 

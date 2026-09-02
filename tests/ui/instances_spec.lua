@@ -28,7 +28,13 @@ describe("neoagent direct Agent Applets", function()
       persistence = { enabled = false },
       default_model = { provider = "fake", model = name },
       providers = { fake = { api = "fake", models = { [name] = {} } } },
-      _apis = { fake = function() return model end },
+      _apis = { fake = function(resolved)
+        model.api = model.api or resolved.api
+        model.provider = model.provider or resolved.provider_id
+        model.id = model.id or resolved.model_id
+        model.input = model.input or resolved.model.input or { "text" }
+        return model
+      end },
       tools = {},
       agent_instructions = false,
       skills = false,

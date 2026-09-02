@@ -188,10 +188,102 @@ describe("neoagent provider service", function()
     local release = provider_service.acquire(value)
     local blocked, active_err = provider_service.run(value, "mutate")
     assert.is_nil(blocked)
-    assert.matches("active model run", active_err.message)
+    assert.matches("active provider use", active_err.message)
     assert.is_true(wait(assert(provider_service.run(value, "inspect"))).ok)
     release()
     provider_service.acquire(value)()
+  end)
+
+  it("owns use and operation leases through idempotent values", function()
+    local value = service({})
+    local use = assert(provider_service.acquire_use(value))
+    local inspect = assert(provider_service.begin_operation(value, {
+      mutating = false,
+    }))
+    local second = assert(provider_service.begin_operation(value, {
+      mutating = false,
+    }))
+    local blocked, err = provider_service.begin_operation(value, {
+      mutating = true,
+    })
+    assert.is_nil(blocked)
+    assert.matches("active provider use", err.message)
+
+    assert.is_true(inspect:finish())
+    assert.is_false(inspect:finish())
+    assert.is_true(second:finish())
+    assert.is_true(use:release())
+    assert.is_false(use:release())
+
+    local exclusive = assert(provider_service.begin_operation(value, {
+      mutating = true,
+    }))
+    local unavailable, unavailable_err = provider_service.acquire_use(value)
+    assert.is_nil(unavailable)
+    assert.matches("mutating provider operation", unavailable_err.message)
+    assert.is_true(exclusive:finish())
+  end)
+
+  it("lets one Run consume an operation token", function()
+    for _, mutating in ipairs({ false, true }) do
+      local pending
+      local calls = 0
+      local value = service({
+        work = {
+          label = "Work",
+          mutating = mutating,
+          run = function()
+            calls = calls + 1
+            return async.run(function()
+              return async.await(function(done)
+                pending = done
+                return function() end
+              end)
+            end)
+          end,
+        },
+      })
+      local coordination = assert(provider_service.begin_operation(value, {
+        mutating = mutating,
+      }))
+      local first = assert(provider_service.run(value, "work", {
+        coordination = coordination,
+      }))
+      local second, err = provider_service.run(value, "work", {
+        coordination = coordination,
+      })
+      assert.is_nil(second)
+      assert.matches("coordination token is invalid", err.message)
+      assert.are.equal(1, calls)
+
+      if mutating then
+        assert.is_nil(provider_service.acquire_use(value))
+        assert.is_nil(provider_service.begin_operation(value, {
+          mutating = false,
+        }))
+      end
+      pending.resolve({ ok = true })
+      assert.is_true(wait(first).ok)
+      assert.is_false(coordination:finish())
+      assert.is_false(provider_service.busy(value))
+    end
+  end)
+
+  it("defers concrete Service destruction until every lease settles", function()
+    local value = service({})
+    local use = assert(provider_service.acquire_use(value))
+    local destroyed = 0
+
+    assert.is_true(provider_service.retire(value, function()
+      destroyed = destroyed + 1
+    end))
+    assert.are.equal(0, destroyed)
+    local unavailable, err = provider_service.acquire_use(value)
+    assert.is_nil(unavailable)
+    assert.matches("retiring", err.message)
+    assert.is_true(use:release())
+    assert.are.equal(1, destroyed)
+    assert.is_false(provider_service.retire(value, function() end))
   end)
 
   it("publishes shared service lease and operation changes", function()
@@ -227,14 +319,22 @@ describe("neoagent provider service", function()
       end,
     })
     local release = assert(provider_service.acquire(value))
-    assert.are.same({ users = 1, busy = false, mutating = false }, snapshots[1])
+    assert.are.same({
+      users = 1, operations = 0, busy = false, mutating = false,
+    }, snapshots[1])
     release()
-    assert.are.same({ users = 0, busy = false, mutating = false }, snapshots[2])
+    assert.are.same({
+      users = 0, operations = 0, busy = false, mutating = false,
+    }, snapshots[2])
     local run = assert(provider_service.run(value, "inspect"))
-    assert.are.same({ users = 0, busy = true, mutating = false }, snapshots[3])
+    assert.are.same({
+      users = 0, operations = 1, busy = true, mutating = false,
+    }, snapshots[3])
     pending.resolve({ ok = true })
     assert.is_true(wait(run).ok)
-    assert.are.same({ users = 0, busy = false, mutating = false }, snapshots[4])
+    assert.are.same({
+      users = 0, operations = 0, busy = false, mutating = false,
+    }, snapshots[4])
     assert.is_true(unsubscribe())
     assert.is_false(unsubscribe())
     assert.is_true(unsubscribe_broken())
@@ -370,6 +470,17 @@ describe("neoagent provider service", function()
     assert.is_nil(provider_service.run(value, "work", { interact = "bad" }))
     assert.is_nil(provider_service.run(value, "work", {
       interact = { select = function() end },
+    }))
+    local other = service(value.operations)
+    local coordination = assert(provider_service.begin_operation(value, {
+      mutating = false,
+    }))
+    assert.is_nil(provider_service.run(other, "work", {
+      coordination = coordination,
+    }))
+    assert.is_true(coordination:finish())
+    assert.is_nil(provider_service.run(value, "work", {
+      coordination = coordination,
     }))
     assert.are.same({}, provider_service.public_config(nil))
     assert.are.same({

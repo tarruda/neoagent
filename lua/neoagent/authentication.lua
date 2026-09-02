@@ -5,6 +5,14 @@ local M = {}
 local Authentication = {}
 Authentication.__index = Authentication
 
+local function valid_run(value)
+  return type(value) == "table"
+    and type(value.await) == "function"
+    and type(value.cancel) == "function"
+    and type(value.is_done) == "function"
+    and type(value.result) == "function"
+end
+
 local function assert_presenter(value)
   assert(type(value) == "table"
       and type(value.select) == "function"
@@ -29,12 +37,23 @@ function Authentication.new(opts)
     "authentication on_activity must be a function")
   assert(opts.report == nil or type(opts.report) == "function",
     "authentication report must be a function")
+  assert(opts.refresh_after_login == nil
+      or type(opts.refresh_after_login) == "boolean",
+    "authentication refresh_after_login must be a boolean")
+  assert(opts.refresh_after_auth_change == nil
+      or type(opts.refresh_after_auth_change) == "boolean",
+    "authentication refresh_after_auth_change must be a boolean")
+  local refresh_after_auth_change = opts.refresh_after_auth_change
+  if refresh_after_auth_change == nil then
+    refresh_after_auth_change = opts.refresh_after_login
+  end
   return setmetatable({
     config = opts.config,
     auth = opts.auth,
     runtimes = opts.runtimes or {},
     presenter = opts.presenter,
     report = opts.report,
+    refresh_after_auth_change = refresh_after_auth_change ~= false,
     on_activity = opts.on_activity,
     login_operation = nil,
     logout_operation = nil,
@@ -213,43 +232,79 @@ function Authentication:_method_id(id)
   return type(provider) == "table" and provider.auth or id
 end
 
-function Authentication:_refresh_after_login(method_id)
-  for provider_id, runtime in pairs(self.runtimes) do
-    local provider = self.config.providers[provider_id]
-    local catalog = type(runtime) == "table" and runtime.catalog or nil
-    if provider and provider.auth == method_id and catalog then
-      local started, run = pcall(catalog.refresh, catalog, { force = true })
-      if not started or type(run) ~= "table"
-          or type(run.await) ~= "function" then
-        self:_notify("failed to refresh " .. provider_id
-          .. " catalog after login", vim.log.levels.ERROR)
-      else
-        local token = {}
-        local owned
-        owned = async.run(function()
-          local result = run:await()
-          if result.ok == false then error(result.error, 0) end
-          return result
-        end, {
-          on_done = function(result)
-            self.catalog_runs[token] = nil
-            self:_publish()
-            if not result.ok and result.error.kind ~= "cancelled"
-                and not self.destroyed then
+function Authentication:refresh_catalogs(method_id)
+  local ids = vim.tbl_keys(self.runtimes)
+  table.sort(ids)
+  local token = {}
+  local owned
+  local tracked = false
+  owned = async.run(function()
+    for _, provider_id in ipairs(ids) do
+      local runtime = self.runtimes[provider_id]
+      local provider = self.config.providers[provider_id]
+      local catalog = type(runtime) == "table" and runtime.catalog or nil
+      if provider and provider.auth == method_id and catalog then
+        local usable = true
+        if runtime.credentials then
+          local inspected, state = pcall(
+            runtime.credentials.state, runtime.credentials)
+          if not inspected or type(state) ~= "table" then
+            usable = false
+            self:_notify("failed to inspect " .. provider_id
+              .. " credentials after authentication change",
+              vim.log.levels.ERROR)
+          elseif state.source == "error" then
+            usable = false
+            self:_notify("failed to inspect " .. provider_id
+              .. " credentials after authentication change: "
+              .. (state.error and state.error.message or "unavailable"),
+              vim.log.levels.ERROR)
+          else
+            usable = state.usable == true
+          end
+        end
+        if usable then
+          local started, run = pcall(
+            catalog.refresh, catalog, { force = true })
+          if not started or not valid_run(run) then
+            self:_notify("failed to refresh " .. provider_id
+              .. " catalog after authentication change",
+              vim.log.levels.ERROR)
+          else
+            local result = run:await()
+            if type(result) ~= "table" or type(result.ok) ~= "boolean" then
               self:_notify("failed to refresh " .. provider_id
-                .. " catalog: " .. result.error.message,
+                .. " catalog: catalog returned an invalid result",
+                vim.log.levels.ERROR)
+              result = { ok = true }
+            end
+            if not result.ok then
+              local failure = util.normalize_error(
+                result.error or "catalog refresh failed", "provider")
+              if failure.kind == "cancelled" then error(failure, 0) end
+              self:_notify("failed to refresh " .. provider_id
+                .. " catalog: " .. failure.message,
                 vim.log.levels.ERROR)
             end
-          end,
-          error_kind = "provider",
-        })
-        if not owned:is_done() then
-          self.catalog_runs[token] = owned
-          self:_publish()
+          end
         end
       end
     end
+    return { ok = true, method = method_id }
+  end, {
+    on_done = function()
+      if not tracked then return end
+      self.catalog_runs[token] = nil
+      self:_publish()
+    end,
+    error_kind = "provider",
+  })
+  if not owned:is_done() then
+    tracked = true
+    self.catalog_runs[token] = owned
+    self:_publish()
   end
+  return owned
 end
 
 function Authentication:is_active()
@@ -314,7 +369,9 @@ function Authentication:login(method_id)
       end
       if self.destroyed then return end
       if result.ok then
-        self:_refresh_after_login(method_id)
+        if self.refresh_after_auth_change then
+          self:refresh_catalogs(method_id)
+        end
         self:_notify("logged in with " .. methods[method_id].name
           .. "; credentials saved to " .. self.config.auth.path)
       elseif result.error.kind ~= "cancelled" then
@@ -322,11 +379,13 @@ function Authentication:login(method_id)
       end
     end,
   })
-  if not ok then
+  if not ok or not valid_run(run) then
     self:_close_login_notice()
     self.login_operation = nil
     self:_publish()
-    error(run, 0)
+    if not ok then error(run, 0) end
+    error(util.error("auth",
+      "Authentication login must return a Run"), 0)
   end
   operation.run = run
   if run:is_done() and self.login_operation == operation then
@@ -338,10 +397,21 @@ function Authentication:login(method_id)
 end
 
 function Authentication:cancel()
-  local operation = self.login_operation
-  local cancelled = operation ~= nil
+  local cancelled = false
   if self:_close_login_notice() then cancelled = true end
-  if operation and operation.run then operation.run:cancel() end
+  for _, operation in ipairs({
+    self.login_operation,
+    self.logout_operation,
+  }) do
+    if operation and operation.run then
+      cancelled = true
+      operation.run:cancel()
+    end
+  end
+  for _, run in pairs(self.catalog_runs) do
+    cancelled = true
+    run:cancel()
+  end
   for _, run in pairs(self.presentation_runs) do
     cancelled = true
     run:cancel()
@@ -405,6 +475,9 @@ function Authentication:logout(method_id)
       end
       if self.destroyed then return end
       if result.ok then
+        if self.refresh_after_auth_change then
+          self:refresh_catalogs(method_id)
+        end
         if selected.type == "api_key" then
           self:_notify("removed stored " .. selected.name
             .. "; environment API keys are unchanged")
@@ -416,10 +489,12 @@ function Authentication:logout(method_id)
       end
     end,
   })
-  if not ok then
+  if not ok or not valid_run(run) then
     self.logout_operation = nil
     self:_publish()
-    error(run, 0)
+    if not ok then error(run, 0) end
+    error(util.error("auth",
+      "Authentication logout must return a Run"), 0)
   end
   operation.run = run
   if run:is_done() and self.logout_operation == operation then

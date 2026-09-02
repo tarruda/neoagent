@@ -1,4 +1,6 @@
+local async = require("neoagent.async")
 local provider_runtimes = require("neoagent.provider_runtimes")
+local provider_service = require("neoagent.provider_service")
 
 describe("neoagent provider runtime composition", function()
   local function provider(id, constructor)
@@ -46,6 +48,104 @@ describe("neoagent provider runtime composition", function()
     assert.are.equal(runtimes.managed.catalog, resources.catalog)
     assert.are.equal("secret", resources.ambient_api_key())
     provider_runtimes.destroy(runtimes)
+  end)
+
+  it("enables every ambient API-key account catalog cache", function()
+    local config = require("neoagent.config")
+    local configured = config.setup({})
+    local values = {
+      OPENAI_API_KEY = "openai-secret",
+      ANTHROPIC_API_KEY = "anthropic-secret",
+      DEEPSEEK_API_KEY = "deepseek-secret",
+      ZAI_API_KEY = "zai-secret",
+    }
+    for name, value in pairs(values) do vim.env[name] = value end
+    local credential_store = {
+      read = function() return nil end,
+      write = function() return true end,
+    }
+    local manager = require("neoagent.auth").new({
+      methods = configured.auth.methods,
+      store = credential_store,
+    })
+    local catalog_store = {
+      read = function() return nil end,
+      write = function() return true end,
+    }
+
+    local ok, err = pcall(function()
+      local runtimes = assert(provider_runtimes.compose(configured, {
+        auth = manager,
+        store = catalog_store,
+        startup = false,
+      }))
+      for _, id in ipairs({
+        "openai", "anthropic", "deepseek", "zai", "zai-coding-plan",
+      }) do
+        local persistence = runtimes[id].catalog:snapshot().persistence
+        assert.is_true(persistence.configured, id)
+        assert.is_true(persistence.enabled, id)
+        assert.is_nil(persistence.error, id)
+      end
+      provider_runtimes.destroy(runtimes)
+    end)
+    for name in pairs(values) do vim.env[name] = nil end
+    config._reset()
+    assert(ok, err)
+  end)
+
+  it("scopes llama.cpp caches to stored server identity", function()
+    local config = require("neoagent.config")
+    local configured = config.setup({})
+    local credential = {
+      type = "api_key",
+      key = "anonymous",
+      env = {
+        LLAMA_BASE_URL = "http://first.example.test",
+        LLAMA_ANONYMOUS = "1",
+      },
+    }
+    local credential_store = {
+      read = function(_, id)
+        return id == "llama" and vim.deepcopy(credential) or nil
+      end,
+      write = function() return true end,
+    }
+    local manager = require("neoagent.auth").new({
+      methods = configured.auth.methods,
+      store = credential_store,
+    })
+    local provider = configured.providers["llama.cpp"]
+    local ProviderCredentials = require("neoagent.provider_credentials")
+    local credentials = ProviderCredentials.new({
+      provider_id = "llama.cpp",
+      provider = provider,
+      authentication = manager,
+      method = configured.auth.methods.llama,
+    })
+    local first = assert(require("neoagent.model_catalog").source_fingerprint({
+      provider_id = "llama.cpp",
+      provider = provider,
+      definition = provider.catalog,
+      credentials = credentials,
+    }))
+    credential.env.LLAMA_BASE_URL = "http://second.example.test"
+    local second = assert(require("neoagent.model_catalog").source_fingerprint({
+      provider_id = "llama.cpp",
+      provider = provider,
+      definition = provider.catalog,
+      credentials = credentials,
+    }))
+    assert.are_not.equal(first, second)
+
+    credential = nil
+    assert(require("neoagent.model_catalog").source_fingerprint({
+      provider_id = "llama.cpp",
+      provider = provider,
+      definition = provider.catalog,
+      credentials = credentials,
+    }))
+    config._reset()
   end)
 
   it("destroys partial compositions after constructor failures", function()
@@ -125,5 +225,88 @@ describe("neoagent provider runtime composition", function()
     assert.is_true(provider_runtimes.destroy(runtimes))
     assert.is_false(provider_runtimes.destroy(runtimes))
     assert.are.equal(1, destroyed)
+  end)
+
+  it("groups shared authentication Services and waits to destroy them", function()
+    local destroyed = 0
+    local configured = { providers = {
+      first = provider("first", function(id)
+        return {
+          id = id,
+          name = "First",
+          state = function() return false end,
+          operations = {},
+          destroy = function() destroyed = destroyed + 1 end,
+        }
+      end),
+      second = provider("second", function(id)
+        return {
+          id = id,
+          name = "Second",
+          state = function() return false end,
+          operations = {},
+          destroy = function() destroyed = destroyed + 1 end,
+        }
+      end),
+    } }
+    configured.providers.first.auth = "shared"
+    configured.providers.second.auth = "shared"
+    local runtimes = assert(provider_runtimes.compose(configured, {
+      startup = false,
+    }))
+    assert.are.equal(runtimes.first.auth_services,
+      runtimes.second.auth_services)
+    assert.are.equal(2, #runtimes.first.auth_services)
+
+    local lease = assert(provider_service.acquire_use(
+      runtimes.second.service))
+    assert.is_true(provider_runtimes.destroy(runtimes))
+    assert.are.equal(1, destroyed)
+    assert.is_true(lease:release())
+    assert.are.equal(2, destroyed)
+  end)
+
+  it("retires a Service after its cancelled catalog refresh settles", function()
+    local cancelled = false
+    local destroyed = 0
+    local started = false
+    local configured = { providers = {
+      managed = provider("managed", function(id)
+        return {
+          id = id,
+          name = "Managed",
+          state = function() return false end,
+          operations = {},
+          destroy = function() destroyed = destroyed + 1 end,
+        }
+      end),
+    } }
+    configured.providers.managed.catalog = {
+      source_id = "managed-test-models",
+      source_revision = 1,
+      seed = { { id = "model" } },
+      discover = function()
+        return async.run(function()
+          return async.await(function(done)
+            started = true
+            return function()
+              cancelled = true
+              done.reject(async.cancelled_error)
+            end
+          end)
+        end)
+      end,
+    }
+    local runtimes = assert(provider_runtimes.compose(configured, {
+      startup = false,
+    }))
+    local refresh = runtimes.managed.catalog:refresh()
+    assert(vim.wait(1000, function() return started end, 5))
+
+    assert.is_true(provider_runtimes.destroy(runtimes))
+    assert(vim.wait(1000, function()
+      return refresh:is_done() and cancelled and destroyed == 1
+    end, 5))
+    assert.are.equal("cancelled", refresh:result().error.kind)
   end)
 end)

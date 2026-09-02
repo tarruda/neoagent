@@ -167,8 +167,12 @@ local provider_fields = {
 }
 
 local catalog_fields = {
+  account_scoped = true,
   discover = true,
   seed = true,
+  source_id = true,
+  source_options = true,
+  source_revision = true,
   ttl_ms = true,
   transform_model = true,
 }
@@ -280,6 +284,36 @@ local function validate(opts)
     assert(provider.catalog.discover == nil
         or type(provider.catalog.discover) == "function",
       "provider " .. id .. " catalog.discover must be a function")
+    assert(provider.catalog.source_options == nil
+        or type(provider.catalog.source_options) == "function",
+      "provider " .. id .. " catalog.source_options must be a function")
+    assert(not (provider.catalog.discover
+          and next(provider.service_opts or {}) ~= nil)
+        or type(provider.catalog.source_options) == "function",
+      "provider " .. id
+        .. " discovery with service_opts requires catalog.source_options")
+    local source_id = provider.catalog.source_id
+    local source_revision = provider.catalog.source_revision
+    assert(source_id == nil or type(source_id) == "string" and source_id ~= ""
+        and #source_id <= 256 and util.is_valid_utf8(source_id)
+        and not source_id:find("[%z\1-\31\127]"),
+      "provider " .. id .. " catalog.source_id must be safe text")
+    assert(source_revision == nil or type(source_revision) == "number"
+        and source_revision >= 1 and source_revision % 1 == 0
+        and source_revision < math.huge,
+      "provider " .. id
+        .. " catalog.source_revision must be a positive integer")
+    assert((source_id == nil) == (source_revision == nil),
+      "provider " .. id
+        .. " catalog source_id and source_revision must be supplied together")
+    assert(provider.catalog.discover == nil or source_id ~= nil,
+      "provider " .. id
+        .. " discovery requires catalog source_id and source_revision")
+    assert(provider.catalog.account_scoped == nil
+        or type(provider.catalog.account_scoped) == "boolean",
+      "provider " .. id .. " catalog.account_scoped must be boolean")
+    assert(provider.catalog.account_scoped ~= true or provider.auth ~= nil,
+      "provider " .. id .. " account-scoped catalog requires auth")
     assert(provider.catalog.transform_model == nil
         or type(provider.catalog.transform_model) == "function",
       "provider " .. id .. " catalog.transform_model must be a function")
@@ -348,6 +382,8 @@ local function validate(opts)
       "auth methods require login and request_opts")
     assert(method.public_metadata == nil or type(method.public_metadata) == "function",
       "auth method public_metadata must be a function")
+    assert(method.cache_identity == nil or type(method.cache_identity) == "function",
+      "auth method cache_identity must be a function")
     if method.type == "api_key" then
       assert(method.refresh == nil or type(method.refresh) == "function",
         "API key auth method refresh must be a function")

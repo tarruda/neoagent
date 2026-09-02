@@ -33,6 +33,12 @@ end
 
 local function check_configuration()
   local configured = require("neoagent.config").get()
+  local tools = configured._tools_supplied and configured.tools
+    or require("neoagent.tools").coding({
+      shell_timeout = configured.shell_timeout,
+    })
+  require("neoagent.agent_loop").validate_toolset(
+    tools, configured.execute_tool)
   local applet, resources
   local ok, err = pcall(function()
     local profiles, default_profile
@@ -46,6 +52,19 @@ local function check_configuration()
     })
     assert(#applet:agents() == 0,
       "Profile composition must not construct Agents")
+    local ids = vim.tbl_keys(resources.runtimes)
+    table.sort(ids)
+    for _, provider_id in ipairs(ids) do
+      local runtime = resources.runtimes[provider_id]
+      local credential = runtime.credentials:state()
+      local persistence = runtime.catalog:snapshot().persistence
+      if credential.usable and persistence and persistence.configured
+          and not persistence.enabled then
+        vim.health.warn(provider_id .. " model catalog cache is unavailable: "
+          .. (persistence.error and persistence.error.message
+            or "source identity is unavailable"))
+      end
+    end
     local selected = configured.default_model
     if not selected then return end
     local runtime = resources.runtimes[selected.provider]

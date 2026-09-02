@@ -31,7 +31,13 @@ describe("neoagent Agent-owned Applets", function()
       providers = {
         fake = { api = "fake-api", models = { test = {} } },
       },
-      _apis = { ["fake-api"] = function() return model end },
+      _apis = { ["fake-api"] = function(resolved)
+        model.api = model.api or resolved.api
+        model.provider = model.provider or resolved.provider_id
+        model.id = model.id or resolved.model_id
+        model.input = model.input or resolved.model.input or { "text" }
+        return model
+      end },
       tools = {},
       agent_instructions = false,
       skills = false,

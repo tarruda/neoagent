@@ -1,4 +1,5 @@
 local async = require("neoagent.async")
+local model_contract = require("neoagent.model")
 local request_opts = require("neoagent.api.request_opts")
 local util = require("neoagent.util")
 
@@ -47,6 +48,22 @@ local function public_metadata(value)
   return result
 end
 
+local function safe_cache_identity(value)
+  if value == nil then return nil end
+  if type(value) ~= "string" or value == "" or #value > 1024
+      or not util.is_valid_utf8(value)
+      or value:find("[%z\1-\31\127]") then
+    return nil, util.error("auth",
+      "Login method cache_identity must return safe non-empty text")
+  end
+  return value
+end
+
+local function hash_identity(method_id, value)
+  return vim.fn.sha256(#method_id .. ":" .. method_id
+    .. ":" .. #value .. ":" .. value)
+end
+
 local function credential_type(credential)
   if type(credential) ~= "table" then return nil end
   if credential.type == "api_key" then return "api_key" end
@@ -81,6 +98,33 @@ local function method_for(self, id)
   local method = self.methods[id]
   if not method then error(util.error("auth", "Unknown login method: " .. tostring(id)), 0) end
   return method
+end
+
+local function credential_identity(self, id, method, credential)
+  if credential == nil or type(method.cache_identity) ~= "function" then
+    return nil
+  end
+  local ok, value = pcall(method.cache_identity, util.copy(credential))
+  if not ok then
+    return nil, util.error("auth",
+      "Login method cache_identity failed")
+  end
+  local selected, err = safe_cache_identity(value)
+  if not selected then return nil, err end
+  return hash_identity(id, selected)
+end
+
+local function publish(self, id, kind)
+  self.revisions[id] = (self.revisions[id] or 0) + 1
+  local event = {
+    method = id,
+    kind = kind,
+    revision = self.revisions[id],
+  }
+  for _, subscription in pairs(self.listeners[id] or {}) do
+    pcall(subscription, util.copy(event))
+  end
+  return event.revision
 end
 
 local function credential_from(result, action, method)
@@ -125,7 +169,13 @@ function Manager:login(id, opts)
     }
     local credential = credential_from(method.login(interaction):await(), "Login", method)
     modify_store(self, id, function() return credential end)
-    return { ok = true, method = id, credential_type = credential_type(credential) }
+    local revision = publish(self, id, "login")
+    return {
+      ok = true,
+      method = id,
+      credential_type = credential_type(credential),
+      revision = revision,
+    }
   end, { on_event = opts.on_event, on_done = opts.on_done, error_kind = "auth" })
 end
 
@@ -146,6 +196,7 @@ function Manager:resolve(id, opts)
       if type(method.refresh) ~= "function" then
         error(util.error("auth", "Login method cannot refresh OAuth credentials"), 0)
       end
+      local previous_identity = credential_identity(self, id, method, credential)
       credential = modify_store(self, id, function(current)
         if type(current) ~= "table" then return nil end
         if not valid_for(method, current) then
@@ -157,6 +208,11 @@ function Manager:resolve(id, opts)
       if not credential then error(util.error("auth", "Credential was removed during refresh"), 0) end
       if not valid_for(method, credential) then
         error(util.error("auth", "Stored credential changed during refresh"), 0)
+      end
+      local next_identity = credential_identity(self, id, method, credential)
+      if previous_identity ~= next_identity
+          and (previous_identity ~= nil or next_identity ~= nil) then
+        publish(self, id, "refresh")
       end
     end
     local override = method.request_opts(util.copy(credential))
@@ -182,6 +238,48 @@ function Manager:resolve(id, opts)
       metadata = metadata,
     }
   end, { on_done = opts.on_done, error_kind = "auth" })
+end
+
+function Manager:cache_identity(id)
+  local method = method_for(self, id)
+  local credential, err = self.store:read(id)
+  if err then return nil, err end
+  if credential == nil then return nil end
+  if not valid_for(method, credential) then
+    return nil, util.error("auth", "Stored credential is invalid for " .. id)
+  end
+  return self:derive_cache_identity(id, credential)
+end
+
+function Manager:derive_cache_identity(id, credential)
+  local method = method_for(self, id)
+  if not valid_for(method, credential) then
+    return nil, util.error("auth",
+      "Credential is invalid for cache identity: " .. id)
+  end
+  return credential_identity(self, id, method, credential)
+end
+
+function Manager:revision(id)
+  method_for(self, id)
+  return self.revisions[id] or 0
+end
+
+function Manager:subscribe(id, listener)
+  method_for(self, id)
+  assert(type(listener) == "function",
+    "authentication revision listener must be a function")
+  self.next_listener_id = self.next_listener_id + 1
+  local listener_id = self.next_listener_id
+  self.listeners[id] = self.listeners[id] or {}
+  self.listeners[id][listener_id] = listener
+  local active = true
+  return function()
+    if not active then return false end
+    active = false
+    if self.listeners[id] then self.listeners[id][listener_id] = nil end
+    return true
+  end
 end
 
 function Manager:has_credentials(id)
@@ -246,12 +344,16 @@ function Manager:logout(id, opts)
       local removed, delete_err = self.store:write(id, nil)
       if not removed then error(delete_err, 0) end
     end
-    return { ok = true, method = id }
+    return {
+      ok = true,
+      method = id,
+      revision = publish(self, id, "logout"),
+    }
   end, { on_done = opts.on_done, error_kind = "auth" })
 end
 
 function Manager:wrap(model, id, opts)
-  assert(type(model) == "table" and type(model.stream) == "function", "model is required")
+  model = model_contract.assert(model, "Authentication input Model")
   method_for(self, id)
   opts = opts or {}
   local wrapped = {
@@ -283,7 +385,7 @@ function Manager:wrap(model, id, opts)
   end
   wrapped._manager, wrapped._method, wrapped._model = self, id, model
   wrapped._optional = opts.optional == true
-  return wrapped
+  return model_contract.assert(wrapped, "Authentication Model wrapper")
 end
 
 function M.new(opts)
@@ -295,6 +397,9 @@ function M.new(opts)
     methods = util.copy(opts.methods),
     store = opts.store,
     now = opts.now or util.now_ms,
+    revisions = {},
+    listeners = {},
+    next_listener_id = 0,
   }, Manager)
 end
 

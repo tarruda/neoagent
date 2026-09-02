@@ -125,9 +125,15 @@ end
 local function new_runtime()
   return {
     users = 0,
-    operation = nil,
+    operations = {},
+    operation_count = 0,
+    mutating = nil,
+    next_operation_id = 0,
     listeners = {},
     next_listener_id = 0,
+    retiring = false,
+    destroy = nil,
+    destroyed = false,
   }
 end
 
@@ -153,8 +159,9 @@ end
 local function publish_runtime(state)
   local snapshot = {
     users = state.users,
-    busy = state.operation ~= nil,
-    mutating = state.operation and state.operation.mutating == true or false,
+    operations = state.operation_count,
+    busy = state.operation_count > 0,
+    mutating = state.mutating ~= nil,
   }
   for _, subscription in pairs(state.listeners) do
     local ok, err = pcall(subscription.listener, util.copy(snapshot))
@@ -165,6 +172,16 @@ local function publish_runtime(state)
       end)
     end
   end
+end
+
+local function finish_retirement(state)
+  if not state.retiring or state.destroyed or state.users > 0
+      or state.operation_count > 0 then return false end
+  state.destroyed = true
+  local destroy = state.destroy
+  state.destroy = nil
+  if destroy then pcall(destroy) end
+  return true
 end
 
 function M.subscribe(service, listener, opts)
@@ -192,32 +209,128 @@ end
 
 function M.busy(service)
   service = M.assert(service)
-  return runtime(service).operation ~= nil
+  return runtime(service).operation_count > 0
 end
 
 function M.operation_enabled(service, operation)
   service = M.assert(service)
   local state = runtime(service)
-  return state.operation == nil
-    and not (operation.mutating == true and state.users > 0)
+  if state.retiring then return false end
+  if operation.mutating == true then
+    return state.users == 0 and state.operation_count == 0
+  end
+  return state.mutating == nil
 end
 
-function M.acquire(service)
+function M.acquire_use(service)
   service = M.assert(service)
   local state = runtime(service)
-  if state.operation and state.operation.mutating then
-    return failure("Cannot start a model run during a mutating provider operation")
+  if state.retiring then
+    return failure("Provider Service is retiring")
+  end
+  if state.mutating then
+    return failure(
+      "Cannot acquire provider use during a mutating provider operation")
   end
   state.users = state.users + 1
   publish_runtime(state)
-  local active = true
-  return function()
-    if not active then return false end
-    active = false
+  local lease = { active = true }
+  function lease:release()
+    if not self.active then return false end
+    self.active = false
     state.users = math.max(0, state.users - 1)
     publish_runtime(state)
+    finish_retirement(state)
     return true
   end
+  return lease
+end
+
+function M.acquire(service)
+  local lease, err = M.acquire_use(service)
+  if not lease then return nil, err end
+  return function() return lease:release() end
+end
+
+function M.begin_operation(service, opts)
+  service = M.assert(service)
+  opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "provider operation lease options must be an object")
+  assert(opts.mutating == nil or type(opts.mutating) == "boolean",
+    "provider operation mutating must be a boolean")
+  local state = runtime(service)
+  if state.retiring then return failure("Provider Service is retiring") end
+  local mutating = opts.mutating == true
+  if mutating then
+    if state.users > 0 then
+      return failure(
+        "Cannot run a mutating provider operation during active provider use")
+    end
+    if state.operation_count > 0 then
+      return failure("A provider operation is already active")
+    end
+  elseif state.mutating then
+    return failure("A mutating provider operation is already active")
+  end
+  state.next_operation_id = state.next_operation_id + 1
+  local id = state.next_operation_id
+  local token = {
+    active = true,
+    mutating = mutating,
+    _service = service,
+    _operation_id = id,
+    _phase = "available",
+    _run = nil,
+  }
+  state.operations[id] = token
+  state.operation_count = state.operation_count + 1
+  if mutating then state.mutating = token end
+  publish_runtime(state)
+  function token:finish()
+    if not self.active then return false end
+    if state.operations[id] ~= self then return false end
+    self.active = false
+    state.operations[id] = nil
+    state.operation_count = state.operation_count - 1
+    if state.mutating == self then state.mutating = nil end
+    self._phase = "finished"
+    self._run = nil
+    publish_runtime(state)
+    finish_retirement(state)
+    return true
+  end
+  return token
+end
+
+local function claim_operation(token, service, mutating)
+  if type(token) ~= "table"
+      or type(token.finish) ~= "function"
+      or token.active ~= true
+      or token._service ~= service
+      or token.mutating ~= mutating
+      or token._phase ~= "available" then
+    return failure("provider operation coordination token is invalid")
+  end
+  local state = runtime(service)
+  if state.operations[token._operation_id] ~= token then
+    return failure("provider operation coordination token is invalid")
+  end
+  token._phase = "claimed"
+  return token
+end
+
+function M.retire(service, destroy)
+  service = M.assert(service)
+  assert(type(destroy) == "function",
+    "Provider Service retirement requires a destroy callback")
+  local state = runtime(service)
+  if state.retiring then return false end
+  state.retiring = true
+  state.destroy = destroy
+  finish_retirement(state)
+  return true
 end
 
 function M.public_config(provider)
@@ -272,13 +385,6 @@ function M.run(service, operation_id, opts)
   if not descriptor then
     return failure("Unknown provider operation: " .. tostring(operation_id))
   end
-  local state = runtime(service)
-  if state.operation ~= nil then
-    return failure("A provider operation is already active")
-  end
-  if descriptor.mutating == true and state.users > 0 then
-    return failure("Cannot run a mutating provider operation during an active model run")
-  end
   if opts.args ~= nil and type(opts.args) ~= "string" then
     return failure("provider operation args must be a string")
   end
@@ -297,10 +403,19 @@ function M.run(service, operation_id, opts)
     end
   end
 
-  local token = { mutating = descriptor.mutating == true }
-  state.operation = token
-  publish_runtime(state)
-  local run = async.run(function()
+  local token = opts.coordination
+  local token_err
+  if token == nil then
+    token, token_err = M.begin_operation(service, {
+      mutating = descriptor.mutating == true,
+    })
+  end
+  if not token then return nil, token_err end
+  token, token_err = claim_operation(
+    token, service, descriptor.mutating == true)
+  if not token then return nil, token_err end
+
+  local constructed, run = pcall(async.run, function()
     local ctx = {
       provider = {
         id = service.id,
@@ -332,19 +447,18 @@ function M.run(service, operation_id, opts)
   end, {
     on_event = opts.on_event,
     on_done = function(result)
-      if state.operation == token then
-        state.operation = nil
-        publish_runtime(state)
-      end
+      token:finish()
       if opts.on_done then opts.on_done(result) end
     end,
     error_kind = "provider",
   })
-  token.run = run
-  if run:is_done() and state.operation == token then
-    state.operation = nil
-    publish_runtime(state)
+  if not constructed then
+    token:finish()
+    return failure("Failed to construct provider operation Run: "
+      .. util.normalize_error(run, "provider").message)
   end
+  token._run = run
+  if run:is_done() then token:finish() end
   return run
 end
 

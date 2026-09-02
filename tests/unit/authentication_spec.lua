@@ -245,8 +245,10 @@ describe("neoagent Authentication coordinator", function()
     local text = table.concat(vim.tbl_map(function(item) return item[1] end,
       notifications), "\n")
     assert.matches("logged in with Alpha login", text)
-    assert.matches("failed to refresh invalid catalog after login", text)
-    assert.matches("failed to refresh crashed catalog after login", text)
+    assert.matches(
+      "failed to refresh invalid catalog after authentication change", text)
+    assert.matches(
+      "failed to refresh crashed catalog after authentication change", text)
     assert.matches("failed to refresh rejected catalog: refresh rejected", text)
     assert.is_true(vim.tbl_contains(activity, true))
     assert.is_true(vim.tbl_contains(activity, false))
@@ -611,6 +613,54 @@ describe("neoagent Authentication coordinator", function()
     assert.is_nil(missing)
     assert.are.equal(list_error, err)
     assert.matches("credential list failed", notifications[#notifications][1])
+  end)
+
+  it("refreshes usable catalogs after direct logout", function()
+    local selected_manager = manager()
+    selected_manager.credentials = {
+      { id = "key", name = "Stored key", type = "api_key" },
+    }
+    local refreshes, skipped = 0, 0
+    local value = authentication({
+      auth = selected_manager,
+      config = config(nil, {
+        ambient = { auth = "key" },
+        offline = { auth = "key" },
+      }),
+      runtimes = { ambient = {
+        credentials = {
+          state = function()
+            return { usable = true, source = "environment" }
+          end,
+        },
+        catalog = {
+          refresh = function()
+            refreshes = refreshes + 1
+            return async.run(function() return { ok = true } end)
+          end,
+        },
+      }, offline = {
+        credentials = {
+          state = function()
+            return { usable = false, source = "logged_out" }
+          end,
+        },
+        catalog = {
+          refresh = function()
+            skipped = skipped + 1
+            return async.run(function() return { ok = true } end)
+          end,
+        },
+      } },
+    })
+
+    local run = assert(value:logout("key"))
+    assert(vim.wait(1000, function() return run:is_done() end, 5))
+    assert.is_true(run:result().ok)
+    assert(vim.wait(1000, function()
+      return refreshes == 1 and not value:is_active()
+    end, 5))
+    assert.are.equal(0, skipped)
   end)
 
   it("publishes completion of an asynchronously settled logout", function()

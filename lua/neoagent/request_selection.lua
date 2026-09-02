@@ -1,4 +1,5 @@
 local thinking = require("neoagent.thinking")
+local model_contract = require("neoagent.model")
 local util = require("neoagent.util")
 
 local M = {}
@@ -89,14 +90,15 @@ end
 function RequestSelection:bind(selected, model, preferred)
   assert(valid_model(selected),
     "RequestSelection model must identify a provider and model")
-  assert(type(model) == "table" and type(model.stream) == "function",
-    "RequestSelection resolved Model is invalid")
-  self.selected = util.copy(selected)
-  self.model_value = model
-  self.initial = nil
-  self.thinking_value = thinking.clamp(model,
+  model = model_contract.assert(model, "RequestSelection resolved Model")
+  local selected_value = util.copy(selected)
+  local thinking_value = thinking.clamp(model,
     preferred or self.thinking_value
       or self:preferences().default_thinking_level)
+  self.selected = selected_value
+  self.model_value = model
+  self.initial = nil
+  self.thinking_value = thinking_value
   return model
 end
 
@@ -115,11 +117,13 @@ function RequestSelection:resolve(selected, preferred)
   if not selected then
     return nil, util.error("model", "No default_model is configured")
   end
-  local ok, model = pcall(require("neoagent.models").resolve,
-    selected.provider, selected.model, self.config, self.auth,
-    self.runtimes)
+  local ok, model = pcall(function()
+    local resolved = require("neoagent.models").resolve(
+      selected.provider, selected.model, self.config, self.auth,
+      self.runtimes)
+    return self:bind(selected, resolved, preferred)
+  end)
   if not ok then return nil, util.normalize_error(model, "model") end
-  self:bind(selected, model, preferred)
   return model
 end
 
@@ -165,11 +169,21 @@ function RequestSelection:cycle_thinking_level()
   return self:set_thinking_level(level)
 end
 
-function RequestSelection:snapshot()
-  return {
+function RequestSelection:snapshot(opts)
+  opts = opts or {}
+  assert(type(opts) == "table"
+      and (next(opts) == nil or not util.is_list(opts)),
+    "RequestSelection snapshot options must be an object")
+  assert(opts.persisted == nil or type(opts.persisted) == "boolean",
+    "RequestSelection snapshot persisted must be a boolean")
+  local result = {
     model = self:model_selection(),
     thinking_level = self.thinking_value,
   }
+  if opts.persisted and result.model and result.thinking_level == nil then
+    result.thinking_level = vim.NIL
+  end
+  return result
 end
 
 M.new = RequestSelection.new

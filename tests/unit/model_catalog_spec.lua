@@ -19,6 +19,26 @@ describe("neoagent ModelCatalog", function()
     return state
   end
 
+  local function discovery(value)
+    return util.deep_merge({
+      source_id = "test-models",
+      source_revision = 1,
+    }, value or {})
+  end
+
+  local TEST_FINGERPRINT = assert(model_catalog.source_fingerprint({
+    provider_id = "example",
+    provider = {},
+    definition = discovery(),
+  }))
+
+  local function cache(value)
+    local result = util.copy(value)
+    result.version = 2
+    result.source_fingerprint = TEST_FINGERPRINT
+    return result
+  end
+
   local function timers()
     local values = {}
     local function new_timer()
@@ -37,16 +57,355 @@ describe("neoagent ModelCatalog", function()
     return values, new_timer
   end
 
+  it("fingerprints the complete discovery source without credential data", function()
+    local function fingerprint(overrides)
+      local value = {
+        provider_id = "shared",
+        provider = {
+          api = "openai-responses",
+          base_url = "HTTPS://EXAMPLE.test/v1/",
+          auth = "plan",
+          auth_optional = false,
+          service_opts = { tenant = "alpha" },
+        },
+        definition = {
+          source_id = "remote-models",
+          source_revision = 1,
+          account_scoped = true,
+          source_options = function(provider)
+            return { tenant = provider.service_opts.tenant }
+          end,
+        },
+        authentication = {
+          cache_identity = function() return "safe-account-digest" end,
+        },
+      }
+      value = util.deep_merge(value, overrides or {})
+      return model_catalog.source_fingerprint(value)
+    end
+
+    local initial = assert(fingerprint())
+    assert.are.equal(64, #initial)
+    assert.are.equal(initial, fingerprint({ provider = {
+      api = "openai-responses",
+      base_url = "https://example.test/v1",
+      auth = "plan",
+    } }))
+    for _, override in ipairs({
+      { provider = { api = "openai-completions" } },
+      { provider = { base_url = "https://other.test/v1" } },
+      { definition = { source_id = "other-models" } },
+      { definition = { source_revision = 2 } },
+      { provider = { auth_optional = true } },
+      { provider = { service_opts = { tenant = "beta" } } },
+      { authentication = {
+        cache_identity = function() return "other-safe-digest" end,
+      } },
+    }) do
+      assert.are_not.equal(initial, fingerprint(override))
+    end
+    assert.is_nil(initial:find("safe-account", 1, true))
+    assert.is_nil(fingerprint({ authentication = {
+      cache_identity = function() return nil end,
+    } }))
+  end)
+
+  it("persists and restores account catalogs for stored and ambient keys", function()
+    local auth = require("neoagent.auth")
+    local api_key = require("neoagent.auth.api_key")
+    local ProviderCredentials = require("neoagent.provider_credentials")
+    for _, source in ipairs({ "stored", "ambient" }) do
+      local credential
+      if source == "stored" then
+        credential = { type = "api_key", key = "same-secret" }
+      end
+      local credential_store = {
+        read = function() return util.copy(credential) end,
+        write = function(_, _, value) credential = util.copy(value) return true end,
+      }
+      local manager = auth.new({
+        methods = { key = api_key.new({ name = "Example API key" }) },
+        store = credential_store,
+      })
+      local provider = {
+        api = "fake-api",
+        auth = "key",
+        api_key = source == "ambient"
+            and function() return "same-secret" end or nil,
+      }
+      local credentials = ProviderCredentials.new({
+        provider_id = "account-" .. source,
+        provider = provider,
+        authentication = manager,
+        method = { name = "Example API key" },
+      })
+      local state = store()
+      local discoveries = 0
+      local definition = discovery({
+        account_scoped = true,
+        discover = function()
+          discoveries = discoveries + 1
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      })
+      local first = model_catalog.new({
+        provider_id = "account-" .. source,
+        provider = provider,
+        definition = definition,
+        authentication = manager,
+        credentials = credentials,
+        store = state,
+      })
+      assert.is_true(wait(first:refresh()).ok)
+      assert.are.equal(1, #state.writes)
+      assert.is_true(first:snapshot().persistence.enabled)
+      first:destroy()
+
+      local second = model_catalog.new({
+        provider_id = "account-" .. source,
+        provider = provider,
+        definition = definition,
+        authentication = manager,
+        credentials = credentials,
+        store = state,
+      })
+      assert.are.equal("cache", second:snapshot().source)
+      assert.are.equal("remote", second:snapshot().models.remote.id)
+      assert.are.equal(1, discoveries)
+      second:destroy()
+    end
+  end)
+
+  it("rejects unsafe and undeclared discovery source options", function()
+    assert.has_error(function()
+      model_catalog.new({
+        provider_id = "example",
+        provider = { service_opts = { tenant = "one" } },
+        definition = discovery({ discover = function() end }),
+      })
+    end, "ModelCatalog discovery with service_opts requires source_options")
+
+    local cases = {
+      function() error("private-source-value") end,
+      function() return { callback = function() end } end,
+      function()
+        local value = {}
+        value.self = value
+        return value
+      end,
+      function() return { value = string.rep("x", 17 * 1024) } end,
+    }
+    for _, source_options in ipairs(cases) do
+      local fingerprint, err = model_catalog.source_fingerprint({
+        provider_id = "example",
+        provider = { service_opts = { tenant = "one" } },
+        definition = discovery({ source_options = source_options }),
+      })
+      assert.is_nil(fingerprint)
+      assert.are.equal("provider", err.kind)
+      assert.not_matches("private%-source%-value", err.message)
+    end
+  end)
+
+  it("reports configured persistence when account identity is unavailable", function()
+    local state = store()
+    local catalog = model_catalog.new({
+      provider_id = "unidentified",
+      provider = { api = "fake", auth = "missing-identity" },
+      definition = discovery({
+        account_scoped = true,
+        discover = function()
+          return async.run(function()
+            return { ok = true, models = { { id = "remote" } } }
+          end)
+        end,
+      }),
+      authentication = {
+        cache_identity = function() return nil end,
+        resolve = function()
+          return async.run(function()
+            return { ok = true, configured = true, request_opts = {} }
+          end)
+        end,
+      },
+      store = state,
+    })
+
+    local result = wait(catalog:refresh())
+    assert.is_true(result.ok)
+    assert.are.equal("auth", result.persistence_error.kind)
+    assert.are.same({
+      configured = true,
+      enabled = false,
+      error = {
+        kind = "auth",
+        message = "Model catalog account identity is unavailable",
+      },
+    }, catalog:snapshot().persistence)
+    assert.are.equal(0, #state.writes)
+    catalog:destroy()
+  end)
+
+  it("rejects cache records from another discovery source", function()
+    local definition = {
+      source_id = "remote-models",
+      source_revision = 1,
+      seed = { { id = "packaged" } },
+    }
+    local provider = {
+      api = "openai-responses",
+      base_url = "https://first.test/v1",
+    }
+    local fingerprint = assert(model_catalog.source_fingerprint({
+      provider_id = "shared",
+      provider = provider,
+      definition = definition,
+    }))
+    local cached = {
+      version = 2,
+      source_fingerprint = fingerprint,
+      validated_at = 1000,
+      validator = { etag = "first" },
+      models = { { id = "cached" } },
+    }
+    local shared_state = store(cached)
+    local matching = model_catalog.new({
+      provider_id = "shared",
+      provider = provider,
+      definition = definition,
+      store = shared_state,
+      now = function() return 1100 end,
+    })
+    assert.are.equal("cached", matching:snapshot().models.cached.id)
+
+    local reports = {}
+    local mismatched = model_catalog.new({
+      provider_id = "shared",
+      provider = {
+        api = "openai-responses",
+        base_url = "https://second.test/v1",
+      },
+      definition = definition,
+      store = shared_state,
+      report = function(message) reports[#reports + 1] = message end,
+    })
+    assert.is_nil(mismatched:snapshot().models.cached)
+    assert.are.equal("packaged", mismatched:snapshot().models.packaged.id)
+    assert.matches("source does not match", reports[1])
+    matching:destroy()
+    mismatched:destroy()
+  end)
+
+  it("invalidates account caches at authentication revisions", function()
+    local listener
+    local authentication = {
+      identity = "account-one",
+      cache_identity = function(self) return self.identity end,
+      subscribe = function(_, _, callback)
+        listener = callback
+        return function() listener = nil return true end
+      end,
+      resolve = function()
+        return async.run(function()
+          return { ok = true, configured = true, request_opts = {} }
+        end)
+      end,
+    }
+    local provider = {
+      api = "fake-api",
+      base_url = "https://example.test/v1",
+      auth = "plan",
+    }
+    local definition = discovery({
+      account_scoped = true,
+      seed = { { id = "packaged" } },
+      discover = function()
+        return async.run(function()
+          return { ok = true, models = { { id = "remote" } } }
+        end)
+      end,
+    })
+    local fingerprint = assert(model_catalog.source_fingerprint({
+      provider_id = "example",
+      provider = provider,
+      definition = definition,
+      authentication = authentication,
+    }))
+    local catalog = model_catalog.new({
+      provider_id = "example",
+      provider = provider,
+      definition = definition,
+      authentication = authentication,
+      store = store({
+        version = 2,
+        source_fingerprint = fingerprint,
+        validated_at = 1000,
+        validator = { etag = "account-one" },
+        models = { { id = "cached" } },
+      }),
+    })
+    assert.are.equal("cached", catalog:snapshot().models.cached.id)
+
+    authentication.identity = "account-two"
+    listener({ method = "plan", kind = "login", revision = 1 })
+    assert.is_nil(catalog:snapshot().models.cached)
+    assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
+    assert.is_nil(catalog:snapshot().validated_at)
+
+    authentication.identity = nil
+    listener({ method = "plan", kind = "logout", revision = 2 })
+    assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
+    assert.is_nil(catalog:snapshot().validated_at)
+    assert.is_true(catalog:destroy())
+    assert.is_nil(listener)
+  end)
+
+  it("discards discovery when account identity changes in flight", function()
+    local identity = "account-one"
+    local pending
+    local credentials = {
+      cache_identity = function() return identity end,
+      ambient_api_key = function() end,
+    }
+    local catalog = model_catalog.new({
+      provider_id = "example",
+      provider = { api = "fake", auth = "plan" },
+      credentials = credentials,
+      store = store(),
+      definition = discovery({
+        account_scoped = true,
+        seed = { { id = "packaged" } },
+        discover = function()
+          return async.run(function()
+            return async.await(function(done) pending = done end)
+          end)
+        end,
+      }),
+    })
+    local refresh = catalog:refresh()
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    identity = "account-two"
+    pending.resolve({ ok = true, models = { { id = "wrong-account" } } })
+    local result = wait(refresh)
+
+    assert.is_false(result.ok)
+    assert.matches("source changed", result.error.message)
+    assert.is_nil(catalog:snapshot().models["wrong-account"])
+    assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
+    catalog:destroy()
+  end)
+
   it("restores and transforms its cache during construction", function()
     local calls = 0
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       validator = { etag = "catalog-1" },
       models = { { id = "ox-alpha-free" } },
-    })
+    }))
     local catalog = model_catalog.new({
-      provider_id = "opencode-go",
+      provider_id = "example",
       provider = {},
       store = state,
       now = function() return 1100 end,
@@ -58,7 +417,7 @@ describe("neoagent ModelCatalog", function()
           is_closing = function() return false end,
         }
       end,
-      definition = {
+      definition = discovery({
         ttl_ms = 1000,
         discover = function()
           calls = calls + 1
@@ -69,7 +428,7 @@ describe("neoagent ModelCatalog", function()
           model.name = "Alpha"
           return model
         end,
-      },
+      }),
     })
     local snapshot = catalog:snapshot()
     assert.are.equal("Alpha", snapshot.models["ox-alpha-free"].name)
@@ -83,18 +442,17 @@ describe("neoagent ModelCatalog", function()
 
   it("rejects empty discovery caches during construction", function()
     local reports = {}
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       models = {},
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
       store = state,
       now = function() return 1100 end,
       report = function(message) reports[#reports + 1] = message end,
-      definition = {
+      definition = discovery({
         seed = { { id = "packaged" } },
         discover = function()
           return async.run(function()
@@ -104,7 +462,7 @@ describe("neoagent ModelCatalog", function()
             }
           end)
         end,
-      },
+      }),
     })
 
     local snapshot = catalog:snapshot()
@@ -189,13 +547,13 @@ describe("neoagent ModelCatalog", function()
       provider_id = "example",
       provider = {},
       store = state,
-      definition = {
+      definition = discovery({
         discover = function()
           return async.run(function()
             return { ok = true, models = { { id = "new" } } }
           end)
         end,
-      },
+      }),
     })
     local result = wait(catalog:refresh())
     assert.is_true(result.ok)
@@ -212,13 +570,13 @@ describe("neoagent ModelCatalog", function()
       provider_id = "example",
       provider = {},
       store = state,
-      definition = {
+      definition = discovery({
         discover = function()
           return async.run(function()
             return { ok = true, models = { { id = "published" } } }
           end)
         end,
-      },
+      }),
     })
 
     local result = wait(catalog:refresh())
@@ -273,7 +631,7 @@ describe("neoagent ModelCatalog", function()
         provider = {},
         store = state,
         models = case.models,
-        definition = {
+        definition = discovery({
           seed = { { id = "stable" } },
           transform_model = case.transform_model,
           discover = function()
@@ -281,7 +639,7 @@ describe("neoagent ModelCatalog", function()
               return { ok = true, models = { { id = "candidate" } } }
             end)
           end,
-        },
+        }),
       })
 
       local result = wait(catalog:refresh())
@@ -344,18 +702,17 @@ describe("neoagent ModelCatalog", function()
     local now = 5000
     local seen
     local changed = false
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       validator = { etag = "first" },
       models = { { id = "cached" } },
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
       store = state,
       now = function() return now end,
-      definition = {
+      definition = discovery({
         ttl_ms = 1000,
         discover = function(ctx)
           seen = ctx.validator
@@ -370,7 +727,7 @@ describe("neoagent ModelCatalog", function()
             }
           end)
         end,
-      },
+      }),
     })
     assert.is_true(wait(catalog:refresh()).ok)
     assert.are.same({ etag = "first" }, seen)
@@ -426,17 +783,16 @@ describe("neoagent ModelCatalog", function()
   it("publishes refresh status and makes failed validation stale", function()
     local pending = {}
     local states = {}
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       models = { { id = "cached" } },
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
       store = state,
       now = function() return 1100 end,
-      definition = {
+      definition = discovery({
         ttl_ms = 1000,
         discover = function()
           return async.run(function()
@@ -445,7 +801,7 @@ describe("neoagent ModelCatalog", function()
             end)
           end)
         end,
-      },
+      }),
     })
     catalog:subscribe(function(snapshot)
       states[#states + 1] = snapshot.refresh.state
@@ -491,24 +847,23 @@ describe("neoagent ModelCatalog", function()
 
   it("restores stale data before starting an automatic refresh", function()
     local pending
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       models = { { id = "cached" } },
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
       store = state,
       now = function() return 5000 end,
-      definition = {
+      definition = discovery({
         ttl_ms = 1000,
         discover = function()
           return async.run(function()
             return async.await(function(done) pending = done end)
           end)
         end,
-      },
+      }),
     })
     assert.are.equal("cached", catalog:snapshot().models.cached.id)
     assert.is_true(catalog:snapshot().stale)
@@ -527,18 +882,17 @@ describe("neoagent ModelCatalog", function()
     local now = 1500
     local force_values = {}
     local scheduled, new_timer = timers()
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       models = { { id = "cached" } },
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
       store = state,
       now = function() return now end,
       new_timer = new_timer,
-      definition = {
+      definition = discovery({
         ttl_ms = 1000,
         discover = function(ctx)
           force_values[#force_values + 1] = ctx.force
@@ -546,7 +900,7 @@ describe("neoagent ModelCatalog", function()
             return { ok = true, models = { { id = "remote" } } }
           end)
         end,
-      },
+      }),
     })
     assert.is_true(catalog:start())
     assert.are.equal(500, scheduled[1].timeout)
@@ -567,21 +921,20 @@ describe("neoagent ModelCatalog", function()
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = {},
-      store = store({
-        version = 1,
+      store = store(cache({
         validated_at = 1000,
         models = { { id = "cached" } },
-      }),
+      })),
       now = function() return 1000 end,
       report = function(message) reports[#reports + 1] = message end,
-      definition = {
+      definition = discovery({
         ttl_ms = 60000,
         discover = function()
           return async.run(function()
             return { ok = true, models = { { id = "remote" } } }
           end)
         end,
-      },
+      }),
     })
 
     assert.is_true(catalog:start())
@@ -857,23 +1210,22 @@ describe("neoagent ModelCatalog", function()
   end)
 
   it("retains a cached validator across an unchanged response", function()
-    local state = store({
-      version = 1,
+    local state = store(cache({
       validated_at = 1000,
       validator = { etag = "cached" },
       models = { { id = "cached" } },
-    })
+    }))
     local catalog = model_catalog.new({
       provider_id = "example",
       store = state,
       now = function() return 2000 end,
-      definition = {
+      definition = discovery({
         discover = function()
           return async.run(function()
             return { ok = true, unchanged = true }
           end)
         end,
-      },
+      }),
     })
 
     assert.is_true(wait(catalog:refresh()).ok)
@@ -886,22 +1238,21 @@ describe("neoagent ModelCatalog", function()
     local function configured(new_timer)
       return model_catalog.new({
         provider_id = "example",
-        store = store({
-          version = 1,
+        store = store(cache({
           validated_at = 1000,
           models = { { id = "cached" } },
-        }),
+        })),
         now = function() return 1000 end,
         new_timer = new_timer,
         report = function(message) reports[#reports + 1] = message end,
-        definition = {
+        definition = discovery({
           ttl_ms = 1000,
           discover = function()
             return async.run(function()
               return { ok = true, models = { { id = "remote" } } }
             end)
           end,
-        },
+        }),
       })
     end
 
@@ -938,7 +1289,7 @@ describe("neoagent ModelCatalog", function()
       provider_id = "example",
       store = state,
       report = function(message) reports[#reports + 1] = message end,
-      definition = { seed = { { id = "seed" } } },
+      definition = discovery({ seed = { { id = "seed" } } }),
     })
     local notifications = 0
     catalog:subscribe(function()
@@ -983,22 +1334,21 @@ describe("neoagent ModelCatalog", function()
     assert.matches("invalid model catalog cache", reports[#reports])
     second:destroy()
 
-    local unusable = store({
-      version = 1,
+    local unusable = store(cache({
       validated_at = 1000,
       models = { { id = "cached" } },
-    })
+    }))
     local third = model_catalog.new({
       provider_id = "example",
       store = unusable,
       report = function(message) reports[#reports + 1] = message end,
-      definition = {
+      definition = discovery({
         seed = { { id = "seed" } },
         transform_model = function(model)
           if model.id == "cached" then model.id = "different" end
           return model
         end,
-      },
+      }),
     })
     assert.are.equal("seed", third:snapshot().models.seed.id)
     assert.matches("unusable model catalog cache", reports[#reports])

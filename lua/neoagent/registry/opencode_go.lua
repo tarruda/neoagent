@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local function request(body)
   return { body = body }
@@ -240,6 +241,9 @@ return {
   api_key = function() return vim.env.OPENCODE_API_KEY end,
   auth = "opencode-go",
   catalog = {
+    source_id = "opencode-go-models",
+    source_revision = 1,
+    source_options = no_source_options,
     ttl_ms = 14 * 24 * 60 * 60 * 1000,
     seed = seed,
     discover = require("neoagent.providers.opencode_go").discover_models,
