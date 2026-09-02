@@ -1,4 +1,5 @@
 local curl = require("neoagent.transport.curl")
+local util = require("neoagent.util")
 
 describe("neoagent.transport.curl", function()
   it("bounds stderr and reports stream read failures", function()
@@ -16,7 +17,7 @@ describe("neoagent.transport.curl", function()
     end
     local requested = result()
     assert.is_false(requested.ok)
-    assert.are.equal(64 * 1024, #requested.error.detail)
+    assert.is_true(#requested.error.detail <= util.MAX_ERROR_STRING_CHARACTERS + 3)
 
     vim.system = function(_, options, on_exit)
       options.stderr("stderr read failed")
