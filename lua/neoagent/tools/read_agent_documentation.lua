@@ -22,7 +22,8 @@ local function documentation()
     "Neoagent is composed from plain Lua values. Use the layer that matches the task:",
     "",
     "- Models implement `model:stream(opts)` and return cancellable Runs.",
-    "- `neoagent.agent_loop.run(opts)` runs an explicit Model and toolset.",
+    "- `neoagent.agent_loop.run(opts)` runs an explicit Model, toolset, and "
+      .. "message commit command.",
     "- `Session.new()` owns in-memory messages; persistence is injected.",
     "- `neoagent.profile_sessions` binds registered Profiles to Session headers.",
     "- `neoagent.new(opts[, runtime])` creates an independent Agent.",
@@ -32,21 +33,26 @@ local function documentation()
     "",
     "```lua",
     "local neoagent = require(\"neoagent\")",
-    "local opts = require(\"neoagent.config\").get()",
     "local session = require(\"neoagent.session\").new()",
-    "opts.name = \"Review\"",
-    "opts.tools = require(\"neoagent.tools\").read_only()",
-    "opts.system_prompt = \"Review this workspace.\"",
     "",
-    "local review = neoagent.new(opts, {",
+    "local review = neoagent.new({",
+    "  name = \"Review\",",
+    "  tools = require(\"neoagent.tools\").read_only(),",
+    "  system_prompt = \"Review this workspace.\",",
+    "}, {",
     "  session = session,",
     "  workspace = vim.fn.getcwd(),",
     "})",
     "```",
     "",
     "Each Agent has opaque identity and owns one immutable Session binding, model selection, "
-      .. "toolset, Presenter, dialogs, and active Run. Direct Agents may remain "
-      .. "headless.",
+      .. "toolset, Presenter, dialogs, and outer activity Run. Durable submission "
+      .. "acceptance is published separately from Run creation. Direct Agents may "
+      .. "remain headless.",
+    "Agent completion publications contain bounded scalar metadata and exclude "
+      .. "Session, Store, Model, Run, Presenter, and UI owner graphs.",
+    "`agent:config()` and `neoagent.config.get()` return resolved inspection snapshots; "
+      .. "constructor input is an ordinary options table.",
     "",
     "Registered-Profile Sessions record `metadata.neoagent.profileId`. The "
       .. "top-level Applet owns new, resume, fork, copy, live Session "
@@ -63,11 +69,19 @@ local function documentation()
     "`execute_tool(tool, arguments, ctx)` is the policy boundary for approvals, "
       .. "logging, sandboxing, and post-edit checks. Bundled tools route effects "
       .. "through optional `ctx.fs` and `ctx.process` capabilities.",
+    "Bundled writes atomically replace regular files in their target directory, "
+      .. "preserve existing modes, reject symbolic links, and create new files "
+      .. "with mode 0644 subject to process policy.",
     "",
     "Tools may define `on_messages(messages, ctx)` to derive Session state and "
       .. "`render(opts)` to return semantic presentation data. "
       .. "`agent:set_toolset(toolset)` replaces tools and their executor "
       .. "between Runs.",
+    "Toolsets are validated during configuration, health checks, replacement, "
+      .. "and turn preparation. Model and request preparation complete before "
+      .. "the Session accepts a user message.",
+    "Tool-result images use base64 data and a required `image/*` MIME type. "
+      .. "Transient image updates also carry stable `id` and `revision` values.",
     "",
     "## Runtime policies and UI",
     "",

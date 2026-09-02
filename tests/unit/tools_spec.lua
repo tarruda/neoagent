@@ -496,6 +496,11 @@ describe("neoagent bundled tools", function()
     local text = result.content[1].text
     assert.matches("# Neoagent API map", text)
     assert.matches("Independent Agent", text)
+    assert.is_truthy(text:find("local review = neoagent.new({", 1, true))
+    assert.is_truthy(text:find(
+      "constructor input is an ordinary options table", 1, true))
+    assert.is_nil(text:find(
+      "neoagent.new(require(\"neoagent.config\").get()", 1, true))
     assert.matches("Tools and execution", text)
     assert.matches("Runtime policies and UI", text)
     assert.matches("architecture.md", text)

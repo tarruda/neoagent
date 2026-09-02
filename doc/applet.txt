@@ -107,6 +107,11 @@ Chrome, view intent, and editable state are validated and committed
 independently. Owners can retain immutable root identity for status-only
 updates without traversing document regions.
 
+A document root composed entirely of regions with explicit revisions retains
+its longest unchanged prefix when its root table changes. Pane compiles and
+reconciles from the first affected region. Region revisions cover their child
+content and image sources.
+
 Compiled Layouts are compared as exact immutable Lua values. Reconciliation
 receives one categorized change set for content, decorations, interaction,
 images, regions, sources, virtual text, chrome, and view state.
@@ -367,8 +372,11 @@ delete their owned buffer at unmount. `owns_pane` transfers Pane destruction
 to the Applet when that mount identity expires. A required mount makes its
 first content commit part of open success. Changing `mount_revision` or
 calling `remount(key)` clears suppression after an external detach. Sensitive
-buffers require a transient mount, disable swap and undo-file persistence, and
-are wiped during cleanup.
+buffers require a transient mount and disable swap and undo-file persistence.
+Transient buffer generations include mount revision, sensitivity, and Pane
+identity. Replacing a sensitive generation allocates a fresh buffer, moves
+foreign windows away from the prior buffer, overwrites it, and deletes it while
+the sensitive descriptor remains attached.
 
 A Pane can be mounted only once in one submitted layout and by only one live
 Applet. The Pane key is opaque layout identity; display labels belong in Pane
@@ -754,7 +762,11 @@ backend uses the Kitty graphics protocol. A backend table implements:
 `replace` receives every desired placement for `owner` in one list. Each
 placement contains its slot `key`, validated PNG `resource`, fixed cell
 dimensions, fit, screen position, and optional source viewport. An optional
-`set_error_handler(callback)` reports an asynchronous transport failure.
+`set_error_handler(callback)` reports a transport failure. ImageSystem captures
+the backend generation around every backend call and publishes candidate state
+only when that generation remains available and current. A synchronous error
+callback or thrown method destroys the backend once and clears resources and
+presentations before the caller can publish its candidate.
 
 `Applet.ImageSystem.diagnostics({ backend = "kitty" })` reports whether the
 current terminal provides the ordered Kitty transport needed for persistent
