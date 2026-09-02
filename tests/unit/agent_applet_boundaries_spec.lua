@@ -197,7 +197,7 @@ describe("Agent Applet boundaries", function()
       destroy = function() fake_destroyed = true end,
       set_attention = function() end,
       prepare = function() return true end,
-      send = function() return { id = "run" } end,
+      send = function() return { id = "run" }, nil, 1, "turn" end,
       snapshot = function()
         return {
           revision = 0,
@@ -249,10 +249,17 @@ describe("Agent Applet boundaries", function()
       view = view_factory(rejected_record, { presentation_error = true }),
     })
     local selection = rejected:presenter():select({ items = { "choice" } })
+    local opened, open_err = rejected:open()
+    assert.is_nil(opened)
+    assert.matches("presentation rejected", open_err.message)
+    assert.is_true(rejected_record.view.destroyed)
+    assert.is_nil(rejected:view())
+    assert.is_false(selection:is_done())
+    rejected.view_factory = view_factory(rejected_record)
     assert(rejected:open())
+    local active = assert(rejected:presenter():snapshot().active)
+    assert(rejected:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
-    assert.is_false(selection:result().ok)
-    assert.is_nil(rejected:presenter():snapshot().active)
 
     local dialog_record = {}
     local unsupported = applet({
@@ -364,8 +371,18 @@ describe("Agent Applet boundaries", function()
 
     value.pending_submission = "retry"
     record.view:set_input("retry")
-    owned_agent.send = function() return { id = "retry-run" } end
+    owned_agent.send = function()
+      return { id = "retry-run" }, nil, 1, "turn"
+    end
     assert(value:retry_submission())
+    assert.are.equal("retry", record.view:get_input())
+    value:_apply({
+      revision = value.agent_snapshot.revision + 1,
+      type = "submission_accepted",
+      submission_id = 1,
+      prompt = "retry",
+      entry_id = "entry",
+    })
     assert.are.equal("", record.view:get_input())
 
     local notifications = {}
@@ -383,6 +400,198 @@ describe("Agent Applet boundaries", function()
     assert.matches("settings were not saved", notifications[#notifications][1])
     owned_agent.prepare = original_prepare
     owned_agent.send = original_send
+  end)
+
+  it("destroys an unbound Applet without consuming borrowed semantic sources", function()
+    local owned_agent = agent()
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+    })
+    assert.are.equal(owned_agent, value:bind(owned_agent))
+    assert.are.equal(owned_agent, value:unbind(owned_agent))
+
+    value:destroy()
+
+    assert.is_false(owned_agent:is_destroyed())
+    assert.is_nil(owned_agent:applet())
+    assert.is_false(owned_agent:presenter().destroyed)
+    local presented
+    local detach_presenter = owned_agent:presenter():attach({
+      present = function(snapshot)
+        presented = snapshot
+        return true
+      end,
+    })
+    local presentation = owned_agent:presenter():notice({
+      prompt = "Borrowed Presenter",
+      body = "ready",
+    })
+    assert.is_table(presented.active)
+    assert(owned_agent:presenter():resolve(presented.active.id))
+    assert(vim.wait(1000, function() return presentation:is_done() end, 5))
+    assert.is_true(presentation:result().ok)
+    detach_presenter()
+
+    local dialog_snapshot
+    local detach_dialog = owned_agent:dialogs():subscribe(function(snapshot)
+      dialog_snapshot = snapshot
+    end)
+    local dialog = owned_agent:dialogs():show({
+      placement = "float",
+      title = "Borrowed Dialogs",
+      body = "ready",
+      actions = { { id = "done", label = "Done", key = "<CR>" } },
+    })
+    assert.is_table(dialog_snapshot.active)
+    assert(owned_agent:dialogs():choose(dialog_snapshot.active.id, "done"))
+    assert(vim.wait(1000, function() return dialog:is_done() end, 5))
+    assert.is_true(dialog:result().ok)
+    detach_dialog()
+  end)
+
+  it("rolls back every View hydration failure and preserves input", function()
+    for _, method in ipairs({
+      "set_position", "set_messages", "set_context", "apply", "finish",
+    }) do
+      for _, returned in ipairs({ false, true }) do
+        local owned_agent = agent()
+        local record = {}
+        local value = applet({
+          presenter = owned_agent:presenter(),
+          dialogs = owned_agent:dialogs(),
+          view = view_factory(record),
+        })
+        assert(value:open())
+        assert.are.equal("retained draft", value:set_input("retained draft"))
+        local failed_view = record.view
+        failed_view[method] = function()
+          if returned then
+            return nil, util.error("ui", method .. " rejected")
+          end
+          error(method .. " exploded")
+        end
+        owned_agent.snapshot = function()
+          return {
+            revision = 1,
+            messages = { { role = "user", content = "message" } },
+            context = {
+              workspace = owned_agent:get_workspace().root,
+              model = "fake/test",
+              position = "left",
+            },
+            events = { { type = "text_delta", text = "event" } },
+            result = { ok = true },
+          }
+        end
+
+        local expected = method .. (returned and " rejected" or " exploded")
+        assert.has_error(function() value:bind(owned_agent) end, expected)
+        assert.is_nil(value:agent())
+        assert.is_nil(value:view())
+        assert.is_true(failed_view.destroyed)
+        assert.are.equal("retained draft", value:get_input())
+
+        assert.are.equal(owned_agent, value:bind(owned_agent))
+        assert(value:open())
+        assert.are.equal("retained draft", value:get_input())
+      end
+    end
+  end)
+
+  it("destroys every failed View candidate before publication", function()
+    for _, method in ipairs({
+      "set_input", "set_context", "set_dialog", "set_presentation",
+    }) do
+      for _, returned in ipairs({ false, true }) do
+        local record = {}
+        local created = 0
+        local base = view_factory(record)
+        local value = applet({
+          view = function(opts)
+            created = created + 1
+            local view = base(opts)
+            if created == 1 then
+              view[method] = function()
+                if returned then
+                  return nil, util.error("ui", method .. " rejected")
+                end
+                error(method .. " exploded")
+              end
+            end
+            return view
+          end,
+        })
+        value.input_value = "retained candidate input"
+        local pending
+        if method == "set_dialog" then
+          pending = value:dialogs():show({
+            placement = "float",
+            title = "Candidate dialog",
+            body = "body",
+            actions = { {
+              id = "close", label = "Close", key = "<CR>",
+            } },
+          })
+        elseif method == "set_presentation" then
+          pending = value:presenter():select({ items = { "one" } })
+        end
+
+        local opened, err = value:open()
+        assert.is_nil(opened)
+        assert.matches(method, err.message)
+        assert.is_true(record.view.destroyed)
+        assert.is_nil(value:view())
+        assert.are.equal("retained candidate input", value:get_input())
+
+        assert(value:open())
+        assert.are.equal(2, created)
+        assert.are.equal("retained candidate input", value:get_input())
+        if pending then
+          if method == "set_dialog" then
+            value:dialogs():cancel_pending("test complete")
+          else
+            local active = assert(value:presenter():snapshot().active)
+            value:presenter():cancel(active.id, "test complete")
+          end
+          assert(vim.wait(1000, function() return pending:is_done() end))
+        end
+      end
+    end
+  end)
+
+  it("rolls back subscription and returned attachment failures", function()
+    local owned_agent = agent()
+    local record = {}
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      view = view_factory(record),
+    })
+    assert(value:open())
+    local first_view = record.view
+    local subscribe = owned_agent.subscribe
+    owned_agent.subscribe = function() error("subscription exploded") end
+    assert.has_error(function() value:bind(owned_agent) end,
+      "subscription exploded")
+    assert.is_nil(value:agent())
+    assert.are.equal(first_view, value:view())
+    assert.is_false(first_view.destroyed == true)
+
+    owned_agent.subscribe = subscribe
+    local attach = owned_agent.attach_applet
+    owned_agent.attach_applet = function()
+      return nil, util.error("agent", "attachment rejected")
+    end
+    assert.has_error(function() value:bind(owned_agent) end,
+      "attachment rejected")
+    assert.is_nil(value:agent())
+    assert.is_nil(value:view())
+    assert.is_true(first_view.destroyed)
+
+    owned_agent.attach_applet = attach
+    assert.are.equal(owned_agent, value:bind(owned_agent))
+    assert(value:open())
   end)
 
   it("validates Agent Applets and contains activity listeners", function()
@@ -420,6 +629,21 @@ describe("Agent Applet boundaries", function()
     unsubscribe()
     vim.notify = original_notify
     assert(ok, err)
+
+    local requests = 0
+    local unavailable = agent({ workspace_trust = {
+      is_trusted = function()
+        return nil, util.error("workspace_trust", "trust store unreadable")
+      end,
+      check = function()
+        return nil, util.error("workspace_trust", "trust store unreadable")
+      end,
+      request = function() requests = requests + 1 end,
+    } })
+    local prepared, prepare_err = unavailable:prepare()
+    assert.is_nil(prepared)
+    assert.matches("trust store unreadable", prepare_err.message)
+    assert.are.equal(0, requests)
   end)
 
   it("publishes independent semantic updates to each Agent listener", function()

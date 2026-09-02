@@ -226,7 +226,7 @@ local function validate(opts)
       "workspace_trust.path is required")
   end
   assert(require("neoagent.thinking").is_level(opts.default_thinking_level),
-    "default_thinking_level must be off, minimal, low, medium, high, xhigh, or max")
+    "default_thinking_level must be off, minimal, low, medium, high, xhigh, max, or ultra")
   if opts.default_model ~= nil then
     assert(type(opts.default_model) == "table", "default_model must be a table")
     assert(model_config.safe_provider_id(opts.default_model.provider),

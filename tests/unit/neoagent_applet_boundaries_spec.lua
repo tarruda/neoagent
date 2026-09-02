@@ -83,6 +83,34 @@ describe("Neoagent Applet boundaries", function()
     assert.is_nil(owner:_activate({}))
   end)
 
+  it("rolls back every resource from failed draft construction", function()
+    local owner = setup(fake_model.new({}))
+    local profile = assert(owner:profile("neo"))
+    local create_applet = profile.create_applet
+    local rejected
+    profile.create_applet = function(context)
+      local candidate, options = create_applet(context)
+      rejected = candidate
+      options.default_model = { provider = "", model = "unsafe/model" }
+      return candidate, options
+    end
+
+    local draft, err = owner:draft("neo")
+
+    assert.is_nil(draft)
+    assert.matches("provider", err.message)
+    assert.is_true(rejected:is_destroyed())
+    assert.is_nil(rejected:owner())
+    assert.is_nil(owner:retained_draft("neo"))
+    assert.is_nil(next(owner.drafts_by_key))
+    assert.is_nil(next(owner.drafts_by_applet))
+
+    profile.create_applet = create_applet
+    local retried = assert(owner:draft("neo"))
+    assert.are_not.equal(rejected, retried)
+    assert.are.equal(owner, retried:owner())
+  end)
+
   it("destroys an invalid Agent returned by a Profile", function()
     local owner = setup(fake_model.new({}))
     assert(owner:toggle())

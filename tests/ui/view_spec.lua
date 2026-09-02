@@ -3912,10 +3912,12 @@ describe("neoagent.ui", function()
   it("scrolls the transcript after submit and when leaving it", function()
     local function scrolling_view(overrides)
       local submissions = 0
-      local result = ui.new({
+      local result
+      result = ui.new({
         config = config.setup({ ui = vim.tbl_extend("force", { position = "center" }, overrides or {}) }).ui,
         on_submit = function()
           submissions = submissions + 1
+          result:submission_accepted("send")
           return true
         end,
       })

@@ -796,9 +796,7 @@ end
 function View:_submit(value)
   local pane = self:pane("input")
   if pane and pane:completion_visible() then return pane:completion_accept() end
-  local result, err = self.callbacks.on_submit(value)
-  if result then self:submission_accepted(value) end
-  return result, err
+  return self.callbacks.on_submit(value)
 end
 
 function View:submission_accepted(value)

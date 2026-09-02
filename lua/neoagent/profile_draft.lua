@@ -48,6 +48,10 @@ function ProfileDraft:is_active()
   return self.state_value == "draft"
 end
 
+function ProfileDraft:is_retained()
+  return self.state_value == "draft" or self.state_value == "provisional"
+end
+
 function ProfileDraft:options()
   local options = util.copy(self.options_value)
   local selected = self.selection:model_selection()

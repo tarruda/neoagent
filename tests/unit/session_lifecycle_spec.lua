@@ -2,6 +2,8 @@ local lifecycle_module = require("neoagent.agent.session_lifecycle")
 
 describe("neoagent Agent session lifecycle", function()
   local function fixture(overrides)
+    local steering = require("neoagent.agent.steering").new()
+    steering:enqueue(1, "previous", 1)
     local session = {
       path = function() return {} end,
       state = function() return {} end,
@@ -30,7 +32,7 @@ describe("neoagent Agent session lifecycle", function()
       provider_status = "ready",
       inference_stats = { generation_tokens_per_second = 40 },
       pending_events = { "previous" },
-      steering = { "previous" },
+      steering = steering,
       last_result = { ok = true },
     }
     local notifications = {}
@@ -98,7 +100,7 @@ describe("neoagent Agent session lifecycle", function()
     assert.is_nil(state.provider_status)
     assert.is_nil(state.inference_stats)
     assert.are.same({}, state.pending_events)
-    assert.are.same({}, state.steering)
+    assert.are.same({}, state.steering:texts())
     assert.is_nil(state.last_result)
     assert.is_nil(state.request_selection:model())
     local _, published, updated = observed()
@@ -123,7 +125,7 @@ describe("neoagent Agent session lifecycle", function()
 
   it("rejects branch changes while a Run is active", function()
     local lifecycle, state, notifications = fixture()
-    state.run = { active = true }
+    state.activity = { phase = "running" }
 
     assert.is_nil(lifecycle.branch("entry"))
     assert.matches("cannot change branches", notifications[1].message)

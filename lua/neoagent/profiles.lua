@@ -84,47 +84,54 @@ local function applet_factory(
     configured, profile_id, profile_label, auth, runtimes)
   return function(context)
     local presenter = require("neoagent.presenter").new()
-    local workspace = require("neoagent.fs").canonical(context.workspace)
-    local options = draft_options(
-      configured, profile_id, presenter, workspace)
-    local selected_model = options.default_model or configured.default_model
-    if not selected_model then
-      local fallback, err = require("neoagent.models").first_available(
-        configured, auth, runtimes)
-      if err then
-        presenter:notify({
-          message = "neoagent: " .. err.message
-            .. (err.detail and ": " .. err.detail or ""),
-          level = vim.log.levels.ERROR,
-        })
-      elseif fallback then
-        selected_model = fallback
-        options.default_model = util.copy(fallback)
+    local built, applet, options = pcall(function()
+      local workspace = require("neoagent.fs").canonical(context.workspace)
+      local draft = draft_options(
+        configured, profile_id, presenter, workspace)
+      local selected_model = draft.default_model or configured.default_model
+      if not selected_model then
+        local fallback, err = require("neoagent.models").first_available(
+          configured, auth, runtimes)
+        if err then
+          presenter:notify({
+            message = "neoagent: " .. err.message
+              .. (err.detail and ": " .. err.detail or ""),
+            level = vim.log.levels.ERROR,
+          })
+        elseif fallback then
+          selected_model = fallback
+          draft.default_model = util.copy(fallback)
+        end
       end
+      local selected_thinking = draft.default_thinking_level
+      if selected_thinking == nil then
+        selected_thinking = configured.default_thinking_level
+      end
+      local model_label = "no model"
+      if selected_model then
+        model_label = selected_model.provider .. "/" .. selected_model.model
+      end
+      local value = AgentApplet.new({
+        config = util.deep_merge(
+          util.deep_merge(configured.ui, draft.ui or {}), context.ui or {}),
+        persistence = configured.persistence,
+        context = {
+          model = model_label,
+          thinking = selected_thinking or false,
+          workspace = workspace,
+          state = "idle",
+        },
+        profile_id = profile_id,
+        label = context.label or profile_label,
+        presenter = presenter,
+        view = configured._view,
+      })
+      return value, draft
+    end)
+    if not built then
+      presenter:destroy()
+      error(applet, 0)
     end
-    local selected_thinking = options.default_thinking_level
-    if selected_thinking == nil then
-      selected_thinking = configured.default_thinking_level
-    end
-    local model_label = "no model"
-    if selected_model then
-      model_label = selected_model.provider .. "/" .. selected_model.model
-    end
-    local applet = AgentApplet.new({
-      config = util.deep_merge(
-        util.deep_merge(configured.ui, options.ui or {}), context.ui or {}),
-      persistence = configured.persistence,
-      context = {
-        model = model_label,
-        thinking = selected_thinking or false,
-        workspace = workspace,
-        state = "idle",
-      },
-      profile_id = profile_id,
-      label = context.label or profile_label,
-      presenter = presenter,
-      view = configured._view,
-    })
     return applet, options
   end
 end
@@ -237,11 +244,13 @@ local function make_neo(configured, auth, runtimes, runtime)
       if trust then
         trust:attach({
           close = function() applet:close() end,
-          on_trusted = function()
+          on_result = function(result)
+            if applet:is_destroyed() then return end
             if applet:pending_message() then
-              applet:retry_submission()
+              applet:trust_submission_result(result)
               return
             end
+            if not result.ok then return end
             local prepared, err = agent:prepare()
             if not prepared and err then
               applet:presenter():notify({

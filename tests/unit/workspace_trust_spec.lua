@@ -350,10 +350,17 @@ describe("neoagent workspace trust", function()
       notify = function(err) notices[#notices + 1] = err end,
       session = {},
     })
-    activation:attach({ activate = function() error("View unavailable") end })
+    local activation_result
+    activation:attach({
+      activate = function() error("View unavailable") end,
+      on_result = function(result) activation_result = result end,
+    })
     assert.is_false(activation:request(root))
-    assert(vim.wait(1000, function() return #notices == 2 end, 5))
+    assert(vim.wait(1000, function()
+      return #notices == 2 and activation_result ~= nil
+    end, 5))
     assert.matches("activate", notices[2].message:lower())
+    assert.is_false(activation_result.ok)
 
     local changed_path = directory .. "/changed.json"
     local changed = trust.new({
@@ -393,11 +400,18 @@ describe("neoagent workspace trust", function()
         end,
       },
     })
+    local persistence_result
+    persistence:attach({
+      on_result = function(result) persistence_result = result end,
+    })
     assert.is_false(persistence:request(root))
-    assert(vim.wait(1000, function() return #notices == 4 end, 5))
+    assert(vim.wait(1000, function()
+      return #notices == 4 and persistence_result ~= nil
+    end, 5))
     unsubscribe()
     assert.is_false(persistence:is_trusted(root))
     assert.are.equal("write failed", notices[4].message)
+    assert.are.equal("write failed", persistence_result.error.message)
 
     local dismissals = require("neoagent.dialog").new()
     local cancellation_settled = false

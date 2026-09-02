@@ -292,30 +292,57 @@ function Policy:_notify(err)
   self.notify(err)
 end
 
+function Policy:_finish(result)
+  if self.on_result then
+    local ok, err = pcall(self.on_result, util.copy(result))
+    if not ok then
+      self:_notify(util.normalize_error(err, "workspace_trust"))
+    end
+  end
+  if result.ok and self.on_trusted then
+    local ok, err = pcall(self.on_trusted, result.target)
+    if not ok then
+      self:_notify(util.normalize_error(err, "workspace_trust"))
+    end
+  end
+end
+
 function Policy:request(cwd)
   local trusted, err, target = self:is_trusted(cwd)
-  if trusted then return true end
+  if trusted then return true, nil, "trusted" end
   if err then
     self:_notify(err)
     return nil, err
   end
   local key = M.key(target)
-  if self.pending[key] or self.scheduled[key] then return false end
+  if self.pending[key] then return false, nil, "active" end
+  if self.scheduled[key] then return false, nil, "scheduled" end
   self.scheduled[key] = true
   vim.schedule(function()
     self.scheduled[key] = nil
     local current, current_err = self:is_trusted(target)
-    if current then return end
+    if current then
+      self:_finish({
+        ok = true,
+        target = target,
+        persistent = true,
+        already_trusted = true,
+      })
+      return
+    end
     if current_err then
       self:_notify(current_err)
+      self:_finish({ ok = false, error = current_err })
       return
     end
     if self.pending[key] then return end
     if self.activate then
       local ok, activate_err = pcall(self.activate)
       if not ok then
-        self:_notify(failure("Failed to activate workspace trust prompt",
-          activate_err))
+        local activate_failure = failure(
+          "Failed to activate workspace trust prompt", activate_err)
+        self:_notify(activate_failure)
+        self:_finish({ ok = false, error = activate_failure })
         return
       end
     end
@@ -338,10 +365,7 @@ function Policy:request(cwd)
       error_kind = "workspace_trust",
       on_done = function(result)
         if self.pending[key] == run then self.pending[key] = nil end
-        if result.ok and self.on_trusted then
-          local ok, err = pcall(self.on_trusted, result.target)
-          if not ok and err then self:_notify(util.normalize_error(err, "workspace_trust")) end
-        end
+        self:_finish(result)
         if not result.ok and not result.presenter_unavailable and result.error.kind ~= "cancelled"
             and result.error.message ~= "Workspace trust was cancelled"
             and not (result.error.kind == "dialog"
@@ -352,17 +376,22 @@ function Policy:request(cwd)
     })
     self.pending[key] = run
   end)
-  return false
+  return false, nil, "scheduled"
 end
 
 function Policy:check(cwd)
   local trusted, err, target = self:is_trusted(cwd)
   if trusted then return true end
   if err then return nil, err end
-  self:request(target)
+  local requested, request_err, request_state = self:request(target)
+  if requested then return true end
+  if requested == nil then return nil, request_err end
   local display = target:gsub("[%z\1-\31\127]", " ")
   if #display > 900 then display = display:sub(1, 897) .. "..." end
-  return nil, failure("Workspace trust is required for " .. display)
+  local err = failure("Workspace trust is required for " .. display)
+  err.pending = true
+  err.request_state = request_state
+  return nil, err
 end
 
 function Policy:set_sandbox_status(status)
@@ -377,9 +406,12 @@ function Policy:attach(opts)
     "workspace trust close callback must be a function")
   assert(opts.on_trusted == nil or type(opts.on_trusted) == "function",
     "workspace trust on_trusted callback must be a function")
+  assert(opts.on_result == nil or type(opts.on_result) == "function",
+    "workspace trust on_result callback must be a function")
   self.activate = opts.activate
   self.close = opts.close
   self.on_trusted = opts.on_trusted
+  self.on_result = opts.on_result
   return self
 end
 
