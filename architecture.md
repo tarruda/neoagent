@@ -769,24 +769,27 @@ constructors retain their ordinary unrecorded curl default.
 
 Model resolution adds the canonical Workspace, opaque Agent ID, persisted
 Session ID, provider, and model to the wrapped transport. Catalog,
-Authentication, and Provider Shell copies carry their corresponding origin;
-requests without an Agent use the working directory at request acceptance.
-The HTTP clients remain unaware of recording configuration and paths.
+Authentication, and Provider Shell copies carry their corresponding provider
+or authentication method and origin. These shared operations have no
+Workspace owner. The HTTP clients remain unaware of recording configuration
+and paths.
 
 Each HTTP exchange owns one mode-`0600` NDJSON staging file beneath a
-mode-`0700` Workspace and UTC-date hierarchy. The opening record contains the
-credential-scrubbed request and correlation context. Model request bodies are
-opaque and byte-faithful. Response callbacks append ordered timing and
+mode-`0700` hierarchy. Workspace-owned exchanges reuse the canonical hashed
+Workspace state directory and its `recordings` child. Shared provider
+exchanges use `provider-recordings/<provider>`. The opening record contains
+the credential-scrubbed request and correlation context. Model request bodies
+are opaque and byte-faithful. Response callbacks append ordered timing and
 byte-count records. Raw response fragments remain exchange-local until
 settlement, when the complete body, response metadata, and one terminal record
-are appended and the handle is closed. Invalid UTF-8 bodies use lossless base64
-with an explicit encoding marker.
+are appended and the handle is closed. Invalid UTF-8 bodies use lossless
+base64 with an explicit encoding marker.
 
 JSON publication renames the closed staging file to `.jsonl`. YAML publication
 runs one compatible `yq` v4 process over that file and atomically writes its
 multi-document output. Format selection occurs when the recorder is
 constructed. `auto` chooses YAML when `yq` is available and JSON otherwise;
-an explicit YAML selection requires `yq`. The recording directory is a
+an explicit YAML selection requires `yq`. The recording state root is a
 configuration value so interactive and test compositions can own independent
 locations.
 

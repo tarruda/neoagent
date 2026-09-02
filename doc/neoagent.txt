@@ -121,8 +121,7 @@ The main options and defaults are: >lua
     recording = {
       enabled = false,
       format = "auto", -- "auto", "yaml", or "json"
-      directory = stdpath("state")
-        .. "/neoagent/workspaces/recordings",
+      directory = stdpath("state") .. "/neoagent",
     },
     ui = {
       style = "codex",
@@ -969,15 +968,27 @@ to its provider traffic.
 
 Recordings default to: >lua
 
-  vim.fn.stdpath("state") .. "/neoagent/workspaces/recordings"
+  vim.fn.stdpath("state") .. "/neoagent"
 <
-Set `recording.directory` to an absolute or normalized destination when a
-different owner, such as a test runner, supplies the storage location.
-Workspace directories combine a readable basename and a hash of the canonical
-root. Exchanges are grouped by UTC date. Each filename begins with a sortable
-UTC timestamp, process ID, and sequence, then names its provider and origin.
-Normal filename sorting therefore preserves request-start order within one
-Neoagent process.
+`recording.directory` is the state root used to organize both kinds of
+recording. An exchange with an explicit Workspace is stored beneath the same
+hashed Workspace directory used by settings and Sessions: >text
+
+  <recording.directory>/workspaces/<workspace-sha256>/recordings/<UTC-date>/
+<
+The Workspace directory also gains `workspace.json`, which identifies its
+canonical root. Catalog, Provider Shell, and Authentication exchanges have no
+Workspace owner and use: >text
+
+  <recording.directory>/provider-recordings/<provider>/<UTC-date>/
+<
+An Authentication exchange without a provider identifier uses its
+authentication method as the provider directory; a fully unscoped transport
+uses `http`. Set `recording.directory` to an absolute or normalized state root
+when a different owner, such as a test runner, supplies the storage location.
+Each filename begins with a sortable UTC timestamp, process ID, and sequence,
+then names its provider and origin. Normal filename sorting preserves
+request-start order within one Neoagent process.
 
 Each request/response pair owns one private staging file ending in
 `.partial.ndjson`. Neoagent appends timing records while the request runs,

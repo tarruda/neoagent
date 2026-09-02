@@ -665,7 +665,12 @@ end
 function Recorder:_start(operation, request, supplied_context)
   if self._destroyed then return nil end
   local context = merge_context(self._context, supplied_context)
-  local workspace = fs.canonical(context.workspace or vim.fn.getcwd())
+  local workspace
+  if context.workspace ~= nil then
+    assert(type(context.workspace) == "string" and context.workspace ~= "",
+      "recording context workspace must be a non-empty string")
+    workspace = fs.canonical(context.workspace)
+  end
   local secrets = {}
   local authentication = context.origin == "authentication"
   local model_exchange = context.origin == "model"
@@ -692,22 +697,43 @@ function Recorder:_start(operation, request, supplied_context)
   global_sequence = global_sequence + 1
   local sequence = global_sequence
   local now = math.floor(self._now())
-  local workspace_label = select(1, redact_text(
-    vim.fs.basename(workspace) or workspace, secrets))
-  local workspace_name = slug(workspace_label)
-    .. "--" .. vim.fn.sha256(workspace)
-  local workspace_directory = fs.join(self._directory, workspace_name)
-  local day_directory = fs.join(workspace_directory,
+  local selected_context = sanitize_context(context, secrets)
+  local provider = slug(selected_context.provider
+    or selected_context.auth_method or "http")
+  local scope_directory
+  local directories = { self._directory }
+  local workspace_directory
+  if workspace then
+    local workspaces_directory = fs.join(self._directory, "workspaces")
+    workspace_directory = require("neoagent.workspace_settings").new({
+      directory = workspaces_directory,
+      root = workspace,
+    }).directory
+    scope_directory = fs.join(workspace_directory, "recordings")
+    directories[#directories + 1] = workspaces_directory
+    directories[#directories + 1] = workspace_directory
+  else
+    local providers_directory = fs.join(
+      self._directory, "provider-recordings")
+    scope_directory = fs.join(providers_directory, provider)
+    directories[#directories + 1] = providers_directory
+  end
+  directories[#directories + 1] = scope_directory
+  local day_directory = fs.join(scope_directory,
     os.date("!%Y-%m-%d", math.floor(now / 1000)))
-  local ok, err = ensure_directory(self._directory)
-  if ok then ok, err = ensure_directory(workspace_directory) end
-  if ok then ok, err = ensure_directory(day_directory) end
+  directories[#directories + 1] = day_directory
+  local ok, err = true
+  for _, directory in ipairs(directories) do
+    ok, err = ensure_directory(directory)
+    if not ok then break end
+  end
   if not ok then
     report(self, "failed to create recording directory: " .. tostring(err))
     return nil
   end
-  local index_path = fs.join(workspace_directory, "workspace.json")
-  if not vim.uv.fs_stat(index_path) then
+  local index_path = workspace_directory
+      and fs.join(workspace_directory, "workspace.json") or nil
+  if index_path and not vim.uv.fs_stat(index_path) then
     local indexed = fs.atomic_replace(index_path, util.json_encode({
       version = FORMAT_VERSION,
       root = select(1, redact_text(workspace, secrets)),
@@ -716,8 +742,6 @@ function Recorder:_start(operation, request, supplied_context)
       report(self, "failed to write Workspace recording index")
     end
   end
-  local selected_context = sanitize_context(context, secrets)
-  local provider = slug(selected_context.provider or "http")
   local origin = slug(selected_context.origin or operation)
   local base = string.format("%s-%06d-%08d-%s-%s",
     filename_timestamp(now), vim.uv.os_getpid(), sequence, provider, origin)
@@ -732,7 +756,8 @@ function Recorder:_start(operation, request, supplied_context)
     sequence = sequence,
     started_at = iso_timestamp(now),
     operation = operation,
-    workspace = { root = select(1, redact_text(workspace, secrets)) },
+    workspace = workspace
+      and { root = select(1, redact_text(workspace, secrets)) } or nil,
     context = selected_context,
     request = {
       method = select(1, redact_text(
@@ -1085,7 +1110,7 @@ function M.new(opts)
     _format = format,
     _directory = fs.normalize(opts.directory
       or selected.directory
-      or vim.fn.stdpath("state") .. "/neoagent/workspaces/recordings"),
+      or vim.fn.stdpath("state") .. "/neoagent"),
     _context = opts.context,
     _report = opts.report,
     _now = opts.now or util.now_ms,

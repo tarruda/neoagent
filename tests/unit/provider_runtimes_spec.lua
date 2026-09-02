@@ -50,7 +50,7 @@ describe("neoagent provider runtime composition", function()
     provider_runtimes.destroy(runtimes)
   end)
 
-  it("attributes model, catalog, and Provider Shell HTTP transports", function()
+  it("attributes model and shared provider HTTP transports", function()
     local catalog_context
     local service_context
     local function contextual(context)
@@ -84,21 +84,20 @@ describe("neoagent provider runtime composition", function()
     }
     local runtimes = assert(provider_runtimes.compose(configured, {
       startup = false,
-      transport = contextual({ workspace = "/workspace" }),
+      transport = contextual(),
     }))
 
     assert.are.same({
-      workspace = "/workspace", provider = "managed", origin = "model",
+      provider = "managed", origin = "model",
     }, runtimes.managed.transport.context)
     assert.are.same({
-      workspace = "/workspace", provider = "managed",
-      origin = "provider-shell",
+      provider = "managed", origin = "provider-shell",
     }, service_context)
     local refresh = runtimes.managed.catalog:refresh()
     assert(vim.wait(1000, function() return refresh:is_done() end))
     assert.is_true(refresh:result().ok)
     assert.are.same({
-      workspace = "/workspace", provider = "managed", origin = "catalog",
+      provider = "managed", origin = "catalog",
     }, catalog_context)
     provider_runtimes.destroy(runtimes)
   end)

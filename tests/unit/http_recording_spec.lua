@@ -73,7 +73,7 @@ describe("neoagent HTTP recording", function()
     local defaults = config.resolve({ default_registry = false })
     assert.is_false(defaults.recording.enabled)
     assert.are.equal("auto", defaults.recording.format)
-    assert.matches("/neoagent/workspaces/recordings$",
+    assert.matches("/neoagent$",
       defaults.recording.directory)
 
     local configured = config.resolve({
@@ -121,6 +121,102 @@ describe("neoagent HTTP recording", function()
     assert.has_error(function()
       recording.new({ config = { enabled = true, format = "xml" } })
     end, "recording format must be auto, yaml, or json")
+  end)
+
+  it("stores Workspace and provider-owned traffic separately", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+      now = function() return 1788363492417 end,
+    }))
+    local model = recording:transport(transport({ "model response" }), {
+      workspace = workspace,
+      provider = "example",
+      model = "test-model",
+      origin = "model",
+    })
+    assert.is_true(wait(model.fetch({ request = {
+      url = "https://example.test/model",
+    } })).ok)
+
+    local original = vim.fn.getcwd()
+    local ok, err = xpcall(function()
+      vim.cmd.cd(vim.fn.fnameescape(directory))
+      local catalog = recording:transport(transport({ "catalog response" }), {
+        provider = "example",
+        origin = "catalog",
+      })
+      assert.is_true(wait(catalog.fetch({ request = {
+        url = "https://example.test/models",
+      } })).ok)
+    end, debug.traceback)
+    vim.cmd.cd(vim.fn.fnameescape(original))
+    if not ok then error(err, 0) end
+    recording:destroy()
+
+    local workspace_directory = fs.join(
+      directory, "workspaces", vim.fn.sha256(workspace))
+    local workspace_paths = vim.fn.globpath(fs.join(
+      workspace_directory, "recordings", "2026-09-02"),
+      "*.jsonl", false, true)
+    local provider_paths = vim.fn.globpath(fs.join(
+      directory, "provider-recordings", "example", "2026-09-02"),
+      "*.jsonl", false, true)
+    assert.are.equal(1, #workspace_paths)
+    assert.are.equal(1, #provider_paths)
+    for _, path in ipairs({
+      fs.join(directory, "workspaces"),
+      workspace_directory,
+      fs.join(workspace_directory, "recordings"),
+      fs.join(directory, "provider-recordings"),
+      fs.join(directory, "provider-recordings", "example"),
+    }) do
+      assert.are.equal(448, require("bit").band(
+        assert(vim.uv.fs_stat(path)).mode, 511))
+    end
+    local index_content = assert(fs.read(
+      fs.join(workspace_directory, "workspace.json")))
+    assert.are.equal(workspace, vim.json.decode(index_content).root)
+    assert.are.equal(workspace, records(workspace_paths[1])[1].workspace.root)
+    assert.is_nil(records(provider_paths[1])[1].workspace)
+  end)
+
+  it("keeps recording when the Workspace index cannot be published", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local reports = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local original_replace = fs.atomic_replace
+    fs.atomic_replace = function(path, ...)
+      if path:sub(-#"workspace.json") == "workspace.json" then
+        return nil, "index unavailable"
+      end
+      return original_replace(path, ...)
+    end
+    local ok, err = xpcall(function()
+      local http = recording:transport(transport({ "response" }), {
+        workspace = workspace,
+        provider = "example",
+        origin = "model",
+      })
+      assert.is_true(wait(http.fetch({ request = {
+        url = "https://example.test/model",
+      } })).ok)
+    end, debug.traceback)
+    fs.atomic_replace = original_replace
+    recording:destroy()
+    if not ok then error(err, 0) end
+
+    assert.are.equal(1, #files(directory, ".jsonl"))
+    assert.matches("failed to write Workspace recording index", reports[1])
   end)
 
   it("uses one compatible yq process after closing an exchange", function()
@@ -810,9 +906,8 @@ else:
   end)
 
   it("records unclassified built-in authentication responses exactly", function()
-    local directory, workspace, state = tempdir(), tempdir(), tempdir()
+    local directory, state = tempdir(), tempdir()
     directories[#directories + 1] = directory
-    directories[#directories + 1] = workspace
     directories[#directories + 1] = state
     local configured = config.resolve({
       default_registry = false,
@@ -833,7 +928,7 @@ else:
       body = response_body,
     })
     local manager = require("neoagent.auth").configured(configured, {
-      transport = recorder:transport(base, { workspace = workspace }),
+      transport = recorder:transport(base),
     })
 
     local result = wait(manager:login("llama", {
@@ -847,7 +942,9 @@ else:
 
     local paths = files(directory, ".jsonl")
     assert.are.equal(1, #paths)
+    assert.matches("/provider%-recordings/llama/", paths[1])
     local parsed = records(paths[1])
+    assert.is_nil(parsed[1].workspace)
     assert.are.equal("authentication", parsed[1].context.origin)
     assert.are.equal("llama", parsed[1].context.auth_method)
     assert.is_nil(parsed[1].context.session_id)

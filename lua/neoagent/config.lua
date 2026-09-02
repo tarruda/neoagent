@@ -52,8 +52,7 @@ local defaults = {
   recording = {
     enabled = false,
     format = "auto",
-    directory = vim.fn.stdpath("state")
-      .. "/neoagent/workspaces/recordings",
+    directory = vim.fn.stdpath("state") .. "/neoagent",
   },
   agent_instructions = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },

@@ -78,13 +78,9 @@ describe("HTTP recording integration", function()
 
   it("replaces a real OAuth credential response classified by its adapter", function()
     local directory = vim.fn.tempname()
-    local workspace = vim.fn.tempname()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
-    assert.are.equal(1, vim.fn.mkdir(workspace, "p"))
     directory = assert(vim.uv.fs_realpath(directory))
-    workspace = assert(vim.uv.fs_realpath(workspace))
     directories[#directories + 1] = directory
-    directories[#directories + 1] = workspace
     local server = mock_server.start("tests/fixtures/openai/codex_oauth.json")
     servers[#servers + 1] = server
     local recorder = assert(require("neoagent.http_recording").new({
@@ -92,7 +88,6 @@ describe("HTTP recording integration", function()
       directory = directory,
     }))
     local http = recorder:transport(require("neoagent.transport.curl"), {
-      workspace = workspace,
       origin = "authentication",
       auth_method = "openai-codex",
     })
@@ -121,10 +116,12 @@ describe("HTTP recording integration", function()
 
     local paths = vim.fn.globpath(directory, "**/*.jsonl", false, true)
     assert.are.equal(1, #paths)
+    assert.matches("/provider%-recordings/openai%-codex/", paths[1])
     local content = assert(fs.read(paths[1]))
     assert.is_nil(content:find("integration-refresh", 1, true))
     assert.is_nil(content:find("integration-code", 1, true))
     local parsed = records(paths[1])
+    assert.is_nil(parsed[1].workspace)
     assert.are.equal("authentication", parsed[1].context.origin)
     assert.are.equal("openai-codex", parsed[1].context.auth_method)
     assert.matches("client_id=%*", parsed[1].request.body)
