@@ -154,6 +154,122 @@ describe("neoagent.chat", function()
     assert.are.equal(4, #session:messages())
   end)
 
+  it("rejects an invalid Tool before accepting the user message", function()
+    local invalid_tools = {
+      { {
+        name = "unsafe\nname",
+        description = "cannot identify safely",
+        input_schema = {},
+        execute = function() end,
+      } },
+      { {
+        name = "missing_execute",
+        description = "cannot run",
+        input_schema = {},
+      } },
+      { {
+        name = "invalid_schema",
+        description = "cannot describe arguments",
+        input_schema = "invalid",
+        execute = function() end,
+      } },
+      { {
+        name = "invalid_description",
+        description = "invalid\255description",
+        input_schema = {},
+        execute = function() end,
+      } },
+      { {
+        name = "invalid_message_hook",
+        description = "cannot observe messages",
+        input_schema = {},
+        execute = function() end,
+        on_messages = true,
+      } },
+      { {
+        name = "invalid_current_hook",
+        description = "cannot expose current state",
+        input_schema = {},
+        execute = function() end,
+        current = true,
+      } },
+      { {
+        name = "invalid_capability",
+        description = "cannot declare capabilities",
+        input_schema = {},
+        execute = function() end,
+        capabilities = { read_files = "yes" },
+      } },
+      { {
+        name = "invalid_renderer",
+        description = "cannot render",
+        input_schema = {},
+        execute = function() end,
+        render = {},
+      } },
+      { {
+        name = "unsupported_field",
+        description = "cannot add implicit contracts",
+        input_schema = {},
+        execute = function() end,
+        extension = true,
+      } },
+      {
+        {
+          name = "duplicate",
+          description = "first",
+          input_schema = {},
+          execute = function() end,
+        },
+        {
+          name = "duplicate",
+          description = "second",
+          input_schema = {},
+          execute = function() end,
+        },
+      },
+    }
+
+    for _, tools in ipairs(invalid_tools) do
+      local session = assert(Session.new())
+      local model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "unused" } }),
+      } })
+      local ok = pcall(chat.run, session, "must not be accepted", {
+        model = model,
+        tools = tools,
+      })
+
+      assert.is_false(ok)
+      assert.are.same({}, session:messages())
+    end
+  end)
+
+  it("prepares the complete agent request before acceptance", function()
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "unused" } }),
+    } })
+    local invalid_options = {
+      { model = {} },
+      { model = model, model_options = "invalid" },
+      { model = model, system_prompt = {} },
+      { model = model, execute_tool = true },
+      { model = model, get_steering_messages = true },
+      { model = model, on_event = true },
+      { model = model, on_done = true },
+    }
+
+    for _, options in ipairs(invalid_options) do
+      local session = assert(Session.new())
+      assert.is_false(pcall(chat.run, session, "must not be accepted", options))
+      assert.are.same({}, session:messages())
+    end
+
+    local session = assert(Session.new())
+    assert.is_false(pcall(chat.run, session, false, { model = model }))
+    assert.are.same({}, session:messages())
+  end)
+
   it("persists only the final frame from transient tool animation", function()
     local directory = vim.fn.tempname()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
@@ -237,6 +353,7 @@ describe("neoagent.chat", function()
       } }) },
     })
     local identities = {}
+    local tool_identity
     local result = wait(chat.run(session, "go", {
       model = model,
       tools = { {
@@ -248,6 +365,8 @@ describe("neoagent.chat", function()
       on_event = function(event)
         if event.type == "message_end" then
           identities[#identities + 1] = event.message._neoagent_entry_id
+        elseif event.type == "tool_end" then
+          tool_identity = event.message._neoagent_entry_id
         end
       end,
     }))
@@ -260,6 +379,8 @@ describe("neoagent.chat", function()
       seen[identity] = true
     end
     assert.are.equal(3, vim.tbl_count(seen))
+    assert.is_string(tool_identity)
+    assert.is_true(seen[tool_identity])
   end)
 
   it("persists steering messages when the Agent Loop accepts them", function()
@@ -325,9 +446,11 @@ describe("neoagent.chat", function()
     assert.is_true(sent:is_done())
     assert.matches("stream startup failed", sent:result().error.message)
 
-    local invalid = chat.run(session, "second", { model = {} })
-    assert.is_true(invalid:is_done())
-    assert.matches("model is required", invalid:result().error.message)
+    local invalid_ok, invalid_err = pcall(
+      chat.run, session, "second", { model = {} })
+    assert.is_false(invalid_ok)
+    assert.matches("model is required", invalid_err)
+    assert.are.equal(1, #session:messages())
 
     local recovered = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
@@ -337,18 +460,22 @@ describe("neoagent.chat", function()
 
   it("clears acceptance reservations after append and preparation failures", function()
     local session = assert(Session.new())
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "unused" } }),
+    } })
     local append = session.append
     session.append = function()
       session.append = append
       error("append crashed")
     end
-    local ok, err = pcall(chat.run, session, "not accepted", { model = {} })
+    local ok, err = pcall(chat.run, session, "not accepted", { model = model })
     assert.is_false(ok)
     assert.matches("append crashed", err)
 
-    ok, err = pcall(chat.run, session, "accepted", { model = false })
+    ok, err = pcall(chat.run, session, "not prepared", { model = false })
     assert.is_false(ok)
     assert.matches("model is required", err)
+    assert.are.same({}, session:messages())
 
     local recovered = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "recovered" } }),
@@ -425,6 +552,47 @@ describe("neoagent.chat", function()
     local result = wait(chat.run(session, "question", { model = model }))
     assert.is_false(result.ok)
     assert.are.equal("unavailable", result.error.message)
+    assert.are.equal(2, writes)
+  end)
+
+  it("commits a tool call before allowing its effect", function()
+    local messages = {}
+    local writes = 0
+    local session = {
+      append = function(_, message)
+        writes = writes + 1
+        if writes == 2 then
+          return nil, { kind = "storage", message = "journal unavailable" }
+        end
+        messages[#messages + 1] = vim.deepcopy(message)
+        return true
+      end,
+      messages = function() return vim.deepcopy(messages) end,
+    }
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "effect", name = "mutate", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local executed = false
+    local result = wait(chat.run(session, "change it", {
+      model = model,
+      tools = { {
+        name = "mutate",
+        description = "perform an effect",
+        input_schema = { type = "object" },
+        execute = function()
+          executed = true
+          return { content = { { type = "text", text = "changed" } } }
+        end,
+      } },
+    }))
+
+    assert.is_false(result.ok)
+    assert.are.equal("journal unavailable", result.error.message)
+    assert.is_false(executed)
+    assert.are.equal(1, #model.requests)
     assert.are.equal(2, writes)
   end)
 end)

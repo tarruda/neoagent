@@ -407,6 +407,9 @@ describe("neoagent.api.openai_codex_responses", function()
       event({ type = "response.output_item.added", output_index = 0,
         item = { type = "reasoning", id = "reasoning", summary = {} } }),
       event({ type = "response.reasoning_summary_text.delta", output_index = 0, delta = "working" }),
+      event({ type = "response.output_item.done", output_index = 0,
+        item = { type = "reasoning", id = "reasoning",
+          summary = { { text = "working" } } } }),
       event({ type = "response.failed", response = {
         error = { code = "upstream_error", message = "upstream disconnected" },
       } }),

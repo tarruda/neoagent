@@ -293,6 +293,7 @@ describe("neoagent shared sandbox contract", function()
         messages = {},
         tools = options.tools,
         execute_tool = options.execute_tool,
+        commit_message = function() return true end,
         context = context,
       }), 60000)
       assert.is_true(completed.ok)
@@ -537,6 +538,7 @@ describe("neoagent shared sandbox contract", function()
         messages = {},
         tools = options.tools,
         execute_tool = options.execute_tool,
+        commit_message = function() return true end,
         context = context,
       }), 60000)
       server:close()

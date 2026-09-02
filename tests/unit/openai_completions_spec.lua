@@ -368,6 +368,7 @@ describe("neoagent.api.openai_completions", function()
     local result = wait(agent_loop.run({
       model = model,
       messages = { { role = "user", content = "Edit the file" } },
+      commit_message = function() return true end,
       tools = { {
         name = "edit_file",
         description = "Edit a file",
@@ -420,7 +421,7 @@ describe("neoagent.api.openai_completions", function()
       { opts = { request_opts = { headers = "bad" } }, message = "headers" },
       { opts = { request_opts = { body = "bad" } }, message = "body" },
       { opts = { request_opts = function() return nil end }, message = "table" },
-      { opts = { messages = { { role = "system", content = "unexpected" } } }, message = "Unsupported message role" },
+      { opts = { messages = { { role = "system", content = "unexpected" } } }, message = "unsupported message role" },
     }
     for _, case in ipairs(cases) do
       local fake = fake_transport.new()

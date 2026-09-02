@@ -1,6 +1,8 @@
 local async = require("neoagent.async")
 local messages = require("neoagent.api.messages")
+local model_contract = require("neoagent.model")
 local request_opts = require("neoagent.api.request_opts")
+local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local tool_schema = require("neoagent.api.tool_schema")
 local curl = require("neoagent.transport.curl")
@@ -144,10 +146,6 @@ local function encode_tools(tools)
   return result
 end
 
-local function has_content(message)
-  return message and #message.content > 0
-end
-
 local function stop_reason(reason)
   if reason == "tool_calls" or reason == "function_call" then
     return "toolUse"
@@ -157,6 +155,40 @@ local function stop_reason(reason)
     return "stop"
   end
   return "error"
+end
+
+local function complete_call(call)
+  if type(call.id) ~= "string" or call.id == ""
+      or type(call.name) ~= "string" or call.name == "" then
+    return nil
+  end
+  if call._raw ~= nil then
+    call.arguments, call.argumentsError = tool_arguments.decode(call._raw)
+    call._raw = nil
+  end
+  return call
+end
+
+local function partial_message(message, calls_complete, err)
+  if type(message) ~= "table" then return nil end
+  local candidate = util.copy(message)
+  candidate.content = {}
+  for _, block in ipairs(message.content or {}) do
+    local retained
+    if block.type == "text" and type(block.text) == "string"
+        and block.text ~= "" then
+      retained = util.copy(block)
+    elseif block.type == "thinking" and type(block.thinking) == "string"
+        and block.thinking ~= "" then
+      retained = util.copy(block)
+    elseif block.type == "toolCall" and calls_complete then
+      retained = complete_call(util.copy(block))
+    end
+    if retained then candidate.content[#candidate.content + 1] = retained end
+  end
+  candidate.stopReason = err.kind == "cancelled" and "aborted" or "error"
+  candidate.errorMessage = err.message
+  return semantic_message.normalize_partial_assistant(candidate)
 end
 
 local function usage_from(raw)
@@ -342,6 +374,8 @@ function Model:stream(opts)
   assert(type(opts.messages) == "table", "messages are required")
   local transport = self._transport
   local message
+  local calls
+  local calls_complete = false
   return async.run(function(run)
     local ok, outcome = pcall(function()
       local request = self:_request(opts)
@@ -357,7 +391,7 @@ function Model:stream(opts)
       }
       local text_block
       local thinking_block
-      local calls = {}
+      calls = {}
       local finish_seen = false
       local done_seen = false
       local protocol_error
@@ -367,6 +401,7 @@ function Model:stream(opts)
       local function process_payload(payload)
         if payload == "[DONE]" then
           done_seen = true
+          calls_complete = true
           return
         end
         local decoded_ok, chunk = pcall(vim.json.decode, payload)
@@ -396,6 +431,7 @@ function Model:stream(opts)
         end
         if choice.finish_reason ~= nil and choice.finish_reason ~= vim.NIL then
           finish_seen = true
+          calls_complete = true
           message.stopReason = stop_reason(choice.finish_reason)
           if message.stopReason == "error" then
             error(util.error("model", "Provider finish_reason: " .. tostring(choice.finish_reason)), 0)
@@ -406,6 +442,10 @@ function Model:stream(opts)
           return
         end
         if type(delta.content) == "string" and delta.content ~= "" then
+          if not util.is_valid_utf8(delta.content) then
+            error(util.error("protocol",
+              "OpenAI text delta must contain valid UTF-8"), 0)
+          end
           if not text_block then
             text_block = { type = "text", text = "" }
             message.content[#message.content + 1] = text_block
@@ -424,6 +464,10 @@ function Model:stream(opts)
           end
         end
         if thinking then
+          if not util.is_valid_utf8(thinking) then
+            error(util.error("protocol",
+              "OpenAI thinking delta must contain valid UTF-8"), 0)
+          end
           if not thinking_block then
             thinking_block = { type = "thinking", thinking = "", thinkingSignature = thinking_signature }
             message.content[#message.content + 1] = thinking_block
@@ -482,13 +526,10 @@ function Model:stream(opts)
         if not finished then error(util.error("protocol", finish_err), 0) end
       end
       for _, call in pairs(calls) do
-        local arguments, arguments_error = tool_arguments.decode(call._raw)
-        call._raw = nil
-        call.arguments = arguments
-        call.argumentsError = arguments_error
-        if call.id == "" then
+        if calls_complete then complete_call(call) end
+        if calls_complete and call.id == "" then
           protocol_error = util.error("protocol", "Tool call is missing an id")
-        elseif call.name == "" then
+        elseif calls_complete and call.name == "" then
           protocol_error = util.error("protocol", "Tool call is missing a name")
         end
       end
@@ -509,16 +550,16 @@ function Model:stream(opts)
 
     if not ok then
       local err = util.normalize_error(outcome, "model")
-      local partial = type(message) == "table" and message or nil
-      if partial and has_content(partial) then
-        partial.stopReason = err.kind == "cancelled" and "aborted" or "error"
-        partial.errorMessage = err.message
-      else
-        partial = nil
-      end
+      local partial = partial_message(message, calls_complete, err)
       return { ok = false, message = partial, error = err }
     end
-    local message = outcome
+    local message, message_err = semantic_message.normalize(outcome)
+    if not message then
+      return {
+        ok = false,
+        error = util.error("model", "Invalid assistant message", message_err),
+      }
+    end
     return { ok = true, message = message, text = util.text_content(message.content) }
   end, {
     on_event = opts.on_event,
@@ -544,7 +585,7 @@ function M.new(opts)
       and opts.timeout_ms % 1 == 0,
       "timeout_ms must be a positive integer")
   end
-  return setmetatable({
+  return model_contract.assert(setmetatable({
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
@@ -559,7 +600,7 @@ function M.new(opts)
     _request_opts = layers,
     _timeout_ms = opts.timeout_ms,
     _transport = opts.transport or curl,
-  }, Model)
+  }, Model), "OpenAI Chat Completions constructor")
 end
 
 M._encode_messages = encode_messages

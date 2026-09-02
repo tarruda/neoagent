@@ -371,6 +371,41 @@ describe("neoagent.api.anthropic_messages", function()
     assert.are.equal("cut off", result.message.content[1].text)
   end)
 
+  it("retains meaningful thinking and omits an open Tool call on failure", function()
+    local fake = fake_transport.new({ {
+      chunks = {
+        message_start(),
+        event({
+          type = "content_block_start",
+          index = 0,
+          content_block = { type = "thinking", thinking = "" },
+        }),
+        event({
+          type = "content_block_delta",
+          index = 0,
+          delta = { type = "thinking_delta", thinking = "working" },
+        }),
+        event({
+          type = "content_block_start",
+          index = 1,
+          content_block = {
+            type = "tool_use", id = "call", name = "read", input = {},
+          },
+        }),
+      },
+      error = { kind = "transport", message = "connection lost" },
+    } })
+    local result = wait(anthropic.new({
+      provider = "p", model = "m", base_url = "http://x", transport = fake,
+    }):stream({ messages = {} }))
+
+    assert.is_false(result.ok)
+    assert.are.equal(1, #result.message.content)
+    assert.are.equal("thinking", result.message.content[1].type)
+    assert.are.equal("working", result.message.content[1].thinking)
+    assert.is_nil(result.message.content[1].thinkingSignature)
+  end)
+
   it("accepts redacted thinking, pings, and citation deltas", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
@@ -596,13 +631,13 @@ describe("neoagent.api.anthropic_messages", function()
       { opts = { request_opts = function() return nil end }, message = "table" },
       {
         opts = { messages = { { role = "system", content = "unexpected" } } },
-        message = "Unsupported message role",
+        message = "unsupported message role",
       },
       {
         opts = { messages = { { role = "assistant", content = {
           { type = "toolCall", id = "c1", name = "bad", arguments = "bad" },
         } } } },
-        message = "Tool arguments",
+        message = "toolCall arguments",
       },
     }
     for _, case in ipairs(cases) do

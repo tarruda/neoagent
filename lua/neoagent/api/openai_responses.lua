@@ -1,15 +1,13 @@
 local async = require("neoagent.async")
 local decoder = require("neoagent.api.openai_responses.decoder")
+local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
+local semantic_message = require("neoagent.semantic_message")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
 
 local M = {}
-
-local function has_content(message)
-  return message and #message.content > 0
-end
 
 local Model = {}
 Model.__index = Model
@@ -23,10 +21,11 @@ function Model:stream(opts)
   assert(type(opts.messages) == "table", "messages are required")
   local transport = self._transport
   local message
+  local stream
   return async.run(function(run)
     local ok, outcome = pcall(function()
       local request = self:_request(opts)
-      local stream = decoder.new(self, function(event) run:emit(event) end)
+      stream = decoder.new(self, function(event) run:emit(event) end)
       message = stream.message
       local parser = sse.new({ on_event = stream.process })
       local child = transport.request({
@@ -67,16 +66,23 @@ function Model:stream(opts)
 
     if not ok then
       local err = util.normalize_error(outcome, "model")
-      local partial = type(message) == "table" and message or nil
-      if partial and has_content(partial) then
+      local partial = stream and stream.partial() or nil
+      if partial then
         partial.stopReason = err.kind == "cancelled" and "aborted" or "error"
         partial.errorMessage = err.message
-      else
-        partial = nil
+        partial = semantic_message.normalize_partial_assistant(partial)
       end
       return { ok = false, message = partial, error = err }
     end
-    return { ok = true, message = outcome, text = util.text_content(outcome.content) }
+    local normalized, message_err = semantic_message.normalize(outcome)
+    if not normalized then
+      return {
+        ok = false,
+        error = util.error("model", "Invalid assistant message", message_err),
+      }
+    end
+    return { ok = true, message = normalized,
+      text = util.text_content(normalized.content) }
   end, {
     on_event = opts.on_event,
     on_done = opts.on_done,
@@ -92,7 +98,7 @@ function M.new(opts)
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do layers[#layers + 1] = layer end
   if opts.request_opts ~= nil then layers[#layers + 1] = opts.request_opts end
-  return setmetatable({
+  return model_contract.assert(setmetatable({
     api = "openai-responses",
     provider = opts.provider,
     id = opts.model,
@@ -112,7 +118,7 @@ function M.new(opts)
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _transport = opts.transport or curl,
-  }, Model)
+  }, Model), "OpenAI Responses constructor")
 end
 
 M._encode_messages = request_builder.encode_messages

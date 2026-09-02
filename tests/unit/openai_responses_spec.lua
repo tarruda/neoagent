@@ -417,6 +417,7 @@ describe("neoagent.api.openai_responses", function()
     local result = wait(require("neoagent.agent_loop").run({
       model = model(fake),
       messages = { { role = "user", content = "echo" } },
+      commit_message = function() return true end,
       tools = { {
         name = "echo", description = "Echo", input_schema = { type = "object" },
         execute = function() return { content = { { type = "text", text = "tool output" } } } end,
@@ -444,7 +445,7 @@ describe("neoagent.api.openai_responses", function()
       { chunks = { event({ type = "response.output_item.added", output_index = 0,
         item = { type = "message", id = "m", content = util.list() } }),
         event({ type = "response.output_text.delta", output_index = 0, delta = "partial" }) },
-        kind = "protocol", message = "terminal", partial = true },
+        kind = "protocol", message = "terminal" },
       { chunks = { event({ type = "response.output_item.added", output_index = 0,
         item = { type = "function_call", id = "fc", call_id = "call", name = "bad", arguments = "" } }),
         event({ type = "response.output_item.done", output_index = 0,
@@ -460,7 +461,8 @@ describe("neoagent.api.openai_responses", function()
     end
 
     local invalid_history = {
-      { messages = { { role = "system", content = "bad" } }, message = "Unsupported" },
+      { messages = { { role = "system", content = "bad" } },
+        message = "unsupported message role" },
       { messages = { { role = "assistant", content = { {
         type = "thinking", thinking = "x", thinkingSignature = "bad",
       } } } }, message = "reasoning signature" },

@@ -5,12 +5,73 @@ local util = require("neoagent.util")
 local M = {}
 local active = setmetatable({}, { __mode = "k" })
 
+local function persisted_message(message, entry)
+  if not entry or type(entry.id) ~= "string" or entry.id == "" then
+    return message
+  end
+  local copied = util.copy(message)
+  copied._neoagent_entry_id = entry.id
+  return copied
+end
+
+local function session_commit(session)
+  return function(message)
+    local ok, err, entry = session:append(message)
+    if not ok then return nil, err end
+    return true, nil, persisted_message(message, entry)
+  end
+end
+
 local function diagnostic_report(report)
   if not report then return nil end
   return function(diagnostic)
     report("callback failed during " .. diagnostic.phase .. ": "
       .. diagnostic.message, vim.log.levels.ERROR)
   end
+end
+
+local function preflight(opts, tools, commit_message)
+  assert(opts.report == nil or type(opts.report) == "function",
+    "report must be a function")
+  assert(opts.on_accept == nil or type(opts.on_accept) == "function",
+    "on_accept must be a function")
+  assert(opts.context_messages == nil
+      or type(opts.context_messages) == "function"
+      or type(opts.context_messages) == "table"
+        and util.is_list(opts.context_messages),
+    "context_messages must be a list or function")
+  local prepared = agent_loop.prepare({
+    model = opts.model,
+    messages = {},
+    system_prompt = opts.system_prompt,
+    tools = tools,
+    model_options = opts.model_options,
+    context = opts.context,
+    execute_tool = opts.execute_tool,
+    get_steering_messages = opts.get_steering_messages,
+    commit_message = commit_message,
+    on_event = opts.on_event,
+    on_done = opts.on_done,
+    report = diagnostic_report(opts.report),
+  })
+  return {
+    model = prepared.model,
+    system_prompt = prepared.system_prompt,
+    tools = prepared.tools,
+    model_options = prepared.model_options,
+    context = prepared.context,
+    execute_tool = prepared.execute_tool,
+    get_steering_messages = prepared.get_steering_messages,
+    commit_message = prepared.commit_message,
+    on_event = prepared.on_event,
+    on_done = prepared.on_done,
+    report = opts.report,
+    diagnostic_report = prepared.report,
+    on_accept = opts.on_accept,
+    context_messages = type(opts.context_messages) == "table"
+        and util.copy(opts.context_messages) or opts.context_messages,
+    session_state = opts.session_state and util.copy(opts.session_state) or nil,
+  }
 end
 
 local function release(session, owner)
@@ -100,16 +161,13 @@ local function persisted_event(event, entry)
     return event
   end
   local copied = util.copy(event)
-  copied.message._neoagent_entry_id = entry.id
+  copied.message = persisted_message(copied.message, entry)
   return copied
 end
 
 function M.send(session, prompt, opts)
   opts = opts or {}
-  assert(type(opts.model) == "table", "model is required")
-  assert(opts.report == nil or type(opts.report) == "function",
-    "report must be a function")
-  local reporter = diagnostic_report(opts.report)
+  opts = preflight(opts, {}, session_commit(session))
   local reservation, entry = begin(session, prompt, opts.session_state)
   accepted(opts, entry)
   return start_reserved(session, reservation, function()
@@ -141,7 +199,7 @@ function M.send(session, prompt, opts)
         release(session, run)
         if opts.on_done then opts.on_done(result) end
       end,
-      report = reporter,
+      report = opts.diagnostic_report,
       error_kind = "session",
     })
     return run
@@ -151,10 +209,8 @@ end
 local function run_agent(session, opts)
   opts = opts or {}
   assert(type(opts.model) == "table", "model is required")
-  local reporter = diagnostic_report(opts.report)
   local run
   run = async.run(function()
-    local storage_error
     local child = agent_loop.run({
       model = opts.model,
       messages = context_messages(session, opts),
@@ -164,30 +220,13 @@ local function run_agent(session, opts)
       context = opts.context,
       execute_tool = opts.execute_tool,
       get_steering_messages = opts.get_steering_messages,
+      commit_message = opts.commit_message,
       on_event = function(event)
-        if event.type == "message_end" and not storage_error then
-          local ok, err, entry = session:append(event.message)
-          if not ok then
-            storage_error = err
-          else
-            event = persisted_event(event, entry)
-          end
-        end
-        if not storage_error then
-          run:emit(event)
-        end
+        run:emit(event)
       end,
-      report = reporter,
+      report = opts.diagnostic_report,
     })
     local result = child:await()
-    if storage_error then
-      return finish_result({
-        ok = false,
-        new_messages = result.new_messages or {},
-        message = result.message,
-        error = storage_error,
-      }, session)
-    end
     return finish_result(result, session)
   end, {
     on_event = opts.on_event,
@@ -195,7 +234,7 @@ local function run_agent(session, opts)
       release(session, run)
       if opts.on_done then opts.on_done(result) end
     end,
-    report = reporter,
+    report = opts.diagnostic_report,
     error_kind = "session",
   })
   return run
@@ -204,8 +243,7 @@ end
 
 function M.run(session, prompt, opts)
   opts = opts or {}
-  assert(opts.report == nil or type(opts.report) == "function",
-    "report must be a function")
+  opts = preflight(opts, opts.tools or {}, session_commit(session))
   local reservation, entry = begin(session, prompt, opts.session_state)
   accepted(opts, entry)
   return start_reserved(session, reservation, function()
@@ -215,8 +253,7 @@ end
 
 function M.continue(session, opts)
   opts = opts or {}
-  assert(opts.report == nil or type(opts.report) == "function",
-    "report must be a function")
+  opts = preflight(opts, opts.tools or {}, session_commit(session))
   local reservation = reserve(session)
   return start_reserved(session, reservation, function()
     return run_agent(session, opts)

@@ -1,10 +1,14 @@
+local semantic_message = require("neoagent.semantic_message")
+
 local M = {}
 
 local USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)"
 local TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"
 
 local function supports_images(model)
-  if type(model.input) ~= "table" then return true end
+  assert(type(model) == "table" and type(model.input) == "table"
+      and vim.tbl_contains(model.input, "text"),
+    "messages.for_model requires a Model with declared input modalities")
   return vim.tbl_contains(model.input, "image")
 end
 
@@ -34,6 +38,14 @@ local function with_content(message, content)
 end
 
 function M.for_model(messages, model)
+  assert(type(messages) == "table" and vim.islist(messages),
+    "messages must be a list")
+  for index, message in ipairs(messages) do
+    local normalized, err = semantic_message.normalize(message)
+    if not normalized then
+      error("message " .. tostring(index) .. ": " .. err, 0)
+    end
+  end
   if supports_images(model) then return messages end
   local result = {}
   for index, message in ipairs(messages) do

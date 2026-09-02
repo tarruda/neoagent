@@ -3,25 +3,44 @@ local util = require("neoagent.util")
 local M = {}
 
 local MAX_ISSUES = 20
+local schema_fields = {
+  type = true,
+  properties = true,
+  required = true,
+  additionalProperties = true,
+  items = true,
+  enum = true,
+  minItems = true,
+  maxItems = true,
+  description = true,
+}
 
 local function is_object(value)
+  return type(value) == "table" and not util.is_list(value)
+end
+
+local function is_array(value)
+  return type(value) == "table" and util.is_list(value)
+end
+
+local function is_schema_object(value)
   return type(value) == "table"
     and (next(value) == nil or not util.is_list(value))
 end
 
-local function is_array(value)
-  return type(value) == "table"
-    and (next(value) == nil or util.is_list(value))
+local function finite_number(value)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
 end
 
 local type_checks = {
   array = is_array,
   boolean = function(value) return type(value) == "boolean" end,
   integer = function(value)
-    return type(value) == "number" and value % 1 == 0
+    return finite_number(value) and value % 1 == 0
   end,
   ["null"] = function(value) return value == vim.NIL end,
-  number = function(value) return type(value) == "number" end,
+  number = finite_number,
   object = is_object,
   string = function(value) return type(value) == "string" end,
 }
@@ -35,6 +54,111 @@ local type_labels = {
   object = "a JSON object",
   string = "a string",
 }
+
+local function validate_schema(schema, path, active)
+  path = path or "input_schema"
+  if not is_schema_object(schema) then
+    return nil, path .. " must be an object"
+  end
+  active = active or {}
+  if active[schema] then return nil, path .. " must not contain cycles" end
+  active[schema] = true
+  for key in pairs(schema) do
+    if not schema_fields[key] then
+      active[schema] = nil
+      return nil, path .. " has unsupported field: " .. tostring(key)
+    end
+  end
+  local declared = schema.type
+  if declared ~= nil then
+    declared = type(declared) == "string" and { declared } or declared
+    if type(declared) ~= "table" or not util.is_list(declared)
+        or #declared == 0 then
+      active[schema] = nil
+      return nil, path .. ".type must be a type name or non-empty list"
+    end
+    local seen = {}
+    for _, name in ipairs(declared) do
+      if not type_checks[name] or seen[name] then
+        active[schema] = nil
+        return nil, path .. ".type contains an invalid or duplicate type"
+      end
+      seen[name] = true
+    end
+  end
+  if schema.description ~= nil
+      and (type(schema.description) ~= "string"
+        or not util.is_valid_utf8(schema.description)) then
+    active[schema] = nil
+    return nil, path .. ".description must be a UTF-8 string"
+  end
+  if schema.properties ~= nil then
+    if not is_schema_object(schema.properties) then
+      active[schema] = nil
+      return nil, path .. ".properties must be an object"
+    end
+    for key, child in pairs(schema.properties) do
+      if type(key) ~= "string" or key == "" then
+        active[schema] = nil
+        return nil, path .. ".properties keys must be non-empty strings"
+      end
+      local ok, err = validate_schema(
+        child, path .. ".properties." .. key, active)
+      if not ok then active[schema] = nil return nil, err end
+    end
+  end
+  if schema.required ~= nil then
+    if type(schema.required) ~= "table" or not util.is_list(schema.required) then
+      active[schema] = nil
+      return nil, path .. ".required must be a list"
+    end
+    local seen = {}
+    for _, key in ipairs(schema.required) do
+      if type(key) ~= "string" or key == "" or seen[key] then
+        active[schema] = nil
+        return nil, path .. ".required must contain unique non-empty strings"
+      end
+      seen[key] = true
+    end
+  end
+  local additional = schema.additionalProperties
+  if additional ~= nil and type(additional) ~= "boolean" then
+    local ok, err = validate_schema(
+      additional, path .. ".additionalProperties", active)
+    if not ok then active[schema] = nil return nil, err end
+  end
+  if schema.items ~= nil then
+    local ok, err = validate_schema(schema.items, path .. ".items", active)
+    if not ok then active[schema] = nil return nil, err end
+  end
+  if schema.enum ~= nil then
+    if type(schema.enum) ~= "table" or not util.is_list(schema.enum)
+        or #schema.enum == 0 then
+      active[schema] = nil
+      return nil, path .. ".enum must be a non-empty list"
+    end
+    local encoded = pcall(util.json_encode, schema.enum)
+    if not encoded then
+      active[schema] = nil
+      return nil, path .. ".enum must contain JSON values"
+    end
+  end
+  for _, key in ipairs({ "minItems", "maxItems" }) do
+    local value = schema[key]
+    if value ~= nil and (type(value) ~= "number" or value < 0
+        or value % 1 ~= 0 or value == math.huge) then
+      active[schema] = nil
+      return nil, path .. "." .. key .. " must be a non-negative integer"
+    end
+  end
+  if schema.minItems ~= nil and schema.maxItems ~= nil
+      and schema.minItems > schema.maxItems then
+    active[schema] = nil
+    return nil, path .. ".minItems must not exceed maxItems"
+  end
+  active[schema] = nil
+  return true
+end
 
 local function declared_types(schema)
   if type(schema.type) == "string" then return { schema.type } end
@@ -178,7 +302,8 @@ local function validate_value(schema, value, path, state)
 end
 
 function M.normalize(schema)
-  assert(type(schema) == "table", "tool input_schema must be a table")
+  local valid, err = validate_schema(schema)
+  assert(valid, err)
   local normalized = util.copy(schema)
   if next(normalized) == nil then return vim.empty_dict() end
   if normalized.type == "object" and type(normalized.properties) == "table"
@@ -186,6 +311,12 @@ function M.normalize(schema)
     normalized.properties = vim.empty_dict()
   end
   return normalized
+end
+
+function M.validate_definition(schema)
+  local valid, err = validate_schema(schema)
+  if not valid then return nil, err end
+  return M.normalize(schema)
 end
 
 function M.validate(schema, value)

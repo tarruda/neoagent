@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
+local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 
 local M = {}
@@ -438,9 +439,8 @@ local function validate(opts)
         "UI mappings must be non-empty strings, non-empty lists, or false")
     end
   end
-  if opts.tools ~= nil then assert(type(opts.tools) == "table", "tools must be an array") end
+  agent_loop.validate_toolset(opts.tools or {}, opts.execute_tool)
   if opts.system_prompt ~= nil then assert(type(opts.system_prompt) == "string" or type(opts.system_prompt) == "function", "system_prompt must be a string or function") end
-  if opts.execute_tool ~= nil then assert(type(opts.execute_tool) == "function", "execute_tool must be a function") end
   if opts._view ~= nil then
     assert(type(opts._view) == "function", "_view must be a function")
   end

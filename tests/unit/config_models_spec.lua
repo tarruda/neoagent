@@ -814,6 +814,16 @@ describe("neoagent configuration and model resolution", function()
     assert.has_error(function() config.setup({ compaction = { keep_recent_tokens = 1.5 } }) end)
     assert.has_error(function() config.setup({ compaction = { run = true } }) end)
     assert.has_error(function()
+      config.setup({ tools = { {
+        name = "incomplete",
+        description = "missing execution",
+        input_schema = {},
+      } } })
+    end, "tool[1].execute must be a function")
+    assert.has_error(function()
+      config.setup({ tools = {}, execute_tool = true })
+    end, "execute_tool must be a function")
+    assert.has_error(function()
       config.setup({ providers = { bad = { api = "custom", api_key = 42, models = {} } } })
     end)
     assert.has_error(function()
