@@ -87,10 +87,17 @@ function M.buffer_windows(buffer)
   return result
 end
 
-local function qualified_name(applet, descriptor)
-  if descriptor.buffer.uri then return descriptor.buffer.uri end
-  local name = descriptor.buffer.name:gsub("[^%w%._%-]", "-")
-  return ("applet://%s/%d/%s"):format(applet.name, applet.id, name)
+local function qualified_name(applet, record, descriptor)
+  local result = descriptor.buffer.uri
+  if not result then
+    local name = descriptor.buffer.name:gsub("[^%w%._%-]", "-")
+    result = ("applet://%s/%d/%s"):format(applet.name, applet.id, name)
+  end
+  if record.buffer_name_generation ~= nil then
+    result = result .. "#applet-generation-"
+      .. tostring(record.buffer_name_generation)
+  end
+  return result
 end
 
 local function get_option(option, scope)
@@ -174,7 +181,7 @@ function M.ensure_buffer(applet, record, descriptor)
     return record.buffer, false
   end
   local buffer = vim.api.nvim_create_buf(false, true)
-  local name = qualified_name(applet, descriptor)
+  local name = qualified_name(applet, record, descriptor)
   local named, name_error = pcall(vim.api.nvim_buf_set_name, buffer, name)
   if not named then
     pcall(vim.api.nvim_buf_delete, buffer, { force = true })

@@ -52,15 +52,20 @@ describe("Applet host effects", function()
   end)
 
   it("opens semantic documents and owns exit autocmd cleanup", function()
+    local original_tab = vim.api.nvim_get_current_tabpage()
     assert(effects.open_document({
       name = "applet-host-document",
       filetype = "markdown",
-      content = "heading\nbody\n",
+      content = "\nheading\nbody\n",
     }))
     assert.are.equal("markdown", vim.bo.filetype)
     assert.are.equal("wipe", vim.bo.bufhidden)
-    assert.are.same({ "heading", "body" },
-      vim.api.nvim_buf_get_lines(0, 0, -1, false))
+    assert.are.equal("nofile", vim.bo.buftype)
+    assert.is_false(vim.bo.buflisted)
+    assert.is_false(vim.bo.swapfile)
+    assert.matches("^neoagent://provider/", vim.api.nvim_buf_get_name(0))
+    assert.are.equal("\nheading\nbody\n", table.concat(
+      vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"))
 
     assert.has_error(function() effects.open_document(false) end)
     assert.has_error(function()
@@ -72,6 +77,12 @@ describe("Applet host effects", function()
     assert.has_error(function()
       effects.open_document({ name = "name", filetype = "text", content = false })
     end)
+    for _, name in ipairs({ "../report", "dir/report", "dir\\report",
+      "bad\nname" }) do
+      assert.has_error(function()
+        effects.open_document({ name = name, filetype = "text", content = "" })
+      end)
+    end
 
     local original_cmd = vim.cmd
     vim.cmd = function() error("tab creation failed") end
@@ -81,6 +92,23 @@ describe("Applet host effects", function()
     vim.cmd = original_cmd
     assert.is_nil(opened)
     assert.matches("tab creation failed", err)
+
+    local tabs = #vim.api.nvim_list_tabpages()
+    local buffers = vim.api.nvim_list_bufs()
+    local original_set_lines = vim.api.nvim_buf_set_lines
+    vim.api.nvim_buf_set_lines = function() error("content failed") end
+    opened, err = effects.open_document({
+      name = "rollback", filetype = "text", content = "value",
+    })
+    vim.api.nvim_buf_set_lines = original_set_lines
+    assert.is_nil(opened)
+    assert.matches("content failed", err)
+    assert.are.equal(tabs, #vim.api.nvim_list_tabpages())
+    for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+      if not vim.tbl_contains(buffers, buffer) then
+        assert.is_false(vim.api.nvim_buf_is_valid(buffer))
+      end
+    end
 
     local release = effects.on_exit(function() end)
     local autocmds = vim.api.nvim_get_autocmds({ event = "VimLeavePre" })
@@ -94,5 +122,15 @@ describe("Applet host effects", function()
     release()
     release()
     assert.has_error(function() effects.on_exit(false) end)
+    local document_tab = vim.api.nvim_get_current_tabpage()
+    if vim.api.nvim_tabpage_is_valid(original_tab) then
+      vim.api.nvim_set_current_tabpage(original_tab)
+    end
+    if document_tab ~= original_tab
+        and vim.api.nvim_tabpage_is_valid(document_tab) then
+      vim.api.nvim_set_current_tabpage(document_tab)
+      vim.cmd("tabclose!")
+      vim.api.nvim_set_current_tabpage(original_tab)
+    end
   end)
 end)

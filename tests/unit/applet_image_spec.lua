@@ -1067,6 +1067,97 @@ describe("Applet images", function()
     handler("late")
   end)
 
+  it("rejects presentation state after synchronous backend failure", function()
+    local handler
+    local destroyed = 0
+    local selected = backend({
+      set_error_handler = function(_, callback) handler = callback end,
+      replace = function()
+        handler("synchronous replace failure")
+      end,
+      destroy = function() destroyed = destroyed + 1 end,
+    })
+    local system = ImageSystem._new({ _backend = selected })
+    local owner = {}
+    local value = {
+      kind = "png_bytes", id = "preview", data = png(2, 2), revision = 1,
+    }
+    local identity = source.identity(value)
+    system:set_references(owner, { [identity] = true })
+    system:request(value)
+    assert(vim.wait(1000, function()
+      return system:snapshot().resources[identity] ~= nil
+    end))
+
+    assert.is_false(system:present(owner, {
+      slots = { preview = identity },
+      placements = { { key = "preview", width = 2, height = 2 } },
+    }))
+
+    local snapshot = system:snapshot(owner)
+    local stats = system:_stats()
+    assert.are.equal("unavailable", snapshot.status)
+    assert.are.same({}, snapshot.resources)
+    assert.are.same({}, snapshot.presented)
+    assert.are.equal(0, stats.prepared_resources)
+    assert.are.equal(0, stats.active_presentations)
+    assert.are.equal(0, stats.cached_bytes)
+    assert.are.equal(1, destroyed)
+  end)
+
+  it("contains thrown backend calls in one unavailable transition", function()
+    for _, method in ipairs({
+      "cell_dimensions", "clear", "redraw", "release",
+    }) do
+      local destroyed = 0
+      local selected = backend({
+        [method] = function() error(method .. " exploded") end,
+        destroy = function() destroyed = destroyed + 1 end,
+      })
+      local system = ImageSystem._new({ _backend = selected })
+      local owner = {}
+      if method == "cell_dimensions" then
+        system:snapshot()
+      elseif method == "clear" then
+        assert.is_false(system:clear(owner))
+      elseif method == "redraw" then
+        assert.is_false(system:redraw(owner))
+      else
+        local value = {
+          kind = "png_bytes", id = "release", data = png(1, 1), revision = 1,
+        }
+        local identity = source.identity(value)
+        system:set_references(owner, { [identity] = true })
+        system:request(value)
+        assert(vim.wait(1000, function()
+          return system:_stats().prepared_resources == 1
+        end))
+        system:set_references(owner, {})
+      end
+      assert.are.equal("unavailable", system.status)
+      assert.matches(method .. " exploded", system.last_backend_error)
+      assert.are.equal(1, destroyed)
+      assert.are.equal(0, system:_stats().prepared_resources)
+      assert.are.equal(0, system:_stats().active_presentations)
+      system:destroy()
+      assert.are.equal(1, destroyed)
+    end
+
+    local system = ImageSystem._new({
+      _backend = backend({ destroy = function() error("destroy exploded") end }),
+    })
+    assert.has_no_error(function() system:destroy() end)
+
+    local destroyed = 0
+    system = ImageSystem._new({ _backend = backend({
+      set_error_handler = function() error("handler setup exploded") end,
+      destroy = function() destroyed = destroyed + 1 end,
+    }) })
+    assert.are.equal("unavailable", system.status)
+    assert.matches("handler setup exploded", system.last_backend_error)
+    assert.are.equal(1, destroyed)
+  end)
+
   it("cancels unreferenced work and retains failures only while requested", function()
     local completions, cancellations = {}, 0
     local system = ImageSystem._new({

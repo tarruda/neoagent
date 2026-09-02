@@ -1483,6 +1483,68 @@ describe("Pane content Trees and compilation", function()
     assert.is_nil(cache.regions.stable)
   end)
 
+  it("retains revised document prefixes across suffix updates", function()
+    local cache = {}
+    local stats = {
+      region_compilations = 0,
+      region_reuses = 0,
+      document_reuses = 0,
+    }
+    local function document(tail, revision)
+      return {
+        root = ui.scope({
+          key = "document:scope",
+          child = ui.column({ key = "document", gap = 1, children = {
+            ui.region({
+              key = "first",
+              revision = 1,
+              child = ui.text({ key = "first:text", text = "first" }),
+            }),
+            ui.region({
+              key = "second",
+              revision = 1,
+              child = ui.target({
+                key = "second:target",
+                child = ui.text({ key = "second:text", text = "second" }),
+              }),
+            }),
+            ui.region({
+              key = "tail",
+              revision = revision,
+              child = ui.text({ key = "tail:text", text = tail }),
+            }),
+          } }),
+        }),
+      }
+    end
+
+    local first = compile({
+      tree = document("old", 1), width = 40, cache = cache, stats = stats,
+    })
+    local second = compile({
+      tree = document("new\ntail", 2), previous = first,
+      width = 40, cache = cache, stats = stats,
+    })
+
+    assert.are.same({ "first", "", "second", "", "old" }, first.lines)
+    assert.are.same({ "first", "", "second", "", "new", "tail" },
+      second.lines)
+    assert.is_true(rawequal(first.regions[1], second.regions[1]))
+    assert.is_true(rawequal(first.regions[2], second.regions[2]))
+    assert.are.equal(3, second.region_document.changed_first)
+    assert.are.equal(1, stats.document_reuses)
+    assert.are.equal(4, stats.region_compilations)
+    assert.is_true(layout_changes(first, second).content)
+
+    local stable = compile({
+      tree = document("caller-owned replacement", 2), previous = second,
+      width = 40, cache = cache, stats = stats,
+    })
+    assert.is_true(rawequal(second.lines, stable.lines))
+    assert.are.same(second.lines, stable.lines)
+    assert.are.equal(2, stats.document_reuses)
+  end)
+
   it("retains immutable content for reused region fragments", function()
     local marker = "__cached_transcript_payload__"
     local cache = {}

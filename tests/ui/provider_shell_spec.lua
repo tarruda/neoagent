@@ -610,10 +610,30 @@ describe("neoagent Provider Shell UI", function()
       assert.are.equal("•", mark[4].conceal)
     end
 
-    assert(value:set_presentation({ active = nil, queue_count = 0 }))
+    assert(value:set_presentation({
+      active = {
+        id = "ordinary",
+        kind = "input",
+        prompt = "Ordinary prompt",
+        default = "seed",
+        multiline = false,
+        secret = false,
+        allow_empty = true,
+        mask = "•",
+      },
+      queue_count = 0,
+    }))
     assert(vim.wait(1000, function()
       return not vim.api.nvim_buf_is_valid(buffer)
     end, 5))
+    local ordinary = native(value, "presentation").buffer
+    assert.are_not.equal(buffer, ordinary)
+    assert.are.equal("neoagent-prompt", vim.bo[ordinary].filetype)
+    assert(value.presentation_component:set_text("ordinary"))
+    vim.api.nvim_buf_call(ordinary, function() vim.cmd("silent! undo") end)
+    assert.is_nil(table.concat(vim.api.nvim_buf_get_lines(
+      ordinary, 0, -1, false), "\n"):find("s3cr3t", 1, true))
+    assert(value:set_presentation({ active = nil, queue_count = 0 }))
   end)
 
   it("changes the visible provider through real selector input", function()

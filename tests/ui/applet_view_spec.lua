@@ -590,14 +590,16 @@ describe("neoagent Applet View composition", function()
     value:set_messages(messages(2, 2))
     assert.is_true(value.transcript.pane:flush())
     assert(vim.wait(1000, function()
-      return images:_stats().prepared_resources == 2
+      local stats = images:_stats()
+      return stats.preparations == 2
+        and stats.prepared_resources == 1 and stats.releases == 1
     end))
     local prepared = {}
     for _, resource in pairs(images:snapshot().resources) do
       prepared[#prepared + 1] = { resource.width, resource.height }
     end
     table.sort(prepared, function(left, right) return left[1] < right[1] end)
-    assert.are.same({ { 1, 1 }, { 2, 2 } }, prepared)
+    assert.are.same({ { 2, 2 } }, prepared)
     images:destroy()
   end)
 
@@ -796,7 +798,7 @@ describe("neoagent Applet View composition", function()
     local after = details.pane:_stats()
 
     assert.is_true(#details.pane.layout.regions >= 3)
-    assert.is_true(after.region_reuses >= before.region_reuses + 2)
+    assert.are.equal(before.document_reuses + 1, after.document_reuses)
     assert.are.equal(before.region_compilations + 1,
       after.region_compilations)
     assert.is_true(details:text():find(
@@ -902,6 +904,8 @@ describe("neoagent Applet View composition", function()
     local after = value.transcript.pane:_stats()
     assert.is_true(after.renders <= before.renders + 2)
     assert.is_true(after.region_compilations <= before.region_compilations + 3)
+    assert.is_true(after.region_reuses <= before.region_reuses + 3)
+    assert.are.equal(before.document_reuses + 1, after.document_reuses)
     assert.is_true(after.line_splices <= before.line_splices + 2)
     assert.is_true(calls <= 3)
     assert.is_true(rawequal(stable_snapshot,

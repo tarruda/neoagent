@@ -149,6 +149,55 @@ describe("Applet ownership boundaries", function()
     end)
   end
 
+  it("retires a sensitive transient buffer before an ordinary generation", function()
+    local secret = new_pane("presentation", { mode = "editable" })
+    local ordinary = new_pane("presentation", { mode = "editable" })
+    local value = applet({
+      name = "sensitive-generation",
+      host = host("floating"),
+    })
+    local function requested(component, revision, sensitive)
+      return frame(pane("presentation", component, {
+        lifecycle = "transient",
+        owns_pane = true,
+        mount_revision = revision,
+        sensitive = sensitive,
+        focus_mode = "insert",
+        buffer_options = {
+          buftype = "nofile",
+          swapfile = false,
+          undofile = false,
+        },
+      }), { focus = "presentation" })
+    end
+
+    value:update(requested(secret, "secret", true))
+    succeeds(value:open())
+    assert(secret:replace_text("s3cr3t"))
+    local secret_buffer = assert(secret:native().buffer)
+    local host_window = assert(secret:native().window)
+    vim.cmd("belowright split")
+    local foreign_window = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(foreign_window, secret_buffer)
+    vim.api.nvim_set_current_win(host_window)
+
+    value:update(requested(ordinary, "ordinary", false))
+    succeeds(value:flush())
+    local ordinary_buffer = assert(ordinary:native().buffer)
+    assert.are_not.equal(secret_buffer, ordinary_buffer)
+    assert.is_false(vim.api.nvim_buf_is_valid(secret_buffer))
+    assert.are_not.equal(secret_buffer,
+      vim.api.nvim_win_get_buf(foreign_window))
+
+    assert(ordinary:replace_text("ordinary prompt"))
+    vim.api.nvim_buf_call(ordinary_buffer, function()
+      vim.cmd("silent! undo")
+    end)
+    local text = table.concat(vim.api.nvim_buf_get_lines(
+      ordinary_buffer, 0, -1, false), "\n")
+    assert.is_nil(text:find("s3cr3t", 1, true))
+  end)
+
   it("restores a removed buffer option on a retained Pane", function()
     local content = new_pane("content", { text = "options" })
     local value = applet({

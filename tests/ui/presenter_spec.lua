@@ -493,6 +493,11 @@ describe("neoagent Applet Presenter", function()
     assert.is_false(vim.bo[native.buffer].swapfile)
     assert.is_false(vim.bo[native.buffer].undofile)
     pane:replace_text("s3cr3t", { line = 1, column = 6 }, 1)
+    local queued = presenter:input({
+      prompt = "Ordinary prompt",
+      default = "seed",
+      allow_empty = true,
+    })
     local marks = vim.api.nvim_buf_get_extmarks(native.buffer,
       view.presentation_component.pane.mask_namespace, 0, -1, { details = true })
     assert.are.equal(6, #marks)
@@ -504,7 +509,17 @@ describe("neoagent Applet Presenter", function()
     assert(vim.wait(1000, function()
       return not vim.api.nvim_buf_is_valid(native.buffer)
     end))
-    assert.is_nil(presenter:snapshot().active)
+    local ordinary = assert(view:pane("presentation")):native()
+    assert.are_not.equal(native.buffer, ordinary.buffer)
+    assert.are.equal("neoagent-prompt", vim.bo[ordinary.buffer].filetype)
+    assert(view.presentation_component:set_text("ordinary"))
+    vim.api.nvim_buf_call(ordinary.buffer, function()
+      vim.cmd("silent! undo")
+    end)
+    assert.is_nil(table.concat(vim.api.nvim_buf_get_lines(
+      ordinary.buffer, 0, -1, false), "\n"):find("s3cr3t", 1, true))
+    assert(presenter:cancel(presenter:snapshot().active.id))
+    assert(vim.wait(1000, function() return queued:is_done() end))
   end)
 
   it("fails a semantic request when a custom View cannot present it", function()

@@ -193,6 +193,22 @@ local function walk_images(node, callback, seen)
   seen[node] = nil
 end
 
+local function region_document(root)
+  while type(root) == "table" and root.type == "scope" do root = root.child end
+  if type(root) ~= "table" then return nil end
+  if root.type == "region" and root.revision ~= nil then return { root } end
+  if root.type ~= "column" then return nil end
+  local regions = root.children or {}
+  if #regions == 0 then return nil end
+  for _, region in ipairs(regions) do
+    if type(region) ~= "table" or region.type ~= "region"
+        or region.revision == nil then
+      return nil
+    end
+  end
+  return regions
+end
+
 local function image_snapshot(pane)
   return pane.image_system and util.copy(pane.image_system:snapshot(pane))
     or {
@@ -309,12 +325,14 @@ function Pane.new(opts)
     interaction_revision = 0,
     position_overrides = {},
     compile_cache = {},
+    image_region_cache = {},
     counters = {
       requested_generations = 0,
       renders = 0,
       commits = 0,
       region_compilations = 0,
       region_reuses = 0,
+      document_reuses = 0,
       layer_compilations = 0,
       layer_reuses = 0,
       composed_cells = 0,
@@ -895,12 +913,38 @@ function Pane:_validate_actions(layout)
       error(("%s: unknown action %q"):format(path, action.action), 0)
     end
   end
-  for key, target in pairs(layout.targets) do
-    validate(target.action, "target " .. key)
-  end
-  for key, scope in pairs(layout.scopes) do
-    for index, binding in ipairs(scope.bindings) do
-      validate(binding.action, ("scope %s binding %d"):format(key, index))
+  local document = layout.region_document
+  local first = document and document.changed_first
+  if document then
+    if first then
+      for index = first, #layout.regions do
+        local region = layout.regions[index]
+        for key, target in pairs(region.targets or {}) do
+          validate(target.action, "target " .. key)
+        end
+        for key, scope in pairs(region.scopes or {}) do
+          for binding_index, binding in ipairs(scope.bindings) do
+            validate(binding.action,
+              ("scope %s binding %d"):format(key, binding_index))
+          end
+        end
+      end
+      for key, scope in pairs(layout.scopes) do
+        if scope.root then
+          for index, binding in ipairs(scope.bindings) do
+            validate(binding.action, ("scope %s binding %d"):format(key, index))
+          end
+        end
+      end
+    end
+  else
+    for key, target in pairs(layout.targets) do
+      validate(target.action, "target " .. key)
+    end
+    for key, scope in pairs(layout.scopes) do
+      for index, binding in ipairs(scope.bindings) do
+        validate(binding.action, ("scope %s binding %d"):format(key, index))
+      end
     end
   end
   if layout.edit then validate(layout.edit.on_change, "edit.on_change") end
@@ -911,14 +955,43 @@ function Pane:_prepare_images(tree)
   local root = tree.type and tree or tree.root
   local requested, sources = {}, {}
   local paintable = surface_visible(self.surface)
-  walk_images(root, function(value)
-    local identity_ok, identity = pcall(
-      ImageSource.identity, value)
-    if identity_ok then
-      requested[identity] = true
-      sources[#sources + 1] = { identity = identity, value = value }
+  local regions = region_document(root)
+  if regions then
+    local active = {}
+    for _, region in ipairs(regions) do
+      active[region.key] = true
+      local cached = self.image_region_cache[region.key]
+      if not cached or cached.revision ~= region.revision then
+        cached = { revision = region.revision, sources = {} }
+        walk_images(region.child, function(value)
+          local identity_ok, identity = pcall(ImageSource.identity, value)
+          if identity_ok then
+            cached.sources[#cached.sources + 1] = {
+              identity = identity,
+              value = value,
+            }
+          end
+        end, {})
+        self.image_region_cache[region.key] = cached
+      end
+      for _, source in ipairs(cached.sources) do
+        requested[source.identity] = true
+        sources[#sources + 1] = source
+      end
     end
-  end, {})
+    for key in pairs(self.image_region_cache) do
+      if not active[key] then self.image_region_cache[key] = nil end
+    end
+  else
+    self.image_region_cache = {}
+    walk_images(root, function(value)
+      local identity_ok, identity = pcall(ImageSource.identity, value)
+      if identity_ok then
+        requested[identity] = true
+        sources[#sources + 1] = { identity = identity, value = value }
+      end
+    end, {})
+  end
   self.requested_image_references = requested
   self.deferred_images = not paintable and #sources > 0
   self.image_system:set_references(self, requested)
