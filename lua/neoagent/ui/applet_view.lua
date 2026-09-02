@@ -2,6 +2,7 @@ local Applet = require("applet")
 local Details = require("neoagent.ui.panes.details")
 local Dialog = require("neoagent.ui.panes.dialog")
 local Input = require("neoagent.ui.panes.input")
+local presentation_surface = require("neoagent.ui.presentation_surface")
 local Transcript = require("neoagent.ui.panes.transcript")
 local protocol = require("neoagent.ui.renderer")
 local util = require("neoagent.util")
@@ -297,6 +298,17 @@ function View.new(opts)
     on_error = opts.on_error,
     notify = opts.notify,
     open_uri = opts.open_uri,
+  })
+  presentation_surface.configure(self, {
+    submit = function() self:_submit_frame() end,
+    flush = function() return self:_flush_frame() end,
+    is_open = function() return self:is_open() end,
+    resolve = function(id, value)
+      return self.callbacks.on_presentation_resolve(id, value)
+    end,
+    cancel = function(id)
+      return self.callbacks.on_presentation_cancel(id)
+    end,
   })
   self.blocks = self.transcript.blocks
   self.messages = self.transcript.messages
@@ -604,36 +616,11 @@ function View:open_uri(uri)
 end
 
 function View:_new_presentation_component(active)
-  return Applet.presentation.new({
-    key = "presentation",
-    filter_key = "presentation-filter",
-    results_key = "presentation-results",
-    request = active,
-    theme = self.applet_theme,
-    on_choose = function(value)
-      self.callbacks.on_presentation_resolve(active.id, value)
-    end,
-    on_cancel = function()
-      self.callbacks.on_presentation_cancel(active.id)
-    end,
-    on_error = self.on_error,
-  })
+  return presentation_surface.new_component(self, active)
 end
 
 function View:_ensure_presentation_component()
-  local active = self.presentation and self.presentation.active
-  if not active then return false end
-  local current = self.presentation_component
-  local editable = current and current:editable_pane() or nil
-  local results = current and current.pane or nil
-  if current and not current:is_destroyed()
-      and editable and not editable:is_destroyed()
-      and results and not results:is_destroyed() then
-    return false
-  end
-  if current then current:destroy() end
-  self.presentation_component = self:_new_presentation_component(active)
-  return true
+  return presentation_surface.ensure(self)
 end
 
 function View:open(origin, opts)
@@ -668,10 +655,7 @@ function View:close()
   if self.destroyed then return end
   local was_open = self:is_open()
   if self.input then self.input.pending_text = self:get_input() end
-  if self.presentation and self.presentation.active
-      and self.presentation.active.kind == "input" then
-    self.presentation_seed = self.presentation.active.default or ""
-  end
+  presentation_surface.retain_seed(self)
   self.applet:close()
   self:_stop_spinner()
   if was_open then self.callbacks.on_close() end
@@ -688,9 +672,8 @@ function View:destroy()
   self.applet:destroy()
   if self.details_component then self.details_component:destroy() end
   if self.dialog_component then self.dialog_component:destroy() end
-  if self.presentation_component then self.presentation_component:destroy() end
+  presentation_surface.destroy(self)
   self.details, self.details_component, self.dialog_component = nil, nil, nil
-  self.presentation, self.presentation_component = nil, nil
   self.transcript:destroy()
   self.input:destroy()
   if self.owns_image_system then self.image_system:destroy() end
@@ -1020,65 +1003,11 @@ function View:set_dialog(snapshot)
 end
 
 function View:_seed_presentation()
-  local component = self.presentation_component
-  local editable = component and component:editable_pane() or nil
-  if self.presentation_seed == nil or not editable
-      or not editable:is_editable() or not editable:is_connected() then
-    return false
-  end
-  local value = self.presentation_seed
-  self.presentation_seed = nil
-  self.presentation_component:set_text(value)
-  return true
+  return presentation_surface.seed(self)
 end
 
 function View:set_presentation(snapshot)
-  assert(snapshot == nil or type(snapshot) == "table",
-    "presentation snapshot must be a table")
-  snapshot = snapshot and util.copy(snapshot) or { active = nil, queue_count = 0 }
-  local active = snapshot.active
-  if active then
-    assert(type(active.id) == "string" and active.id ~= ""
-        and (active.kind == "select" or active.kind == "input"
-          or active.kind == "notice"),
-      "presentation request is invalid")
-  end
-  local current = self.presentation and self.presentation.active
-  if current and active and current.id == active.id
-      and current.kind == active.kind then
-    if active.kind == "select" and self.presentation_component then
-      self.presentation_component:set_items(active.items)
-    end
-    self.presentation = snapshot
-    return true
-  end
-
-  local previous_snapshot = self.presentation
-  local previous_component = self.presentation_component
-  local next_component
-  if active then
-    next_component = self:_new_presentation_component(active)
-  end
-  self.presentation = active and snapshot or nil
-  self.presentation_component = next_component
-  self.presentation_seed = active and active.kind == "input"
-      and (active.default or "") or nil
-  self:_submit_frame()
-  if self:is_open() then
-    local committed, err = self:_flush_frame()
-    if not committed then
-      self.presentation = previous_snapshot
-      self.presentation_component = previous_component
-      self.presentation_seed = nil
-      self:_submit_frame()
-      self:_flush_frame()
-      if next_component then next_component:destroy() end
-      return nil, err
-    end
-    self:_seed_presentation()
-  end
-  if previous_component and not self:is_open() then previous_component:destroy() end
-  return true
+  return presentation_surface.set(self, snapshot)
 end
 
 function View:_pane_detached(key, default)
@@ -1167,9 +1096,7 @@ function View:set_renderer(renderer)
   self.config.renderer = selected
   self.transcript:set_renderer(selected)
   self.input:set_theme(selected.theme)
-  if self.presentation_component and not self:_ensure_presentation_component() then
-    self.presentation_component:set_theme(selected.theme)
-  end
+  presentation_surface.set_theme(self, selected.theme)
   if dialog_visible then self:_show_dialog(dialog_focused) end
   if details_key and self:show_card_details(details_key) and details_raw then
     self.details:set(self.details.block, true)

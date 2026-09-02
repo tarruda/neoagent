@@ -14,7 +14,7 @@ local function active(state)
   return state ~= "success" and state ~= "error"
 end
 
-local function wrap_words(text, available)
+local function compact_words(text, available)
   local result = {}
   available = math.max(1, available)
   for _, source in ipairs(display.lines(text or "")) do
@@ -33,7 +33,7 @@ local function wrap_words(text, available)
   return result
 end
 
-local function wrap_characters(text, width)
+local function compact_characters(text, width)
   text = (text or ""):gsub("\t", "    ")
   if text == "" then return { "" } end
   local result, current, current_width = {}, "", 0
@@ -59,15 +59,16 @@ local function activity(value, opts)
     return nil
   end
   local verb = active(opts.state) and value.ongoing or value.complete
+  local details = opts.presentation_surface == "details"
   local result = {
-    default = not compact_activities[value.operation] or opts.full == true,
+    default = not compact_activities[value.operation] or details,
     status = true,
     title = {
       { text = verb, style = "bold" },
       { text = " " .. value.subject },
     },
   }
-  if value.command and opts.full ~= true then
+  if value.command and not details then
     result.default = nil
     result.title = { result.title[1] }
     result.command = value.command
@@ -81,11 +82,16 @@ local function plan_body(value, opts, codex)
     return nil
   end
   local body = {}
-  local body_width = math.max(1, (opts.width or 80) - (codex and 4 or 2))
+  local body_width = opts.presentation_surface == "transcript"
+      and math.max(1, (opts.width or 80) - (codex and 4 or 2)) or nil
+  local function lines(text, width)
+    if width then return compact_words(text, width) end
+    return display.lines(text or "")
+  end
   local explanation = type(value.explanation) == "string"
       and util.trim(value.explanation) or ""
   if explanation ~= "" then
-    for _, line in ipairs(wrap_words(explanation, body_width)) do
+    for _, line in ipairs(lines(explanation, body_width)) do
       body[#body + 1] = { text = line, style = { "muted", "italic" } }
     end
   end
@@ -108,8 +114,8 @@ local function plan_body(value, opts, codex)
           and (codex and { "cyan", "bold" } or "bold")
         or "muted"
       local marker_width = codex and 2 or 4
-      for index, line in ipairs(
-          wrap_words(item.step, body_width - marker_width)) do
+      local available = body_width and body_width - marker_width or nil
+      for index, line in ipairs(lines(item.step, available)) do
         body[#body + 1] = {
           text = (index == 1 and marker
             or string.rep(" ", marker_width)) .. line,
@@ -182,7 +188,7 @@ local function edit_rows(rows, width, maximum_lines)
     end
   end
   local gutter_width = #tostring(maximum)
-  local available = math.max(1, width - gutter_width - 5)
+  local available = width and math.max(1, width - gutter_width - 5) or nil
   for _, row in ipairs(rows) do
     if row.kind == "separator" then
       if maximum_lines and #result >= maximum_lines then
@@ -204,7 +210,9 @@ local function edit_rows(rows, width, maximum_lines)
         or row.kind == "delete" and "red" or nil
       local sign = row.kind == "add" and "+"
         or row.kind == "delete" and "-" or " "
-      for index, chunk in ipairs(wrap_characters(row.text, available)) do
+      local chunks = available and compact_characters(row.text, available)
+        or { row.text }
+      for index, chunk in ipairs(chunks) do
         if maximum_lines and #result >= maximum_lines then
           omitted = omitted + 1
         else
@@ -233,8 +241,10 @@ end
 
 local function edit(value, opts)
   if type(value.path) ~= "string" or not util.is_list(value.rows) then return nil end
-  local maximum = opts.full ~= true and EDIT_PREVIEW_LINES or nil
-  local lines, omitted = edit_rows(value.rows, opts.width or 80, maximum)
+  local compact = opts.presentation_surface == "transcript"
+  local maximum = compact and EDIT_PREVIEW_LINES or nil
+  local lines, omitted = edit_rows(
+    value.rows, compact and (opts.width or 80) or nil, maximum)
   if not lines then return nil end
   if omitted > 0 then
     lines[#lines + 1] = { {

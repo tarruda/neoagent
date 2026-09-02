@@ -479,7 +479,7 @@ local function custom_tool_presentation(self, block, args, options)
     util.copy(semantic), {
       state = block.state,
       width = options.width or self:_content_width(),
-      full = options.full == true,
+      presentation_surface = options.presentation_surface,
       spinner = self.spinner_frames[self.spinner_frame],
     })
   if not presented or type(presentation) ~= "table" then return nil end
@@ -515,20 +515,21 @@ local tool_labels = {
   read_agent_documentation = "neoagent docs",
 }
 
-local function summary_value(value, full)
+local function summary_value(value, surface)
   if value == vim.NIL then return "null" end
   if type(value) == "string" then
     value = value:gsub("\r\n", "\n"):gsub("\r", "\n"):gsub("\n", "\\n")
-    return not full and #value > 80 and value:sub(1, 77) .. "..." or value
+    return surface == "transcript" and #value > 80
+      and value:sub(1, 77) .. "..." or value
   end
   if type(value) ~= "table" then return tostring(value) end
   if util.is_list(value) then return "[" .. #value .. " items]" end
   return "{…}"
 end
 
-local function argument_text(value, fallback, full)
+local function argument_text(value, fallback, surface)
   if value == nil then return fallback end
-  return summary_value(value, full)
+  return summary_value(value, surface)
 end
 
 local function numeric_argument(value)
@@ -536,7 +537,7 @@ local function numeric_argument(value)
   if type(value) == "string" then return tonumber(value) end
 end
 
-local function read_range(args)
+local function read_range(args, surface)
   local offset = numeric_argument(args.offset)
   local limit = numeric_argument(args.limit)
   if (args.offset == nil or offset) and (args.limit == nil or limit) then
@@ -545,38 +546,58 @@ local function read_range(args)
     return ":" .. first .. (last and "-" .. last or "")
   end
   local fields = {}
-  if args.offset ~= nil then fields[#fields + 1] = "offset=" .. argument_text(args.offset, "?") end
-  if args.limit ~= nil then fields[#fields + 1] = "limit=" .. argument_text(args.limit, "?") end
+  if args.offset ~= nil then
+    fields[#fields + 1] = "offset="
+      .. argument_text(args.offset, "?", surface)
+  end
+  if args.limit ~= nil then
+    fields[#fields + 1] = "limit="
+      .. argument_text(args.limit, "?", surface)
+  end
   return " (" .. table.concat(fields, " ") .. ")"
 end
 
-local function tool_title(name, args, full)
+local function tool_title(name, args, surface)
   name = type(name) == "string" and name or "<tool>"
   local label = tool_labels[name] or name
   if name == "shell" then
     return { {
-      text = "$ " .. argument_text(args.command, "…", full),
+      text = "$ " .. argument_text(args.command, "…", surface),
       group = "NeoagentMarkdownBold",
     } }
   end
   local parts = { { text = label, group = "NeoagentMarkdownBold" } }
   if name == "read" or name == "read_file" or name == "write" or name == "write_file"
       or name == "edit" or name == "edit_file" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.path or args.file_path, "…", full), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " " .. argument_text(
+      args.path or args.file_path, "…", surface), group = "NeoagentAccent" }
     if (name == "read" or name == "read_file") and (args.offset or args.limit) then
-      parts[#parts + 1] = { text = read_range(args), group = "DiagnosticWarn" }
+      parts[#parts + 1] = {
+        text = read_range(args, surface), group = "DiagnosticWarn",
+      }
     end
   elseif name == "grep" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…", full), group = "NeoagentAccent" }
-    parts[#parts + 1] = { text = " in " .. argument_text(args.path, ".", full), group = "NeoagentToolOutput" }
-    if args.glob then parts[#parts + 1] = { text = " (" .. argument_text(args.glob, "?", full) .. ")", group = "NeoagentToolOutput" } end
+    parts[#parts + 1] = { text = " "
+      .. argument_text(args.pattern, "…", surface), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in "
+      .. argument_text(args.path, ".", surface), group = "NeoagentToolOutput" }
+    if args.glob then
+      parts[#parts + 1] = { text = " ("
+        .. argument_text(args.glob, "?", surface) .. ")",
+        group = "NeoagentToolOutput" }
+    end
   elseif name == "find" then
-    parts[#parts + 1] = { text = " " .. argument_text(args.pattern, "…", full), group = "NeoagentAccent" }
-    parts[#parts + 1] = { text = " in " .. argument_text(args.path, ".", full), group = "NeoagentToolOutput" }
+    parts[#parts + 1] = { text = " "
+      .. argument_text(args.pattern, "…", surface), group = "NeoagentAccent" }
+    parts[#parts + 1] = { text = " in "
+      .. argument_text(args.path, ".", surface), group = "NeoagentToolOutput" }
   else
     local values = {}
     for key, value in pairs(args) do
-      if key ~= "content" and value ~= nil then values[#values + 1] = tostring(key) .. "=" .. summary_value(value, full) end
+      if key ~= "content" and value ~= nil then
+        values[#values + 1] = tostring(key) .. "="
+          .. summary_value(value, surface)
+      end
     end
     table.sort(values)
     if #values > 0 then parts[#parts + 1] = { text = " " .. table.concat(values, " "), group = "NeoagentToolOutput" } end
@@ -793,16 +814,18 @@ local function source_output(result, path, line_count)
   return result
 end
 
-local function tool_output(self, block, args, full)
+local function tool_output(self, block, args, surface)
   local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
   local message = block.message
   local update = block.update
   local value = message and content_text(message.content) or update and content_text(update.content) or nil
   local maximum
-  if not full then maximum = name == "grep" and 15 or name == "find" and 20 or 10 end
+  if surface == "transcript" then
+    maximum = name == "grep" and 15 or name == "find" and 20 or 10
+  end
 
   if name == "write" or name == "write_file" then
-    if not full and self.policy.write_preview_lines then
+    if surface == "transcript" and self.policy.write_preview_lines then
       maximum = self.policy.write_preview_lines
     end
     local result = output_lines(self,
@@ -820,7 +843,7 @@ local function tool_output(self, block, args, full)
     end
     return rendered()
   elseif name == "read" or name == "read_file" then
-    local syntax = full and self.policy.read_source_syntax
+    local syntax = surface == "details" and self.policy.read_source_syntax
       and not (message and message.isError)
     local group
     if not syntax then
@@ -882,11 +905,11 @@ local function clip_head(content, maximum)
   return omitted
 end
 
-local function compaction_content(self, block, full, width)
+local function compaction_content(self, block, surface, width)
   local content = rendered()
   local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
   local token_count = format_token_count(block.tokens_before)
-  if full then
+  if surface == "details" then
     add_line(content, label, label_spans)
     add_line(content, "")
     local body = "**Compacted from " .. token_count .. "**"
@@ -922,11 +945,11 @@ local function thinking_header(self, source, omitted, expandable)
   return message .. "]"
 end
 
-local function assistant_content(self, block, full, width)
+local function assistant_content(self, block, surface, width)
   local document = self:render_markdown(
     "assistant", block.text or "", { width = width })
   local finish = document:finish()
-  if full then
+  if surface == "details" then
     return {
       markdown_document = document,
       markdown_first = 1,
@@ -936,10 +959,10 @@ local function assistant_content(self, block, full, width)
   return document:slice(1, finish)
 end
 
-local function thinking_content(self, block, full, width)
+local function thinking_content(self, block, surface, width)
   local source = self:render_markdown(
     "thinking", block.text or "", { width = width })
-  if full then
+  if surface == "details" then
     return {
       markdown_document = source,
       markdown_first = 1,
@@ -967,9 +990,9 @@ local function thinking_content(self, block, full, width)
   return content
 end
 
-local function ordinary_tool_title(self, block, args, full, status)
+local function ordinary_tool_title(self, block, args, surface, status)
   return segments(self.policy.tool_title(tool_title(
-    block.name or (block.call and block.call.name), args, full), status))
+    block.name or (block.call and block.call.name), args, surface), status))
 end
 
 local COMMAND_CONTINUATION_MAX_LINES = 2
@@ -1066,22 +1089,23 @@ local function command_tool_content(self, block, presentation)
 end
 
 local function ordinary_tool_content(
-    self, block, args, full, title_override, status)
+    self, block, args, surface, title_override, status)
   local content = rendered()
-  local title, spans = ordinary_tool_title(self, block, args, full, status)
+  local title, spans = ordinary_tool_title(
+    self, block, args, surface, status)
   if title_override and title_override ~= true then
     title, spans = presentation_line(
       self.policy.tool_title(title_override, status))
   end
   add_line(content, title, spans)
-  append_rendered(content, tool_output(self, block, args, full), true)
+  append_rendered(content, tool_output(self, block, args, surface), true)
   return content
 end
 
 local function presented_tool_content(self, block, args, options, presentation)
   if not presentation then
     return ordinary_tool_content(
-      self, block, args, options.full)
+      self, block, args, options.presentation_surface)
   end
   if presentation.command then
     return command_tool_content(self, block, presentation)
@@ -1089,7 +1113,7 @@ local function presented_tool_content(self, block, args, options, presentation)
   local content
   if presentation.default == true then
     content = ordinary_tool_content(
-      self, block, args, options.full, presentation.title,
+      self, block, args, options.presentation_surface, presentation.title,
       presentation.status and block.state or nil)
   else
     content = rendered()
@@ -1097,7 +1121,7 @@ local function presented_tool_content(self, block, args, options, presentation)
       local title, spans
       if presentation.title == true then
         title, spans = ordinary_tool_title(
-          self, block, args, options.full,
+          self, block, args, options.presentation_surface,
           presentation.status and block.state or nil)
       else
         title, spans = presentation_line(
@@ -1116,6 +1140,9 @@ end
 
 local function card_content(self, block, options)
   options = options or {}
+  local surface = options.presentation_surface
+  assert(surface == "transcript" or surface == "details",
+    "render surface must be transcript or details")
   local width = options.width or self:_content_width()
   if block.kind == "user" then
     return markdown.render(block.text, {
@@ -1123,12 +1150,12 @@ local function card_content(self, block, options)
       preserve_markers = true,
     }), self.policy.user_background()
   elseif block.kind == "compaction" then
-    return compaction_content(self, block, options.full, width),
+    return compaction_content(self, block, surface, width),
       self.policy.compaction_background()
   elseif block.kind == "thinking" then
-    return thinking_content(self, block, options.full, width)
+    return thinking_content(self, block, surface, width)
   elseif block.kind == "assistant" then
-    return assistant_content(self, block, options.full, width)
+    return assistant_content(self, block, surface, width)
   elseif block.kind ~= "tool" then
     return nil
   end
@@ -1197,7 +1224,9 @@ local function decorate_block(self, block, content, neighbors)
 end
 
 function M.block(self, block, neighbors)
-  local content, background = card_content(self, block, neighbors)
+  local options = vim.tbl_extend(
+    "force", neighbors or {}, { presentation_surface = "transcript" })
+  local content, background = card_content(self, block, options)
   if content then
     local width
     if content.wrap ~= true and (block.kind == "compaction" or (
@@ -1217,7 +1246,8 @@ function M.block(self, block, neighbors)
 end
 
 function M.details(self, block, options)
-  options = vim.tbl_extend("force", options or {}, { full = true })
+  options = vim.tbl_extend(
+    "force", options or {}, { presentation_surface = "details" })
   return card_content(self, block, options)
 end
 

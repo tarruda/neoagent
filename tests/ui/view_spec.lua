@@ -590,49 +590,6 @@ describe("neoagent.ui", function()
     assert.are.equal(0x006622, tool.background)
   end)
 
-  it("uses the card background behind expanded soft-wrap continuations", function()
-    vim.o.showbreak = "↪"
-    vim.api.nvim_set_hl(0, "Normal", {
-      fg = 0xffffff,
-      bg = 0x000000,
-    })
-    vim.api.nvim_set_hl(0, "NonText", {
-      fg = 0xffffff,
-      bg = 0x120034,
-    })
-    vim.api.nvim_set_hl(0, "NeoagentUserBackground", {
-      bg = 0x880022,
-    })
-    local result = view({ position = "center", wrap_cards = true })
-    result:set_messages({ {
-      role = "user",
-      content = string.rep("expandedwrap ", 20),
-    } })
-    assert(result:open())
-    assert(result.transcript.pane:flush())
-    local transcript_grid = assert(
-      continuation_cells("expandedwrap", "↪")[1]).grid
-    result:focus_transcript()
-    local user_row
-    for index, line in ipairs(vim.api.nvim_buf_get_lines(
-        view_handles.buffer(result, "transcript"), 0, -1, false)) do
-      if line:find("expandedwrap", 1, true) then user_row = index break end
-    end
-    assert.is_not_nil(user_row)
-    vim.api.nvim_win_set_cursor(
-      view_handles.window(result, "transcript"), { user_row, 0 })
-    assert.is_true(result:show_card_details())
-    assert(result.details.pane:flush())
-    local details
-    for _, candidate in ipairs(continuation_cells("expandedwrap", "↪")) do
-      if candidate.grid ~= transcript_grid then details = candidate end
-    end
-    details = assert(details)
-    assert.are.equal(0xffffff, details.attributes.foreground)
-    assert.are.equal(0x880022, details.attributes.background)
-    close_details(result)
-  end)
-
   it("places the bottom rule below a wrapped text card last line", function()
     local result = view({ position = "center" })
     local long = "ending " .. string.rep("word ", 60)
@@ -1103,6 +1060,53 @@ describe("neoagent.ui", function()
     assert.is_false(has_line_group(result, "NeoagentToolPendingBackground"))
     local marks = vim.api.nvim_buf_get_extmarks(view_handles.buffer(result, "transcript"), result.transcript.pane.namespace, 0, -1, {})
     assert.is_true(#marks >= 3)
+  end)
+
+  it("settles unresolved Tool presentation on terminal completion", function()
+    local result = view({ position = "center" })
+    assert(result:open())
+    result:apply({ type = "message_end", message = {
+      role = "assistant",
+      content = { {
+        type = "toolCall", id = "pending", name = "write_file",
+        arguments = { path = "file.txt" },
+      } },
+    } })
+    result:apply({
+      type = "tool_start",
+      call = { id = "pending", name = "write_file",
+        arguments = { path = "file.txt" } },
+    })
+    result:apply({
+      type = "tool_update",
+      call = { id = "pending", name = "write_file" },
+      result = { content = { { type = "text", text = "partial" } } },
+    })
+    local block = assert(result.transcript.calls.pending)
+    assert.is_true(result.transcript.animated_blocks[block])
+
+    result:finish({
+      ok = false,
+      error = { kind = "cancelled", message = "Operation cancelled" },
+    })
+
+    assert.are.equal("cancelled", block.state)
+    assert.is_true(block.finished)
+    assert.is_nil(block.update)
+    assert.is_nil(result.transcript.animated_blocks[block])
+
+    result:set_messages({ { role = "assistant", content = { {
+      type = "toolCall", id = "failed", name = "read_file",
+      arguments = { path = "file.txt" },
+    } } } })
+    local failed = assert(result.transcript.calls.failed)
+    result:finish({
+      ok = false,
+      error = { kind = "model", message = "request failed" },
+    })
+    assert.are.equal("error", failed.state)
+    assert.is_true(failed.finished)
+    assert.is_nil(result.transcript.animated_blocks[failed])
   end)
 
   it("renders attachments, structured arguments, and unannounced tool events", function()
@@ -3568,15 +3572,17 @@ describe("neoagent.ui", function()
     assert.is_nil(bottom:find("word", 1, true))
   end)
 
-  it("titles expanded cards by kind and wraps their content", function()
+  it("uses native window wrapping only for prose details", function()
     local result = view({ position = "center" })
+    local thinking = "trace " .. string.rep("unwrapped-thinking ", 20)
+    local output = "content " .. string.rep("unwrapped-output ", 20)
     result:set_messages({
       { role = "assistant", content = {
-        { type = "thinking", thinking = "trace" },
+        { type = "thinking", thinking = thinking },
         { type = "toolCall", id = "c1", name = "read_file", arguments = { path = "x" } },
       } },
       { role = "toolResult", toolCallId = "c1", toolName = "read_file", isError = false,
-        content = { { type = "text", text = "content" } } },
+        content = { { type = "text", text = output } } },
     })
     assert(result:open())
     result.transcript.pane:flush()
@@ -3601,17 +3607,22 @@ describe("neoagent.ui", function()
     local thinking_win = open_details(thinking_row)
     assert.matches("Thinking", window_title(thinking_win))
     assert.is_true(vim.wo[thinking_win].wrap)
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
+      view_handles.buffer(result, "details"), 0, -1, false), thinking))
     close_details(result)
     local tool_win = open_details(tool_row)
     assert.matches("Tool call", window_title(tool_win))
-    assert.is_true(vim.wo[tool_win].wrap)
+    assert.is_false(vim.wo[tool_win].wrap)
+    assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
+      view_handles.buffer(result, "details"), 0, -1, false), output))
     close_details(result)
   end)
 
-  it("sizes card details to wrapped screen lines", function()
+  it("sizes prose details from native wrapped screen lines", function()
     local result = view({ position = "center" })
+    local source = string.rep("wrapped content ", 39) .. "end"
     result:set_messages({ { role = "assistant", content = {
-      { type = "text", text = string.rep("wrapped content ", 40) },
+      { type = "text", text = source },
     } } })
     assert(result:open())
     result.transcript.pane:flush()
@@ -3622,13 +3633,15 @@ describe("neoagent.ui", function()
       view_handles.window(result, "details"), {}).all
     local available = math.max(1,
       vim.o.lines - vim.o.cmdheight - 4)
+    assert.are.same({ source }, vim.api.nvim_buf_get_lines(
+      view_handles.buffer(result, "details"), 0, -1, false))
     assert.is_true(text_height > 1)
     assert.are.equal(math.min(available, text_height),
       vim.api.nvim_win_get_height(view_handles.window(result, "details")))
     close_details(result)
   end)
 
-  it("reflows open card details after an editor resize", function()
+  it("reflows and recenters open prose details after an editor resize", function()
     local result = view({ position = "center" })
     result:set_messages({ { role = "assistant", content = {
       { type = "text", text = string.rep("resized content ", 40) },

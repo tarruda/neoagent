@@ -311,6 +311,7 @@ local function cached_block_node(state, env, block, index, width, cache)
   local following = state.blocks[index + 1]
   local signature = {
     revision = block.revision,
+    image_scope = block.image_scope,
     previous_key = previous and previous.key or false,
     previous_revision = previous and previous.revision or false,
     following_key = following and following.key or false,
@@ -353,9 +354,9 @@ local function cached_block_node(state, env, block, index, width, cache)
   if not node then error(continuation.message, 0) end
   local revision_parts = {}
   for _, key in ipairs({
-    "revision", "previous_key", "previous_revision", "following_key",
-    "following_revision", "width", "surface_width", "details_key",
-    "wrap_cards", "show_images",
+    "revision", "image_scope", "previous_key", "previous_revision",
+    "following_key", "following_revision", "width", "surface_width",
+    "details_key", "wrap_cards", "show_images",
   }) do
     local value = tostring(signature[key])
     revision_parts[#revision_parts + 1] = #value .. ":" .. value
@@ -372,20 +373,44 @@ render = function(state, env, cache)
   local document = cache.document
   if not document or document.revision ~= state.document_revision
       or document.width ~= width then
-    local regions, active = {}, {}
+    local block_regions = {}
+    local dirty = {}
+    local reusable = document and document.width == width
+      and document.details_key == state.details_key
+      and document.wrap_cards == (state.config.wrap_cards == true)
+      and document.show_images == (state.config.images ~= false
+        and (type(state.config.images) ~= "table"
+          or state.config.images.display ~= "expanded"))
+      and #state.blocks >= #(document.block_regions or {})
+    if reusable then
+      for index, block in ipairs(state.blocks) do
+        block_regions[index] = document.block_regions[index]
+        if document.block_snapshots[index] ~= block then
+          dirty[index - 1] = true
+          dirty[index] = true
+          dirty[index + 1] = true
+        end
+      end
+    else
+      for index = 1, #state.blocks do dirty[index] = true end
+    end
+    local active = {}
     for index, block in ipairs(state.blocks) do
       active[block.key] = true
-      local node, revision = cached_block_node(
-        state, env, block, index, width, cache.blocks)
-      regions[#regions + 1] = ui.region({
-        key = "block:" .. block.key,
-        revision = revision,
-        child = node,
-      })
+      if dirty[index] then
+        local node, revision = cached_block_node(
+          state, env, block, index, width, cache.blocks)
+        block_regions[index] = ui.region({
+          key = "block:" .. block.key,
+          revision = revision,
+          child = node,
+        })
+      end
     end
     for key in pairs(cache.blocks) do
       if not active[key] then cache.blocks[key] = nil end
     end
+    local regions = vim.list_slice(block_regions)
     local status = status_region(state)
     if status then regions[#regions + 1] = status end
     local dialog, dialog_entry = dialog_region(state)
@@ -398,6 +423,13 @@ render = function(state, env, cache)
     document = {
       revision = state.document_revision,
       width = width,
+      details_key = state.details_key,
+      wrap_cards = state.config.wrap_cards == true,
+      show_images = state.config.images ~= false
+        and (type(state.config.images) ~= "table"
+          or state.config.images.display ~= "expanded"),
+      block_regions = block_regions,
+      block_snapshots = vim.list_slice(state.blocks),
       root = ui.scope({
         key = "transcript:scope",
         bindings = root_bindings(state),
@@ -819,8 +851,18 @@ end
 
 function Transcript:finish(result)
   self:_finish_text_streams()
+  local cancelled = not result.ok
+    and result.error and result.error.kind == "cancelled"
+  for block in pairs(self.animated_blocks) do
+    if block.kind == "tool" and not block.finished then
+      block.state = cancelled and "cancelled" or "error"
+      block.update = nil
+      block.finished = true
+      self:_set_animated(block, false)
+      self:_change(block)
+    end
+  end
   if not result.ok then
-    local cancelled = result.error and result.error.kind == "cancelled"
     self:_add_block({
       kind = "notice",
       text = result.error and result.error.message or "Unknown error",

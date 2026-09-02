@@ -127,6 +127,15 @@ local function snapshot(state)
   }
 end
 
+local function finish_fallback(entry)
+  if not entry then return false end
+  local cancel = entry.cancel_fallback
+  entry.cancel_fallback = nil
+  if not cancel then return false end
+  pcall(cancel)
+  return true
+end
+
 function Presenter:_publish()
   if not self.attachment then return true end
   local ok, err = pcall(self.attachment.present, snapshot(self.state))
@@ -140,7 +149,7 @@ end
 function Presenter:_remove(entry)
   local state = self.state
   if state.active == entry then
-    if entry.cancel_fallback then pcall(entry.cancel_fallback) end
+    finish_fallback(entry)
     state.active = table.remove(state.queue, 1)
     self:_start_active()
     return true
@@ -167,8 +176,12 @@ function Presenter:_start_active()
   })
   if not ok then
     self:reject(entry.id, cancel_or_error)
-  elseif type(cancel_or_error) == "function" and self.state.active == entry then
-    entry.cancel_fallback = cancel_or_error
+  elseif type(cancel_or_error) == "function" then
+    if self.state.active == entry then
+      entry.cancel_fallback = cancel_or_error
+    else
+      pcall(cancel_or_error)
+    end
   end
 end
 
@@ -277,6 +290,7 @@ function Presenter:resolve(id, value)
       return nil, presentation_error("Input response must not be empty")
     end
   end
+  finish_fallback(entry)
   self.state.active = table.remove(self.state.queue, 1)
   entry.done.resolve(value)
   self:_start_active()
@@ -286,6 +300,7 @@ end
 function Presenter:reject(id, err)
   local entry = self.state.active
   if not entry or entry.id ~= id then return false end
+  finish_fallback(entry)
   self.state.active = table.remove(self.state.queue, 1)
   entry.done.reject(util.normalize_error(err, "presentation"))
   self:_start_active()
@@ -310,6 +325,7 @@ function Presenter:attach(opts)
     notify = opts.notify,
     open_uri = opts.open_uri,
   }
+  finish_fallback(self.state.active)
   self.attachment = attachment
   local ok, err = self:_publish()
   if not ok then error(err, 0) end
@@ -330,6 +346,7 @@ function Presenter:detach(attachment, reason)
     vim.list_extend(pending, self.state.queue)
     self.state.active, self.state.queue = nil, {}
     for _, entry in ipairs(pending) do
+      finish_fallback(entry)
       entry.done.reject(presentation_error(reason))
     end
   elseif self.state.active then
@@ -365,7 +382,7 @@ function Presenter:destroy()
   vim.list_extend(pending, self.state.queue)
   self.state.active, self.state.queue, self.attachment = nil, {}, nil
   for _, entry in ipairs(pending) do
-    if entry.cancel_fallback then pcall(entry.cancel_fallback) end
+    finish_fallback(entry)
     entry.done.reject(presentation_error("Presenter was destroyed"))
   end
 end

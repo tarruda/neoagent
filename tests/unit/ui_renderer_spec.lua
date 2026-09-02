@@ -324,6 +324,66 @@ describe("neoagent native Renderer protocol", function()
     assert.are.equal(5, written.source_ranges[1].last)
   end)
 
+  it("keeps expanded semantic tool rows independent of width", function()
+    local edit_tool = require("neoagent.tools.edit_file").new()
+    local edit_line = "local value = " .. string.rep("long_expression + ", 12)
+      .. "final_value"
+    local edit_block = {
+      key = "expanded-edit",
+      kind = "tool",
+      state = "success",
+      call = { name = "edit_file", arguments = {
+        path = "example.lua",
+        edits = {},
+      } },
+      message = {
+        toolName = "edit_file",
+        isError = false,
+        content = { { type = "text", text = "edited" } },
+        details = { patch = "@@ -1 +1 @@\n-old\n+" .. edit_line },
+      },
+    }
+    local plan_tool = require("neoagent.tools.update_plan").new()
+    local explanation = "Explain " .. string.rep("one logical line ", 10)
+      .. "completely"
+    local step = "Implement " .. string.rep("one logical step ", 10)
+      .. "completely"
+    local plan = {
+      explanation = explanation,
+      plan = { { step = step, status = "pending" } },
+    }
+    local plan_block = {
+      key = "expanded-plan",
+      kind = "tool",
+      state = "success",
+      call = { name = "update_plan", arguments = plan },
+      message = {
+        toolName = "update_plan",
+        isError = false,
+        content = { { type = "text", text = "Plan updated" } },
+        details = plan,
+      },
+    }
+    local function details_lines(block, tool, width)
+      return layout(assert(protocol.render_details(renderers.codex, block, {
+        width = width,
+        spinner = "*",
+        tool = tool,
+      })), renderers.codex.theme, width).lines
+    end
+
+    local narrow_edit = details_lines(edit_block, edit_tool, 24)
+    local wide_edit = details_lines(edit_block, edit_tool, 80)
+    assert.are.same(wide_edit, narrow_edit)
+    assert.is_true(vim.tbl_contains(narrow_edit, "   1 +" .. edit_line))
+
+    local narrow_plan = details_lines(plan_block, plan_tool, 24)
+    local wide_plan = details_lines(plan_block, plan_tool, 80)
+    assert.are.same(wide_plan, narrow_plan)
+    assert.is_true(vim.tbl_contains(narrow_plan, "   └ " .. explanation))
+    assert.is_true(vim.tbl_contains(narrow_plan, "     □ " .. step))
+  end)
+
   it("keeps unsupported images searchable through fixed fallback text", function()
     local text = rendered(renderers.pi, {
       key = "image-block",

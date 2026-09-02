@@ -165,6 +165,43 @@ describe("neoagent semantic Presenter", function()
     assert.are.equal("one", run:result().value)
   end)
 
+  it("retires each fallback exactly once when an Applet takes over", function()
+    for _, kind in ipairs({ "select", "input", "notice" }) do
+      local cancelled = 0
+      local fallback_done
+      local value = presenter({
+        host = host({
+          [kind] = function(_, done)
+            fallback_done = done
+            return function() cancelled = cancelled + 1 end
+          end,
+        }),
+      })
+      local run
+      if kind == "select" then
+        run = value:select({ items = { "one" } })
+      elseif kind == "input" then
+        run = value:input({ allow_empty = true })
+      else
+        run = value:notice({ body = "notice" })
+      end
+      assert.is_false(run:is_done())
+      local presented
+      local detach = value:attach({
+        present = function(snapshot) presented = snapshot end,
+      })
+      assert.are.equal(1, cancelled)
+      local active = assert(presented.active)
+      local response = kind == "select" and active.items[1].id
+        or kind == "input" and "answer" or nil
+      assert(value:resolve(active.id, response))
+      assert(vim.wait(1000, function() return run:is_done() end))
+      fallback_done.resolve(response)
+      assert.are.equal(1, cancelled)
+      detach()
+    end
+  end)
+
   it("publishes closeable notices", function()
     local value = presenter({ host = host() })
     local detach = value:attach({ present = function() end })

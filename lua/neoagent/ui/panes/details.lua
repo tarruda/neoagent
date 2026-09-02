@@ -9,10 +9,13 @@ Details.__index = Details
 
 local FOLLOW_INTERVAL_MS = 150
 
-local function follow_available(block)
+local function prose(block)
   return type(block) == "table"
     and (block.kind == "assistant" or block.kind == "thinking")
-    and block.text_epoch ~= nil
+end
+
+local function follow_available(block)
+  return prose(block) and block.text_epoch ~= nil
 end
 
 local function first(value)
@@ -75,14 +78,14 @@ local function raw_node(state)
   return ui.text({
     key = "details:raw",
     text = state.block.text or "",
-    wrap = "word",
+    wrap = "native",
   })
 end
 
 local function render(component, state, env)
   local block = state.block or { kind = "notice", text = "" }
   local child
-  if state.raw and (block.kind == "assistant" or block.kind == "thinking") then
+  if state.raw and prose(block) then
     child = raw_node(state)
   else
     local cache = component.render_cache
@@ -100,7 +103,7 @@ local function render(component, state, env)
       child = ui.text({
         key = "details:fallback",
         text = block.text or block.summary or block.name or block.kind or "",
-        wrap = "word",
+        wrap = "native",
       })
     else
       child = node
@@ -113,7 +116,7 @@ local function render(component, state, env)
   end
   local mappings = state.config.mappings or {}
   local bindings = {}
-  local raw_available = block.kind == "assistant" or block.kind == "thinking"
+  local raw_available = prose(block)
   local can_follow = follow_available(block)
   add_binding(bindings, "n", first(mappings.card_previous),
     "details.previous", "Previous card")
@@ -146,9 +149,9 @@ local function render(component, state, env)
         style = "window_title" } },
       title_pos = "center",
       options = {
-        wrap = true,
-        linebreak = true,
-        breakindent = true,
+        wrap = raw_available,
+        linebreak = raw_available,
+        breakindent = raw_available,
         cursorline = true,
       },
     },
