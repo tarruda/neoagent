@@ -466,6 +466,162 @@ else:
     assert.is_nil(opaque_records[3].redacted)
   end)
 
+  it("scrubs protocol envelopes while preserving ordinary response content", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local response_body = '{"token":"ordinary-response-token"}'
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+    }))
+    local http = recording:transport(transport(nil, {
+      ok = true,
+      status = 200,
+      body = response_body,
+      headers = {
+        ["content-type"] = "application/json",
+        ["set-cookie"] = "session=response-cookie; Path=/; HttpOnly",
+        location = "https://example.test/redirect"
+          .. "?access_token=response-location-secret&empty=",
+        ["x-echo"] = "response-cookie",
+      },
+    }), {
+      workspace = workspace,
+      origin = "authentication",
+    })
+    local requests = {
+      {
+        url = "https://example.test/json?empty=&bare#fragment-secret",
+        headers = {
+          ["Content-Type"] = "application/json",
+          ["X-Binary"] = "bad\255",
+          ["X-Flag"] = false,
+        },
+        body = '{"custom_token":{"number":7,"flag":true,'
+          .. '"none":null,"nested":["nested-secret"]},'
+          .. '"callback":"https://callback.test/path?api_key=nested-url-secret"}',
+      },
+      {
+        url = "https://example.test/empty-fragment#",
+        body = "",
+      },
+      {
+        url = "https://example.test/form",
+        headers = {
+          ["Content-Type"] = "application/x-www-form-urlencoded",
+        },
+        body = "grant_type=client_credentials&orphan",
+      },
+      {
+        url = "https://example.test/text",
+        headers = { ["Content-Type"] = "text/plain" },
+        body = "Bearer protocol-request-secret",
+      },
+      {
+        url = "https://example.test/yaml",
+        headers = { ["Content-Type"] = "application/yaml" },
+        body = "name: ordinary",
+      },
+      {
+        url = "https://example.test/javascript",
+        headers = { ["Content-Type"] = "application/javascript" },
+        body = "const value = 1",
+      },
+    }
+    for _, request in ipairs(requests) do
+      assert.is_true(wait(http.fetch({ request = request })).ok)
+    end
+    recording:destroy()
+
+    local captured = {}
+    for _, path in ipairs(files(directory, ".jsonl")) do
+      local parsed = records(path)
+      captured[parsed[1].request.url] = parsed
+      assert.are.equal(response_body, parsed[3].body)
+      assert.is_nil(parsed[3].redacted)
+      assert.matches("access_token=%*", parsed[4].headers.location)
+      assert.are.equal("*", parsed[4].headers["set-cookie"])
+      assert.are.equal("*", parsed[4].headers["x-echo"])
+    end
+    assert.are.equal(6, vim.tbl_count(captured))
+    local json = captured[
+      "https://example.test/json?empty=&bare#*"]
+    assert.is_truthy(json)
+    assert.are.equal("*", json[1].request.headers["X-Binary"])
+    assert.are.equal("false", json[1].request.headers["X-Flag"])
+    assert.are.same({
+      callback = "https://callback.test/path?api_key=*",
+      custom_token = "*",
+    }, vim.json.decode(json[1].request.body))
+    assert.is_truthy(captured["https://example.test/empty-fragment#"])
+    assert.are.equal("grant_type=client_credentials&orphan",
+      captured["https://example.test/form"][1].request.body)
+    assert.are.equal("Bearer *",
+      captured["https://example.test/text"][1].request.body)
+    assert.are.equal("name: ordinary",
+      captured["https://example.test/yaml"][1].request.body)
+    assert.are.equal("const value = 1",
+      captured["https://example.test/javascript"][1].request.body)
+  end)
+
+  it("masks classified credential failures for buffered and streamed HTTP", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local failure = {
+      ok = false,
+      error = {
+        kind = "auth",
+        message = "OAuth token exchange failed",
+        detail = '{"access_token":"detail-secret"}',
+        code = "Bearer credential-code",
+        status = 401,
+        response = {
+          status = 401,
+          headers = { ["content-type"] = "application/json" },
+          body = '{"access_token":"body-secret"}',
+        },
+      },
+    }
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+    }))
+    local http = recording:transport(transport(nil, failure), {
+      workspace = workspace,
+      origin = "authentication",
+      credential_response_body = true,
+    })
+    assert.is_false(wait(http.fetch({ request = {
+      url = "https://example.test/buffered-token",
+    } })).ok)
+    assert.is_false(wait(http.request({ request = {
+      url = "https://example.test/streamed-token",
+    } })).ok)
+    local no_response = recording:transport(transport(nil, {
+      ok = false,
+      error = { kind = "transport", message = "connection failed" },
+    }), { workspace = workspace })
+    assert.is_false(wait(no_response.fetch({ request = {
+      url = "https://example.test/no-response",
+    } })).ok)
+    recording:destroy()
+
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(3, #paths)
+    for index = 1, 2 do
+      local parsed = records(paths[index])
+      assert.are.equal("*", parsed[3].body)
+      assert.is_true(parsed[3].redacted)
+      assert.are.equal("*", parsed[5].error.detail)
+      assert.are.equal("Bearer *", parsed[5].error.code)
+    end
+    local absent = records(paths[3])
+    assert.are.equal(0, absent[2].bytes)
+    assert.is_false(absent[4].ok)
+  end)
+
   it("records callback failures and keeps recording faults observational", function()
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
@@ -510,6 +666,35 @@ else:
     observer:destroy()
     assert.is_true(#reports > 0)
     assert.are.equal("ordinary file", assert(fs.read(blocked)))
+  end)
+
+  it("records synchronous transport failures before rethrowing them", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+    }))
+    local http = recording:transport({
+      fetch = function() error("transport start failed") end,
+    }, { workspace = workspace, provider = "broken" })
+
+    local ok, err = pcall(http.fetch, { request = {
+      url = "https://example.test/synchronous-failure",
+    } })
+    assert.is_false(ok)
+    assert.matches("transport start failed", err)
+    recording:destroy()
+
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(1, #paths)
+    local parsed = records(paths[1])
+    assert.are.equal("response_body", parsed[2].type)
+    assert.are.equal("complete", parsed[4].type)
+    assert.is_false(parsed[4].ok)
+    assert.are.equal("transport", parsed[4].error.kind)
+    assert.matches("transport start failed", parsed[4].error.message)
   end)
 
   it("records buffered HTTP failures and propagates cancellation", function()

@@ -1185,6 +1185,19 @@ describe("Pane buffer surfaces", function()
       assert.are.equal(0, matches)
       value:update(content("local value = 2", 2, "after", 2))
       assert(value:flush())
+      value:update(ui.source({
+        key = "direct:source",
+        path = "direct.lua",
+        child = ui.text({ key = "direct:text", text = "local direct = 1" }),
+      }))
+      assert(value:flush())
+      matches = 0
+      value:update(ui.source({
+        key = "direct:source",
+        path = "direct.lua",
+        child = ui.text({ key = "direct:text", text = "local direct = 2" }),
+      }))
+      assert(value:flush())
     end)
     vim.filetype.match = filetype_match
 
