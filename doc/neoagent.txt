@@ -972,13 +972,14 @@ Recordings default to: >lua
 <
 `recording.directory` is the state root used to organize both kinds of
 recording. An exchange with an explicit Workspace is stored beneath the same
-hashed Workspace directory used by settings and Sessions: >text
+basename-and-hash Workspace directory used by settings and Sessions: >text
 
-  <recording.directory>/workspaces/<workspace-sha256>/recordings/<UTC-date>/
+  <recording.directory>/workspaces/<basename>-<workspace-sha256>/recordings/<UTC-date>-<session-id>/
 <
 The Workspace directory also gains `workspace.json`, which identifies its
-canonical root. Catalog, Provider Shell, and Authentication exchanges have no
-Workspace owner and use: >text
+canonical root. A Workspace exchange without a Session ID uses `unscoped` as
+the final directory component. Catalog, Provider Shell, and Authentication
+exchanges have no Workspace owner and use: >text
 
   <recording.directory>/provider-recordings/<provider>/<UTC-date>/
 <
@@ -1001,11 +1002,12 @@ It then publishes one final file:
   `format = "json"`   Publish `.jsonl` without invoking `yq`.
 
 YAML conversion invokes `yq` once with the closed NDJSON staging file as its
-input. A YAML recording consists of ordered YAML documents and requires
-compatible `yq` for machine replay. A JSON recording remains newline-delimited
-JSON and has no `yq` dependency. A conversion failure retains the staging file
-for inspection. Directories created by the recorder use mode `0700`; files use
-mode `0600`.
+input. Valid JSON request and response bodies become native YAML values and
+carry `body_format = "json"`; other text bodies remain strings. A YAML
+recording consists of ordered YAML documents and requires compatible `yq` for
+machine replay. A JSON recording remains newline-delimited JSON and has no
+`yq` dependency. A conversion failure retains the staging file for inspection.
+Directories created by the recorder use mode `0700`; files use mode `0600`.
 
 Authentication values, API keys, access and refresh tokens, OAuth client
 identifiers and codes, passwords, cookies, private keys, credential-bearing
@@ -1018,9 +1020,11 @@ credential-bearing headers are `*`.
 
 Model request bodies bypass content sanitation. Ordinary response bodies also
 bypass content sanitation, including credential-shaped text returned as model
-output. Valid UTF-8 bodies are stored byte-for-byte; other bodies use lossless
-base64 with `body_encoding = "base64"`. Recordings therefore retain prompts,
-tool schemas and results, images, generated text, provider payloads, and other
+output. NDJSON staging and JSON recordings store valid UTF-8 bodies
+byte-for-byte. YAML recordings represent valid JSON bodies structurally and
+retain other valid UTF-8 bodies as strings. Other bodies use lossless base64
+with `body_encoding = "base64"`. Recordings therefore retain prompts, tool
+schemas and results, images, generated text, provider payloads, and other
 private interaction content. Treat the directory as sensitive and remove
 captures when they are no longer needed.
 
@@ -1047,6 +1051,8 @@ and the latest 100 accepted inputs are shared by the Workspace.
 
 Unreadable, invalid, or unsupported Workspace settings leave configured
 defaults active. The warning identifies the settings file to update or delete.
+Workspace settings, Sessions, and input history share
+`<persistence.directory>/<workspace-basename>-<workspace-sha256>/`.
 
 Set `persistence.workspace_settings = false` to keep configured model,
 thinking, and position values authoritative while retaining Sessions and input

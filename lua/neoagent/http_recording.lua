@@ -11,6 +11,12 @@ local FILE_MODE = 384 -- 0600
 local FORMAT_VERSION = 1
 local DIAGNOSTIC_LIMIT = 1024
 local global_sequence = 0
+local YQ_EXPRESSION = [[
+((select(.type == "exchange" and .request.body_format == "json")
+    .request.body),
+  (select(.type == "response_body" and .body_format == "json")
+    .body)) |= from_json
+]]
 
 local sensitive_keys = {
   access = true,
@@ -347,6 +353,19 @@ local function exact_body_state(state)
   return vim.base64.encode(state.body), "base64"
 end
 
+local function body_format(body, headers, encoding)
+  if encoding ~= nil or type(body) ~= "string" or body == ""
+      or not util.is_valid_utf8(body) then
+    return nil
+  end
+  local first = body:match("^%s*(.)")
+  if not content_type(headers):find("json", 1, true)
+      and first ~= "{" and first ~= "[" then
+    return nil
+  end
+  return pcall(vim.json.decode, body) and "json" or nil
+end
+
 local function sensitive_url_key(key, authentication)
   local selected = normalized_key(key)
   if sensitive_key(selected, authentication)
@@ -582,10 +601,10 @@ local function filename_timestamp(milliseconds)
     .. string.format(".%03dZ", milliseconds % 1000)
 end
 
-local function slug(value)
+local function slug(value, fallback)
   local selected = safe_string(value):gsub("[^%w._-]+", "-")
     :gsub("^-+", ""):gsub("-+$", "")
-  if selected == "" then selected = "workspace" end
+  if selected == "" then selected = fallback or "workspace" end
   if #selected > 48 then selected = selected:sub(1, 48) end
   return selected
 end
@@ -610,7 +629,9 @@ local function default_yq()
         and major ~= nil
     end,
     convert = function(path, done)
-      return vim.system({ "yq", "-p=json", "-o=yaml", "-P", ".", path }, {
+      return vim.system({
+        "yq", "-p=json", "-o=yaml", "-P", YQ_EXPRESSION, path,
+      }, {
         text = false,
       }, function(result)
         if result.code == 0 and type(result.stdout) == "string" then
@@ -719,8 +740,10 @@ function Recorder:_start(operation, request, supplied_context)
     directories[#directories + 1] = providers_directory
   end
   directories[#directories + 1] = scope_directory
-  local day_directory = fs.join(scope_directory,
-    os.date("!%Y-%m-%d", math.floor(now / 1000)))
+  local day = os.date("!%Y-%m-%d", math.floor(now / 1000))
+  local group = workspace and day .. "-"
+    .. slug(selected_context.session_id or "unscoped", "unscoped") or day
+  local day_directory = fs.join(scope_directory, group)
   directories[#directories + 1] = day_directory
   local ok, err = true
   for _, directory in ipairs(directories) do
@@ -766,6 +789,8 @@ function Recorder:_start(operation, request, supplied_context)
       headers = sanitized_headers,
       body = recorded_body,
       body_encoding = body_encoding,
+      body_format = body_format(
+        recorded_body, request.headers, body_encoding),
       body_bytes = request_body.absent and 0 or #request_body.body,
       redacted = body_redacted or nil,
       timeout_ms = request.timeout_ms,
@@ -941,6 +966,7 @@ function Recorder:_finish(exchange, result, operation)
     at_us = settled_at,
     body = body,
     body_encoding = body_encoding,
+    body_format = body_format(body, response.headers, body_encoding),
     bytes = #raw_body,
     redacted = redacted or nil,
   })

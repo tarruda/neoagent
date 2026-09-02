@@ -775,32 +775,35 @@ Workspace owner. The HTTP clients remain unaware of recording configuration
 and paths.
 
 Each HTTP exchange owns one mode-`0600` NDJSON staging file beneath a
-mode-`0700` hierarchy. Workspace-owned exchanges reuse the canonical hashed
-Workspace state directory and its `recordings` child. Shared provider
-exchanges use `provider-recordings/<provider>`. The opening record contains
-the credential-scrubbed request and correlation context. Model request bodies
-are opaque and byte-faithful. Response callbacks append ordered timing and
-byte-count records. Raw response fragments remain exchange-local until
-settlement, when the complete body, response metadata, and one terminal record
-are appended and the handle is closed. Invalid UTF-8 bodies use lossless
-base64 with an explicit encoding marker.
+mode-`0700` hierarchy. Workspace-owned exchanges reuse the canonical
+basename-and-hash Workspace state directory and group its `recordings` child
+by UTC date and Session ID. Session-less Workspace exchanges use `unscoped`.
+Shared provider exchanges use `provider-recordings/<provider>`. The opening
+record contains the credential-scrubbed request and correlation context. Model
+request bodies enter NDJSON staging as opaque, byte-faithful values. Response
+callbacks append ordered timing and byte-count records. Raw response fragments
+remain exchange-local until settlement, when the complete body, response
+metadata, and one terminal record are appended and the handle is closed.
+Invalid UTF-8 bodies use lossless base64 with an explicit encoding marker.
 
 JSON publication renames the closed staging file to `.jsonl`. YAML publication
 runs one compatible `yq` v4 process over that file and atomically writes its
-multi-document output. Format selection occurs when the recorder is
-constructed. `auto` chooses YAML when `yq` is available and JSON otherwise;
-an explicit YAML selection requires `yq`. The recording state root is a
-configuration value so interactive and test compositions can own independent
-locations.
+multi-document output. Valid JSON bodies carry a format marker and become
+native YAML values; other text bodies remain strings. Format selection occurs
+when the recorder is constructed. `auto` chooses YAML when `yq` is available
+and JSON otherwise; an explicit YAML selection requires `yq`. The recording
+state root is a configuration value so interactive and test compositions can
+own independent locations.
 
 Credential sanitation applies at protocol-aware locations. Non-empty
 credential headers, credential-bearing URL values, and known credential fields
 in non-model request bodies become `*`. Empty values and non-sensitive server
 headers remain wire-faithful, and header maps use stable name ordering. Model
 request bodies bypass sanitation so prompts, tools, attachments, and all other
-LLM input retain their exact bytes. Response bodies are also byte-faithful by
-default. An Authentication adapter can classify a request as
-credential-bearing; its non-empty response body is then stored as `*`.
+LLM input retain their exact bytes in staging and JSON recordings. YAML
+recordings retain valid JSON bodies structurally. Response bodies follow the
+same representation rules. An Authentication adapter can classify a request
+as credential-bearing; its non-empty response body is then stored as `*`.
 Recorder errors are reported with bounded, content-free metadata and never
 replace the HTTP Run's result.
 

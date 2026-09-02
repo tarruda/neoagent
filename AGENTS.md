@@ -237,11 +237,13 @@ changes.
   upper-layer reporter used to report each diagnostic sink failure once.
 - Opt-in HTTP recording wraps the explicitly composed provider transport and
   writes one private, sortable exchange file. Workspace-owned exchanges reuse
-  the hashed Workspace state directory; catalog, Authentication, and Provider
-  Shell exchanges use `provider-recordings/<provider>`. Private NDJSON staging
-  closes before JSON publication or one final `yq` conversion. HTTP credential
-  headers and URL fields become `*`. Model request bodies and ordinary response
-  bodies remain byte-faithful; Authentication adapters explicitly classify
+  the basename-and-hash Workspace state directory and group recordings by date
+  and Session ID; catalog, Authentication, and Provider Shell exchanges use
+  `provider-recordings/<provider>`. Private NDJSON staging closes before JSON
+  publication or one final `yq` conversion. YAML represents valid JSON bodies
+  as native values with an explicit format marker. HTTP credential headers and
+  URL fields become `*`. Model request bodies and ordinary response bodies
+  bypass content sanitation; Authentication adapters explicitly classify
   credential response bodies, which become `*`. Recorder failures never
   replace provider results.
 - Cancellation must propagate through active Models, tools, and nested Runs,

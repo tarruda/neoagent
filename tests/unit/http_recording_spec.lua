@@ -137,6 +137,7 @@ describe("neoagent HTTP recording", function()
       provider = "example",
       model = "test-model",
       origin = "model",
+      session_id = "session-42",
     })
     assert.is_true(wait(model.fetch({ request = {
       url = "https://example.test/model",
@@ -158,9 +159,10 @@ describe("neoagent HTTP recording", function()
     recording:destroy()
 
     local workspace_directory = fs.join(
-      directory, "workspaces", vim.fn.sha256(workspace))
+      directory, "workspaces", vim.fs.basename(workspace)
+        .. "-" .. vim.fn.sha256(workspace))
     local workspace_paths = vim.fn.globpath(fs.join(
-      workspace_directory, "recordings", "2026-09-02"),
+      workspace_directory, "recordings", "2026-09-02-session-42"),
       "*.jsonl", false, true)
     local provider_paths = vim.fn.globpath(fs.join(
       directory, "provider-recordings", "example", "2026-09-02"),
@@ -260,6 +262,85 @@ else:
     end, debug.traceback)
     vim.env.PATH = original_path
     if not ok then error(err, 0) end
+  end)
+
+  it("renders JSON request and response bodies as native YAML", function()
+    if vim.fn.executable("yq") ~= 1 then return end
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local recording = require("neoagent.http_recording").new({
+      config = { enabled = true, format = "yaml" },
+      directory = directory,
+    })
+    if not recording then return end
+    local http = recording:transport(transport(nil, {
+      ok = true,
+      status = 200,
+      body = '{"result":{"text":"readable response"}}',
+      headers = { ["Content-Type"] = "application/json" },
+    }), {
+      workspace = workspace,
+      origin = "model",
+      session_id = "session-readable",
+    })
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/yaml",
+      headers = { ["Content-Type"] = "application/json" },
+      body = '{"model":"readable","messages":[{"role":"user"}]}',
+    } })).ok)
+    local malformed = recording:transport(transport(nil, {
+      ok = true,
+      status = 200,
+      body = "{invalid response",
+      headers = { ["Content-Type"] = "application/json" },
+    }), {
+      workspace = workspace,
+      origin = "model",
+      session_id = "session-readable",
+    })
+    assert.is_true(wait(malformed.fetch({ request = {
+      url = "https://example.test/malformed",
+      headers = { ["Content-Type"] = "application/json" },
+      body = "{invalid request",
+    } })).ok)
+    assert(vim.wait(3000,
+      function() return #files(directory, ".yaml") == 2 end))
+    recording:destroy()
+
+    local path, malformed_path
+    for _, candidate in ipairs(files(directory, ".yaml")) do
+      local content = assert(fs.read(candidate))
+      if content:find("model: readable", 1, true) then
+        path = candidate
+      else
+        malformed_path = candidate
+      end
+    end
+    assert.is_truthy(path)
+    assert.is_truthy(malformed_path)
+    local request_type = vim.system({
+      "yq", "eval-all",
+      'select(.type == "exchange") | .request.body | type', path,
+    }, { text = true }):wait()
+    local response_type = vim.system({
+      "yq", "eval-all",
+      'select(.type == "response_body") | .body | type', path,
+    }, { text = true }):wait()
+    assert.are.equal(0, request_type.code)
+    assert.are.equal(0, response_type.code)
+    assert.are.equal("!!map", vim.trim(request_type.stdout))
+    assert.are.equal("!!map", vim.trim(response_type.stdout))
+    local content = assert(fs.read(path))
+    assert.matches("body:%s*\n%s+model: readable", content)
+    assert.matches("body:%s*\n%s+result:%s*\n%s+text: readable response",
+      content)
+    local malformed_type = vim.system({
+      "yq", "eval-all",
+      'select(.type == "exchange") | .request.body | type', malformed_path,
+    }, { text = true }):wait()
+    assert.are.equal(0, malformed_type.code)
+    assert.are.equal("!!str", vim.trim(malformed_type.stdout))
   end)
 
   it("writes one Session-linked exchange with exact model bodies", function()
@@ -371,6 +452,7 @@ else:
     assert.matches("X%-Amz%-Signature=%*", parsed[1].request.url)
     assert.are.equal(request_body, parsed[1].request.body)
     assert.are.equal(#request_body, parsed[1].request.body_bytes)
+    assert.are.equal("json", parsed[1].request.body_format)
     assert.is_nil(parsed[1].request.body_encoding)
     assert.is_nil(parsed[1].request.redacted)
     assert.are.equal("response_chunk", parsed[2].type)
@@ -378,6 +460,7 @@ else:
     assert.are.equal("response_body", parsed[4].type)
     assert.are.equal(response_body, parsed[4].body)
     assert.are.equal(#response_body, parsed[4].bytes)
+    assert.is_nil(parsed[4].body_format)
     assert.is_nil(parsed[4].body_encoding)
     assert.is_nil(parsed[4].redacted)
     assert.are.equal("response", parsed[5].type)
@@ -524,6 +607,7 @@ else:
     local json_records = records(paths[3])
     assert.are.equal('{"clientSecret":"*","items":[],"metadata":{}}',
       json_records[1].request.body)
+    assert.are.equal("json", json_records[1].request.body_format)
     assert.is_nil(assert(fs.read(paths[3])):find(
       "json-secret", 1, true))
 
@@ -635,6 +719,7 @@ else:
       local parsed = records(path)
       captured[parsed[1].request.url] = parsed
       assert.are.equal(response_body, parsed[3].body)
+      assert.are.equal("json", parsed[3].body_format)
       assert.is_nil(parsed[3].redacted)
       assert.matches("access_token=%*", parsed[4].headers.location)
       assert.are.equal("*", parsed[4].headers["set-cookie"])

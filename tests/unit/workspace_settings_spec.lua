@@ -8,6 +8,37 @@ describe("neoagent workspace settings", function()
     paths = {}
   end)
 
+  it("uses one readable canonical directory for Workspace state", function()
+    local parent = vim.fn.tempname()
+    local root = parent .. "/readable-workspace"
+    local directory = vim.fn.tempname()
+    paths = { parent, directory }
+    assert.are.equal(1, vim.fn.mkdir(root, "p"))
+    root = assert(vim.uv.fs_realpath(root))
+    local expected = directory .. "/readable-workspace-"
+      .. vim.fn.sha256(root)
+
+    local settings = settings_module.new({
+      directory = directory,
+      root = root,
+    })
+    local history = require("neoagent.input_history").new({
+      directory = directory,
+      root = root,
+    })
+    assert.are.equal(expected, settings.directory)
+    assert.are.equal(expected, history.directory)
+
+    if jit.os ~= "Windows" then
+      local filesystem_root = settings_module.new({
+        directory = directory,
+        root = "/",
+      })
+      assert.are.equal(directory .. "/root-" .. vim.fn.sha256("/"),
+        filesystem_root.directory)
+    end
+  end)
+
   it("recursively merges and atomically persists cwd-scoped overrides", function()
     local root = vim.fn.tempname()
     local directory = vim.fn.tempname()
@@ -16,7 +47,8 @@ describe("neoagent workspace settings", function()
     local settings = settings_module.new({ directory = directory, root = root })
     local metadata = settings:metadata()
     assert.are.equal(vim.uv.fs_realpath(root), metadata.root)
-    assert.are.equal(directory .. "/" .. vim.fn.sha256(metadata.root), metadata.directory)
+    assert.are.equal(directory .. "/" .. vim.fs.basename(metadata.root)
+      .. "-" .. vim.fn.sha256(metadata.root), metadata.directory)
     assert.are.equal(metadata.directory .. "/settings.json", metadata.settings_path)
     assert.are.equal(metadata.directory .. "/sessions", metadata.sessions_directory)
 
