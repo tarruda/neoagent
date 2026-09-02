@@ -101,6 +101,7 @@ one plain runtime per configured provider:
   catalog = model_catalog,
   service = provider_service,
   credentials = provider_credentials,
+  transport = provider_model_transport,
   auth_method = authentication_method_id,
   auth_services = shared_method_services,
 }
@@ -757,6 +758,48 @@ Dialogs and provider screens use the same Tree primitives. An executor
 publishes a semantic request, a component composes its content and bindings,
 and the active Pane owns interaction and response routing. Surfaces retain
 buffers while their host windows are recreated.
+
+## HTTP recording
+
+The top-level profile resources and a directly constructed Agent optionally
+own one `HttpRecorder`. It wraps the concrete transport supplied to provider
+runtimes and binds provider-specific copies for Models, catalogs, Provider
+Services, and built-in Authentication HTTP. Direct API and transport
+constructors retain their ordinary unrecorded curl default.
+
+Model resolution adds the canonical Workspace, opaque Agent ID, persisted
+Session ID, provider, and model to the wrapped transport. Catalog,
+Authentication, and Provider Shell copies carry their corresponding origin;
+requests without an Agent use the working directory at request acceptance.
+The HTTP clients remain unaware of recording configuration and paths.
+
+Each HTTP exchange owns one mode-`0600` NDJSON staging file beneath a
+mode-`0700` Workspace and UTC-date hierarchy. The opening record contains the
+credential-scrubbed request and correlation context. Model request bodies are
+opaque and byte-faithful. Response callbacks append ordered timing and
+byte-count records. Raw response fragments remain exchange-local until
+settlement, when the complete body, response metadata, and one terminal record
+are appended and the handle is closed. Invalid UTF-8 bodies use lossless base64
+with an explicit encoding marker.
+
+JSON publication renames the closed staging file to `.jsonl`. YAML publication
+runs one compatible `yq` v4 process over that file and atomically writes its
+multi-document output. Format selection occurs when the recorder is
+constructed. `auto` chooses YAML when `yq` is available and JSON otherwise;
+an explicit YAML selection requires `yq`. The recording directory is a
+configuration value so interactive and test compositions can own independent
+locations.
+
+Credential sanitation applies at protocol-aware locations. Non-empty
+credential headers, credential-bearing URL values, and known credential fields
+in non-model request bodies become `*`. Empty values and non-sensitive server
+headers remain wire-faithful, and header maps use stable name ordering. Model
+request bodies bypass sanitation so prompts, tools, attachments, and all other
+LLM input retain their exact bytes. Response bodies are also byte-faithful by
+default. An Authentication adapter can classify a request as
+credential-bearing; its non-empty response body is then stored as `*`.
+Recorder errors are reported with bounded, content-free metadata and never
+replace the HTTP Run's result.
 
 ## Public composition
 

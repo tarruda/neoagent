@@ -288,14 +288,32 @@ function M.bundled(configured, runtime)
     end
     return true
   end
-  local auth = require("neoagent.auth").configured(configured)
+  local transport = runtime.transport
+  local recorder
+  if configured.recording and configured.recording.enabled then
+    local recording_err
+    recorder, recording_err = require("neoagent.http_recording").new({
+      config = configured.recording,
+      report = provider_report,
+    })
+    if not recorder then error(recording_err, 0) end
+    transport = recorder:transport(
+      transport or require("neoagent.transport.curl"))
+  end
+  local auth = require("neoagent.auth").configured(configured, {
+    transport = transport,
+  })
   local runtimes, err = provider_runtimes.compose(configured, {
     auth = auth,
     store = runtime.store or catalog_store(),
     startup = runtime.startup,
     report = provider_report,
+    transport = transport,
   })
-  if not runtimes then error(err, 0) end
+  if not runtimes then
+    if recorder then recorder:destroy() end
+    error(err, 0)
+  end
   local shell_ok, shell = pcall(require("neoagent.provider_shell").new, {
     config = configured,
     auth = auth,
@@ -305,6 +323,7 @@ function M.bundled(configured, runtime)
   })
   if not shell_ok then
     provider_runtimes.destroy(runtimes)
+    if recorder then recorder:destroy() end
     error(shell, 0)
   end
   report_target = function(message, level)
@@ -318,6 +337,7 @@ function M.bundled(configured, runtime)
     auth = auth,
     runtimes = runtimes,
     provider_shell = shell,
+    recorder = recorder,
     destroyed = false,
   }
   function resources:destroy()
@@ -325,6 +345,7 @@ function M.bundled(configured, runtime)
     self.destroyed = true
     self.provider_shell:destroy()
     provider_runtimes.destroy(self.runtimes)
+    if self.recorder then self.recorder:destroy() end
   end
   return {
     make_neo(configured, auth, runtimes, runtime),

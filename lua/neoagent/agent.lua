@@ -209,6 +209,13 @@ function M.from_config(options, runtime)
     auth = auth_manager,
     runtimes = state.provider_runtimes,
     initial_model = runtime.initial_model,
+    http_context = function()
+      return {
+        workspace = workspace_root,
+        agent_id = agent_id,
+        session_id = state.session:id(),
+      }
+    end,
   })
 
   local function trust_cwd()
@@ -1189,14 +1196,27 @@ function M.new(opts, runtime)
   for key, value in pairs(runtime or {}) do selected[key] = value end
   local destroy_runtimes
   if selected.runtimes == nil then
-    local auth = selected.auth or require("neoagent.auth").configured(options)
-    selected.auth = auth
     local function report(message, level)
       if selected.presenter then
         return selected.presenter:notify({ message = message, level = level })
       end
       return require("applet").Presenter.notify(message, level)
     end
+    local recorder
+    local transport = selected.transport
+    if options.recording and options.recording.enabled then
+      local recording_err
+      recorder, recording_err = require("neoagent.http_recording").new({
+        config = options.recording,
+        report = report,
+      })
+      if not recorder then error(recording_err, 0) end
+      transport = recorder:transport(
+        transport or require("neoagent.transport.curl"))
+    end
+    local auth = selected.auth or require("neoagent.auth").configured(
+      options, { transport = transport })
+    selected.auth = auth
     local runtimes, err = require("neoagent.provider_runtimes").compose(
       options, {
         auth = auth,
@@ -1204,14 +1224,19 @@ function M.new(opts, runtime)
           directory = vim.fn.stdpath("state") .. "/neoagent/model-catalog",
         }),
         report = report,
+        transport = transport,
       })
-    if not runtimes then error(err, 0) end
+    if not runtimes then
+      if recorder then recorder:destroy() end
+      error(err, 0)
+    end
     selected.runtimes = runtimes
     local owned = runtimes
     destroy_runtimes = function()
       local current = owned
       owned = nil
       require("neoagent.provider_runtimes").destroy(current)
+      if recorder then recorder:destroy() recorder = nil end
     end
     selected.destroy_runtimes = destroy_runtimes
   end

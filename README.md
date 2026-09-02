@@ -60,6 +60,21 @@ provider's status, authentication, operations, and model-catalog refresh.
 Use `:NeoagentCycle` to switch between live Agents or start a Neo coding or
 Chat conversation.
 
+Provider HTTP recording is opt-in and intended for debugging:
+
+```lua
+require("neoagent").setup({
+  recording = { enabled = true },
+})
+```
+
+It writes one credential-scrubbed, Session-linked exchange file per request
+under `stdpath("state") .. "/neoagent/workspaces/recordings"`. Compatible `yq`
+v4 selects readable YAML automatically; JSON Lines is used when `yq` is absent.
+Model request and ordinary provider response bodies are retained exactly, so
+recordings contain private conversation content. See `:help neoagent-recording`
+for format, privacy, and path configuration.
+
 ## Trust and sandboxing
 
 Before Neo loads project instructions or uses tools, it asks you to trust the

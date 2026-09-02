@@ -207,6 +207,9 @@ end
 function M.new(opts)
   opts = opts or {}
   local http = opts.http or curl
+  if type(http) == "table" and type(http.with_context) == "function" then
+    http = http.with_context({ credential_response_body = true })
+  end
   local now = opts.now or util.now_ms
   local auth_base = opts.auth_base_url or AUTH_BASE_URL
   local token_url = auth_base .. "/oauth/token"
@@ -354,7 +357,7 @@ function M.new(opts)
     error(util.error("auth", "OpenAI device authorization timed out"), 0)
   end
 
-  return {
+  local method = {
     type = "oauth",
     name = "OpenAI (ChatGPT Plus/Pro)",
     login = function(interaction)
@@ -403,6 +406,12 @@ function M.new(opts)
       } }
     end,
   }
+  method._with_transport = function(transport)
+    local selected = util.copy(opts)
+    selected.http = transport
+    return M.new(selected)
+  end
+  return method
 end
 
 return M

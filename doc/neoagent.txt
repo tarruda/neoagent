@@ -11,6 +11,7 @@ CONTENTS                                                        *neoagent-conten
    Sandboxing                                            |neoagent-sandbox|
    AGENTS.md and skills                             |neoagent-context-files|
    Provider runtimes and services                |neoagent-provider-services|
+   HTTP recording                                      |neoagent-recording|
    Workspace settings                             |neoagent-workspace-settings|
 3. Commands                                              |neoagent-commands|
 4. UI                                                          |neoagent-ui|
@@ -116,6 +117,12 @@ The main options and defaults are: >lua
       enabled = true,
       workspace_settings = true,
       directory = stdpath("state") .. "/neoagent/workspaces",
+    },
+    recording = {
+      enabled = false,
+      format = "auto", -- "auto", "yaml", or "json"
+      directory = stdpath("state")
+        .. "/neoagent/workspaces/recordings",
     },
     ui = {
       style = "codex",
@@ -628,6 +635,7 @@ Every configured provider is composed into one runtime: >lua
     catalog = model_catalog,
     service = provider_service,
     credentials = provider_credentials,
+    transport = provider_model_transport,
     auth_method = authentication_method_id,
     auth_services = shared_method_services,
   }
@@ -940,6 +948,74 @@ The transcript footer shows prompt processing as `pp` once it has remained
 active for two seconds, then token generation as `tg`, measured over a rolling
 three-second server-time window. It displays one current phase and retains the
 final generation rate until another inference starts.
+
+HTTP RECORDING                                            *neoagent-recording*
+
+Neoagent can record its provider HTTP exchanges for diagnosis: >lua
+
+  require("neoagent").setup({
+    recording = {
+      enabled = true,
+    },
+  })
+<
+Recording is disabled by default. When enabled, it includes model streams,
+model-catalog requests, Provider Shell operations, and HTTP performed by
+built-in authentication methods. Each exchange records its prepared request,
+response status and headers, response body, curl callback boundaries,
+microsecond offsets, and terminal result. Model exchanges also record their
+Workspace, Agent ID, Session ID, provider, and model so a Session can be linked
+to its provider traffic.
+
+Recordings default to: >lua
+
+  vim.fn.stdpath("state") .. "/neoagent/workspaces/recordings"
+<
+Set `recording.directory` to an absolute or normalized destination when a
+different owner, such as a test runner, supplies the storage location.
+Workspace directories combine a readable basename and a hash of the canonical
+root. Exchanges are grouped by UTC date. Each filename begins with a sortable
+UTC timestamp, process ID, and sequence, then names its provider and origin.
+Normal filename sorting therefore preserves request-start order within one
+Neoagent process.
+
+Each request/response pair owns one private staging file ending in
+`.partial.ndjson`. Neoagent appends timing records while the request runs,
+appends the complete response body and completion, and closes the file.
+It then publishes one final file:
+
+  `format = "auto"`   Use YAML when compatible Mike Farah `yq` v4 is on
+                      `PATH`; otherwise publish JSON Lines.
+  `format = "yaml"`   Require compatible `yq` v4 and publish `.yaml`.
+  `format = "json"`   Publish `.jsonl` without invoking `yq`.
+
+YAML conversion invokes `yq` once with the closed NDJSON staging file as its
+input. A YAML recording consists of ordered YAML documents and requires
+compatible `yq` for machine replay. A JSON recording remains newline-delimited
+JSON and has no `yq` dependency. A conversion failure retains the staging file
+for inspection. Directories created by the recorder use mode `0700`; files use
+mode `0600`.
+
+Authentication values, API keys, access and refresh tokens, OAuth client
+identifiers and codes, passwords, cookies, private keys, credential-bearing
+URL values, and known credential fields in non-model request bodies are
+replaced by `*` before persistence or YAML conversion. Authentication adapters
+classify responses known to contain credentials; those non-empty bodies are
+`*`, while empty bodies remain empty. Request and response header names and
+non-sensitive values are retained in stable name order; values carried by
+credential-bearing headers are `*`.
+
+Model request bodies bypass content sanitation. Ordinary response bodies also
+bypass content sanitation, including credential-shaped text returned as model
+output. Valid UTF-8 bodies are stored byte-for-byte; other bodies use lossless
+base64 with `body_encoding = "base64"`. Recordings therefore retain prompts,
+tool schemas and results, images, generated text, provider payloads, and other
+private interaction content. Treat the directory as sensitive and remove
+captures when they are no longer needed.
+
+Recording failures are reported without request or response content and do
+not change the provider request result. A `.partial.ndjson` file identifies an
+exchange interrupted by process exit or persistence/conversion failure.
 
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 

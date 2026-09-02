@@ -50,6 +50,59 @@ describe("neoagent provider runtime composition", function()
     provider_runtimes.destroy(runtimes)
   end)
 
+  it("attributes model, catalog, and Provider Shell HTTP transports", function()
+    local catalog_context
+    local service_context
+    local function contextual(context)
+      local value = { context = vim.deepcopy(context or {}) }
+      value.with_context = function(extra)
+        return contextual(vim.tbl_extend(
+          "force", vim.deepcopy(value.context), vim.deepcopy(extra)))
+      end
+      return value
+    end
+    local configured = { providers = {
+      managed = provider("managed", function(id, _, resources)
+        service_context = resources.transport.context
+        return {
+          id = id,
+          name = "Managed",
+          state = function() return false end,
+          operations = {},
+        }
+      end),
+    } }
+    configured.providers.managed.catalog = {
+      source_id = "managed-models",
+      source_revision = 1,
+      discover = function(resources)
+        catalog_context = resources.transport.context
+        return async.run(function()
+          return { ok = true, models = { { id = "model" } } }
+        end)
+      end,
+    }
+    local runtimes = assert(provider_runtimes.compose(configured, {
+      startup = false,
+      transport = contextual({ workspace = "/workspace" }),
+    }))
+
+    assert.are.same({
+      workspace = "/workspace", provider = "managed", origin = "model",
+    }, runtimes.managed.transport.context)
+    assert.are.same({
+      workspace = "/workspace", provider = "managed",
+      origin = "provider-shell",
+    }, service_context)
+    local refresh = runtimes.managed.catalog:refresh()
+    assert(vim.wait(1000, function() return refresh:is_done() end))
+    assert.is_true(refresh:result().ok)
+    assert.are.same({
+      workspace = "/workspace", provider = "managed", origin = "catalog",
+    }, catalog_context)
+    provider_runtimes.destroy(runtimes)
+  end)
+
   it("enables every ambient API-key account catalog cache", function()
     local config = require("neoagent.config")
     local configured = config.setup({})

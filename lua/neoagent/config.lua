@@ -49,6 +49,12 @@ local defaults = {
     workspace_settings = true,
     directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
   },
+  recording = {
+    enabled = false,
+    format = "auto",
+    directory = vim.fn.stdpath("state")
+      .. "/neoagent/workspaces/recordings",
+  },
   agent_instructions = {
     global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
     project_filenames = { "AGENTS.md" },
@@ -133,6 +139,7 @@ local input_fields = {
   providers = true,
   auth = true,
   persistence = true,
+  recording = true,
   agent_instructions = true,
   skills = true,
   retry = true,
@@ -386,6 +393,9 @@ local function validate(opts)
       "auth method public_metadata must be a function")
     assert(method.cache_identity == nil or type(method.cache_identity) == "function",
       "auth method cache_identity must be a function")
+    assert(method._with_transport == nil
+        or type(method._with_transport) == "function",
+      "auth method _with_transport must be a function")
     if method.type == "api_key" then
       assert(method.refresh == nil or type(method.refresh) == "function",
         "API key auth method refresh must be a function")
@@ -403,6 +413,20 @@ local function validate(opts)
   assert(type(opts.persistence.enabled) == "boolean", "persistence.enabled must be boolean")
   assert(type(opts.persistence.workspace_settings) == "boolean", "persistence.workspace_settings must be boolean")
   assert(type(opts.persistence.directory) == "string" and opts.persistence.directory ~= "", "persistence.directory is required")
+  assert(type(opts.recording) == "table" and not util.is_list(opts.recording),
+    "recording must be a table")
+  for key in pairs(opts.recording) do
+    assert(key == "enabled" or key == "format" or key == "directory",
+      "unsupported recording setting: " .. tostring(key))
+  end
+  assert(type(opts.recording.enabled) == "boolean",
+    "recording.enabled must be boolean")
+  assert(opts.recording.format == "auto" or opts.recording.format == "yaml"
+      or opts.recording.format == "json",
+    "recording.format must be auto, yaml, or json")
+  assert(type(opts.recording.directory) == "string"
+      and opts.recording.directory ~= "",
+    "recording.directory is required")
   local function string_list(value, name)
     assert(util.is_list(value), name .. " must be a list")
     for _, item in ipairs(value) do

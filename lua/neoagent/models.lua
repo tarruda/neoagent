@@ -5,6 +5,14 @@ local util = require("neoagent.util")
 
 local M = {}
 
+local function bind_transport(transport, context)
+  if type(transport) == "table"
+      and type(transport.with_context) == "function" then
+    return transport.with_context(context)
+  end
+  return transport
+end
+
 local function validated_model(value, owner)
   return model_contract.assert(value, owner)
 end
@@ -131,10 +139,12 @@ local function api_factory(module, resolved)
     thinking = resolved.model.thinking,
     request_opts_layers = layers,
     on_diagnostic = on_diagnostic,
+    transport = resolved.transport,
   })
 end
 
-function M.resolve(provider_id, model_id, configured, manager, runtimes)
+function M.resolve(provider_id, model_id, configured, manager, runtimes,
+    http_context)
   configured = configured or config.get()
   runtimes = assert_runtimes(runtimes)
   if provider_id == nil or model_id == nil then
@@ -159,6 +169,11 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes)
     provider = util.copy(provider),
     model = util.copy(model),
     report = runtime.report,
+    transport = bind_transport(runtime.transport, util.deep_merge({
+      provider = provider_id,
+      model = model_id,
+      origin = "model",
+    }, http_context or {})),
   }
   if provider.auth and manager == nil then
     manager = require("neoagent.auth").configured(configured)

@@ -6,6 +6,14 @@ local util = require("neoagent.util")
 local M = {}
 local destroyed = setmetatable({}, { __mode = "k" })
 
+local function bind_transport(transport, context)
+  if type(transport) == "table"
+      and type(transport.with_context) == "function" then
+    return transport.with_context(context)
+  end
+  return transport
+end
+
 local function provider_projection(provider)
   local result = {}
   for _, key in ipairs({
@@ -66,6 +74,10 @@ function M.compose(configured, opts)
   for _, provider_id in ipairs(provider_ids) do
     local provider = configured.providers[provider_id]
     local bound_service
+    local model_transport = bind_transport(opts.transport, {
+      provider = provider_id,
+      origin = "model",
+    })
     local credentials = provider_credentials.new({
       provider_id = provider_id,
       provider = provider,
@@ -81,7 +93,10 @@ function M.compose(configured, opts)
       store = opts.store,
       authentication = opts.auth,
       credentials = credentials,
-      transport = opts.transport,
+      transport = bind_transport(opts.transport, {
+        provider = provider_id,
+        origin = "catalog",
+      }),
       report = opts.report,
       now = opts.now,
       new_timer = opts.new_timer,
@@ -102,6 +117,7 @@ function M.compose(configured, opts)
       definition = provider,
       catalog = catalog,
       credentials = credentials,
+      transport = model_transport,
       report = opts.report,
       bind_service = function(service) bound_service = service end,
     }
@@ -115,7 +131,10 @@ function M.compose(configured, opts)
       local ok, value = pcall(provider.service, provider_projection(provider), {
         auth = opts.auth,
         catalog = runtime.catalog,
-        transport = opts.transport,
+        transport = bind_transport(opts.transport, {
+          provider = provider_id,
+          origin = "provider-shell",
+        }),
         provider_id = provider_id,
         report = opts.report,
         ambient_api_key = function()
