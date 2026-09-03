@@ -24,6 +24,7 @@ function ProfileDraft.new(opts)
       default_model = options.default_model,
       default_thinking_level = options.default_thinking_level,
     },
+    http_context = { workspace = opts.workspace },
   })
   local self = setmetatable({
     key = opts.key,

@@ -15,12 +15,11 @@ function M.usage_tokens(usage)
 end
 
 local function estimate_messages(messages, first)
-  local characters = 0
+  local tokens = 0
   for index = first, #messages do
-    local ok, encoded = pcall(vim.json.encode, messages[index])
-    if ok then characters = characters + #encoded end
+    tokens = tokens + compaction.estimate_tokens(messages[index])
   end
-  return math.ceil(characters / 4)
+  return tokens
 end
 
 local function valid_assistant_usage(message)
@@ -49,9 +48,7 @@ local function historical_usage_is_current(session)
 end
 
 local function estimate_projected(messages)
-  local used = 0
-  for _, message in ipairs(messages) do used = used + compaction.estimate_tokens(message) end
-  return used
+  return estimate_messages(messages, 1)
 end
 
 function M.tokens(session, messages, live_usage)

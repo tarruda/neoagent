@@ -100,7 +100,10 @@ function M.new(opts)
   assert(opts.limit == nil or type(opts.limit) == "number" and opts.limit > 0
     and opts.limit % 1 == 0, "limit must be a positive integer")
   local root = fs.canonical(opts.root)
-  local directory = fs.join(fs.normalize(opts.directory), vim.fn.sha256(root))
+  local directory = require("neoagent.workspace_settings").new({
+    directory = opts.directory,
+    root = root,
+  }).directory
   return setmetatable({
     root = root,
     directory = directory,

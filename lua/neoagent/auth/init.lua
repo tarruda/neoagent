@@ -403,10 +403,26 @@ function M.new(opts)
   }, Manager)
 end
 
-function M.configured(configured)
+function M.configured(configured, runtime)
   local options = configured and configured.auth or require("neoagent.config").get().auth
+  runtime = runtime or {}
+  local methods = util.copy(options.methods)
+  if runtime.transport then
+    for id, method in pairs(methods) do
+      if type(method._with_transport) == "function" then
+        local transport = runtime.transport
+        if type(transport.with_context) == "function" then
+          transport = transport.with_context({
+            auth_method = id,
+            origin = "authentication",
+          })
+        end
+        methods[id] = method._with_transport(transport)
+      end
+    end
+  end
   return M.new({
-    methods = options.methods,
+    methods = methods,
     store = require("neoagent.auth.store").new(options.path),
   })
 end

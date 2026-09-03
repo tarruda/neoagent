@@ -166,6 +166,51 @@ describe("neoagent upper-layer request selection", function()
     assert.are.equal(original_thinking, selection:thinking_level())
   end)
 
+  it("binds Workspace, Agent, and Session identity to resolved HTTP", function()
+    local configured = configuration()
+    local seen
+    configured._apis.fake = function(resolved)
+      seen = resolved.transport.context
+      return {
+        api = resolved.api,
+        provider = resolved.provider_id,
+        id = resolved.model_id,
+        input = { "text" },
+        stream = function() end,
+        thinking = vim.deepcopy(resolved.model.thinking),
+      }
+    end
+    local provider_runtimes = runtimes(configured)
+    local function contextual(context)
+      local value = { context = vim.deepcopy(context or {}) }
+      value.with_context = function(extra)
+        return contextual(vim.tbl_extend(
+          "force", vim.deepcopy(value.context), vim.deepcopy(extra)))
+      end
+      return value
+    end
+    provider_runtimes.fake.transport = contextual({ origin = "model" })
+    local selection = RequestSelection.new({
+      config = configured,
+      runtimes = provider_runtimes,
+      http_context = {
+        workspace = "/workspace",
+        agent_id = "agent-2",
+        session_id = "session-9",
+      },
+    })
+
+    assert(selection:resolve())
+    assert.are.same({
+      origin = "model",
+      provider = "fake",
+      model = "one",
+      workspace = "/workspace",
+      agent_id = "agent-2",
+      session_id = "session-9",
+    }, seen)
+  end)
+
   it("moves one ProfileDraft transactionally through its typestates", function()
     local profile = {
       id = "neo",

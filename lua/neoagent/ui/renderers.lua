@@ -152,11 +152,32 @@ local function image_content(block)
   return block.content
 end
 
-local function image_nodes(block, key, native, env)
+local function image_render_signature(block, key, native, env)
+  if block.revision == nil then return nil end
+  local details = env.image_mode == "details"
+  return table.concat({
+    identity_component(block.revision),
+    identity_component(block.image_scope or ""),
+    identity_component(key),
+    native == false and "0" or "1",
+    details and "1" or "0",
+    not details and type(env.width) == "number" and env.width > 1
+      and "1" or "0",
+  })
+end
+
+local function image_nodes(block, key, native, env, continuation)
   local result = {}
   env = env or {}
+  local signature = image_render_signature(block, key, native, env)
+  local cached = type(continuation) == "table" and continuation.images or nil
+  if signature and cached and cached.signature == signature then
+    return cached.nodes, cached
+  end
   local content = image_content(block)
-  if type(content) ~= "table" then return result end
+  if type(content) ~= "table" then
+    return result, signature and { signature = signature, nodes = result } or nil
+  end
   for index, value in ipairs(content) do
     if type(value) == "table" and value.type == "image" then
       local slot = image_slot(value, index)
@@ -209,7 +230,7 @@ local function image_nodes(block, key, native, env)
       end
     end
   end
-  return result
+  return result, signature and { signature = signature, nodes = result } or nil
 end
 
 local function new(policy)
@@ -229,7 +250,9 @@ local function new(policy)
       if content.card and content.card.last < content.card.first then
         content.card = nil
       end
-      local images = image_nodes(block, key, env.show_images, env)
+      local images, image_continuation = image_nodes(
+        block, key, env.show_images, env, continuation)
+      next_continuation.images = image_continuation
       local focus = tree.focus(block, content, {
         width = env.surface_width or (env.width and env.width + 2) or 2,
         details_key = env.details_key,
@@ -260,9 +283,10 @@ local function new(policy)
         render_context, block, { width = env.width })
       if not content then return nil end
       local details_key = "details:" .. tostring(block.key or env.key or "block")
-      local images = image_nodes(
+      local images, image_continuation = image_nodes(
         block, details_key, true,
-        vim.tbl_extend("force", env, { image_mode = "details" }))
+        vim.tbl_extend("force", env, { image_mode = "details" }), continuation)
+      next_continuation.images = image_continuation
       local node
       if content.markdown_document then
         node, next_continuation.tree = tree.retained_markdown(

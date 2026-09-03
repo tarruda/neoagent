@@ -93,15 +93,18 @@ end
 describe("neoagent Applet View composition", function()
   local views = {}
   local components = {}
+  local base64_decode
 
   before_each(function()
     config._reset()
+    base64_decode = vim.base64.decode
     vim.o.columns = 120
     vim.o.lines = 40
     vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "x", false)
   end)
 
   after_each(function()
+    vim.base64.decode = base64_decode
     for _, view in ipairs(views) do view:destroy() end
     for _, component in ipairs(components) do component:destroy() end
     views = {}
@@ -449,6 +452,11 @@ describe("neoagent Applet View composition", function()
   end)
 
   it("retains stable image placements while clipped thinking streams", function()
+    local decodes = 0
+    vim.base64.decode = function(value)
+      decodes = decodes + 1
+      return base64_decode(value)
+    end
     local batches = {}
     local images = Applet.ImageSystem._new({
       _backend = image_backend({
@@ -493,6 +501,7 @@ describe("neoagent Applet View composition", function()
     value.transcript.pane:flush()
 
     local batch_count = #batches
+    local decode_count = decodes
     local image_layout = vim.deepcopy(value.transcript.pane.layout.images)
     value:apply({
       type = "thinking_delta",
@@ -503,6 +512,7 @@ describe("neoagent Applet View composition", function()
     assert.is_true(contains(view_handles.buffer(value, "transcript"), "thinking line 12"))
     assert.are.same(image_layout, value.transcript.pane.layout.images)
     assert.are.equal(batch_count, #batches)
+    assert.are.equal(decode_count, decodes)
 
     local row, line = line_index(view_handles.buffer(value, "transcript"), "thinking line 12")
     row = row - 1

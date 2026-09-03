@@ -67,7 +67,9 @@ describe("neoagent.storage", function()
     dirs[#dirs + 1] = directory
     local store = storage.new({ directory = directory, cwd = directory })
     local path = store:metadata().path
-    local workspace_directory = directory .. "/" .. vim.fn.sha256(vim.uv.fs_realpath(directory))
+    local root = assert(vim.uv.fs_realpath(directory))
+    local workspace_directory = directory .. "/" .. vim.fs.basename(root)
+      .. "-" .. vim.fn.sha256(root)
     assert.are.equal(workspace_directory .. "/sessions", vim.fs.dirname(path))
     assert.is_nil(vim.uv.fs_stat(path))
     local session = assert(Session.new({ store = store }))

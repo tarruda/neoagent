@@ -1,5 +1,6 @@
 local curl = require("neoagent.transport.curl")
 local util = require("neoagent.util")
+local bit = require("bit")
 
 describe("neoagent.transport.curl", function()
   it("bounds stderr and reports stream read failures", function()
@@ -46,19 +47,28 @@ describe("neoagent.transport.curl", function()
       url = "http://localhost",
       headers = { ["Content-Type"] = "application/json", Authorization = "Bearer x" },
     }))
-    assert.are.same({
-      "curl", "--silent", "--show-error", "-X", "GET", "--max-time", "1.500",
-      "--write-out", "\n%{http_code}", "http://localhost",
-    }, (function()
+    local fetch_command = (function()
       local original_system = vim.system
       local commands = {}
       vim.system = function(command) commands[1] = command return { kill = function() end } end
-      curl.fetch({
+      local run = curl.fetch({
         request = { url = "http://localhost", method = "GET", timeout_ms = 1500 },
       })
+      assert.are.equal(384, bit.band(
+        assert(vim.uv.fs_stat(commands[1][7])).mode, 511))
+      run:cancel()
+      assert(vim.wait(1000, function() return run:is_done() end))
       vim.system = original_system
       return commands[1]
-    end)())
+    end)()
+    assert.are.same({
+      "curl", "--silent", "--show-error", "-X", "GET", "--dump-header",
+    }, vim.list_slice(fetch_command, 1, 6))
+    assert.is_string(fetch_command[7])
+    assert.are.same({
+      "--max-time", "1.500", "--write-out", "\n%{http_code}",
+      "http://localhost",
+    }, vim.list_slice(fetch_command, 8))
     assert.are.same({
       "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
       "-X", "GET", "--max-time", "1.500", "http://localhost",
@@ -68,8 +78,8 @@ describe("neoagent.transport.curl", function()
   it("bounds fetched response bodies while curl is running", function()
     local original_system = vim.system
     local function result(maximum, send)
-      vim.system = function(_, options, on_exit)
-        send(options, on_exit)
+      vim.system = function(command, options, on_exit)
+        send(options, on_exit, command)
         return { kill = function() end }
       end
       local run = curl.fetch({ request = {
@@ -81,13 +91,25 @@ describe("neoagent.transport.curl", function()
       return run:result()
     end
 
-    local fetched = result(2, function(options, on_exit)
+    local fetched = result(2, function(options, on_exit, command)
+      assert.are.equal(384, bit.band(
+        assert(vim.uv.fs_stat(command[7])).mode, 511))
+      vim.fn.writefile({
+        "HTTP/1.1 200 OK",
+        "Content-Type: application/json",
+        "X-Request-Id: req-1",
+        "",
+      }, command[7], "b")
       options.stdout(nil, "{}\n200")
       on_exit({ code = 0 })
     end)
     assert.is_true(fetched.ok)
     assert.are.equal("{}", fetched.body)
     assert.are.equal(200, fetched.status)
+    assert.are.same({
+      ["content-type"] = "application/json",
+      ["x-request-id"] = "req-1",
+    }, fetched.headers)
 
     fetched = result(2, function(options, on_exit)
       options.stdout(nil, "too-large\n200")

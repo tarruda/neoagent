@@ -119,14 +119,16 @@ describe("neoagent.compaction", function()
     assert.are.same(retained.request, path[3].request)
   end)
 
-  it("adds messages after live provider usage to the context estimate", function()
+  it("estimates trailing text and images after live provider usage", function()
     local context = require("neoagent.agent.context")
     local messages = {
       { role = "assistant", content = { { type = "text", text = "answer" } } },
       { role = "user", content = "follow-up" },
+      { role = "toolResult", content = { {
+        type = "image", mimeType = "image/png", data = string.rep("a", 2400000),
+      } } },
     }
-    local encoded = vim.json.encode(messages[2])
-    assert.are.equal(50 + math.ceil(#encoded / 4),
+    assert.are.equal(50 + 3 + 1200,
       context.tokens({}, messages, { tokens = 50, message_count = 1 }))
   end)
 

@@ -9,7 +9,6 @@ CONTENTS                                                         *applet-content
 4. Content Trees                                                   |applet-trees|
 5. Interaction                                               |applet-interaction|
 6. Images                                                         |applet-images|
-7. Diagnostics                                                 |applet-diagnostics|
 
 ===============================================================================
 1. OVERVIEW                                                     *applet-overview*
@@ -78,10 +77,8 @@ while it owns virtual chrome, decorations, mappings, and actions.
 
 `frame_interval_ms` bounds the automatic presentation cadence for frequently
 updated state and content Tree submissions. Every submission immediately
-becomes the newest pending value; the next frame commits that value. The first
-submission after connecting is presented immediately. Native viewport,
-surface, Theme, and image-resource invalidations request the next safe
-InteractionDomain turn immediately.
+becomes the newest pending value; the next frame commits that value. Native
+viewport, Theme, and image changes request an earlier safe commit.
 
 Pane and Applet submissions are immutable borrowed values: >lua
 
@@ -94,27 +91,17 @@ Pane and Applet submissions are immutable borrowed values: >lua
 The caller retains ownership and does not mutate a submitted value. Each
 semantic change supplies a new value, affected subtree, or revision. Pending
 submissions coalesce to the newest generation. A failed render,
-content compilation, or commit preserves the last committed Layout and
-reports `{ pane, phase, generation, message }`.
+compilation, or commit preserves the last committed Layout and reports
+`{ pane, phase, generation, message }`.
 
 `set_state(state, { eager = true })` bypasses the configured frame interval
 while retaining InteractionDomain safety. It suits terminal lifecycle and
 direct-interaction submissions that must settle on the next safe domain turn.
 
-Pane retains a compiled document when consecutive Trees share the same root
-table and equal layout constraints, Theme generation, and image generation.
-Chrome, view intent, and editable state are validated and committed
-independently. Owners can retain immutable root identity for status-only
-updates without traversing document regions.
-
 A document root composed entirely of regions with explicit revisions retains
 its longest unchanged prefix when its root table changes. Pane compiles and
 reconciles from the first affected region. Region revisions cover their child
 content and image sources.
-
-Compiled Layouts are compared as exact immutable Lua values. Reconciliation
-receives one categorized change set for content, decorations, interaction,
-images, regions, sources, virtual text, chrome, and view state.
 
 An Applet creates and connects the buffer and window for every mounted Pane.
 Closing an Applet retains its Pane buffers for reopening; destroying it releases
@@ -372,11 +359,8 @@ delete their owned buffer at unmount. `owns_pane` transfers Pane destruction
 to the Applet when that mount identity expires. A required mount makes its
 first content commit part of open success. Changing `mount_revision` or
 calling `remount(key)` clears suppression after an external detach. Sensitive
-buffers require a transient mount and disable swap and undo-file persistence.
-Transient buffer generations include mount revision, sensitivity, and Pane
-identity. Replacing a sensitive generation allocates a fresh buffer, moves
-foreign windows away from the prior buffer, overwrites it, and deletes it while
-the sensitive descriptor remains attached.
+buffers require a transient mount, disable swap and undo-file persistence, and
+are overwritten before deletion.
 
 A Pane can be mounted only once in one submitted layout and by only one live
 Applet. The Pane key is opaque layout identity; display labels belong in Pane
@@ -455,11 +439,6 @@ staging, and publication failures preserve the prior committed Frame or roll
 opening back to `closed`. Applet publishes copied Host Snapshots before
 external callbacks. Callback mutations settle after the current observation
 batch.
-
-An open Applet activates live window, tab, buffer, mode, scroll, resize, and
-option observers. Closing releases those broad observers. Each retained buffer
-uses a buffer-local unload, delete, and wipeout observer until its next open or
-final release.
 
 `Applet.layout.compile()` exposes the pure layout compiler: >lua
 
@@ -665,17 +644,25 @@ Menus return their primitive scope and an entry descriptor covering the
 requested `initial` item, or the first enabled item, and the final visible
 item. `menu_intent(entry, key)` converts that descriptor into a target intent
 which selects the entry and keeps the complete menu visible when it fits. The
-initial item must be enabled. Focused items use the `selected` Theme style.
-Menus claim no default keys. With the explicit keys above, arrow
-movement and Enter are semantic while `h`, `j`, `k`, `l`, and every other
-unclaimed key remain native. Either movement key selects the first enabled
-item when the cursor is outside the menu group. Horizontal padding on an item
-row belongs to its nearest menu item, keeping cursor-based selection stable
-across native column changes. Menu titles, labels, and details use word
-wrapping by default. Set `text_wrap` to `word`, `character`, `none`, or
-`native` to apply that mode throughout one menu. Dialog action menus are
-vertical and default to Up, Down, and Enter. `initial_action` chooses their
-entry and they return the action-menu entry descriptor as a second value.
+initial item must be enabled. Menus claim no default keys, so supplied
+bindings coexist with unclaimed native motions. Set `text_wrap` to `word`,
+`character`, `none`, or `native`. Dialog action menus are vertical and default
+to Up, Down, and Enter.
+
+The pure content compiler is available without a Pane: >lua
+
+  local compiled = Applet.Pane.compile({
+    tree = tree,
+    width = 80,
+    height = 24,
+    extent = "document",
+    theme = theme,
+    images = image_snapshot,
+  })
+<
+Content Trees contain plain finite data. Compilation rejects callbacks,
+cycles, metatables, malformed UTF-8, duplicate identities, ambiguous mappings,
+and impossible layouts before any buffer mutation.
 
 ===============================================================================
 5. INTERACTION                                               *applet-interaction*
@@ -737,7 +724,7 @@ target-relative positions.
 ===============================================================================
 6. IMAGES                                                         *applet-images*
 
-Create one image system with an explicit backend and share it among related
+Create one ImageSystem with an explicit backend and share it among related
 Panes: >lua
 
   local images = Applet.ImageSystem.new({
@@ -747,38 +734,29 @@ Panes: >lua
     max_pixels = 40 * 1000 * 1000,
   })
 <
-ImageSystem validates PNG sources, bounds source size, pixel count, and cached
-bytes, and publishes one complete presentation per Pane. The bundled `kitty`
-backend uses the Kitty graphics protocol. A backend table implements:
 
-  available                           Report current availability as a boolean.
+ImageSystem validates PNG sources, bounds source size, pixel count, and cached
+bytes, and publishes one complete presentation per Pane. A backend implements:
+
+  available                           Report current availability.
   cell_dimensions()                   Return terminal cell pixel dimensions.
-  replace(owner, placements)          Replace one complete owner presentation.
+  replace(owner, placements)          Replace one owner presentation.
   clear(owner)                        Relinquish one presentation owner.
   release(resource)                   Release an unreferenced prepared PNG.
-  redraw(owner)                       Reapply a current presentation.
-  destroy()                           Release the complete backend.
+  redraw(owner)                       Reapply one presentation.
+  destroy()                           Release the backend.
 
-`replace` receives every desired placement for `owner` in one list. Each
-placement contains its slot `key`, validated PNG `resource`, fixed cell
-dimensions, fit, screen position, and optional source viewport. An optional
-`set_error_handler(callback)` reports a transport failure. ImageSystem captures
-the backend generation around every backend call and publishes candidate state
-only when that generation remains available and current. A synchronous error
-callback or thrown method destroys the backend once and clears resources and
-presentations before the caller can publish its candidate.
+`replace` receives every desired placement for its owner. A placement contains
+a slot key, validated PNG resource, fixed cell dimensions, fit, screen
+position, and optional source viewport. An optional
+`set_error_handler(callback)` reports transport failure.
 
 `Applet.ImageSystem.diagnostics({ backend = "kitty" })` reports whether the
-current terminal provides the ordered Kitty transport needed for persistent
-placements. A custom backend owns its protocol-specific diagnostics.
+current terminal supports persistent Kitty placements. A custom backend owns
+its protocol-specific diagnostics. Explicit `cell_width` and `cell_height`
+options override terminal pixel detection.
 
-Pane reads terminal cell pixels from terminal window geometry. Explicit
-`cell_width` and `cell_height` options override detection. Kitty uses `1:2` as
-the aspect-ratio fallback when pixel geometry is absent.
-
-Image nodes accept bounded PNG bytes or trusted local PNG paths. Byte sources
-carry an owner-defined `id`; `id` and `revision` form their constant-cost
-identity, keeping image payloads outside Layout comparison: >lua
+Image nodes accept bounded PNG bytes or trusted local PNG paths: >lua
 
   ui.image({
     key = "attachment:42",
@@ -796,91 +774,25 @@ identity, keeping image payloads outside Layout comparison: >lua
     align = "left",
   })
 <
+
 Integer widths and heights reserve exact cell dimensions. `width = "fill"`
-uses the available width. `width = "native"` approaches the source pixel
-width without exceeding available cells. `height = "auto"` preserves source
-aspect ratio using detected cell pixels; `max_height` bounds the result.
+uses the available width; `width = "native"` approaches the source pixel width.
+`height = "auto"` preserves aspect ratio, and `max_height` bounds it.
 
-The owner keeps `id` unique for distinct byte resources that can coexist in a
-shared ImageSystem and supplies a finite numeric or string `revision`, changing
-it whenever source contents change. Numeric and string revisions are distinct
-identity values.
+The source `id` is unique among byte resources that can coexist in one
+ImageSystem. Change `revision` whenever its bytes change. An image node `key`
+identifies its visual slot.
 
-An image node `key` identifies one visual slot. ImageSystem owns the slot set
-that the backend has presented for each Pane. When a slot publishes a new
-source revision, Pane requests the desired source and compiles the presented
-source until that preparation completes. First load uses the compact fallback.
-Removing the node submits a presentation without that slot. An unavailable
-backend clears every presentation and compiles fallbacks.
+Source loading is asynchronous. Existing content remains presented while a new
+revision prepares. Removing a node releases its slot; disconnecting a Pane
+clears its presentation. Cancellation suppresses stale source completion.
 
-Pane resolves the complete visible presentation before invoking ImageSystem.
-It clips placements to the editor screen and removes cells covered by higher
-z-index floating rectangles. Its slot map contains source identities, so
-ImageSystem alone resolves every referenced resource before invoking the
-backend. The backend receives a candidate only after Pane has completed its
-buffer transaction. Source preparation retains the current presentation until
-the desired revision is ready, and cancellation suppresses stale source
-completions.
+The bundled Kitty backend supports direct terminals and tmux pass-through when
+an ordered terminal-output path is available. Offscreen, folded, clipped,
+obscured, and overlapping placements remain hidden until the next refresh. An
+unavailable backend uses the text fallback and reserves no image rectangle.
 
-Source reads and PNG validation are asynchronous and bounded. Desired and
-current presentations retain prepared resources. Releasing the final desired
-or presented reference cancels active source work, releases its backend
-resource, and discards its failure record. The byte limit bounds the complete
-set of referenced prepared resources.
-
-Kitty uploads prepared PNG bytes in bounded direct chunks and reuses one upload
-across independent Pane presentations. It creates every candidate placement
-before deleting the prior owner's placements. Queued revisions for one Pane
-coalesce to its newest complete presentation. Image data without a visible
-placement is deleted from the terminal and uploaded again when it becomes
-visible. Neovim redraw observation reapplies current persistent placements in
-screen order. A terminal output failure makes the backend unavailable.
-
-The backend orders protocol output after Neovim text through a serialized UI
-API or the built-in TUI acknowledgement barrier. Active tmux receives its
-pass-through envelope. Environments without an ordered output boundary keep
-the selected backend unavailable.
-
-An unavailable backend compiles the fallback at its natural bounded height
-and reserves no image rectangle. Offscreen, folded, horizontally clipped,
-popup-obscured, and overlapping rectangles remain hidden until the next
-coalesced refresh. Disconnect clears its owned presentation. Destroy clears
-runtime protocol state and the prepared source cache. Applet
-performs no network fetch or image conversion. Use `images:destroy()` when its
-owner is destroyed.
-
-The interactive harness compares native floating windows with a Pane
-container scene: >lua
-
-  :luafile scripts/applet-image-harness.lua
-  :lua applet_image_harness("kitty", "native")
-  :lua applet_image_harness("kitty", "pane")
-<
-
-===============================================================================
-7. DIAGNOSTICS                                                 *applet-diagnostics*
-
-`make benchmark-applet` enforces the representative container budgets used for
-the Applet UI. At 80x22, Tree construction is bounded to 0.05 ms and
-8 retained KiB per frame, content compilation to 0.75 ms and 64 KiB,
-retained position updates to 0.05 ms and 8 KiB, and full updates to 0.75 ms and
-32 KiB. A retained position update has a zero composed-cell budget. The target
-runs 1,000 iterations and reports each measurement as JSON.
-
-The pure Pane content compiler is available as: >lua
-
-  local compiled = Applet.Pane.compile({
-    tree = tree,
-    width = 80,
-    height = 24,
-    extent = "document",
-    theme = theme,
-    images = image_snapshot,
-  })
-<
-Content Trees contain plain finite data. Compilation rejects callbacks,
-cycles, metatables, malformed UTF-8 text, duplicate semantic identities,
-unknown built-in actions, ambiguous mappings, and impossible layouts before a
-buffer is mutated.
+Applet performs no network fetch or image conversion. Call `images:destroy()`
+when its owner is destroyed.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

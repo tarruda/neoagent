@@ -20,8 +20,10 @@ local function server_url(credential)
   end
 end
 
-function M.new()
-  return {
+function M.new(opts)
+  opts = opts or {}
+  local transport = opts.transport
+  local method = {
     type = "api_key",
     name = "llama.cpp server",
     login = function(interaction)
@@ -37,7 +39,10 @@ function M.new()
         selected = client.normalize_server_url(selected)
         local key = "anonymous"
         local anonymous = true
-        local listed = client.new({ server_url = selected }):list():await()
+        local listed = client.new({
+          server_url = selected,
+          transport = transport,
+        }):list():await()
         if not listed.ok then
           local err = listed.error or util.error("auth",
             "llama.cpp server check failed")
@@ -53,6 +58,7 @@ function M.new()
           local verified = client.new({
             server_url = selected,
             api_key = key,
+            transport = transport,
           }):list():await()
           if not verified.ok then error(verified.error, 0) end
           anonymous = false
@@ -90,6 +96,12 @@ function M.new()
       return tostring(#value) .. ":" .. value .. ":" .. credential.key
     end,
   }
+  method._with_transport = function(value)
+    local selected = util.copy(opts)
+    selected.transport = value
+    return M.new(selected)
+  end
+  return method
 end
 
 return M

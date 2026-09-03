@@ -136,7 +136,12 @@ function M.new(opts)
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
   assert(type(opts.root) == "string" and opts.root ~= "", "root is required")
   local root = fs.canonical(opts.root)
-  local directory = fs.join(fs.normalize(opts.directory), vim.fn.sha256(root))
+  local basename = vim.fs.basename(root):gsub('[%c<>:"/\\|?*]', "-")
+  if basename == "" or basename == "." or basename == ".." then
+    basename = "root"
+  end
+  local directory = fs.join(fs.normalize(opts.directory),
+    basename .. "-" .. vim.fn.sha256(root))
   return setmetatable({
     root = root,
     directory = directory,
