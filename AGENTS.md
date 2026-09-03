@@ -243,11 +243,13 @@ changes.
   `provider/recordings/<provider>`. Private NDJSON staging closes before JSON
   publication or one final `yq` conversion. YAML-selected staging represents
   valid JSON bodies as native values with an explicit format marker; the final
-  conversion translates the outer NDJSON documents only. HTTP credential
-  headers and URL fields become `*`. Model request bodies and ordinary response
-  bodies bypass content sanitation; Authentication adapters explicitly
-  classify credential response bodies, which become `*`. Recorder failures
-  never replace provider results.
+  conversion translates the outer NDJSON documents only. Rolling retention
+  publishes a replacement before removing older final files in the same leaf;
+  all-file retention supports complete captures. HTTP credential headers and
+  URL fields become `*`. Model request bodies and ordinary response bodies
+  bypass content sanitation; Authentication adapters explicitly classify
+  credential response bodies, which become `*`. Recorder failures never
+  replace provider results.
 - Cancellation must propagate through active Models, tools, and nested Runs,
   complete exactly once, preserve meaningful partial output, and prevent stale
   callbacks from mutating newer Agent state. Agent destruction retains activity

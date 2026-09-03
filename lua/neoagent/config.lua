@@ -52,6 +52,7 @@ local defaults = {
   recording = {
     enabled = false,
     format = "auto",
+    retention = "rolling",
     directory = vim.fn.stdpath("state") .. "/neoagent",
   },
   agent_instructions = {
@@ -415,7 +416,8 @@ local function validate(opts)
   assert(type(opts.recording) == "table" and not util.is_list(opts.recording),
     "recording must be a table")
   for key in pairs(opts.recording) do
-    assert(key == "enabled" or key == "format" or key == "directory",
+    assert(key == "enabled" or key == "format" or key == "retention"
+        or key == "directory",
       "unsupported recording setting: " .. tostring(key))
   end
   assert(type(opts.recording.enabled) == "boolean",
@@ -423,6 +425,9 @@ local function validate(opts)
   assert(opts.recording.format == "auto" or opts.recording.format == "yaml"
       or opts.recording.format == "json",
     "recording.format must be auto, yaml, or json")
+  assert(opts.recording.retention == "rolling"
+      or opts.recording.retention == "all",
+    "recording.retention must be rolling or all")
   assert(type(opts.recording.directory) == "string"
       and opts.recording.directory ~= "",
     "recording.directory is required")

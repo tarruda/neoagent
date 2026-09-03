@@ -121,6 +121,7 @@ The main options and defaults are: >lua
     recording = {
       enabled = false,
       format = "auto", -- "auto", "yaml", or "json"
+      retention = "rolling", -- "rolling" or "all"
       directory = stdpath("state") .. "/neoagent",
     },
     ui = {
@@ -990,6 +991,21 @@ when a different owner, such as a test runner, supplies the storage location.
 Each filename begins with a sortable UTC timestamp, process ID, and sequence,
 then names its provider and origin. Normal filename sorting preserves
 request-start order within one Neoagent process.
+
+`recording.retention` controls finalized files within each Session or shared
+provider directory:
+
+  `retention = "rolling"`   Keep the newest successfully published exchange.
+                            This is the default.
+  `retention = "all"`       Keep every successfully published exchange.
+
+Rolling retention publishes the completed replacement before removing older
+`.yaml` or `.jsonl` files. During a normal serial request, the directory
+therefore contains the prior final file and the current `.partial.ndjson`;
+after publication it contains the new final file. A failed publication keeps
+the prior final and its staging evidence. Files whose names do not identify a
+Neoagent recording are never removed. Use `retention = "all"` for fixture
+capture or when the complete HTTP sequence is required.
 
 Each request/response pair owns one private staging file ending in
 `.partial.ndjson`. Neoagent appends timing records while the request runs,

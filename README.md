@@ -73,8 +73,10 @@ directory and provider-owned exchanges beneath
 `neoagent/provider/recordings`. Compatible `yq` v4 selects readable YAML
 automatically; JSON Lines is used when compatible `yq` is unavailable. Model
 request and ordinary provider response bodies are retained exactly, so
-recordings contain private conversation content. See
-`:help neoagent-recording` for format, privacy, and path configuration.
+recordings contain private conversation content. Each directory retains its
+newest finalized exchange by default; set `retention = "all"` to preserve every
+exchange. See `:help neoagent-recording` for format, retention, privacy, and
+path configuration.
 
 ## Trust and sandboxing
 

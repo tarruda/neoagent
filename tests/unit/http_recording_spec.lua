@@ -73,15 +73,21 @@ describe("neoagent HTTP recording", function()
     local defaults = config.resolve({ default_registry = false })
     assert.is_false(defaults.recording.enabled)
     assert.are.equal("auto", defaults.recording.format)
+    assert.are.equal("rolling", defaults.recording.retention)
     assert.matches("/neoagent$",
       defaults.recording.directory)
 
     local configured = config.resolve({
       default_registry = false,
-      recording = { enabled = true, format = "json" },
+      recording = {
+        enabled = true,
+        format = "json",
+        retention = "all",
+      },
     })
     assert.is_true(configured.recording.enabled)
     assert.are.equal("json", configured.recording.format)
+    assert.are.equal("all", configured.recording.retention)
 
     assert.has_error(function()
       config.resolve({ default_registry = false,
@@ -91,10 +97,15 @@ describe("neoagent HTTP recording", function()
       config.resolve({ default_registry = false,
         recording = { enabled = true, extra = true } })
     end, "unsupported recording setting: extra")
+    assert.has_error(function()
+      config.resolve({ default_registry = false,
+        recording = { enabled = true, retention = "forever" } })
+    end, "recording.retention must be rolling or all")
   end)
 
   it("selects one format for the recorder lifecycle", function()
     local recording = require("neoagent.http_recording")
+    assert.is_nil(recording.new())
     assert.is_nil(recording.new({ config = { enabled = false } }))
 
     local json = assert(recording.new({
@@ -121,6 +132,11 @@ describe("neoagent HTTP recording", function()
     assert.has_error(function()
       recording.new({ config = { enabled = true, format = "xml" } })
     end, "recording format must be auto, yaml, or json")
+    assert.has_error(function()
+      recording.new({ config = {
+        enabled = true, format = "json", retention = "forever",
+      } })
+    end, "recording retention must be rolling or all")
   end)
 
   it("stores Workspace and provider-owned traffic separately", function()
@@ -271,7 +287,7 @@ else:
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
     local recording = require("neoagent.http_recording").new({
-      config = { enabled = true, format = "yaml" },
+      config = { enabled = true, format = "yaml", retention = "all" },
       directory = directory,
     })
     if not recording then return end
@@ -482,7 +498,7 @@ else:
     directories[#directories + 1] = workspace
     local converted = {}
     local recording = assert(require("neoagent.http_recording").new({
-      config = { enabled = true, format = "auto" },
+      config = { enabled = true, format = "auto", retention = "all" },
       directory = directory,
       now = function() return 1788363492417 end,
       yq = {
@@ -517,12 +533,235 @@ else:
     assert.are.equal(0, #files(directory, ".partial.ndjson"))
   end)
 
-  it("sanitizes classified credential bodies and preserves other bytes", function()
+  it("rolls finalized JSON exchanges by default", function()
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
     local recording = assert(require("neoagent.http_recording").new({
       config = { enabled = true, format = "json" },
+      directory = directory,
+    }))
+    local http = recording:transport(transport({ "response" }), {
+      workspace = workspace,
+      provider = "example",
+      origin = "model",
+      session_id = "rolling-json",
+    })
+
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/first",
+    } })).ok)
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/second",
+    } })).ok)
+    recording:destroy()
+
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(1, #paths)
+    assert.are.equal("https://example.test/second",
+      records(paths[1])[1].request.url)
+    assert.are.equal(0, #files(directory, ".partial.ndjson"))
+  end)
+
+  it("keeps the prior YAML until its rolling replacement publishes", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local conversions = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "yaml" },
+      directory = directory,
+      yq = {
+        available = function() return true end,
+        convert = function(path, done)
+          conversions[#conversions + 1] = { path = path, done = done }
+        end,
+      },
+    }))
+    local http = recording:transport(transport({ "response" }), {
+      workspace = workspace,
+      provider = "example",
+      origin = "model",
+      session_id = "rolling-yaml",
+    })
+
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/first",
+    } })).ok)
+    assert.are.equal(1, #conversions)
+    conversions[1].done("turn: first\n")
+    local first_path = assert(files(directory, ".yaml")[1])
+    local note_path = fs.join(vim.fs.dirname(first_path), "notes.txt")
+    assert(fs.atomic_replace(note_path, "keep me\n", { mode = 384 }))
+
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/second",
+    } })).ok)
+    assert.are.equal(2, #conversions)
+    assert.are.equal(1, #files(directory, ".yaml"))
+    assert.are.equal(1, #files(directory, ".partial.ndjson"))
+    assert.is_not_nil(vim.uv.fs_stat(first_path))
+
+    conversions[2].done("turn: second\n")
+    recording:destroy()
+    local paths = files(directory, ".yaml")
+    assert.are.equal(1, #paths)
+    assert.are.equal("turn: second\n", assert(fs.read(paths[1])))
+    assert.are.equal("keep me\n", assert(fs.read(note_path)))
+    assert.is_nil(vim.uv.fs_stat(first_path))
+    assert.are.equal(0, #files(directory, ".partial.ndjson"))
+  end)
+
+  it("waits for an active YAML publication during recorder shutdown", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local finish_conversion
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "yaml" },
+      directory = directory,
+      yq = {
+        available = function() return true end,
+        convert = function(_, done) finish_conversion = done end,
+      },
+    }))
+    local http = recording:transport(transport({ "response" }), {
+      workspace = workspace,
+      provider = "example",
+      origin = "model",
+      session_id = "shutdown-conversion",
+    })
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/shutdown-conversion",
+    } })).ok)
+    assert.is_function(finish_conversion)
+
+    vim.schedule(function() finish_conversion("turn: final\n") end)
+    assert.is_true(recording:destroy())
+    assert.are.equal(1, #files(directory, ".yaml"))
+    assert.are.equal(0, #files(directory, ".partial.ndjson"))
+  end)
+
+  it("keeps the prior final when a rolling replacement cannot publish", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local reports = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local http = recording:transport(transport({ "response" }), {
+      workspace = workspace,
+      provider = "example",
+      origin = "model",
+      session_id = "rolling-publication-failure",
+    })
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/first",
+    } })).ok)
+    local first_path = assert(files(directory, ".jsonl")[1])
+
+    local original_rename = vim.uv.fs_rename
+    local ok, err = xpcall(function()
+      vim.uv.fs_rename = function(source, target, ...)
+        if source:sub(-#".partial.ndjson") == ".partial.ndjson"
+            and target:sub(-#".jsonl") == ".jsonl" then
+          return nil, "rename failed", "EIO"
+        end
+        return original_rename(source, target, ...)
+      end
+      assert.is_true(wait(http.fetch({ request = {
+        url = "https://example.test/second",
+      } })).ok)
+    end, debug.traceback)
+    vim.uv.fs_rename = original_rename
+    if not ok then error(err, 0) end
+    recording:destroy()
+
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(1, #paths)
+    assert.are.equal(first_path, paths[1])
+    assert.are.equal("https://example.test/first",
+      records(paths[1])[1].request.url)
+    assert.are.equal(1, #files(directory, ".partial.ndjson"))
+    assert.matches("failed to publish recording", table.concat(reports, "\n"))
+  end)
+
+  it("keeps provider results when rolling cleanup fails", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local reports = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local http = recording:transport(transport({ "response" }), {
+      workspace = workspace,
+      provider = "example",
+      origin = "model",
+      session_id = "rolling-failure",
+    })
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/first",
+    } })).ok)
+    local first_path = assert(files(directory, ".jsonl")[1])
+
+    local original_unlink = vim.uv.fs_unlink
+    local original_scandir = vim.uv.fs_scandir
+    local ok, err = xpcall(function()
+      vim.uv.fs_unlink = function(path)
+        if path == first_path then error("unlink exploded") end
+        return original_unlink(path)
+      end
+      assert.is_true(wait(http.fetch({ request = {
+        url = "https://example.test/unlink-failure",
+      } })).ok)
+
+      vim.uv.fs_unlink = original_unlink
+      vim.uv.fs_scandir = function()
+        error(string.rep("scan exploded ", 200))
+      end
+      assert.is_true(wait(http.fetch({ request = {
+        url = "https://example.test/scan-exception",
+      } })).ok)
+
+      vim.uv.fs_scandir = function() return nil, "scan failed" end
+      assert.is_true(wait(http.fetch({ request = {
+        url = "https://example.test/scan-failure",
+      } })).ok)
+    end, debug.traceback)
+    vim.uv.fs_unlink = original_unlink
+    vim.uv.fs_scandir = original_scandir
+    if not ok then error(err, 0) end
+
+    assert.are.equal(4, #files(directory, ".jsonl"))
+    assert.is_true(wait(http.fetch({ request = {
+      url = "https://example.test/recovered",
+    } })).ok)
+    recording:destroy()
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(1, #paths)
+    assert.are.equal("https://example.test/recovered",
+      records(paths[1])[1].request.url)
+    local diagnostic = table.concat(reports, "\n")
+    assert.matches("failed to remove a previous recording", diagnostic)
+    assert.matches("failed to retain rolling recording", diagnostic)
+    assert.matches("failed to list previous recordings", diagnostic)
+    for _, message in ipairs(reports) do
+      assert.is_true(#message <= #"neoagent: HTTP recording: " + 1024)
+    end
+  end)
+
+  it("sanitizes classified credential bodies and preserves other bytes", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json", retention = "all" },
       directory = directory,
       context = function() return { workspace = workspace } end,
     }))
@@ -619,7 +858,7 @@ else:
     local binary_directory = tempdir()
     directories[#directories + 1] = binary_directory
     local binary = assert(require("neoagent.http_recording").new({
-      config = { enabled = true, format = "json" },
+      config = { enabled = true, format = "json", retention = "all" },
       directory = binary_directory,
     }))
     local binary_http = binary:transport(transport({ "bad\255bytes" }), {
@@ -657,7 +896,7 @@ else:
     directories[#directories + 1] = workspace
     local response_body = '{"token":"ordinary-response-token"}'
     local recording = assert(require("neoagent.http_recording").new({
-      config = { enabled = true, format = "json" },
+      config = { enabled = true, format = "json", retention = "all" },
       directory = directory,
     }))
     local http = recording:transport(transport(nil, {
@@ -771,7 +1010,7 @@ else:
       },
     }
     local recording = assert(require("neoagent.http_recording").new({
-      config = { enabled = true, format = "json" },
+      config = { enabled = true, format = "json", retention = "all" },
       directory = directory,
     }))
     local http = recording:transport(transport(nil, failure), {
@@ -854,6 +1093,44 @@ else:
     assert.are.equal("ordinary file", assert(fs.read(blocked)))
   end)
 
+  it("keeps provider results when a staging file cannot be opened", function()
+    local directory, workspace = tempdir(), tempdir()
+    directories[#directories + 1] = directory
+    directories[#directories + 1] = workspace
+    local reports = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" },
+      directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local http = recording:transport(transport({ "still works" }), {
+      workspace = workspace,
+      provider = "example",
+    })
+
+    local original_open = fs.open_regular
+    local ok, result = xpcall(function()
+      fs.open_regular = function(path, ...)
+        if path:sub(-#".partial.ndjson") == ".partial.ndjson" then
+          return nil, "open failed"
+        end
+        return original_open(path, ...)
+      end
+      return wait(http.fetch({ request = {
+        url = "https://example.test/staging-open-failure",
+      } }))
+    end, debug.traceback)
+    fs.open_regular = original_open
+    if not ok then error(result, 0) end
+    recording:destroy()
+
+    assert.is_true(result.ok)
+    assert.are.equal(0, #files(directory, ".partial.ndjson"))
+    assert.are.equal(0, #files(directory, ".jsonl"))
+    local diagnostic = table.concat(reports, "\n")
+    assert.matches("failed to open a recording", diagnostic)
+  end)
+
   it("records synchronous transport failures before rethrowing them", function()
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
@@ -888,7 +1165,7 @@ else:
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
     local recording = assert(require("neoagent.http_recording").new({
-      config = { enabled = true, format = "json" },
+      config = { enabled = true, format = "json", retention = "all" },
       directory = directory,
     }))
     local failed = recording:transport(transport(nil, {

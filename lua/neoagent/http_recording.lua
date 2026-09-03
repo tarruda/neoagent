@@ -610,6 +610,11 @@ local function ensure_directory(path)
   return true
 end
 
+local function final_recording_name(name)
+  local extension = name:match("^%d%d%d%d%d%d%d%dT%d%d%d%d%d%d%.%d%d%dZ%-%d+%-%d+%-.+%.([^.]+)$")
+  return extension == "yaml" or extension == "jsonl"
+end
+
 local function default_yq()
   return {
     available = function()
@@ -618,9 +623,9 @@ local function default_yq()
       local version = ((result and result.stdout) or ""):lower()
       local major = version:find("version v4", 1, true)
         or version:find("version 4", 1, true)
+      local mike_farah = version:find("mikefarah", 1, true) ~= nil
       return result and result.code == 0
-        and (version:find("mikefarah", 1, true) ~= nil
-          or version:find("github.com/mikefarah/yq", 1, true) ~= nil)
+        and mike_farah
         and major ~= nil
     end,
     convert = function(path, done)
@@ -852,6 +857,7 @@ function Recorder:_conversion_done(exchange, output)
       exchange.final_path, output, { mode = FILE_MODE })
     if written then
       pcall(vim.uv.fs_unlink, exchange.stage_path)
+      self:_published(exchange)
     else
       report(self, "failed to write YAML recording " .. exchange.id .. ": "
         .. tostring(write_err))
@@ -862,12 +868,46 @@ function Recorder:_conversion_done(exchange, output)
   self._pending_conversions = math.max(0, self._pending_conversions - 1)
 end
 
+function Recorder:_retain(exchange)
+  if self._retention == "all" then return end
+  local directory = vim.fs.dirname(exchange.final_path)
+  local scan = vim.uv.fs_scandir(directory)
+  if not scan then
+    report(self, "failed to list previous recordings for " .. exchange.id)
+    return
+  end
+  while true do
+    local name, kind = vim.uv.fs_scandir_next(scan)
+    if not name then break end
+    local path = fs.join(directory, name)
+    if kind == "file" and path ~= exchange.final_path
+        and final_recording_name(name) then
+      local called, removed, remove_err, remove_code = pcall(
+        vim.uv.fs_unlink, path)
+      if not called or not removed and remove_code ~= "ENOENT" then
+        report(self, "failed to remove a previous recording for "
+          .. exchange.id .. ": " .. tostring(remove_err or removed))
+      end
+    end
+  end
+end
+
+function Recorder:_published(exchange)
+  local retained, retain_err = pcall(self._retain, self, exchange)
+  if not retained then
+    report(self, "failed to retain rolling recording " .. exchange.id .. ": "
+      .. tostring(retain_err))
+  end
+end
+
 function Recorder:_publish(exchange)
   if self._format == "json" then
     local moved, err = vim.uv.fs_rename(exchange.stage_path, exchange.final_path)
     if not moved then
       report(self, "failed to publish recording " .. exchange.id .. ": "
         .. tostring(err))
+    else
+      self:_published(exchange)
     end
     return
   end
@@ -1118,7 +1158,8 @@ end
 
 function M.new(opts)
   opts = opts or {}
-  local selected = opts.config or { enabled = false, format = "auto" }
+  local selected = opts.config
+    or { enabled = false, format = "auto", retention = "rolling" }
   assert(type(selected) == "table", "recording configuration is required")
   if selected.enabled ~= true then return nil end
   local yq = opts.yq or default_yq()
@@ -1137,8 +1178,12 @@ function M.new(opts)
     return nil, util.error("configuration",
       "recording.format is yaml but a compatible yq v4 is unavailable")
   end
+  local retention = selected.retention or "rolling"
+  assert(retention == "rolling" or retention == "all",
+    "recording retention must be rolling or all")
   return setmetatable({
     _format = format,
+    _retention = retention,
     _directory = fs.normalize(opts.directory
       or selected.directory
       or vim.fn.stdpath("state") .. "/neoagent"),

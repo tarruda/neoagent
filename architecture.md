@@ -798,6 +798,13 @@ available and JSON otherwise; an explicit YAML selection requires `yq`. The
 recording state root is a configuration value so interactive and test
 compositions can own independent locations.
 
+Retention is local to each Workspace Session or shared provider directory.
+The default rolling policy publishes one complete replacement before removing
+older Neoagent final files, so a conversion or publication failure preserves
+the prior complete exchange and the current staging evidence. The `all` policy
+preserves every final file for fixture capture and complete protocol analysis.
+Cleanup errors are diagnostic-only and never change the provider result.
+
 Credential sanitation applies at protocol-aware locations. Non-empty
 credential headers, credential-bearing URL values, and known credential fields
 in non-model request bodies become `*`. Empty values and non-sensitive server
