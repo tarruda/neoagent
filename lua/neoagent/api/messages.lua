@@ -37,6 +37,29 @@ local function with_content(message, content)
   return result
 end
 
+local function foreign_assistant(message, model)
+  return message.role == "assistant" and (
+    (message.api ~= nil and message.api ~= model.api)
+    or (message.provider ~= nil and message.provider ~= model.provider)
+    or (message.model ~= nil and message.model ~= model.id))
+end
+
+local function portable_content(content)
+  local result = {}
+  for _, block in ipairs(content) do
+    if block.type == "thinking" then
+      if not block.redacted and block.thinking ~= "" then
+        result[#result + 1] = { type = "text", text = block.thinking }
+      end
+    elseif block.type == "text" then
+      result[#result + 1] = { type = "text", text = block.text }
+    else
+      result[#result + 1] = block
+    end
+  end
+  return result
+end
+
 function M.for_model(messages, model)
   assert(type(messages) == "table" and vim.islist(messages),
     "messages must be a list")
@@ -46,20 +69,24 @@ function M.for_model(messages, model)
       error("message " .. tostring(index) .. ": " .. err, 0)
     end
   end
-  if supports_images(model) then return messages end
+  local images = supports_images(model)
   local result = {}
+  local changed = false
   for index, message in ipairs(messages) do
-    if message.role == "user" and type(message.content) == "table" then
+    if foreign_assistant(message, model) then
+      result[index] = with_content(message, portable_content(message.content))
+    elseif not images and message.role == "user" and type(message.content) == "table" then
       result[index] = with_content(message,
         replace_images(message.content, USER_IMAGE_PLACEHOLDER))
-    elseif message.role == "toolResult" then
+    elseif not images and message.role == "toolResult" then
       result[index] = with_content(message,
         replace_images(message.content, TOOL_IMAGE_PLACEHOLDER))
     else
       result[index] = message
     end
+    changed = changed or result[index] ~= message
   end
-  return result
+  return changed and result or messages
 end
 
 return M

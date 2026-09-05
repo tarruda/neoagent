@@ -1029,7 +1029,9 @@ Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, `usage`,
 and optional `provider_status` and `inference_stats`. A successful result
 contains `{ ok = true, message, text }`; a failure contains
 `{ ok = false, error, message? }`. Failures may retain meaningful partial
-output. Cancellation uses `stopReason = "aborted"`.
+output. A successful `toolUse` response contains at least one `toolCall` block;
+an inconsistent provider response fails. Cancellation uses
+`stopReason = "aborted"`.
 
 A Run supports: >lua
 

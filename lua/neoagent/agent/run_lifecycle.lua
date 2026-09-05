@@ -177,12 +177,13 @@ local function is_retryable_error(err)
   if type(err.retryable) == "boolean" then return err.retryable end
   local text = error_text(err)
   if has_pattern(text, non_retryable_error_patterns) then return false end
+  if has_pattern(text, retryable_error_patterns) then return true end
   local response = type(err.response) == "table" and err.response or {}
   local status = tonumber(err.status) or tonumber(response.status)
     or tonumber(text:match("http%s+(%d%d%d)"))
   if status and status >= 400 then return retryable_status[status] == true end
   if err.kind == "transport" then return true end
-  return has_pattern(text, retryable_error_patterns)
+  return false
 end
 
 local function retry_delay(milliseconds)

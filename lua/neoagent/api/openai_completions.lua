@@ -555,7 +555,8 @@ function Model:stream(opts)
       local partial = partial_message(message, calls_complete, err)
       return { ok = false, message = partial, error = err }
     end
-    local message, message_err = semantic_message.normalize(outcome)
+    local message, message_err =
+      semantic_message.normalize_model_response(outcome)
     if not message then
       return {
         ok = false,

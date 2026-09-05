@@ -1557,6 +1557,32 @@ describe("neoagent default agent", function()
     assert.is_true(snapshot().result.ok)
   end)
 
+  it("retries provider timeouts reported with terminal HTTP statuses", function()
+    local failed = fake_model.assistant({}, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "transport",
+      message = "HTTP 400: Download multimodal file timed out",
+      response = { status = 400 },
+    }
+    local model = fake_model.new({
+      { result = failed },
+      { result = fake_model.assistant({
+        { type = "text", text = "recovered" },
+      }) },
+    })
+    setup_model(model, {
+      retry = { enabled = true, max_retries = 1, base_delay_ms = 1 },
+    })
+    local run = assert(neoagent.send("retry provider timeout"))
+    assert(vim.wait(1000, function()
+      return run:is_done() and is_idle() and #model.requests == 2
+    end))
+
+    assert.are.equal(2, #model.requests)
+    assert.is_true(snapshot().result.ok)
+  end)
+
   it("bounds automatic retries with the configured retry budget", function()
     local function interrupted()
       local failed = fake_model.assistant({}, "error")

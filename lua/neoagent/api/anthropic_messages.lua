@@ -301,7 +301,12 @@ function Model:stream(opts)
           error(util.error("protocol", "Anthropic stream ended with an open content block"), 0)
         end
       end
-      return message
+      local normalized, message_err =
+        semantic_message.normalize_model_response(message)
+      if not normalized then
+        error(util.error("protocol", tostring(message_err), message_err), 0)
+      end
+      return normalized
     end)
 
     if not ok then
@@ -309,15 +314,8 @@ function Model:stream(opts)
       local partial = partial_message(message, blocks, err)
       return { ok = false, message = partial, error = err }
     end
-    local normalized, message_err = semantic_message.normalize(outcome)
-    if not normalized then
-      return {
-        ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
-      }
-    end
-    return { ok = true, message = normalized,
-      text = util.text_content(normalized.content) }
+    return { ok = true, message = outcome,
+      text = util.text_content(outcome.content) }
   end, {
     on_event = opts.on_event,
     on_done = opts.on_done,

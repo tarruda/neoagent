@@ -166,6 +166,21 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("ray-error", result.error.response.headers["cf-ray"])
   end)
 
+  it("surfaces provider errors from non-2xx SSE responses", function()
+    local server = mock_server.start("tests/fixtures/openai/sse_error.json")
+    servers[#servers + 1] = server
+    local result = wait(model(server):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("model", result.error.kind)
+    assert.are.equal(
+      "HTTP 400: Download multimodal file timed out",
+      result.error.message)
+    assert.matches("invalid_parameter_error", result.error.detail)
+    assert.are.equal(400, result.error.response.status)
+    assert.are.equal("req-sse-error",
+      result.error.response.headers["x-request-id"])
+  end)
+
   it("cancels curl and preserves partial assistant output", function()
     local server = mock_server.start("tests/fixtures/openai/cancel.json")
     servers[#servers + 1] = server
