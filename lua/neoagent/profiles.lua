@@ -145,6 +145,11 @@ local function agent_options(configured, context)
       selected[key] = util.copy(value)
     end
   end
+  local selection = context.initial_selection
+  if selection then
+    selected.default_model = util.copy(selection.model)
+    selected.default_thinking_level = selection.thinking_level
+  end
   return selected
 end
 
@@ -169,7 +174,7 @@ local function make_chat(configured, auth, runtimes, runtime)
         id = context.id,
         profile_id = "chat",
         label = context.label,
-        initial_model = context.options.default_model,
+        initial_selection = context.initial_selection,
         session = context.session,
         workspace = context.workspace,
         restore_session_selection = context.restore_session_selection,
@@ -227,7 +232,7 @@ local function make_neo(configured, auth, runtimes, runtime)
         id = context.id,
         profile_id = "neo",
         label = context.label,
-        initial_model = context.options.default_model,
+        initial_selection = context.initial_selection,
         session = context.session,
         workspace = context.workspace,
         restore_session_selection = context.restore_session_selection,

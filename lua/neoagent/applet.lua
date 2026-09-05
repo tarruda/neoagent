@@ -270,7 +270,11 @@ function NeoagentApplet:_construct_agent(
   local previous_foreground_id = self.foreground_id
   local previous_selected = self.selected
   local previous_last_id = self.last_id
-  local draft_options = draft and draft:options() or {}
+  local draft_snapshot = draft and draft:snapshot() or {
+    options = {},
+    initial_selection = nil,
+  }
+  local draft_options = draft_snapshot.options
   local ok, agent, metadata = pcall(profile.create_agent, {
     id = id,
     label = label,
@@ -281,6 +285,7 @@ function NeoagentApplet:_construct_agent(
     restore_session_selection = opts.restore_session_selection == true,
     commit_workspace_preference = opts.commit_workspace_preference == true,
     options = draft_options,
+    initial_selection = draft_snapshot.initial_selection,
     resources = self.resources,
   })
   if not ok then return self:_construction_error(applet, agent) end
