@@ -722,6 +722,58 @@ describe("neoagent default agent", function()
     unsubscribe()
   end)
 
+  it("continues after stopping a tool and manually compacting its turn", function()
+    local async = require("neoagent.async")
+    local entered, executions = false, 0
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "Earlier response" } }) },
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "interrupted", name = "pending", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "Continued" } }) },
+    })
+    model.context_window = 1000
+    local agent = setup_model(model, {
+      compaction = { auto = false, reserve_tokens = 200, keep_recent_tokens = 1 },
+      tools = { {
+        name = "pending", description = "Wait", input_schema = { type = "object" },
+        execute = function()
+          entered, executions = true, executions + 1
+          return async.await(function() return function() end end)
+        end,
+      } },
+      _compaction_run = function(options)
+        return completed_run(options, {
+          ok = true, summary = "Earlier work",
+          first_kept_entry_id = options.preparation.first_kept_entry_id,
+          tokens_before = options.preparation.tokens_before,
+        })
+      end,
+    })
+    local earlier = assert(agent:send("Earlier task"))
+    assert(vim.wait(1000, function() return earlier:is_done() end))
+    local interrupted = assert(agent:send("Start a tool"))
+    assert(vim.wait(1000, function() return entered end))
+    assert.is_true(agent:stop())
+    assert(vim.wait(1000, function() return interrupted:is_done() and not agent:is_running() end))
+    assert.are.equal("cancelled", interrupted:result().error.kind)
+    local compacted = assert(agent:compact())
+    assert(vim.wait(1000, function() return compacted:is_done() and not agent:is_running() end))
+    assert.is_true(compacted:result().ok)
+    local resumed, err = agent:send("Continue")
+    assert.is_nil(err)
+    assert.is_table(resumed)
+    assert(vim.wait(1000, function() return resumed:is_done() end))
+    assert.is_true(resumed:result().ok)
+    assert.are.equal(3, #model.requests)
+    assert.are.equal(1, executions)
+    local results = vim.tbl_filter(function(message)
+      return message.role == "toolResult" and message.toolCallId == "interrupted"
+    end, agent:get_session():messages())
+    assert.are.equal(1, #results)
+    assert.is_true(results[1].isError)
+  end)
+
   it("rejects new work after destruction with shared provider runtimes", function()
     local executions = 0
     local model = fake_model.new({

@@ -425,6 +425,8 @@ function M.new(opts)
   local function prepare_compaction()
     local settings = compaction_settings()
     if not settings or not state.session then return nil end
+    local closed, close_err = close_unmatched_calls()
+    if not closed then return nil, close_err end
     local path, path_err = state.session:path()
     if not path then return nil, path_err end
     return require("neoagent.compaction").prepare(path, settings)

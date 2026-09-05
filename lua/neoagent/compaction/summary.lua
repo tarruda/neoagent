@@ -179,7 +179,7 @@ function M.run(opts, system_prompt)
     local summary
     local usage
     if preparation.split_turn and #preparation.turn_prefix > 0 then
-      local history = "No prior history."
+      local history = preparation.previous_summary or "No prior history."
       if #preparation.messages > 0 then
         local generated, err = summarize(run, opts, preparation.messages, preparation.previous_summary,
           opts.instructions, preparation.previous_summary and update_summary_prompt or summary_prompt, "history",
