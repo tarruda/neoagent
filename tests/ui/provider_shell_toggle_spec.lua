@@ -184,7 +184,7 @@ describe("neoagent Provider Shell toggle", function()
     local pane = assert(shell:view():pane("provider"))
     local window = native.window
     assert.are.equal(window, vim.api.nvim_get_current_win())
-    assert.are.equal("provider:operations:item:neoagent.catalog.refresh",
+    assert.are.equal("provider:operations:item:inspect",
       assert(pane:focused_target()).key)
     vim.api.nvim_buf_call(native.buffer, function()
       for _, key in ipairs({ "j", "k", "h", "l" }) do
@@ -199,7 +199,7 @@ describe("neoagent Provider Shell toggle", function()
     end, 5))
     assert.matches("Alpha ready", table.concat(
       vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false), "\n"))
-    assert.are.equal("provider:operations:item:neoagent.catalog.refresh",
+    assert.are.equal("provider:operations:item:inspect",
       assert(pane:focused_target()).key)
     assert(pane:reveal_target("provider:operations:item:inspect"))
     feed("<CR>")
@@ -214,7 +214,7 @@ describe("neoagent Provider Shell toggle", function()
     end, 5))
     assert.matches("Beta ready", table.concat(
       vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false), "\n"))
-    assert.are.equal("provider:operations:item:neoagent.catalog.refresh",
+    assert.are.equal("provider:operations:item:inspect",
       assert(pane:focused_target()).key)
 
     feed("<C-k>")

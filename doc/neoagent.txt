@@ -253,6 +253,10 @@ The default provider IDs are:
   anthropic          Anthropic API; login `anthropic` or
                      `ANTHROPIC_API_KEY`.
   deepseek           DeepSeek API; login `deepseek` or `DEEPSEEK_API_KEY`.
+  alibaba-token-plan Alibaba Cloud Token Plan Personal; login
+                     `alibaba-token-plan` or use
+                     `BAILIAN_TOKEN_PLAN_API_KEY` for inference; optional
+                     dashboard login provides quota reporting.
   zai                Z.AI API; login `zai` or `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Plan; login `zai-coding-plan`, `zai`, or
                      `ZAI_API_KEY`. Both login names use the `zai` credential.
@@ -261,14 +265,34 @@ The default provider IDs are:
   llama.cpp          Local llama.cpp router; login `llama`.
 
 Open the Provider Shell with `:NeoagentProvider`, select a provider, and choose
-Log in to store a key or start OAuth. Stored credentials take precedence over
-a configured `api_key`, then an `api_key` callback such as an environment
-lookup. Log out removes only a stored credential. Dismissing OAuth or
-device-code instructions leaves authorization running; use
+an authentication action. Stored inference credentials take precedence over a
+configured `api_key`, then an `api_key` callback such as an environment lookup.
+Each logout action removes its corresponding stored credential. Dismissing
+OAuth or device-code instructions leaves authorization running; use
 `:NeoagentProvider!` to cancel it.
 
 Credentials default to `stdpath("state") .. "/neoagent/auth.json"`. Listing
 credentials returns IDs and types only.
+
+Alibaba Cloud Token Plan Personal uses its dedicated key with the Singapore
+plan endpoint. Select it directly: >lua
+
+  require("neoagent").setup({
+    default_model = {
+      provider = "alibaba-token-plan",
+      model = "qwen3.8-flash",
+    },
+  })
+<
+`Login` prompts for the dedicated `sk-sp-...` key from Token Plan My
+Subscriptions and enables model calls. `Login to dashboard (optional to see
+quotas)` opens Alibaba Cloud in a browser and enables the 5-hour and 7-day quota
+display. `Logout` and `Logout from dashboard` remove their corresponding
+credentials independently. Set
+`BAILIAN_TOKEN_PLAN_API_KEY` before starting Neovim for an ambient
+inference credential. The packaged catalog contains the plan's supported chat
+models, so the Provider Shell does not offer model-catalog refresh for this
+provider.
 
 Codex diagnostics default to
 `stdpath("state") .. "/neoagent/codex.log"`. They contain bounded transport
@@ -618,14 +642,18 @@ or `muted`.
 The Provider Shell presents configured runtimes independently of Agent
 lifecycles. Its selector marks provider usability and credential source, while
 the detail Pane shows provider state, actions, catalog source, freshness, model
-count, and bounded errors. Every provider exposes `Refresh model catalog`.
+count, and bounded errors. Providers with a dynamic catalog expose `Refresh
+model catalog`.
 
-Authentication actions follow credential state. Required logged-out providers
-offer login; stored credentials add logout; configured and environment
-credentials remain managed at their source. Selection, confirmation, input,
-and login notices appear within the Provider Shell. Successful login refreshes
-catalogs sharing that Authentication method. Logout refreshes providers that
-remain usable through another credential source.
+Authentication actions follow credential state independently for the primary
+inference method and each method in `provider.auth_scopes`. A missing method
+exposes its login action; a stored method exposes a confirmed logout action.
+Configured and environment credentials remain managed at their source. A
+method with `login_with_ambient = true` also offers login while an environment
+or configured inference credential is active. Selection, confirmation, input,
+and login notices appear within the Provider Shell. Successful inference login
+refreshes catalogs sharing that Authentication method. Logout refreshes
+providers that remain usable through another inference credential source.
 
 The Shell invokes a Service's non-mutating `refresh` operation when that
 provider gains focus. Concurrent focus refreshes coalesce. It performs no
@@ -659,6 +687,8 @@ The built-in Services expose:
                 credits.
   anthropic     Organization token usage and costs when permitted.
   deepseek      Account balances.
+  alibaba-token-plan
+                Token Plan endpoint and 5-hour and 7-day quota usage.
   zai           API endpoint and balance.
   zai-coding-plan
                 Plan token, credit, and MCP quotas.
@@ -1097,10 +1127,27 @@ Authentication is independently composable: >lua
 <
 
 Credentials are tagged `api_key` or `oauth` values. A login method may provide
-`login`, `refresh`, `request_opts`, `public_metadata`, and
-`cache_identity(credential)`. Stores implement `read`, `write`, `modify`,
-`list`, and `delete`. Metadata and cache-identity APIs return values that do not
-contain credentials.
+`login`, `refresh`, `request_opts(credential[, scope])`, `public_metadata`, and
+`cache_identity(credential)`. `validate_credential(credential)` may enforce a
+method-specific credential shape. Set `login_with_ambient = true` when stored
+login remains available alongside an active environment or configured
+credential. Stores implement `read`, `write`, `modify`, `list`, and `delete`.
+Metadata and cache-identity APIs return values that do not contain credentials.
+
+Providers may bind independent Authentication methods to named scopes: >lua
+
+  providers = {
+    example = {
+      auth = "example-inference",
+      auth_scopes = { dashboard = "example-dashboard" },
+    },
+  }
+<
+Model wrapping uses `auth`. A Provider Service operation declares
+`auth_scope = "dashboard"` and requests that credential with
+`ctx.resolve_auth("dashboard")`. The Provider Shell gates the operation and
+offers login and logout for each method independently. Authentication methods
+may set `login_label` and `logout_label` for those actions.
 
 Use `manager:wrap(model, id, { optional = true })` when the Model can run with
 an ambient credential.

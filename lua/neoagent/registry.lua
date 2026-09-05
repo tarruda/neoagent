@@ -8,6 +8,7 @@ local defaults = {
   openai = openai.openai,
   ["openai-codex"] = openai["openai-codex"],
   deepseek = require("neoagent.registry.deepseek"),
+  ["alibaba-token-plan"] = require("neoagent.registry.alibaba_token_plan"),
   zai = require("neoagent.registry.zai"),
   ["zai-coding-plan"] = require("neoagent.registry.zai_coding_plan"),
   anthropic = require("neoagent.registry.anthropic"),

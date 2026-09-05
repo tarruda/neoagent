@@ -39,18 +39,21 @@ Neovim:
 | ChatGPT subscription | `openai-codex` | — |
 | Anthropic API | `anthropic` | `ANTHROPIC_API_KEY` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| Alibaba Cloud Token Plan Personal | `alibaba-token-plan` | `BAILIAN_TOKEN_PLAN_API_KEY` |
 | Z.AI API | `zai` | `ZAI_API_KEY` |
 | Z.AI Plan | `zai-coding-plan` | `ZAI_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_API_KEY` |
 | llama.cpp | `llama.cpp` | — |
 
-Stored credentials take precedence over environment variables. The Provider
-Shell shows Log out for a stored credential; other credential sources remain
-managed at their source.
+Stored credentials take precedence over environment variables. Logged-out
+authentication methods expose their login actions, and each stored credential
+exposes its own confirmed logout action. Environment and configured inference
+credentials remain managed at their source.
 
 Use `:NeoagentModel` to choose another model. The Provider Shell exposes each
-provider's status, authentication, operations, and model-catalog refresh. Use
-`:NeoagentCycle` to switch between live Agents or start a new conversation.
+provider's status, authentication, operations, and model catalog. Providers
+with dynamic catalogs offer a refresh action. Use `:NeoagentCycle` to switch
+between live Agents or start a new conversation.
 
 Provider HTTP recording is available for debugging:
 

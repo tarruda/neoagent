@@ -54,6 +54,7 @@ describe("neoagent configuration and model resolution", function()
   local original_zai_key
   local original_anthropic_key
   local original_opencode_key
+  local original_alibaba_token_plan_key
 
   before_each(function()
     config._reset()
@@ -62,11 +63,13 @@ describe("neoagent configuration and model resolution", function()
     original_zai_key = vim.env.ZAI_API_KEY
     original_anthropic_key = vim.env.ANTHROPIC_API_KEY
     original_opencode_key = vim.env.OPENCODE_API_KEY
+    original_alibaba_token_plan_key = vim.env.BAILIAN_TOKEN_PLAN_API_KEY
     vim.env.OPENAI_API_KEY = nil
     vim.env.DEEPSEEK_API_KEY = nil
     vim.env.ZAI_API_KEY = nil
     vim.env.ANTHROPIC_API_KEY = nil
     vim.env.OPENCODE_API_KEY = nil
+    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = nil
   end)
 
   after_each(function()
@@ -80,6 +83,7 @@ describe("neoagent configuration and model resolution", function()
     vim.env.ZAI_API_KEY = original_zai_key
     vim.env.ANTHROPIC_API_KEY = original_anthropic_key
     vim.env.OPENCODE_API_KEY = original_opencode_key
+    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = original_alibaba_token_plan_key
   end)
 
   it("keeps setup out of direct core constructors", function()
@@ -97,7 +101,7 @@ describe("neoagent configuration and model resolution", function()
     local configured = config.get()
     for _, id in ipairs({
       "openai", "openai-codex", "deepseek", "zai", "zai-coding-plan",
-      "anthropic", "opencode-go", "llama.cpp",
+      "alibaba-token-plan", "anthropic", "opencode-go", "llama.cpp",
     }) do
       assert.is_function(configured.providers[id].service, id)
     end
@@ -547,6 +551,149 @@ describe("neoagent configuration and model resolution", function()
     })
     assert.are.equal("https://api.z.ai/api/paas/v4/chat/completions", request.url)
     assert.is_true(request.body.tool_stream)
+  end)
+
+  it("resolves the Alibaba Token Plan Personal profile", function()
+    vim.env.BAILIAN_TOKEN_PLAN_API_KEY = "sk-sp-token-plan-key"
+    config.setup({})
+
+    local configured = config.get()
+    local plan = assert(configured.providers["alibaba-token-plan"])
+    assert.are.equal("openai-completions", plan.api)
+    assert.are.equal(
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      plan.base_url)
+    assert.are.equal("alibaba-token-plan", plan.auth)
+    assert.are.same({
+      dashboard = "alibaba-token-plan-dashboard",
+    }, plan.auth_scopes)
+    assert.are.equal("Alibaba Cloud Token Plan API key",
+      configured.auth.methods["alibaba-token-plan"].name)
+    local dashboard =
+      configured.auth.methods["alibaba-token-plan-dashboard"]
+    assert.are.equal("Alibaba Cloud dashboard", dashboard.name)
+    assert.are.equal("Login", configured.auth.methods["alibaba-token-plan"]
+      .login_label)
+    assert.are.equal("Logout", configured.auth.methods["alibaba-token-plan"]
+      .logout_label)
+    assert.are.equal("Login to dashboard (optional to see quotas)",
+      dashboard.login_label)
+    assert.are.equal("Logout from dashboard", dashboard.logout_label)
+    assert.is_nil(configured.providers.alibaba)
+    assert.is_nil(configured.providers["alibaba-coding-plan"])
+    assert.is_nil(configured.auth.methods.alibaba)
+    assert.is_nil(configured.auth.methods["alibaba-coding-plan"])
+    assert.is_nil(plan.catalog.discover)
+
+    local plan_models = vim.tbl_keys(
+      runtimes_for(configured)["alibaba-token-plan"]
+        .catalog:snapshot().models)
+    table.sort(plan_models)
+    assert.are.same({
+      "deepseek-v4-flash-0731", "deepseek-v4-pro",
+      "deepseek-v4-pro-0813", "glm-5.2", "qwen3.6-flash",
+      "qwen3.7-max", "qwen3.7-plus", "qwen3.8-flash",
+      "qwen3.8-max",
+    }, plan_models)
+
+    local tools = { {
+      name = "inspect",
+      description = "Inspect a path",
+      input_schema = {
+        type = "object", properties = { path = { type = "string" } },
+      },
+    } }
+    local qwen = models.resolve("alibaba-token-plan", "qwen3.8-max")
+    assert.are.same({ "off", "low", "medium", "xhigh" },
+      require("neoagent.thinking").levels(qwen))
+    local request = qwen._model:_request({
+      messages = { { role = "assistant", content = { {
+        type = "thinking", thinking = "prior reasoning",
+        thinkingSignature = "reasoning_content",
+      }, { type = "text", text = "prior answer" } } } },
+      tools = tools,
+      request_opts = qwen.thinking.xhigh,
+    })
+    assert.are.equal(
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+      request.url)
+    assert.are.equal("Bearer sk-sp-token-plan-key",
+      request.headers.Authorization)
+    assert.are.equal("neoagent", request.headers["User-Agent"])
+    assert.are.same({ "text", "image" }, qwen.input)
+    assert.are.equal(1000000, qwen.context_window)
+    assert.are.equal(131072, request.body.max_completion_tokens)
+    assert.is_true(request.body.enable_thinking)
+    assert.are.equal("xhigh", request.body.reasoning_effort)
+    assert.is_true(request.body.tool_stream)
+    assert.is_true(request.body.stream_options.include_usage)
+    assert.are.equal("prior reasoning",
+      request.body.messages[1].reasoning_content)
+    request = qwen._model:_request({
+      messages = {}, tools = {}, request_opts = qwen.thinking.off,
+    })
+    assert.is_false(request.body.enable_thinking)
+    assert.is_nil(request.body.reasoning_effort)
+
+    local qwen37 = models.resolve("alibaba-token-plan", "qwen3.7-plus")
+    assert.are.same({ "off", "high" },
+      require("neoagent.thinking").levels(qwen37))
+    request = qwen37._model:_request({
+      messages = {}, tools = {}, request_opts = qwen37.thinking.high,
+    })
+    assert.is_true(request.body.enable_thinking)
+    assert.is_nil(request.body.reasoning_effort)
+    assert.is_nil(request.body.tool_stream)
+    request = qwen37._model:_request({
+      messages = {}, tools = {}, request_opts = qwen37.thinking.off,
+    })
+    assert.is_false(request.body.enable_thinking)
+
+    assert.are.same({ "text" },
+      models.resolve("alibaba-token-plan", "qwen3.7-max").input)
+    local qwen36 = models.resolve("alibaba-token-plan", "qwen3.6-flash")
+    request = qwen36._model:_request({ messages = {}, tools = {} })
+    assert.are.equal(65536, request.body.max_completion_tokens)
+
+    local deepseek = models.resolve(
+      "alibaba-token-plan", "deepseek-v4-pro-0813")
+    assert.are.same({ "off", "low", "high", "max" },
+      require("neoagent.thinking").levels(deepseek))
+    request = deepseek._model:_request({
+      messages = {}, tools = tools, request_opts = deepseek.thinking.max,
+    })
+    assert.are.equal(393216, request.body.max_completion_tokens)
+    assert.are.equal("max", request.body.reasoning_effort)
+    assert.is_nil(request.body.tool_stream)
+
+    local current_deepseek = models.resolve(
+      "alibaba-token-plan", "deepseek-v4-pro")
+    assert.are.same({ "off", "high", "max" },
+      require("neoagent.thinking").levels(current_deepseek))
+
+    local flash = models.resolve(
+      "alibaba-token-plan", "deepseek-v4-flash-0731")
+    assert.are.same({ "off", "low", "high", "max" },
+      require("neoagent.thinking").levels(flash))
+    request = flash._model:_request({
+      messages = {}, tools = {}, request_opts = flash.thinking.low,
+    })
+    assert.is_true(request.body.enable_thinking)
+    assert.are.equal("low", request.body.reasoning_effort)
+
+    local glm = models.resolve("alibaba-token-plan", "glm-5.2")
+    assert.are.equal(1048576, glm.context_window)
+    request = glm._model:_request({
+      messages = {}, tools = tools, request_opts = glm.thinking.high,
+    })
+    assert.are.equal(131072, request.body.max_completion_tokens)
+    assert.is_true(request.body.tool_stream)
+    assert.are.equal("high", request.body.reasoning_effort)
+    request = glm._model:_request({
+      messages = {}, tools = {}, request_opts = glm.thinking.off,
+    })
+    assert.is_false(request.body.enable_thinking)
+    assert.is_nil(request.body.reasoning_effort)
   end)
 
   it("applies discovered Anthropic capabilities to requests", function()

@@ -1,5 +1,7 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
+local alibaba_dashboard_auth = require("neoagent.auth.alibaba_dashboard")
+local alibaba_token_plan_auth = require("neoagent.auth.alibaba_token_plan")
 local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 local provider_auth = require("neoagent.provider_auth")
@@ -25,6 +27,8 @@ local defaults = {
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
+      ["alibaba-token-plan"] = alibaba_token_plan_auth.new(),
+      ["alibaba-token-plan-dashboard"] = alibaba_dashboard_auth.new(),
       zai = api_key.new({ name = "Z.AI API and Plan key" }),
       anthropic = api_key.new({
         name = "Anthropic API key",
