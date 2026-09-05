@@ -43,9 +43,8 @@ local function documentation()
     "})",
     "```",
     "",
-    "The constructor input is an ordinary options table. Runtime-owned values, "
-      .. "including a Session, Workspace, or shared provider runtimes, use the "
-      .. "separate runtime argument.",
+    "The constructor input is an ordinary options table. Pass a Session, "
+      .. "Workspace, or shared provider runtimes in the second argument.",
     "",
     "## Tools and execution",
     "",
@@ -61,33 +60,21 @@ local function documentation()
     "An Agent Applet presents one Agent; the top-level Neoagent Applet owns "
       .. "Profile drafts, Agent selection, and the Provider Shell.",
     "",
-    "Use `:help neoagent` for configuration, commands, and public Lua APIs. "
-      .. "Use `:help applet` for the UI package. Read `architecture.md` "
-      .. "for ownership and data flow, then inspect the relevant source.",
-    "",
-    "## Paths",
+    "## References",
     "",
     "- Plugin root: " .. root,
-    "- README: " .. root .. "/README.md",
-    "- Vim help: " .. root .. "/doc/neoagent.txt",
-    "- Applet help: " .. root .. "/doc/applet.txt",
-    "- Architecture: " .. root .. "/architecture.md",
+    "- Configuration, commands, and Lua APIs: " .. root .. "/doc/neoagent.txt",
+    "- UI package: " .. root .. "/doc/applet.txt",
+    "- Ownership and data flow: " .. root .. "/architecture.md",
     "- Contributor guide: " .. root .. "/AGENTS.md",
-    "- Agent Loop: " .. root .. "/lua/neoagent/agent_loop.lua",
-    "- Agent: " .. root .. "/lua/neoagent/agent.lua",
-    "- Neoagent Applet: " .. root .. "/lua/neoagent/applet.lua",
-    "- Configuration: " .. root .. "/lua/neoagent/config.lua",
-    "- Tools: " .. root .. "/lua/neoagent/tools",
     "- Active Neovim configuration: " .. init_path(),
-    "- Neovim configuration directory: " .. vim.fn.stdpath("config"),
   }, "\n")
 end
 
 local DESCRIPTION = table.concat({
   "Read Neoagent's configuration and composition API map.",
-  "Use this only when the user asks about Neoagent itself, configuring or",
-  "extending Neoagent, its Lua APIs, tools, Agents, Views, models, sessions,",
-  "or UI. Do not call it for ordinary project work.",
+  "Use this only when the user asks about Neoagent, its configuration, or",
+  "its Lua APIs. Do not call it for ordinary project work.",
 }, " ")
 
 local function new()
