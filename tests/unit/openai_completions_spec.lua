@@ -60,6 +60,122 @@ describe("neoagent.api.openai_completions", function()
     assert.are.same({ input = 2, output = 0 }, { input = result.message.usage.input, output = result.message.usage.output })
   end)
 
+  it("normalizes optional usage counts and preserves provider fallbacks", function()
+    local cases = {
+      {
+        name = "absent counts become zero",
+        usage = vim.empty_dict(),
+        expected = {
+          input = 0, output = 0, cacheRead = 0, cacheWrite = 0,
+          totalTokens = 0,
+        },
+      },
+      {
+        name = "provider counts override fallbacks",
+        usage = {
+          prompt_tokens = 2, completion_tokens = 3, total_tokens = 8,
+          prompt_cache_hit_tokens = 7,
+          prompt_tokens_details = { cached_tokens = 1, cache_write_tokens = 2 },
+        },
+        expected = {
+          input = 2, output = 3, cacheRead = 1, cacheWrite = 2,
+          totalTokens = 8,
+        },
+      },
+      {
+        name = "null cache-write count",
+        usage = {
+          prompt_tokens = 2, completion_tokens = 3, total_tokens = 5,
+          prompt_tokens_details = {
+            cached_tokens = 1, cache_write_tokens = vim.NIL,
+          },
+        },
+        expected = {
+          input = 2, output = 3, cacheRead = 1, cacheWrite = 0,
+          totalTokens = 5,
+        },
+      },
+      {
+        name = "explicit zero counts override fallbacks",
+        usage = {
+          prompt_tokens = 2, completion_tokens = 3, total_tokens = 0,
+          prompt_cache_hit_tokens = 1,
+          prompt_tokens_details = { cached_tokens = 0, cache_write_tokens = 0 },
+        },
+        expected = {
+          input = 2, output = 3, cacheRead = 0, cacheWrite = 0,
+          totalTokens = 0,
+        },
+      },
+    }
+    for _, invalid in ipairs({
+      { name = "null", value = vim.NIL },
+      { name = "string", value = "unknown" },
+      { name = "boolean", value = false },
+      { name = "object", value = vim.empty_dict() },
+    }) do
+      cases[#cases + 1] = {
+        name = invalid.name .. " counts become zero",
+        usage = {
+          prompt_tokens = invalid.value, completion_tokens = invalid.value,
+          total_tokens = invalid.value, prompt_cache_hit_tokens = invalid.value,
+          prompt_tokens_details = {
+            cached_tokens = invalid.value, cache_write_tokens = invalid.value,
+          },
+        },
+        expected = {
+          input = 0, output = 0, cacheRead = 0, cacheWrite = 0,
+          totalTokens = 0,
+        },
+      }
+      cases[#cases + 1] = {
+        name = invalid.name .. " counts use available fallbacks",
+        usage = {
+          prompt_tokens = 2, completion_tokens = 3,
+          total_tokens = invalid.value, prompt_cache_hit_tokens = 1,
+          prompt_tokens_details = { cached_tokens = invalid.value },
+        },
+        expected = {
+          input = 2, output = 3, cacheRead = 1, cacheWrite = 0,
+          totalTokens = 5,
+        },
+      }
+    end
+    for _, case in ipairs(cases) do
+      local fake = fake_transport.new({ {
+        chunks = {
+          'data: {"choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null}}],"usage":null}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"Thinking"}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-1","function":{"name":"echo","arguments":""}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":null,"arguments":"{}"}}]}}]}\n\n',
+          "data: " .. vim.json.encode({
+            choices = { { delta = {
+              role = vim.NIL, content = vim.NIL,
+              reasoning_content = vim.NIL, tool_calls = vim.NIL,
+            }, finish_reason = "tool_calls" } },
+            usage = case.usage,
+          }) .. "\n\n",
+          "data: [DONE]\n\n",
+          'data: {"choices":[],"cost":"0"}\n\n',
+        },
+      } })
+      local model = openai.new({ provider = "local", model = "test", base_url = "http://localhost/v1", transport = fake })
+      local result = wait(model:stream({
+        messages = { { role = "user", content = "Hello" } },
+        tools = { { name = "echo", description = "Echo", input_schema = {} } },
+      }))
+      assert.is_true(result.ok, case.name)
+      assert.are.equal("toolUse", result.message.stopReason)
+      assert.are.same(case.expected, {
+        input = result.message.usage.input,
+        output = result.message.usage.output,
+        cacheRead = result.message.usage.cacheRead,
+        cacheWrite = result.message.usage.cacheWrite,
+        totalTokens = result.message.usage.totalTokens,
+      })
+    end
+  end)
+
   it("normalizes prompt progress and rolls generation timing over three seconds", function()
     local fake = fake_transport.new({ {
       chunks = {

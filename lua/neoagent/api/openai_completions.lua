@@ -194,15 +194,19 @@ end
 local function usage_from(raw)
   local details = type(raw.prompt_tokens_details) == "table"
     and raw.prompt_tokens_details or {}
-  local input = raw.prompt_tokens or 0
-  local output = raw.completion_tokens or 0
-  local cache_read = details.cached_tokens or raw.prompt_cache_hit_tokens or 0
+  local input = type(raw.prompt_tokens) == "number" and raw.prompt_tokens or 0
+  local output = type(raw.completion_tokens) == "number" and raw.completion_tokens or 0
+  local cache_read = type(details.cached_tokens) == "number" and details.cached_tokens
+    or type(raw.prompt_cache_hit_tokens) == "number" and raw.prompt_cache_hit_tokens
+    or 0
   return {
     input = input,
     output = output,
     cacheRead = cache_read,
-    cacheWrite = details.cache_write_tokens or 0,
-    totalTokens = raw.total_tokens or (input + output),
+    cacheWrite = type(details.cache_write_tokens) == "number"
+      and details.cache_write_tokens or 0,
+    totalTokens = type(raw.total_tokens) == "number" and raw.total_tokens
+      or (input + output),
     cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
   }
 end
