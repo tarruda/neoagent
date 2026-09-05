@@ -94,9 +94,12 @@ unsupported images in the request copy while the Session retains the original
 content.
 
 Authentication wraps Models at stream time and remains separate from API
-codecs and presentation. Credential mutations are serialized and publish a
-method revision. Catalogs associated with that method refresh after the
-credential identity changes.
+codecs and presentation. A provider binds its primary inference method and may
+bind independent methods to named Provider Service scopes. Each method owns one
+credential record, login protocol, and request-option derivation. Credential
+changes publish a method revision. Catalogs associated with the primary method
+refresh after its credential identity changes. Browser authentication receives
+credentials on a bounded loopback callback owned by Authentication.
 
 Provider Service coordination is keyed by the concrete shared Service value.
 Model, compaction, catalog, and non-mutating operation Runs may share use.

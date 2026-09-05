@@ -868,6 +868,51 @@ describe("neoagent configuration and model resolution", function()
         refresh = true, request_opts = function() return {} end,
       } } } })
     end)
+    assert.has_error(function()
+      config.setup({ auth = { methods = { invalid = {
+        type = "api_key", name = "Invalid", login = function() end,
+        login_with_ambient = "yes", request_opts = function() return {} end,
+      } } } })
+    end)
+    assert.has_error(function()
+      config.setup({ auth = { methods = { invalid = {
+        type = "api_key", name = "Invalid", login = function() end,
+        validate_credential = true,
+        request_opts = function() return {} end,
+      } } } })
+    end)
+    for _, labels in ipairs({
+      { login_label = true },
+      { logout_label = "" },
+      { login_label = "unsafe\nlabel" },
+      { logout_label = string.rep("x", 129) },
+    }) do
+      assert.has_error(function()
+        config.setup({ auth = { methods = { invalid = {
+          type = "api_key", name = "Invalid", login = function() end,
+          login_label = labels.login_label,
+          logout_label = labels.logout_label,
+          request_opts = function() return {} end,
+        } } } })
+      end)
+    end
+    for _, auth_scopes in ipairs({
+      true,
+      { "key" },
+      { [""] = "key" },
+      { ["unsafe/scope"] = "key" },
+      { inference = "key" },
+      { dashboard = true },
+      { dashboard = "missing" },
+    }) do
+      assert.has_error(function()
+        config.setup({ providers = { scoped = {
+          api = "custom",
+          models = {},
+          auth_scopes = auth_scopes,
+        } } })
+      end)
+    end
     config.setup({ providers = {} })
     assert.has_error(function() models.resolve("missing", "model") end)
 

@@ -32,8 +32,8 @@ function M.new(opts)
         return { ok = true, credential = { type = "api_key", key = util.trim(key) } }
       end, { error_kind = "auth" })
     end,
-    request_opts = function(credential)
-      if opts.request_opts then return opts.request_opts(credential) end
+    request_opts = function(credential, scope)
+      if opts.request_opts then return opts.request_opts(credential, scope) end
       return { headers = { Authorization = "Bearer " .. credential.key } }
     end,
     cache_identity = function(credential)

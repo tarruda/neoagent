@@ -1,5 +1,6 @@
 local Applet = require("applet")
 local async = require("neoagent.async")
+local provider_auth = require("neoagent.provider_auth")
 local provider_credentials = require("neoagent.provider_credentials")
 local provider_service = require("neoagent.provider_service")
 local provider_state = require("neoagent.provider_state")
@@ -318,7 +319,7 @@ end
 
 function ProviderShell:_auth_services(runtime, method_id)
   local candidates = type(runtime.auth_services) == "table"
-      and runtime.auth_services or nil
+      and runtime.auth_services[method_id] or nil
   local services, seen = {}, {}
   for _, service in ipairs(candidates or {}) do
     if type(service) == "table" and not seen[service] then
@@ -330,7 +331,7 @@ function ProviderShell:_auth_services(runtime, method_id)
     for provider_id, candidate in pairs(self.runtimes) do
       local provider = self.config.providers[provider_id]
       local service = type(candidate) == "table" and candidate.service or nil
-      if provider and provider.auth == method_id and service
+      if provider and provider_auth.uses(provider, method_id) and service
           and not seen[service] then
         seen[service] = true
         services[#services + 1] = service

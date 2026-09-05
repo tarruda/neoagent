@@ -1,4 +1,5 @@
 local model_catalog = require("neoagent.model_catalog")
+local provider_auth = require("neoagent.provider_auth")
 local provider_credentials = require("neoagent.provider_credentials")
 local provider_service = require("neoagent.provider_service")
 local util = require("neoagent.util")
@@ -17,7 +18,8 @@ end
 local function provider_projection(provider)
   local result = {}
   for _, key in ipairs({
-    "api", "base_url", "auth", "auth_optional", "models", "service_opts",
+    "api", "base_url", "auth", "auth_optional", "auth_scopes", "models",
+    "service_opts",
   }) do
     if provider[key] ~= nil then result[key] = util.copy(provider[key]) end
   end
@@ -167,16 +169,22 @@ function M.compose(configured, opts)
   local auth_groups = {}
   for _, provider_id in ipairs(provider_ids) do
     local runtime = runtimes[provider_id]
-    local method = runtime.definition.auth
-    if type(method) == "string" then
-      auth_groups[method] = auth_groups[method] or {}
-      auth_groups[method][#auth_groups[method] + 1] = runtime.service
-      runtime.auth_method = method
+    runtime.auth_methods = {}
+    for _, entry in ipairs(provider_auth.entries(runtime.definition)) do
+      local method = entry.method
+      if type(method) == "string" then
+        auth_groups[method] = auth_groups[method] or {}
+        auth_groups[method][#auth_groups[method] + 1] = runtime.service
+        runtime.auth_methods[#runtime.auth_methods + 1] = method
+      end
     end
   end
   for _, runtime in pairs(runtimes) do
-    runtime.auth_services = runtime.auth_method
-        and auth_groups[runtime.auth_method] or {}
+    runtime.auth_services = {}
+    for _, method in ipairs(runtime.auth_methods) do
+      runtime.auth_services[method] = auth_groups[method]
+    end
+    runtime.auth_methods = nil
   end
 
   if opts.startup ~= false then

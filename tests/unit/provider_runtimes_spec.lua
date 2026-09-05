@@ -34,6 +34,7 @@ describe("neoagent provider runtime composition", function()
       headers = { Authorization = "secret" },
     }
     configured.providers.managed.service_opts = { region = "local" }
+    configured.providers.managed.auth_scopes = { dashboard = "dashboard" }
     local runtimes = assert(provider_runtimes.compose(configured, {
       startup = false,
     }))
@@ -43,6 +44,7 @@ describe("neoagent provider runtime composition", function()
     assert.are.equal("plain", runtimes.plain.service.id)
     assert.are.equal("fake", projection.api)
     assert.are.same({ region = "local" }, projection.service_opts)
+    assert.are.same({ dashboard = "dashboard" }, projection.auth_scopes)
     assert.is_nil(projection.api_key)
     assert.is_nil(projection.request_opts)
     assert.are.equal(runtimes.managed.catalog, resources.catalog)
@@ -320,9 +322,9 @@ describe("neoagent provider runtime composition", function()
     local runtimes = assert(provider_runtimes.compose(configured, {
       startup = false,
     }))
-    assert.are.equal(runtimes.first.auth_services,
-      runtimes.second.auth_services)
-    assert.are.equal(2, #runtimes.first.auth_services)
+    assert.are.equal(runtimes.first.auth_services.shared,
+      runtimes.second.auth_services.shared)
+    assert.are.equal(2, #runtimes.first.auth_services.shared)
 
     local lease = assert(provider_service.acquire_use(
       runtimes.second.service))

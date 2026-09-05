@@ -1,3 +1,4 @@
+local provider_auth = require("neoagent.provider_auth")
 local util = require("neoagent.util")
 
 local M = {}
@@ -19,16 +20,24 @@ function ProviderCredentials.new(opts)
     "ProviderCredentials authentication must be a table")
   assert(opts.method == nil or type(opts.method) == "table",
     "ProviderCredentials method must be a table")
+  assert(opts.scope == nil or type(opts.scope) == "string"
+      and opts.scope ~= "",
+    "ProviderCredentials scope must be a non-empty string")
   return setmetatable({
     provider_id = opts.provider_id,
     provider = opts.provider,
     authentication = opts.authentication,
     method = opts.method,
+    scope = opts.scope,
   }, ProviderCredentials)
 end
 
+function ProviderCredentials:_method_id()
+  return provider_auth.for_scope(self.provider, self.scope)
+end
+
 function ProviderCredentials:_stored()
-  local method_id = self.provider.auth
+  local method_id = self:_method_id()
   if method_id == nil then return false end
   local authentication = self.authentication
   if type(authentication) ~= "table"
@@ -50,6 +59,7 @@ function ProviderCredentials:_stored()
 end
 
 function ProviderCredentials:_ambient()
+  if self.scope ~= nil and self.scope ~= "inference" then return nil end
   local source = self.provider.api_key
   if source == nil then return nil end
   local ok, value = pcall(function()
@@ -65,7 +75,7 @@ function ProviderCredentials:_ambient()
 end
 
 function ProviderCredentials:state()
-  local method_id = self.provider.auth
+  local method_id = self:_method_id()
   local method_name = self.method and self.method.name or method_id
   local stored, stored_err = self:_stored()
   if stored == nil then
@@ -106,7 +116,8 @@ function ProviderCredentials:state()
   if method_id == nil and self.provider.api_key == nil then
     return { usable = true, source = "none" }
   end
-  if method_id ~= nil and self.provider.auth_optional == true then
+  if method_id ~= nil and self.provider.auth_optional == true
+      and (self.scope == nil or self.scope == "inference") then
     return {
       usable = true,
       source = "optional",
@@ -132,7 +143,7 @@ function ProviderCredentials:ambient_api_key()
 end
 
 function ProviderCredentials:cache_identity()
-  local method_id = self.provider.auth
+  local method_id = self:_method_id()
   if type(method_id) ~= "string" then
     return nil, auth_error(
       "Model catalog account identity is unavailable")
@@ -185,7 +196,7 @@ function ProviderCredentials:cache_identity()
 end
 
 function ProviderCredentials:uses_method(method_id)
-  return type(method_id) == "string" and self.provider.auth == method_id
+  return provider_auth.uses(self.provider, method_id)
 end
 
 M.new = ProviderCredentials.new

@@ -176,6 +176,39 @@ describe("neoagent provider authentication", function()
     assert.are.equal("provider-key", result.request_opts.headers["x-api-key"])
   end)
 
+  it("resolves distinct protocol scopes from one login method", function()
+    local seen_scope
+    local selected = require("neoagent.auth.api_key").new({
+      name = "Scoped credential",
+      request_opts = function(credential, scope)
+        seen_scope = scope
+        local key = scope == "dashboard"
+            and credential.dashboard_key or credential.key
+        return { headers = { Authorization = "Bearer " .. key } }
+      end,
+    })
+    local manager = auth.new({
+      methods = { scoped = selected },
+      store = memory_store({ scoped = {
+        type = "api_key",
+        key = "inference-secret",
+        dashboard_key = "dashboard-secret",
+      } }),
+    })
+
+    local result = wait(manager:resolve("scoped", { scope = "dashboard" }))
+
+    assert.is_true(result.ok)
+    assert.are.equal("dashboard", seen_scope)
+    assert.are.equal("Bearer dashboard-secret",
+      result.request_opts.headers.Authorization)
+
+    result = wait(manager:resolve("scoped", { scope = "../dashboard" }))
+    assert.is_false(result.ok)
+    assert.are.equal("auth", result.error.kind)
+    assert.matches("scope is invalid", result.error.message)
+  end)
+
   it("rejects malformed API-key methods and credentials without exposing secrets", function()
     local selected = require("neoagent.auth.api_key").new({ name = "Validated key" })
     local storage = memory_store({ key = {
@@ -198,6 +231,38 @@ describe("neoagent provider authentication", function()
     }))
     assert.is_false(blank.ok)
     assert.matches("required", blank.error.message)
+
+    local constrained = require("neoagent.auth.api_key").new({
+      name = "Constrained key",
+    })
+    constrained.validate_credential = function(credential)
+      return credential.key == "accepted"
+    end
+    manager = auth.new({
+      methods = { constrained = constrained },
+      store = memory_store({ constrained = {
+        type = "api_key", key = "wrong-kind",
+      } }),
+    })
+    available, err = manager:has_credentials("constrained")
+    assert.is_nil(available)
+    assert.matches("Stored credential is invalid", err.message)
+    assert.is_true(wait(manager:login("constrained", {
+      prompt = function(_, done) done.resolve("accepted") end,
+    })).ok)
+
+    constrained.validate_credential = function()
+      error("private-validator-failure")
+    end
+    manager = auth.new({
+      methods = { constrained = constrained },
+      store = memory_store({ constrained = {
+        type = "api_key", key = "secret",
+      } }),
+    })
+    local invalid = wait(manager:resolve("constrained"))
+    assert.is_false(invalid.ok)
+    assert.not_matches("private%-validator", invalid.error.message)
 
     local invalid_result = {
       type = "api_key",

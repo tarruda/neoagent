@@ -44,6 +44,14 @@ local function validate_operation(id, value)
   if value.mutating ~= nil and type(value.mutating) ~= "boolean" then
     return failure("operation " .. id .. " mutating must be a boolean")
   end
+  if value.auth_scope ~= nil then
+    local ok_scope, err_scope = valid_text(
+      value.auth_scope, "operation " .. id .. " auth_scope", 128)
+    if not ok_scope then return nil, err_scope end
+    if not value.auth_scope:match("^[%w_.-]+$") then
+      return failure("operation " .. id .. " auth_scope must be safe text")
+    end
+  end
   if value.complete ~= nil and type(value.complete) ~= "function" then
     return failure("operation " .. id .. " complete must be a function")
   end
@@ -117,6 +125,7 @@ function M.operations(service)
       label = operation.label,
       description = operation.description,
       mutating = operation.mutating == true,
+      auth_scope = operation.auth_scope,
     }
   end
   return result
@@ -360,6 +369,7 @@ function M.resolve_auth(opts)
       "provider operation auth manager is invalid")
     return opts.manager:resolve(opts.method, {
       optional = opts.optional == true,
+      scope = opts.scope,
     }):await()
   end, { error_kind = "auth" })
 end
@@ -423,14 +433,15 @@ function M.run(service, operation_id, opts)
         config = M.public_config(opts.provider or {}),
       },
       args = opts.args or "",
-      resolve_auth = function()
+      resolve_auth = function(scope)
         if type(opts.resolve_auth) == "function" then
-          return opts.resolve_auth()
+          return opts.resolve_auth(scope)
         end
         return M.resolve_auth({
           manager = opts.auth,
           method = opts.auth_method,
           optional = opts.optional_auth == true,
+          scope = scope,
         })
       end,
       interact = interact,
