@@ -324,13 +324,13 @@ describe("neoagent configuration and model resolution", function()
             minimal = false,
             high = { body = { reasoning = { effort = "custom-high" } } },
           } },
-          custom = {},
-        } },
+          unlisted = {},
+        }, catalog = { additions = { custom = {} } } },
         ["openai-codex"] = { models = {
           ["gpt-5.5"] = { thinking = {
             high = { body = { metadata = { user = true } } },
           } },
-        } },
+        }, catalog = { additions = { ["gpt-5.5"] = {} } } },
         local_provider = { api = "custom", models = { local_model = {} } },
       },
     })
@@ -339,7 +339,8 @@ describe("neoagent configuration and model resolution", function()
     assert.is_false(providers.openai.models["gpt-4"])
     assert.is_false(providers.openai.models["gpt-5.4"].thinking.minimal)
     assert.are.equal("custom-high", providers.openai.models["gpt-5.4"].thinking.high.body.reasoning.effort)
-    assert.is_table(providers.openai.models.custom)
+    assert.is_table(providers.openai.catalog.additions.custom)
+    assert.is_table(providers.openai.models.unlisted)
     local catalog_models = runtimes_for(configured)["openai-codex"]
       .catalog:snapshot().models
     assert.is_true(catalog_models["gpt-5.5"]
@@ -349,6 +350,7 @@ describe("neoagent configuration and model resolution", function()
     vim.env.OPENAI_API_KEY = "api-key"
     local available = assert(models.available())
     assert.is_true(vim.tbl_contains(available, "openai/custom"))
+    assert.is_false(vim.tbl_contains(available, "openai/unlisted"))
     assert.is_true(vim.tbl_contains(available, "openai/gpt-5.4"))
     assert.is_false(vim.tbl_contains(available, "openai/gpt-4"))
     assert.is_false(vim.tbl_contains(available, "openai-codex/gpt-5.5"))

@@ -136,7 +136,7 @@ function M.discover(ctx)
       api_key = bearer_key(resolved),
       transport = ctx.transport,
     })
-    local listed = client:list():await()
+    local listed = client:list({ reload = ctx.force == true }):await()
     if listed.ok == false then error(listed.error, 0) end
     local models = M.normalize(listed.value)
     if not models then

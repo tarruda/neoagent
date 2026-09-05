@@ -52,6 +52,26 @@ describe("neoagent provider runtime composition", function()
     provider_runtimes.destroy(runtimes)
   end)
 
+  it("shares explicit catalog additions with the owning Provider Service", function()
+    local definition = require("neoagent.registry").defaults()["llama.cpp"]
+    definition.catalog.additions = {
+      qwen = {
+        hf_repo = "owner/repo",
+        quantization = "Q4_0",
+        context_window = 65536,
+      },
+    }
+    local runtimes = assert(provider_runtimes.compose({ providers = {
+      ["llama.cpp"] = definition,
+    } }, { startup = false }))
+
+    local runtime = runtimes["llama.cpp"]
+    assert.are.equal(65536,
+      runtime.catalog:snapshot().models.qwen.context_window)
+    assert.are.same({ "qwen" }, runtime.service.operations.download.complete())
+    provider_runtimes.destroy(runtimes)
+  end)
+
   it("attributes model and shared provider HTTP transports", function()
     local catalog_context
     local service_context

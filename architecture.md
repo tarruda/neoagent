@@ -74,17 +74,19 @@ A provider runtime groups five concerns:
   wrapping, and provider events.
 - Transport carries provider HTTP and may be wrapped by the recorder.
 
-Model catalogs publish complete revisioned snapshots. Packaged or restored
-discoveries form the base inventory; provider transforms add family knowledge;
-exact model configuration applies final overrides and removals. Model
-resolution and model selection consume the same snapshot. A resolved Model is
-independent of later catalog revisions.
+Model catalogs publish complete revisioned snapshots. Discovery-backed sources
+and explicit catalog additions own inventory membership; source-free catalogs
+derive membership from packaged and configured models. Provider transforms add
+family knowledge, catalog additions supply their base configuration, then exact
+model configuration applies final overrides and removals. Model resolution and
+model selection consume the same snapshot. A resolved Model is independent of
+later catalog revisions.
 
 Catalog persistence stores sparse provider discoveries and a fingerprint of
 the inputs that determine them. Account-scoped fingerprints use a hashed
 credential identity. Credentials and effective configured Models stay outside
-the cache. A stale or unusable cache leaves the packaged and configured
-inventory available while refresh owns the network work.
+the cache. A stale or unusable cache leaves the packaged fallback inventory
+available while refresh owns the network work.
 
 `request_opts` is the request customization boundary. Provider, model, and call
 layers merge in that order across the URL, headers, and body. Thinking levels

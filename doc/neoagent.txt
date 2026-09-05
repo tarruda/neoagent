@@ -154,9 +154,12 @@ The main options and defaults are: >lua
 <
 Provider tables recursively override the built-in registry. Assign `false` to
 remove a provider, or set `default_registry = false` to use only configured
-providers. A table under `models[id]` adds or overrides that model; `false`
-removes it. A model may set `api` to override its provider's adapter. Built-in
-adapter names are
+providers. For a source-free provider, a table under `models[id]` adds or
+overrides that model. For a discovery-backed provider, it overrides the ID
+while the current catalog contains it. Put a permanent model and its base
+configuration under `catalog.additions[id]`. `false` under `models[id]`
+removes the ID. A model may set `api` to override its provider's adapter.
+Built-in adapter names are
 `openai-completions`, `openai-responses`,
 `openai-codex-responses`, and `anthropic-messages`: >lua
 
@@ -573,7 +576,9 @@ A ModelCatalog owns the provider's selectable inventory. Its API is: >lua
 `snapshot()` returns an owned revisioned model map with source, freshness,
 refresh, and persistence status. Subscribers immediately receive the current
 snapshot. Resolved Models keep their current definition when a later snapshot
-is published.
+is published. Discovery-backed catalogs combine the latest source snapshot
+with explicit `catalog.additions`; exact model configuration applies only to
+those members.
 
 `catalog.discover(ctx)` returns a cancellable Run. A successful result contains
 `models` and may contain ETag or Last-Modified validator data; an unchanged
@@ -706,22 +711,24 @@ and explicit thinking request layers: >lua
 
   providers = {
     ["llama.cpp"] = {
-      models = {
-        qwen = {
-          hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
-          quantization = "Q4_0",
-          load = { ctx_size = 32768, gpu_layers = 99 },
-          context_window = 32768,
-          max_output_tokens = 80000,
-          thinking = {
-            off = {
-              body = { chat_template_kwargs = { enable_thinking = false } },
-            },
-            high = {
-              body = { chat_template_kwargs = {
-                enable_thinking = true,
-                reasoning_effort = "high",
-              } },
+      catalog = {
+        additions = {
+          qwen = {
+            hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
+            quantization = "Q4_0",
+            load = { ctx_size = 32768, gpu_layers = 99 },
+            context_window = 32768,
+            max_output_tokens = 80000,
+            thinking = {
+              off = {
+                body = { chat_template_kwargs = { enable_thinking = false } },
+              },
+              high = {
+                body = { chat_template_kwargs = {
+                  enable_thinking = true,
+                  reasoning_effort = "high",
+                } },
+              },
             },
           },
         },
@@ -730,8 +737,10 @@ and explicit thinking request layers: >lua
   }
 <
 
-Configured definitions override router fields. The definition ID aliases its
-Hugging Face router ID. `service_opts` may set `wait_timeout_ms`,
+Catalog additions remain selectable independently of the router inventory.
+Their IDs define loadable models and alias their Hugging Face router IDs.
+`models[id]` may override a router-reported model without keeping it in the
+catalog. `service_opts` may set `wait_timeout_ms`,
 `download_timeout_ms`, and `poll_interval_ms`.
 
 The llama.cpp transcript footer shows prompt processing as `pp` and token

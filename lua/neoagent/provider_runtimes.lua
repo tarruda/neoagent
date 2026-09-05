@@ -18,10 +18,14 @@ end
 local function provider_projection(provider)
   local result = {}
   for _, key in ipairs({
-    "api", "base_url", "auth", "auth_optional", "auth_scopes", "models",
-    "service_opts",
+    "api", "base_url", "auth", "auth_optional", "auth_scopes", "service_opts",
   }) do
     if provider[key] ~= nil then result[key] = util.copy(provider[key]) end
+  end
+  if provider.catalog and provider.catalog.additions ~= nil then
+    result.catalog = {
+      additions = util.copy(provider.catalog.additions),
+    }
   end
   return result
 end

@@ -183,6 +183,7 @@ local provider_fields = {
 
 local catalog_fields = {
   account_scoped = true,
+  additions = true,
   discover = true,
   seed = true,
   source_id = true,
@@ -192,10 +193,19 @@ local catalog_fields = {
   transform_model = true,
 }
 
+local function model_configuration_maps(provider)
+  return {
+    provider.models or {},
+    provider.catalog and provider.catalog.additions or {},
+  }
+end
+
 local function provider_uses_api(provider, name)
   if provider.api == name then return true end
-  for _, model in pairs(provider.models or {}) do
-    if type(model) == "table" and model.api == name then return true end
+  for _, models in ipairs(model_configuration_maps(provider)) do
+    for _, model in pairs(models) do
+      if type(model) == "table" and model.api == name then return true end
+    end
   end
   return false
 end
@@ -338,12 +348,32 @@ local function validate(opts)
       assert(seed, seed_err and seed_err.message
         or "provider catalog seed is invalid")
     end
-    local uses_built_in_api = built_in_apis[provider.api] == true
-    for _, model in pairs(provider.models) do
-      if type(model) == "table" and built_in_apis[model.api] then
-        uses_built_in_api = true
-        break
+    assert(provider.catalog.additions == nil
+        or type(provider.catalog.additions) == "table"
+          and (next(provider.catalog.additions) == nil
+            or not util.is_list(provider.catalog.additions)),
+      "provider " .. id .. " catalog.additions must be a keyed table")
+    for model_id, model in pairs(provider.catalog.additions or {}) do
+      assert(model_config.safe_id(model_id)
+          and (model == false or type(model) == "table"
+            and (next(model) == nil or not util.is_list(model))),
+        "provider " .. id
+          .. " catalog.additions must contain keyed tables or false")
+      if model ~= false then
+        local validated, model_err = model_config.validate(id, model_id, model)
+        assert(validated, model_err and model_err.message
+          or "catalog model addition is invalid")
       end
+    end
+    local uses_built_in_api = built_in_apis[provider.api] == true
+    for _, models in ipairs(model_configuration_maps(provider)) do
+      for _, model in pairs(models) do
+        if type(model) == "table" and built_in_apis[model.api] then
+          uses_built_in_api = true
+          break
+        end
+      end
+      if uses_built_in_api then break end
     end
     if uses_built_in_api then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
