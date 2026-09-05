@@ -68,7 +68,7 @@ local function activity(value, opts)
       { text = " " .. value.subject },
     },
   }
-  if value.command and not details then
+  if value.command then
     result.default = nil
     result.title = { result.title[1] }
     result.command = value.command
@@ -149,7 +149,6 @@ local function plan(value, opts, codex)
       }
     end
   else
-    lines[1] = { { text = "" } }
     for _, item in ipairs(body) do
       lines[#lines + 1] = { { text = item.text, style = item.style } }
     end
