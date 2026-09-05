@@ -1,0 +1,19 @@
+{
+  "steps": [
+    {
+      "expect": { "path": "/v1/chat/completions" },
+      "respond": {
+        "status": 400,
+        "headers": {
+          "content-type": "text/event-stream; charset=utf-8",
+          "x-request-id": "req-sse-error"
+        },
+        "chunks": [
+          {
+            "data": "data: {\"error\":{\"code\":\"invalid_parameter_error\",\"message\":\"Download multimodal file timed out\",\"type\":\"invalid_request_error\"}}\n\n"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,4 +1,6 @@
 local async = require("neoagent.async")
+local alibaba = require("neoagent.providers.alibaba_token_plan")
+local alibaba_client = require("neoagent.providers.alibaba_token_plan.client")
 local anthropic = require("neoagent.providers.anthropic")
 local deepseek = require("neoagent.providers.deepseek")
 local model_catalog = require("neoagent.model_catalog")
@@ -49,6 +51,14 @@ end
 local function field_value(service, label)
   for _, block in ipairs(service:state().blocks) do
     if block.type == "field" and block.label == label then return block.value end
+  end
+end
+
+local function block(service, block_type, label)
+  for _, candidate in ipairs(service:state().blocks) do
+    if candidate.type == block_type and candidate.label == label then
+      return candidate
+    end
   end
 end
 
@@ -118,6 +128,11 @@ describe("provider management HTTP integration", function()
         base_url = root .. "/api/coding/paas/v4", models = {},
         service_opts = { management_url = root },
       }, { provider_id = "zai-coding-plan" }),
+      alibaba.new(nil, {
+        client = alibaba_client.new({
+          gateway_url = root,
+        }),
+      }),
     }
 
     assert.is_true(wait(catalogs[1]:refresh({ force = true })).ok)
@@ -155,10 +170,14 @@ describe("provider management HTTP integration", function()
     assert.are.equal("max", field_value(services[5], "Plan"))
     assert.is_nil(status_text(services[5]))
 
-    assert(vim.wait(1000, function() return #server.records >= 11 end))
+    assert.is_true(wait(operation(services[6], "refresh", bearer_auth)).ok)
+    assert.are.equal(0.4,
+      block(services[6], "limit", "7-day quota").remaining)
+
+    assert(vim.wait(1000, function() return #server.records >= 12 end))
     local requests = vim.tbl_filter(function(record)
       return record.type == "request"
     end, server.records)
-    assert.are.equal(11, #requests)
+    assert.are.equal(12, #requests)
   end)
 end)

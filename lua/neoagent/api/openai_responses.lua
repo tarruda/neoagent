@@ -74,7 +74,8 @@ function Model:stream(opts)
       end
       return { ok = false, message = partial, error = err }
     end
-    local normalized, message_err = semantic_message.normalize(outcome)
+    local normalized, message_err =
+      semantic_message.normalize_model_response(outcome)
     if not normalized then
       return {
         ok = false,

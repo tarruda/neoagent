@@ -13,6 +13,7 @@ local RETRY_MAX_MS = 60 * 60 * 1000
 local MAX_DIAGNOSTIC_CHARACTERS = 1024
 local DEFINITION_FIELDS = {
   account_scoped = true,
+  additions = true,
   discover = true,
   seed = true,
   source_id = true,
@@ -116,16 +117,57 @@ local function bounded_error(err, kind)
   return { kind = selected.kind, message = message }
 end
 
+local function model_configuration(values, label)
+  local overrides, removals = {}, {}
+  assert(values == nil or type(values) == "table"
+      and (next(values) == nil or not util.is_list(values)),
+    "ModelCatalog " .. label .. " must be a keyed table")
+  for model_id, model in pairs(values or {}) do
+    assert(model_config.safe_id(model_id),
+      "ModelCatalog " .. label .. " ids must be safe non-empty text")
+    assert(model == false or type(model) == "table"
+        and (next(model) == nil or not util.is_list(model)),
+      "ModelCatalog " .. label .. " must contain objects or false")
+    if model == false then
+      removals[model_id] = true
+    else
+      overrides[model_id] = util.copy(model)
+    end
+  end
+  return overrides, removals
+end
+
+local function configured_inventory(additions, overrides, source_free)
+  local inventory, seen = {}, {}
+  for model_id in pairs(additions) do
+    inventory[#inventory + 1] = { id = model_id }
+    seen[model_id] = true
+  end
+  if source_free then
+    for model_id in pairs(overrides) do
+      if not seen[model_id] then
+        inventory[#inventory + 1] = { id = model_id }
+      end
+    end
+  end
+  table.sort(inventory, function(left, right) return left.id < right.id end)
+  return inventory
+end
+
+local function fallback_source(catalog)
+  if #catalog._seed > 0 then return "packaged" end
+  if #catalog._configured_inventory > 0 then return "configured" end
+  return "empty"
+end
+
 function Catalog:_build(discoveries)
   local normalized, normalize_err = model_config.normalize_discoveries(
     self._provider_id, discoveries)
   if not normalized then return nil, normalize_err end
   local sources = {}
   for _, entry in ipairs(normalized) do sources[entry.id] = entry end
-  for model_id, override in pairs(self._overrides) do
-    if type(override) == "table" and not sources[model_id] then
-      sources[model_id] = { id = model_id }
-    end
+  for _, entry in ipairs(self._configured_inventory) do
+    if not sources[entry.id] then sources[entry.id] = entry end
   end
   local ids = vim.tbl_keys(sources)
   table.sort(ids)
@@ -151,6 +193,8 @@ function Catalog:_build(discoveries)
       end
     end
     if model ~= false and not self._removals[model_id] then
+      local addition = self._additions[model_id]
+      if addition then model = util.deep_merge(model, addition) end
       local override = self._overrides[model_id]
       if type(override) == "table" then
         model = util.deep_merge(model, override)
@@ -257,13 +301,11 @@ function Catalog:_reset_inventory(message)
   self._validated_at = nil
   self._validator = nil
   self._last_error = nil
-  local source = #self._seed > 0 and "packaged"
-    or next(self._overrides) and "configured" or "empty"
   local published, err = self:_publish(self._seed, {
     allow_empty = true,
     validator = nil,
     validator_set = true,
-    source = source,
+    source = fallback_source(self),
   })
   if not published then
     self:_diagnose(message or "failed to reset model catalog source", err)
@@ -672,19 +714,11 @@ function M.new(opts)
     "ModelCatalog store must provide read and write")
   assert(opts.report == nil or type(opts.report) == "function",
     "ModelCatalog report must be a function")
-  local overrides, removals = {}, {}
-  assert(opts.models == nil or type(opts.models) == "table"
-      and (next(opts.models) == nil or not util.is_list(opts.models)),
-    "ModelCatalog models must be a keyed table")
-  for model_id, model in pairs(opts.models or {}) do
-    assert(model_config.safe_id(model_id),
-      "ModelCatalog model ids must be safe non-empty text")
-    assert(model == false or type(model) == "table"
-        and (next(model) == nil or not util.is_list(model)),
-      "ModelCatalog models must contain objects or false")
-    if model == false then removals[model_id] = true
-    else overrides[model_id] = util.copy(model) end
-  end
+  local overrides, removals = model_configuration(opts.models, "models")
+  local additions = model_configuration(
+    definition.additions, "catalog additions")
+  local inventory = configured_inventory(
+    additions, overrides, definition.discover == nil)
   local self = setmetatable({
     _provider_id = opts.provider_id,
     _provider = util.copy(provider),
@@ -692,8 +726,10 @@ function M.new(opts)
     _seed = util.copy(definition.seed or {}),
     _discover = definition.discover,
     _transform = definition.transform_model,
+    _additions = additions,
     _overrides = overrides,
     _removals = removals,
+    _configured_inventory = inventory,
     _store = opts.store,
     _auth = opts.authentication or {
       resolve = function()
@@ -765,8 +801,7 @@ function M.new(opts)
   end
   local initial = restored and restored.models or definition.seed or {}
   local initial_source = restored and "cache"
-    or #initial > 0 and "packaged"
-    or next(overrides) and "configured" or "empty"
+    or fallback_source(self)
   local published, publish_err = self:_publish(initial, {
     allow_empty = true,
     validated_at = restored and restored.validated_at or nil,
@@ -779,8 +814,7 @@ function M.new(opts)
       .. self._provider_id, publish_err)
     published, publish_err = self:_publish(definition.seed or {}, {
       allow_empty = true,
-      source = #(definition.seed or {}) > 0 and "packaged"
-        or next(overrides) and "configured" or "empty",
+      source = fallback_source(self),
     })
   end
   if not published then error(publish_err, 0) end

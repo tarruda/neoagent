@@ -27,14 +27,8 @@ Neoagent provides streamed Models, cancellable Runs, and a plain Agent Loop.
 The plugin adds optional tools, persistence, provider management, and a
 floating UI.
 
-Requirements:
-
-  Neovim 0.10+
-  curl 7.76+
-  rg
-  fd
-
-ImageMagick's `magick` is optional. Run this after installation: >
+Requires Neovim 0.10+, curl 7.76+, `rg`, and `fd`. ImageMagick's `magick` is
+optional for image conversion. Check the installation with: >
 
   :checkhealth neoagent
 
@@ -77,7 +71,6 @@ The main options and defaults are: >lua
     name = nil,
     default_registry = true,
     providers = {},
-    auth = { path = ..., methods = {} },
     default_model = nil,
     default_thinking_level = "medium",
     system_prompt = nil,
@@ -85,44 +78,37 @@ The main options and defaults are: >lua
     shell_timeout = 300,
     execute_tool = nil,
 
-    retry = {
-      enabled = true,
-      max_retries = 3,
-      base_delay_ms = 2000,
-    },
+    retry = { enabled = true, max_retries = 3, base_delay_ms = 2000 },
     compaction = {
       auto = true,
       reserve_tokens = 16384,
       keep_recent_tokens = 20000,
     },
-    sandbox = {
-      enabled = false,
-      profile = nil,
-    },
+    sandbox = { enabled = false, profile = nil },
     workspace_trust = {
-      path = stdpath("state") .. "/neoagent/trust.json",
+      path = vim.fn.stdpath("state") .. "/neoagent/trust.json",
     },
     agent_instructions = {
-      global_files = { stdpath("config") .. "/AGENTS.md" },
+      global_files = { vim.fn.stdpath("config") .. "/AGENTS.md" },
       project_filenames = { "AGENTS.md" },
     },
     skills = {
       global_dirs = {
-        expand("~/.agents/skills"),
-        stdpath("config") .. "/neoagent/skills",
+        vim.fn.expand("~/.agents/skills"),
+        vim.fn.stdpath("config") .. "/neoagent/skills",
       },
       project_dirs = { ".agents/skills" },
     },
     persistence = {
       enabled = true,
       workspace_settings = true,
-      directory = stdpath("state") .. "/neoagent/workspaces",
+      directory = vim.fn.stdpath("state") .. "/neoagent/workspaces",
     },
     recording = {
       enabled = false,
       format = "auto", -- "auto", "yaml", or "json"
       retention = "rolling", -- "rolling" or "all"
-      directory = stdpath("state") .. "/neoagent",
+      directory = vim.fn.stdpath("state") .. "/neoagent",
     },
     ui = {
       style = "codex",
@@ -148,15 +134,19 @@ The main options and defaults are: >lua
       },
       completion = true,
       border = "rounded",
-      mappings = {},
     },
   }
 <
+See |neoagent-ui| for mappings and |neoagent-built-in-providers| for credentials.
+
 Provider tables recursively override the built-in registry. Assign `false` to
 remove a provider, or set `default_registry = false` to use only configured
-providers. A table under `models[id]` adds or overrides that model; `false`
-removes it. A model may set `api` to override its provider's adapter. Built-in
-adapter names are
+providers. For a source-free provider, a table under `models[id]` adds or
+overrides that model. For a discovery-backed provider, it overrides the ID
+while the current catalog contains it. Put a permanent model and its base
+configuration under `catalog.additions[id]`. `false` under `models[id]`
+removes the ID. A model may set `api` to override its provider's adapter.
+Built-in adapter names are
 `openai-completions`, `openai-responses`,
 `openai-codex-responses`, and `anthropic-messages`: >lua
 
@@ -180,9 +170,9 @@ adapter names are
   }
 <
 
-The transform receives an owned Model configuration and secret-free context.
-It returns that table, a replacement table, or `false` to exclude the ID.
-Exact-ID configuration takes final precedence.
+`transform_model(model, ctx)` receives a Model configuration copy and
+secret-free context. Return the modified table, a replacement, or `false` to
+exclude the ID. Exact-ID configuration takes final precedence.
 
 `neoagent.model_rules.compile(rules)` builds a transform from ordered Lua
 patterns or predicate functions. `defaults` fills absent fields, `set`
@@ -219,8 +209,7 @@ returns `false`: >lua
     },
   }
 <
-Matching rules run in list order, so broad family defaults can be followed by
-specific exceptions. `neoagent.model_efforts` also supplies constructors for
+Rules run in list order. `neoagent.model_efforts` also supplies constructors for
 OpenAI Chat Completions, generic thinking-enabled completions, and Anthropic
 adaptive thinking request layers.
 
@@ -253,6 +242,10 @@ The default provider IDs are:
   anthropic          Anthropic API; login `anthropic` or
                      `ANTHROPIC_API_KEY`.
   deepseek           DeepSeek API; login `deepseek` or `DEEPSEEK_API_KEY`.
+  alibaba-token-plan Alibaba Cloud Token Plan Personal; login
+                     `alibaba-token-plan` or use
+                     `BAILIAN_TOKEN_PLAN_API_KEY` for inference; optional
+                     dashboard login provides quota reporting.
   zai                Z.AI API; login `zai` or `ZAI_API_KEY`.
   zai-coding-plan    Z.AI Plan; login `zai-coding-plan`, `zai`, or
                      `ZAI_API_KEY`. Both login names use the `zai` credential.
@@ -261,14 +254,19 @@ The default provider IDs are:
   llama.cpp          Local llama.cpp router; login `llama`.
 
 Open the Provider Shell with `:NeoagentProvider`, select a provider, and choose
-Log in to store a key or start OAuth. Stored credentials take precedence over
-a configured `api_key`, then an `api_key` callback such as an environment
-lookup. Log out removes only a stored credential. Dismissing OAuth or
-device-code instructions leaves authorization running; use
+an authentication action. Stored inference credentials take precedence over a
+configured `api_key`, then an `api_key` callback such as an environment lookup.
+Each logout action removes its corresponding stored credential. Dismissing
+OAuth or device-code instructions leaves authorization running; use
 `:NeoagentProvider!` to cancel it.
 
-Credentials default to `stdpath("state") .. "/neoagent/auth.json"`. Listing
-credentials returns IDs and types only.
+Credentials default to `stdpath("state") .. "/neoagent/auth.json"`; override
+with `auth.path`. Listing credentials returns IDs and types only.
+
+Alibaba Cloud Token Plan Personal requires its dedicated `sk-sp-...` key from
+Token Plan My Subscriptions and uses the Singapore plan endpoint. Supply the
+key through login or `BAILIAN_TOKEN_PLAN_API_KEY`. The optional dashboard login
+enables quota reporting and stores a separate credential.
 
 Codex diagnostics default to
 `stdpath("state") .. "/neoagent/codex.log"`. They contain bounded transport
@@ -288,16 +286,14 @@ AGENTS AND APPLETS                                   *neoagent-agents*
 and Chat Profiles. Neo is configured for coding; Chat has an empty system
 prompt and no tools. Agents and Sessions are created when work begins.
 
-`:Neoagent` opens the retained Neo draft for the current Workspace. Its first
-accepted message binds a new Agent. Model, thinking, sandbox, and composer state
-are retained per Profile and canonical Workspace. `:NeoagentCycle` lists those
-drafts and all live Agents. Closing an Agent UI leaves its Agent running, and
-selecting it again restores its presentation state.
+`:Neoagent` opens the Neo draft for the current Workspace. Drafts retain model,
+thinking, sandbox, and input choices per Profile and Workspace until the first
+accepted message creates an Agent. `:NeoagentCycle` lists drafts and live
+Agents. Closing the UI leaves the Agent running.
 
 A draft selects its model from the Workspace/Profile preference, configured
-`default_model`, or first available provider/model. Model changes resolve the
-complete Model before updating draft state. A failed pre-acceptance operation
-preserves the draft for retry.
+`default_model`, or first available provider/model. See
+|neoagent-workspace-settings| for saved preferences.
 
 The top-level Applet supports: >lua
 
@@ -386,17 +382,17 @@ Agent methods include: >lua
   agent:destroy()
 <
 
-Each Agent has fixed Profile, Session, and Workspace identity plus independent
-model selection, toolset, steering queue, dialogs, and activity. `send()`
-starts a turn while idle and queues steering while busy. `set_toolset()`
-replaces the `{ tools, execute_tool }` pair between Runs and returns its
-previous value.
+Each Agent has fixed Profile, Session, and Workspace identity. `send()` starts
+a turn while idle and queues steering while busy. `set_toolset()` replaces the
+`{ tools, execute_tool }` pair between Runs and returns its previous value.
+
+`destroy()` cancels work and releases owned resources. A destroyed Agent
+rejects new work; caller-owned provider runtimes remain available.
 
 `agent:subscribe(callback)` publishes `messages`, `context`, `event`,
 `submission_accepted`, and `finish` updates with increasing revisions.
 `snapshot()` supplies current state for a newly attached consumer.
-`submission_accepted` identifies the prompt that became durable; completion
-updates contain bounded result metadata.
+`submission_accepted` identifies the prompt that became durable.
 
 `agent:presenter()` serializes semantic selection, input, confirmation, and
 notice requests. `agent:dialogs()` exposes the Agent's dialog source for
@@ -527,13 +523,9 @@ also expose `discover(opts)` and `format(resources)`.
 
 PROVIDER RUNTIMES AND SERVICES                     *neoagent-provider-services*
 
-Each configured provider has one runtime shared by the interactive
-composition. It combines the provider definition, credentials, ModelCatalog,
-optional Provider Service, and transport. Direct Agents compose their own
-runtimes unless `runtime.runtimes` supplies shared values.
-
-ProviderCredentials applies stored, configured, environment, optional, and
-absent credential precedence. Its public state contains no credential material.
+The interactive composition shares a runtime for each provider: definition,
+Authentication, ModelCatalog, optional Provider Service, and transport. Direct
+Agents create runtimes unless `runtime.runtimes` supplies shared values.
 
 A ModelCatalog owns the provider's selectable inventory. Its API is: >lua
 
@@ -546,10 +538,9 @@ A ModelCatalog owns the provider's selectable inventory. Its API is: >lua
   catalog:destroy()
 <
 
-`snapshot()` returns an owned revisioned model map with source, freshness,
-refresh, and persistence status. Subscribers immediately receive the current
-snapshot. Resolved Models keep their current definition when a later snapshot
-is published.
+`snapshot()` returns a copy of the model map with revision, source, freshness,
+refresh, and persistence status. Subscribers receive the current snapshot
+immediately. Catalog updates leave already resolved Models unchanged.
 
 `catalog.discover(ctx)` returns a cancellable Run. A successful result contains
 `models` and may contain ETag or Last-Modified validator data; an unchanged
@@ -577,11 +568,9 @@ cache unsafe. `source_options` returns JSON-safe provider options that affect
 discovery. Account-scoped sources use a hashed Authentication identity and
 perform live discovery when no safe identity is available.
 
-Catalog state defaults to
-`stdpath("state") .. "/neoagent/provider/state"` and is independent of Session
-persistence. Expired catalogs refresh automatically; transient failures retain
-the current snapshot. `catalog.ttl_ms` sets a provider-specific freshness
-window.
+Catalogs are cached under `stdpath("state") .. "/neoagent/provider/state"`,
+independently of Session persistence. `catalog.ttl_ms` sets freshness; expired
+catalogs refresh automatically and retain their snapshot on transient failure.
 
 A Provider Service supplies management status and provider-scoped operations:
 >lua
@@ -615,22 +604,13 @@ Snapshots may contain `status`, `field`, `progress`, `limit`, `list`, and
 `activity` blocks. A `field.level` may be `info`, `success`, `warn`, `error`,
 or `muted`.
 
-The Provider Shell presents configured runtimes independently of Agent
-lifecycles. Its selector marks provider usability and credential source, while
-the detail Pane shows provider state, actions, catalog source, freshness, model
-count, and bounded errors. Every provider exposes `Refresh model catalog`.
+The Provider Shell presents runtimes independently of Agents. Dynamic catalogs
+offer `Refresh model catalog`. Login and logout actions follow each method's
+credential state; see |neoagent-built-in-providers| and |neoagent-core-api|.
 
-Authentication actions follow credential state. Required logged-out providers
-offer login; stored credentials add logout; configured and environment
-credentials remain managed at their source. Selection, confirmation, input,
-and login notices appear within the Provider Shell. Successful login refreshes
-catalogs sharing that Authentication method. Logout refreshes providers that
-remain usable through another credential source.
-
-The Shell invokes a Service's non-mutating `refresh` operation when that
-provider gains focus. Concurrent focus refreshes coalesce. It performs no
-background polling. Explicit operations continue when the Shell loses focus;
-changing provider cancels only a pending automatic refresh.
+The Shell invokes the Service's non-mutating `refresh` operation on focus,
+with no background polling. Changing provider cancels a pending automatic
+refresh; explicit operations continue when the Shell loses focus.
 
 The Provider Shell API is: >lua
 
@@ -652,20 +632,6 @@ The Provider Shell API is: >lua
   shell:is_active()
 <
 
-The built-in Services expose:
-
-  openai        Organization completion usage and costs when permitted.
-  openai-codex  Subscription limits, usage, activity, workspaces, and reset
-                credits.
-  anthropic     Organization token usage and costs when permitted.
-  deepseek      Account balances.
-  zai           API endpoint and balance.
-  zai-coding-plan
-                Plan token, credit, and MCP quotas.
-  opencode-go   Subscription windows.
-  llama.cpp     Endpoint, catalog, loaded Models, requests, downloads, and
-                router operations.
-
 Restricted management endpoints may reject an otherwise valid model
 credential. The provider remains usable and the Shell shows a warning. Z.AI
 management origins derive from `base_url` and can be overridden with
@@ -676,22 +642,24 @@ and explicit thinking request layers: >lua
 
   providers = {
     ["llama.cpp"] = {
-      models = {
-        qwen = {
-          hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
-          quantization = "Q4_0",
-          load = { ctx_size = 32768, gpu_layers = 99 },
-          context_window = 32768,
-          max_output_tokens = 80000,
-          thinking = {
-            off = {
-              body = { chat_template_kwargs = { enable_thinking = false } },
-            },
-            high = {
-              body = { chat_template_kwargs = {
-                enable_thinking = true,
-                reasoning_effort = "high",
-              } },
+      catalog = {
+        additions = {
+          qwen = {
+            hf_repo = "ggml-org/Qwen3.5-0.8B-GGUF",
+            quantization = "Q4_0",
+            load = { ctx_size = 32768, gpu_layers = 99 },
+            context_window = 32768,
+            max_output_tokens = 80000,
+            thinking = {
+              off = {
+                body = { chat_template_kwargs = { enable_thinking = false } },
+              },
+              high = {
+                body = { chat_template_kwargs = {
+                  enable_thinking = true,
+                  reasoning_effort = "high",
+                } },
+              },
             },
           },
         },
@@ -700,12 +668,11 @@ and explicit thinking request layers: >lua
   }
 <
 
-Configured definitions override router fields. The definition ID aliases its
-Hugging Face router ID. `service_opts` may set `wait_timeout_ms`,
+Catalog additions remain selectable independently of the router inventory.
+Their IDs define loadable models and alias their Hugging Face router IDs.
+`models[id]` may override a router-reported model without keeping it in the
+catalog. `service_opts` may set `wait_timeout_ms`,
 `download_timeout_ms`, and `poll_interval_ms`.
-
-The llama.cpp transcript footer shows prompt processing as `pp` and token
-generation as `tg` when the router reports timing data.
 
 HTTP RECORDING                                            *neoagent-recording*
 
@@ -718,33 +685,17 @@ Provider HTTP recording is disabled by default. Enable it with: >lua
   })
 <
 
-Recording covers model streams, model-catalog requests, Provider Shell
-operations, and HTTP used by built-in authentication methods. Each exchange
-contains the prepared request, response status and headers, response body,
-ordered callback boundaries, microsecond offsets, and terminal result. Model
-exchanges also carry Workspace, Agent, Session, provider, and model identity.
+Recording captures requests, responses, timing, and outcomes for model streams,
+catalog discovery, Provider Shell operations, and built-in authentication.
+Model exchanges include Workspace, Agent, Session, provider, and model IDs.
 
-The default recording root is: >lua
+`recording.directory` defaults to `stdpath("state") .. "/neoagent"`.
+Recordings are stored under that root at: >text
 
-  vim.fn.stdpath("state") .. "/neoagent"
+  workspaces/<basename>-<sha256>/recordings/<date>-<session-id>/
+  provider/recordings/<provider>/<date>/
 <
-
-Workspace-owned exchanges use the same basename-and-hash Workspace directory
-as settings and Sessions: >text
-
-  <directory>/workspaces/<basename>-<sha256>/recordings/<date>-<session-id>/
-<
-
-Session-less Workspace exchanges use `unscoped`. Catalog, Provider Shell, and
-Authentication exchanges are grouped separately: >text
-
-  <directory>/provider/recordings/<provider>/<date>/
-<
-
-`recording.directory` selects another state root, including a test-owned
-fixture location. Filenames start with a sortable UTC timestamp, process ID,
-and sequence so file-browser ordering follows request start order within one
-Neoagent process.
+Session-less Workspace exchanges use `unscoped` in place of the Session ID.
 
 `recording.retention` controls completed files in each Session or shared
 provider directory:
@@ -753,10 +704,7 @@ provider directory:
               default.
   `all`       Keep every completed exchange.
 
-During a serial request, rolling retention leaves the previous completed file
-beside the current `.partial.ndjson` file. Successful finalization replaces the
-previous completed file. A failed finalization preserves both the previous
-recording and staging evidence.
+Failed finalization preserves the previous recording and the partial file.
 
 `recording.format` accepts:
 
@@ -765,15 +713,13 @@ recording and staging evidence.
   `yaml`   Require compatible `yq` v4 and publish `.yaml`.
   `json`   Publish `.jsonl` without a `yq` dependency.
 
-YAML recordings contain ordered documents and represent valid JSON bodies as
-native YAML mappings, sequences, or scalars. Machine replay of YAML requires
+YAML recordings represent JSON bodies as native values; machine replay requires
 `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies use
-lossless base64 with an encoding marker.
+base64 with an encoding marker.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive
-are replaced by `*`. Empty and non-sensitive header values are retained in
-stable name order.
+are replaced by `*`.
 
 Model request bodies and ordinary provider response bodies are not sanitized.
 Recordings can therefore contain prompts, tool schemas and results, images,
@@ -788,15 +734,10 @@ finalization failure.
 WORKSPACE SETTINGS                                  *neoagent-workspace-settings*
 
 With persistence and workspace settings enabled, the first accepted message in
-a new Session commits its selected model and thinking level as the Workspace
-preference for that Profile. Selecting another model changes live Agent or
-draft state. Each accepted user message records its model and thinking state
-with the message in one Session append, so resuming a Session restores the last
-model used on its active branch. A resumed Session keeps its recorded model
-independently from the Workspace preference.
-When that first accepted Model has no thinking level, it writes the Session
-clear marker and removes the Profile's Workspace thinking override. A later
-thinking-capable draft then uses its configured Profile default.
+a new Session saves its model and thinking level as the Workspace preference
+for that Profile. Starting a new Session with a Model without thinking clears
+the Profile's thinking preference. Resuming a Session restores the last model
+and thinking level used on its active branch, independently of the preference.
 
 Model and thinking preferences for bundled Agents are scoped by stable Profile
 ID. Direct Agents use their configured name as the preference key. UI position
@@ -812,12 +753,11 @@ thinking, and position values authoritative while retaining Sessions and input
 history.
 
 The reusable settings object is created with
-`require("neoagent.workspace_settings").new({ directory, root })`. It exposes
+`require("neoagent.workspace_settings").new({ directory = path, root = cwd })`.
+It exposes
 `metadata()`, `load()`, `merge(defaults)`, `write(settings)`, and
 `update(patch)`. Update recursively merges keyed tables and replaces lists,
-scalars, and other values. A `vim.NIL` value deletes its key, and deletion
-prunes empty Agent scopes. The encoded settings document contains no
-tombstones.
+scalars, and other values. A `vim.NIL` value deletes its key.
 
 ===============================================================================
 3. COMMANDS                                                   *neoagent-commands*
@@ -839,22 +779,15 @@ tombstones.
   :NeoagentToggleSandbox          Toggle sandbox execution for Neo.
   :NeoagentSandboxInfo            Show sandbox status and capabilities.
 
-Compact instructions and Provider operation arguments preserve the complete
-command tail, including ordinary spaces.
-
-Neoagent defines `<Plug>(NeoagentToggle)` and
-`<Plug>(NeoagentCycle)` as stable targets for user mappings. It assigns
-no concrete global lhs: >lua
+Use the `<Plug>` targets to assign global mappings: >lua
 
   vim.keymap.set("n", "<leader>a", "<Plug>(NeoagentToggle)")
   vim.keymap.set("n", "<leader>A", "<Plug>(NeoagentCycle)")
 <
 
-Argument-free selectors open an Applet-backed modal selection Layer in the
-built-in View. An editable prompt filters labels and details with
-case-insensitive fuzzy matching. The first enabled result is selected
-immediately. Use `<C-j>`/`<C-k>`, `<C-n>`/`<C-p>`, or the arrow keys to move
-through results while typing, and press Enter to select one. Normal-mode `q`,
+Selectors filter labels and details with case-insensitive fuzzy matching. Use
+`<C-j>`/`<C-k>`, `<C-n>`/`<C-p>`, or arrow keys to move through results, and
+Enter to select. Normal-mode `q`,
 `<Esc>`, or `<C-c>`, Insert-mode `<C-c>`, and `:q` close the picker. Fork
 selection restores the chosen user message to the input.
 
@@ -869,15 +802,11 @@ Session, the error includes its path so it can be resumed.
 ===============================================================================
 4. UI                                                               *neoagent-ui*
 
-The bundled Agent UI is available to integrations as
-`require("neoagent.ui").new(opts)`. It contains transcript, composer, details,
-and dialog Panes. The Provider Shell uses a separate Applet.
+The bundled Agent UI is available as `require("neoagent.ui").new(opts)`.
 
 The transcript supports native search, motions, Visual selection, and yank.
-Streamed redraws pause while a native interaction requires stable text.
-Expanded text and thinking details wrap complete logical lines; tool details
-allow horizontal scrolling. `<A-f>` toggles following while a streaming detail
-card is open.
+Streamed redraws pause during interactions that require stable text. `<A-f>`
+toggles following in an expanded streaming card.
 
 Input submitted while an Agent is busy becomes steering and is consumed after
 the current assistant response and tool calls. The interrupt mapping cancels
@@ -887,51 +816,43 @@ Filename completion is available in Insert mode when `ui.completion` is true.
 Each Agent Applet has an input-history cursor; the Workspace stores the latest
 100 accepted entries.
 
-The composer footer displays `<C-g>? help`. That mapping opens a read-only
-reference for the current Input and Transcript mappings.
+`<C-g>?` opens the current mapping reference. Configure `ui.mappings` with a
+lhs string, list of lhs strings, or `false` for each key:
 
-Default mappings:
+  Key                    Default             Action
+  help                   <C-g>?              Show mappings.
+  submit                 <CR>                Submit or accept completion.
+  complete               <Tab>               Complete filenames.
+  interrupt              <C-c>               Clear input; if empty, stop.
+  close_input            <Esc><Esc>          Hide from input Normal mode.
+  close_empty            <C-d>               Hide when input is empty.
+  card_details           <CR>                Expand card details.
+  card_raw               r                   Toggle raw Markdown details.
+  card_follow            <A-f>               Toggle following in details.
+  card_center            zz                  Center the expanded card.
+  card_previous          <A-k>, <C-Up>        Previous card.
+  card_next              <A-j>, <C-Down>      Next card or input.
+  focus_input            <C-w>j              Focus input.
+  focus_transcript       <C-w>k              Focus transcript.
+  provider_previous      <C-k>               Previous provider.
+  provider_next          <C-j>               Next provider.
+  menu_previous          K                   Previous action.
+  menu_next              J                   Next action.
+  cycle_thinking         <S-Tab>             Cycle thinking levels.
+  agents                 <A-n>               Switch Agent or draft.
+  select_model           <A-m>               Select Model.
+  resume_session         <A-r>               Resume Session.
+  history_previous       <Up>, <C-k>         Older input.
+  history_next           <Down>              Newer input.
+  select_history         <C-r>               Select from history.
+  dequeue_steering       <A-Up>               Restore queued steering.
+  toggle_provider_shell  <A-p>               Toggle Provider Shell.
+  provider_close         q                   Hide Provider Shell.
+  close                  q                   Hide Agent UI.
 
-  <C-g>?      Open the Input and Transcript mapping reference.
-  <CR>        Submit input, accept completion, open details, or choose a menu
-              item.
-  <Tab>       Open filename completion or select its next item.
-  <C-c>       Clear a draft; with an empty draft, stop the active Run.
-  <Esc><Esc>  Hide the UI from input Normal mode.
-  <C-d>       Hide the UI when input is empty.
-  <A-k>       Move to the previous card. `<C-Up>` is an alias.
-  <A-j>       Move to the next card or input. `<C-Down>` is an alias.
-  <A-f>       Toggle following in expanded card details.
-  zz          Center the expanded card in the transcript.
-  <C-w>j      Focus input.
-  <C-w>k      Focus transcript.
-  r           Toggle rendered and raw Markdown in text or thinking details.
-  <S-Tab>     Cycle thinking levels.
-  <A-n>       Open the Agent and Profile draft switcher.
-  <A-m>       Select a Model.
-  <A-r>       Resume a Session.
-  <Up>/<Down> Browse input history.
-  <C-k>       Browse toward older input.
-  <C-r>       Select from input history.
-  <A-Up>      Restore queued steering to input.
-  <A-p>       Toggle the Provider Shell.
-  <C-k>/<C-j> Select the previous/next provider in the Provider Shell.
-  K/J         Move through dialog or Provider Shell actions.
-  q           Hide the current Agent UI or Provider Shell.
-  <C-c>       Close details or the Provider Shell from read-only Panes.
-
-An active Provider Shell prompt uses `<C-c>` to cancel the prompt. Dialog
-actions use `<CR>` or their displayed shortcuts. Sandbox escalation requests
+`<C-c>` closes details and the Provider Shell, or cancels an active prompt.
+Dialog actions use `<CR>` or displayed shortcuts. Sandbox escalation requests
 default to denial.
-
-Each `ui.mappings` value accepts a lhs string, a list of lhs strings, or
-`false`. Mapping keys are `help`, `submit`, `complete`, `interrupt`,
-`close_input`, `close_empty`, `card_details`, `card_raw`, `card_follow`,
-`card_center`, `card_previous`, `card_next`, `focus_input`,
-`focus_transcript`, `provider_previous`, `provider_next`, `menu_previous`,
-`menu_next`, `cycle_thinking`, `agents`, `select_model`, `resume_session`,
-`history_previous`, `history_next`, `select_history`, `dequeue_steering`,
-`toggle_provider_shell`, `provider_close`, and `close`.
 
 `ui.position` accepts `auto`, `left`, `right`, `top`, `bottom`, or `center`.
 Width and height accept a fraction in `(0, 1]`, an integer greater than one, or
@@ -981,11 +902,10 @@ methods:
   render_block(block, env, continuation)
   render_details(block, env, continuation)
 
-Each method returns a Pane content Tree node and an optional opaque
-continuation. The next render of the same block on the same surface receives
-that continuation. Components discard it when the block identity or Renderer
-changes. Both methods receive a copied semantic block and bounded layout,
-focus, Theme, and image context. See |applet-trees| for the node vocabulary.
+Each method receives a copied semantic block and layout, focus, Theme, and image
+context. It returns a content Tree node and optional continuation, reused for
+the same block and surface until the Renderer changes. See |applet-trees| for
+the node vocabulary.
 Tool `render(opts)` hooks return semantic values for the active Renderer to
 convert into nodes.
 
@@ -998,18 +918,11 @@ Models can be constructed without `setup()`: >lua
     provider = "local",
     model = "coder",
     base_url = "http://127.0.0.1:8080/v1",
-    api_key = nil,
     input = { "text", "image" },
-    context_window = nil,
-    max_output_tokens = nil,
-    request_opts = nil,
   })
 
   local run = model:stream({
-    messages = messages,
-    system_prompt = nil,
-    tools = {},
-    request_opts = nil,
+    messages = { { role = "user", content = "Hello" } },
     on_event = function(event) end,
     on_done = function(result) end,
   })
@@ -1017,19 +930,28 @@ Models can be constructed without `setup()`: >lua
 
 Other constructors are `neoagent.api.anthropic_messages`,
 `neoagent.api.openai_responses`, and
-`neoagent.api.openai_codex_responses`. The Codex constructor also accepts
+`neoagent.api.openai_codex_responses`. Optional settings include `api_key`,
+`context_window`, `max_output_tokens`, and `request_opts`; `stream()` also
+accepts `system_prompt`, `tools`, and `request_opts`. The Codex constructor adds
 `responses_lite`, `request_max_retries`, and `on_diagnostic`.
 
-A Model has safe `api`, `provider`, and `id` fields, a `stream` function, and a
+A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
 unique `input` list containing `text` and optionally `image`. Optional context,
 timeout, and thinking values are validated when the Model is constructed or
 wrapped.
+
+Adapters preserve native assistant signatures for matching API, provider, and
+model identities; omitted fields default to the destination. For other
+identities, requests convert visible thinking to text and omit redacted
+thinking, signatures, and phase metadata. Session messages remain unchanged.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, `usage`,
 and optional `provider_status` and `inference_stats`. A successful result
 contains `{ ok = true, message, text }`; a failure contains
 `{ ok = false, error, message? }`. Failures may retain meaningful partial
-output. Cancellation uses `stopReason = "aborted"`.
+output. A successful `toolUse` response contains at least one `toolCall` block;
+an inconsistent provider response fails. Cancellation uses
+`stopReason = "aborted"`.
 
 A Run supports: >lua
 
@@ -1056,24 +978,18 @@ The reusable Agent Loop is: >lua
   require("neoagent.agent_loop").run({
     model = model,
     messages = messages,
-    system_prompt = nil,
     tools = {},
     commit_message = function(message)
       local ok, err = message_owner:append(message)
       return ok, err
     end,
-    execute_tool = nil,
-    context = nil,
-    model_options = nil,
-    get_steering_messages = nil,
-    on_event = nil,
-    on_done = nil,
-    report = nil,
   })
 <
 
-It copies messages and uses exactly the supplied Model, tools, executor, and
-context. `commit_message(message)` returns `true` after the message becomes
+The loop copies messages and uses the supplied dependencies. Optional fields
+are `system_prompt`, `execute_tool`, `context`, `model_options`,
+`get_steering_messages`, `on_event`, `on_done`, and `report`.
+`commit_message(message)` returns `true` after the message becomes
 authoritative or `nil, err` on failure. Its optional third result is a copied
 observation message with presentation metadata. Assistant, tool-result, and
 steering messages commit before dependent work or final observation.
@@ -1095,10 +1011,27 @@ Authentication is independently composable: >lua
 <
 
 Credentials are tagged `api_key` or `oauth` values. A login method may provide
-`login`, `refresh`, `request_opts`, `public_metadata`, and
-`cache_identity(credential)`. Stores implement `read`, `write`, `modify`,
-`list`, and `delete`. Metadata and cache-identity APIs return values that do not
-contain credentials.
+`login`, `refresh`, `request_opts(credential[, scope])`, `public_metadata`, and
+`cache_identity(credential)`. `validate_credential(credential)` may enforce a
+method-specific credential shape. Set `login_with_ambient = true` when stored
+login remains available alongside an active environment or configured
+credential. Stores implement `read`, `write`, `modify`, `list`, and `delete`.
+Metadata and cache-identity APIs return values that do not contain credentials.
+
+Providers may bind independent Authentication methods to named scopes: >lua
+
+  providers = {
+    example = {
+      auth = "example-inference",
+      auth_scopes = { dashboard = "example-dashboard" },
+    },
+  }
+<
+Model wrapping uses `auth`. A Provider Service operation declares
+`auth_scope = "dashboard"` and requests that credential with
+`ctx.resolve_auth("dashboard")`. The Provider Shell gates the operation and
+offers login and logout for each method independently. Authentication methods
+may set `login_label` and `logout_label` for those actions.
 
 Use `manager:wrap(model, id, { optional = true })` when the Model can run with
 an ambient credential.
@@ -1123,10 +1056,6 @@ Optional Tool fields are:
                             Derive state from the active conversation.
   render(opts)              Return semantic presentation data.
 
-Tool validation is shared by configuration, health checks, Agent toolset
-replacement, and turn preparation. Preparation failures leave the conversation
-unchanged.
-
 Bundled presets are: >lua
 
   require("neoagent.tools").coding()
@@ -1148,6 +1077,10 @@ and streaming callbacks. The shell timeout defaults to 300 seconds;
 temporaries, preserve existing modes, reject symbolic links, and request mode
 `0644` for new files. `details.changed_paths` tells the interactive Neo Agent
 which unmodified buffers may be refreshed after success.
+
+`edit_file` requires unique, non-overlapping matches in the original content.
+Exact matches take precedence over a punctuation- and whitespace-tolerant
+fallback. Edits preserve surrounding text, the BOM, and line-ending convention.
 
 `require("neoagent.session").new()` creates an in-memory Session. It accepts an
 optional store, initial messages, or validated tree snapshot. User, assistant,
@@ -1190,10 +1123,6 @@ Tree-aware Session methods are: >lua
 thinking state preserves the active branch value; a string selects a level;
 `vim.NIL` clears it. `move_to()` selects another tree entry, and the next
 append creates a branch.
-
-A Session may carry immutable ID, Workspace, timestamp, parent Session, and
-metadata values. Storage accepts opaque header metadata and disposable index
-attributes used by higher-level pickers.
 
 Create a linked child with: >lua
 
@@ -1254,8 +1183,7 @@ Session adapters are: >lua
 optional `get_steering_messages` callback supplies user-message tables between
 assistant/tool turns and supports the acknowledgement return documented under
 |neoagent-core-api|. Session adapters allow one active mutation per Session.
-This includes the interval in which the optional `on_accept` callback observes
-a journaled user message. Acceptance callback failures are advisory and reach
-the optional `report(message, level)` callback while the turn continues.
+`on_accept` observes a committed user message; callback failures reach
+`report(message, level)` without stopping the turn.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

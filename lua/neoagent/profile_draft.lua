@@ -16,13 +16,17 @@ function ProfileDraft.new(opts)
   assert(type(opts.applet) == "table",
     "ProfileDraft Agent Applet is required")
   local options = util.copy(opts.options or {})
+  local selected_model = options.default_model
+  local selected_thinking = options.default_thinking_level
+  options.default_model = nil
+  options.default_thinking_level = nil
   local selection = RequestSelection.new({
     config = opts.profile.config,
     auth = opts.auth,
     runtimes = opts.runtimes,
     workspace = {
-      default_model = options.default_model,
-      default_thinking_level = options.default_thinking_level,
+      default_model = selected_model,
+      default_thinking_level = selected_thinking,
     },
     http_context = { workspace = opts.workspace },
   })
@@ -37,7 +41,7 @@ function ProfileDraft.new(opts)
   }, ProfileDraft)
   local selected = selection:candidate()
   if selected then
-    selection:stage(selected, options.default_thinking_level
+    selection:stage(selected, selected_thinking
       or opts.profile.config.default_thinking_level)
   end
   return self
@@ -62,6 +66,14 @@ function ProfileDraft:options()
   return options
 end
 
+function ProfileDraft:snapshot()
+  local selected = self.selection:snapshot()
+  return {
+    options = util.copy(self.options_value),
+    initial_selection = selected.model and selected or nil,
+  }
+end
+
 function ProfileDraft:model_selection()
   return self.selection:model_selection()
 end
@@ -70,7 +82,10 @@ function ProfileDraft:update(patch)
   assert(type(patch) == "table" and not util.is_list(patch),
     "Profile draft options must be an object")
   assert(self:is_active(), "ProfileDraft is not active")
-  local selected_options = util.deep_merge(self.options_value, patch)
+  local options_patch = util.copy(patch)
+  options_patch.default_model = nil
+  options_patch.default_thinking_level = nil
+  local selected_options = util.deep_merge(self.options_value, options_patch)
   if patch.default_model ~= nil then
     local selected = patch.default_model
     local model, err = self.selection:select(
@@ -90,10 +105,7 @@ function ProfileDraft:set_model(provider, model)
   assert(self:is_active(), "ProfileDraft is not active")
   local resolved, err = self.selection:select(provider, model)
   if not resolved then return nil, err end
-  local snapshot = self.selection:snapshot()
-  self.options_value.default_model = snapshot.model
-  self.options_value.default_thinking_level = snapshot.thinking_level
-  return snapshot.model
+  return self.selection:model_selection()
 end
 
 function ProfileDraft:thinking_level()
@@ -109,7 +121,6 @@ function ProfileDraft:set_thinking_level(level)
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:set_thinking_level(level)
   if not selected then return nil, err end
-  self.options_value.default_thinking_level = selected
   return selected
 end
 
@@ -117,7 +128,6 @@ function ProfileDraft:cycle_thinking_level()
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:cycle_thinking_level()
   if not selected then return nil, err end
-  self.options_value.default_thinking_level = selected
   return selected
 end
 

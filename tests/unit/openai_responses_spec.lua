@@ -225,6 +225,35 @@ describe("neoagent.api.openai_responses", function()
     assert.are.same({ provider = true }, provider_opts.body.metadata)
   end)
 
+  it("adapts foreign reasoning history without changing the Session", function()
+    for _, source in ipairs({
+      { api = "openai-completions", provider = "deepseek", signature = "reasoning_content" },
+      { api = "anthropic-messages", provider = "anthropic", signature = "opaque-anthropic-signature" },
+      { api = "openai-responses", provider = "another-provider", signature = "foreign-signature" },
+    }) do
+      local session = assert(require("neoagent.session").new({ messages = {
+        { role = "user", content = "Hello" },
+        { role = "assistant", api = source.api, provider = source.provider, model = "source-model",
+          content = {
+            { type = "thinking", thinking = "Considering the answer", thinkingSignature = source.signature },
+            { type = "text", text = "Hello!" },
+          } },
+        { role = "user", content = "Continue" },
+      } }))
+      local before = session:messages()
+      local fake = fake_transport.new({ { chunks = { event({
+        type = "response.completed", response = { status = "completed", output = util.list() },
+      }) } } })
+      local result = wait(model(fake):stream({ messages = session:context_messages() }))
+      assert.is_true(result.ok)
+      assert.are.equal(1, #fake.requests)
+      local encoded = vim.json.encode(vim.json.decode(fake.requests[1].body).input)
+      assert.is_nil(encoded:find(source.signature, 1, true))
+      assert.matches("Hello!", encoded, 1, true)
+      assert.are.same(before, session:messages())
+    end
+  end)
+
   it("downgrades images before encoding requests for text-only models", function()
     local instance = model(fake_transport.new(), { input = { "text" } })
     local request = instance:_request({
@@ -463,7 +492,7 @@ describe("neoagent.api.openai_responses", function()
     local invalid_history = {
       { messages = { { role = "system", content = "bad" } },
         message = "unsupported message role" },
-      { messages = { { role = "assistant", content = { {
+      { messages = { { role = "assistant", api = "openai-responses", provider = "local", model = "test", content = { {
         type = "thinking", thinking = "x", thinkingSignature = "bad",
       } } } }, message = "reasoning signature" },
     }

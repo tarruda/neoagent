@@ -17,12 +17,27 @@ local function same_model(left, right)
     and left.provider == right.provider and left.model == right.model
 end
 
+local function valid_selection(value)
+  return type(value) == "table"
+    and valid_model(value.model)
+    and (value.thinking_level == nil
+      or thinking.is_level(value.thinking_level))
+end
+
+local function initial_thinking(self, selected)
+  local initial = self.initial
+  if initial and same_model(initial.model, selected) then
+    return initial.thinking_level
+  end
+end
+
 function RequestSelection.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table",
     "RequestSelection configuration is required")
-  assert(opts.initial_model == nil or valid_model(opts.initial_model),
-    "RequestSelection initial_model must identify a provider and model")
+  assert(opts.initial_selection == nil
+      or valid_selection(opts.initial_selection),
+    "RequestSelection initial_selection must contain a model and optional thinking level")
   assert(opts.http_context == nil or type(opts.http_context) == "table"
       or type(opts.http_context) == "function",
     "RequestSelection HTTP context must be a table or function")
@@ -38,7 +53,7 @@ function RequestSelection.new(opts)
       ui_position = opts.config.ui and opts.config.ui.position or nil,
     },
     workspace = util.copy(opts.workspace or {}),
-    initial = util.copy(opts.initial_model),
+    initial = util.copy(opts.initial_selection),
     selected = nil,
     model_value = nil,
     thinking_value = nil,
@@ -70,7 +85,7 @@ function RequestSelection:clear(discard_initial)
 end
 
 function RequestSelection:candidate()
-  return util.copy(self.selected or self.initial
+  return util.copy(self.selected or self.initial and self.initial.model
     or self:preferences().default_model)
 end
 
@@ -110,6 +125,11 @@ end
 function RequestSelection:stage(selected, preferred)
   assert(valid_model(selected),
     "RequestSelection model must identify a provider and model")
+  if preferred == nil then preferred = initial_thinking(self, selected) end
+  if preferred == nil then
+    preferred = self.thinking_value
+      or self:preferences().default_thinking_level
+  end
   self.selected = util.copy(selected)
   self.model_value = nil
   self.initial = nil
@@ -122,6 +142,7 @@ function RequestSelection:resolve(selected, preferred)
   if not selected then
     return nil, util.error("model", "No default_model is configured")
   end
+  if preferred == nil then preferred = initial_thinking(self, selected) end
   local ok, model = pcall(function()
     local http_context = self.http_context
     if type(http_context) == "function" then http_context = http_context() end

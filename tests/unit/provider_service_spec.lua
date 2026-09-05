@@ -54,13 +54,15 @@ describe("neoagent provider service", function()
   it("returns sorted operation metadata without functions", function()
     local operations = {
       zeta = { label = "Zeta", run = function() end },
-      alpha = { label = "Alpha", description = "first", mutating = true, run = function() end },
+      alpha = { label = "Alpha", description = "first", mutating = true,
+        auth_scope = "dashboard", run = function() end },
     }
     local metadata = provider_service.operations(service(operations))
     assert.are.same({ "alpha", "zeta" },
       vim.tbl_map(function(item) return item.id end, metadata))
     assert.are.equal("first", metadata[1].description)
     assert.is_true(metadata[1].mutating)
+    assert.are.equal("dashboard", metadata[1].auth_scope)
     assert.is_nil(metadata[1].run)
   end)
 
@@ -386,8 +388,10 @@ describe("neoagent provider service", function()
 
   it("resolves provider auth through the supplied manager", function()
     local value = service({})
+    local resolved_scope
     local manager = {
-      resolve = function(method, opts)
+      resolve = function(_, method, opts)
+        resolved_scope = opts.scope
         return async.run(function()
           return {
             ok = true,
@@ -405,7 +409,7 @@ describe("neoagent provider service", function()
       auth = {
         label = "Auth",
         run = function(ctx)
-          local resolved = ctx.resolve_auth():await()
+          local resolved = ctx.resolve_auth("dashboard"):await()
           seen = resolved
           return async.run(function() return { ok = true } end)
         end,
@@ -417,6 +421,8 @@ describe("neoagent provider service", function()
     }))
     assert.is_true(result.ok)
     assert.is_true(seen.configured)
+    assert.are.equal("fake", seen.method)
+    assert.are.equal("dashboard", resolved_scope)
     assert.are.equal("http://localhost", seen.metadata.server_url)
   end)
 
@@ -473,6 +479,13 @@ describe("neoagent provider service", function()
       bad = { label = "x", mutating = "yes", run = function() end },
     }
     assert.is_nil(provider_service.validate(value))
+    for _, scope in ipairs({ "", "unsafe/scope", "bad\nscope",
+      string.rep("s", 129) }) do
+      value.operations = {
+        bad = { label = "x", auth_scope = scope, run = function() end },
+      }
+      assert.is_nil(provider_service.validate(value))
+    end
     value.operations = {
       bad = { label = "x", complete = true, run = function() end },
     }

@@ -433,6 +433,31 @@ describe("bundled model catalog sources", function()
     assert.matches("invalid model catalog", result.error.message)
   end)
 
+  it("reloads the llama.cpp router inventory for forced discovery", function()
+    local transport = fake_transport.new()
+    transport.fetches = { {
+      body = vim.json.encode({ data = { {
+        id = "remaining-model",
+        status = { value = "unloaded" },
+      } } }),
+    } }
+    local ctx = context({
+      base_url = "http://127.0.0.1:8080/v1",
+      auth_optional = true,
+    }, transport)
+    ctx.force = true
+
+    local result = wait(
+      require("neoagent.providers.llama.catalog").discover(ctx))
+
+    assert.is_true(result.ok)
+    assert.are.same({ "remaining-model" }, vim.tbl_map(function(model)
+      return model.id
+    end, result.models))
+    assert.are.equal("http://127.0.0.1:8080/models?reload=1",
+      transport.fetch_requests[1].url)
+  end)
+
   it("reports per-slot context for parallel llama.cpp router models", function()
     local source = require("neoagent.providers.llama.catalog")
     local function context(args)

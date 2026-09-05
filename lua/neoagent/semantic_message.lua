@@ -372,6 +372,21 @@ function M.normalize(message)
   return result
 end
 
+function M.normalize_model_response(message)
+  local result, err = M.normalize(message)
+  if not result then return nil, err end
+  if result.role ~= "assistant" then
+    return failure("assistant message is required")
+  end
+  if result.stopReason == "toolUse" then
+    for _, block in ipairs(result.content) do
+      if block.type == "toolCall" then return result end
+    end
+    return failure("Provider declared tool use without supplying a tool call")
+  end
+  return result
+end
+
 function M.normalize_partial_assistant(message)
   if type(message) ~= "table" or message.role ~= "assistant"
       or type(message.content) ~= "table" then

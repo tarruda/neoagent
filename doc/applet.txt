@@ -1,4 +1,4 @@
-*applet.txt*  Declarative multi-pane UI framework for Neovim
+*applet.txt*  Declarative multi-pane UI for Neovim
 
 ===============================================================================
 CONTENTS                                                         *applet-contents*
@@ -13,37 +13,21 @@ CONTENTS                                                         *applet-content
 ===============================================================================
 1. OVERVIEW                                                     *applet-overview*
 
-The `applet` package has two primary values:
+`require("applet")` provides multi-pane layouts using Neovim's native buffers
+and windows. It depends only on Neovim and its own modules.
 
-  Applet  A coordinated multi-window composition. It owns layout, Hosts,
-          buffers, windows, focus, observation, and atomic publication.
-  Pane    The content and runtime for one buffer. It owns content compilation,
-          reconciliation, mappings, extmarks, scrolling, and optional images.
+An Applet owns layout, windows, buffers, and focus. It mounts Panes through a
+floating Host or native splits in a dedicated tab. Overlay Layers use floats
+with either Host. Each Pane owns its buffer's content and interaction, built
+from a plain content Tree.
 
-An Applet mounts existing Panes through a host-neutral layout. A floating Host
-projects the layout as coordinated floats. A tab Host projects its main
-topology as native splits in a dedicated tabpage. Both Hosts use floats for
-Layers.
-
-A Pane compiles a plain content Tree into ordinary Neovim buffer state. The
-Tree describes lines, highlights, source annotations, mappings, targets,
-window chrome, and image placements. The mounted Pane value is also the
-runtime capability used for text, cursor, focus, scrolling, completion, and
-native handle access. There is no second Pane-handle object.
-
-`require("applet")` is the public module. It exports the concrete Applet, Pane,
-layout, Host, presentation, interaction, image, and effect values used by
-Neoagent. Modules under `lua/applet/` depend only on Neovim APIs and other
-Applet modules.
-
-The cursor is the selection model. Normal motions, search, marks, Visual
-selection, registers, and yanking retain their native behavior for every key
-that a content Tree or Applet layout does not claim.
+The cursor selects content. Unclaimed keys retain native motions, search,
+Visual selection, registers, and yanking.
 
 ===============================================================================
 2. PANE                                                             *applet-pane*
 
-Create a Pane with fixed dependencies: >lua
+Create a Pane: >lua
 
   local Applet = require("applet")
   local ui = Applet.Pane.nodes
@@ -59,11 +43,6 @@ Create a Pane with fixed dependencies: >lua
         text = state.message,
       })
     end,
-    handlers = {
-      choose = function(event)
-        print(event.payload.id)
-      end,
-    },
     on_error = function(err)
       vim.notify(err.message, vim.log.levels.ERROR)
     end,
@@ -75,12 +54,7 @@ Neovim. `extent = "viewport"` bounds physical and virtual output to the
 mounted height. An editable Pane leaves physical text and undo under Neovim
 while it owns virtual chrome, decorations, mappings, and actions.
 
-`frame_interval_ms` bounds the automatic presentation cadence for frequently
-updated state and content Tree submissions. Every submission immediately
-becomes the newest pending value; the next frame commits that value. Native
-viewport, Theme, and image changes request an earlier safe commit.
-
-Pane and Applet submissions are immutable borrowed values: >lua
+Submit state or a content Tree: >lua
 
   transcript:set_state({ message = "Hello" })
   transcript:set_state({ message = "Ready" }, { eager = true })
@@ -88,24 +62,15 @@ Pane and Applet submissions are immutable borrowed values: >lua
   transcript:set_theme(theme)   -- recompile semantic styles
   transcript:flush()            -- bypass cadence for eager rendering
 <
-The caller retains ownership and does not mutate a submitted value. Each
-semantic change supplies a new value, affected subtree, or revision. Pending
-submissions coalesce to the newest generation. A failed render,
-compilation, or commit preserves the last committed Layout and reports
-`{ pane, phase, generation, message }`.
+Pane and Applet submissions are borrowed: callers must keep submitted values
+immutable and supply new values or revisions for changes. Region revisions
+must cover child content and image sources.
 
-`set_state(state, { eager = true })` bypasses the configured frame interval
-while retaining InteractionDomain safety. It suits terminal lifecycle and
-direct-interaction submissions that must settle on the next safe domain turn.
-
-A document root composed entirely of regions with explicit revisions retains
-its longest unchanged prefix when its root table changes. Pane compiles and
-reconciles from the first affected region. Region revisions cover their child
-content and image sources.
-
-An Applet creates and connects the buffer and window for every mounted Pane.
-Closing an Applet retains its Pane buffers for reopening; destroying it releases
-the complete mounted runtime.
+`frame_interval_ms` limits automatic rendering frequency. Pending submissions
+coalesce to the latest value. `{ eager = true }` and `flush()` bypass the
+interval while respecting InteractionDomain safety. A render, compilation, or
+commit failure preserves the prior presentation and reports
+`{ pane, phase, generation, message }` to `on_error`.
 
 The Pane runtime methods are:
 
@@ -156,23 +121,23 @@ An `InteractionDomain` coordinates safe commits: >lua
 <
 Visual, Select, operator-pending, register-prefix, and host-declared critical
 interactions defer physical commits until `SafeState`.
-The Domain activates its global key observer while at least one connected Pane
-participates and releases it when the final participant disconnects.
 
 ===============================================================================
 3. APPLET                                                         *applet-layout*
 
-An Applet owns one coordinated presentation lifecycle for several Panes. Its
-layout describes a main Pane topology, split allocation, Layers, focus, and
-ambient bindings. Create Panes first, then mount the same values: >lua
+Mount Panes in a layout. This adds editable input below the transcript created
+above: >lua
 
   local Applet = require("applet")
   local layout = Applet.layout
+  local ui = Applet.Pane.nodes
 
   local input = Applet.Pane.new({
     key = "input",
     buffer_mode = "editable",
-    render = render_input,
+    render = function()
+      return ui.text({ key = "input-text", text = "" })
+    end,
   })
 
   local applet = Applet.new({
@@ -211,16 +176,10 @@ ambient bindings. Create Panes first, then mount the same values: >lua
               },
             },
           }),
-          layers = state.dialog and { state.dialog } or {},
         }),
         focus = { initial = "input" },
       }
     end,
-    handlers = {
-      ["example.save"] = function(event)
-        print(event.pane:key())
-      end,
-    },
     on_error = function(err)
       vim.notify(err.message, vim.log.levels.ERROR)
     end,
@@ -265,8 +224,8 @@ The Host constructors validate and copy plain policy values: >lua
   })
 <
 `applet:set_host(host_or_resolver)` selects the next Host policy and reprocesses
-the current submission. A Host-kind change takes effect on the next open
-epoch. `applet:host()` returns its copied semantic descriptor.
+the current submission. A Host-kind change takes effect on the next open.
+`applet:host()` returns its copied semantic descriptor.
 `applet:is_visible()` distinguishes an open Applet in an inactive tab from one
 currently visible.
 
@@ -288,9 +247,8 @@ An Applet layout is a complete snapshot: >lua
 Every frame, split, scope, layer, and split child has a stable non-empty key.
 A mount derives its identity from `pane:key()`. `frame.child` accepts mount,
 split, or scope nodes. `frame.layers` is an ordered list of layer nodes.
-Focus intents apply once for one contiguous `{ key, revision }` occurrence.
-Removing an intent ends that occurrence, so the same token may be submitted
-again later. Applet retains only the current occurrence token.
+Focus intents apply once per `{ key, revision }`. Change either value or remove
+and resubmit the intent to apply it again.
 
 A split allocates one axis: >lua
 
@@ -334,7 +292,6 @@ Mount one existing Pane with optional lifecycle and surface policy: >lua
     mount_revision = 1,
     buffer = {
       name = "input",
-      uri = nil,
       filetype = "example-input",
       sensitive = false,
       options = { buftype = "nofile", swapfile = false },
@@ -342,10 +299,6 @@ Mount one existing Pane with optional lifecycle and surface policy: >lua
     window = {
       border = "rounded",
       options = { wrap = true },
-      host_options = {
-        floating = {},
-        tab = {},
-      },
     },
     focus = {
       mode = "insert",       -- normal, insert, or preserve
@@ -362,16 +315,15 @@ calling `remount(key)` clears suppression after an external detach. Sensitive
 buffers require a transient mount, disable swap and undo-file persistence, and
 are overwritten before deletion.
 
-A Pane can be mounted only once in one submitted layout and by only one live
-Applet. The Pane key is opaque layout identity; display labels belong in Pane
-content or chrome. Applet mapping dispatch retains its originating Insert or
-Replace intent while the callback runs and applies the final focused Pane
-policy when the callback completes. A `normal` policy cancels that intent,
-including temporary Normal transitions that return to editing. An `insert`
-policy enters Insert mode, and `preserve` restores the Pane's retained mode.
-Focusing an existing mounted Pane keeps its live native cursor and viewport.
-Applet restores retained cursor and viewport snapshots while mounting windows
-across Host and Frame lifecycle transitions.
+`buffer.uri` sets a document URI. `window.host_options.floating` and
+`window.host_options.tab` supply Host-specific window options.
+
+A Pane may be mounted once per layout and by only one live Applet. Its key is
+layout identity; put display labels in content or chrome.
+
+Focus policy takes effect after a mapping callback: `normal` enters Normal
+mode, `insert` enters Insert mode, and `preserve` restores the Pane's retained
+mode. Focusing a mounted Pane preserves its cursor and viewport.
 
 A Layer anchors an overlay subtree: >lua
 
@@ -405,11 +357,7 @@ Applet bindings use the Pane-content binding shape: >lua
     silent = true,
   }
 <
-The built-in Applet actions are `applet.close`, `applet.focus`,
-`applet.focus.move`, and `applet.focus.restore`. Pane content target actions
-are also available. Content modal scopes, Applet modal scopes, content scopes,
-mount bindings, layout scopes, and root bindings form one ordered mapping set
-installed by each mounted Pane.
+See |applet-interaction| for built-in actions and binding precedence.
 
 Lifecycle and observation methods are:
 
@@ -432,13 +380,11 @@ Lifecycle and observation methods are:
   open_uri(uri)          Run injected package-owned effects.
   flush()                Settle pending renders and observations eagerly.
   invalidate([opts])     Refresh Host facts or reset adopted split sizes.
-  destroy()              Release every resource; idempotent.
+  destroy()              Release owned resources; idempotent.
 
-Pending generations coalesce. Render, layout compilation, measurement,
-staging, and publication failures preserve the prior committed Frame or roll
-opening back to `closed`. Applet publishes copied Host Snapshots before
-external callbacks. Callback mutations settle after the current observation
-batch.
+Submissions coalesce. A failed update preserves the prior presentation; a failed
+open restores the closed state. Observation callbacks receive committed Host
+Snapshots; their mutations take effect after the current notification batch.
 
 `Applet.layout.compile()` exposes the pure layout compiler: >lua
 
@@ -446,23 +392,18 @@ batch.
     tree = applet_layout,
     host = Applet.host.floating({}),
     editor = { row = 0, col = 0, width = 160, height = 48 },
-    container = nil,
-    measurements = {},
-    overrides = {},
-    handlers = { ["example.save"] = true },
-    has_action = function(name) return false end,
   })
 <
 `render(state, env)` receives semantic editor, Host, origin, focus, lifecycle,
 generation, and measurement facts. Neither the environment nor compiled Frame
 contains native handles.
 
-`Applet.presentation.new()` creates an editable input presentation, a
-two-Pane selection picker, or a managed notice from a semantic request. A
-picker owns case-insensitive fuzzy matching and semantic selection. A notice
-uses normal-mode `q`, `<Esc>`, and `<C-c>` cancellation. `Applet.Presenter`
-implements `select`, `input`, `notice`, `confirm`, `notify`, and `open_uri` as
-the default host fallback.
+Compiler options also accept `container`, `measurements`, `overrides`,
+`handlers`, and `has_action` for custom measurement and action resolution.
+
+`Applet.presentation.new()` turns a semantic request into an input, fuzzy
+selection picker, or notice. `Applet.Presenter` supplies the host fallback for
+`select`, `input`, `notice`, `confirm`, `notify`, and `open_uri`.
 
 `Applet.host_effects` supplies `refresh_file(path)`, `open_document(document)`,
 and `on_exit(callback)`. `Applet.Pane.text` supplies display-cell `width`,
@@ -479,23 +420,21 @@ stable, non-empty key. A complete Pane content Tree has this form: >lua
     chrome = {
       title = { { text = " Example ", style = "strong" } },
       title_pos = "center", -- "left", "center", or "right"
-      footer = nil,
-      footer_pos = "center",
       options = { cursorline = true },
     },
     view = {
       scroll = "preserve", -- or "follow_end"
-      initial_target = nil,
-      target_intent = nil,
     },
     edit = {
       on_change = ui.action("draft.changed"),
     },
   }
 <
+Chrome also accepts `footer` and `footer_pos`. `view.initial_target` chooses
+the initial cursor target; `target_intent` changes it on later submissions.
 The content primitives are:
 
-  region      A stable vertical reconciliation unit with optional revision.
+  region      A reusable vertical section with optional revision.
   text        Rich runs with explicit or native wrapping, clipping, tabs, and
               styles.
   column      Vertical children separated by a fixed gap.
@@ -511,17 +450,14 @@ The content primitives are:
   scope       Mappings active for a subtree or the complete buffer.
   virtual     Virtual lines anchored above or below physical content.
 
-`view.target_intent` selects an exact target after content reconciliation.
-Its `key` identifies one contiguous occurrence, `select` names the cursor
-target, and optional `reveal` names a second target whose final line remains
-visible with the selection when both targets fit in the viewport. Removing the
-intent permits its key to be used again. Pane retains only the current
-occurrence key.
+`view.target_intent` has `key`, `select`, and optional `reveal` fields. It
+applies once per key; removing the intent allows reuse of the key. `select`
+names the cursor target; `reveal` names another target to keep visible with it
+when both fit.
 
 `text.background` applies one semantic whole-line highlight to every compiled
 line without padding its physical text. Use `panel.background` when the node
-also needs allocated padding. Pane carries this highlight through the
-`breakindent` and `showbreak` prefix of natively wrapped lines.
+also needs allocated padding.
 
 Document roots may be one region, a column containing only regions, or any
 ordinary node, which becomes one implicit region. A root scope may wrap those
@@ -535,14 +471,12 @@ width. Native wrapping preserves each logical line for Neovim soft wrapping.
 A rich-text run accepts one `style`, one `group`, or a `groups` list. The list
 preserves layered highlights over the same text. Each item is a highlight
 group name or `{ group = name, priority = integer }`; `{ style = name }`
-resolves a semantic Theme style. Pane emits a separate extmark for every
-layer.
+resolves a semantic Theme style.
 
-`Applet.Theme.new()` creates an independent derived-highlight namespace.
-`theme:derive(key, spec)` returns one stable group per semantic key, up to
-`max_derived_highlights` (256 by default). Independent Theme values never
-overwrite one another's derived groups. Reaching the bound returns the base
-group, or `nil` when no base is supplied.
+`Applet.Theme.new()` creates an isolated highlight namespace.
+`theme:derive(key, spec)` returns a stable group per key, up to
+`max_derived_highlights` (default 256). At the limit it returns the base group,
+or `nil` if none was supplied.
 
 A container allocates a fixed inner rectangle. `width` and `height` describe
 that rectangle; a border and down-right shadow extend its outer dimensions.
@@ -591,9 +525,7 @@ coordinates move content through the top or left clipping edges. >lua
 Every positioned layer requires explicit `width` and `height`. Background,
 border, title, and shadow styling accept semantic `style` values or concrete
 `group` values. A custom border supplies eight one-cell characters in
-Neovim's floating-border order. Transparent cells expose lower layers. Text,
-highlights, targets, scopes, source annotations, and image viewports project
-through the same visible-cell composition.
+Neovim's floating-border order. Transparent cells expose lower layers.
 
 Viewport overflow is explicit on the root content node:
 
@@ -602,13 +534,15 @@ Viewport overflow is explicit on the root content node:
   collapse  Compile a supplied summary node.
 
 Use `Applet.Pane.widgets.menu`, `Applet.Pane.widgets.dialog`, and
-`Applet.Pane.widgets.card` for common compositions. Widgets return primitive
-content Trees and install no hooks. Dialog navigation and action bindings
-belong to its modal scope, so they work from every cursor position inside the
-Pane.
+`Applet.Pane.widgets.card` for common content Trees. Dialog navigation works
+from any cursor position in its Pane.
 
 A three-option menu with an initial selection is: >lua
 
+  local pane = Applet.Pane.new({
+    key = "menu",
+    handlers = { choose = function(event) print(event.payload.id) end },
+  })
   local menu, entry = Applet.Pane.widgets.menu({
     key = "options",
     initial = "two",
@@ -640,14 +574,11 @@ A three-option menu with an initial selection is: >lua
     },
   })
 <
-Menus return their primitive scope and an entry descriptor covering the
-requested `initial` item, or the first enabled item, and the final visible
-item. `menu_intent(entry, key)` converts that descriptor into a target intent
-which selects the entry and keeps the complete menu visible when it fits. The
-initial item must be enabled. Menus claim no default keys, so supplied
-bindings coexist with unclaimed native motions. Set `text_wrap` to `word`,
-`character`, `none`, or `native`. Dialog action menus are vertical and default
-to Up, Down, and Enter.
+Menus return a scope and entry descriptor. `menu_intent(entry, key)` selects
+the enabled `initial` item (default: first enabled item) and reveals the menu
+when it fits. Menus claim only supplied keys. `text_wrap` accepts `word`,
+`character`, `none`, or `native`. Dialog menus are vertical and bind Up, Down,
+and Enter by default.
 
 The pure content compiler is available without a Pane: >lua
 
@@ -678,12 +609,10 @@ provides these built-in actions:
   applet.target.activate  Dispatch the selected target's action.
   applet.target.reveal    Move the cursor to one exact target.
 
-Target movement anchors to an enabled candidate containing the cursor. At a
-free cursor position, `next` selects the first following candidate and
-`previous` selects the last preceding candidate. `entry = "first"` selects the
-first enabled candidate from a free position in either direction. Reaching a
-document boundary returns `false`; a movement with `wrap = true` cycles through
-that boundary.
+Target movement starts from the target under the cursor or the nearest enabled
+target in the requested direction. `entry = "first"` enters at the first
+enabled target from a free cursor position. At a boundary movement returns
+`false`, or cycles when `wrap = true`.
 
 An Applet adds:
 
@@ -692,11 +621,10 @@ An Applet adds:
   applet.focus.move       Move focus left, right, up, or down.
   applet.focus.restore    Restore focus captured by the active Layer.
 
-A scope is the content primitive that claims mappings. Modal scope bindings
-take precedence, followed by the innermost matching scope and its parents.
-Duplicate bindings and ambiguous overlapping sibling scopes fail compilation.
-Applet layout scopes and mount bindings participate in the same precedence
-order.
+A scope claims mappings. Precedence is content modal scopes, Applet modal
+scopes, content scopes, mount bindings, layout scopes, then root bindings.
+Inner scopes precede their parents. Duplicate bindings and ambiguous
+overlapping sibling scopes fail compilation.
 
 Handler events contain the action, copied payload, count, mode, cursor facts,
 and the exact `event.pane` value. Applet-dispatched events also include
@@ -712,10 +640,8 @@ decorations selected by the same cursor relationship.
 Each focus decoration has a target-relative non-negative integer `row` or the
 value `"end"`, optional display-cell `col`, non-empty `chunks`, and either
 `position` (`overlay`, `eol`, `right_align`, or `inline`) or `win_col`. An
-optional non-negative `priority` defaults to 200. The row immediately after
-the target is addressable so a composition can draw a bottom edge on an
-existing boundary line. `"end"` resolves that boundary after dynamic content
-such as prepared images establishes its physical height.
+optional non-negative `priority` defaults to 200. `"end"` addresses the row
+immediately after the target.
 
 Visual and Select modes suppress target chrome so native selection remains
 clear. Reconciliation restores both free cursor positions and surviving
@@ -787,9 +713,7 @@ Source loading is asynchronous. Existing content remains presented while a new
 revision prepares. Removing a node releases its slot; disconnecting a Pane
 clears its presentation. Cancellation suppresses stale source completion.
 
-The bundled Kitty backend supports direct terminals and tmux pass-through when
-an ordered terminal-output path is available. Offscreen, folded, clipped,
-obscured, and overlapping placements remain hidden until the next refresh. An
+The bundled Kitty backend supports direct terminals and tmux pass-through. An
 unavailable backend uses the text fallback and reserves no image rectangle.
 
 Applet performs no network fetch or image conversion. Call `images:destroy()`

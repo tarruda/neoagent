@@ -219,7 +219,7 @@ describe("llama.cpp router HTTP integration", function()
     assert.is_nil(block(service:state(), "activity"))
     assert(vim.wait(1000, function()
       return server:count_requests("POST", "/models") == 1
-        and server:count_requests("GET", "/models?reload=1") == 1
+        and server:count_requests("GET", "/models?reload=1") == 2
     end))
 
     local updates_before_failure = dashboard_updates

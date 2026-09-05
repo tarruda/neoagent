@@ -14,6 +14,15 @@ local function prose(block)
     and (block.kind == "assistant" or block.kind == "thinking")
 end
 
+local function tool_name(block)
+  if type(block) ~= "table" or block.kind ~= "tool" then return nil end
+  if block.name ~= nil then return block.name end
+  if type(block.call) == "table" and block.call.name ~= nil then
+    return block.call.name
+  end
+  if type(block.message) == "table" then return block.message.toolName end
+end
+
 local function follow_available(block)
   return prose(block) and block.text_epoch ~= nil
 end
@@ -117,6 +126,7 @@ local function render(component, state, env)
   local mappings = state.config.mappings or {}
   local bindings = {}
   local raw_available = prose(block)
+  local wraps = raw_available or tool_name(block) == "shell"
   local can_follow = follow_available(block)
   add_binding(bindings, "n", first(mappings.card_previous),
     "details.previous", "Previous card")
@@ -149,7 +159,7 @@ local function render(component, state, env)
         style = "window_title" } },
       title_pos = "center",
       options = {
-        wrap = raw_available,
+        wrap = wraps,
         linebreak = raw_available,
         breakindent = raw_available,
         cursorline = true,
@@ -225,10 +235,7 @@ function Details:set(block, raw)
   self.tool = nil
   if self.block and self.block.kind == "tool"
       and type(self.resolve_tool) == "function" then
-    local name = self.block.name
-      or self.block.call and self.block.call.name
-      or self.block.message and self.block.message.toolName
-    local ok, resolved = pcall(self.resolve_tool, name)
+    local ok, resolved = pcall(self.resolve_tool, tool_name(self.block))
     if ok and type(resolved) == "table" then
       self.tool = { name = resolved.name, render = resolved.render }
     end

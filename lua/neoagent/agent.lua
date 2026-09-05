@@ -5,6 +5,7 @@ local context_metrics = require("neoagent.agent.context")
 local provider_service = require("neoagent.provider_service")
 local RequestSelection = require("neoagent.request_selection")
 local session_lifecycle = require("neoagent.agent.session_lifecycle")
+local thinking = require("neoagent.thinking")
 local util = require("neoagent.util")
 local workspace_preferences = require("neoagent.workspace_preferences")
 
@@ -73,13 +74,17 @@ function M.from_config(options, runtime)
         or type(runtime[field]) == "string" and runtime[field] ~= "",
       "agent " .. field .. " must be a non-empty string")
   end
-  if runtime.initial_model ~= nil then
-    assert(type(runtime.initial_model) == "table"
-        and type(runtime.initial_model.provider) == "string"
-        and runtime.initial_model.provider ~= ""
-        and type(runtime.initial_model.model) == "string"
-        and runtime.initial_model.model ~= "",
-      "agent initial_model must identify a provider and model")
+  if runtime.initial_selection ~= nil then
+    local selected = runtime.initial_selection
+    assert(type(selected) == "table"
+        and type(selected.model) == "table"
+        and type(selected.model.provider) == "string"
+        and selected.model.provider ~= ""
+        and type(selected.model.model) == "string"
+        and selected.model.model ~= ""
+        and (selected.thinking_level == nil
+          or thinking.is_level(selected.thinking_level)),
+      "agent initial_selection must contain a model and optional thinking level")
   end
   if runtime.host_effects ~= nil then
     assert(type(runtime.host_effects) == "table"
@@ -208,7 +213,7 @@ function M.from_config(options, runtime)
     config = options,
     auth = auth_manager,
     runtimes = state.provider_runtimes,
-    initial_model = runtime.initial_model,
+    initial_selection = runtime.initial_selection,
     http_context = function()
       return {
         workspace = workspace_root,
@@ -855,8 +860,7 @@ function M.from_config(options, runtime)
       local selected = state.request_selection:candidate()
       if selected then
         if configured_catalog_pending(selected) then
-          state.request_selection:stage(
-            selected, configured().default_thinking_level)
+          state.request_selection:stage(selected)
           bind_provider(selected.provider)
         else
           ensure_model()

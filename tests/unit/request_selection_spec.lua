@@ -75,18 +75,24 @@ describe("neoagent upper-layer request selection", function()
     local selection = RequestSelection.new({
       config = configured,
       runtimes = runtimes(configured),
-      initial_model = { provider = "fake", model = "two" },
+      initial_selection = {
+        model = { provider = "fake", model = "two" },
+        thinking_level = "max",
+      },
       workspace = { default_thinking_level = "low" },
     })
     assert.are.same({ provider = "fake", model = "two" },
       selection:candidate())
     assert.are.equal("no model", selection:label())
 
+    assert.are.same({ provider = "fake", model = "two" },
+      selection:stage(selection:candidate()))
+    assert.are.equal("max", selection:thinking_level())
     assert(selection:resolve())
     assert.are.equal("fake/two", selection:label())
-    assert.are.equal("low", selection:thinking_level())
+    assert.are.equal("max", selection:thinking_level())
     assert.are.same({ "low", "max" }, selection:levels())
-    assert.are.equal("max", selection:cycle_thinking_level())
+    assert.are.equal("low", selection:cycle_thinking_level())
     local unsupported, unsupported_err = selection:set_thinking_level("off")
     assert.is_nil(unsupported)
     assert.matches("not supported", unsupported_err.message)
@@ -233,6 +239,13 @@ describe("neoagent upper-layer request selection", function()
     assert.is_true(draft:is_active())
     assert.are.equal("low", draft:thinking_level())
     assert.are.same({ "low", "max" }, draft:thinking_levels())
+    assert.are.same({
+      options = { sandbox = { enabled = false } },
+      initial_selection = {
+        model = { provider = "fake", model = "two" },
+        thinking_level = "low",
+      },
+    }, draft:snapshot())
 
     local rejected, rejected_err = draft:update({
       default_thinking_level = "off",
@@ -254,6 +267,13 @@ describe("neoagent upper-layer request selection", function()
     assert.are.equal("max", draft:thinking_level())
     assert.is_table(draft:update({ sandbox = { enabled = true } }))
     assert.is_true(draft:options().sandbox.enabled)
+    assert.are.same({
+      options = { sandbox = { enabled = true } },
+      initial_selection = {
+        model = { provider = "fake", model = "two" },
+        thinking_level = "max",
+      },
+    }, draft:snapshot())
 
     assert.are.equal(draft, draft:stage())
     assert.are.equal("provisional", draft:state())

@@ -1858,6 +1858,7 @@ describe("neoagent.ui", function()
       view_handles.buffer(result, "transcript"), 0, -1, false)
     assert.are.same({
       " • Updated Plan ",
+      "  ",
       "    └ Implement in three focused phases. ",
       "      ✔ Inspect Codex behavior ",
       "      □ Add the optional tool ",
@@ -1879,13 +1880,13 @@ describe("neoagent.ui", function()
       return found
     end
     assert.is_true(groups(0).NeoagentMarkdownBold)
-    assert.is_true(groups(2).NeoagentMarkdownStrike)
-    assert.is_true(groups(3).NeoagentCyan)
+    assert.is_true(groups(3).NeoagentMarkdownStrike)
+    assert.is_true(groups(4).NeoagentCyan)
     assert.are.equal(6, vim.api.nvim_get_hl(0, {
       name = "NeoagentCyan", link = false,
     }).ctermfg)
-    assert.is_true(groups(3).NeoagentMarkdownBold)
-    assert.is_true(groups(4).NeoagentMuted)
+    assert.is_true(groups(4).NeoagentMarkdownBold)
+    assert.is_true(groups(5).NeoagentMuted)
   end)
 
   it("keeps multiline Codex tool headers visible while hovered", function()
@@ -2335,6 +2336,7 @@ describe("neoagent.ui", function()
       view_handles.buffer(result, "transcript"), 0, -1, false))
     assert.are.same({
       " • Edited existing.lua (+1 -1)",
+      "",
       "    1  line one",
       "    2 -line two",
       "    2 +line two changed",
@@ -2356,8 +2358,8 @@ describe("neoagent.ui", function()
     assert.is_true(groups(0).NeoagentMarkdownBold)
     assert.is_true(groups(0).NeoagentGreen)
     assert.is_true(groups(0).NeoagentRed)
-    assert.is_true(groups(2).NeoagentRed)
-    assert.is_true(groups(3).NeoagentGreen)
+    assert.is_true(groups(3).NeoagentRed)
+    assert.is_true(groups(4).NeoagentGreen)
     assert.are.equal(2, vim.api.nvim_get_hl(0, {
       name = "NeoagentGreen", link = false,
     }).ctermfg)
@@ -2713,12 +2715,13 @@ describe("neoagent.ui", function()
       "   │ git log -1 --format='%h %s%n%n%b' && ",
       "   │ printf done ",
       "   │ … +1 lines ",
+      "  ",
       "   └ 1 ",
       "     2 ",
       "     … +6 lines ",
       "     9 ",
       "     10 ",
-    }, vim.list_slice(lines, first, first + 8))
+    }, vim.list_slice(lines, first, first + 9))
     assert.not_matches("ctrl %+ t", text(result))
 
     local empty
@@ -2728,8 +2731,9 @@ describe("neoagent.ui", function()
     assert.is_not_nil(empty)
     assert.are.same({
       " • Ran true ",
+      "  ",
       "   └ (no output) ",
-    }, vim.list_slice(lines, empty, empty + 1))
+    }, vim.list_slice(lines, empty, empty + 2))
 
     local long
     for index, line in ipairs(lines) do
@@ -2743,13 +2747,13 @@ describe("neoagent.ui", function()
     assert.are.equal("", lines[long + 1])
     assert.is_true(vim.fn.strdisplaywidth(lines[long]) <= 72)
 
-    local plain_index = first + 5
+    local plain_index = first + 6
     local plain_row = plain_index - 1
     local plain_col = assert(lines[plain_index]:find("2", 1, true)) - 1
     local groups, normal_start, ansi_group = {}, nil, nil
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
       view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
-      { first + 3, 0 }, { plain_row, -1 },
+      { first + 4, 0 }, { plain_row, -1 },
       { details = true, hl_name = true }
     )) do
       local group = mark[4].hl_group
@@ -3572,7 +3576,7 @@ describe("neoagent.ui", function()
     assert.is_nil(bottom:find("word", 1, true))
   end)
 
-  it("uses native window wrapping only for prose details", function()
+  it("wraps prose but not ordinary tool details", function()
     local result = view({ position = "center" })
     local thinking = "trace " .. string.rep("unwrapped-thinking ", 20)
     local output = "content " .. string.rep("unwrapped-output ", 20)
@@ -3615,6 +3619,30 @@ describe("neoagent.ui", function()
     assert.is_false(vim.wo[tool_win].wrap)
     assert.is_true(vim.tbl_contains(vim.api.nvim_buf_get_lines(
       view_handles.buffer(result, "details"), 0, -1, false), output))
+    close_details(result)
+  end)
+
+  it("wraps expanded shell tool calls at the window boundary", function()
+    local result = view({ position = "center" }, {
+      require("neoagent.tools.shell").new(),
+    })
+    local command = "printf " .. string.rep("long-command-argument ", 20)
+    result:set_messages({ { role = "assistant", content = { {
+      type = "toolCall",
+      id = "wrapped-shell",
+      name = "shell",
+      arguments = { command = command },
+    } } } })
+    assert(result:open())
+    assert(vim.wait(1000, function()
+      return text(result):find("printf", 1, true) ~= nil
+    end))
+
+    assert.is_true(result:show_card_details("tool:wrapped-shell"))
+    local window = view_handles.window(result, "details")
+    assert.is_true(vim.wo[window].wrap)
+    assert.is_false(vim.wo[window].linebreak)
+    assert.is_false(vim.wo[window].breakindent)
     close_details(result)
   end)
 

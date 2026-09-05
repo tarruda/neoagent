@@ -180,6 +180,26 @@ describe("neoagent.compaction", function()
     end, prepared.turn_prefix))
   end)
 
+  it("retains a trailing tool result with its call when it exceeds the token budget", function()
+    local path = {
+      entry("u1", nil, { role = "user", content = "Earlier request" }),
+      entry("a1", "u1", { role = "assistant", content = { { type = "text", text = "Earlier work" } } }),
+      entry("u2", "a1", { role = "user", content = "Current request" }),
+      entry("a2", "u2", { role = "assistant", content = { {
+        type = "toolCall", id = "call", name = "read_file", arguments = { path = "large" },
+      } } }),
+      entry("tool", "a2", {
+        role = "toolResult", toolCallId = "call", toolName = "read_file",
+        content = { { type = "text", text = string.rep("output ", 100) } },
+      }),
+    }
+    local prepared, err = compaction.prepare(path, { keep_recent_tokens = 1 })
+    assert.is_nil(err)
+    assert.are.equal("a2", prepared.first_kept_entry_id)
+    assert.are.equal(2, #prepared.messages)
+    assert.are.same({ path[3].message }, prepared.turn_prefix)
+  end)
+
   it("generates cancellable structured summaries through an ordinary Model", function()
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "  ## Goal\nFinish it  " } }),
@@ -266,6 +286,38 @@ describe("neoagent.compaction", function()
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.is_true(cancelled)
     assert.are.equal("cancelled", run:result().error.kind)
+  end)
+
+  it("retains the previous summary when recompacting within one turn", function()
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = "Earlier requirements" }))
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "Earlier work" } } }))
+    local _, _, retained = session:append({ role = "user", content = "Current task" })
+    assert(session:append({ role = "assistant", content = { { type = "text", text = "Initial work" } } }))
+    local previous = "Preserve the production database"
+    assert(session:append_compaction({
+      summary = previous, firstKeptEntryId = retained.id, tokensBefore = 1000,
+    }))
+    assert(session:append({ role = "assistant", content = {
+      { type = "text", text = string.rep("Recent work. ", 40) },
+    } }))
+    local prepared = assert(compaction.prepare(assert(session:path()), { keep_recent_tokens = 1 }))
+    assert.is_true(prepared.split_turn)
+    assert.are.equal(0, #prepared.messages)
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "Current work summary" } }),
+    } })
+    local run = compaction.run({ preparation = prepared, model = model })
+    assert(vim.wait(1000, function() return run:is_done() end))
+    local result = run:result()
+    assert.is_true(result.ok)
+    assert.matches(previous, result.summary, 1, true)
+    assert.are.equal(1, #model.requests)
+    assert(session:append_compaction({
+      summary = result.summary, firstKeptEntryId = result.first_kept_entry_id,
+      tokensBefore = result.tokens_before,
+    }))
+    assert.matches(previous, session:context_messages()[1].content[1].text, 1, true)
   end)
 
   it("combines history and turn-prefix summaries", function()

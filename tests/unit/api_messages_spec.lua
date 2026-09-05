@@ -9,6 +9,39 @@ describe("neoagent.api.messages", function()
     assert.are.equal(original, messages.for_model(original, { input = { "text", "image" } }))
   end)
 
+  it("adapts foreign assistant metadata while preserving text and tool linkage", function()
+    local model = { api = "openai-responses", provider = "openai", id = "gpt-5.4", input = { "text", "image" } }
+    local native = {
+      role = "assistant", api = model.api, provider = model.provider, model = model.id,
+      content = { { type = "thinking", thinking = "Native", thinkingSignature = "native" } },
+    }
+    local original = {
+      native,
+      { role = "assistant", api = "anthropic-messages", provider = "anthropic", model = "claude-sonnet-4-6",
+        content = {
+          { type = "thinking", thinking = "Visible thought", thinkingSignature = "signed" },
+          { type = "thinking", thinking = "", thinkingSignature = "cipher", redacted = true },
+          { type = "thinking", thinking = "" },
+          { type = "text", text = "Answer", textSignature = "item", phase = "commentary" },
+          { type = "toolCall", id = "call", name = "read_file", arguments = { path = "README.md" } },
+        } },
+      { role = "toolResult", toolCallId = "call", content = { { type = "text", text = "Read" } } },
+      { role = "assistant", api = model.api, provider = model.provider, model = "another-model",
+        content = { { type = "thinking", thinking = "Other model", thinkingSignature = "other" } } },
+    }
+    local before = vim.deepcopy(original)
+    local transformed = messages.for_model(original, model)
+    assert.are.equal(native, transformed[1])
+    assert.are.same({
+      { type = "text", text = "Visible thought" },
+      { type = "text", text = "Answer" },
+      original[2].content[5],
+    }, transformed[2].content)
+    assert.are.equal(original[3], transformed[3])
+    assert.are.same({ { type = "text", text = "Other model" } }, transformed[4].content)
+    assert.are.same(before, original)
+  end)
+
   it("replaces unsupported user and tool images without mutating history", function()
     local original = {
       { role = "user", content = {

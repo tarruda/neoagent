@@ -177,12 +177,13 @@ local function is_retryable_error(err)
   if type(err.retryable) == "boolean" then return err.retryable end
   local text = error_text(err)
   if has_pattern(text, non_retryable_error_patterns) then return false end
+  if has_pattern(text, retryable_error_patterns) then return true end
   local response = type(err.response) == "table" and err.response or {}
   local status = tonumber(err.status) or tonumber(response.status)
     or tonumber(text:match("http%s+(%d%d%d)"))
   if status and status >= 400 then return retryable_status[status] == true end
   if err.kind == "transport" then return true end
-  return has_pattern(text, retryable_error_patterns)
+  return false
 end
 
 local function retry_delay(milliseconds)
@@ -369,6 +370,7 @@ function M.new(opts)
   end
 
   local function close_unmatched_calls()
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     local messages = state.session:messages()
     local pending = {}
     local order = {}
@@ -423,6 +425,8 @@ function M.new(opts)
   local function prepare_compaction()
     local settings = compaction_settings()
     if not settings or not state.session then return nil end
+    local closed, close_err = close_unmatched_calls()
+    if not closed then return nil, close_err end
     local path, path_err = state.session:path()
     if not path then return nil, path_err end
     return require("neoagent.compaction").prepare(path, settings)
@@ -965,6 +969,10 @@ function M.new(opts)
       if restored and not state.destroyed then opts.update_context() end
       return restored
     end
+    if state.destroyed then
+      rollback_claim()
+      return nil, util.error("agent", "Agent is destroyed")
+    end
     if type(prompt) ~= "string" or util.trim(prompt) == "" then
       rollback_claim()
       return nil
@@ -1010,6 +1018,7 @@ function M.new(opts)
   end
 
   function lifecycle.send(text)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then return lifecycle.steer(text) end
     local submission_id = next_submission_id()
     local run, err = submit(text, nil, submission_id)
@@ -1017,6 +1026,7 @@ function M.new(opts)
   end
 
   function lifecycle.steer(text)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if not state.activity then
       opts.notify("cannot steer while the agent is idle", vim.log.levels.WARN)
       return nil
@@ -1031,6 +1041,7 @@ function M.new(opts)
   end
 
   function lifecycle.resubmit_steering(submission_id)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
       return nil, util.error("steering", "The Agent is busy")
     end
@@ -1054,6 +1065,7 @@ function M.new(opts)
   end
 
   function lifecycle.compact(instructions)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
       opts.notify("cannot compact while the agent is running", vim.log.levels.WARN)
       return nil

@@ -88,6 +88,44 @@ describe("neoagent provider credential ownership", function()
     assert.matches("environment credential", err.message)
   end)
 
+  it("resolves named authentication independently from inference", function()
+    local inspected
+    local provider = {
+      auth = "inference",
+      auth_optional = true,
+      auth_scopes = { dashboard = "dashboard" },
+      api_key = "ambient-inference",
+    }
+    local value = ProviderCredentials.new({
+      provider_id = "example",
+      provider = provider,
+      authentication = {
+        has_credentials = function(_, method)
+          inspected = method
+          return method == "dashboard"
+        end,
+      },
+      method = { name = "Dashboard authorization" },
+      scope = "dashboard",
+    })
+
+    assert.are.same({
+      usable = true,
+      source = "stored",
+      method_id = "dashboard",
+      method_name = "Dashboard authorization",
+    }, value:state())
+    assert.are.equal("dashboard", inspected)
+    assert.is_nil(value:ambient_api_key())
+    assert.is_true(value:uses_method("inference"))
+    assert.is_true(value:uses_method("dashboard"))
+
+    value.authentication.has_credentials = function() return false end
+    local state = value:state()
+    assert.is_false(state.usable)
+    assert.are.equal("logged_out", state.source)
+  end)
+
   it("fails closed when stored credential inspection is unavailable", function()
     local unavailable = ProviderCredentials.new({
       provider_id = "example",
