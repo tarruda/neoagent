@@ -145,11 +145,6 @@ local function agent_options(configured, context)
       selected[key] = util.copy(value)
     end
   end
-  local selection = context.initial_selection
-  if selection then
-    selected.default_model = util.copy(selection.model)
-    selected.default_thinking_level = selection.thinking_level
-  end
   return selected
 end
 

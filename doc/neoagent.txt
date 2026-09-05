@@ -323,8 +323,9 @@ selecting it again restores its presentation state.
 
 A draft selects its model from the Workspace/Profile preference, configured
 `default_model`, or first available provider/model. Model changes resolve the
-complete Model before updating draft state. A failed pre-acceptance operation
-preserves the draft for retry.
+complete Model before updating draft state. Model and thinking choices bind as
+one initial request selection and govern the first accepted message. A failed
+pre-acceptance operation preserves the draft for retry.
 
 The top-level Applet supports: >lua
 

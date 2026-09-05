@@ -860,8 +860,7 @@ function M.from_config(options, runtime)
       local selected = state.request_selection:candidate()
       if selected then
         if configured_catalog_pending(selected) then
-          state.request_selection:stage(
-            selected, configured().default_thinking_level)
+          state.request_selection:stage(selected)
           bind_provider(selected.provider)
         else
           ensure_model()

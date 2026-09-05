@@ -418,6 +418,53 @@ describe("neoagent Agent-owned Applets", function()
       agent:get_session():state().model)
   end)
 
+  it("persists an explicit draft thinking level on first acceptance", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local settings = require("neoagent.workspace_settings").new({
+      directory = directory,
+      root = vim.fn.getcwd(),
+    })
+    assert(settings:write({
+      agents = { neo = {
+        default_model = { provider = "fake", model = "test" },
+        default_thinking_level = "medium",
+      } },
+    }))
+    setup(fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "saved" } }),
+    } }), {
+      persistence = {
+        enabled = true,
+        workspace_settings = true,
+        directory = directory,
+      },
+      providers = { fake = { api = "fake-api", models = { test = {
+        thinking = { medium = {}, xhigh = {} },
+      } } } },
+    })
+    assert(applet:toggle())
+
+    assert.are.equal("xhigh", applet:set_thinking_level("xhigh"))
+    assert.are.equal("medium",
+      assert(settings:load()).agents.neo.default_thinking_level)
+
+    submit("remember this thinking level")
+
+    assert(vim.wait(1000, function()
+      local agent = applet:active_agent()
+      return agent and not agent:is_running()
+    end, 5))
+    local agent = assert(applet:active_agent())
+    assert.are.equal("xhigh", agent:get_session():state().thinking_level)
+    local stored = assert(require("neoagent.storage").open(
+      agent:get_session():metadata().path))
+    assert.are.equal("xhigh", stored:state().thinking_level)
+    assert.are.equal("xhigh", stored:entries()[1].request.thinkingLevel)
+    assert.are.equal("xhigh",
+      assert(settings:load()).agents.neo.default_thinking_level)
+  end)
+
   it("restores workspace preferences into the first lazy Profile draft", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory

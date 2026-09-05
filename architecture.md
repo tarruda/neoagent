@@ -206,6 +206,11 @@ provisionally adopts an Agent. Failure before acceptance restores the draft;
 durable acceptance binds the Agent. Session creation remains authoritative
 when later activation fails.
 
+Agent construction receives draft configuration and the staged request
+selection as distinct values. The selection carries model identity and
+thinking level atomically and governs the first accepted message, while a
+resumed Agent restores request state from its selected Session path.
+
 Each bundled Agent owns one permanent Agent Applet, and each Agent Applet owns
 one View. Closing the visible surface leaves the Agent and its semantic state
 alive. Background Agent Runs continue independently while the top-level
