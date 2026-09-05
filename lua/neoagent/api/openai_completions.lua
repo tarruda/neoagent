@@ -192,7 +192,8 @@ local function partial_message(message, calls_complete, err)
 end
 
 local function usage_from(raw)
-  local details = raw.prompt_tokens_details or {}
+  local details = type(raw.prompt_tokens_details) == "table"
+    and raw.prompt_tokens_details or {}
   local input = raw.prompt_tokens or 0
   local output = raw.completion_tokens or 0
   local cache_read = details.cached_tokens or raw.prompt_cache_hit_tokens or 0
@@ -477,7 +478,8 @@ function Model:stream(opts)
           thinking_block.thinking = thinking_block.thinking .. thinking
           run:emit({ type = "thinking_delta", text = thinking })
         end
-        for _, raw_call in ipairs(delta.tool_calls or {}) do
+        local tool_calls = type(delta.tool_calls) == "table" and delta.tool_calls or {}
+        for _, raw_call in ipairs(tool_calls) do
           local index = raw_call.index or 0
           local call = calls[index]
           if not call then
@@ -488,7 +490,7 @@ function Model:stream(opts)
           if type(raw_call.id) == "string" and raw_call.id ~= "" and call.id == "" then
             call.id = raw_call.id
           end
-          local fn = raw_call["function"] or {}
+          local fn = type(raw_call["function"]) == "table" and raw_call["function"] or {}
           if type(fn.name) == "string" and fn.name ~= "" then
             call.name = call.name .. fn.name
           end

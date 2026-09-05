@@ -37,6 +37,29 @@ describe("neoagent.api.openai_completions", function()
     ))
   end)
 
+  it("tolerates null tool_calls, function, and usage detail fields in deltas", function()
+    local fake = fake_transport.new({ {
+      chunks = {
+        'data: {"choices":[{"delta":{"role":"assistant","content":null,"tool_calls":null}}],"usage":{"prompt_tokens":2,"completion_tokens":0,"total_tokens":2,"prompt_tokens_details":null}}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"echo","arguments":"{\\\"text\\\":"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":null}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\\"ok\\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+        "data: [DONE]\n\n",
+      },
+    } })
+    local model = openai.new({ provider = "local", model = "test", base_url = "http://localhost/v1", transport = fake })
+    local result = wait(model:stream({
+      messages = { { role = "user", content = "Hello" } },
+      tools = { { name = "echo", description = "Echo", input_schema = {} } },
+    }))
+    assert.is_true(result.ok)
+    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.equal("c1", result.message.content[1].id)
+    assert.are.equal("echo", result.message.content[1].name)
+    assert.are.same({ text = "ok" }, result.message.content[1].arguments)
+    assert.are.same({ input = 2, output = 0 }, { input = result.message.usage.input, output = result.message.usage.output })
+  end)
+
   it("normalizes prompt progress and rolls generation timing over three seconds", function()
     local fake = fake_transport.new({ {
       chunks = {
