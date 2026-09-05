@@ -370,6 +370,7 @@ function M.new(opts)
   end
 
   local function close_unmatched_calls()
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     local messages = state.session:messages()
     local pending = {}
     local order = {}
@@ -966,6 +967,10 @@ function M.new(opts)
       if restored and not state.destroyed then opts.update_context() end
       return restored
     end
+    if state.destroyed then
+      rollback_claim()
+      return nil, util.error("agent", "Agent is destroyed")
+    end
     if type(prompt) ~= "string" or util.trim(prompt) == "" then
       rollback_claim()
       return nil
@@ -1011,6 +1016,7 @@ function M.new(opts)
   end
 
   function lifecycle.send(text)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then return lifecycle.steer(text) end
     local submission_id = next_submission_id()
     local run, err = submit(text, nil, submission_id)
@@ -1018,6 +1024,7 @@ function M.new(opts)
   end
 
   function lifecycle.steer(text)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if not state.activity then
       opts.notify("cannot steer while the agent is idle", vim.log.levels.WARN)
       return nil
@@ -1032,6 +1039,7 @@ function M.new(opts)
   end
 
   function lifecycle.resubmit_steering(submission_id)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
       return nil, util.error("steering", "The Agent is busy")
     end
@@ -1055,6 +1063,7 @@ function M.new(opts)
   end
 
   function lifecycle.compact(instructions)
+    if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
       opts.notify("cannot compact while the agent is running", vim.log.levels.WARN)
       return nil

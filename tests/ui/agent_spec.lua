@@ -722,6 +722,96 @@ describe("neoagent default agent", function()
     unsubscribe()
   end)
 
+  it("rejects new work after destruction with shared provider runtimes", function()
+    local executions = 0
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "destroyed-call", name = "effect", arguments = {},
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "Done" } }) },
+    })
+    local options = model_options(model, { tools = { {
+      name = "effect", description = "Execute", input_schema = { type = "object" },
+      execute = function()
+        executions = executions + 1
+        return { content = { { type = "text", text = "Executed" } } }
+      end,
+    } } })
+    local runtimes = { fake = provider_runtime("fake", options.providers.fake) }
+    local session = assert(require("neoagent.session").new())
+    local agent = neoagent.new(options, { session = session, runtimes = runtimes })
+    neoagent._set_default(agent)
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      runtimes.fake.service, function(value) users[#users + 1] = value.users end)
+    local sibling
+    local ok, failure = pcall(function()
+      assert(agent:prepare())
+      agent:destroy()
+      for _, call in ipairs({
+        function() return agent:send("Execute after destruction") end,
+        function() return agent:compact() end,
+        function() return agent:steer("Steer after destruction") end,
+        function() return agent:resubmit_steering(1) end,
+      }) do
+        local run, err = call()
+        if type(run) == "table" and run.is_done then
+          assert(vim.wait(1000, function() return run:is_done() end))
+        end
+        assert.is_nil(run)
+        assert.are.equal("Agent is destroyed", err.message)
+      end
+      assert.are.equal(0, #model.requests)
+      assert.are.equal(0, executions)
+      assert.are.same({}, session:messages())
+      assert.are.same({}, users)
+      sibling = neoagent.new(options, { runtimes = runtimes })
+      local run = assert(sibling:send("Execute on the live Agent"))
+      assert(vim.wait(1000, function() return run:is_done() end))
+      assert.is_true(run:result().ok)
+      assert.are.equal(1, executions)
+      assert.are.same({ 1, 0 }, users)
+      assert.are.same({}, session:messages())
+    end)
+    if sibling then sibling:destroy() end
+    agent:destroy()
+    unsubscribe()
+    require("neoagent.provider_runtimes").destroy(runtimes)
+    assert(ok, failure)
+  end)
+
+  it("rejects a submission destroyed by its prompt preparation callback", function()
+    local agent
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "Must not run" } }),
+    } })
+    local options = model_options(model, {
+      system_prompt = function()
+        agent:destroy()
+        return "Destroyed during preparation"
+      end,
+    })
+    local runtimes = { fake = provider_runtime("fake", options.providers.fake) }
+    agent = neoagent.new(options, { runtimes = runtimes })
+    neoagent._set_default(agent)
+    local users = {}
+    local unsubscribe = require("neoagent.provider_service").subscribe(
+      runtimes.fake.service, function(value) users[#users + 1] = value.users end)
+    local ok, failure = pcall(function()
+      local run, err = agent:send("Prepare a request")
+      if run then assert(vim.wait(1000, function() return run:is_done() end)) end
+      assert.is_nil(run)
+      assert.are.equal("Agent is destroyed", err.message)
+      assert.are.same({}, agent:get_session():messages())
+      assert.are.equal(0, #model.requests)
+      assert.are.same({ 1, 0 }, users)
+    end)
+    agent:destroy()
+    unsubscribe()
+    require("neoagent.provider_runtimes").destroy(runtimes)
+    assert(ok, failure)
+  end)
+
   it("identifies the Agent and active Session in executor context", function()
     local model = fake_model.new({
       { result = fake_model.assistant({
