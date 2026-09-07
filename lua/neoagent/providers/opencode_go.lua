@@ -14,7 +14,7 @@ local windows = {
   { id = "monthly", label = "Monthly limit", dollars = 60 },
 }
 
----@param provider Neoagent.ProviderHttpServiceConfig
+---@param provider Neoagent.ProviderServiceConfig
 ---@param resources Neoagent.ProviderServiceResources
 ---@return Neoagent.OpenCodeClient
 local function client(provider, resources)
@@ -28,7 +28,7 @@ local function client(provider, resources)
   })
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderHttpServiceConfig>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
@@ -65,7 +65,7 @@ local function limit_level(window)
   return "success"
 end
 
----@param opts? Neoagent.ProviderHttpServiceConfig
+---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.ProviderServiceResources
 ---@return Neoagent.ProviderService
 function M.new(opts, resources)

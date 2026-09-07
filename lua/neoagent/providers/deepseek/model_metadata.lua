@@ -3,7 +3,7 @@ local M = {}
 local efforts = require("neoagent.model_efforts")
 local util = require("neoagent.util")
 
----@class Neoagent.DeepSeekModelMetadata
+---@class Neoagent.DeepSeekModelMetadata: Neoagent.ModelConfigInput
 ---@field input? ("text"|"image")[]
 ---@field context_window? integer
 ---@field max_output_tokens? integer

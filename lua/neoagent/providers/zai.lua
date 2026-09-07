@@ -8,9 +8,6 @@ local M = {}
 ---@class Neoagent.ZaiServiceOptions: Neoagent.ProviderHttpServiceOptions
 ---@field management_url? string
 
----@class Neoagent.ZaiServiceConfig: Neoagent.ProviderServiceConfig
----@field service_opts? Neoagent.ZaiServiceOptions
-
 local DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 
 ---@param value unknown
@@ -83,7 +80,7 @@ local function unavailable(resource, err)
     .. tostring(err.message or "permission denied")
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ZaiServiceConfig>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local service_opts = validate_service_opts(ctx.provider.service_opts)
@@ -104,7 +101,7 @@ function M.discover_models(ctx)
   end, { error_kind = "provider" })
 end
 
----@param opts? Neoagent.ZaiServiceConfig
+---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.ProviderServiceResources
 ---@return Neoagent.ProviderService
 function M.new(opts, resources)

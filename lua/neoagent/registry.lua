@@ -3,6 +3,29 @@ local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local M = {}
 
+---@alias Neoagent.ProviderCompositionResources {catalog: Neoagent.ModelCatalog, auth?: Neoagent.AuthManager, provider_id?: string, transport?: Neoagent.ByteBackend, report?: fun(message: string, level: integer), ambient_api_key?: fun(): string?}
+
+---@alias Neoagent.ProviderCompositionConfig {api?: string, base_url?: string, auth?: string, auth_optional?: boolean, auth_scopes?: table<string, string>, service_opts?: table<string, unknown>, catalog?: {additions?: table<string, Neoagent.ModelConfigInput|false>}}
+
+---@alias Neoagent.ProviderFactory fun(config: Neoagent.ProviderCompositionConfig, resources: Neoagent.ProviderCompositionResources): Neoagent.ProviderService
+
+---@class Neoagent.ProviderOptions: Neoagent.ProviderCredentialConfig
+---@field api? string
+---@field base_url? string
+---@field models? table<string, Neoagent.ModelConfigInput|false>
+---@field catalog? Neoagent.CatalogDefinition
+---@field request_opts? Neoagent.RequestLayer
+---@field service? Neoagent.ProviderFactory
+---@field service_opts? table<string, unknown>
+---@field diagnostics? {path: string}|false
+
+---@class Neoagent.ProviderDefinition: Neoagent.ProviderOptions
+---@field api string
+---@field models table<string, Neoagent.ModelConfigInput|false>
+---@field catalog Neoagent.CatalogDefinition
+
+
+---@type {openai: Neoagent.ProviderDefinition, ["openai-codex"]: Neoagent.ProviderDefinition}
 local openai = require("neoagent.registry.openai")
 local defaults = {
   openai = openai.openai,

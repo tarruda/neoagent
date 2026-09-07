@@ -6,7 +6,12 @@ local M = {}
 ---@field summary? string|false
 ---@field encrypted? boolean
 
----@alias Neoagent.ResponseEffort { body: { reasoning: { effort: string, summary?: string }, include?: string[] } }
+---@class Neoagent.ResponseEffortBody: Neoagent.JsonObject
+---@field reasoning {effort: string, summary?: string}
+---@field include? string[]
+
+---@class Neoagent.ResponseEffort: Neoagent.RequestOverride
+---@field body Neoagent.ResponseEffortBody
 ---@alias Neoagent.CompletionEffort { body: { reasoning_effort: string } }
 ---@class Neoagent.ThinkingEffortBody: Neoagent.JsonObject
 ---@field thinking {type: "enabled"|"disabled"}

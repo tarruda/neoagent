@@ -232,7 +232,7 @@ local function random_id()
   end)
 end
 
----@param opts? Neoagent.ProviderHttpServiceConfig
+---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.ProviderServiceResources
 ---@return Neoagent.ProviderService
 function M.new(opts, resources)
@@ -244,8 +244,8 @@ function M.new(opts, resources)
   local client = management.new({
     base_url = opts.base_url or DEFAULT_BASE_URL,
     transport = resources.transport,
-    timeout_ms = service_opts.timeout_ms,
-    max_response_bytes = service_opts.max_response_bytes,
+    timeout_ms = rawget(service_opts, "timeout_ms"),
+    max_response_bytes = rawget(service_opts, "max_response_bytes"),
   })
   ---@type Neoagent.ProviderStatusBlock?
   local status

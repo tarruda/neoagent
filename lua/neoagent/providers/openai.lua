@@ -7,7 +7,7 @@ local util = require("neoagent.util")
 local M = {}
 local DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
----@param provider Neoagent.ProviderHttpServiceConfig
+---@param provider Neoagent.ProviderServiceConfig
 ---@param resources Neoagent.ProviderServiceResources
 ---@return Neoagent.OpenAIClient
 local function client(provider, resources)
@@ -22,7 +22,7 @@ local function client(provider, resources)
   })
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderHttpServiceConfig>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
@@ -56,7 +56,7 @@ local function currency(entry)
   return string.format("%.2f %s", entry.value, entry.currency:upper())
 end
 
----@param opts? Neoagent.ProviderHttpServiceConfig
+---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.ProviderServiceResources
 ---@return Neoagent.ProviderService
 function M.new(opts, resources)

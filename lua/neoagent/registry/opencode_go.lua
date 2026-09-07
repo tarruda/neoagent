@@ -1,10 +1,15 @@
 local util = require("neoagent.util")
+
 local no_source_options = require("neoagent.model_catalog.source").no_options
 
+---@param body Neoagent.JsonObject
+---@return Neoagent.RequestOverride
 local function request(body)
   return { body = body }
 end
 
+---@param values table<Neoagent.ThinkingLevel, string>
+---@return Neoagent.ThinkingOptions
 local function response_efforts(values)
   local result = {}
   for level, effort in pairs(values) do
@@ -13,6 +18,8 @@ local function response_efforts(values)
   return result
 end
 
+---@param values table<Neoagent.ThinkingLevel, string>
+---@return Neoagent.ThinkingOptions
 local function completion_efforts(values)
   local result = {}
   for level, effort in pairs(values) do
@@ -21,6 +28,8 @@ local function completion_efforts(values)
   return result
 end
 
+---@param values Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function completion_thinking(values)
   local result = {
     off = request({ thinking = { type = "disabled" } }),
@@ -34,6 +43,8 @@ local function completion_thinking(values)
   return result
 end
 
+---@param values Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function message_efforts(values)
   local result = {
     off = request({ thinking = { type = "disabled" } }),
@@ -47,6 +58,8 @@ local function message_efforts(values)
   return result
 end
 
+---@param enabled_type? string
+---@return Neoagent.ThinkingOptions
 local function toggle_thinking(enabled_type)
   return {
     off = request({ thinking = { type = "disabled" } }),
@@ -57,9 +70,11 @@ end
 -- Go attributes metered inference to the calling conversation. Omit the header
 -- instead of failing a request when the composition has no Session identity
 -- or when an identity is not a safe header value.
+---@param context Neoagent.RequestOptionsContext
+---@return Neoagent.RequestOverride
 local function session_header(context)
   local identity = context.request_context
-  local session_id = type(identity) == "table" and identity.session_id or nil
+  local session_id = type(identity) == "table" and rawget(identity, "session_id") or nil
   if type(session_id) ~= "string" or session_id == "" or #session_id > 512
       or not util.is_valid_utf8(session_id)
       or session_id:find("[%z\1-\31\127]") then
@@ -68,7 +83,19 @@ local function session_header(context)
   return { headers = { ["x-opencode-session"] = session_id } }
 end
 
+---@class Neoagent.RegistryModelDefaults
+---@field context_window integer
+---@field max_output_tokens integer
+---@field input ("text"|"image")[]
+---@field api? string
+---@field thinking? Neoagent.ThinkingOptions
+
+---@param context_window integer
+---@param max_output_tokens integer
+---@param options? {api?: string, image?: boolean, thinking?: Neoagent.ThinkingOptions}
+---@return Neoagent.RegistryModelDefaults
 local function model(context_window, max_output_tokens, options)
+  ---@type Neoagent.RegistryModelDefaults
   local result = {
     context_window = context_window,
     max_output_tokens = max_output_tokens,
@@ -83,6 +110,7 @@ end
 
 local responses = "openai-responses"
 local messages = "anthropic-messages"
+---@type table<string, Neoagent.RegistryModelDefaults>
 local known_models = {
   ["grok-4.5"] = model(500000, 500000, {
     api = responses,
@@ -196,6 +224,7 @@ local known_models = {
   }),
 }
 
+---@type table<string, boolean>
 local response_models = {
   ["gpt-5.6-luna"] = true,
   ["grok-4.5"] = true,
@@ -203,12 +232,15 @@ local response_models = {
   ["muse-spark-1.2-contributor"] = true,
 }
 
+---@type table<string, boolean>
 local message_models = {
   ["minimax-m3"] = true,
   ["minimax-m2.7"] = true,
   ["minimax-m2.5"] = true,
 }
 
+---@param id string
+---@return Neoagent.ThinkingOptions?
 local function qwen_thinking(id)
   if id:match("^qwen3%.8%-") then
     return message_efforts({ "low", "medium", "xhigh" })
@@ -216,18 +248,23 @@ local function qwen_thinking(id)
   if id:match("^qwen3%.[5-7]%-") then return toggle_thinking() end
 end
 
+---@param source Neoagent.DiscoveredModel
+---@return Neoagent.ModelConfigInput
 local function transform(source)
-  local defaults = util.deep_merge(
-    { input = { "text" } }, known_models[source.id] or {})
+  ---@type Neoagent.ModelConfigInput
+  local fallback = { input = { "text" } }
+  local defaults = util.deep_merge(fallback, known_models[source.id] or {})
+  ---@cast defaults Neoagent.ModelConfigInput
   if defaults.thinking == nil then
     defaults.thinking = qwen_thinking(source.id)
   end
   local result = util.deep_merge(defaults, source)
+  ---@cast result Neoagent.DiscoveredModel
   if result.api == nil then
-    if response_models[result.id] then
+    if response_models[source.id] then
       result.api = responses
-    elseif message_models[result.id]
-        or result.id:match("^qwen3%.[5-8]%-") then
+    elseif message_models[source.id]
+        or source.id:match("^qwen3%.[5-8]%-") then
       result.api = messages
     end
   end
@@ -246,10 +283,12 @@ local ids = {
   "qwen3.8-flash", "qwen3.8-max",
 }
 
+---@type Neoagent.DiscoveredModel[]
 local seed = {}
 for _, id in ipairs(ids) do seed[#seed + 1] = { id = id } end
 
-return {
+---@type Neoagent.ProviderDefinition
+local provider = {
   api = "openai-completions",
   base_url = "https://opencode.ai/zen/go/v1",
   api_key = function() return vim.env.OPENCODE_API_KEY end,
@@ -267,3 +306,5 @@ return {
   models = {},
   service = require("neoagent.providers.opencode_go").new,
 }
+
+return provider

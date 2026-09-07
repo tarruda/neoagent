@@ -7,12 +7,7 @@ local M = {}
 ---@field base_url? string
 ---@field service_opts? table<string, unknown>
 
----@class Neoagent.CatalogSourceProjection
----@field api? string
----@field base_url? string
----@field auth? string
----@field auth_optional? boolean
----@field service_opts? table<string, unknown>
+---@alias Neoagent.CatalogSourceProjection {api?: string, base_url?: string, auth?: string, auth_optional?: boolean, service_opts?: table<string, unknown>}
 
 ---@class Neoagent.CatalogSourceDefinition
 ---@field source_id? string

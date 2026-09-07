@@ -24,9 +24,6 @@ local M = {}
 ---@field timeout_ms? integer
 ---@field max_response_bytes? integer
 
----@class Neoagent.ProviderHttpServiceConfig: Neoagent.ProviderServiceConfig
----@field service_opts? Neoagent.ProviderHttpServiceOptions
-
 ---@param value unknown
 ---@param provider string
 ---@return Neoagent.ProviderHttpServiceOptions

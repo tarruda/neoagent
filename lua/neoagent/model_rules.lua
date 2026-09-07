@@ -2,9 +2,7 @@ local util = require("neoagent.util")
 
 local M = {}
 
----@class Neoagent.ModelRuleContext
----@field provider_id? string
----@field source_model? Neoagent.DiscoveredModel
+---@alias Neoagent.ModelRuleContext {provider_id?: string, source_model?: Neoagent.DiscoveredModel}
 
 ---@alias Neoagent.ModelTransform fun(model: Neoagent.ModelConfigInput, ctx?: Neoagent.ModelRuleContext): Neoagent.ModelConfigInput|false
 

@@ -6,10 +6,6 @@ local util = require("neoagent.util")
 local M = {}
 -- Neoagent validates the supported Codex model metadata locally. Request the
 -- complete account inventory independently from Codex CLI release gates.
----@class Neoagent.CodexCatalogProvider
----@field base_url string
----@field service_opts? {timeout_ms?: number, max_response_bytes?: integer}
-
 ---@class Neoagent.CodexCatalogModel: Neoagent.ModelConfig
 ---@field reasoning_levels Neoagent.ThinkingLevel[]
 ---@field service_tiers? string[]
@@ -149,13 +145,13 @@ local function base_url(value)
   return (value:gsub("/codex/responses$", ""):gsub("/codex$", ""))
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.CodexCatalogProvider>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.CatalogSourceProjection>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.CodexCatalogModel>, nil>
 function M.discover(ctx)
   local provider = ctx.provider
   local service_opts = provider.service_opts or {}
-  local timeout_ms = service_opts.timeout_ms or DEFAULT_TIMEOUT_MS
-  local maximum = service_opts.max_response_bytes or DEFAULT_MAX_RESPONSE_BYTES
+  local timeout_ms = rawget(service_opts, "timeout_ms") or DEFAULT_TIMEOUT_MS
+  local maximum = rawget(service_opts, "max_response_bytes") or DEFAULT_MAX_RESPONSE_BYTES
   local transport = http_client.new(ctx.transport)
   return async.run(
   ---@return Neoagent.CatalogDiscovered<Neoagent.CodexCatalogModel>|Neoagent.CatalogUnchanged
@@ -173,7 +169,7 @@ function M.discover(ctx)
       ["If-None-Match"] = ctx.validator and ctx.validator.etag,
     })
     local fetched = transport.fetch({ request = {
-      url = base_url(provider.base_url) .. "/codex/models?client_version="
+      url = base_url(assert(provider.base_url, "Codex catalog requires base_url")) .. "/codex/models?client_version="
         .. CATALOG_CLIENT_VERSION,
       method = "GET",
       headers = headers,

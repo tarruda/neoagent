@@ -7,7 +7,7 @@ local util = require("neoagent.util")
 local M = {}
 local DEFAULT_BASE_URL = "https://api.deepseek.com"
 
----@param provider Neoagent.ProviderHttpServiceConfig
+---@param provider Neoagent.ProviderServiceConfig
 ---@param resources Neoagent.ProviderServiceResources
 ---@return Neoagent.DeepSeekClient
 local function client(provider, resources)
@@ -21,7 +21,7 @@ local function client(provider, resources)
   })
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderHttpServiceConfig>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
@@ -44,7 +44,7 @@ local function amount(currency, value)
   return (currency == "USD" and "$" or "CN¥") .. value
 end
 
----@param opts? Neoagent.ProviderHttpServiceConfig
+---@param opts? Neoagent.ProviderServiceConfig
 ---@param resources? Neoagent.ProviderServiceResources
 ---@return Neoagent.ProviderService
 function M.new(opts, resources)

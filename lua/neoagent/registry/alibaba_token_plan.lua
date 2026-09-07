@@ -1,3 +1,5 @@
+---@param body Neoagent.JsonObject
+---@return Neoagent.RequestOverride
 local function request(body)
   return { body = body }
 end
@@ -5,7 +7,10 @@ end
 local BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com"
   .. "/compatible-mode/v1"
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function effort_thinking(levels)
+  ---@type Neoagent.ThinkingOptions
   local result = {
     off = request({ enable_thinking = false }),
   }
@@ -18,6 +23,7 @@ local function effort_thinking(levels)
   return result
 end
 
+---@return Neoagent.ThinkingOptions
 local function hybrid_thinking()
   return {
     off = request({ enable_thinking = false }),
@@ -25,11 +31,18 @@ local function hybrid_thinking()
   }
 end
 
+---@param context Neoagent.RequestOptionsContext
+---@return Neoagent.RequestOverride
 local function tool_stream(context)
   if #context.tools == 0 then return {} end
   return { body = { tool_stream = true } }
 end
 
+---@param id string
+---@param context_window integer
+---@param max_output_tokens integer
+---@param opts? {image?: boolean, thinking?: Neoagent.ThinkingOptions, tool_stream?: boolean}
+---@return Neoagent.ModelConfig
 local function model(id, context_window, max_output_tokens, opts)
   opts = opts or {}
   return {
@@ -42,17 +55,21 @@ local function model(id, context_window, max_output_tokens, opts)
   }
 end
 
+---@return Neoagent.ThinkingOptions
 local qwen38 = function()
   return effort_thinking({ "low", "medium", "xhigh" })
 end
+---@return Neoagent.ThinkingOptions
 local deepseek = function()
   return effort_thinking({ "high", "max" })
 end
+---@return Neoagent.ThinkingOptions
 local deepseek_snapshot = function()
   return effort_thinking({ "low", "high", "max" })
 end
 
-return {
+---@type Neoagent.ProviderDefinition
+local provider = {
   api = "openai-completions",
   base_url = BASE_URL,
   api_key = function() return vim.env.BAILIAN_TOKEN_PLAN_API_KEY end,
@@ -97,3 +114,5 @@ return {
   models = {},
   service = require("neoagent.providers.alibaba_token_plan").new,
 }
+
+return provider

@@ -22,7 +22,10 @@ local M = {}
 ---@field reasoning_context? unknown
 ---@field text_verbosity? unknown
 
----@class Neoagent.ModelConfig: Neoagent.ModelConfigInput
+---@class Neoagent.DiscoveredModel: Neoagent.ModelConfigInput
+---@field id string
+
+---@class Neoagent.ModelConfig: Neoagent.DiscoveredModel
 ---@field id string
 ---@field api? string
 ---@field name? string
@@ -39,9 +42,6 @@ local M = {}
 ---@field reasoning_summary? string
 ---@field reasoning_context? string
 ---@field text_verbosity? string
-
----@class Neoagent.DiscoveredModel: Neoagent.ModelConfigInput
----@field id string
 
 ---@param provider_id string
 ---@param model_id? string
