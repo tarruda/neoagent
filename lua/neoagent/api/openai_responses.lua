@@ -40,21 +40,27 @@ local M = {}
 local Model = {}
 Model.__index = Model
 
+---@param call_opts Neoagent.StreamOptions
+---@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
 function Model:_request(call_opts)
   return request_builder.build(self, call_opts)
 end
 
+---@param opts Neoagent.StreamOptions
+---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local message
+  ---@type Neoagent.ResponsesDecoder?
   local stream
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+  ---@return Neoagent.ModelResult
+  function(run)
     local ok, outcome = pcall(function()
       local request, identity = self:_request(opts)
       local transport = request_context.bind_transport(self._transport, identity)
       stream = decoder.new(self, function(event) run:emit(event) end)
-      message = stream.message
       local child = transport.stream({
         request = {
           url = request.url,
@@ -65,10 +71,10 @@ function Model:stream(opts)
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
       if not transport_ok then error(transport_result, 0) end
-      http_response.check(transport_result)
+      local response = http_response.check(transport_result)
       if self._response_status then
         local status, details = self._response_status(
-          transport_result.headers or {})
+          response.headers)
         if type(status) == "string" and status ~= ""
             or type(details) == "table" then
           run:emit({
@@ -81,7 +87,7 @@ function Model:stream(opts)
       if not stream.is_terminal() then
         error(util.error("protocol", "Stream ended before a terminal response event"), 0)
       end
-      return message
+      return stream.message
     end)
 
     if not ok then
@@ -111,6 +117,8 @@ function Model:stream(opts)
   })
 end
 
+---@param opts Neoagent.ResponsesOptions
+---@return Neoagent.ResponsesModel
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
@@ -119,7 +127,7 @@ function M.new(opts)
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do layers[#layers + 1] = layer end
   if opts.request_opts ~= nil then layers[#layers + 1] = opts.request_opts end
-  return model_contract.assert(setmetatable({
+  local result = model_contract.assert(setmetatable({
     api = "openai-responses",
     provider = opts.provider,
     id = opts.model,
@@ -141,6 +149,8 @@ function M.new(opts)
     _request_context = request_context.copy(opts.request_context),
     _transport = http.new(opts.transport),
   }, Model), "OpenAI Responses constructor")
+  ---@cast result Neoagent.ResponsesModel
+  return result
 end
 
 M._encode_messages = request_builder.encode_messages

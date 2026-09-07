@@ -40,7 +40,13 @@ local M = {}
 ---@field type 'warning'
 ---@field message string
 
----@alias Neoagent.ModelEvent Neoagent.ModelTextDelta|Neoagent.ModelThinkingDelta|Neoagent.ModelToolDelta|Neoagent.ModelUsageEvent|Neoagent.ModelInferenceStats|Neoagent.ModelWarning
+---@class Neoagent.ModelProviderStatus
+---@field type 'provider_status'
+---@field text? string
+---@field details? Neoagent.JsonObject
+---@field reconnecting? boolean
+
+---@alias Neoagent.ModelEvent Neoagent.ModelTextDelta|Neoagent.ModelThinkingDelta|Neoagent.ModelToolDelta|Neoagent.ModelUsageEvent|Neoagent.ModelInferenceStats|Neoagent.ModelWarning|Neoagent.ModelProviderStatus
 
 ---@class Neoagent.ModelSuccess
 ---@field ok true
