@@ -7,6 +7,9 @@ local util = require("neoagent.util")
 local M = {}
 local DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 
+---@param provider Neoagent.ProviderHttpServiceConfig
+---@param resources Neoagent.ProviderServiceResources
+---@return Neoagent.AnthropicClient
 local function client(provider, resources)
   local service_opts = provider_http.service_options(provider.service_opts, "anthropic")
   return client_module.new({
@@ -22,6 +25,8 @@ local function client(provider, resources)
   })
 end
 
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderHttpServiceConfig>
+---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.AnthropicCatalogModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
     transport = ctx.transport,
@@ -34,6 +39,8 @@ function M.discover_models(ctx)
   end, { error_kind = "provider" })
 end
 
+---@param value number
+---@return string
 local function grouped(value)
   local digits = tostring(math.floor(value))
   while true do
@@ -43,22 +50,31 @@ local function grouped(value)
   end
 end
 
+---@param entry Neoagent.AnthropicOrganizationCost
+---@return string
 local function currency(entry)
   if entry.currency == "USD" then return string.format("$%.2f", entry.value) end
   return string.format("%.2f %s", entry.value, entry.currency)
 end
 
+---@param opts? Neoagent.ProviderHttpServiceConfig
+---@param resources? Neoagent.ProviderServiceResources
+---@return Neoagent.ProviderService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
   local provider_id = resources.provider_id or "anthropic"
   local base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", "")
   local selected = client(opts, resources)
+  ---@type Neoagent.ProviderStatusBlock?
   local status
+  ---@type Neoagent.AnthropicOrganizationSuccess?
   local report
   local destroyed = false
 
+  ---@return Neoagent.ProviderBlock[]
   local function blocks()
+    ---@type Neoagent.ProviderBlock[]
     local result = {}
     if status then result[#result + 1] = util.copy(status) end
     result[#result + 1] = {
@@ -89,6 +105,7 @@ function M.new(opts, resources)
   local function publish()
     if not destroyed then assert(dashboard:push({ blocks = blocks() })) end
   end
+  ---@class Neoagent.AnthropicService: Neoagent.ProviderService
   local service = {
     id = provider_id,
     name = "Anthropic API",
@@ -113,7 +130,8 @@ function M.new(opts, resources)
         local refreshed = selected:organization(ctx):await()
         if refreshed.ok == false then
           local err = refreshed.error
-          if err and (err.status == 401 or err.status == 403) then
+          local status_code = err and rawget(err, "status")
+          if status_code == 401 or status_code == 403 then
             local detail = tostring(err.message or "permission denied")
             status = {
               type = "status",

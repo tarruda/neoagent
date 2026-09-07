@@ -46,7 +46,6 @@ lua/neoagent/profiles.lua
 lua/neoagent/provider_runtimes.lua
 lua/neoagent/provider_shell.lua
 lua/neoagent/providers/alibaba_token_plan.lua
-lua/neoagent/providers/anthropic.lua
 lua/neoagent/providers/codex.lua
 lua/neoagent/providers/llama.lua
 lua/neoagent/providers/opencode_go.lua
