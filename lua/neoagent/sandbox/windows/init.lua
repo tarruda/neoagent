@@ -1,6 +1,6 @@
 local compiler = require("neoagent.sandbox.windows.compile")
 local path_module = require("neoagent.sandbox.path")
-local protocol = require("neoagent.sandbox.windows.protocol")
+local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
 
 local M = {

@@ -792,7 +792,7 @@ end)
 
 describe("neoagent sandbox protocol and native profiles", function()
   it("frames fragmented binary MessagePack events", function()
-    local protocol = require("neoagent.sandbox.linux.protocol")
+    local protocol = require("neoagent.sandbox.protocol")
     local binary = "a\0b\255"
     local data = protocol.encode({ v = 1, type = "ready" })
       .. protocol.encode({

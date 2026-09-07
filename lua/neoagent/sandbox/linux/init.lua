@@ -1,4 +1,4 @@
-local protocol = require("neoagent.sandbox.linux.protocol")
+local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
 
 local M = { name = "linux" }

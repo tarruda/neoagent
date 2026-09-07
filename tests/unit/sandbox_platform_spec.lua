@@ -1,5 +1,5 @@
 local fs = require("neoagent.fs")
-local protocol = require("neoagent.sandbox.linux.protocol")
+local protocol = require("neoagent.sandbox.protocol")
 
 local function temporary_directory()
   local path = vim.fn.tempname()
@@ -1524,7 +1524,7 @@ describe("neoagent sandbox platform adapters", function()
   end
 
   local function windows_events(values, stderr, result)
-    local framed = require("neoagent.sandbox.windows.protocol")
+    local framed = require("neoagent.sandbox.protocol")
     return function(_, opts)
       if stderr then opts.on_output(stderr, true) end
       for _, value in ipairs(values or {}) do
@@ -1544,7 +1544,7 @@ describe("neoagent sandbox platform adapters", function()
   it("adapts Windows operations to the standalone Lua runtime", function()
     windows_test_host()
     local windows = require("neoagent.sandbox.windows")
-    local framed = require("neoagent.sandbox.windows.protocol")
+    local framed = require("neoagent.sandbox.protocol")
     local seen = {}
     local services = {
       nvim = "C:\\Neovim\\bin\\nvim.exe",
@@ -1716,7 +1716,7 @@ describe("neoagent sandbox platform adapters", function()
   it("probes the live Windows runtime and fails closed", function()
     windows_test_host()
     local windows = require("neoagent.sandbox.windows")
-    local framed = require("neoagent.sandbox.windows.protocol")
+    local framed = require("neoagent.sandbox.protocol")
     local fake_fs = {
       create_temp_directory = function()
         return "C:\\probe"
@@ -1905,7 +1905,7 @@ describe("neoagent sandbox platform adapters", function()
   it("fails Windows execution closed across process and protocol errors", function()
     windows_test_host()
     local windows = require("neoagent.sandbox.windows")
-    local framed = require("neoagent.sandbox.windows.protocol")
+    local framed = require("neoagent.sandbox.protocol")
     local function execute(process, request_value)
       return windows.exec(vim.tbl_extend("force", {
         argv = { "C:\\bin\\tool.exe" },
@@ -1994,7 +1994,7 @@ describe("neoagent sandbox platform adapters", function()
   end)
 
   it("rejects malformed Windows runtime event streams", function()
-    local framed = require("neoagent.sandbox.windows.protocol")
+    local framed = require("neoagent.sandbox.protocol")
     local function rejected(events, opts)
       local decoder = framed.new(opts)
       local ok, err = pcall(function()

@@ -40,14 +40,12 @@ lua/neoagent/sandbox/escalation.lua
 lua/neoagent/sandbox/init.lua
 lua/neoagent/sandbox/linux/abi.lua
 lua/neoagent/sandbox/linux/init.lua
-lua/neoagent/sandbox/linux/protocol.lua
 lua/neoagent/sandbox/linux/seccomp.lua
 lua/neoagent/sandbox/macos/init.lua
 lua/neoagent/sandbox/macos/profile.lua
 lua/neoagent/sandbox/platform.lua
 lua/neoagent/sandbox/windows/compile.lua
 lua/neoagent/sandbox/windows/init.lua
-lua/neoagent/sandbox/windows/protocol.lua
 lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/common.lua
 lua/neoagent/tools/edit_file.lua
