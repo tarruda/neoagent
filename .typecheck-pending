@@ -6,10 +6,8 @@ lua/applet/host/base.lua
 lua/applet/host/float.lua
 lua/applet/host/tab.lua
 lua/applet/host_effects.lua
-lua/applet/image/cell_size.lua
 lua/applet/image/init.lua
 lua/applet/image/kitty.lua
-lua/applet/image/source.lua
 lua/applet/image/transport.lua
 lua/applet/init.lua
 lua/applet/interaction_domain.lua

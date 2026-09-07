@@ -1,15 +1,48 @@
 local util = require("applet.util")
+local applet_expect = util.expect
 
 local M = {}
 
+---@class Applet.PngBytes
+---@field kind 'png_bytes'
+---@field id string
+---@field revision string|number
+---@field data string
+
+---@class Applet.PngFile
+---@field kind 'png_file'
+---@field path string
+---@field revision string|number
+
+---@alias Applet.ImageSource Applet.PngBytes|Applet.PngFile
+
+---@class Applet.PngInfo
+---@field width integer
+---@field height integer
+---@field bytes integer
+
+---@class Applet.ImageResource: Applet.PngInfo
+---@field id string
+---@field data string
+
+---@class Applet.ImageLoadOptions
+---@field max_bytes? integer
+---@field max_pixels? integer
+---@field read_file? fun(path: string, maximum: integer): string?, string?
+---@field uv? uv
+
+---@alias Applet.ImageLoadDone fun(resource?: Applet.ImageResource, error?: string)
+
 local PNG_SIGNATURE = "\137PNG\r\n\26\n"
 
+---@param source Applet.ImageSource
+---@return string
 local function revision(source)
   local kind = type(source.revision)
-  util.expect(kind == "number" or kind == "string",
+  applet_expect(kind == "number" or kind == "string",
     "image.source.revision", "must be a number or string", 4)
   if kind == "number" then
-    util.expect(source.revision == source.revision
+    applet_expect(source.revision == source.revision
         and source.revision ~= math.huge and source.revision ~= -math.huge,
       "image.source.revision", "must be finite", 4)
   end
@@ -17,56 +50,75 @@ local function revision(source)
   return kind == "number" and "number:" .. value or "string:" .. value
 end
 
+---@param value string
+---@return string
 local function component(value)
   return tostring(#value) .. ":" .. value
 end
 
+---@param source Applet.ImageSource
+---@return string
 function M.identity(source)
-  util.expect(type(source) == "table", "image.source", "must be a table", 3)
+  applet_expect(type(source) == "table", "image.source", "must be a table", 3)
   local rev = revision(source)
   if source.kind == "png_bytes" then
-    util.expect(util.nonempty_string(source.id), "image.source.id",
+    applet_expect(util.nonempty_string(source.id), "image.source.id",
       "must be a non-empty string", 3)
-    util.expect(type(source.data) == "string", "image.source.data", "must be a string", 3)
+    applet_expect(type(source.data) == "string", "image.source.data", "must be a string", 3)
     return "bytes:" .. component(source.id) .. component(rev)
   end
-  util.expect(source.kind == "png_file", "image.source.kind",
+  applet_expect(source.kind == "png_file", "image.source.kind",
     "must be png_bytes or png_file", 3)
-  util.expect(util.nonempty_string(source.path), "image.source.path",
+  applet_expect(util.nonempty_string(source.path), "image.source.path",
     "must be a non-empty string", 3)
   return "file:" .. component(source.path) .. component(rev)
 end
 
+---@param data string
+---@param offset integer
+---@return integer?
 local function uint32(data, offset)
   local a, b, c, d = data:byte(offset, offset + 3)
   if not d then return nil end
   return ((a * 256 + b) * 256 + c) * 256 + d
 end
 
+---@param data string
+---@param limits? {max_bytes?: integer, max_pixels?: integer}
+---@return Applet.PngInfo
 function M.png_info(data, limits)
   limits = limits or {}
-  util.expect(type(data) == "string", "PNG data", "must be a string", 3)
-  util.expect(#data <= (limits.max_bytes or 20 * 1024 * 1024),
+  applet_expect(type(data) == "string", "PNG data", "must be a string", 3)
+  applet_expect(#data <= (limits.max_bytes or 20 * 1024 * 1024),
     "PNG data", "exceeds the byte limit", 3)
-  util.expect(data:sub(1, 8) == PNG_SIGNATURE, "PNG data", "has an invalid signature", 3)
-  util.expect(data:sub(13, 16) == "IHDR", "PNG data", "has no IHDR header", 3)
+  applet_expect(data:sub(1, 8) == PNG_SIGNATURE, "PNG data", "has an invalid signature", 3)
+  applet_expect(data:sub(13, 16) == "IHDR", "PNG data", "has no IHDR header", 3)
   local width, height = uint32(data, 17), uint32(data, 21)
-  util.expect(width and width > 0 and height and height > 0,
+  applet_expect(width and width > 0 and height and height > 0,
     "PNG data", "has invalid dimensions", 3)
-  util.expect(width * height <= (limits.max_pixels or 40 * 1000 * 1000),
+  applet_expect(width * height <= (limits.max_pixels or 40 * 1000 * 1000),
     "PNG data", "exceeds the pixel limit", 3)
   return { width = width, height = height, bytes = #data }
 end
 
+---@param path string
+---@param maximum integer
+---@return string? data
+---@return string? error
 local function default_read(path, maximum)
   local handle, err = io.open(path, "rb")
   if not handle then return nil, err end
-  local data = handle:read(maximum + 1)
+  local data, read_err = handle:read(maximum + 1)
   handle:close()
+  if not data then return nil, read_err end
   if #data > maximum then return nil, "file exceeds the byte limit" end
   return data
 end
 
+---@param source Applet.ImageSource
+---@param opts? Applet.ImageLoadOptions
+---@return Applet.ImageResource? resource
+---@return string? error
 function M.load(source, opts)
   opts = opts or {}
   local identity = M.identity(source)
@@ -75,6 +127,8 @@ function M.load(source, opts)
   if source.kind == "png_bytes" then
     data = source.data
   else
+    -- Identity validation established the file variant and its path.
+    ---@cast source Applet.PngFile
     data, err = (opts.read_file or default_read)(source.path, maximum)
   end
   if not data then return nil, err or "could not read image" end
@@ -92,15 +146,22 @@ function M.load(source, opts)
   }
 end
 
+---@param value Applet.ImageSource
+---@param opts? Applet.ImageLoadOptions
+---@param done Applet.ImageLoadDone
+---@return fun() cancel
 function M.load_async(value, opts, done)
   opts = opts or {}
   assert(type(done) == "function", "image load callback must be a function")
   local cancelled, completed = false, false
+  ---@param resource? Applet.ImageResource
+  ---@param err? string
   local function finish(resource, err)
     if cancelled or completed then return end
     completed = true
     done(resource, err)
   end
+  ---@param callback fun()
   local function later(callback)
     vim.schedule(function()
       if not cancelled and not completed then callback() end
@@ -128,8 +189,12 @@ function M.load_async(value, opts, done)
     end)
     return cancel
   end
+  -- Inline sources returned above; identity validation established the file path.
+  ---@cast value Applet.PngFile
   local uv = opts.uv or vim.uv or vim.loop
+  ---@type integer?
   local handle
+  ---@param after? fun(error?: string)
   local function close(after)
     local open = handle
     handle = nil
