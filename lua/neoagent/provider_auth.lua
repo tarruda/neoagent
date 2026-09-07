@@ -1,5 +1,17 @@
 local M = {}
 
+---@class Neoagent.ProviderAuthConfig
+---@field auth? string
+---@field auth_scopes? table<string, string>
+
+---@class Neoagent.ProviderAuthEntry
+---@field scope string
+---@field method? string
+---@field primary boolean
+
+---@param provider? Neoagent.ProviderAuthConfig
+---@param scope? string
+---@return string?, boolean
 function M.for_scope(provider, scope)
   provider = type(provider) == "table" and provider or {}
   if scope == nil or scope == "inference" then return provider.auth, false end
@@ -11,6 +23,8 @@ function M.for_scope(provider, scope)
   return nil, false
 end
 
+---@param provider? Neoagent.ProviderAuthConfig
+---@return Neoagent.ProviderAuthEntry[]
 function M.entries(provider)
   provider = type(provider) == "table" and provider or {}
   local result = { {
@@ -38,6 +52,9 @@ function M.entries(provider)
   return result
 end
 
+---@param provider? Neoagent.ProviderAuthConfig
+---@param method unknown
+---@return boolean
 function M.uses(provider, method)
   if type(method) ~= "string" then return false end
   for _, entry in ipairs(M.entries(provider)) do

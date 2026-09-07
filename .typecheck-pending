@@ -23,8 +23,6 @@ lua/neoagent/agent_instructions.lua
 lua/neoagent/agent_loop.lua
 lua/neoagent/applet.lua
 lua/neoagent/auth/alibaba_dashboard.lua
-lua/neoagent/auth/alibaba_token_plan.lua
-lua/neoagent/auth/api_key.lua
 lua/neoagent/auth/init.lua
 lua/neoagent/auth/local_callback.lua
 lua/neoagent/auth/openai_codex.lua
@@ -55,7 +53,6 @@ lua/neoagent/process/windows.lua
 lua/neoagent/profile_draft.lua
 lua/neoagent/profile_sessions.lua
 lua/neoagent/profiles.lua
-lua/neoagent/provider_auth.lua
 lua/neoagent/provider_credentials.lua
 lua/neoagent/provider_log.lua
 lua/neoagent/provider_runtimes.lua
@@ -66,7 +63,6 @@ lua/neoagent/providers/alibaba_token_plan.lua
 lua/neoagent/providers/alibaba_token_plan/client.lua
 lua/neoagent/providers/anthropic.lua
 lua/neoagent/providers/anthropic/client.lua
-lua/neoagent/providers/auth_headers.lua
 lua/neoagent/providers/codex.lua
 lua/neoagent/providers/codex/catalog.lua
 lua/neoagent/providers/codex_management.lua

@@ -3,13 +3,31 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.AuthHeaderOptions
+---@field name? string
+---@field ambient_api_key fun(): string?
+---@field environment? string
+---@field missing_message? string
+---@field ambient_headers? fun(key: string): table<string, unknown>
+
+---@class Neoagent.AuthHeadersSuccess
+---@field ok true
+---@field headers table<string, unknown>
+
+---@alias Neoagent.AuthHeadersResult Neoagent.AuthHeadersSuccess|Neoagent.AsyncFailure
+
+---@param ctx Neoagent.ProviderAuthContext
+---@param opts Neoagent.AuthHeaderOptions
+---@return Neoagent.Run<Neoagent.AuthHeadersResult, nil>
 function M.resolve(ctx, opts)
   opts = opts or {}
   assert(type(ctx) == "table" and type(ctx.resolve_auth) == "function",
     (opts.name or "provider") .. " request requires auth resolution")
   assert(type(opts.ambient_api_key) == "function",
     "ambient_api_key must be a function")
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.AuthHeadersSuccess
+  function()
     local resolved = ctx.resolve_auth():await()
     if resolved.ok == false then error(resolved.error, 0) end
     if resolved.configured then

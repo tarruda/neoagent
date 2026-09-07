@@ -4,6 +4,89 @@ local request_opts = require("neoagent.api.request_opts")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.ApiKeyCredential
+---@field type "api_key"
+---@field key string
+---@field env? table<string, string>
+
+---@class Neoagent.OAuthCredential
+---@field type? "oauth"
+---@field access string
+---@field refresh string
+---@field expires number
+
+---@alias Neoagent.Credential Neoagent.ApiKeyCredential|Neoagent.OAuthCredential
+
+---@class Neoagent.LoginChoice
+---@field id string
+---@field label string
+
+---@class Neoagent.LoginTextPrompt
+---@field type "secret"|"text"|"manual_code"
+---@field message string
+
+---@class Neoagent.LoginSelectPrompt
+---@field type "select"
+---@field message string
+---@field options Neoagent.LoginChoice[]
+
+---@alias Neoagent.LoginPrompt Neoagent.LoginTextPrompt|Neoagent.LoginSelectPrompt
+
+---@class Neoagent.AuthUrlEvent
+---@field type "auth_url"
+---@field url string
+---@field instructions? string
+
+---@class Neoagent.DeviceCodeEvent
+---@field type "device_code"
+---@field verificationUri string
+---@field userCode string
+
+---@class Neoagent.AuthProgressEvent
+---@field type "progress"
+---@field message string
+
+---@alias Neoagent.AuthEvent Neoagent.AuthUrlEvent|Neoagent.DeviceCodeEvent|Neoagent.AuthProgressEvent
+---@alias Neoagent.LoginPromptCallback fun(prompt: Neoagent.LoginPrompt, done: Neoagent.AwaitCallbacks<string?>): fun()?
+
+---@class Neoagent.LoginInteraction
+---@field prompt Neoagent.LoginPromptCallback
+---@field notify fun(event: Neoagent.AuthEvent)
+
+---@class Neoagent.CredentialSuccess<C>
+---@field ok true
+---@field credential C
+
+---@alias Neoagent.CredentialResult<C> Neoagent.CredentialSuccess<C>|Neoagent.AsyncFailure
+
+---@class Neoagent.AuthMethod<C>
+---@field login_label? string
+---@field logout_label? string
+---@field type? "api_key"|"oauth"
+---@field name string
+---@field login fun(interaction: Neoagent.LoginInteraction): Neoagent.Run<Neoagent.CredentialResult<C>, nil>
+---@field request_opts fun(credential: C, scope?: string): Neoagent.RequestOverride
+---@field refresh? fun(credential: C): Neoagent.Run<Neoagent.CredentialResult<C>, nil>
+---@field cache_identity? fun(credential: C): string?
+---@field public_metadata? fun(credential: C): table<string, string>?
+---@field validate_credential? fun(credential: C): boolean
+---@field _with_transport? fun(transport: Neoagent.ByteBackend): Neoagent.AuthMethod<C>
+
+---@class Neoagent.AuthConfigured
+---@field ok true
+---@field configured true
+---@field method string
+---@field credential_type "api_key"|"oauth"
+---@field request_opts Neoagent.RequestOverride
+---@field metadata? table<string, string>
+
+---@class Neoagent.AuthUnconfigured
+---@field ok true
+---@field configured false
+---@field method? string
+
+---@alias Neoagent.AuthResolution Neoagent.AuthConfigured|Neoagent.AuthUnconfigured|Neoagent.AsyncFailure
+
 local Manager = {}
 Manager.__index = Manager
 

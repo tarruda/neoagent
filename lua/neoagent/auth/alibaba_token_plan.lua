@@ -3,6 +3,8 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@param value unknown
+---@return string?, Neoagent.Error?
 local function plan_key(value)
   value = type(value) == "string" and util.trim(value) or ""
   if value == "" then
@@ -15,15 +17,21 @@ local function plan_key(value)
   return value
 end
 
+---@return Neoagent.AuthMethod<Neoagent.ApiKeyCredential>
 function M.new()
   return {
     type = "api_key",
     name = "Alibaba Cloud Token Plan API key",
     login_label = "Login",
     logout_label = "Logout",
+    ---@param interaction Neoagent.LoginInteraction
     login = function(interaction)
-      return async.run(function()
-        local key = async.await(function(done)
+      return async.run(
+      ---@return Neoagent.CredentialSuccess<Neoagent.ApiKeyCredential>
+      function()
+        local key = async.await(
+        ---@param done Neoagent.AwaitCallbacks<string?>
+        function(done)
           return interaction.prompt({
             type = "secret",
             message = "Enter Alibaba Cloud Token Plan API key:",

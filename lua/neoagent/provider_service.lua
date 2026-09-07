@@ -2,6 +2,9 @@ local async = require("neoagent.async")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.ProviderAuthContext
+---@field resolve_auth fun(scope?: string): Neoagent.Run<Neoagent.AuthResolution, nil>
+
 local default_runtimes = setmetatable({}, { __mode = "k" })
 local MAX_DIAGNOSTIC_CHARACTERS = 512
 
