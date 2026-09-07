@@ -41,6 +41,42 @@ describe("neoagent.session_tree", function()
     assert.are.equal("owned", entry.message.content)
   end)
 
+  it("rejects journal dates that cannot produce valid conversation timestamps", function()
+    for _, timestamp in ipairs({
+      "not-a-date", "2026-02-30T00:00:00.000Z", "2100-02-29T00:00:00Z",
+      "2026-01-01T24:00:00Z", "2026-01-01T00:60:00Z",
+      "2026-01-01T00:00:60Z", "2026-13-01T00:00:00Z",
+      "2026-00-01T00:00:00Z", "2026-01-00T00:00:00Z",
+      "2026-01-01T00:00:00.Z", "1969-12-31T23:59:59Z",
+    }) do
+      local entry = base("compaction", {
+        timestamp = timestamp, summary = "Earlier work", tokensBefore = 12,
+        firstKeptEntryId = "user",
+      })
+      local valid, err = tree.validate_entry(entry)
+      assert.is_false(valid, timestamp)
+      assert.matches("timestamp", err)
+    end
+
+    for _, case in ipairs({
+      { "1970-01-01T00:00:00Z", 0 },
+      { "2000-02-29T00:00:00.123Z", 951782400123 },
+      { "2026-01-01T00:00:00.123456Z", 1767225600123 },
+    }) do
+      local entry = base("compaction", {
+        timestamp = case[1], summary = "Earlier work", tokensBefore = 12,
+        firstKeptEntryId = "user",
+      })
+      assert.is_true(tree.validate_entry(entry))
+      local messages = tree.to_llm(tree.entry_messages(entry))
+      assert.are.equal(case[2], messages[1].timestamp)
+      local normalized, err = require("neoagent.semantic_message")
+        .normalize_list(messages)
+      assert.is_nil(err)
+      assert.are.same(messages, normalized)
+    end
+  end)
+
   it("validates every current entry shape", function()
     local invalid = {
       base("message", { parentId = {}, message = { role = "user", content = "x" } }),

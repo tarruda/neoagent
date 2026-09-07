@@ -57,7 +57,7 @@ describe("neoagent.compaction", function()
     assert.are.same({ first_kept_index = 1, split_turn = false },
       compaction.find_cut_point({ { type = "selection" } }, 1, 1, 1))
     local compacted = {
-      type = "compaction", id = "c", parentId = vim.NIL, timestamp = "t",
+      type = "compaction", id = "c", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
       summary = "done", firstKeptEntryId = "u", tokensBefore = 10,
     }
     assert.is_nil(compaction.prepare({ compacted }, { keep_recent_tokens = 20 }))

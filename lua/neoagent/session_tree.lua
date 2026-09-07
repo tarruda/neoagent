@@ -23,6 +23,40 @@ local function safe_text(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+-- Journal dates are UTC; calendar arithmetic avoids local timezone and DST.
+---@param value string
+---@return integer?
+local function timestamp_ms(value)
+  local date, fraction = value:match("^(.-)%.(%d+)Z$")
+  date = date or value:match("^(.-)Z$")
+  if not date then return nil end
+  local year, month, day, hour, minute, second = date:match(
+    "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)$")
+  if not year then return nil end
+  local y, m, d = tonumber(year), tonumber(month), tonumber(day)
+  local h, min, sec = tonumber(hour), tonumber(minute), tonumber(second)
+  ---@cast y integer
+  ---@cast m integer
+  ---@cast d integer
+  ---@cast h integer
+  ---@cast min integer
+  ---@cast sec integer
+  if y < 1970 or m < 1 or m > 12 or d < 1
+      or h > 23 or min > 59 or sec > 59 then return nil end
+  local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
+  local month_days = { 31, leap and 29 or 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31 }
+  if d > month_days[m] then return nil end
+  local previous_year = y - 1
+  local days = previous_year * 365 + math.floor(previous_year / 4)
+    - math.floor(previous_year / 100) + math.floor(previous_year / 400)
+    - 719162 + d - 1
+  for index = 1, m - 1 do days = days + month_days[index] end
+  local millis = tonumber(((fraction or "") .. "000"):sub(1, 3))
+  ---@cast millis integer
+  return ((days * 24 + h) * 60 * 60 + min * 60 + sec) * 1000 + millis
+end
+
 local function validate_request(request)
   if request == nil then return true end
   if type(request) ~= "table"
@@ -205,6 +239,9 @@ function M.validate_entry(entry)
     return false, "parentId must be an entry id or null"
   end
   if not nonempty_string(entry.timestamp) then return false, "entry timestamp is required" end
+  if timestamp_ms(entry.timestamp) == nil then
+    return false, "entry timestamp must be a UTC ISO 8601 date"
+  end
   return validators[entry.type](entry)
 end
 
@@ -360,18 +397,6 @@ function M.path(entries, leaf_id)
   return indexed_path(validated.by_id, leaf_id or validated.leaf_id)
 end
 
-local function timestamp_ms(value)
-  local year, month, day, hour, minute, second, millis = value:match(
-    "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)Z$"
-  )
-  if not year then return value end
-  local local_seconds = os.time({
-    year = tonumber(year), month = tonumber(month), day = tonumber(day),
-    hour = tonumber(hour), min = tonumber(minute), sec = tonumber(second),
-  })
-  local utc_offset = os.difftime(os.time(os.date("!*t", local_seconds)), local_seconds)
-  return (local_seconds - utc_offset) * 1000 + tonumber((millis .. "000"):sub(1, 3))
-end
 
 function M.entry_messages(entry)
   if entry.type == "message" then return { util.copy(entry.message) } end
@@ -380,7 +405,7 @@ function M.entry_messages(entry)
       role = "compactionSummary",
       summary = entry.summary,
       tokensBefore = entry.tokensBefore,
-      timestamp = timestamp_ms(entry.timestamp),
+      timestamp = assert(timestamp_ms(entry.timestamp)),
     } }
   end
   return {}

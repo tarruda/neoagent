@@ -207,21 +207,21 @@ describe("neoagent.storage", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory
     local path = directory .. "/tree.jsonl"
-    local header = vim.json.encode({ type = "session", version = 3, id = "s", timestamp = "t", cwd = directory })
+    local header = vim.json.encode({ type = "session", version = 3, id = "s", timestamp = "2026-01-01T00:00:00.000Z", cwd = directory })
     local first = vim.json.encode({
-      type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+      type = "message", id = "one", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
       message = { role = "user", content = "one" },
     })
     local left = vim.json.encode({
-      type = "message", id = "left", parentId = "one", timestamp = "t",
+      type = "message", id = "left", parentId = "one", timestamp = "2026-01-01T00:00:00.000Z",
       message = { role = "assistant", content = { { type = "text", text = "left" } } },
     })
     local right = vim.json.encode({
-      type = "message", id = "right", parentId = "one", timestamp = "t",
+      type = "message", id = "right", parentId = "one", timestamp = "2026-01-01T00:00:00.000Z",
       message = { role = "assistant", content = { { type = "text", text = "right" } } },
     })
     local leaf = vim.json.encode({
-      type = "leaf", id = "move", parentId = "right", timestamp = "t", targetId = "left",
+      type = "leaf", id = "move", parentId = "right", timestamp = "2026-01-01T00:00:00.000Z", targetId = "left",
     })
     vim.fn.writefile({ "", header, first, left, right, leaf, "" }, path, "b")
     local store = assert(storage.open(path))
@@ -307,7 +307,7 @@ describe("neoagent.storage", function()
     assert.matches("Failed to read", missing_err.message)
 
     local path = directory .. "/bad.jsonl"
-    local header = { type = "session", version = 3, id = "session", timestamp = "time", cwd = directory }
+    local header = { type = "session", version = 3, id = "session", timestamp = "2026-01-01T00:00:00.000Z", cwd = directory }
     local cases = {
       { lines = { "42" }, detail = "expected object" },
       { lines = { "{" }, detail = ".+" },
@@ -319,27 +319,27 @@ describe("neoagent.storage", function()
         unknown = true,
       })) }, detail = "unsupported session header field" },
       { lines = { vim.json.encode({
-        type = "session", version = 3, id = "session", timestamp = "time", cwd = directory, metadata = { 1 },
+        type = "session", version = 3, id = "session", timestamp = "2026-01-01T00:00:00.000Z", cwd = directory, metadata = { 1 },
       }) }, detail = "metadata must be an object" },
       { lines = { vim.json.encode(header), vim.json.encode({ type = "other", id = "one" }) }, detail = "unsupported entry type" },
       { lines = {
         vim.json.encode(header),
-        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
           message = { role = "user", content = "one" } }),
-        vim.json.encode({ type = "message", id = "one", parentId = "one", timestamp = "t",
+        vim.json.encode({ type = "message", id = "one", parentId = "one", timestamp = "2026-01-01T00:00:00.000Z",
           message = { role = "user", content = "two" } }),
       }, detail = "duplicate entry id" },
       { lines = {
         vim.json.encode(header),
-        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
           message = { role = "user" } }),
       }, detail = "content is required" },
       { lines = {
         vim.json.encode(header),
-        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "t",
+        vim.json.encode({ type = "message", id = "one", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
           message = { role = "user", content = "one" } }),
         vim.json.encode({
-          type = "compaction", id = "compact", parentId = "one", timestamp = "t",
+          type = "compaction", id = "compact", parentId = "one", timestamp = "2026-01-01T00:00:00.000Z",
           summary = "bad", firstKeptEntryId = "missing", tokensBefore = 1,
         }),
       }, detail = "first kept entry" },
@@ -724,7 +724,7 @@ describe("neoagent.storage", function()
 
     local incomplete_header = directory .. "/incomplete-header.jsonl"
     assert(original_write_all(incomplete_header, vim.json.encode({
-      type = "session", version = 3, id = "incomplete", timestamp = "time",
+      type = "session", version = 3, id = "incomplete", timestamp = "2026-01-01T00:00:00.000Z",
       cwd = directory,
     }), "w", 384))
     local missing, err = storage.open(incomplete_header)
