@@ -5,7 +5,6 @@ lua/applet/host/base.lua
 lua/applet/host/float.lua
 lua/applet/host/tab.lua
 lua/applet/init.lua
-lua/applet/interaction_domain.lua
 lua/applet/layout.lua
 lua/applet/layout/compile.lua
 lua/applet/pane.lua

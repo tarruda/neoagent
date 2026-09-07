@@ -1,3 +1,43 @@
+---@class Applet.SurfaceChange
+---@field chrome? boolean
+
+---@class Applet.DomainMember
+---@field _flush_requested fun(self: Applet.DomainMember)
+---@field surface_changed? fun(self: Applet.DomainMember, opts?: Applet.SurfaceChange): boolean?
+
+---@class Applet.DomainParticipant
+---@field value Applet.DomainMember
+---@field phase number
+---@field order integer
+---@field index integer
+
+---@class Applet.DomainOptions
+---@field critical? fun(): boolean
+
+---@class Applet.ParticipantOptions
+---@field phase? "frame"|"content"|number
+
+---@class Applet.DomainStats
+---@field participants integer
+---@field active_participants integer
+---@field key_observer_active boolean
+---@field waiting_for_safe boolean
+
+---@class Applet.InteractionDomain
+---@field members table<Applet.DomainMember, Applet.DomainParticipant>
+---@field participants Applet.DomainParticipant[]
+---@field active table<Applet.DomainMember, true>
+---@field active_count integer
+---@field next_order integer
+---@field dirty table<Applet.DomainMember, true>
+---@field group integer
+---@field critical? fun(): boolean
+---@field scheduled boolean
+---@field safe_autocmd? integer
+---@field register_pending boolean
+---@field key_observer_active boolean
+---@field destroyed boolean
+---@field key_namespace integer
 local Domain = {}
 Domain.__index = Domain
 
@@ -14,6 +54,8 @@ local phases = { frame = 1, content = 2 }
 
 local sequence = 0
 
+---@param opts? Applet.DomainOptions
+---@return Applet.InteractionDomain
 function Domain.new(opts)
   opts = opts or {}
   sequence = sequence + 1
@@ -37,6 +79,7 @@ function Domain.new(opts)
   return self
 end
 
+---@return boolean
 function Domain:_start_key_observer()
   if self.key_observer_active or self.destroyed then return false end
   vim.on_key(function(key) self:_track_key(key) end, self.key_namespace)
@@ -44,6 +87,7 @@ function Domain:_start_key_observer()
   return true
 end
 
+---@return boolean
 function Domain:_stop_key_observer()
   if not self.key_observer_active then return false end
   vim.on_key(nil, self.key_namespace)
@@ -56,6 +100,8 @@ function Domain:_stop_key_observer()
   return true
 end
 
+---@param key string
+---@param mode? string
 function Domain:_track_key(key, mode)
   if self.destroyed or key ~= '"' then return end
   mode = mode or vim.api.nvim_get_mode().mode
@@ -64,6 +110,8 @@ function Domain:_track_key(key, mode)
   self:_wait_for_safe()
 end
 
+---@param value Applet.DomainMember
+---@param opts? Applet.ParticipantOptions
 function Domain:add(value, opts)
   assert(not self.destroyed, "interaction domain is destroyed")
   opts = opts or {}
@@ -88,6 +136,8 @@ function Domain:add(value, opts)
   self.participants[#self.participants + 1] = participant
 end
 
+---@param value Applet.DomainMember
+---@return boolean
 function Domain:remove(value)
   local participant = self.members[value]
   self.dirty[value] = nil
@@ -98,13 +148,17 @@ function Domain:remove(value)
   assert(self.participants[index] == participant,
     "interaction participant index is inconsistent")
   table.remove(self.participants, index)
-  participant.index = nil
   for cursor = index, #self.participants do
-    self.participants[cursor].index = cursor
+    local remaining = self.participants[cursor]
+    -- The compacted participant array contains every index through its length.
+    ---@cast remaining Applet.DomainParticipant
+    remaining.index = cursor
   end
   return true
 end
 
+---@param value Applet.DomainMember
+---@return boolean
 function Domain:activate(value)
   assert(not self.destroyed, "interaction domain is destroyed")
   assert(self.members[value], "participant does not belong to this interaction domain")
@@ -115,6 +169,8 @@ function Domain:activate(value)
   return true
 end
 
+---@param value Applet.DomainMember
+---@return boolean
 function Domain:deactivate(value)
   if not self.active[value] then return false end
   self.active[value] = nil
@@ -124,6 +180,7 @@ function Domain:deactivate(value)
   return true
 end
 
+---@return Applet.DomainStats
 function Domain:_stats()
   return {
     participants = #self.participants,
@@ -133,6 +190,7 @@ function Domain:_stats()
   }
 end
 
+---@return boolean
 function Domain:is_safe()
   if self.destroyed or self.register_pending then return false end
   if vim.fn.pumvisible() == 1 then return false end
@@ -157,6 +215,7 @@ function Domain:_wait_for_safe()
   self.safe_autocmd = id
 end
 
+---@param value Applet.DomainMember
 function Domain:request(value)
   if self.destroyed then return end
   assert(self.members[value], "participant does not belong to this interaction domain")
@@ -169,6 +228,8 @@ function Domain:request(value)
   end)
 end
 
+---@param opts? Applet.SurfaceChange
+---@return boolean
 function Domain:surfaces_changed(opts)
   if self.destroyed then return false end
   local participants = {}
@@ -184,6 +245,7 @@ function Domain:surfaces_changed(opts)
   return true
 end
 
+---@return boolean
 function Domain:flush()
   if self.destroyed then return false end
   if not self:is_safe() then
