@@ -3,6 +3,41 @@ local async = require("neoagent.async")
 local util = require("neoagent.util")
 
 local M = {}
+
+---@class Neoagent.SelectItem
+---@field id? string
+---@field label? string
+---@field detail? string
+---@field description? string
+---@field disabled? boolean
+---@field value? unknown
+---@field fallback? unknown
+
+---@class Neoagent.SelectRequest
+---@field prompt? string
+---@field items (Neoagent.SelectItem|string)[]
+
+---@class Neoagent.InputRequest
+---@field prompt? string
+---@field default? string
+---@field multiline? boolean
+---@field secret? boolean
+---@field allow_empty? boolean
+---@field mask? string
+
+---@class Neoagent.NoticeRequest
+---@field prompt? string
+---@field body? string
+
+---@class Neoagent.ConfirmRequest
+---@field prompt? string
+---@field accept_label? string
+---@field reject_label? string
+
+---@class Neoagent.NotificationRequest
+---@field message string
+---@field level? integer
+
 local Presenter = {}
 Presenter.__index = Presenter
 
