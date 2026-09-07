@@ -90,6 +90,17 @@ local function partial_message(message, blocks, err)
   return semantic_message.normalize_partial_assistant(candidate)
 end
 
+---@class Neoagent.AnthropicModelOptions: Neoagent.ApiModelOptions
+---@field max_output_tokens? integer
+
+---@class Neoagent.AnthropicModel: Neoagent.Model
+---@field _base_url string
+---@field _api_key? string|fun(): string?
+---@field _max_output_tokens integer
+---@field _anthropic_version string
+---@field _request_opts Neoagent.RequestLayer[]
+---@field _request_context? Neoagent.RequestIdentity
+---@field _transport Neoagent.HttpClient
 local Model = {}
 Model.__index = Model
 
