@@ -33,7 +33,6 @@ lua/neoagent/process/windows.lua
 lua/neoagent/profile_draft.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_shell.lua
-lua/neoagent/sandbox/approval_summary.lua
 lua/neoagent/sandbox/composition.lua
 lua/neoagent/sandbox/enforce.lua
 lua/neoagent/sandbox/escalation.lua
