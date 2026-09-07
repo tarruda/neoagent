@@ -2,6 +2,7 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@type table<string, [integer, integer]>
 local specs = {
   ["glm-4.5"] = { 131072, 98304 },
   ["glm-4.5-air"] = { 131072, 98304 },
@@ -21,6 +22,7 @@ local specs = {
   ["glm-5v-turbo"] = { 200000, 131072 },
 }
 
+---@type table<string, boolean>
 local tool_stream_unsupported = {
   ["glm-4.5"] = true,
   ["glm-4.5-air"] = true,
@@ -28,14 +30,23 @@ local tool_stream_unsupported = {
   ["glm-4.5v"] = true,
 }
 
+---@param enabled boolean
+---@param effort? string
+---@param preserve? boolean
+---@return Neoagent.RequestOverride
 local function thinking(enabled, effort, preserve)
+  ---@type Neoagent.JsonObject
   local selected = { type = enabled and "enabled" or "disabled" }
   if preserve and enabled then selected.clear_thinking = false end
+  ---@type Neoagent.JsonObject
   local body = { thinking = selected }
   if effort then body.reasoning_effort = effort end
   return { body = body }
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@param preserve boolean
+---@return Neoagent.ThinkingOptions
 local function thinking_levels(levels, preserve)
   local result = {}
   for _, level in ipairs(levels) do
@@ -45,6 +56,8 @@ local function thinking_levels(levels, preserve)
   return result
 end
 
+---@param preserve boolean
+---@return Neoagent.ThinkingOptions
 local function toggle_levels(preserve)
   return {
     off = thinking(false, nil, preserve),
@@ -52,11 +65,16 @@ local function toggle_levels(preserve)
   }
 end
 
+---@param context Neoagent.RequestOptionsContext
+---@return Neoagent.RequestOverride
 local function tool_stream(context)
   if #context.tools == 0 then return {} end
   return { body = { tool_stream = true } }
 end
 
+---@param model Neoagent.DiscoveredModel
+---@param ctx Neoagent.CatalogTransformContext
+---@return Neoagent.DiscoveredModel
 function M.transform(model, ctx)
   local spec = specs[model.id]
   local preserve = ctx.provider_id == "zai-coding-plan"
@@ -81,6 +99,8 @@ function M.transform(model, ctx)
   return result
 end
 
+---@param ids string[]
+---@return Neoagent.DiscoveredModel[]
 function M.seed(ids)
   local result = {}
   for _, id in ipairs(ids) do result[#result + 1] = { id = id } end

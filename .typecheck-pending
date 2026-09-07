@@ -47,13 +47,11 @@ lua/neoagent/provider_shell.lua
 lua/neoagent/registry.lua
 lua/neoagent/registry/alibaba_token_plan.lua
 lua/neoagent/registry/anthropic.lua
-lua/neoagent/registry/anthropic_common.lua
 lua/neoagent/registry/deepseek.lua
 lua/neoagent/registry/openai.lua
 lua/neoagent/registry/opencode_go.lua
 lua/neoagent/registry/zai.lua
 lua/neoagent/registry/zai_coding_plan.lua
-lua/neoagent/registry/zai_common.lua
 lua/neoagent/request_selection.lua
 lua/neoagent/sandbox/approval_summary.lua
 lua/neoagent/sandbox/composition.lua

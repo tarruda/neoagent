@@ -14,7 +14,12 @@ local M = {}
 
 ---@class Neoagent.ThinkingEffort: Neoagent.RequestOverride
 ---@field body Neoagent.ThinkingEffortBody
----@alias Neoagent.AdaptiveEffort { body: { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: Neoagent.ThinkingLevel } } }
+---@class Neoagent.AdaptiveEffortBody: Neoagent.JsonObject
+---@field thinking {type: "adaptive", display: "summarized"}
+---@field output_config {effort: Neoagent.ThinkingLevel}
+
+---@class Neoagent.AdaptiveEffort: Neoagent.RequestOverride
+---@field body Neoagent.AdaptiveEffortBody
 
 ---@param effort string
 ---@param opts? Neoagent.OpenAIReasoningOptions
