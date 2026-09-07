@@ -11,7 +11,6 @@ lua/applet/interaction_domain.lua
 lua/applet/layout.lua
 lua/applet/layout/compile.lua
 lua/applet/pane.lua
-lua/applet/pane/canvas.lua
 lua/applet/pane/compile.lua
 lua/applet/pane/input.lua
 lua/applet/pane/nodes.lua
