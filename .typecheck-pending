@@ -24,7 +24,6 @@ lua/applet/pane/source.lua
 lua/applet/pane/widgets.lua
 lua/applet/presentation.lua
 lua/applet/presenter.lua
-lua/applet/theme.lua
 lua/neoagent/agent.lua
 lua/neoagent/agent/context.lua
 lua/neoagent/agent/run_lifecycle.lua
