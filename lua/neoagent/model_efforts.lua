@@ -8,7 +8,12 @@ local M = {}
 
 ---@alias Neoagent.ResponseEffort { body: { reasoning: { effort: string, summary?: string }, include?: string[] } }
 ---@alias Neoagent.CompletionEffort { body: { reasoning_effort: string } }
----@alias Neoagent.ThinkingEffort { body: { thinking: { type: 'enabled'|'disabled' }, reasoning_effort?: string } }
+---@class Neoagent.ThinkingEffortBody: Neoagent.JsonObject
+---@field thinking {type: "enabled"|"disabled"}
+---@field reasoning_effort? string
+
+---@class Neoagent.ThinkingEffort: Neoagent.RequestOverride
+---@field body Neoagent.ThinkingEffortBody
 ---@alias Neoagent.AdaptiveEffort { body: { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: Neoagent.ThinkingLevel } } }
 
 ---@param effort string

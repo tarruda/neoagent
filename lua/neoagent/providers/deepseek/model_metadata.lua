@@ -3,6 +3,13 @@ local M = {}
 local efforts = require("neoagent.model_efforts")
 local util = require("neoagent.util")
 
+---@class Neoagent.DeepSeekModelMetadata
+---@field input? ("text"|"image")[]
+---@field context_window? integer
+---@field max_output_tokens? integer
+---@field thinking? Neoagent.ThinkingOptions
+
+---@type table<string, Neoagent.DeepSeekModelMetadata>
 local overrides = {
   ["deepseek-v4-flash"] = {
     context_window = 1000000,
@@ -19,7 +26,10 @@ local overrides = {
   },
 }
 
+---@param id string
+---@return Neoagent.DeepSeekModelMetadata
 function M.for_id(id)
+  ---@type Neoagent.DeepSeekModelMetadata
   local result = {
     input = { "text" },
   }
@@ -33,7 +43,13 @@ function M.for_id(id)
       "off", "high", "max",
     })
   end
-  return util.deep_merge(result, util.copy(overrides[id] or {}))
+  local override = overrides[id]
+  if override then
+    result.input = util.copy(override.input or result.input)
+    result.context_window = override.context_window
+    result.max_output_tokens = override.max_output_tokens
+  end
+  return result
 end
 
 return M
