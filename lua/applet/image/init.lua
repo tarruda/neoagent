@@ -1,9 +1,112 @@
 local source = require("applet.image.source")
 local util = require("applet.util")
 
+---@class Applet.ImageBackend
+---@field name? string
+---@field available boolean
+---@field cell_dimensions fun(self: Applet.ImageBackend): Applet.CellDimensions
+---@field replace fun(self: Applet.ImageBackend, owner: Applet.ImageOwner, requests: Applet.ImageRequest[])
+---@field clear fun(self: Applet.ImageBackend, owner: Applet.ImageOwner): boolean?
+---@field release fun(self: Applet.ImageBackend, resource: Applet.ImageContent)
+---@field redraw fun(self: Applet.ImageBackend, owner: Applet.ImageOwner): boolean?
+---@field destroy fun(self: Applet.ImageBackend)
+---@field set_error_handler? fun(self: Applet.ImageBackend, callback: fun(err: string))
+
+---@class Applet.ImageOptions
+---@field backend? "kitty"|Applet.ImageBackend
+---@field kitty? Applet.KittyOptions
+---@field max_source_bytes? integer
+---@field max_pixels? integer
+---@field max_cache_bytes? integer
+---@field read_file? fun(path: string, maximum: integer): string?, string?
+
+---@class Applet.ImageDiagnosticsOptions: Applet.ImageDetectionOptions
+---@field backend? "kitty"
+---@field kitty? Applet.KittyOptions
+
+---@class Applet.ImageInternalOptions: Applet.ImageOptions
+---@field _backend? Applet.ImageBackend
+---@field _load_source? fun(source: Applet.ImageSource, limits: Applet.ImageLoadOptions, done: Applet.ImageLoadDone): Applet.CancelOutput?
+
+---@class Applet.ImageSlotPlacement
+---@field key string
+---@field width integer
+---@field height integer
+---@field fit? Applet.ImageFit
+---@field viewport? Applet.Rectangle
+---@field screen_row? integer
+---@field screen_col? integer
+---@field cell_width? number
+---@field cell_height? number
+
+---@class Applet.ImagePresentation
+---@field slots? table<string, string>
+---@field placements? Applet.ImageSlotPlacement[]
+
+---@class Applet.ResolvedImagePresentation
+---@field slots table<string, string>
+---@field placements Applet.ImageRequest[]
+---@field signature Applet.ImagePresentation
+
+---@class Applet.ImageMetadata
+---@field id string
+---@field width integer
+---@field height integer
+
+---@alias Applet.ImageStatus "available"|"unavailable"
+
+---@class Applet.ImageSnapshot
+---@field backend string
+---@field status Applet.ImageStatus
+---@field generation integer
+---@field cell_width number
+---@field cell_height number
+---@field resources table<string, Applet.ImageMetadata>
+---@field presented table<string, string>
+
+---@class Applet.ImageCounters
+---@field preparations integer
+---@field releases integer
+---@field cancelled_preparations integer
+---@field presentation_changes integer
+---@field backend_errors integer
+
+---@class Applet.ImageStats: Applet.ImageCounters
+---@field cached_bytes integer
+---@field prepared_resources integer
+---@field pending_preparations integer
+---@field failed_resources integer
+---@field active_presentations integer
+---@field backend string
+---@field status Applet.ImageStatus
+
+---@class Applet.ImageSystem
+---@field backend Applet.ImageBackend
+---@field backend_name string
+---@field backend_generation integer
+---@field backend_destroyed boolean
+---@field status Applet.ImageStatus
+---@field generation integer
+---@field resources table<string, Applet.ImageResource>
+---@field pending table<string, Applet.OutputOperation>
+---@field failures table<string, string>
+---@field references table<Applet.ImageOwner, table<string, true>>
+---@field presentations table<Applet.ImageOwner, Applet.ResolvedImagePresentation>
+---@field callbacks table<fun(system: Applet.ImageSystem), true>
+---@field max_bytes integer
+---@field max_pixels integer
+---@field max_cache_bytes integer
+---@field cache_bytes integer
+---@field read_file? fun(path: string, maximum: integer): string?, string?
+---@field load_source fun(source: Applet.ImageSource, limits: Applet.ImageLoadOptions, done: Applet.ImageLoadDone): Applet.CancelOutput?
+---@field destroyed boolean
+---@field counters Applet.ImageCounters
+---@field last_backend_error? string
 local ImageSystem = {}
 ImageSystem.__index = ImageSystem
 
+---@param opts {kitty?: Applet.KittyOptions}
+---@return Applet.KittyOptions
 local function kitty_options(opts)
   local configured = opts.kitty or {}
   assert(type(configured) == "table",
@@ -13,6 +116,8 @@ local function kitty_options(opts)
   return result
 end
 
+---@param opts Applet.ImageOptions
+---@return Applet.ImageBackend, string
 local function select_backend(opts)
   if type(opts.backend) == "table" then
     return opts.backend, opts.backend.name or "custom"
@@ -22,6 +127,7 @@ local function select_backend(opts)
   return require("applet.image.kitty").new(kitty_options(opts)), name
 end
 
+---@param value Applet.ImageBackend
 local function validate_backend(value)
   assert(type(value) == "table", "image backend must be a table")
   assert(value.name == nil or util.nonempty_string(value.name),
@@ -39,27 +145,34 @@ local function validate_backend(value)
     "image backend set_error_handler must be a function")
 end
 
+---@param opts? Applet.ImageDiagnosticsOptions
+---@return Applet.ImageDiagnostic[]
 local function diagnostics(opts)
   opts = opts or {}
   local name = opts.backend or "kitty"
   assert(name == "kitty", "unknown image backend: " .. tostring(name))
   local result = require("applet.image.detect").diagnostics(opts)
-  vim.list_extend(result,
-    require("applet.image.kitty").diagnostics(kitty_options(opts)))
+  kitty_options(opts)
+  vim.list_extend(result, require("applet.image.kitty").diagnostics())
   return result
 end
 
+---@param value integer
+---@param name string
+---@return integer
 local function positive(value, name)
   assert(type(value) == "number" and value > 0,
     name .. " must be positive")
   return value
 end
 
+---@param opts? Applet.ImageInternalOptions
+---@return Applet.ImageSystem
 local function create(opts)
   opts = opts or {}
-  local backend, backend_name
-  if opts._backend then
-    backend = opts._backend
+  local backend = opts._backend
+  local backend_name
+  if backend then
     backend_name = backend.name or "custom"
   else
     backend, backend_name = select_backend(opts)
@@ -67,6 +180,7 @@ local function create(opts)
   validate_backend(backend)
   local load_source = opts._load_source or source.load_async
   assert(type(load_source) == "function", "_load_source must be a function")
+  ---@type Applet.ImageSystem
   local value = setmetatable({
     backend = backend,
     backend_name = backend_name,
@@ -107,18 +221,26 @@ local function create(opts)
   return value
 end
 
+---@param opts? Applet.ImageOptions
+---@return Applet.ImageSystem
 function ImageSystem.new(opts)
   return create(opts or {})
 end
 
+---@param opts? Applet.ImageDiagnosticsOptions
+---@return Applet.ImageDiagnostic[]
 function ImageSystem.diagnostics(opts)
   return diagnostics(opts or {})
 end
 
+---@param opts? Applet.ImageInternalOptions
+---@return Applet.ImageSystem
 function ImageSystem._new(opts)
   return create(opts)
 end
 
+---@param opts? Applet.ImageDiagnosticsOptions
+---@return Applet.ImageDiagnostic[]
 function ImageSystem._diagnostics(opts)
   return diagnostics(opts)
 end
@@ -128,6 +250,7 @@ function ImageSystem:_changed()
   for callback in pairs(self.callbacks) do pcall(callback, self) end
 end
 
+---@return boolean
 function ImageSystem:_destroy_backend()
   if self.backend_destroyed then return false end
   self.backend_destroyed = true
@@ -135,6 +258,7 @@ function ImageSystem:_destroy_backend()
   return true
 end
 
+---@param err unknown
 function ImageSystem:_backend_failure(err)
   if self.destroyed or self.status == "unavailable" then return end
   self.status = "unavailable"
@@ -153,14 +277,17 @@ function ImageSystem:_backend_failure(err)
   self:_changed()
 end
 
-function ImageSystem:_backend_call(method, ...)
+---@generic T
+---@param invoke fun(backend: Applet.ImageBackend): T
+---@return T?, boolean
+function ImageSystem:_backend_call(invoke)
   if self.destroyed or self.status ~= "available"
       or self.backend_destroyed then
     return nil, false
   end
   local backend = self.backend
   local generation = self.backend_generation
-  local ok, result = pcall(backend[method], backend, ...)
+  local ok, result = pcall(invoke, backend)
   if not ok then
     self:_backend_failure(result)
     return nil, false
@@ -174,12 +301,17 @@ function ImageSystem:_backend_call(method, ...)
   return result, true
 end
 
+---@param callback fun(system: Applet.ImageSystem)
+---@return fun()
 function ImageSystem:subscribe(callback)
   assert(type(callback) == "function", "image callback must be a function")
   self.callbacks[callback] = true
   return function() self.callbacks[callback] = nil end
 end
 
+---@param presentation? Applet.ResolvedImagePresentation
+---@param id string
+---@return boolean
 local function presentation_references(presentation, id)
   if not presentation then return false end
   for _, source_identity in pairs(presentation.slots) do
@@ -188,6 +320,8 @@ local function presentation_references(presentation, id)
   return false
 end
 
+---@param id string
+---@return boolean
 function ImageSystem:_wanted(id)
   for _, identities in pairs(self.references) do
     if identities[id] then return true end
@@ -198,6 +332,7 @@ function ImageSystem:_wanted(id)
   return false
 end
 
+---@return boolean
 function ImageSystem:_release_unused()
   for id, operation in pairs(self.pending) do
     if not self:_wanted(id) then
@@ -212,7 +347,9 @@ function ImageSystem:_release_unused()
   end
   for id, resource in pairs(self.resources) do
     if not self:_wanted(id) then
-      local _, current = self:_backend_call("release", resource)
+      local _, current = self:_backend_call(function(backend)
+        return backend:release(resource)
+      end)
       if not current then return false end
       self.resources[id] = nil
       self.cache_bytes = self.cache_bytes - resource.bytes
@@ -222,6 +359,11 @@ function ImageSystem:_release_unused()
   return true
 end
 
+---@param id string
+---@param resource unknown
+---@param limits Applet.ImageLoadOptions
+---@return Applet.ImageResource
+---@return_overload nil, string
 local function loaded_resource(id, resource, limits)
   if type(resource) ~= "table" or resource.id ~= id
       or type(resource.data) ~= "string" then
@@ -241,6 +383,11 @@ local function loaded_resource(id, resource, limits)
   }
 end
 
+---@param id string
+---@param operation Applet.OutputOperation
+---@param resource? Applet.ImageResource
+---@param err unknown
+---@param limits Applet.ImageLoadOptions
 function ImageSystem:_complete(id, operation, resource, err, limits)
   if self.destroyed or self.pending[id] ~= operation then return end
   self.pending[id] = nil
@@ -262,12 +409,15 @@ function ImageSystem:_complete(id, operation, resource, err, limits)
   self:_changed()
 end
 
+---@param value Applet.ImageSource
+---@return Applet.ImageResource?, string?
 function ImageSystem:request(value)
   if self.destroyed then return nil, "image system is destroyed" end
   local id = source.identity(value)
   if self.resources[id] then return self.resources[id] end
   if self.failures[id] then return nil, self.failures[id] end
   if self.pending[id] or self.status ~= "available" then return nil end
+  ---@type Applet.OutputOperation
   local operation = {}
   self.pending[id] = operation
   local limits = {
@@ -275,7 +425,11 @@ function ImageSystem:request(value)
     max_bytes = self.max_bytes,
     max_pixels = self.max_pixels,
   }
-  local invoking, completion = true, nil
+  local invoking = true
+  ---@type {resource?: Applet.ImageResource, err?: string}?
+  local completion
+  ---@param resource? Applet.ImageResource
+  ---@param err? string
   local function done(resource, err)
     if invoking then
       completion = completion or { resource = resource, err = err }
@@ -302,6 +456,8 @@ function ImageSystem:request(value)
   return nil
 end
 
+---@param owner Applet.ImageOwner
+---@param identities? table<string, unknown>
 function ImageSystem:set_references(owner, identities)
   if self.destroyed then return end
   assert(owner ~= nil, "image reference owner is required")
@@ -311,6 +467,8 @@ function ImageSystem:set_references(owner, identities)
   self:_release_unused()
 end
 
+---@param resource Applet.ImageResource
+---@return Applet.ImageMetadata
 local function resource_metadata(resource)
   return {
     id = resource.id,
@@ -319,6 +477,9 @@ local function resource_metadata(resource)
   }
 end
 
+---@param system Applet.ImageSystem
+---@param value Applet.ImagePresentation
+---@return Applet.ResolvedImagePresentation
 local function resolve_presentation(system, value)
   assert(type(value) == "table", "image presentation must be a table")
   local slots = value.slots
@@ -345,6 +506,7 @@ local function resolve_presentation(system, value)
       "image presentation placements require a string key")
     local id = assert(result.slots[placement.key],
       "image presentation placement must reference a slot")
+    ---@type Applet.ImageRequest
     local request = util.copy(placement)
     request.resource = system.resources[id]
     result.placements[index] = request
@@ -353,6 +515,9 @@ local function resolve_presentation(system, value)
   return result
 end
 
+---@param owner Applet.ImageOwner
+---@param value Applet.ImagePresentation
+---@return boolean
 function ImageSystem:present(owner, value)
   if self.destroyed or self.status ~= "available" then return false end
   assert(owner ~= nil, "image presentation owner is required")
@@ -363,8 +528,9 @@ function ImageSystem:present(owner, value)
   end
   if not current and not next(presentation.slots)
       and #presentation.placements == 0 then return false end
-  local _, current_generation = self:_backend_call(
-    "replace", owner, presentation.placements)
+  local _, current_generation = self:_backend_call(function(backend)
+    return backend:replace(owner, presentation.placements)
+  end)
   if not current_generation then return false end
   self.presentations[owner] = next(presentation.slots)
       and presentation or nil
@@ -374,10 +540,14 @@ function ImageSystem:present(owner, value)
   return true
 end
 
+---@param owner? Applet.ImageOwner
+---@return boolean
 function ImageSystem:clear(owner)
   if self.destroyed or owner == nil then return false end
   local changed = self.presentations[owner] ~= nil
-  local backend_changed, current_generation = self:_backend_call("clear", owner)
+  local backend_changed, current_generation = self:_backend_call(function(backend)
+    return backend:clear(owner)
+  end)
   self.presentations[owner] = nil
   self.references[owner] = nil
   if not current_generation then return false end
@@ -385,10 +555,14 @@ function ImageSystem:clear(owner)
   return changed or backend_changed == true
 end
 
+---@param owner? Applet.ImageOwner
+---@return Applet.ImageSnapshot
 function ImageSystem:snapshot(owner)
   local cells = { width = 1, height = 1 }
   if self.status == "available" then
-    local selected, current_generation = self:_backend_call("cell_dimensions")
+    local selected, current_generation = self:_backend_call(function(backend)
+      return backend:cell_dimensions()
+    end)
     if current_generation and type(selected) == "table" then cells = selected end
   end
   local resources = {}
@@ -407,13 +581,19 @@ function ImageSystem:snapshot(owner)
   }
 end
 
+---@param owner Applet.ImageOwner
+---@return boolean
 function ImageSystem:redraw(owner)
   if self.destroyed or self.status ~= "available" then return false end
-  local redrawn, current_generation = self:_backend_call("redraw", owner)
+  local redrawn, current_generation = self:_backend_call(function(backend)
+    return backend:redraw(owner)
+  end)
   return current_generation and redrawn == true or false
 end
 
+---@return Applet.ImageStats
 function ImageSystem:_stats()
+  ---@type Applet.ImageStats
   local result = util.copy(self.counters)
   result.cached_bytes = self.cache_bytes
   result.prepared_resources = vim.tbl_count(self.resources)

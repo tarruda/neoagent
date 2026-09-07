@@ -5,7 +5,7 @@ local geometry = require("applet.image.geometry")
 
 ---@alias Applet.ImageOwner string|number|boolean|table|function|userdata|thread
 
----@class Applet.ImageRequest: Applet.ImagePlacement
+---@class Applet.ImageRequest: Applet.ImagePlacement, Applet.ImageSlotPlacement
 ---@field key string
 ---@field resource Applet.ImageContent
 ---@field cell_width? number
@@ -48,7 +48,7 @@ local geometry = require("applet.image.geometry")
 ---@class Applet.OutputOperation
 ---@field cancel? Applet.CancelOutput
 
----@class Applet.Kitty
+---@class Applet.Kitty: Applet.ImageBackend
 ---@field name "kitty"
 ---@field available boolean
 ---@field write fun(data: string): boolean?
