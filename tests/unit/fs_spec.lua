@@ -18,6 +18,7 @@ describe("neoagent.fs", function()
       chmod = vim.uv.fs_chmod,
       rename = vim.uv.fs_rename,
       random = vim.uv.random,
+      tmpdir = vim.uv.os_tmpdir,
       mkstemp = vim.uv.fs_mkstemp,
       mkdtemp = vim.uv.fs_mkdtemp,
       unlink = vim.uv.fs_unlink,
@@ -47,6 +48,7 @@ describe("neoagent.fs", function()
     vim.uv.fs_chmod = original.chmod
     vim.uv.fs_rename = original.rename
     vim.uv.random = original.random
+    vim.uv.os_tmpdir = original.tmpdir
     vim.uv.fs_mkstemp = original.mkstemp
     vim.uv.fs_mkdtemp = original.mkdtemp
     vim.uv.fs_unlink = original.unlink
@@ -75,6 +77,15 @@ describe("neoagent.fs", function()
     assert.is_nil(path)
     assert.are.equal("close failed", err)
     assert.are.equal("/tmp/neoagent-test-file", removed)
+  end)
+
+  it("reports failures resolving the temporary directory", function()
+    vim.uv.os_tmpdir = function() return nil, "temporary directory unavailable" end
+    for _, create in ipairs({ fs.create_temp, fs.create_temp_directory }) do
+      local path, err = create()
+      assert.is_nil(path)
+      assert.are.equal("temporary directory unavailable", err)
+    end
   end)
 
   it("creates temporary directories atomically", function()

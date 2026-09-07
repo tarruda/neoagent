@@ -68,7 +68,6 @@ lua/neoagent/dialog.lua
 lua/neoagent/file_lock.lua
 lua/neoagent/file_lock/posix.lua
 lua/neoagent/file_lock/windows.lua
-lua/neoagent/fs.lua
 lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
 lua/neoagent/http_replay.lua

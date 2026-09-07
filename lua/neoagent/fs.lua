@@ -3,6 +3,36 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.FileIdentity
+---@field device number
+---@field inode number
+
+---@alias Neoagent.FileFailureStage 'ownership'|'read'|'write'|'truncate'|'close'|'open'
+---@alias Neoagent.AtomicFailureStage 'write'|'mode'|'inspect'|'target'|'target_changed'|'temporary'|'rename'
+
+---@class Neoagent.AtomicRequirements
+---@field require_existing? boolean
+---@field expected_content_fingerprint? string
+
+---@class Neoagent.FixedModePolicy: Neoagent.AtomicRequirements
+---@field mode integer
+---@field preserve_mode? false
+
+---@class Neoagent.PreserveModePolicy: Neoagent.AtomicRequirements
+---@field preserve_mode true
+---@field new_mode integer
+
+---@alias Neoagent.AtomicPolicy Neoagent.FixedModePolicy|Neoagent.PreserveModePolicy
+
+---@class Neoagent.FileObservation
+---@field exists boolean
+---@field type? string
+---@field device? integer
+---@field inode? integer
+---@field mode? integer
+
+---@param data string
+---@return string
 function M.content_fingerprint(data)
   assert(type(data) == "string", "fingerprint data must be a string")
   local seeds = {
@@ -24,10 +54,15 @@ function M.content_fingerprint(data)
   return table.concat(parts)
 end
 
+---@param path string
+---@return string
 function M.normalize(path)
   return vim.fs.normalize(path)
 end
 
+---@param path unknown
+---@param os_name? string
+---@return boolean
 function M.is_absolute(path, os_name)
   if type(path) ~= "string" or path == "" then return false end
   os_name = os_name or jit.os
@@ -38,13 +73,32 @@ function M.is_absolute(path, os_name)
   return path:sub(1, 1) == "/"
 end
 
+---@param ... string
+---@return string
 function M.join(...)
   return vim.fs.joinpath(...)
 end
 
+---@param prefix? string
+---@param directory? string
+---@return string? template
+---@return string? error
+local function temporary_template(prefix, directory)
+  if not directory then
+    local err
+    directory, err = vim.uv.os_tmpdir()
+    if not directory then return nil, err end
+  end
+  return M.join(directory, (prefix or "neoagent-") .. "XXXXXX")
+end
+
+---@param prefix? string
+---@param directory? string
+---@return string? path
+---@return string? error
 function M.create_temp(prefix, directory)
-  local template = M.join(
-    directory or vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+  local template, template_err = temporary_template(prefix, directory)
+  if not template then return nil, template_err end
   local fd, path = vim.uv.fs_mkstemp(template)
   if not fd then return nil, path end
   local ok, err = vim.uv.fs_close(fd)
@@ -55,12 +109,22 @@ function M.create_temp(prefix, directory)
   return path
 end
 
+---@param prefix? string
+---@param directory? string
+---@return string? path
+---@return string? error
+---@return string? code
 function M.create_temp_directory(prefix, directory)
-  local template = M.join(
-    directory or vim.uv.os_tmpdir(), (prefix or "neoagent-") .. "XXXXXX")
+  local template, template_err = temporary_template(prefix, directory)
+  if not template then return nil, template_err end
   return vim.uv.fs_mkdtemp(template)
 end
 
+---@param path string
+---@param on_chunk fun(data: string, offset: integer)
+---@param chunk_size? integer
+---@return true? ok
+---@return unknown error Includes exceptions raised by the caller's callback.
 function M.read_chunks(path, on_chunk, chunk_size)
   assert(type(on_chunk) == "function", "chunk callback is required")
   chunk_size = chunk_size or 64 * 1024
@@ -99,6 +163,9 @@ function M.read_chunks(path, on_chunk, chunk_size)
   return true
 end
 
+---@param path string
+---@return string? data
+---@return string? error
 function M.read(path)
   local chunks = {}
   local ok, err = M.read_chunks(path, function(data) chunks[#chunks + 1] = data end)
@@ -106,6 +173,9 @@ function M.read(path)
   return table.concat(chunks)
 end
 
+---@param path? string
+---@return true? ok
+---@return unknown error
 function M.mkdirp(path)
   if path == nil or path == "" or path == "." then
     return true
@@ -117,6 +187,12 @@ function M.mkdirp(path)
   return true
 end
 
+---@param path string
+---@param requested_mode integer
+---@return true? ok
+---@return boolean|string|nil created_or_error
+---@return_overload true, boolean
+---@return_overload nil, string?
 function M.ensure_private_directory(path, requested_mode)
   assert(type(path) == "string" and path ~= "",
     "private directory path is required")
@@ -158,6 +234,12 @@ function M.ensure_private_directory(path, requested_mode)
   return true, created
 end
 
+---@param path string
+---@param data string
+---@param flags? string
+---@param mode? integer
+---@return true? ok
+---@return string? error
 function M.write_all(path, data, flags, mode)
   local fd, open_err = vim.uv.fs_open(path, flags or "w", mode or 420)
   if not fd then
@@ -181,9 +263,16 @@ function M.write_all(path, data, flags, mode)
   return true
 end
 
+---@class Neoagent.RegularFile
+---@field _path string
+---@field _fd? integer
+---@field _identity Neoagent.FileIdentity
+---@field _uv uv
 local RegularFile = {}
 RegularFile.__index = RegularFile
 
+---@param stat unknown
+---@return Neoagent.FileIdentity?
 local function regular_identity(stat)
   if type(stat) ~= "table" or stat.type ~= "file"
       or type(stat.dev) ~= "number" or type(stat.ino) ~= "number" then
@@ -192,16 +281,23 @@ local function regular_identity(stat)
   return { device = stat.dev, inode = stat.ino }
 end
 
+---@param identity? Neoagent.FileIdentity
+---@param stat unknown
+---@return boolean?
 local function same_regular_identity(identity, stat)
   local current = regular_identity(stat)
   return identity and current
     and identity.device == current.device and identity.inode == current.inode
 end
 
+---@return Neoagent.FileIdentity
 function RegularFile:identity()
   return util.copy(self._identity)
 end
 
+---@return uv.fs_stat.result? stat
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:stat()
   local fd = self._fd
   if not fd then return nil, "regular file handle is closed" end
@@ -213,6 +309,9 @@ function RegularFile:stat()
   return stat
 end
 
+---@return uv.fs_stat.result? stat
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:verify_path()
   local held, held_err, held_code = self:stat()
   if not held then return nil, held_err, held_code end
@@ -223,12 +322,18 @@ function RegularFile:verify_path()
   return held
 end
 
+---@return string? data
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:read_all()
   local stat, stat_err, stat_code = self:stat()
   if not stat then return nil, stat_err, stat_code end
+  -- Successful synchronous stat verifies that this handle is open.
+  local fd = self._fd
+  ---@cast fd integer
   local chunks, offset = {}, 0
   while true do
-    local chunk, read_err = self._uv.fs_read(self._fd, 64 * 1024, offset)
+    local chunk, read_err = self._uv.fs_read(fd, 64 * 1024, offset)
     if chunk == nil then return nil, read_err, "read" end
     if chunk == "" then break end
     chunks[#chunks + 1] = chunk
@@ -237,6 +342,11 @@ function RegularFile:read_all()
   return table.concat(chunks)
 end
 
+---@param data string
+---@param offset integer
+---@return true? ok
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:append(data, offset)
   assert(type(data) == "string", "regular file append data must be a string")
   assert(type(offset) == "number" and offset >= 0 and offset % 1 == 0,
@@ -256,6 +366,10 @@ function RegularFile:append(data, offset)
   return true
 end
 
+---@param size integer
+---@return true? ok
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:truncate(size)
   assert(type(size) == "number" and size >= 0 and size % 1 == 0,
     "regular file truncate size must be a non-negative integer")
@@ -271,6 +385,9 @@ function RegularFile:truncate(size)
   return true
 end
 
+---@return true? ok
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function RegularFile:close()
   local fd = self._fd
   if not fd then return true end
@@ -280,6 +397,11 @@ function RegularFile:close()
   return true
 end
 
+---@param path string
+---@param opts? { mode?: integer, identity?: Neoagent.FileIdentity }
+---@return Neoagent.RegularFile? file
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
 function M.open_regular(path, opts)
   assert(type(path) == "string" and path ~= "",
     "regular file path is required")
@@ -322,6 +444,10 @@ function M.open_regular(path, opts)
   }, RegularFile)
 end
 
+---@param path string
+---@param size integer
+---@return true? ok
+---@return string? error
 function M.truncate(path, size)
   assert(type(size) == "number" and size >= 0 and size % 1 == 0,
     "truncate size must be a non-negative integer")
@@ -340,18 +466,27 @@ function M.truncate(path, size)
   return true
 end
 
+---@param value unknown
+---@param name string
+---@return integer
 local function mode(value, name)
   assert(type(value) == "number" and value >= 0 and value <= 511
       and value % 1 == 0,
     name .. " must be a permission mode between 0000 and 0777")
+  ---@cast value integer
   return value
 end
 
+---@param err unknown
+---@param code? string
+---@return boolean
 local function missing(err, code)
   if code == "ENOENT" then return true end
   return type(err) == "string" and err:find("ENOENT", 1, true) ~= nil
 end
 
+---@param value unknown
+---@return Neoagent.AtomicPolicy
 local function atomic_policy(value)
   assert(type(value) == "table"
       and (next(value) == nil or not util.is_list(value)),
@@ -388,6 +523,8 @@ local function atomic_policy(value)
   return value
 end
 
+---@param stat? uv.fs_stat.result
+---@return Neoagent.FileObservation
 local function observation(stat)
   return {
     exists = stat ~= nil,
@@ -399,6 +536,9 @@ local function observation(stat)
   }
 end
 
+---@param left Neoagent.FileObservation
+---@param right Neoagent.FileObservation
+---@return boolean
 local function same_observation(left, right)
   return left.exists == right.exists
     and left.type == right.type
@@ -407,6 +547,10 @@ local function same_observation(left, right)
     and left.mode == right.mode
 end
 
+---@param path string
+---@param expected Neoagent.FileObservation
+---@return string? fingerprint
+---@return string? error
 local function fingerprint_file(path, expected)
   local fd, open_err = vim.uv.fs_open(path, "r", 438)
   if not fd then return nil, open_err end
@@ -441,10 +585,15 @@ local function fingerprint_file(path, expected)
   return M.content_fingerprint(table.concat(chunks))
 end
 
+---@param policy unknown
+---@return Neoagent.AtomicPolicy
 function M._normalize_atomic_policy(policy)
   return atomic_policy(util.copy(policy or {}))
 end
 
+---@param actual? integer
+---@param expected integer
+---@return boolean
 local function candidate_mode_matches(actual, expected)
   if type(actual) ~= "number" then return false end
   if jit.os == "Windows" then
@@ -453,10 +602,19 @@ local function candidate_mode_matches(actual, expected)
   return bit.band(actual, 511) == expected
 end
 
+---@param path string
+---@param data string
+---@param selected_mode integer
+---@param exact_mode boolean
+---@return Neoagent.FileIdentity? identity
+---@return string? error
+---@return Neoagent.AtomicFailureStage? stage
 local function write_atomic_candidate(path, data, selected_mode, exact_mode)
   local fd, open_err = vim.uv.fs_open(path, "wx", selected_mode)
   if not fd then return nil, open_err, "write" end
-  local failure, stage
+  local failure
+  ---@type Neoagent.AtomicFailureStage?
+  local stage
   local written = 0
   while written < #data do
     local count, write_err = vim.uv.fs_write(
@@ -497,6 +655,8 @@ local function write_atomic_candidate(path, data, selected_mode, exact_mode)
   return regular_identity(stat)
 end
 
+---@param path string
+---@param identity? Neoagent.FileIdentity
 local function remove_atomic_candidate(path, identity)
   if identity then
     local current = vim.uv.fs_lstat(path)
@@ -505,6 +665,14 @@ local function remove_atomic_candidate(path, identity)
   vim.uv.fs_unlink(path)
 end
 
+---@param path string
+---@param data string
+---@param policy Neoagent.AtomicPolicy
+---@return true? ok
+---@return Neoagent.FileIdentity|string|nil identity_or_error
+---@return Neoagent.AtomicFailureStage? stage
+---@return_overload true, Neoagent.FileIdentity
+---@return_overload nil, string?, Neoagent.AtomicFailureStage?
 function M.atomic_replace(path, data, policy)
   assert(type(path) == "string" and path ~= "",
     "atomic replacement path is required")
@@ -598,10 +766,14 @@ function M.atomic_replace(path, data, policy)
   return true, identity
 end
 
+---@param path string
+---@return string
 function M.canonical(path)
   return vim.uv.fs_realpath(path) or M.normalize(path)
 end
 
+---@param path string
+---@return string[]
 function M.ancestors(path)
   local current = M.canonical(path)
   local marker = vim.fs.find(".git", { path = current, upward = true })[1]

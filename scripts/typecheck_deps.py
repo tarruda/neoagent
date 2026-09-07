@@ -106,6 +106,26 @@ def install_types(name, url, digest, included):
         staging.rename(destination)
 
 
+def correct_luv_lstat():
+    # The pinned LuaCATS declaration incorrectly types a path as a descriptor.
+    # https://github.com/luvit/luv/blob/master/docs/docs.md#uvfs_lstatpath-callback
+    path = ROOT / ".deps/typecheck/luv/library/uv.lua"
+    original = """---@param  path                  integer
+---@return uv.fs_stat.result|nil stat
+---@return uv.error.message|nil err
+---@return uv.error.name|nil err_name
+---
+---@overload fun(path:integer, callback:uv.fs_lstat.callback):uv.uv_fs_t
+function uv.fs_lstat(path) end"""
+    corrected = original.replace("path                  integer", "path                  string")
+    corrected = corrected.replace("fun(path:integer", "fun(path:string")
+    source = path.read_text()
+    if source.count(original) == 1:
+        path.write_text(source.replace(original, corrected))
+    elif source.count(corrected) != 1:
+        raise RuntimeError("Pinned fs_lstat declaration changed; review its correction.")
+
+
 def main():
     host = (platform.system(), platform.machine())
     if host not in BINARIES:
@@ -121,6 +141,7 @@ def main():
         "https://codeload.github.com/LuaCATS/luv/tar.gz/3615eb12c94a7cfa7184b8488cf908abb5e94c9c",
         "0631e73045be8fa37042df1eef6617d82e1f9786b8bd4191f1ed479fb738458f",
         ("library", "LICENSE"))
+    correct_luv_lstat()
     print(f"EmmyLua {VERSION}, Neovim v0.10.2 and pinned libuv declarations ready.")
 
 
