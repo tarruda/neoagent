@@ -287,8 +287,15 @@ function M.list(configured, workspace)
   })
   for _, info in ipairs(sessions) do
     local attributes = info.attributes or {}
-    info.profile_id = attributes.profileId
-    info.profile_error = attributes.profileError
+    local selected, error_text = attributes.profileId, attributes.profileError
+    if error_text ~= nil then
+      info.profile_error = type(error_text) == "string" and error_text ~= ""
+          and error_text or "Invalid cached Session Profile error"
+    elseif type(selected) == "string" and selected ~= "" then
+      info.profile_id = selected
+    else
+      info.profile_error = "Invalid cached Session Profile binding"
+    end
   end
   return sessions
 end

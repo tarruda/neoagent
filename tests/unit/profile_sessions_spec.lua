@@ -67,6 +67,32 @@ describe("neoagent.profile_sessions", function()
     assert.are.equal("neo", indexed.attributes.profileId)
   end)
 
+  it("reports malformed cached Profile attributes as listing errors", function()
+    local root = directory()
+    local persistence = { enabled = true, directory = root }
+    local session = assert(profile_sessions.new({
+      profile_id = "neo", workspace = root, persistence = persistence,
+    }))
+    assert(session:append({ role = "user", content = "saved" }))
+    local path = session:metadata().path
+    local index_path = fs.join(vim.fs.dirname(vim.fs.dirname(path)),
+      "session-index.json")
+    local data = assert(fs.read(index_path))
+    local index = vim.json.decode(data)
+    for _, attributes in ipairs({
+      { profileId = 42 }, { profileId = "" }, { profileId = vim.NIL },
+      { profileError = false }, { profileError = {} }, { profileError = "" },
+    }) do
+      index.sessions[vim.fs.basename(path)].attributes = attributes
+      assert((fs.write_all(index_path, vim.json.encode(index))))
+      local listed = profile_sessions.list(persistence, root)
+      assert.are.equal(1, #listed)
+      assert.is_nil(listed[1].profile_id)
+      assert.are.equal("string", type(listed[1].profile_error))
+      assert.matches("Invalid cached Session Profile", listed[1].profile_error)
+    end
+  end)
+
   it("rejects Profile-free and malformed bindings", function()
     local root = directory()
     local unassigned = storage.new({ directory = root, cwd = root })
