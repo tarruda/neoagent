@@ -4,12 +4,12 @@ local request_opts = require("neoagent.api.request_opts")
 local util = require("neoagent.util")
 
 local M = {}
----@class Neoagent.ApiKeyCredential
+---@class Neoagent.ApiKeyCredential: Neoagent.JsonObject
 ---@field type "api_key"
 ---@field key string
 ---@field env? table<string, string>
 
----@class Neoagent.OAuthCredential
+---@class Neoagent.OAuthCredential: Neoagent.JsonObject
 ---@field type? "oauth"
 ---@field access string
 ---@field refresh string

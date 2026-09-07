@@ -4,28 +4,55 @@ local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.CredentialStoreOptions
+---@field lock_timeout_ms? integer
+---@field lock_poll_ms? integer
+
+---@class Neoagent.StoredCredentialEntry
+---@field id string
+---@field type Neoagent.JsonValue
+
+---@class Neoagent.CredentialMutationSuccess
+---@field ok true
+---@field credential? Neoagent.JsonValue
+
+---@alias Neoagent.CredentialMutationResult Neoagent.CredentialMutationSuccess|Neoagent.AsyncFailure
+
+---@class Neoagent.CredentialStore
+---@field path string
+---@field lock_timeout_ms integer
+---@field lock_poll_ms integer
 local Store = {}
 Store.__index = Store
+---@type Neoagent.JsonObject
 local DELETE = {}
 local DEFAULT_LOCK_TIMEOUT_MS = 30000
 local DEFAULT_LOCK_POLL_MS = 50
 
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function failure(message, detail)
   return util.error("auth", message, detail)
 end
 
+---@param err unknown
+---@param releasing boolean
+---@return Neoagent.Error
 local function credential_lock_error(err, releasing)
   err = util.normalize_error(err, "file_lock")
+  local detail = rawget(err, "detail")
   if err.kind == "cancelled" then return err end
   if releasing then
-    return failure("Failed to release credential lock", err.detail or err.message)
+    return failure("Failed to release credential lock", detail or err.message)
   end
-  if err.code == "timeout" then
-    return failure("Timed out acquiring credential lock", err.detail)
+  if rawget(err, "code") == "timeout" then
+    return failure("Timed out acquiring credential lock", detail)
   end
-  return failure("Failed to acquire credential lock", err.detail or err.message)
+  return failure("Failed to acquire credential lock", detail or err.message)
 end
 
+---@return Neoagent.FileLock
 function Store:_file_lock()
   return file_lock.new({
     path = self.path .. ".lock",
@@ -34,6 +61,8 @@ function Store:_file_lock()
   })
 end
 
+---@async
+---@return fun(): true?, Neoagent.Error?
 function Store:_lock()
   local ok, lease = pcall(function()
     return self:_file_lock():acquire_async()
@@ -46,6 +75,7 @@ function Store:_lock()
   end
 end
 
+---@return Neoagent.JsonObject?, Neoagent.Error?
 function Store:_read_all()
   local stat = vim.uv.fs_stat(self.path)
   if not stat then return {} end
@@ -55,15 +85,19 @@ function Store:_read_all()
   if not ok or type(decoded) ~= "table" or util.is_list(decoded) then
     return nil, failure("Invalid credential file", ok and "expected an object" or decoded)
   end
+  ---@cast decoded Neoagent.JsonObject
   return decoded
 end
 
+---@param id string
+---@return Neoagent.JsonValue?, Neoagent.Error?
 function Store:read(id)
   local values, err = self:_read_all()
   if not values then return nil, err end
   return util.copy(values[id])
 end
 
+---@return Neoagent.StoredCredentialEntry[]?, Neoagent.Error?
 function Store:list()
   local values, err = self:_read_all()
   if not values then return nil, err end
@@ -77,6 +111,8 @@ function Store:list()
   return result
 end
 
+---@param values Neoagent.JsonObject
+---@return true?, Neoagent.Error?
 function Store:_write_all(values)
   local directory = vim.fs.dirname(self.path)
   local ok, err
@@ -95,6 +131,9 @@ function Store:_write_all(values)
   return true
 end
 
+---@param id string
+---@param credential? Neoagent.JsonValue
+---@return true?, Neoagent.Error?
 function Store:write(id, credential)
   local directory = vim.fs.dirname(self.path)
   local created, create_err = fs.ensure_private_directory(directory, 448)
@@ -111,24 +150,36 @@ function Store:write(id, credential)
   return result, err
 end
 
+---@param id string
+---@return Neoagent.Run<Neoagent.CredentialMutationResult, nil>
 function Store:delete(id)
   if not vim.uv.fs_stat(self.path) then
-    return async.run(function() return { ok = true } end, { error_kind = "auth" })
+    return async.run(
+    ---@return Neoagent.CredentialMutationSuccess
+    function() return { ok = true } end, { error_kind = "auth" })
   end
   return self:modify(id, function() return DELETE end)
 end
 
+---@param id string
+---@param fn async fun(current?: Neoagent.JsonValue): Neoagent.JsonValue?
+---@return Neoagent.Run<Neoagent.CredentialMutationResult, nil>
 function Store:modify(id, fn)
   assert(type(fn) == "function", "credential modifier is required")
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.CredentialMutationSuccess
+  function()
     local directory = vim.fs.dirname(self.path)
     local created, create_err = fs.ensure_private_directory(directory, 448)
     if not created then error(failure("Failed to create credential directory", create_err), 0) end
     local release = self:_lock()
-    local ok, result = pcall(function()
+    local ok, result = pcall(
+    ---@return Neoagent.JsonValue?
+    function()
       local values, read_err = self:_read_all()
       if not values then error(read_err, 0) end
       local next_value = fn(util.copy(values[id]))
+      ---@type Neoagent.JsonValue?
       local post
       if next_value == DELETE then
         local existed = values[id] ~= nil
@@ -154,12 +205,19 @@ function Store:modify(id, fn)
   end, { error_kind = "auth" })
 end
 
+---@param value unknown
+---@param name string
+---@return integer
 local function positive_integer(value, name)
   assert(type(value) == "number" and value > 0 and value % 1 == 0,
     name .. " must be a positive integer")
+  ---@cast value integer
   return value
 end
 
+---@param path string
+---@param opts? Neoagent.CredentialStoreOptions
+---@return Neoagent.CredentialStore
 function M.new(path, opts)
   assert(type(path) == "string" and path ~= "", "credential path is required")
   opts = opts or {}

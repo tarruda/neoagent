@@ -26,7 +26,6 @@ lua/neoagent/auth/alibaba_dashboard.lua
 lua/neoagent/auth/init.lua
 lua/neoagent/auth/local_callback.lua
 lua/neoagent/auth/openai_codex.lua
-lua/neoagent/auth/store.lua
 lua/neoagent/authentication.lua
 lua/neoagent/chat.lua
 lua/neoagent/compaction.lua
