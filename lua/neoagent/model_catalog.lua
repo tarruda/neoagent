@@ -4,6 +4,32 @@ local model_config = require("neoagent.model_config")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.CatalogValidator
+---@field etag? string
+---@field last_modified? string
+
+---@class Neoagent.CatalogDiscoveryContext<P>: Neoagent.ProviderAuthContext
+---@field provider_id string
+---@field provider P
+---@field transport? Neoagent.ByteBackend
+---@field validator? Neoagent.CatalogValidator
+---@field force boolean
+---@field now fun(): number
+---@field resolve_api_key fun(): string?
+
+---@class Neoagent.CatalogUnchanged
+---@field ok true
+---@field unchanged true
+---@field validator? Neoagent.CatalogValidator
+
+---@class Neoagent.CatalogDiscovered<T>
+---@field ok true
+---@field models T[]
+---@field unchanged? false
+---@field validator? Neoagent.CatalogValidator
+
+---@alias Neoagent.CatalogDiscoveryResult<T> Neoagent.CatalogDiscovered<T>|Neoagent.CatalogUnchanged|Neoagent.AsyncFailure
+
 local Catalog = {}
 Catalog.__index = Catalog
 

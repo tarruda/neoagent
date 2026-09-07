@@ -62,7 +62,6 @@ lua/neoagent/provider_state.lua
 lua/neoagent/providers/alibaba_token_plan.lua
 lua/neoagent/providers/anthropic.lua
 lua/neoagent/providers/codex.lua
-lua/neoagent/providers/codex/catalog.lua
 lua/neoagent/providers/deepseek.lua
 lua/neoagent/providers/deepseek/model_metadata.lua
 lua/neoagent/providers/llama.lua
