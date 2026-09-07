@@ -55,7 +55,6 @@ lua/neoagent/api/request_opts.lua
 lua/neoagent/api/tool_arguments.lua
 lua/neoagent/api/tool_schema.lua
 lua/neoagent/applet.lua
-lua/neoagent/async.lua
 lua/neoagent/auth/alibaba_dashboard.lua
 lua/neoagent/auth/alibaba_token_plan.lua
 lua/neoagent/auth/api_key.lua

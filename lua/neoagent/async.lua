@@ -1,8 +1,82 @@
 local util = require("neoagent.util")
 
+---@class Neoagent.AsyncFailure
+---@field ok false
+---@field error Neoagent.Error
+
+---@class Neoagent.AsyncSuccess
+---@field ok true
+
+-- A coroutine with no return value settles with the default success record.
+---@alias Neoagent.NoReturn nil
+---@alias Neoagent.RunValue<T> T extends Neoagent.NoReturn and Neoagent.AsyncSuccess or T
+---@alias Neoagent.RunResult<T> Neoagent.RunValue<T>|Neoagent.AsyncFailure
+---@alias Neoagent.CancelSubscription fun(): boolean
+---@alias Neoagent.DiagnosticPhase 'event'|'done'|'listener'|'cancel'|'dispose'
+
+---@class Neoagent.AsyncDiagnostic
+---@field kind 'callback'
+---@field phase Neoagent.DiagnosticPhase
+---@field message string
+
+---@class Neoagent.RunOptions<T, E>
+---@field on_event? fun(event: E)
+---@field on_done? fun(result: Neoagent.RunResult<T>)
+---@field error_kind? string
+---@field report? fun(diagnostic: Neoagent.AsyncDiagnostic)
+
+---@class Neoagent.AwaitCallbacks<T>
+---@field resolve fun(value: T, disposer?: fun(value: T)): boolean
+---@field reject fun(error: unknown): boolean
+
+---@class Neoagent.CancelHandler
+---@field fn fun()
+---@field active boolean
+
+---@class Neoagent.QueuedCallback
+---@field invoke fun()
+---@field phase Neoagent.DiagnosticPhase
+
+---@class Neoagent.AwaitState
+---@field state 'pending'|'settled'|'cancelled'|'delivered'
+---@field yielded boolean
+---@field delivery_scheduled? boolean
+---@field cancel_invoked? boolean
+---@field cancel_pending? boolean
+---@field cancel_producer? fun()
+---@field cancel_wait? Neoagent.CancelSubscription
+---@field remove_cancel? Neoagent.CancelSubscription
+---@field ok? boolean
+---@field value? unknown
+---@field disposer? fun(value: unknown)
+---@field resolve? fun(value: unknown, disposer?: fun(value: unknown)): boolean
+---@field reject? fun(error: unknown): boolean
+
 local M = {}
+---@type table<thread, Neoagent.Run<unknown, unknown>>
 local managed = setmetatable({}, { __mode = "k" })
 
+---@class Neoagent.Run<T, E>
+---@field _co? thread
+---@field _on_event? fun(event: E)
+---@field _on_done? fun(result: Neoagent.RunResult<T>)
+---@field _error_kind string
+---@field _report? fun(diagnostic: Neoagent.AsyncDiagnostic)
+---@field _callback_queue (Neoagent.QueuedCallback|false)[]
+---@field _callback_head integer
+---@field _drain_scheduled? boolean
+---@field _diagnostics Neoagent.AsyncDiagnostic[]
+---@field _diagnostic_listeners table<fun(diagnostic: Neoagent.AsyncDiagnostic), boolean>
+---@field _listeners fun(result: Neoagent.RunResult<T>)[]
+---@field _cancel_handlers Neoagent.CancelHandler[]
+---@field _inactive_cancel_handlers integer
+---@field _children table<Neoagent.Run<unknown, unknown>, boolean>
+---@field _parents table<Neoagent.Run<unknown, unknown>, boolean>
+---@field _completed boolean
+---@field _cancelled boolean
+---@field _cancelling? boolean
+---@field _result? Neoagent.RunResult<T>
+---@field _waiting? Neoagent.AwaitState
 local Run = {}
 Run.__index = Run
 
@@ -12,6 +86,8 @@ local MAX_DIAGNOSTIC_CHARACTERS = 1024
 local CALLBACK_COMPACT_THRESHOLD = 256
 local CANCEL_COMPACT_THRESHOLD = 64
 
+---@param value unknown
+---@return string
 local function diagnostic_message(value)
   return util.safe_message(value, {
     fallback = "Callback failure could not be rendered",
@@ -20,7 +96,9 @@ local function diagnostic_message(value)
   })
 end
 
-function Run:_record_diagnostic(diagnostic)
+---@param diagnostic Neoagent.AsyncDiagnostic
+---@param self Neoagent.Run<unknown, unknown>
+function Run._record_diagnostic(self, diagnostic)
   diagnostic = util.copy(diagnostic)
   if #self._diagnostics == MAX_DIAGNOSTICS then
     table.remove(self._diagnostics, 1)
@@ -32,7 +110,10 @@ function Run:_record_diagnostic(diagnostic)
   end
 end
 
-function Run:_diagnose(phase, value)
+---@param phase Neoagent.DiagnosticPhase
+---@param value unknown
+---@param self Neoagent.Run<unknown, unknown>
+function Run._diagnose(self, phase, value)
   self:_record_diagnostic({
     kind = "callback",
     phase = phase,
@@ -40,7 +121,10 @@ function Run:_diagnose(phase, value)
   })
 end
 
-function Run:_subscribe_diagnostics(listener)
+---@param listener fun(diagnostic: Neoagent.AsyncDiagnostic)
+---@return Neoagent.CancelSubscription
+---@param self Neoagent.Run<unknown, unknown>
+function Run._subscribe_diagnostics(self, listener)
   self._diagnostic_listeners[listener] = true
   for _, diagnostic in ipairs(self._diagnostics) do
     pcall(listener, util.copy(diagnostic))
@@ -54,6 +138,7 @@ function Run:_subscribe_diagnostics(listener)
   end
 end
 
+---@param run Neoagent.Run<unknown, unknown>
 local function schedule_drain(run)
   if run._drain_scheduled then return end
   run._drain_scheduled = true
@@ -62,7 +147,7 @@ local function schedule_drain(run)
       local item = run._callback_queue[run._callback_head]
       run._callback_queue[run._callback_head] = false
       run._callback_head = run._callback_head + 1
-      local ok, err = pcall(item.fn, item.value)
+      local ok, err = pcall(item.invoke)
       if not ok then run:_diagnose(item.phase, err) end
       local length = #run._callback_queue
       if run._callback_head > CALLBACK_COMPACT_THRESHOLD
@@ -81,19 +166,27 @@ local function schedule_drain(run)
   end)
 end
 
-function Run:_enqueue(fn, value, phase)
+---@generic V
+---@param fn? fun(value: V)
+---@param value V
+---@param phase Neoagent.DiagnosticPhase
+---@param self Neoagent.Run<unknown, unknown>
+function Run._enqueue(self, fn, value, phase)
   if not fn then
     return
   end
   self._callback_queue[#self._callback_queue + 1] = {
-    fn = fn,
-    value = value,
+    invoke = function() fn(value) end,
     phase = phase,
   }
   schedule_drain(self)
 end
 
-function Run:emit(event)
+---@generic T, E
+---@param self Neoagent.Run<T, E>
+---@param event E
+---@return boolean
+function Run.emit(self, event)
   if self._completed then
     return false
   end
@@ -101,7 +194,10 @@ function Run:emit(event)
   return true
 end
 
-function Run:_listen(fn)
+---@generic T, E
+---@param self Neoagent.Run<T, E>
+---@param fn fun(result: Neoagent.RunResult<T>)
+function Run._listen(self, fn)
   if self._completed then
     self:_enqueue(fn, self._result, "listener")
   else
@@ -109,7 +205,11 @@ function Run:_listen(fn)
   end
 end
 
-function Run:_finish(result)
+---@generic T, E
+---@param self Neoagent.Run<T, E>
+---@param result Neoagent.RunResult<T>
+---@return boolean
+function Run._finish(self, result)
   if self._completed then
     return false
   end
@@ -135,7 +235,9 @@ function Run:_finish(result)
   return true
 end
 
-function Run:_compact_cancel_handlers()
+---@return boolean
+---@param self Neoagent.Run<unknown, unknown>
+function Run._compact_cancel_handlers(self)
   local inactive = self._inactive_cancel_handlers
   local handlers = self._cancel_handlers
   if self._cancelling or inactive < CANCEL_COMPACT_THRESHOLD
@@ -151,7 +253,10 @@ function Run:_compact_cancel_handlers()
   return true
 end
 
-function Run:on_cancel(fn)
+---@param fn fun()
+---@return Neoagent.CancelSubscription
+---@param self Neoagent.Run<unknown, unknown>
+function Run.on_cancel(self, fn)
   assert(type(fn) == "function", "cancel handler must be a function")
   if self._completed then return function() return false end end
   if self._cancelled then
@@ -170,7 +275,8 @@ function Run:on_cancel(fn)
   end
 end
 
-function Run:cancel()
+---@param self Neoagent.Run<unknown, unknown>
+function Run.cancel(self)
   if self._completed or self._cancelled then
     return
   end
@@ -196,23 +302,36 @@ function Run:cancel()
   end
 end
 
-function Run:is_done()
+---@return boolean
+---@param self Neoagent.Run<unknown, unknown>
+function Run.is_done(self)
   return self._completed
 end
 
-function Run:is_cancelled()
+---@return boolean
+---@param self Neoagent.Run<unknown, unknown>
+function Run.is_cancelled(self)
   return self._cancelled
 end
 
-function Run:result()
+---@generic T, E
+---@param self Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>?
+function Run.result(self)
   return self._result
 end
 
-function Run:diagnostics()
+---@return Neoagent.AsyncDiagnostic[]
+---@param self Neoagent.Run<unknown, unknown>
+function Run.diagnostics(self)
   return util.copy(self._diagnostics)
 end
 
-function Run:await()
+---@async
+---@generic T, E
+---@param self Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
+function Run.await(self)
   local parent = M.current()
   if not parent then
     error("Run:await() must be called inside a coroutine managed by neoagent.async", 2)
@@ -237,6 +356,8 @@ function Run:await()
   end)
 end
 
+---@param run Neoagent.Run<unknown, unknown>
+---@param ... unknown
 local function resume_run(run, ...)
   if run._completed then
     return
@@ -249,6 +370,7 @@ local function resume_run(run, ...)
     return
   end
   if coroutine.status(run._co) == "dead" then
+    ---@type unknown
     local value = result[1]
     if value == nil then
       value = { ok = true }
@@ -257,11 +379,16 @@ local function resume_run(run, ...)
   end
 end
 
+---@return Neoagent.Run<unknown, unknown>?
 function M.current()
   local co = coroutine.running()
   return co and managed[co] or nil
 end
 
+---@async
+---@generic T
+---@param start fun(done: Neoagent.AwaitCallbacks<T>): (fun())?
+---@return T
 function M.await(start)
   assert(type(start) == "function", "async.await start must be a function")
   local co = coroutine.running()
@@ -273,14 +400,21 @@ function M.await(start)
     error(cancelled_error, 0)
   end
 
+  ---@type Neoagent.AwaitState
   local waiting = { state = "pending", yielded = false }
+  ---@type fun()
   local schedule_delivery
 
+  ---@param phase Neoagent.DiagnosticPhase
+  ---@param fn fun(value: unknown)
+  ---@param value? unknown
   local function diagnose(phase, fn, value)
     local ok, err = pcall(fn, value)
     if not ok then run:_diagnose(phase, err) end
   end
 
+  ---@param value unknown
+  ---@param disposer? fun(value: unknown)
   local function dispose(value, disposer)
     if disposer then diagnose("dispose", disposer, value) end
   end
@@ -291,6 +425,7 @@ function M.await(start)
     diagnose("cancel", waiting.cancel_producer)
   end
 
+  ---@return boolean
   local function cancel_wait()
     if waiting.state == "cancelled" or waiting.state == "delivered" then
       return false
@@ -309,6 +444,10 @@ function M.await(start)
     return true
   end
 
+  ---@param ok boolean
+  ---@param value unknown
+  ---@param disposer? fun(value: unknown)
+  ---@return boolean
   local function settle(ok, value, disposer)
     if disposer ~= nil and type(disposer) ~= "function" then
       ok = false
@@ -387,11 +526,16 @@ function M.await(start)
   return value
 end
 
+---@generic T, E
+---@param fn async fun(run: Neoagent.Run<T, E>): T
+---@param opts? Neoagent.RunOptions<T, E>
+---@return Neoagent.Run<T, E>
 function M.run(fn, opts)
   assert(type(fn) == "function", "async.run fn must be a function")
   opts = opts or {}
   assert(opts.report == nil or type(opts.report) == "function",
     "async.run report must be a function")
+  ---@type Neoagent.Run<T, E>
   local run = setmetatable({
     _on_event = opts.on_event,
     _on_done = opts.on_done,
@@ -409,10 +553,12 @@ function M.run(fn, opts)
     _completed = false,
     _cancelled = false,
   }, Run)
-  run._co = coroutine.create(function()
+  ---@async
+  local function execute()
     managed[coroutine.running()] = run
     return fn(run)
-  end)
+  end
+  run._co = coroutine.create(execute)
   resume_run(run)
   return run
 end
