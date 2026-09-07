@@ -11,6 +11,14 @@ local M = {}
 ---@field service_opts? table<string, unknown>
 ---@field auth_optional? boolean
 
+---@class Neoagent.ProviderServiceResources
+---@field provider_id? string
+---@field transport? Neoagent.ByteBackend
+---@field ambient_api_key? fun(): string?
+---@field report? fun(message: string, level: integer)
+---@field now? fun(): number
+---@field new_id? fun(): string
+
 ---@class Neoagent.ProviderDocument
 ---@field kind "document"
 ---@field name string

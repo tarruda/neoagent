@@ -7,6 +7,9 @@ local util = require("neoagent.util")
 local M = {}
 local DEFAULT_BASE_URL = "https://api.deepseek.com"
 
+---@param provider Neoagent.ProviderHttpServiceConfig
+---@param resources Neoagent.ProviderServiceResources
+---@return Neoagent.DeepSeekClient
 local function client(provider, resources)
   local service_opts = provider_http.service_options(provider.service_opts, "deepseek")
   return client_module.new({
@@ -18,6 +21,8 @@ local function client(provider, resources)
   })
 end
 
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderHttpServiceConfig>
+---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
     transport = ctx.transport,
@@ -32,21 +37,31 @@ function M.discover_models(ctx)
   end, { error_kind = "provider" })
 end
 
+---@param currency "USD"|"CNY"
+---@param value string
+---@return string
 local function amount(currency, value)
   return (currency == "USD" and "$" or "CN¥") .. value
 end
 
+---@param opts? Neoagent.ProviderHttpServiceConfig
+---@param resources? Neoagent.ProviderServiceResources
+---@return Neoagent.ProviderService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
   local provider_id = resources.provider_id or "deepseek"
   local base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", "")
   local selected = client(opts, resources)
+  ---@type Neoagent.ProviderStatusBlock?
   local status
+  ---@type Neoagent.DeepSeekBalance?
   local balance
   local destroyed = false
 
+  ---@return Neoagent.ProviderBlock[]
   local function blocks()
+    ---@type Neoagent.ProviderBlock[]
     local result = {}
     if status then result[#result + 1] = util.copy(status) end
     result[#result + 1] = {
@@ -73,6 +88,7 @@ function M.new(opts, resources)
   local function publish()
     if not destroyed then assert(dashboard:push({ blocks = blocks() })) end
   end
+  ---@class Neoagent.DeepSeekService: Neoagent.ProviderService
   local service = {
     id = provider_id,
     name = "DeepSeek",
@@ -97,7 +113,8 @@ function M.new(opts, resources)
         local refreshed = selected:balance(ctx):await()
         if refreshed.ok == false then
           local err = refreshed.error
-          if err and err.status == 403 then
+          local status_code = err and rawget(err, "status")
+          if status_code == 403 then
             local detail = tostring(err.message or "permission denied")
             status = {
               type = "status",
