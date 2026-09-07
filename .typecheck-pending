@@ -178,7 +178,6 @@ lua/neoagent/tools/update_plan.lua
 lua/neoagent/tools/write_file.lua
 lua/neoagent/transport/curl.lua
 lua/neoagent/transport/http.lua
-lua/neoagent/transport/sse.lua
 lua/neoagent/ui.lua
 lua/neoagent/ui/applet_view.lua
 lua/neoagent/ui/panes/details.lua
