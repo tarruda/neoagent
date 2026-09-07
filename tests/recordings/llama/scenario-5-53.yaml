@@ -1,0 +1,71 @@
+---
+operation: request
+request:
+  body:
+    messages:
+    - content:
+      - text: What is in this image?
+        type: text
+      - image_url:
+          url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl5ZAAAAABJRU5ErkJggg==
+        type: image_url
+      role: user
+    model: fake/loaded
+    return_progress: true
+    stream: true
+    stream_options:
+      include_usage: true
+    timings_per_token: true
+  body_bytes: 375
+  body_format: json
+  headers:
+    Content-Type: application/json
+  method: POST
+  url: https://api.test/v1/chat/completions
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 6654
+bytes: 1107
+index: 1
+type: response_chunk
+---
+at_us: 27536
+bytes: 1107
+index: 2
+type: response_chunk
+---
+at_us: 29643
+body: |+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}],"prompt_progress":{"total":3,"cache":0,"processed":1,"time_ms":10},"timings":{"cache_n":0,"prompt_n":1,"prompt_ms":0.001,"prompt_per_second":1000000,"predicted_n":0,"predicted_ms":0,"predicted_per_second":0}}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}],"prompt_progress":{"total":3,"cache":0,"processed":3,"time_ms":2000},"timings":{"cache_n":0,"prompt_n":3,"prompt_ms":40,"prompt_per_second":75,"predicted_n":0,"predicted_ms":0,"predicted_per_second":0}}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"reasoning_content":"checking the image"},"finish_reason":null}],"timings":{"cache_n":0,"prompt_n":3,"prompt_ms":40,"prompt_per_second":75,"predicted_n":1,"predicted_ms":1,"predicted_per_second":0}}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"content":"image "},"finish_reason":null}],"timings":{"cache_n":0,"prompt_n":3,"prompt_ms":40,"prompt_per_second":75,"predicted_n":2,"predicted_ms":26.0,"predicted_per_second":40}}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{"content":"accepted"},"finish_reason":null}],"timings":{"cache_n":0,"prompt_n":3,"prompt_ms":40,"prompt_per_second":75,"predicted_n":3,"predicted_ms":45.44444444444444,"predicted_per_second":45}}
+
+  data: {"id":"chatcmpl-fake","object":"chat.completion.chunk","model":"fake/loaded","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7},"timings":{"cache_n":0,"prompt_n":3,"prompt_ms":40,"prompt_per_second":75,"predicted_n":4,"predicted_ms":61.0,"predicted_per_second":50}}
+
+  data: [DONE]
+
+bytes: 2214
+type: response_body
+---
+at_us: 29643
+headers:
+  content-length: '2214'
+  content-type: text/event-stream
+  date: Mon, 07 Sep 2026 12:35:03 GMT
+  server: BaseHTTP/0.6 Python/3.13.5
+status: 200
+type: response
+---
+at_us: 29643
+ok: true
+type: complete

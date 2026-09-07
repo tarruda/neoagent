@@ -30,17 +30,23 @@ jobs:
           sudo apt-get install -y curl ripgrep fd-find python3
           mkdir -p "$HOME/.local/bin"
           ln -s "$(command -v fdfind)" "$HOME/.local/bin/fd"
+          curl --fail --location --show-error --silent \
+            https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_linux_amd64 \
+            --output "$HOME/.local/bin/yq"
+          echo "c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385  $HOME/.local/bin/yq" \
+            | sha256sum --check
+          chmod +x "$HOME/.local/bin/yq"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run fast suite with coverage
+      - name: Run all suites with coverage
         if: matrix.neovim == 'stable'
-        run: make coverage
+        run: make coverage-ci
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
-        run: make test
+        run: make test test-http-live test-native-sandbox
 
   terminal-images:
     name: terminal images (Linux, stable)
@@ -90,11 +96,11 @@ jobs:
           neovim: true
           version: stable
       - name: Install system dependencies
-        run: brew install ripgrep fd
+        run: brew install ripgrep fd yq
       - name: Install pinned test dependencies
         run: make deps
-      - name: Run fast suite
-        run: make test
+      - name: Run fast and host suites
+        run: make test test-http-live test-native-sandbox
 
   test-windows:
     name: test (Windows, stable)

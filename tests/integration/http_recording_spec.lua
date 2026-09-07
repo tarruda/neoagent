@@ -1,5 +1,5 @@
 local fs = require("neoagent.fs")
-local mock_server = require("tests.helpers.mock_server")
+local http_replay = require("tests.helpers.http_replay")
 
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
@@ -16,15 +16,15 @@ end
 
 describe("HTTP recording integration", function()
   local directories = {}
-  local servers = {}
+  local scenarios = {}
 
   after_each(function()
-    for _, server in ipairs(servers) do server:stop() end
+    for _, scenario in ipairs(scenarios) do http_replay.finish(scenario) end
     for _, path in ipairs(directories) do vim.fn.delete(path, "rf") end
-    servers, directories = {}, {}
+    scenarios, directories = {}, {}
   end)
 
-  it("records a real curl model stream after provider decoding", function()
+  it("records a replayed model stream after provider decoding", function()
     local directory = vim.fn.tempname()
     local workspace = vim.fn.tempname()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
@@ -33,14 +33,16 @@ describe("HTTP recording integration", function()
     workspace = assert(vim.uv.fs_realpath(workspace))
     directories[#directories + 1] = directory
     directories[#directories + 1] = workspace
-    local server = mock_server.start("tests/fixtures/openai/stream.json")
-    servers[#servers + 1] = server
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/stream-01.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local recorder = assert(require("neoagent.http_recording").new({
       config = { enabled = true, format = "json" },
       directory = directory,
     }))
     local transport = recorder:transport(
-      require("neoagent.transport.curl"), {
+      scenario, {
         workspace = workspace,
         provider = "mock",
         model = "test-model",
@@ -51,7 +53,7 @@ describe("HTTP recording integration", function()
     local model = require("neoagent.api.openai_completions").new({
       provider = "mock",
       model = "test-model",
-      base_url = "http://127.0.0.1:" .. server.port .. "/v1",
+      base_url = scenario.url .. "/v1",
       api_key = "test-key",
       transport = transport,
     })
@@ -81,18 +83,20 @@ describe("HTTP recording integration", function()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
     directory = assert(vim.uv.fs_realpath(directory))
     directories[#directories + 1] = directory
-    local server = mock_server.start("tests/fixtures/openai/codex_oauth.json")
-    servers[#servers + 1] = server
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/codex_oauth-01.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local recorder = assert(require("neoagent.http_recording").new({
       config = { enabled = true, format = "json" },
       directory = directory,
     }))
-    local http = recorder:transport(require("neoagent.transport.curl"), {
+    local http = recorder:transport(scenario, {
       origin = "authentication",
       auth_method = "openai-codex",
     })
     local method = require("neoagent.auth.openai_codex").new({
-      auth_base_url = "http://127.0.0.1:" .. server.port,
+      auth_base_url = scenario.url,
       http = http,
       start_callback_server = function()
         return {

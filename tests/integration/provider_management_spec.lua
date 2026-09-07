@@ -4,7 +4,7 @@ local alibaba_client = require("neoagent.providers.alibaba_token_plan.client")
 local anthropic = require("neoagent.providers.anthropic")
 local deepseek = require("neoagent.providers.deepseek")
 local model_catalog = require("neoagent.model_catalog")
-local mock_server = require("tests.helpers.mock_server")
+local http_replay = require("tests.helpers.http_replay")
 local openai = require("neoagent.providers.openai")
 local provider_service = require("neoagent.provider_service")
 local zai = require("neoagent.providers.zai")
@@ -63,7 +63,7 @@ local function block(service, block_type, label)
 end
 
 describe("provider management HTTP integration", function()
-  local server
+  local scenario
   local services
   local catalogs
 
@@ -72,15 +72,29 @@ describe("provider management HTTP integration", function()
     for _, catalog in ipairs(catalogs or {}) do catalog:destroy() end
     services = nil
     catalogs = nil
-    if server then server:stop() server = nil end
+    if scenario then http_replay.finish(scenario) scenario = nil end
   end)
 
-  it("runs catalogs and reporting through real bounded curl requests", function()
-    server = mock_server.start("tests/fixtures/providers/management.json")
-    local root = "http://127.0.0.1:" .. server.port
+  it("runs catalogs and reporting through recorded HTTP responses", function()
+    scenario = http_replay.open({
+      { path = "tests/recordings/providers/management-01.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-02.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-03.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-04.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-05.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-06.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-07.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-08.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-09.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-10.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-11.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/providers/management-12.yaml", body_subset = true, headers_subset = true },
+    })
+    local root = scenario.url
     local function catalog(id, provider, discover, resolve_auth)
       return model_catalog.new({
         provider_id = id,
+        transport = scenario,
         provider = provider,
         definition = { discover = discover },
         models = {},
@@ -110,27 +124,29 @@ describe("provider management HTTP integration", function()
       }, zai.discover_models, bearer_auth),
     }
     services = {
-      deepseek.new({ base_url = root .. "/deepseek" }),
+      deepseek.new({ base_url = root .. "/deepseek" }, { transport = scenario }),
       openai.new({
         base_url = root .. "/openai",
-      }, { now = function() return 1787270400 end }),
+      }, { transport = scenario, now = function() return 1787270400 end }),
       anthropic.new({
         base_url = root .. "/anthropic", auth = "anthropic",
       }, {
         provider_id = "anthropic",
+        transport = scenario,
         now = function() return 1787270400 end,
       }),
       zai.new({
         base_url = root .. "/api/paas/v4", models = {},
         service_opts = { management_url = root },
-      }, { provider_id = "zai" }),
+      }, { provider_id = "zai", transport = scenario }),
       zai.new({
         base_url = root .. "/api/coding/paas/v4", models = {},
         service_opts = { management_url = root },
-      }, { provider_id = "zai-coding-plan" }),
+      }, { provider_id = "zai-coding-plan", transport = scenario }),
       alibaba.new(nil, {
         client = alibaba_client.new({
           gateway_url = root,
+          transport = scenario,
         }),
       }),
     }
@@ -174,10 +190,6 @@ describe("provider management HTTP integration", function()
     assert.are.equal(0.4,
       block(services[6], "limit", "7-day quota").remaining)
 
-    assert(vim.wait(1000, function() return #server.records >= 12 end))
-    local requests = vim.tbl_filter(function(record)
-      return record.type == "request"
-    end, server.records)
-    assert.are.equal(12, #requests)
+    assert.are.equal(12, #scenario.requests)
   end)
 end)

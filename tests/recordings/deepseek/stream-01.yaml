@@ -1,0 +1,76 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/chat/completions
+  headers:
+    authorization: Bearer deepseek-key
+  body:
+    model: deepseek-v4-flash
+    messages:
+    - role: user
+      content: Inspect it
+    stream: true
+    max_completion_tokens: 384000
+    stream_options:
+      include_usage: true
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    tools:
+    - type: function
+      function:
+        name: inspect
+        description: Inspect a path
+        parameters:
+          type: object
+          properties:
+            path:
+              type: string
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 83
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 178
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 119
+---
+type: response_chunk
+index: 4
+at_us: 0
+bytes: 14
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"choices":[{"index":0,"delta":{"reasoning_content":"I should inspect."}}]}
+
+  data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"inspect","arguments":"{\"path\":\"x.lua\"}"}}]},"finish_reason":"tool_calls"}]}
+
+  data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20,"prompt_cache_hit_tokens":4}}
+
+  data: [DONE]
+
+bytes: 394
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

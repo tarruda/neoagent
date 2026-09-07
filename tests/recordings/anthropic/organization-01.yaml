@@ -1,0 +1,40 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/v1/organizations/usage_report/messages?starting_at=2026-07-22T00:00:00Z&ending_at=2026-08-21T00:00:00Z&bucket_width=1d&limit=31
+  headers:
+    x-api-key: admin-key
+    anthropic-version: '2023-06-01'
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 202
+---
+type: response_body
+at_us: 0
+body:
+  has_more: false
+  data:
+  - results:
+    - uncached_input_tokens: 100
+      cache_read_input_tokens: 200
+      cache_creation:
+        ephemeral_5m_input_tokens: 50
+        ephemeral_1h_input_tokens: 25
+      output_tokens: 300
+bytes: 202
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

@@ -1,0 +1,33 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/codex/responses
+  headers: {}
+  body: {}
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 243
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"type":"response.done","response":{"id":"resp-retry","status":"completed","output":[{"type":"message","id":"msg-retry","role":"assistant","status":"completed","content":[{"type":"output_text","text":"recovered","annotations":[]}] }]}}
+
+bytes: 243
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

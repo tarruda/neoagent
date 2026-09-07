@@ -1,0 +1,54 @@
+---
+operation: request
+request:
+  body_bytes: 0
+  headers: {}
+  method: GET
+  url: https://api.test/models/sse
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 21086
+bytes: 97
+index: 1
+type: response_chunk
+---
+at_us: 61370
+bytes: 211
+index: 2
+type: response_chunk
+---
+at_us: 311363
+bytes: 70
+index: 3
+type: response_chunk
+---
+at_us: 341405
+bytes: 96
+index: 4
+type: response_chunk
+---
+at_us: 343168
+body: |+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"model_status","data":{"status":"downloading"}}
+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"download_progress","data":{"progress":{"https://fake.invalid/model.gguf":{"done":256,"total":512},"https://fake.invalid/mmproj.gguf":{"done":256,"total":512}}}}
+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"download_finished"}
+
+  data: {"model":"fake/failing-download","event":"model_status","data":{"status":"downloading"}}
+
+bytes: 474
+type: response_body
+---
+at_us: 343168
+headers: {}
+type: response
+---
+at_us: 343168
+error:
+  kind: cancelled
+  message: Operation cancelled
+ok: false
+type: complete

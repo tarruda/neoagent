@@ -1,6 +1,6 @@
 local async = require("neoagent.async")
 local management = require("neoagent.providers.codex_management")
-local mock_server = require("tests.helpers.mock_server")
+local http_replay = require("tests.helpers.http_replay")
 
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end))
@@ -8,16 +8,19 @@ local function wait(run)
 end
 
 describe("Codex management HTTP integration", function()
-  local server
+  local scenario
 
   after_each(function()
-    if server then server:stop() server = nil end
+    if scenario then http_replay.finish(scenario) scenario = nil end
   end)
 
-  it("loads usage through curl with resolved subscription headers", function()
-    server = mock_server.start("tests/fixtures/openai/codex_usage.json")
+  it("loads usage through recorded HTTP with resolved subscription headers", function()
+    scenario = http_replay.open({
+      { path = "tests/recordings/openai/codex_usage-01.yaml", body_subset = true, headers_subset = true },
+    })
     local client = management.new({
-      base_url = "http://127.0.0.1:" .. server.port .. "/backend-api",
+      transport = scenario,
+      base_url = scenario.url .. "/backend-api",
     })
     local result = wait(client:usage({
       resolve_auth = function()
@@ -45,8 +48,8 @@ describe("Codex management HTTP integration", function()
     assert.are.same({
       email = "account@example.com", plan = "Plus",
     }, result.metadata)
-    assert(vim.wait(1000, function() return #server.records >= 2 end))
-    assert.are.equal("GET", server.records[2].method)
-    assert.are.equal("/backend-api/wham/usage", server.records[2].path)
+    assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
+    assert.are.equal("GET", scenario.requests[1].method)
+    assert.are.equal(scenario.url .. "/backend-api/wham/usage", scenario.requests[1].url)
   end)
 end)

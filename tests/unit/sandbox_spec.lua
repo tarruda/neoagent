@@ -1020,6 +1020,7 @@ describe("neoagent sandbox execution", function()
             if response.stream then
               request.on_output(response.stream, true)
               streamed[#streamed + 1] = response.stream
+              if response.extra_stream then request.on_output(response.extra_stream, true) end
             end
             return {
               code = response.code,
@@ -1150,6 +1151,7 @@ describe("neoagent sandbox execution", function()
       responses.bounded = {
         code = 1,
         stream = string.rep("x", 1024 * 1024) .. "permission denied",
+        extra_stream = "permission denied",
       }
       local bounded = execute("bounded")
       assert.is_nil(bounded.details.sandbox)
@@ -1279,6 +1281,50 @@ describe("neoagent sandbox execution", function()
       })
     end)
     assert.has_error(function() retained.process({ "true" }) end)
+  end)
+
+  it("shares temporary read mounts across tool calls only while file identity is unchanged", function()
+    local root = temp()
+    local requests = {}
+    local box = require("neoagent.sandbox.enforce").new({
+      profile = profile(root), temporary_root = root,
+      platform = {
+        name = "test",
+        compile = function(selected)
+          selected = vim.deepcopy(selected)
+          selected.filesystem.entries[#selected.filesystem.entries + 1] = {
+            path = root .. "/protected", access = "deny",
+          }
+          return selected
+        end,
+        fs = function(request)
+          requests[#requests + 1] = request
+          return fs.read(request.path)
+        end,
+        exec = function() error("no process expected") end,
+      },
+    })
+    local execute = box:wrap()
+    local path = execute({ execute = function(_, ctx)
+      local name = assert(ctx.fs.create_temp("spill-"))
+      assert(ctx.fs.write_all(name, "original"))
+      return name
+    end }, {}, context(root))
+    local read = { execute = function(_, ctx) return ctx.fs.read(path) end }
+    assert.are.equal("original", execute(read, {}, context(root)))
+    local entries = requests[#requests].profile.filesystem.entries
+    assert.are.same({ path = path, access = "read" }, entries[#entries])
+    local inode = assert(vim.uv.fs_stat(path)).ino
+    assert(fs.atomic_replace(path, "replacement", { preserve_mode = true, new_mode = 384 }))
+    assert.are_not.equal(inode, assert(vim.uv.fs_stat(path)).ino)
+    assert.are.equal("replacement", execute(read, {}, context(root)))
+    entries = requests[#requests].profile.filesystem.entries
+    assert.are.same({ path = root .. "/protected", access = "deny" }, entries[#entries])
+    assert.are.equal("replacement", execute(read, {}, context(root)))
+    local denied = execute({ execute = function(_, ctx) return ctx.fs.read(root .. "/protected") end }, {}, context(root))
+    assert.is_true(denied.isError)
+    assert.is_true(denied.details.sandbox.denied)
+    assert.are.equal(3, #requests)
   end)
 
   it("fails closed for malformed capabilities and backend failures", function()

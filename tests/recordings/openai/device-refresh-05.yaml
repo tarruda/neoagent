@@ -1,0 +1,36 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.test/api/accounts/deviceauth/token
+  headers:
+    Content-Type: application/json
+  body:
+    device_auth_id: device
+    user_code: ABCD
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 65
+---
+type: response_body
+at_us: 0
+body:
+  authorization_code: authorization
+  code_verifier: verifier
+bytes: 65
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

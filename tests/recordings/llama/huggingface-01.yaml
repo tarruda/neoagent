@@ -1,0 +1,32 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/api/models?search=a%20b&filter=gguf&sort=downloads&direction=-1&limit=20
+  headers:
+    Authorization: Bearer hf-synthetic
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 36
+---
+type: response_body
+at_us: 0
+body:
+- id: owner/repo
+  downloads: 42
+bytes: 36
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

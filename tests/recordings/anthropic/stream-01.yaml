@@ -1,0 +1,116 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/messages
+  headers:
+    x-api-key: anthropic-key
+    anthropic-version: '2023-06-01'
+  body:
+    model: claude-test
+    messages:
+    - role: user
+      content: Inspect it
+    system: Be concise
+    max_tokens: 128
+    stream: true
+    thinking:
+      type: enabled
+      budget_tokens: 32
+    tools:
+    - name: inspect
+      description: Inspect a path
+      input_schema:
+        type: object
+        properties:
+          path:
+            type: string
+        required:
+        - path
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 295
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 125
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 140
+---
+type: response_chunk
+index: 4
+at_us: 0
+bytes: 153
+---
+type: response_chunk
+index: 5
+at_us: 0
+bytes: 278
+---
+type: response_chunk
+index: 6
+at_us: 0
+bytes: 276
+---
+type: response_chunk
+index: 7
+at_us: 0
+bytes: 188
+---
+type: response_body
+at_us: 0
+body: |+
+  event: message_start
+  data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":0,"cache_read_input_tokens":4,"cache_creation_input_tokens":2}}}
+
+  event: content_block_start
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I should inspect."}}
+
+  event: content_block_start
+  data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call-1","name":"inspect","input":{}}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"x.lua\"}"}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}
+
+  event: content_block_stop
+  data: {"type":"content_block_stop","index":0}
+
+  event: content_block_stop
+  data: {"type":"content_block_stop","index":1}
+
+  event: message_delta
+  data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":8}}
+
+  event: message_stop
+  data: {"type":"message_stop"}
+
+bytes: 1455
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

@@ -1,33 +1,37 @@
 local anthropic = require("neoagent.api.anthropic_messages")
-local mock_server = require("tests.helpers.mock_server")
+local http_replay = require("tests.helpers.http_replay")
 
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end))
   return run:result()
 end
 
-local function model(server, max_output_tokens)
+local function model(scenario, max_output_tokens)
   return anthropic.new({
     provider = "anthropic-test",
     model = "claude-test",
-    base_url = "http://127.0.0.1:" .. server.port,
+    transport = scenario,
+    base_url = scenario.url,
     api_key = "anthropic-key",
     max_output_tokens = max_output_tokens or 128,
   })
 end
 
 describe("Anthropic Messages HTTP integration", function()
-  local servers = {}
+  local scenarios = {}
 
   after_each(function()
-    for _, server in ipairs(servers) do server:stop() end
-    servers = {}
+    for _, scenario in ipairs(scenarios) do http_replay.finish(scenario) end
+    scenarios = {}
   end)
 
-  it("streams reasoning and tools through real curl and replays the turn", function()
-    local server = mock_server.start("tests/fixtures/anthropic/stream.json")
-    servers[#servers + 1] = server
-    local anthropic_model = model(server)
+  it("streams reasoning and tools through recorded HTTP and replays the turn", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/anthropic/stream-01.yaml", body_subset = false, headers_subset = true },
+      { path = "tests/recordings/anthropic/stream-02.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
+    local anthropic_model = model(scenario)
     local tools = { {
       name = "inspect",
       description = "Inspect a path",
@@ -71,14 +75,16 @@ describe("Anthropic Messages HTTP integration", function()
     assert.is_true(second.ok)
     assert.are.equal("Looks good.", second.text)
     assert.are.equal("stop", second.message.stopReason)
-    assert(vim.wait(1000, function() return #server.records >= 3 end))
+    assert(vim.wait(1000, function() return #scenario.requests >= 2 end))
   end)
 
-  it("cancels curl and preserves partial Anthropic output", function()
-    local server = mock_server.start("tests/fixtures/anthropic/cancel.json")
-    servers[#servers + 1] = server
+  it("cancels playback and preserves partial Anthropic output", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/anthropic/cancel-01.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local run
-    run = model(server, 64):stream({
+    run = model(scenario, 64):stream({
       messages = {},
       on_event = function(event)
         if event.type == "text_delta" then run:cancel() end

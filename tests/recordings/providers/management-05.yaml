@@ -1,0 +1,55 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/anthropic/models?limit=1000
+  headers:
+    x-api-key: integration-key
+    anthropic-version: '2023-06-01'
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 383
+---
+type: response_body
+at_us: 0
+body:
+  data:
+  - id: claude-test
+    type: model
+    max_input_tokens: 200000
+    max_tokens: 64000
+    capabilities:
+      image_input:
+        supported: true
+      thinking:
+        supported: true
+        types:
+          adaptive:
+            supported: true
+      effort:
+        supported: true
+        low:
+          supported: true
+        medium:
+          supported: true
+        high:
+          supported: true
+  has_more: true
+  first_id: claude-test
+  last_id: claude-test
+bytes: 383
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

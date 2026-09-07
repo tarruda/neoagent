@@ -1,0 +1,76 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/chat/completions
+  headers:
+    authorization: Bearer zai-key
+  body:
+    model: glm-5.2
+    messages:
+    - role: user
+      content: Inspect it
+    - role: assistant
+      content: null
+      reasoning_content: I should inspect.
+      tool_calls:
+      - id: call-1
+        type: function
+        function:
+          name: inspect
+          arguments: '{"path":"x.lua"}'
+    - role: tool
+      tool_call_id: call-1
+      content: return true
+    stream: true
+    max_completion_tokens: 131072
+    stream_options:
+      include_usage: true
+    thinking:
+      type: enabled
+      clear_thinking: false
+    reasoning_effort: max
+    tool_stream: true
+    tools:
+    - type: function
+      function:
+        name: inspect
+        description: Inspect a path
+        parameters:
+          type: object
+          properties:
+            path:
+              type: string
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 200
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 14
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"choices":[{"index":0,"delta":{"reasoning_content":"The file is valid.","content":"Looks good."},"finish_reason":"stop"}],"usage":{"prompt_tokens":24,"completion_tokens":6,"total_tokens":30}}
+
+  data: [DONE]
+
+bytes: 214
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

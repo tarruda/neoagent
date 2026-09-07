@@ -1,0 +1,38 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/v1/organizations/cost_report?starting_at=2026-07-22T00:00:00Z&ending_at=2026-08-21T00:00:00Z&bucket_width=1d&limit=31
+  headers:
+    x-api-key: admin-key
+    anthropic-version: '2023-06-01'
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 114
+---
+type: response_body
+at_us: 0
+body:
+  has_more: false
+  data:
+  - results:
+    - amount: '123.45'
+      currency: USD
+    - amount: '76.55'
+      currency: USD
+bytes: 114
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

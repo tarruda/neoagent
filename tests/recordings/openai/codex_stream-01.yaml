@@ -1,0 +1,59 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/backend-api/codex/responses
+  headers:
+    authorization: Bearer access-token
+    chatgpt-account-id: integration-account
+    originator: neoagent
+    openai-beta: responses=experimental
+  body:
+    model: gpt-test
+    store: false
+    stream: true
+    instructions: Be useful.
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 131
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 84
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 237
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[]}}
+
+  data: {"type":"response.output_text.delta","output_index":0,"delta":"Codex works"}
+
+  data: {"type":"response.done","response":{"id":"response","status":"completed","output":[{"type":"message","id":"msg","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Codex works","annotations":[]}] }]}}
+
+bytes: 452
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  Content-Type: text/event-stream
+  X-Codex-Primary-Used-Percent: '25'
+  X-Codex-Primary-Window-Minutes: '300'
+  X-Codex-Secondary-Used-Percent: '50'
+  X-Codex-Secondary-Window-Minutes: '10080'
+---
+type: complete
+at_us: 0
+ok: true

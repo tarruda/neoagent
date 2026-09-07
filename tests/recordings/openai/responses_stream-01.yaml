@@ -1,0 +1,70 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/responses
+  headers:
+    authorization: Bearer test-key
+  body:
+    model: test-model
+    input:
+    - role: user
+      content:
+      - type: input_text
+        text: Hello
+    stream: true
+    store: false
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 136
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 76
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 75
+---
+type: response_chunk
+index: 4
+at_us: 0
+bytes: 210
+---
+type: response_chunk
+index: 5
+at_us: 0
+bytes: 162
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_http","role":"assistant","content":[]}}
+
+  data: {"type":"response.output_text.delta","output_index":0,"delta":"Hel"}
+
+  data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}
+
+  data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_http","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello","annotations":[]}]}}
+
+  data: {"type":"response.completed","response":{"id":"resp_http","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+
+bytes: 659
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

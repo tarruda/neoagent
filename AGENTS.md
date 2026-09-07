@@ -93,7 +93,9 @@ guarantees, prohibitions, and errors.
 ## Dependencies and tests
 
 Minimum: Neovim 0.10, curl 7.76, `rg`, `fd`, Python 3, Git, and Make.
+Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
+`yq` remains optional for runtime recording; JSON recording needs no `yq`.
 
 `NVIM` defaults to `nvim` and `PLENARY_DIR` to `.deps/plenary.nvim`.
 Copy `local.mk.example` to `local.mk` for machine-specific executable,
@@ -109,8 +111,12 @@ make test
 ```
 
 `make test` (also `make test-fast`) runs all three suites without coverage or
-terminal images. Integration tests use a localhost Python mock server and real
-curl. UI tests inspect isolated headless Neovim children.
+terminal images. Integration tests replay HTTP recordings through the real
+HTTP decoder and use in-memory browser callback connections, so they need no
+network access. UI tests inspect isolated headless Neovim children.
+`make test-http-live` runs the small localhost curl/callback suite;
+`make test-native-sandbox` runs native enforcement tests and requires working
+platform isolation. Neither is part of `make test`.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.
@@ -143,9 +149,13 @@ Before completion:
 ### Improving coverage
 
 1. Run `make coverage` for a fresh baseline. It clears `.coverage/`, runs
-   the instrumented suites with sandbox checks required, generates the report,
+   the instrumented unit, replay integration and UI suites, generates the report,
    and checks the thresholds. A threshold failure still leaves the report
    available for inspection. Resolve test failures before using the result.
+   `make coverage-ci` makes a separate fresh collection including live HTTP
+   and native sandbox tests. Both commands enforce the same shipped-file and
+   percentage requirements; `make coverage` needs neither localhost listeners
+   nor native sandbox provisioning.
 2. Read `.coverage/luacov.report.out`: its final summary lists hits and misses
    per file; annotated source marks missed lines with `***0` (the number of
    asterisks varies). Find them with:
@@ -173,6 +183,23 @@ Before completion:
    above using only the final code and tests. The displayed percentage is
    rounded; the check uses the unrounded ratio. A requested margin target
    does not change the enforced threshold.
+
+## Reproducing provider issues
+
+Look for the user's relevant recordings under `~/.local/state/nvim/neoagent`
+(or their configured recording directory) before inventing provider responses.
+If evidence is missing, ask them to enable recording, restart and
+reproduce the interaction. Start with default rolling retention; use
+`retention = "all"` only when the last exchange cannot explain the issue.
+Inspect metadata first, minimize private content, and adapt masked credentials
+to consistent synthetic values.
+Keep real Authentication and HTTP decoding in the regression. Do not invoke a
+live API merely to create test data.
+
+See [HTTP regression recordings](tests/recordings/README.md) for the capture,
+validation and promotion workflow, scenario matching/dependencies, and the
+provider/API inventory with missing real captures. Run regression scenarios
+with `make test-integration`; curl parsing belongs in `make test-http-live`.
 
 ## Interactive UI debugging
 

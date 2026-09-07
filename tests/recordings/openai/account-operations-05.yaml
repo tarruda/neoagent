@@ -1,0 +1,41 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/backend-api/codex/models?client_version=99.99.99
+  headers:
+    Authorization: Bearer secret-token
+    chatgpt-account-id: secret-account
+    Accept: application/json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 148
+---
+type: response_body
+at_us: 0
+body:
+  models:
+  - slug: gpt-test
+    display_name: Test model
+    visibility: list
+    context_window: 128000
+    supported_reasoning_levels:
+    - low
+    - high
+bytes: 148
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  etag: inventory-1
+---
+type: complete
+at_us: 0
+ok: true

@@ -1,0 +1,34 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/v1/models
+  headers:
+    Accept: application/json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 63
+---
+type: response_body
+at_us: 0
+body:
+  object: list
+  data:
+  - id: glm-5.3
+  - id: minimax-m3
+bytes: 63
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

@@ -1,0 +1,40 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.test/cli/api.json?action=IntlBroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr.%2ftokenplan%2fpersonal%2fapi%2fv2%2fusage
+  headers:
+    authorization: Bearer integration-key
+    content-type: application/x-www-form-urlencoded
+  body: region=ap-southeast-1
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 157
+---
+type: response_body
+at_us: 0
+body:
+  data:
+    DataV2:
+      data:
+        data:
+          per5HourPercentage: 0.2
+          per5HourResetTime: 1786000000000
+          per1WeekPercentage: 0.6
+          per1WeekResetTime: 1786100000000
+bytes: 157
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

@@ -1,0 +1,51 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/api/monitor/usage/quota/limit
+  headers:
+    authorization: integration-key
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 348
+---
+type: response_body
+at_us: 0
+body:
+  code: 200
+  success: true
+  data:
+    level: max
+    limits:
+    - type: CREDIT_LIMIT
+      percentage: 25
+      currentValue: 7000
+      usage: 28000
+      remaining: 21000
+      nextResetTime: 1787270400000
+      unit: 3
+      number: 5
+    - type: CREDIT_LIMIT
+      percentage: 10
+      currentValue: 14000
+      usage: 140000
+      remaining: 126000
+      nextResetTime: 1787875200000
+      unit: 6
+      number: 7
+bytes: 348
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

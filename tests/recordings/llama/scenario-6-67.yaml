@@ -1,0 +1,108 @@
+---
+operation: fetch
+request:
+  body_bytes: 0
+  headers:
+    Authorization: Bearer router-key
+  method: GET
+  timeout_ms: 15000
+  url: https://api.test/models
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 7740
+bytes: 1046
+index: 1
+type: response_chunk
+---
+at_us: 7740
+body:
+  data:
+  - id: fake/loaded
+    aliases: []
+    tags:
+    - integration
+    object: model
+    owned_by: llamacpp
+    created: 1
+    status:
+      value: loaded
+      args:
+      - llama-server
+      - --alias
+      - fake/loaded
+      preset: |+
+        [fake/loaded]
+        ctx-size = 8192
+
+    architecture:
+      input_modalities:
+      - text
+      - image
+      output_modalities:
+      - text
+    source: preset
+    can_remove: false
+    meta:
+      n_ctx: 8192
+      n_params: 1000000
+      size: 1048576
+  - id: fake/unloaded
+    aliases: []
+    tags: []
+    object: model
+    owned_by: llamacpp
+    created: 1
+    status:
+      value: unloaded
+      args:
+      - llama-server
+      - --alias
+      - fake/unloaded
+      exit_code: 0
+    architecture:
+      input_modalities:
+      - text
+      output_modalities:
+      - text
+    source: cache
+    can_remove: true
+  - id: fake/failing
+    aliases: []
+    tags: []
+    object: model
+    owned_by: llamacpp
+    created: 1
+    status:
+      value: unloaded
+      args:
+      - llama-server
+      - --alias
+      - fake/failing
+      failed: true
+      exit_code: 42
+    architecture:
+      input_modalities:
+      - text
+      output_modalities:
+      - text
+    source: preset
+    can_remove: false
+  object: list
+body_format: json
+bytes: 1046
+type: response_body
+---
+at_us: 7740
+headers:
+  content-length: '1046'
+  content-type: application/json
+  date: Mon, 07 Sep 2026 12:35:03 GMT
+  server: BaseHTTP/0.6 Python/3.13.5
+status: 200
+type: response
+---
+at_us: 7740
+ok: true
+type: complete

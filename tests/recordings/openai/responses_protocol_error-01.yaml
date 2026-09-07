@@ -1,0 +1,37 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/responses
+  headers: {}
+  body:
+    model: test-model
+    input: []
+    stream: true
+    store: false
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 16
+---
+type: response_body
+at_us: 0
+body: |+
+  data: not-json
+
+bytes: 16
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

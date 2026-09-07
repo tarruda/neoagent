@@ -1,0 +1,42 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/chat/completions
+  headers: {}
+  body: {}
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 53
+---
+type: response_chunk
+index: 2
+at_us: 1500000
+bytes: 71
+---
+type: response_body
+at_us: 1500000
+body: |+
+  data: {"choices":[{"delta":{"content":"partial"}}]}
+
+  data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+  data: [DONE]
+
+bytes: 124
+---
+type: response
+at_us: 1500000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 1500000
+ok: true

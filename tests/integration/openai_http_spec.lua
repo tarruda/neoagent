@@ -1,22 +1,24 @@
-local mock_server = require("tests.helpers.mock_server")
+local http_replay = require("tests.helpers.http_replay")
 local codex = require("neoagent.api.openai_codex_responses")
 local openai = require("neoagent.api.openai_completions")
 local responses = require("neoagent.api.openai_responses")
 
-local function model(server, key)
+local function model(scenario, key)
   return openai.new({
     provider = "mock",
     model = "test-model",
-    base_url = "http://127.0.0.1:" .. server.port .. "/v1",
+    transport = scenario,
+    base_url = scenario.url .. "/v1",
     api_key = key,
   })
 end
 
-local function responses_model(server, key)
+local function responses_model(scenario, key)
   return responses.new({
     provider = "mock",
     model = "test-model",
-    base_url = "http://127.0.0.1:" .. server.port .. "/v1",
+    transport = scenario,
+    base_url = scenario.url .. "/v1",
     api_key = key,
   })
 end
@@ -27,17 +29,19 @@ local function wait(run)
 end
 
 describe("OpenAI-compatible HTTP integration", function()
-  local servers = {}
+  local scenarios = {}
   after_each(function()
-    for _, server in ipairs(servers) do server:stop() end
-    servers = {}
+    for _, scenario in ipairs(scenarios) do http_replay.finish(scenario) end
+    scenarios = {}
   end)
 
-  it("streams real curl response chunks", function()
-    local server = mock_server.start("tests/fixtures/openai/stream.json")
-    servers[#servers + 1] = server
+  it("streams recorded response chunks", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/stream-01.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local deltas = {}
-    local result = wait(model(server, "test-key"):stream({
+    local result = wait(model(scenario, "test-key"):stream({
       messages = { { role = "user", content = "Hello" } },
       on_event = function(event) if event.type == "text_delta" then deltas[#deltas + 1] = event.text end end,
     }))
@@ -45,17 +49,20 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("Hello", result.text)
     assert(vim.wait(1000, function() return #deltas == 2 end))
     assert.are.same({ "Hel", "lo" }, deltas)
-    assert(vim.wait(1000, function() return #server.records >= 2 end))
-    assert.are.equal("request", server.records[2].type)
+    assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
   end)
 
   it("streams DeepSeek reasoning and replays it through a tool turn", function()
-    local server = mock_server.start("tests/fixtures/deepseek/stream.json")
-    servers[#servers + 1] = server
+    local scenario = http_replay.open({
+      { path = "tests/recordings/deepseek/stream-01.yaml", body_subset = false, headers_subset = true },
+      { path = "tests/recordings/deepseek/stream-02.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local deepseek = openai.new({
       provider = "deepseek",
       model = "deepseek-v4-flash",
-      base_url = "http://127.0.0.1:" .. server.port,
+      transport = scenario,
+      base_url = scenario.url,
       api_key = "deepseek-key",
       max_output_tokens = 384000,
       request_opts = { body = { stream_options = { include_usage = true } } },
@@ -98,12 +105,16 @@ describe("OpenAI-compatible HTTP integration", function()
   end)
 
   it("streams Z.AI reasoning and streamed tools through its API profile", function()
-    local server = mock_server.start("tests/fixtures/zai/stream.json")
-    servers[#servers + 1] = server
+    local scenario = http_replay.open({
+      { path = "tests/recordings/zai/stream-01.yaml", body_subset = false, headers_subset = true },
+      { path = "tests/recordings/zai/stream-02.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local zai = openai.new({
       provider = "zai",
       model = "glm-5.2",
-      base_url = "http://127.0.0.1:" .. server.port,
+      transport = scenario,
+      base_url = scenario.url,
       api_key = "zai-key",
       max_output_tokens = 131072,
       request_opts_layers = {
@@ -152,9 +163,11 @@ describe("OpenAI-compatible HTTP integration", function()
   end)
 
   it("surfaces non-2xx bodies as transport errors", function()
-    local server = mock_server.start("tests/fixtures/openai/error.json")
-    servers[#servers + 1] = server
-    local result = wait(model(server):stream({ messages = {} }))
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/error-01.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
+    local result = wait(model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
     assert.are.equal("transport", result.error.kind)
     assert.are.equal("HTTP 400: bad request", result.error.message)
@@ -165,9 +178,11 @@ describe("OpenAI-compatible HTTP integration", function()
   end)
 
   it("surfaces provider errors from non-2xx SSE responses", function()
-    local server = mock_server.start("tests/fixtures/openai/sse_error.json")
-    servers[#servers + 1] = server
-    local result = wait(model(server):stream({ messages = {} }))
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/sse_error-01.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
+    local result = wait(model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
     assert.are.equal("model", result.error.kind)
     assert.are.equal(
@@ -179,12 +194,14 @@ describe("OpenAI-compatible HTTP integration", function()
       result.error.response.headers["x-request-id"])
   end)
 
-  it("cancels curl and preserves partial assistant output", function()
-    local server = mock_server.start("tests/fixtures/openai/cancel.json")
-    servers[#servers + 1] = server
+  it("cancels playback and preserves partial assistant output", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/cancel-01.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local saw_partial = false
     local run
-    run = model(server):stream({
+    run = model(scenario):stream({
       messages = {},
       on_event = function(event)
         if event.type == "text_delta" then
@@ -201,39 +218,51 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.are.equal("aborted", result.message.stopReason)
   end)
 
-  it("streams stateless Responses API requests through real curl", function()
-    local server = mock_server.start("tests/fixtures/openai/responses_stream.json")
-    servers[#servers + 1] = server
+  it("streams stateless Responses API requests through recorded HTTP", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/responses_stream-01.yaml", body_subset = false, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local deltas = {}
-    local result = wait(responses_model(server, "test-key"):stream({
+    local result = wait(responses_model(scenario, "test-key"):stream({
       messages = { { role = "user", content = "Hello" } },
       on_event = function(event) if event.type == "text_delta" then deltas[#deltas + 1] = event.text end end,
     }))
     assert.is_true(result.ok)
     assert.are.equal("Hello", result.text)
     assert.are.same({ "Hel", "lo" }, deltas)
-    assert(vim.wait(1000, function() return #server.records >= 2 end))
-    assert.are.equal("/v1/responses", server.records[2].path)
+    assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
+    assert.are.equal(scenario.url .. "/v1/responses", scenario.requests[1].url)
   end)
 
   it("preserves stream protocol errors behind successful HTTP responses", function()
-    local server = mock_server.start("tests/fixtures/openai/responses_protocol_error.json")
-    servers[#servers + 1] = server
-    local result = wait(responses_model(server):stream({ messages = {} }))
+    local scenario = http_replay.open({
+      {
+        path = "tests/recordings/openai/responses_protocol_error-01.yaml",
+        body_subset = false,
+        headers_subset = true,
+      },
+    })
+    scenarios[#scenarios + 1] = scenario
+    local result = wait(responses_model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
     assert.are.equal("protocol", result.error.kind)
     assert.are.equal("Invalid JSON in SSE response", result.error.message)
   end)
 
   it("retries Codex HTTP 500 responses with request diagnostics", function()
-    local server = mock_server.start("tests/fixtures/openai/codex_retry.json")
-    servers[#servers + 1] = server
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/codex_retry-01.yaml", body_subset = true, headers_subset = true },
+      { path = "tests/recordings/openai/codex_retry-02.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local diagnostics = {}
     local statuses = {}
     local result = wait(codex.new({
       provider = "mock-codex",
       model = "gpt-test",
-      base_url = "http://127.0.0.1:" .. server.port .. "/v1",
+      transport = scenario,
+      base_url = scenario.url .. "/v1",
       request_max_retries = 1,
       sleep = function() end,
       on_diagnostic = function(value) diagnostics[#diagnostics + 1] = value end,
@@ -248,10 +277,8 @@ describe("OpenAI-compatible HTTP integration", function()
 
     assert.is_true(result.ok)
     assert.are.equal("recovered", result.text)
-    assert(vim.wait(1000, function() return #server.records >= 3 end))
-    assert.are.equal(2, vim.tbl_count(vim.tbl_filter(function(record)
-      return record.type == "request"
-    end, server.records)))
+    assert(vim.wait(1000, function() return #scenario.requests >= 2 end))
+    assert.are.equal(2, #scenario.requests)
     assert.are.equal("request_retry", diagnostics[1].type)
     assert.are.equal(500, diagnostics[1].status)
     assert.are.equal("req-codex-retry", diagnostics[1].request_id)
@@ -260,11 +287,13 @@ describe("OpenAI-compatible HTTP integration", function()
     assert.is_false(statuses[#statuses].reconnecting)
   end)
 
-  it("cancels Responses API curl and preserves partial output", function()
-    local server = mock_server.start("tests/fixtures/openai/responses_cancel.json")
-    servers[#servers + 1] = server
+  it("cancels Responses API playback and preserves partial output", function()
+    local scenario = http_replay.open({
+      { path = "tests/recordings/openai/responses_cancel-01.yaml", body_subset = true, headers_subset = true },
+    })
+    scenarios[#scenarios + 1] = scenario
     local run
-    run = responses_model(server):stream({
+    run = responses_model(scenario):stream({
       messages = {},
       on_event = function(event) if event.type == "text_delta" then run:cancel() end end,
     })

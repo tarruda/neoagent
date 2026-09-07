@@ -8,7 +8,7 @@ UI_TEST_TIMEOUT ?= 120000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps test test-fast test-unit test-integration test-ui test-terminal-images test-windows benchmark-applet coverage coverage-report coverage-check clean
+.PHONY: deps test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet coverage coverage-ci coverage-report coverage-check clean
 
 .deps/plenary.nvim/.git:
 	mkdir -p .deps
@@ -35,6 +35,12 @@ test-integration:
 test-ui:
 	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/ui { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true, timeout = $(UI_TEST_TIMEOUT) }"
 
+test-http-live:
+	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/http_live { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
+
+test-native-sandbox:
+	$(TEST_ENV) NEOAGENT_REQUIRE_SANDBOX=1 $(TEST_CMD) -c "PlenaryBustedDirectory tests/native_sandbox { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
+
 test-terminal-images:
 	$(TEST_ENV) python3 tests/terminal/image_resume.py
 	$(TEST_ENV) python3 tests/terminal/image_smoke.py
@@ -52,7 +58,13 @@ benchmark-applet:
 
 coverage:
 	rm -rf .coverage
-	NEOAGENT_COVERAGE=1 NEOAGENT_REQUIRE_SANDBOX=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast
+	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast
+	$(MAKE) coverage-report
+	$(MAKE) coverage-check
+
+coverage-ci:
+	rm -rf .coverage
+	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast test-http-live test-native-sandbox
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 
