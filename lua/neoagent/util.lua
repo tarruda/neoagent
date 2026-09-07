@@ -1,11 +1,35 @@
 local M = {}
 
+---@alias Neoagent.JsonValue boolean|number|string|vim.NIL|Neoagent.JsonValue[]|table<string, Neoagent.JsonValue>
+
+---@class Neoagent.Error
+---@field kind string
+---@field message string
+---@field [string] unknown Additional error metadata is untrusted until validated.
+
+---@class Neoagent.SafeMessageOptions
+---@field max_characters? integer
+---@field max_source_bytes? integer
+---@field fallback? string
+
+---@class Neoagent.ErrorCopyState
+---@field active table<table, boolean>
+---@field seen table<table, boolean>
+---@field tables integer
+---@field keys integer
+---@field key_limit? integer
+
 local list_mt = { __neoagent_list = true }
 
+---@generic T
+---@param values? T[]
+---@return T[]
 function M.list(values)
   return setmetatable(values or {}, list_mt)
 end
 
+---@param value unknown
+---@return boolean
 function M.is_list(value)
   if type(value) ~= "table" then
     return false
@@ -19,6 +43,9 @@ function M.is_list(value)
   return vim.tbl_islist(value)
 end
 
+---@param value unknown
+---@param stack table<table, boolean>
+---@return string
 local function encode_json(value, stack)
   if type(value) ~= "table" then return vim.json.encode(value) end
   if stack[value] then error("cannot encode circular JSON value", 0) end
@@ -42,10 +69,15 @@ local function encode_json(value, stack)
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
+---@param value unknown Values are validated by the encoder, including keys and cycles.
+---@return string
 function M.json_encode(value)
   return encode_json(value, {})
 end
 
+---@param value string
+---@param index integer
+---@return integer?
 local function utf8_sequence_length(value, index)
   local first = value:byte(index)
   if not first then return nil end
@@ -87,6 +119,8 @@ end
 
 local non_ascii_pattern = "[\128-\255]"
 
+---@param value unknown
+---@return boolean
 function M.is_valid_utf8(value)
   if type(value) ~= "string" then return false end
   if not value:find(non_ascii_pattern) then return true end
@@ -99,12 +133,17 @@ function M.is_valid_utf8(value)
   return true
 end
 
+---@param value integer
+---@return string
 local function escaped_byte(value)
   return string.format("\\x%02X", value)
 end
 
 local unsafe_text_byte_pattern = "[^\t\n -~]"
 
+---@param value string
+---@return string text
+---@return integer escaped_bytes
 function M.text_from_bytes(value)
   assert(type(value) == "string", "value must be a string")
   if not value:find(unsafe_text_byte_pattern) then return value, 0 end
@@ -133,6 +172,10 @@ function M.text_from_bytes(value)
   return table.concat(parts), escaped
 end
 
+---@generic T
+---@param value T
+---@param seen? table<table, table>
+---@return T
 function M.copy(value, seen)
   if type(value) ~= "table" then
     return value
@@ -149,6 +192,11 @@ function M.copy(value, seen)
   return setmetatable(result, getmetatable(value))
 end
 
+---@generic K, V
+---@param base? table<K, V>
+---@param override? table<K, V>
+---@param key_normalizer? fun(key: K): unknown
+---@return table<K, V>
 function M.deep_merge(base, override, key_normalizer)
   local result = M.copy(base or {})
   for key, value in pairs(override or {}) do
@@ -172,6 +220,10 @@ function M.deep_merge(base, override, key_normalizer)
   return result
 end
 
+---@param kind string
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 function M.error(kind, message, detail)
   local err = { kind = kind, message = message }
   if detail ~= nil and detail ~= "" then
@@ -180,6 +232,10 @@ function M.error(kind, message, detail)
   return err
 end
 
+---@param value string
+---@param maximum integer
+---@return string prefix
+---@return boolean truncated
 local function utf8_prefix(value, maximum)
   local index, characters = 1, 0
   while index <= #value and characters < maximum do
@@ -189,6 +245,9 @@ local function utf8_prefix(value, maximum)
   return value:sub(1, index - 1), index <= #value
 end
 
+---@param value unknown
+---@param opts? Neoagent.SafeMessageOptions
+---@return string
 function M.safe_message(value, opts)
   opts = type(opts) == "table" and opts or {}
   local maximum = type(opts.max_characters) == "number"
@@ -218,6 +277,9 @@ local MAX_ERROR_TABLES = 64
 local MAX_ERROR_KEYS = 256
 local MAX_ERROR_STRING_CHARACTERS = 1024
 
+---@param value unknown
+---@param key boolean
+---@return string|number|boolean|vim.NIL|nil
 local function plain_error_scalar(value, key)
   if value == vim.NIL then return vim.NIL end
   local value_type = type(value)
@@ -237,6 +299,10 @@ local function plain_error_scalar(value, key)
   return nil
 end
 
+---@param value unknown
+---@param state Neoagent.ErrorCopyState
+---@param depth integer
+---@return unknown
 local function plain_error_copy(value, state, depth)
   local scalar = plain_error_scalar(value, false)
   if scalar ~= nil or value == vim.NIL then return scalar end
@@ -270,6 +336,9 @@ local function plain_error_copy(value, state, depth)
   return result
 end
 
+---@param err unknown
+---@param kind? string
+---@return Neoagent.Error
 function M.normalize_error(err, kind)
   if type(err) == "table"
       and type(rawget(err, "kind")) == "string"
@@ -315,19 +384,26 @@ M.MAX_ERROR_TABLES = MAX_ERROR_TABLES
 M.MAX_ERROR_KEYS = MAX_ERROR_KEYS
 M.MAX_ERROR_STRING_CHARACTERS = MAX_ERROR_STRING_CHARACTERS
 
+---@param fn fun()
 function M.schedule(fn)
   vim.schedule(fn)
 end
 
+---@return number
 function M.now_ms()
   local seconds, microseconds = vim.uv.gettimeofday()
+  assert(seconds, microseconds)
   return seconds * 1000 + math.floor(microseconds / 1000)
 end
 
+---@param value string
+---@return string
 function M.trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+---@param content? string|{ type: string, text?: string }[]
+---@return string
 function M.text_content(content)
   if type(content) == "string" then
     return content
@@ -341,6 +417,9 @@ function M.text_content(content)
   return table.concat(parts)
 end
 
+---@generic T
+---@param content? string|T[]
+---@return T[]|{ type: 'text', text: string }[]
 function M.content_blocks(content)
   if type(content) == "string" then
     return { { type = "text", text = content } }

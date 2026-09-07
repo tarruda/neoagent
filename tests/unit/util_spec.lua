@@ -150,6 +150,15 @@ describe("neoagent.util", function()
     assert.are.equal(string.rep("é", 1023) .. "…", message)
   end)
 
+  it("preserves an unavailable wall clock's failure", function()
+    local gettimeofday = vim.uv.gettimeofday
+    vim.uv.gettimeofday = function() return nil, "clock unavailable" end
+    local ok, err = pcall(util.now_ms)
+    vim.uv.gettimeofday = gettimeofday
+    assert.is_false(ok)
+    assert.matches("clock unavailable", err)
+  end)
+
   it("normalizes list and message content values", function()
     assert.is_false(util.is_list("not a table"))
     assert.is_true(util.is_list(util.list()))
