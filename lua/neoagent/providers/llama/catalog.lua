@@ -4,6 +4,25 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.LlamaCatalogStatus: Neoagent.JsonObject
+---@field value string
+---@field failed? boolean
+---@field exit_code? number
+
+---@class Neoagent.LlamaCatalogModel: Neoagent.JsonObject
+---@field id string
+---@field status Neoagent.LlamaCatalogStatus
+---@field context_window? integer
+---@field source? "preset"|"models_dir"
+---@field meta? {size: number}
+---@field architecture? {input_modalities: ("text"|"image")[]}
+
+---@class Neoagent.LlamaCatalogProvider
+---@field base_url string
+
+---@param value unknown
+---@param maximum integer
+---@return string?
 local function safe_text(value, maximum)
   if type(value) == "string" and value ~= "" and #value <= maximum
       and util.is_valid_utf8(value)
@@ -12,6 +31,10 @@ local function safe_text(value, maximum)
   end
 end
 
+---@param args? Neoagent.JsonValue
+---@param names table<string, boolean>
+---@param equals_pattern string
+---@return integer?
 local function numeric_arg(args, names, equals_pattern)
   if type(args) ~= "table" then return nil end
   for index, argument in ipairs(args) do
@@ -25,6 +48,8 @@ local function numeric_arg(args, names, equals_pattern)
   end
 end
 
+---@param args? Neoagent.JsonValue
+---@return boolean
 local function has_unified_kv(args)
   local unified = false
   for _, argument in ipairs(type(args) == "table" and args or {}) do
@@ -37,6 +62,8 @@ local function has_unified_kv(args)
   return unified
 end
 
+---@param args? Neoagent.JsonValue
+---@return integer?
 local function context_from_args(args)
   local value = numeric_arg(args, {
     ["--ctx-size"] = true,
@@ -59,6 +86,8 @@ local function context_from_args(args)
   return value
 end
 
+---@param model Neoagent.JsonObject|Neoagent.JsonArray
+---@return integer?
 function M.reported_context(model)
   local reported = type(model.meta) == "table" and model.meta.n_ctx or nil
   local value = tonumber(reported) or tonumber(model.context_window)
@@ -66,12 +95,15 @@ function M.reported_context(model)
   return value and value > 0 and math.floor(value) or nil
 end
 
+---@param model Neoagent.JsonValue
+---@return Neoagent.LlamaCatalogModel?
 function M.normalize_model(model)
   if type(model) ~= "table" or util.is_list(model) then return nil end
   local id = safe_text(model.id, 512)
   local status = type(model.status) == "table" and model.status or {}
   local status_value = safe_text(status.value, 64)
   if not id or not status_value then return nil end
+  ---@type Neoagent.LlamaCatalogModel
   local result = {
     id = id,
     status = { value = status_value },
@@ -100,6 +132,8 @@ function M.normalize_model(model)
   return result
 end
 
+---@param models unknown
+---@return Neoagent.LlamaCatalogModel[]?
 function M.normalize(models)
   if type(models) ~= "table" or not util.is_list(models) then return nil end
   local result, seen = {}, {}
@@ -113,21 +147,28 @@ function M.normalize(models)
   return result
 end
 
+---@param resolved Neoagent.AuthConfigured|Neoagent.AuthUnconfigured
+---@return string?
 local function bearer_key(resolved)
+  if not resolved.configured then return nil end
   local headers = type(resolved) == "table"
     and type(resolved.request_opts) == "table"
     and resolved.request_opts.headers or nil
   local value = type(headers) == "table"
-    and (headers.Authorization or headers.authorization) or nil
+    and (rawget(headers, "Authorization") or rawget(headers, "authorization")) or nil
   return type(value) == "string" and value:match("^[Bb]earer%s+(.+)$") or nil
 end
 
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.LlamaCatalogProvider>
+---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.LlamaCatalogModel>, nil>
 function M.discover(ctx)
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.CatalogDiscovered<Neoagent.LlamaCatalogModel>
+  function()
     local resolved = ctx.resolve_auth():await()
     if resolved.ok == false then error(resolved.error, 0) end
     local server_url = ctx.provider.base_url
-    local metadata = type(resolved) == "table" and resolved.metadata or nil
+    local metadata = resolved.configured and resolved.metadata or nil
     if type(metadata) == "table" and type(metadata.server_url) == "string" then
       server_url = metadata.server_url
     end
@@ -147,6 +188,8 @@ function M.discover(ctx)
   end, { error_kind = "provider" })
 end
 
+---@param model Neoagent.LlamaCatalogModel
+---@return Neoagent.ModelConfig
 function M.transform(model)
   local source = util.copy(model)
   local input = { "text" }

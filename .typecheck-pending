@@ -66,7 +66,6 @@ lua/neoagent/providers/deepseek.lua
 lua/neoagent/providers/deepseek/model_metadata.lua
 lua/neoagent/providers/llama.lua
 lua/neoagent/providers/llama/auth.lua
-lua/neoagent/providers/llama/catalog.lua
 lua/neoagent/providers/openai.lua
 lua/neoagent/providers/opencode_go.lua
 lua/neoagent/providers/zai.lua
