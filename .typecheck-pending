@@ -33,7 +33,6 @@ lua/neoagent/process.lua
 lua/neoagent/process/posix.lua
 lua/neoagent/process/windows.lua
 lua/neoagent/profile_draft.lua
-lua/neoagent/profile_sessions.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_runtimes.lua
 lua/neoagent/provider_shell.lua

@@ -4,6 +4,7 @@ local semantic_message = require("neoagent.semantic_message")
 
 local M = {}
 ---@class Neoagent.SessionMetadata
+---@field path? string
 ---@field id string
 ---@field cwd? string
 ---@field timestamp? string
