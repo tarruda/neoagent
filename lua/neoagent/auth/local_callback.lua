@@ -2,6 +2,37 @@ local async = require("neoagent.async")
 
 local M = {}
 
+---@class Neoagent.CallbackRequest
+---@field method string
+---@field target string
+---@field headers table<string, string>
+---@field body string
+
+---@class Neoagent.CallbackResponse<T>
+---@field status integer
+---@field body? string
+---@field headers? table<string, unknown>
+---@field done? boolean
+---@field value? T
+
+---@class Neoagent.CallbackOptions<T>
+---@field host? string
+---@field port? integer
+---@field max_request_bytes? integer
+---@field timeout_ms? number
+---@field handler fun(request: Neoagent.CallbackRequest): Neoagent.CallbackResponse<T>
+
+---@class Neoagent.CallbackListener<T>
+---@field port integer
+---@field wait async fun(): T?
+---@field close fun(): boolean
+
+---@class Neoagent.CallbackCompleted<T>
+---@field ok true
+---@field value? T
+
+---@alias Neoagent.CallbackPending<T> Neoagent.CallbackCompleted<T>|Neoagent.AsyncFailure
+
 local reasons = {
   [200] = "OK",
   [204] = "No Content",
@@ -11,10 +42,13 @@ local reasons = {
   [500] = "Internal Server Error",
 }
 
+---@param handle? uv.uv_handle_t
 local function close_handle(handle)
   if handle and not handle:is_closing() then handle:close() end
 end
 
+---@param value? table<string, unknown>
+---@return table<string, string>
 local function safe_headers(value)
   local result = {}
   for name, item in pairs(value or {}) do
@@ -27,11 +61,14 @@ local function safe_headers(value)
   return result
 end
 
+---@generic T
+---@param response Neoagent.CallbackResponse<T>
+---@return string
 local function response_text(response)
-  response = type(response) == "table" and response or {}
-  local status = reasons[response.status] and response.status or 500
-  local body = type(response.body) == "string" and response.body or ""
-  local headers = safe_headers(response.headers)
+  local selected = type(response) == "table" and response or {}
+  local status = reasons[selected.status] and selected.status or 500
+  local body = type(selected.body) == "string" and selected.body or ""
+  local headers = safe_headers(selected.headers)
   headers["Content-Length"] = tostring(#body)
   headers.Connection = "close"
   if body ~= "" and headers["Content-Type"] == nil then
@@ -52,6 +89,9 @@ local function response_text(response)
   return table.concat(lines, "\r\n")
 end
 
+---@param buffer string
+---@param maximum integer
+---@return Neoagent.CallbackRequest|false|nil, "large"|"malformed"?
 local function parsed_request(buffer, maximum)
   if #buffer > maximum then return nil, "large" end
   local header_end = buffer:find("\r\n\r\n", 1, true)
@@ -68,7 +108,7 @@ local function parsed_request(buffer, maximum)
     method, target = first:match(
       "^([A-Z]+)%s+(%S+)%s+HTTP/%d+%.%d+$")
   end
-  if not method or #target > 8192 then return nil, "malformed" end
+  if not method or not target or #target > 8192 then return nil, "malformed" end
   local headers = {}
   for line in (rest or ""):gmatch("[^\n]+") do
     local name, value = line:match("^([^:]+):%s*(.*)$")
@@ -82,13 +122,14 @@ local function parsed_request(buffer, maximum)
   if headers["transfer-encoding"] ~= nil then
     return nil, "malformed"
   end
-  local length = headers["content-length"] or "0"
-  if not length:match("^%d+$") then return nil, "malformed" end
-  length = tonumber(length)
+  local length_text = headers["content-length"] or "0"
+  if not length_text:match("^%d+$") then return nil, "malformed" end
+  local length = tonumber(length_text)
   if not length or length > maximum
       or header_end - 1 + separator + length > maximum then
     return nil, "large"
   end
+  ---@cast length integer
   local body_start = header_end + separator
   if #buffer < body_start - 1 + length then return false end
   return {
@@ -99,6 +140,10 @@ local function parsed_request(buffer, maximum)
   }
 end
 
+---@generic T
+---@param opts Neoagent.CallbackOptions<T>
+---@param new_connection fun(): uv.uv_tcp_t
+---@return Neoagent.CallbackListener<T>?, string?
 function M._listen(opts, new_connection)
   opts = opts or {}
   assert(type(opts.handler) == "function",
@@ -124,12 +169,18 @@ function M._listen(opts, new_connection)
   local address, address_err = listener:getsockname()
   if not address then close_handle(listener) return nil, address_err end
 
+  ---@type table<uv.uv_tcp_t, true>
   local clients = {}
+  ---@type Neoagent.CallbackPending<T>?
   local pending
+  ---@type Neoagent.AwaitCallbacks<T?>?
   local waiter
+  ---@type uv.uv_timer_t?
   local timer
   local closed = false
 
+  ---@param close_clients boolean
+  ---@return boolean
   local function close(close_clients)
     local changed = not closed
     if changed then
@@ -147,12 +198,14 @@ function M._listen(opts, new_connection)
     return changed
   end
 
-  local function complete(ok, value)
+  ---@param result Neoagent.CallbackPending<T>
+  local function complete(result)
     if pending then return end
-    pending = { ok = ok, value = value }
+    pending = result
     close(false)
     if waiter then
-      if ok then waiter.resolve(value) else waiter.reject(value) end
+      if result.ok then waiter.resolve(result.value)
+      else waiter.reject(result.error) end
     end
   end
 
@@ -163,6 +216,7 @@ function M._listen(opts, new_connection)
     clients[client] = true
     local buffer = ""
     local handled = false
+    ---@param response Neoagent.CallbackResponse<T>
     local function finish_client(response)
       if handled then return end
       handled = true
@@ -170,7 +224,7 @@ function M._listen(opts, new_connection)
       client:write(response_text(response), function()
         clients[client] = nil
         close_handle(client)
-        if response.done then complete(true, response.value) end
+        if response.done then complete({ ok = true, value = response.value }) end
       end)
     end
     client:read_start(function(read_err, chunk)
@@ -196,29 +250,31 @@ function M._listen(opts, new_connection)
         finish_client({ status = 500, body = "callback failed\n" })
         return
       end
+      ---@cast response Neoagent.CallbackResponse<T>
       finish_client(response)
     end)
   end)
   if not listened then close_handle(listener) return nil, listen_err end
 
   if timeout_ms then
-    timer = vim.uv.new_timer()
-    timer:start(timeout_ms, 0, function()
-      complete(false, {
+    timer = assert(vim.uv.new_timer())
+    timer:start(math.floor(timeout_ms), 0, function()
+      complete({ ok = false, error = {
         kind = "auth",
         message = "Browser authentication timed out",
-      })
+      } })
     end)
   end
 
   return {
     port = address.port,
+    ---@async
     wait = function()
       return async.await(function(done)
         waiter = done
         if pending then
           if pending.ok then done.resolve(pending.value)
-          else done.reject(pending.value) end
+          else done.reject(pending.error) end
         end
         return function() close(true) end
       end)
@@ -227,8 +283,11 @@ function M._listen(opts, new_connection)
   }
 end
 
+---@generic T
+---@param opts Neoagent.CallbackOptions<T>
+---@return Neoagent.CallbackListener<T>?, string?
 function M.listen(opts)
-  return M._listen(opts, vim.uv.new_tcp)
+  return M._listen(opts, function() return (assert(vim.uv.new_tcp())) end)
 end
 
 return M
