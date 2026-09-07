@@ -22,6 +22,7 @@ local M = {}
 ---@field label string
 
 ---@class Neoagent.LoginTextPrompt
+---@field placeholder? string
 ---@field type "secret"|"text"|"manual_code"
 ---@field message string
 
@@ -38,6 +39,8 @@ local M = {}
 ---@field instructions? string
 
 ---@class Neoagent.DeviceCodeEvent
+---@field intervalSeconds? number
+---@field expiresInSeconds? number
 ---@field type "device_code"
 ---@field verificationUri string
 ---@field userCode string

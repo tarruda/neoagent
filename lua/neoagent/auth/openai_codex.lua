@@ -5,6 +5,24 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.CodexCredential: Neoagent.OAuthCredential
+---@field accountId string
+---@field email? string
+---@field plan? string
+
+---@class Neoagent.CodexTokenMetadata
+---@field account_id? string
+---@field email? string
+---@field plan? string
+
+---@class Neoagent.CodexAuthOptions
+---@field http? Neoagent.ByteBackend
+---@field now? fun(): number
+---@field auth_base_url? string
+---@field callback_host? string
+---@field start_callback_server? fun(state: string, host: string): Neoagent.CallbackListener<string>?, string?
+---@field sleep? async fun(milliseconds: number)
+
 local CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 local AUTH_BASE_URL = "https://auth.openai.com"
 local REDIRECT_URI = "http://localhost:1455/auth/callback"
@@ -34,6 +52,9 @@ local plan_labels = {
   quorum = "Quorum",
 }
 
+---@param value unknown
+---@param maximum integer
+---@return string?
 local function safe_metadata_text(value, maximum)
   if type(value) ~= "string" then return nil end
   value = util.trim(value)
@@ -45,6 +66,8 @@ local function safe_metadata_text(value, maximum)
   return value
 end
 
+---@param fields table<string, string|number>
+---@return string
 local function encode_fields(fields)
   local keys, result = {}, {}
   for key in pairs(fields) do keys[#keys + 1] = key end
@@ -56,29 +79,40 @@ local function encode_fields(fields)
   return table.concat(result, "&")
 end
 
+---@param value? string
+---@return table<string, string>
 local function decode_fields(value)
   local result = {}
   for pair in (value or ""):gmatch("[^&]+") do
     local key, item = pair:match("^([^=]+)=?(.*)$")
     if key then
+      ---@cast item string
       result[vim.uri_decode(key:gsub("+", " "))] = vim.uri_decode(item:gsub("+", " "))
     end
   end
   return result
 end
 
+---@param value string
+---@return string
 local function base64url(value)
-  return vim.base64.encode(value):gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
+  return (vim.base64.encode(value):gsub("+", "-"):gsub("/", "_"):gsub("=+$", ""))
 end
 
+---@param bytes integer
+---@return string
 local function random_urlsafe(bytes)
-  return base64url(vim.uv.random(bytes))
+  return base64url(assert(vim.uv.random(bytes)))
 end
 
+---@param value string
+---@return string
 local function hex_bytes(value)
-  return value:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end)
+  return (value:gsub("..", function(pair) return string.char((assert(tonumber(pair, 16)))) end))
 end
 
+---@param token unknown
+---@return Neoagent.JsonObject?
 local function decode_jwt(token)
   if type(token) ~= "string" then return nil end
   local payload = token:match("^[^.]+%.([^.]+)%.[^.]+$")
@@ -86,9 +120,13 @@ local function decode_jwt(token)
   payload = payload:gsub("-", "+"):gsub("_", "/")
   payload = payload .. string.rep("=", (4 - #payload % 4) % 4)
   local ok, decoded = pcall(function() return vim.json.decode(vim.base64.decode(payload)) end)
-  return ok and type(decoded) == "table" and decoded or nil
+  if not ok or type(decoded) ~= "table" then return nil end
+  ---@cast decoded Neoagent.JsonObject
+  return decoded
 end
 
+---@param token unknown
+---@return Neoagent.CodexTokenMetadata
 local function token_metadata(token)
   local payload = decode_jwt(token)
   if not payload then return {} end
@@ -104,6 +142,8 @@ local function token_metadata(token)
   }
 end
 
+---@param credential Neoagent.CodexCredential
+---@return table<string, string>
 local function public_metadata(credential)
   local fallback = token_metadata(credential and credential.access)
   local result = {}
@@ -118,12 +158,17 @@ local function public_metadata(credential)
   return result
 end
 
+---@param value? string
+---@return table<string, string>
 local function parse_authorization(value)
   value = util.trim(value or "")
   local query = value:match("^https?://[^?]+%?([^#]+)")
   return query and decode_fields(query) or {}
 end
 
+---@param expected_state string
+---@param host? string
+---@return Neoagent.CallbackListener<string>?, string?
 local function start_callback_server(expected_state, host)
   return local_callback.listen({
     host = host or "127.0.0.1",
@@ -151,14 +196,21 @@ local function start_callback_server(expected_state, host)
   })
 end
 
+---@async
+---@param interaction Neoagent.LoginInteraction
+---@param prompt Neoagent.LoginPrompt
+---@return string?
 local function await_prompt(interaction, prompt)
   return async.await(function(done) return interaction.prompt(prompt, done) end)
 end
 
+---@async
+---@param milliseconds number
+---@return true
 local function delay(milliseconds)
   return async.await(function(done)
-    local timer = vim.uv.new_timer()
-    timer:start(math.max(1, milliseconds), 0, function()
+    local timer = assert(vim.uv.new_timer())
+    timer:start(math.max(1, math.floor(milliseconds)), 0, function()
       timer:stop()
       if not timer:is_closing() then timer:close() end
       done.resolve(true)
@@ -170,6 +222,8 @@ local function delay(milliseconds)
   end)
 end
 
+---@param opts? Neoagent.CodexAuthOptions
+---@return Neoagent.AuthMethod<Neoagent.CodexCredential>
 function M.new(opts)
   opts = opts or {}
   local http = http_client.new(opts.http)
@@ -181,6 +235,11 @@ function M.new(opts)
   local start_server = opts.start_callback_server or start_callback_server
   local sleep = opts.sleep or delay
 
+  ---@async
+  ---@param url string
+  ---@param headers table<string, string>
+  ---@param body string
+  ---@return Neoagent.JsonObject|Neoagent.JsonArray
   local function post(url, headers, body)
     local result = http.fetch({ request = { url = url, headers = headers, body = body } }):await()
     if not result.ok then error(result.error, 0) end
@@ -195,6 +254,9 @@ function M.new(opts)
     return value
   end
 
+  ---@param value Neoagent.JsonObject|Neoagent.JsonArray
+  ---@param previous? Neoagent.CodexCredential
+  ---@return Neoagent.CodexCredential
   local function credential(value, previous)
     if type(value.access_token) ~= "string" or value.access_token == ""
         or type(value.refresh_token) ~= "string" or value.refresh_token == ""
@@ -220,6 +282,11 @@ function M.new(opts)
     }
   end
 
+  ---@async
+  ---@param code string
+  ---@param verifier string
+  ---@param redirect_uri string
+  ---@return Neoagent.CodexCredential
   local function exchange(code, verifier, redirect_uri)
     return credential(post(token_url, { ["Content-Type"] = "application/x-www-form-urlencoded" }, encode_fields({
       grant_type = "authorization_code",
@@ -230,6 +297,9 @@ function M.new(opts)
     })))
   end
 
+  ---@async
+  ---@param interaction Neoagent.LoginInteraction
+  ---@return Neoagent.CodexCredential
   local function browser_login(interaction)
     local verifier = random_urlsafe(32)
     local state = random_urlsafe(16)
@@ -272,6 +342,9 @@ function M.new(opts)
     return exchange(code, verifier, REDIRECT_URI)
   end
 
+  ---@async
+  ---@param interaction Neoagent.LoginInteraction
+  ---@return Neoagent.CodexCredential
   local function device_login(interaction)
     local device = post(auth_base .. "/api/accounts/deviceauth/usercode",
       { ["Content-Type"] = "application/json" }, vim.json.encode({ client_id = CLIENT_ID }))
@@ -321,11 +394,14 @@ function M.new(opts)
     error(util.error("auth", "OpenAI device authorization timed out"), 0)
   end
 
+  ---@type Neoagent.AuthMethod<Neoagent.CodexCredential>
   local method = {
     type = "oauth",
     name = "OpenAI (ChatGPT Plus/Pro)",
     login = function(interaction)
-      return async.run(function()
+      return async.run(
+      ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
+      function()
         local choice = await_prompt(interaction, {
           type = "select",
           message = "Select OpenAI Codex login method:",
@@ -334,6 +410,7 @@ function M.new(opts)
             { id = "device_code", label = "Device code login (headless)" },
           },
         })
+        ---@type Neoagent.CodexCredential
         local value
         if choice == "browser" then value = browser_login(interaction)
         elseif choice == "device_code" then value = device_login(interaction)
@@ -342,7 +419,9 @@ function M.new(opts)
       end, { error_kind = "auth" })
     end,
     refresh = function(current)
-      return async.run(function()
+      return async.run(
+      ---@return Neoagent.CredentialSuccess<Neoagent.CodexCredential>
+      function()
         local value = post(token_url, { ["Content-Type"] = "application/x-www-form-urlencoded" }, encode_fields({
           grant_type = "refresh_token",
           refresh_token = current.refresh,
