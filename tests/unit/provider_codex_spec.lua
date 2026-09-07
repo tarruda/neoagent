@@ -150,6 +150,32 @@ describe("neoagent Codex provider service", function()
     assert.are.same({}, service:state().blocks)
   end)
 
+  it("publishes a secondary quota before any primary window arrives", function()
+    local service = codex.new()
+    local published
+    service:subscribe(function(snapshot) published = snapshot end)
+    service:on_event({ type = "provider_status", details = {
+      limits = { { id = "codex", secondary = {
+        remaining = 0.75, window_minutes = 10080, resets_at = 1787870220,
+      } } },
+    } })
+    local weekly = block(published, "limit", "Weekly limit")
+    assert.are.same({
+      type = "limit", label = "Weekly limit", remaining = 0.75,
+      resets_at = 1787870220, level = "success",
+    }, weekly)
+    assert.are.same(published, service:state())
+
+    service:on_event({ type = "provider_status", details = {
+      limits = { { id = "codex", primary = {
+        remaining = 0.5, window_minutes = 300,
+      } } },
+    } })
+    assert.are.equal(0.5, block(published, "limit", "5h limit").remaining)
+    assert.are.equal(0.75, block(published, "limit", "Weekly limit").remaining)
+    service:destroy()
+  end)
+
   it("pushes request token usage without polling", function()
     local service = codex.new()
     local publications = 0

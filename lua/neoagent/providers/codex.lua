@@ -216,7 +216,8 @@ function M.new(opts, resources)
     end
     for _, id in ipairs(limit_order) do
       local limit = limits[id]
-      for _, window in ipairs({ limit.primary, limit.secondary }) do
+      for _, name in ipairs({ "primary", "secondary" }) do
+        local window = limit[name]
         if window then
           result[#result + 1] = {
             type = "limit",
