@@ -102,4 +102,22 @@ function M.assert(value, owner)
   return validated
 end
 
+-- Cancellation interrupts await even when the child has already produced a
+-- partial message. Model wrappers must preserve that output without turning a
+-- cancelled parent back into a successful operation.
+function M.await_result(child)
+  local ok, result = pcall(child.await, child)
+  if ok then return result end
+  child:cancel()
+  local err = util.normalize_error(result, "model")
+  local settled = child:result()
+  local message = settled and settled.message and util.copy(settled.message)
+  if message then
+    message.stopReason = err.kind == "cancelled" and "aborted" or "error"
+    message.errorMessage = err.message
+    message = require("neoagent.semantic_message").normalize_partial_assistant(message)
+  end
+  return { ok = false, error = err, message = message }
+end
+
 return M

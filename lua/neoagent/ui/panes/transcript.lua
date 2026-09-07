@@ -699,7 +699,9 @@ function Transcript:set_messages(messages)
 end
 
 function Transcript:apply(event)
-  if event.type == "text_delta" then
+  if event.type == "warning" then
+    self:_add_block({ kind = "notice", text = "Warning: " .. event.message, warning = true })
+  elseif event.type == "text_delta" then
     self.live_texts = self.live_texts or {}
     local key = event.index ~= nil and tostring(event.index) or "default"
     local block = self.live_texts[key]

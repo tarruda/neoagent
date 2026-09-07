@@ -555,7 +555,7 @@ function Model:stream(opts)
     if not message then
       return {
         ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
+        error = message_err,
       }
     end
     return { ok = true, message = message, text = util.text_content(message.content) }

@@ -72,7 +72,7 @@ function Model:stream(opts)
     if not normalized then
       return {
         ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
+        error = message_err,
       }
     end
     return { ok = true, message = normalized,

@@ -296,7 +296,7 @@ function Model:stream(opts)
       local normalized, message_err =
         semantic_message.normalize_model_response(message)
       if not normalized then
-        error(util.error("protocol", tostring(message_err), message_err), 0)
+        error(message_err, 0)
       end
       return normalized
     end)

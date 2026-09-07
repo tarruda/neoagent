@@ -968,12 +968,18 @@ identities, requests convert visible thinking to text and omit redacted
 thinking, signatures, and phase metadata. Session messages remain unchanged.
 
 Model events are `text_delta`, `thinking_delta`, `tool_call_delta`, `usage`,
-and optional `provider_status` and `inference_stats`. A successful result
+and optional `provider_status`, `inference_stats`, and `warning`. A warning
+carries `message` text and appears in the transcript. A successful result
 contains `{ ok = true, message, text }`; a failure contains
 `{ ok = false, error, message? }`. Failures may retain meaningful partial
 output. A successful `toolUse` response contains at least one `toolCall` block;
 an inconsistent provider response fails. Cancellation uses
 `stopReason = "aborted"`.
+
+Model-response validation errors have `kind = "protocol"` and a `code`:
+`missing_tool_call` identifies a tool-use stop with no tool call;
+`invalid_assistant_message` identifies other semantic validation failures.
+Provider wrappers can inspect these codes without matching error text.
 
 A Run supports: >lua
 
