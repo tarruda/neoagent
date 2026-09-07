@@ -1,20 +1,44 @@
 local M = {}
 
+---@alias Applet.NoValue nil
+---@alias Applet.Copied<T> T extends Applet.NoValue and table or T
+
+---@generic T: table|nil
+---@param value T
+---@return Applet.Copied<T>
 function M.copy(value)
   local result = {}
-  for key, item in pairs(value or {}) do result[key] = item end
+  local source = value or {}
+  -- The generic input is a table or nil; the fallback removes nil.
+  ---@cast source table
+  for key, item in pairs(source) do result[key] = item end
+  -- A shallow copy retains the input fields; nil produces an empty table.
+  ---@cast result Applet.Copied<T>
   return result
 end
 
-function M.expect(condition, path, message, level)
+-- This assertion name is recognized by the checker through runtime.special.
+---@param condition unknown
+---@param path string
+---@param message string
+---@param level? integer
+local function applet_expect(condition, path, message, level)
   if condition then return end
   error(('%s: %s'):format(path, message), level or 3)
 end
 
+M.expect = applet_expect
+
+---@param value unknown
+---@return TypeGuard<string>
 function M.nonempty_string(value)
   return type(value) == "string" and value ~= ""
 end
 
+---@param left unknown
+---@param right unknown
+---@param seen? table<table, table<table, boolean>>
+---@return boolean
 local function equal(left, right, seen)
   if rawequal(left, right) then return true end
   local kind = type(left)
@@ -34,19 +58,29 @@ local function equal(left, right, seen)
   return left_count == right_count
 end
 
+---@param left unknown
+---@param right unknown
+---@return boolean
 function M.equal(left, right)
   return equal(left, right)
 end
 
+---@param text string
+---@return integer
 function M.display_width(text)
   return vim.fn.strdisplaywidth(text)
 end
 
+---@param text string
+---@param index integer
+---@return integer?
 local function utf8_length(text, index)
   local first = text:byte(index)
   if first < 0x80 then return 1 end
   local second, third, fourth = text:byte(index + 1, index + 3)
-  local continuation = function(byte) return byte and byte >= 0x80 and byte <= 0xBF end
+  ---@param byte? integer
+  ---@return TypeGuard<integer>
+  local continuation = function(byte) return byte ~= nil and byte >= 0x80 and byte <= 0xBF end
   if first >= 0xC2 and first <= 0xDF and continuation(second) then return 2 end
   if first >= 0xE0 and first <= 0xEF and continuation(second) and continuation(third)
       and not (first == 0xE0 and second < 0xA0)
@@ -61,6 +95,9 @@ local function utf8_length(text, index)
   end
 end
 
+---@param text string
+---@param display_col integer
+---@return integer
 function M.byte_col(text, display_col)
   if display_col <= 0 then return 0 end
   if not text:find("[\128-\255]") then return math.min(display_col, #text) end
@@ -76,24 +113,32 @@ function M.byte_col(text, display_col)
   return byte_col
 end
 
+---@param text unknown
+---@param path string
+---@return string
 function M.validate_text(text, path)
-  M.expect(type(text) == "string", path, "must be a string")
-  M.expect(not text:find("\r", 1, true), path, "must not contain carriage returns")
+  applet_expect(type(text) == "string", path, "must be a string")
+  applet_expect(not text:find("\r", 1, true), path, "must not contain carriage returns")
   local index = 1
   while index <= #text do
     local length = utf8_length(text, index)
-    M.expect(length ~= nil, path, "must be valid UTF-8")
+    applet_expect(length ~= nil, path, "must be valid UTF-8")
     index = index + length
   end
   return text
 end
 
+---@param text string
+---@param path string
+---@return string[]
 function M.characters(text, path)
   M.validate_text(text, path)
   local result = {}
   local index = 1
   while index <= #text do
     local length = utf8_length(text, index)
+    -- The immutable string was validated before collecting its characters.
+    ---@cast length integer
     result[#result + 1] = text:sub(index, index + length - 1)
     index = index + length
   end

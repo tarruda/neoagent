@@ -6,7 +6,10 @@
       "lua/?/init.lua",
       "?.lua",
       "?/init.lua"
-    ]
+    ],
+    "special": {
+      "applet_expect": "assert"
+    }
   },
   "workspace": {
     "library": [

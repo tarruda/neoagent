@@ -7,8 +7,6 @@ lua/applet/host/float.lua
 lua/applet/host/tab.lua
 lua/applet/host_effects.lua
 lua/applet/image/cell_size.lua
-lua/applet/image/detect.lua
-lua/applet/image/geometry.lua
 lua/applet/image/init.lua
 lua/applet/image/kitty.lua
 lua/applet/image/source.lua
@@ -17,7 +15,6 @@ lua/applet/init.lua
 lua/applet/interaction_domain.lua
 lua/applet/layout.lua
 lua/applet/layout/compile.lua
-lua/applet/mode.lua
 lua/applet/pane.lua
 lua/applet/pane/canvas.lua
 lua/applet/pane/compile.lua
@@ -26,12 +23,10 @@ lua/applet/pane/nodes.lua
 lua/applet/pane/reconcile.lua
 lua/applet/pane/scene.lua
 lua/applet/pane/source.lua
-lua/applet/pane/text.lua
 lua/applet/pane/widgets.lua
 lua/applet/presentation.lua
 lua/applet/presenter.lua
 lua/applet/theme.lua
-lua/applet/util.lua
 lua/neoagent/agent.lua
 lua/neoagent/agent/context.lua
 lua/neoagent/agent/run_lifecycle.lua
