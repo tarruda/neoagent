@@ -1,7 +1,48 @@
 local util = require("neoagent.util")
 local tool_arguments = require("neoagent.api.tool_arguments")
+local http_response = require("neoagent.api.http_response")
 
 local M = {}
+
+---@param value unknown
+---@param field string
+---@return string?
+local function optional_string(value, field)
+  if not value then return nil end
+  if type(value) ~= "string" then
+    error(util.error("protocol", "Invalid OpenAI Responses " .. field .. ": expected a string"), 0)
+  end
+  return value
+end
+
+---@param value? Neoagent.JsonValue
+---@param field string
+---@return Neoagent.JsonObject|Neoagent.JsonArray
+local function json_table(value, field)
+  if not value then return {} end
+  if type(value) ~= "table" then
+    error(util.error("protocol", "Invalid OpenAI Responses " .. field .. ": expected a table"), 0)
+  end
+  return value
+end
+
+---@param value? Neoagent.JsonValue
+---@param separator string
+---@param refusal? boolean
+---@return string
+local function content_text(value, separator, refusal)
+  ---@type (string|number)[]
+  local values = {}
+  for _, raw in ipairs(json_table(value, "content")) do
+    local part = json_table(raw, "content part")
+    local text = part.text or (refusal and part.refusal) or ""
+    if type(text) ~= "string" and type(text) ~= "number" then
+      error(util.error("protocol", "Invalid OpenAI Responses content text"), 0)
+    end
+    values[#values + 1] = text
+  end
+  return table.concat(values, separator)
+end
 
 local function zero_usage()
   return {
@@ -54,7 +95,17 @@ function M.new(model, emit)
   local next_index = 0
   local terminal = false
 
-  local function register_index(index, item_id)
+  local function register_index(raw_index, raw_id)
+    ---@type integer?
+    local index
+    if raw_index ~= nil then
+      if type(raw_index) ~= "number" or raw_index < 0 or raw_index % 1 ~= 0 then
+        error(util.error("protocol", "Invalid OpenAI Responses output index"), 0)
+      end
+      ---@cast raw_index integer
+      index = raw_index
+    end
+    local item_id = optional_string(raw_id, "item id")
     if index == nil then
       index = item_id and item_indexes[item_id] or nil
       if index == nil then
@@ -81,17 +132,18 @@ function M.new(model, emit)
       block_indexes[block] = index
       slots[index] = { type = "text", block = block }
     elseif item.type == "function_call" then
-      local call_id = item.call_id or ""
-      local item_id = item.id or ""
+      local call_id = optional_string(item.call_id, "call id") or ""
+      local item_id = optional_string(item.id, "item id") or ""
+      local arguments = optional_string(item.arguments, "tool arguments") or ""
       local block = {
         type = "toolCall",
         id = item_id ~= "" and (call_id .. "|" .. item_id) or call_id,
-        name = item.name or "",
+        name = optional_string(item.name, "tool name") or "",
         arguments = vim.empty_dict(),
       }
       message.content[#message.content + 1] = block
       block_indexes[block] = index
-      slots[index] = { type = "toolCall", block = block, raw = item.arguments or "" }
+      slots[index] = { type = "toolCall", block = block, raw = arguments }
       emit({
         type = "tool_call_delta",
         index = index,
@@ -119,29 +171,24 @@ function M.new(model, emit)
   local function finalize_item(index, item)
     if finished[index] then return end
     local slot = slots[index] or create_slot(index, item)
+    local item_id = optional_string(item.id, "item id")
     if item.type == "reasoning" and slot and slot.type == "thinking" then
-      local function join(parts)
-        return table.concat(vim.tbl_map(function(part) return part.text or "" end, parts or {}), "\n\n")
-      end
-      local summary = join(item.summary)
-      local text = summary ~= "" and summary or join(item.content)
+      local summary = content_text(item.summary, "\n\n")
+      local text = summary ~= "" and summary or content_text(item.content, "\n\n")
       append_delta(slot, text ~= "" and text or slot.block.thinking,
         "thinking", "thinking_delta", { index = index })
       slot.block.thinkingSignature = vim.json.encode(item)
-      if item.id then reasoning[item.id] = slot.block end
+      if item_id then reasoning[item_id] = slot.block end
     elseif item.type == "message" and slot and slot.type == "text" then
-      local parts = {}
-      for _, part in ipairs(item.content or {}) do
-        parts[#parts + 1] = part.text or part.refusal or ""
-      end
+      local text = content_text(item.content, "", true)
       if type(item.phase) == "string" and item.phase ~= "" then slot.block.phase = item.phase end
-      append_delta(slot, table.concat(parts), "text", "text_delta", {
+      append_delta(slot, text, "text", "text_delta", {
         index = index,
         phase = slot.block.phase,
       })
-      if item.id then slot.block.textSignature = item.id end
+      if item_id then slot.block.textSignature = item_id end
     elseif item.type == "function_call" and slot and slot.type == "toolCall" then
-      local raw = item.arguments or slot.raw or "{}"
+      local raw = optional_string(item.arguments, "tool arguments") or slot.raw or "{}"
       local delta = raw:sub(1, #slot.raw) == slot.raw and raw:sub(#slot.raw + 1) or ""
       if delta ~= "" then
         emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
@@ -155,16 +202,23 @@ function M.new(model, emit)
   end
 
   local function finish_response(response, incomplete)
-    for position, item in ipairs(response.output or {}) do
-      local index = register_index(item.id and item_indexes[item.id] or position - 1, item.id)
+    local output = json_table(response.output, "output")
+    local items = {}
+    for position, raw_item in ipairs(output) do
+      local item = json_table(raw_item, "output item")
+      items[#items + 1] = item
+      local item_id = optional_string(item.id, "item id")
+      local index = register_index(item_id and item_indexes[item_id] or position - 1, item_id)
       finalize_item(index, item)
     end
-    for _, item in ipairs(response.output or {}) do
-      if item.type == "reasoning" and item.id and item.encrypted_content and reasoning[item.id] then
-        reasoning[item.id].thinkingSignature = vim.json.encode(item)
+    for _, item in ipairs(items) do
+      local item_id = optional_string(item.id, "item id")
+      if item.type == "reasoning" and item_id and item.encrypted_content and reasoning[item_id] then
+        reasoning[item_id].thinkingSignature = vim.json.encode(item)
       end
     end
-    if response.id then message.responseId = response.id end
+    local response_id = optional_string(response.id, "response id")
+    if response_id then message.responseId = response_id end
     if type(response.usage) == "table" then
       message.usage = usage_from(response.usage)
       emit({ type = "usage", usage = util.copy(message.usage) })
@@ -185,13 +239,14 @@ function M.new(model, emit)
       error(util.error("protocol", "Expected an object in SSE response"), 0)
     end
     if type(event.error) == "table" and event.type == nil then
-      error(util.error("model", event.error.message or "Provider returned an error", util.json_encode(event)), 0)
+      error(util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)), 0)
     end
-    local item = event.item or {}
+    local item = json_table(event.item, "item")
     local item_id = event.item_id or item.id
     local index = event.output_index
     if event.type == "response.created" then
-      message.responseId = event.response and event.response.id or message.responseId
+      local response = json_table(event.response, "response")
+      message.responseId = optional_string(response.id, "response id") or message.responseId
     elseif event.type == "response.output_item.added" then
       index = register_index(index, item_id)
       create_slot(index, item)
@@ -262,16 +317,15 @@ function M.new(model, emit)
       index = register_index(index, item_id)
       finalize_item(index, item)
     elseif event.type == "response.completed" or event.type == "response.done" then
-      finish_response(event.response or {}, false)
+      finish_response(json_table(event.response, "response"), false)
     elseif event.type == "response.incomplete" then
-      finish_response(event.response or {}, true)
+      finish_response(json_table(event.response, "response"), true)
     elseif event.type == "error" then
-      error(util.error("model", event.message or "Provider returned an error", util.json_encode(event)), 0)
+      error(util.error("model", http_response.error_message(event, "Provider returned an error"), util.json_encode(event)), 0)
     elseif event.type == "response.failed" then
       terminal = true
-      local response = event.response or {}
-      local detail = response.error or {}
-      error(util.error("model", detail.message or "Provider response failed", util.json_encode(event)), 0)
+      local response = json_table(event.response, "response")
+      error(util.error("model", http_response.error_message(response, "Provider response failed"), util.json_encode(event)), 0)
     end
   end
 

@@ -513,6 +513,47 @@ describe("neoagent.api.openai_responses", function()
       util.normalize_error(encode_err).message)
   end)
 
+  it("contains malformed output metadata before publication and preserves completed text", function()
+    local complete = { type = "message", id = "msg_prior", content = {
+      { type = "output_text", text = "Checked." },
+    } }
+    local call = { type = "function_call", id = "fc_1", call_id = "call_1",
+      name = "inspect", arguments = "{}" }
+    local malformed = {
+      { type = "response.output_item.added", output_index = -1, item = call },
+      { type = "response.output_item.added", output_index = 0.5, item = call },
+      { type = "response.output_item.added", output_index = 1,
+        item = vim.tbl_extend("force", call, { name = 42 }) },
+      { type = "response.output_item.added", output_index = 1,
+        item = vim.tbl_extend("force", call, { call_id = { "call" } }) },
+      { type = "response.output_item.added", output_index = 1,
+        item = vim.tbl_extend("force", call, { arguments = {} }) },
+      { type = "response.output_item.added", output_index = 1, item = "invalid" },
+      { type = "response.completed", response = { id = 42 } },
+      { type = "response.completed", response = { output = "invalid" } },
+      { type = "response.output_item.done", output_index = 1,
+        item = { type = "message", id = "msg_bad", content = {
+          { type = "output_text", text = {} },
+        } } },
+    }
+    for _, invalid in ipairs(malformed) do
+      local published = {}
+      local result = wait(model(fake_transport.new({ { chunks = {
+        event({ type = "response.output_item.done", output_index = 0, item = complete }),
+        event(invalid),
+        event({ type = "response.completed", response = { status = "completed" } }),
+      } } })):stream({
+        messages = {},
+        on_event = function(value) published[#published + 1] = value end,
+      }))
+      assert.are.same({ { type = "text_delta", text = "Checked.", index = 0 } }, published)
+      assert.is_false(result.ok)
+      assert.are.equal("protocol", result.error.kind)
+      assert.are.same({ { type = "text", text = "Checked.", index = 0,
+        textSignature = "msg_prior" } }, result.message.content)
+    end
+  end)
+
   it("rejects non-UTF-8 provider deltas at every response boundary", function()
     local original = util.is_valid_utf8
     util.is_valid_utf8 = function(value)
