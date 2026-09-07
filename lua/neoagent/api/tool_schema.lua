@@ -2,6 +2,23 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.SchemaType 'array'|'boolean'|'integer'|'null'|'number'|'object'|'string'
+
+---@class Neoagent.ToolSchema
+---@field type? Neoagent.SchemaType|Neoagent.SchemaType[]
+---@field properties? table<string, Neoagent.ToolSchema>
+---@field required? string[]
+---@field additionalProperties? boolean|Neoagent.ToolSchema
+---@field items? Neoagent.ToolSchema
+---@field enum? Neoagent.JsonValue[]
+---@field minItems? integer
+---@field maxItems? integer
+---@field description? string
+
+---@class Neoagent.SchemaValidation
+---@field issues string[]
+---@field truncated boolean
+
 local MAX_ISSUES = 20
 local schema_fields = {
   type = true,
@@ -15,19 +32,27 @@ local schema_fields = {
   description = true,
 }
 
+---@param value unknown
+---@return TypeGuard<table>
 local function is_object(value)
   return type(value) == "table" and not util.is_list(value)
 end
 
+---@param value unknown
+---@return TypeGuard<unknown[]>
 local function is_array(value)
   return type(value) == "table" and util.is_list(value)
 end
 
+---@param value unknown
+---@return TypeGuard<table>
 local function is_schema_object(value)
   return type(value) == "table"
     and (next(value) == nil or not util.is_list(value))
 end
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite_number(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
@@ -55,6 +80,11 @@ local type_labels = {
   string = "a string",
 }
 
+---@param schema unknown
+---@param path? string
+---@param active? table<table, boolean>
+---@return true? valid
+---@return string? error
 local function validate_schema(schema, path, active)
   path = path or "input_schema"
   if not is_schema_object(schema) then
@@ -160,6 +190,8 @@ local function validate_schema(schema, path, active)
   return true
 end
 
+---@param schema Neoagent.ToolSchema
+---@return Neoagent.SchemaType[]
 local function declared_types(schema)
   if type(schema.type) == "string" then return { schema.type } end
   if type(schema.type) == "table" and util.is_list(schema.type) then
@@ -168,6 +200,8 @@ local function declared_types(schema)
   return {}
 end
 
+---@param values string[]
+---@return string
 local function join_choices(values)
   if #values == 1 then return values[1] end
   if #values == 2 then return values[1] .. " or " .. values[2] end
@@ -175,6 +209,9 @@ local function join_choices(values)
     .. ", or " .. values[#values]
 end
 
+---@param value unknown
+---@param types Neoagent.SchemaType[]
+---@return boolean
 local function matches_type(value, types)
   for _, name in ipairs(types) do
     local check = type_checks[name]
@@ -183,6 +220,9 @@ local function matches_type(value, types)
   return #types == 0
 end
 
+---@param types Neoagent.SchemaType[]
+---@param name Neoagent.SchemaType
+---@return boolean
 local function declares(types, name)
   for _, declared in ipairs(types) do
     if declared == name then return true end
@@ -190,6 +230,9 @@ local function declares(types, name)
   return false
 end
 
+---@generic K
+---@param value? table<K, unknown>
+---@return K[]
 local function sorted_keys(value)
   local keys = {}
   for key in pairs(value or {}) do keys[#keys + 1] = key end
@@ -199,6 +242,9 @@ local function sorted_keys(value)
   return keys
 end
 
+---@param path string
+---@param key unknown
+---@return string
 local function child_path(path, key)
   local name = tostring(key)
   local suffix
@@ -210,15 +256,21 @@ local function child_path(path, key)
   return path == "" and suffix or path .. "." .. suffix
 end
 
+---@param path string
+---@return string
 local function shown_path(path)
   return path == "" and "arguments" or path
 end
 
+---@param value unknown
+---@return string
 local function enum_value(value)
   local encoded, text = pcall(util.json_encode, value)
   return encoded and text or tostring(value)
 end
 
+---@param state Neoagent.SchemaValidation
+---@param message string
 local function add_issue(state, message)
   if #state.issues < MAX_ISSUES then
     state.issues[#state.issues + 1] = message
@@ -227,6 +279,10 @@ local function add_issue(state, message)
   end
 end
 
+---@param schema Neoagent.ToolSchema
+---@param value unknown
+---@param path string
+---@param state Neoagent.SchemaValidation
 local function validate_value(schema, value, path, state)
   if state.truncated or type(schema) ~= "table" then return end
 
@@ -270,7 +326,10 @@ local function validate_value(schema, value, path, state)
     end
     for _, key in ipairs(sorted_keys(properties)) do
       if value[key] ~= nil then
-        validate_value(properties[key], value[key], child_path(path, key), state)
+        -- sorted_keys only supplies existing schema properties.
+        local property = properties[key]
+        ---@cast property Neoagent.ToolSchema
+        validate_value(property, value[key], child_path(path, key), state)
       end
     end
     for _, key in ipairs(sorted_keys(value)) do
@@ -301,6 +360,8 @@ local function validate_value(schema, value, path, state)
   end
 end
 
+---@param schema unknown
+---@return Neoagent.ToolSchema
 function M.normalize(schema)
   local valid, err = validate_schema(schema)
   assert(valid, err)
@@ -313,12 +374,19 @@ function M.normalize(schema)
   return normalized
 end
 
+---@param schema unknown
+---@return Neoagent.ToolSchema? schema
+---@return string? error
 function M.validate_definition(schema)
   local valid, err = validate_schema(schema)
   if not valid then return nil, err end
   return M.normalize(schema)
 end
 
+---@param schema Neoagent.ToolSchema
+---@param value unknown
+---@return boolean valid
+---@return string? error
 function M.validate(schema, value)
   assert(type(schema) == "table", "tool input_schema must be a table")
   local state = { issues = {}, truncated = false }

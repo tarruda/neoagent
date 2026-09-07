@@ -1,6 +1,12 @@
 local M = {}
 
----@alias Neoagent.JsonValue boolean|number|string|vim.NIL|Neoagent.JsonValue[]|table<string, Neoagent.JsonValue>
+---@class Neoagent.JsonArray
+---@field [integer] Neoagent.JsonValue
+
+---@class Neoagent.JsonObject
+---@field [string] Neoagent.JsonValue
+
+---@alias Neoagent.JsonValue boolean|number|string|vim.NIL|Neoagent.JsonArray|Neoagent.JsonObject
 
 ---@class Neoagent.Error
 ---@field kind string
