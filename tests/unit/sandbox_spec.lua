@@ -1110,6 +1110,23 @@ describe("neoagent sandbox execution", function()
       assert.are.equal("custom", image.details.source)
       assert.are.equal("image", image.content[2].type)
 
+      for _, details in ipairs({
+        "tool detail", 7, false, vim.NIL, { "first", "second" },
+        { sandbox = "tool-owned detail" },
+        { sandbox = { "tool-owned list" } },
+      }) do
+        local original = {
+          content = { { type = "text", text = "custom failure" } },
+          isError = true,
+          details = details,
+        }
+        local annotated = execute("image", original)
+        assert.are.same(details, annotated.details)
+        assert.matches("blocked by the sandbox", annotated.content[1].text,
+          1, true)
+        assert.are.equal("custom failure", original.content[1].text)
+      end
+
       responses.thrown = {
         code = 1,
         stderr = "operation not permitted",

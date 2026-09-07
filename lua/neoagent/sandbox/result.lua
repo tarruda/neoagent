@@ -33,6 +33,11 @@ function M.sandbox(message, fields)
   return M.error(message, { sandbox = util.copy(fields or {}) })
 end
 
+local function object(value)
+  return type(value) == "table"
+    and (next(value) == nil or not util.is_list(value))
+end
+
 function M.append(value, text, fields)
   value = util.copy(value)
   local appended = false
@@ -47,8 +52,12 @@ function M.append(value, text, fields)
     value.content = value.content or {}
     table.insert(value.content, 1, { type = "text", text = text })
   end
-  value.details = value.details or {}
-  value.details.sandbox = util.deep_merge(value.details.sandbox or {}, fields)
+  -- Tool details may be any JSON value; preserve payloads we cannot merge.
+  if value.details == nil then value.details = {} end
+  if object(value.details) and (value.details.sandbox == nil
+      or object(value.details.sandbox)) then
+    value.details.sandbox = util.deep_merge(value.details.sandbox or {}, fields)
+  end
   return value
 end
 
