@@ -3,11 +3,23 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.WindowsSandboxPolicy
+---@field version 1
+---@field write_roots string[]
+---@field deny_read string[]
+---@field deny_write string[]
+---@field protected_create Neoagent.SandboxFilesystemEntry[]
+
+---@param message string
+---@return never
 local function failure(message)
   error(util.error("sandbox_unavailable",
     "Windows sandbox cannot enforce this profile: " .. message), 0)
 end
 
+---@param values string[]
+---@param paths Neoagent.SandboxPaths
+---@return string[]
 local function ordered(values, paths)
   table.sort(values, function(left, right)
     local left_depth, right_depth = paths.depth(left), paths.depth(right)
@@ -17,6 +29,10 @@ local function ordered(values, paths)
   return values
 end
 
+---@param entries Neoagent.SandboxFilesystemEntry[]
+---@param entry Neoagent.SandboxFilesystemEntry
+---@param paths Neoagent.SandboxPaths
+---@return Neoagent.SandboxFilesystemEntry?
 local function ancestor(entries, entry, paths)
   local selected
   local depth = -1
@@ -31,16 +47,24 @@ local function ancestor(entries, entry, paths)
   return selected
 end
 
+---@param write_roots string[]
+---@param path string
+---@param paths Neoagent.SandboxPaths
+---@return string?
 local function writable_ancestor(write_roots, path, paths)
   for _, root in ipairs(write_roots) do
     if paths.contains(root, path) then return root end
   end
 end
 
+---@param profile Neoagent.SandboxProfile
+---@param opts? {paths?: Neoagent.SandboxPaths}
+---@return Neoagent.WindowsSandboxPolicy
 function M.compile(profile, opts)
   opts = opts or {}
   local paths = opts.paths or path_module.windows()
   local entries = profile.filesystem.entries
+  ---@type string[]
   local write_roots = {}
 
   for _, entry in ipairs(entries) do
@@ -58,6 +82,9 @@ function M.compile(profile, opts)
 
   local deny_read, deny_write = {}, {}
   local seen_read, seen_write = {}, {}
+  ---@param target string[]
+  ---@param seen table<string, boolean>
+  ---@param path string
   local function add(target, seen, path)
     local key = paths.key(path)
     if not seen[key] then
@@ -66,6 +93,7 @@ function M.compile(profile, opts)
     end
   end
 
+  ---@type Neoagent.SandboxFilesystemEntry[]
   local protected_create = {}
   for _, entry in ipairs(entries) do
     local write_root = writable_ancestor(write_roots, entry.path, paths)

@@ -40,7 +40,6 @@ lua/neoagent/sandbox/init.lua
 lua/neoagent/sandbox/linux/init.lua
 lua/neoagent/sandbox/macos/init.lua
 lua/neoagent/sandbox/platform.lua
-lua/neoagent/sandbox/windows/compile.lua
 lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/common.lua
