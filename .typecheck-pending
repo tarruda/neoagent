@@ -48,7 +48,6 @@ lua/neoagent/provider_shell.lua
 lua/neoagent/providers/alibaba_token_plan.lua
 lua/neoagent/providers/codex.lua
 lua/neoagent/providers/llama.lua
-lua/neoagent/providers/zai.lua
 lua/neoagent/registry.lua
 lua/neoagent/registry/alibaba_token_plan.lua
 lua/neoagent/registry/anthropic.lua
