@@ -1,17 +1,10 @@
 local config = require("neoagent.config")
 local model_contract = require("neoagent.model")
 local provider_credentials = require("neoagent.provider_credentials")
+local request_context = require("neoagent.api.request_context")
 local util = require("neoagent.util")
 
 local M = {}
-
-local function bind_transport(transport, context)
-  if type(transport) == "table"
-      and type(transport.with_context) == "function" then
-    return transport.with_context(context)
-  end
-  return transport
-end
 
 local function validated_model(value, owner)
   return model_contract.assert(value, owner)
@@ -137,6 +130,7 @@ local function api_factory(module, resolved)
     responses_lite = resolved.model.responses_lite,
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
+    request_context = resolved.request_context,
     request_opts_layers = layers,
     on_diagnostic = on_diagnostic,
     transport = resolved.transport,
@@ -144,7 +138,7 @@ local function api_factory(module, resolved)
 end
 
 function M.resolve(provider_id, model_id, configured, manager, runtimes,
-    http_context)
+    supplied_identity)
   configured = configured or config.get()
   runtimes = assert_runtimes(runtimes)
   if provider_id == nil or model_id == nil then
@@ -162,6 +156,7 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
       .. tostring(model_id))
   end
   local api = model.api or provider.api
+  local supplied_context = request_context.copy(supplied_identity)
   local resolved = {
     api = api,
     provider_id = provider_id,
@@ -169,11 +164,12 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
     provider = util.copy(provider),
     model = util.copy(model),
     report = runtime.report,
-    transport = bind_transport(runtime.transport, util.deep_merge({
+    request_context = supplied_context,
+    transport = request_context.bind_transport(runtime.transport, util.deep_merge({
       provider = provider_id,
       model = model_id,
       origin = "model",
-    }, http_context or {})),
+    }, supplied_context or {})),
   }
   if provider.auth and manager == nil then
     manager = require("neoagent.auth").configured(configured)

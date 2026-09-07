@@ -205,6 +205,33 @@
           }
         }
       }
+    },
+    {
+      "expect": {
+        "method": "POST",
+        "path": "/cli/api.json?action=IntlBroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr.%2ftokenplan%2fpersonal%2fapi%2fv2%2fusage",
+        "headers": {
+          "authorization": "Bearer integration-key",
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "body_contains": { "region": "ap-southeast-1" }
+      },
+      "respond": {
+        "json": {
+          "data": {
+            "DataV2": {
+              "data": {
+                "data": {
+                  "per5HourPercentage": 0.2,
+                  "per5HourResetTime": 1786000000000,
+                  "per1WeekPercentage": 0.6,
+                  "per1WeekResetTime": 1786100000000
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

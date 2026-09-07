@@ -156,6 +156,16 @@ describe("neoagent.agent_loop", function()
     result = wait(agent_loop.run({ model = model, messages = {} }))
     assert.is_false(result.ok)
     assert.matches("assistant message is required", result.error.message)
+
+    model = fake_model.new({ {
+      result = fake_model.assistant({ {
+        type = "thinking", thinking = "I should inspect.",
+      } }, "toolUse"),
+    } })
+    result = wait(agent_loop.run({ model = model, messages = {} }))
+    assert.is_false(result.ok)
+    assert.matches("declared tool use without supplying a tool call",
+      result.error.message)
   end)
 
   it("executes requested tools sequentially and emits ordered messages", function()

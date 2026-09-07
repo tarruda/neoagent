@@ -19,6 +19,7 @@ vim.opt.shadafile = "NONE"
 for _, name in ipairs({
   "ANTHROPIC_API_KEY",
   "DEEPSEEK_API_KEY",
+  "BAILIAN_TOKEN_PLAN_API_KEY",
   "OPENAI_API_KEY",
   "OPENCODE_API_KEY",
   "ZAI_API_KEY",

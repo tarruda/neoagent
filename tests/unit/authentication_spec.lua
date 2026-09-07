@@ -593,6 +593,27 @@ describe("neoagent Authentication coordinator", function()
     assert.is_false(value:is_active())
   end)
 
+  it("cancels an active logout without a login operation", function()
+    local cancelled = 0
+    local value = authentication({ auth = manager({
+      credentials = { { id = "test", name = "Test login", type = "oauth" } },
+      logout = function(_, _, opts)
+        return async.run(function()
+          return async.await(function()
+            return function() cancelled = cancelled + 1 end
+          end)
+        end, { on_done = opts.on_done, error_kind = "auth" })
+      end,
+    }) })
+    local run = assert(value:logout("test"))
+    assert.is_true(value:is_active())
+    assert.is_true(value:cancel())
+    assert(vim.wait(1000, function() return run:is_done() and not value:is_active() end, 5))
+    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal(1, cancelled)
+    assert.is_false(value:cancel())
+  end)
+
   it("selects and removes stored credential kinds", function()
     local notifications, choices = {}, {}
     local selected_manager = manager()

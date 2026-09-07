@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
+local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local curl = require("neoagent.transport.curl")
@@ -88,12 +89,12 @@ end
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local transport = self._transport
   local message
   local blocks
   return async.run(function(run)
     local ok, outcome = pcall(function()
-      local outgoing = self:_request(opts)
+      local outgoing, identity = self:_request(opts)
+      local transport = request_context.bind_transport(self._transport, identity)
       message = {
         role = "assistant",
         content = {},
@@ -301,7 +302,12 @@ function Model:stream(opts)
           error(util.error("protocol", "Anthropic stream ended with an open content block"), 0)
         end
       end
-      return message
+      local normalized, message_err =
+        semantic_message.normalize_model_response(message)
+      if not normalized then
+        error(util.error("protocol", tostring(message_err), message_err), 0)
+      end
+      return normalized
     end)
 
     if not ok then
@@ -309,15 +315,8 @@ function Model:stream(opts)
       local partial = partial_message(message, blocks, err)
       return { ok = false, message = partial, error = err }
     end
-    local normalized, message_err = semantic_message.normalize(outcome)
-    if not normalized then
-      return {
-        ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
-      }
-    end
-    return { ok = true, message = normalized,
-      text = util.text_content(normalized.content) }
+    return { ok = true, message = outcome,
+      text = util.text_content(outcome.content) }
   end, {
     on_event = opts.on_event,
     on_done = opts.on_done,
@@ -348,6 +347,7 @@ function M.new(opts)
     _max_output_tokens = opts.max_output_tokens or 4096,
     _anthropic_version = "2023-06-01",
     _request_opts = layers,
+    _request_context = request_context.copy(opts.request_context),
     _transport = opts.transport or curl,
   }, Model), "Anthropic Messages constructor")
 end

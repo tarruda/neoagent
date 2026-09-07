@@ -201,6 +201,10 @@ local function append_rendered(target, source, gap)
   end
 end
 
+local function append_tool_body(target, body)
+  append_rendered(target, body, true)
+end
+
 local function append_rendered_row(target, source, row)
   local spans = {}
   for _, span in ipairs(source.highlights or {}) do
@@ -1039,13 +1043,14 @@ local function prefix_rendered(source, first_prefix, prefix)
   return result
 end
 
-local function command_output_content(self, block)
+local function command_output_content(self, block, surface)
   local active = block.message or block.update
   if not active then return rendered() end
   local value = content_text(active.content)
   local ansi = active.details and active.details.ansi
   local content = output_lines(self, value, nil, false,
     self.policy.plain_output_group(active.isError), ansi)
+  if surface == "details" then return content end
   if #content.lines == 0 then
     add_line(content, "(no output)", {
       { col = 0, end_col = 11, group = "NeoagentMuted" },
@@ -1055,7 +1060,7 @@ local function command_output_content(self, block)
     middle_rendered(content, COMMAND_OUTPUT_MAX_LINES), "  └ ", "    ")
 end
 
-local function command_tool_content(self, block, presentation)
+local function command_tool_content(self, block, presentation, surface)
   local content = rendered()
   local title, title_spans = presentation_line(self.policy.tool_title(
     presentation.title,
@@ -1066,8 +1071,10 @@ local function command_tool_content(self, block, presentation)
   add_line(content, title .. (first_command == "" and "" or " " .. first_command),
     title_spans)
 
-  for index = 2, math.min(#source,
-      COMMAND_CONTINUATION_MAX_LINES + 1) do
+  local last_command = surface == "transcript"
+      and math.min(#source, COMMAND_CONTINUATION_MAX_LINES + 1)
+    or #source
+  for index = 2, last_command do
     local line, spans = segments({
       { text = "  │ ", group = "NeoagentMuted" },
       { text = source[index] },
@@ -1075,7 +1082,8 @@ local function command_tool_content(self, block, presentation)
     add_line(content, line, spans)
   end
   local continuation_count = #source - 1
-  if continuation_count > COMMAND_CONTINUATION_MAX_LINES then
+  if surface == "transcript"
+      and continuation_count > COMMAND_CONTINUATION_MAX_LINES then
     local omitted = continuation_count - COMMAND_CONTINUATION_MAX_LINES
     local line, spans = segments({
       { text = "  │ ", group = "NeoagentMuted" },
@@ -1084,7 +1092,7 @@ local function command_tool_content(self, block, presentation)
     })
     add_line(content, line, spans)
   end
-  append_rendered(content, command_output_content(self, block))
+  append_tool_body(content, command_output_content(self, block, surface))
   return content
 end
 
@@ -1098,7 +1106,7 @@ local function ordinary_tool_content(
       self.policy.tool_title(title_override, status))
   end
   add_line(content, title, spans)
-  append_rendered(content, tool_output(self, block, args, surface), true)
+  append_tool_body(content, tool_output(self, block, args, surface))
   return content
 end
 
@@ -1108,7 +1116,8 @@ local function presented_tool_content(self, block, args, options, presentation)
       self, block, args, options.presentation_surface)
   end
   if presentation.command then
-    return command_tool_content(self, block, presentation)
+    return command_tool_content(
+      self, block, presentation, options.presentation_surface)
   end
   local content
   if presentation.default == true then
@@ -1131,7 +1140,7 @@ local function presented_tool_content(self, block, args, options, presentation)
       add_line(content, title, spans)
     end
     if presentation.lines then
-      append_rendered(content, presentation_content(presentation.lines))
+      append_tool_body(content, presentation_content(presentation.lines))
     end
   end
   if presentation.animated == true then content.animated = true end

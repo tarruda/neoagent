@@ -256,6 +256,9 @@ function M.request(opts)
       end
       if status and (status < 200 or status >= 300) then
         local message = response_error(stdout)
+        if not message and err.kind ~= "transport" then
+          message = err.message
+        end
         err.message = "HTTP " .. tostring(status) .. (message and ": " .. message or "")
         if stdout ~= "" then err.detail = stdout end
       end

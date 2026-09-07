@@ -595,6 +595,44 @@ describe("neoagent.api.anthropic_messages", function()
     end
   end)
 
+  it("rejects a tool-use stop without a Tool call", function()
+    local fake = fake_transport.new({ { chunks = {
+      event({ type = "ping" }),
+      message_start(),
+      event({
+        type = "content_block_start",
+        index = 0,
+        content_block = { type = "thinking", thinking = "" },
+      }),
+      event({
+        type = "content_block_delta",
+        index = 0,
+        delta = { type = "thinking_delta", thinking = "I should inspect." },
+      }),
+      event({ type = "content_block_stop", index = 0 }),
+      event({
+        type = "message_delta",
+        delta = { stop_reason = "tool_use" },
+        usage = { output_tokens = 4 },
+      }),
+      event({ type = "message_stop" }),
+      event({ type = "ping", cost = 0.01 }),
+    } } })
+    local result = wait(anthropic.new({
+      provider = "p",
+      model = "m",
+      base_url = "http://x",
+      transport = fake,
+    }):stream({ messages = {} }))
+
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("declared tool use without supplying a tool call",
+      result.error.message)
+    assert.are.equal("error", result.message.stopReason)
+    assert.are.equal("I should inspect.", result.message.content[1].thinking)
+  end)
+
   it("retains completed Tool calls when a later stream event fails", function()
     local fake = fake_transport.new({ { chunks = {
       message_start(),
@@ -700,7 +738,7 @@ describe("neoagent.api.anthropic_messages", function()
     semantic.normalize = normalize
 
     assert.is_false(result.ok)
-    assert.matches("Invalid assistant message", result.error.message)
+    assert.matches("semantic rejection", result.error.message)
     assert.matches("semantic rejection", result.error.detail)
   end)
 
@@ -710,7 +748,6 @@ describe("neoagent.api.anthropic_messages", function()
       stop_sequence = "stop",
       pause_turn = "stop",
       max_tokens = "length",
-      tool_use = "toolUse",
     }) do
       local fake = fake_transport.new({ { chunks = {
         message_start(),

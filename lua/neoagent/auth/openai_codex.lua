@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local curl = require("neoagent.transport.curl")
+local local_callback = require("neoagent.auth.local_callback")
 local util = require("neoagent.util")
 
 local M = {}
@@ -123,66 +124,31 @@ local function parse_authorization(value)
   return query and decode_fields(query) or {}
 end
 
-local function close_handle(handle)
-  if handle and not handle:is_closing() then handle:close() end
-end
-
-local function reply(client, status, message)
-  local body = "<html><body><p>" .. message .. "</p></body></html>"
-  local response = table.concat({
-    "HTTP/1.1 " .. status,
-    "Content-Type: text/html; charset=utf-8",
-    "Content-Length: " .. #body,
-    "Connection: close",
-    "",
-    body,
-  }, "\r\n")
-  client:write(response, function() close_handle(client) end)
-end
-
 local function start_callback_server(expected_state, host)
-  local server = vim.uv.new_tcp()
-  local bound, bind_err = server:bind(host or "127.0.0.1", 1455)
-  if not bound then close_handle(server) return nil, bind_err end
-  local waiter, pending
-  local listened, listen_err = server:listen(16, function(err)
-    if err then return end
-    local client = vim.uv.new_tcp()
-    if not server:accept(client) then close_handle(client) return end
-    local buffer = ""
-    client:read_start(function(read_err, chunk)
-      if read_err then close_handle(client) return end
-      if not chunk then close_handle(client) return end
-      buffer = buffer .. chunk
-      if not buffer:find("\r\n\r\n", 1, true) and #buffer < 16384 then return end
-      client:read_stop()
-      local target = buffer:match("^GET%s+(%S+)") or ""
-      local path, query = target:match("^([^?]+)%??(.*)$")
+  return local_callback.listen({
+    host = host or "127.0.0.1",
+    port = 1455,
+    max_request_bytes = 16384,
+    handler = function(request)
+      local path, query = request.target:match("^([^?]+)%??(.*)$")
       local fields = decode_fields(query)
-      if path ~= "/auth/callback" then
-        reply(client, "404 Not Found", "Callback route not found.")
-      elseif fields.state ~= expected_state then
-        reply(client, "400 Bad Request", "State mismatch.")
-      elseif not fields.code or fields.code == "" then
-        reply(client, "400 Bad Request", "Missing authorization code.")
-      else
-        reply(client, "200 OK", "OpenAI authentication completed. You can close this window.")
-        pending = fields.code
-        if waiter then waiter.resolve(pending) end
+      if request.method ~= "GET" or path ~= "/auth/callback" then
+        return { status = 404, body = "Callback route not found.\n" }
       end
-    end)
-  end)
-  if not listened then close_handle(server) return nil, listen_err end
-  return {
-    wait = function()
-      return async.await(function(done)
-        waiter = done
-        if pending then done.resolve(pending) end
-        return function() close_handle(server) end
-      end)
+      if fields.state ~= expected_state then
+        return { status = 400, body = "State mismatch.\n" }
+      end
+      if not fields.code or fields.code == "" then
+        return { status = 400, body = "Missing authorization code.\n" }
+      end
+      return {
+        status = 200,
+        body = "OpenAI authentication completed. You can close this window.\n",
+        done = true,
+        value = fields.code,
+      }
     end,
-    close = function() close_handle(server) end,
-  }
+  })
 end
 
 local function await_prompt(interaction, prompt)
@@ -194,12 +160,12 @@ local function delay(milliseconds)
     local timer = vim.uv.new_timer()
     timer:start(math.max(1, milliseconds), 0, function()
       timer:stop()
-      close_handle(timer)
+      if not timer:is_closing() then timer:close() end
       done.resolve(true)
     end)
     return function()
       timer:stop()
-      close_handle(timer)
+      if not timer:is_closing() then timer:close() end
     end
   end)
 end

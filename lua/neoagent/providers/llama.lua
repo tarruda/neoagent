@@ -154,7 +154,8 @@ local function parse_huggingface_model(value)
   return value:sub(1, colon - 1), value:sub(colon + 1)
 end
 
--- Model definitions are plain tables under `providers["llama.cpp"].models`.
+-- Model definitions are plain tables under
+-- `providers["llama.cpp"].catalog.additions`.
 -- Each definition may name an HF source, recommended router load parameters,
 -- and the inference parameters the openai-completions model entries accept.
 local LOAD_LABELS = {
@@ -420,7 +421,7 @@ function M.new(opts, resources)
   local last_response
   local destroyed = false
   local definitions, definition_order, alias_definitions =
-    definitions_of(opts.models)
+    definitions_of(opts.catalog and opts.catalog.additions)
   local service_opts = validate_service_opts(opts.service_opts)
   local report = resources.report or function() end
   local dashboard = provider_state.new({ blocks = { {

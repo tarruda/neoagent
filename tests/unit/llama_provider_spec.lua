@@ -27,12 +27,14 @@ describe("neoagent llama.cpp Provider Service", function()
     }, extra or {})
   end
 
-  local function service(transport, store, models, auth, ttl_ms, report)
+  local function service(transport, store, models, auth, ttl_ms, report,
+      overrides)
     local provider = {
       api = "openai-completions",
       base_url = "http://127.0.0.1:8080/v1",
       auth_optional = true,
-      models = models or {},
+      catalog = { additions = models or {} },
+      models = overrides or {},
     }
     local catalog_value = model_catalog.new({
       provider_id = "llama.cpp",
@@ -41,6 +43,7 @@ describe("neoagent llama.cpp Provider Service", function()
         source_id = "llama-cpp-test-models",
         source_revision = 1,
         ttl_ms = type(ttl_ms) == "number" and ttl_ms or 5 * 60 * 1000,
+        additions = provider.catalog.additions,
         discover = llama_catalog.discover,
         transform_model = llama_catalog.transform,
       },
@@ -140,6 +143,21 @@ describe("neoagent llama.cpp Provider Service", function()
     assert.is_nil(block(state, "field", "Events"))
     assert.is_nil(block(state, "activity"))
     assert.is_nil(block(state, "list"))
+  end)
+
+  it("drops exact overrides when the router omits their model ids", function()
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = catalog({ model("current", "loaded") }) },
+    }
+    local value = service(transport, nil, nil, nil, nil, nil, {
+      removed = { context_window = 65536 },
+    })
+
+    assert(wait(catalog_refresh(value)).ok)
+
+    assert.are.same({ "current" },
+      vim.tbl_map(function(entry) return entry.id end, catalog_models(value)))
   end)
 
   it("bounds loaded model summaries", function()

@@ -1,5 +1,6 @@
 local Applet = require("applet")
 local async = require("neoagent.async")
+local provider_auth = require("neoagent.provider_auth")
 local provider_credentials = require("neoagent.provider_credentials")
 local provider_service = require("neoagent.provider_service")
 local provider_state = require("neoagent.provider_state")
@@ -259,9 +260,27 @@ function ProviderShell:providers()
   return result
 end
 
-function ProviderShell:_auth_state(provider_id)
+function ProviderShell:_auth_state(provider_id, entry)
   local runtime = self.runtimes[provider_id]
-  local selected = runtime and runtime.credentials:state()
+  entry = entry or { scope = "inference", primary = true }
+  local provider = self.config.providers[provider_id]
+    or runtime and runtime.definition or {}
+  local method_id = entry.method
+  if method_id == nil then
+    method_id = provider_auth.for_scope(provider,
+      entry.primary and nil or entry.scope)
+  end
+  local credentials = runtime and runtime.credentials or nil
+  if runtime and not entry.primary then
+    credentials = provider_credentials.new({
+      provider_id = provider_id,
+      provider = provider,
+      authentication = self.auth,
+      method = self.config.auth.methods[method_id],
+      scope = entry.scope,
+    })
+  end
+  local selected = credentials and credentials:state()
     or { usable = false, source = "error", error = util.error(
       "auth", "Provider credential state is unavailable") }
   return {
@@ -270,34 +289,55 @@ function ProviderShell:_auth_state(provider_id)
     method_id = selected.method_id,
     method_name = selected.method_name,
     error = util.copy(selected.error),
+    scope = entry.scope,
+    primary = entry.primary == true,
   }
+end
+
+function ProviderShell:_auth_states(provider_id)
+  local runtime = self.runtimes[provider_id]
+  local provider = self.config.providers[provider_id]
+    or runtime and runtime.definition or {}
+  local result = {}
+  for _, entry in ipairs(provider_auth.entries(provider)) do
+    result[#result + 1] = self:_auth_state(provider_id, entry)
+  end
+  return result
 end
 
 local function auth_block(auth)
   if auth.kind == "none" then return nil end
+  local label = auth.primary and "Authentication" or auth.method_name
   if auth.kind == "stored" then
-    return { type = "field", label = "Authentication",
-      value = auth.method_name, level = "success" }
+    return { type = "field", label = label,
+      value = auth.primary and auth.method_name or "Logged in",
+      level = "success" }
   end
   if auth.kind == "environment" then
-    return { type = "field", label = "Authentication",
+    return { type = "field", label = label,
       value = "Environment credential", level = "success" }
   end
   if auth.kind == "configured" then
-    return { type = "field", label = "Authentication",
+    return { type = "field", label = label,
       value = "Configured credential", level = "success" }
   end
   if auth.kind == "optional" then
-    return { type = "field", label = "Authentication",
+    return { type = "field", label = label,
       value = "Optional", level = "muted" }
   end
   if auth.kind == "error" then
-    return { type = "field", label = "Authentication",
+    return { type = "field", label = label,
       value = auth.error and auth.error.message or "Unavailable",
       level = "error" }
   end
-  return { type = "field", label = "Authentication",
+  return { type = "field", label = label,
     value = "Logged out", level = "warn" }
+end
+
+local function catalog_refreshable(runtime)
+  local definition = runtime and runtime.definition
+  local catalog = type(definition) == "table" and definition.catalog or nil
+  return type(catalog) == "table" and type(catalog.discover) == "function"
 end
 
 local credential_sources = {
@@ -318,7 +358,7 @@ end
 
 function ProviderShell:_auth_services(runtime, method_id)
   local candidates = type(runtime.auth_services) == "table"
-      and runtime.auth_services or nil
+      and runtime.auth_services[method_id] or nil
   local services, seen = {}, {}
   for _, service in ipairs(candidates or {}) do
     if type(service) == "table" and not seen[service] then
@@ -330,7 +370,7 @@ function ProviderShell:_auth_services(runtime, method_id)
     for provider_id, candidate in pairs(self.runtimes) do
       local provider = self.config.providers[provider_id]
       local service = type(candidate) == "table" and candidate.service or nil
-      if provider and provider.auth == method_id and service
+      if provider and provider_auth.uses(provider, method_id) and service
           and not seen[service] then
         seen[service] = true
         services[#services + 1] = service
@@ -351,6 +391,60 @@ function ProviderShell:_authentication_enabled(runtime, method_id)
     end
   end
   return true
+end
+
+function ProviderShell:_login_available(auth)
+  if not auth.method_id then return false end
+  local method = self.config.auth.methods[auth.method_id]
+  if auth.kind == "stored" then return false end
+  if auth.kind == "logged_out" or auth.kind == "error"
+      or auth.kind == "optional" then
+    return true
+  end
+  if auth.kind ~= "environment" and auth.kind ~= "configured" then
+    return false
+  end
+  return type(method) == "table" and method.login_with_ambient == true
+end
+
+local function auth_operation_id(prefix, auth)
+  if auth.primary then return prefix end
+  return prefix .. ":" .. auth.scope
+end
+
+function ProviderShell:_login_operation(auth, enabled)
+  local method = self.config.auth.methods[auth.method_id]
+  return {
+    id = auth_operation_id(LOGIN, auth),
+    label = type(method) == "table" and method.login_label or "Log in",
+    description = auth.method_name,
+    enabled = enabled,
+  }
+end
+
+function ProviderShell:_logout_operation(auth, enabled)
+  local method = self.config.auth.methods[auth.method_id]
+  return {
+    id = auth_operation_id(LOGOUT, auth),
+    label = type(method) == "table" and method.logout_label or "Log out",
+    description = auth.method_name,
+    enabled = enabled,
+  }
+end
+
+local function auth_for_operation(auths, prefix, operation_id)
+  for _, auth in ipairs(auths) do
+    if operation_id == auth_operation_id(prefix, auth) then return auth end
+  end
+end
+
+local function auth_for_scope(provider, auths, scope)
+  if scope == nil or scope == "inference" then return auths[1] end
+  local method_id, mapped = provider_auth.for_scope(provider, scope)
+  if not mapped then return nil end
+  for _, auth in ipairs(auths) do
+    if auth.method_id == method_id then return auth end
+  end
 end
 
 function ProviderShell:_begin_auth_coordination(runtime, method_id)
@@ -514,7 +608,7 @@ function ProviderShell:_service_state(service)
     text = "Provider state is unavailable", level = "error" } } }
 end
 
-function ProviderShell:_operations(runtime, auth)
+function ProviderShell:_operations(runtime, auths)
   local selection = self.presentation and self.presentation.active or nil
   if selection and selection.kind == "select" then
     local result = {}
@@ -538,46 +632,40 @@ function ProviderShell:_operations(runtime, auth)
   if activity == "login" or activity == "presentation" then
     return { { id = CANCEL_LOGIN, label = "Cancel login" } }
   end
-  if (auth.kind == "logged_out" or auth.kind == "error")
-      and auth.method_id then
-    return { {
-      id = LOGIN,
-      label = "Log in",
-      description = auth.method_name,
-      enabled = activity == nil
-        and self:_authentication_enabled(runtime, auth.method_id),
-    } }
-  elseif not auth.usable then return {} end
   local blocked = activity ~= nil
     or self.action ~= nil and not self.action.passive
-  local operations = provider_service.operations(service)
-  for _, operation in ipairs(operations) do
-    operation.enabled = not blocked and provider_service.operation_enabled(
-      service, service.operations[operation.id])
+  local provider = self.config.providers[self.selected_id]
+    or runtime.definition or {}
+  local operations = {}
+  for _, auth in ipairs(auths) do
+    if self:_login_available(auth) then
+      operations[#operations + 1] = self:_login_operation(auth,
+        not blocked and self:_authentication_enabled(runtime, auth.method_id))
+    end
   end
-  table.insert(operations, 1, {
-    id = REFRESH_CATALOG,
-    label = "Refresh model catalog",
-    description = "Discover the provider's current models",
-    enabled = not blocked and provider_service.operation_enabled(
-      service, { mutating = false }),
-  })
-  if auth.kind == "optional" then
-    table.insert(operations, 1, {
-      id = LOGIN,
-      label = "Log in",
-      description = auth.method_name,
-      enabled = not blocked
-        and self:_authentication_enabled(runtime, auth.method_id),
-    })
-  elseif auth.kind == "stored" then
+  local primary = auths[1]
+  if primary and primary.usable and catalog_refreshable(runtime) then
     operations[#operations + 1] = {
-      id = LOGOUT,
-      label = "Log out",
-      description = auth.method_name,
-      enabled = not blocked
-        and self:_authentication_enabled(runtime, auth.method_id),
+      id = REFRESH_CATALOG,
+      label = "Refresh model catalog",
+      description = "Discover the provider's current models",
+      enabled = not blocked and provider_service.operation_enabled(
+        service, { mutating = false }),
     }
+  end
+  for _, operation in ipairs(provider_service.operations(service)) do
+    local required = auth_for_scope(provider, auths, operation.auth_scope)
+    if required and required.usable then
+      operation.enabled = not blocked and provider_service.operation_enabled(
+        service, service.operations[operation.id])
+      operations[#operations + 1] = operation
+    end
+  end
+  for _, auth in ipairs(auths) do
+    if auth.kind == "stored" then
+      operations[#operations + 1] = self:_logout_operation(auth,
+        not blocked and self:_authentication_enabled(runtime, auth.method_id))
+    end
   end
   return operations
 end
@@ -586,7 +674,8 @@ function ProviderShell:_snapshot()
   local runtime = self.selected_id and self.runtimes[self.selected_id] or nil
   if not runtime then return nil end
   local service = runtime.service
-  local auth = self:_auth_state(self.selected_id)
+  local auths = self:_auth_states(self.selected_id)
+  local auth = auths[1]
   local state = self:_service_state(service)
   local catalog = runtime.catalog:snapshot()
   state = state == false and { blocks = {} } or util.copy(state)
@@ -620,9 +709,9 @@ function ProviderShell:_snapshot()
       level = "error",
     }
   end
-  local block = auth_block(auth)
-  if block then
-    table.insert(state.blocks, 1, block)
+  for index = #auths, 1, -1 do
+    local block = auth_block(auths[index])
+    if block then table.insert(state.blocks, 1, block) end
   end
   if self.feedback then
     table.insert(state.blocks, 1, {
@@ -638,7 +727,7 @@ function ProviderShell:_snapshot()
     id = self.selected_id,
     name = service.name,
     state = state,
-    operations = self:_operations(runtime, auth),
+    operations = self:_operations(runtime, auths),
     operation_prompt = self.presentation and self.presentation.active
         and self.presentation.active.kind == "select"
         and self.presentation.active.prompt or nil,
@@ -828,7 +917,9 @@ function ProviderShell:_run(operation_id, args, passive)
     return nil, util.error("provider", "No provider is selected")
   end
   local service = runtime.service
-  local auth = self:_auth_state(self.selected_id)
+  local provider = self.config.providers[self.selected_id]
+    or runtime.definition or {}
+  local auths = self:_auth_states(self.selected_id)
   local selection = self.presentation and self.presentation.active or nil
   if selection and selection.kind == "select" then
     for index, item in ipairs(selection.items or {}) do
@@ -841,14 +932,15 @@ function ProviderShell:_run(operation_id, args, passive)
       return self.presenter_value:cancel(selection.id)
     end
   end
-  if operation_id == LOGIN then
-    if not auth.method_id or not (auth.kind == "logged_out"
-        or auth.kind == "optional" or auth.kind == "error") then
+  local login_auth = auth_for_operation(auths, LOGIN, operation_id)
+  local logout_auth = auth_for_operation(auths, LOGOUT, operation_id)
+  if login_auth then
+    if not self:_login_available(login_auth) then
       return nil, util.error("auth",
         "Login is unavailable for the selected provider")
     end
     local coordination, err = self:_begin_auth_coordination(
-      runtime, auth.method_id)
+      runtime, login_auth.method_id)
     if not coordination then return nil, err end
     self.feedback = nil
     return self:_start_action({
@@ -857,19 +949,19 @@ function ProviderShell:_run(operation_id, args, passive)
       provider_id = self.selected_id,
       coordination = coordination,
       start = function()
-        return self.authentication:login(auth.method_id)
+        return self.authentication:login(login_auth.method_id)
       end,
       after = function(action)
-        self:_refresh_method_catalogs(auth.method_id, action)
+        self:_refresh_method_catalogs(login_auth.method_id, action)
       end,
     })
-  elseif operation_id == LOGOUT then
-    if auth.kind ~= "stored" then
+  elseif logout_auth then
+    if logout_auth.kind ~= "stored" then
       return nil, util.error("auth",
         "Logout is unavailable for the selected provider")
     end
     local coordination, err = self:_begin_auth_coordination(
-      runtime, auth.method_id)
+      runtime, logout_auth.method_id)
     if not coordination then return nil, err end
     self.feedback = nil
     return self:_start_action({
@@ -878,10 +970,27 @@ function ProviderShell:_run(operation_id, args, passive)
       provider_id = self.selected_id,
       coordination = coordination,
       start = function()
-        return self.authentication:logout(auth.method_id)
+        return async.run(function()
+          local confirmation = self.presenter_value:confirm({
+            prompt = "Log out of " .. logout_auth.method_name .. "?",
+            accept_label = "Log out",
+            reject_label = "Cancel",
+          }):await()
+          if not confirmation.ok then error(confirmation.error, 0) end
+          if confirmation.value ~= true then
+            error(async.cancelled_error, 0)
+          end
+          local logout, logout_err =
+            self.authentication:logout(logout_auth.method_id)
+          if not logout then
+            error(logout_err or util.error(
+              "auth", "Authentication logout did not start"), 0)
+          end
+          return logout:await()
+        end, { error_kind = "auth" })
       end,
       after = function(action)
-        self:_refresh_method_catalogs(auth.method_id, action)
+        self:_refresh_method_catalogs(logout_auth.method_id, action)
       end,
     })
   elseif operation_id == CANCEL_LOGIN then
@@ -889,26 +998,40 @@ function ProviderShell:_run(operation_id, args, passive)
     self:_refresh()
     return cancelled
   end
-  if not auth.usable then
-    local err = util.error("auth", "Log in before running provider actions")
-    self:_notify(err.message, vim.log.levels.WARN)
-    return nil, err
-  end
   if self.action then
     local err = util.error("provider", "A provider action is already active")
     self:_notify(err.message, vim.log.levels.WARN)
     return nil, err
   end
-  local descriptor = operation_id == REFRESH_CATALOG and {
-    label = "Refresh model catalog",
-  } or service.operations[operation_id]
+  local descriptor = operation_id == REFRESH_CATALOG
+      and catalog_refreshable(runtime) and {
+        label = "Refresh model catalog",
+      } or service.operations[operation_id]
   if not descriptor then
     local err = util.error("provider",
       "Unknown provider operation: " .. tostring(operation_id))
     self:_notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
-  local provider = self.config.providers[self.selected_id]
+  local required_auth = operation_id == REFRESH_CATALOG and auths[1]
+    or auth_for_scope(provider, auths, descriptor.auth_scope)
+  if not required_auth then
+    local err = util.error("auth",
+      "Provider authentication scope is unavailable: "
+        .. tostring(descriptor.auth_scope))
+    self:_notify(err.message, vim.log.levels.ERROR)
+    return nil, err
+  end
+  if not required_auth.usable then
+    local method = required_auth
+        and self.config.auth.methods[required_auth.method_id] or nil
+    local login_label = type(method) == "table" and method.login_label
+      or "Log in"
+    local err = util.error("auth",
+      login_label .. " before running this provider action")
+    self:_notify(err.message, vim.log.levels.WARN)
+    return nil, err
+  end
   self.feedback = nil
   local coordination
   local coordination_err
@@ -934,10 +1057,16 @@ function ProviderShell:_run(operation_id, args, passive)
     end
     return provider_service.run(service, operation_id, {
       args = args or "",
-      auth = self.auth,
-      auth_method = provider and provider.auth or nil,
-      optional_auth = provider and (provider.auth_optional == true
-        or provider.api_key ~= nil) or false,
+      resolve_auth = function(scope)
+        local method_id, mapped = provider_auth.for_scope(provider, scope)
+        return provider_service.resolve_auth({
+          manager = self.auth,
+          method = method_id,
+          optional = mapped or provider.auth_optional == true
+            or provider.api_key ~= nil,
+          scope = scope,
+        })
+      end,
       provider = provider,
       interact = interact,
       coordination = coordination,
@@ -977,8 +1106,12 @@ function ProviderShell:_maybe_focus_refresh()
     end
     return false
   end
-  if self.authentication:is_active()
-      or not self:_auth_state(provider_id).usable then return false end
+  local provider = self.config.providers[provider_id]
+    or runtime.definition or {}
+  local auths = self:_auth_states(provider_id)
+  local required_auth = auth_for_scope(provider, auths, refresh.auth_scope)
+  if self.authentication:is_active() or not required_auth
+      or not required_auth.usable then return false end
   self.pending_focus_provider_id = nil
   return self:_run(operation_id, nil, true)
 end
@@ -993,21 +1126,29 @@ function ProviderShell:operations()
   local runtime = self.selected_id and self.runtimes[self.selected_id] or nil
   if not runtime then return {} end
   local service = runtime.service
-  local auth = self:_auth_state(self.selected_id)
-  if not auth.usable then return {} end
+  local provider = self.config.providers[self.selected_id]
+    or runtime.definition or {}
+  local auths = self:_auth_states(self.selected_id)
   local blocked = self.action ~= nil or self.authentication:is_active()
-  local operations = provider_service.operations(service)
-  for _, operation in ipairs(operations) do
-    operation.enabled = not blocked and provider_service.operation_enabled(
-      service, service.operations[operation.id])
+  local operations = {}
+  for _, operation in ipairs(provider_service.operations(service)) do
+    local required_auth = auth_for_scope(
+      provider, auths, operation.auth_scope)
+    if required_auth and required_auth.usable then
+      operation.enabled = not blocked and provider_service.operation_enabled(
+        service, service.operations[operation.id])
+      operations[#operations + 1] = operation
+    end
   end
-  table.insert(operations, 1, {
-    id = REFRESH_CATALOG,
-    label = "Refresh model catalog",
-    description = "Discover the provider's current models",
-    enabled = not blocked and provider_service.operation_enabled(
-      service, { mutating = false }),
-  })
+  if auths[1] and auths[1].usable and catalog_refreshable(runtime) then
+    table.insert(operations, 1, {
+      id = REFRESH_CATALOG,
+      label = "Refresh model catalog",
+      description = "Discover the provider's current models",
+      enabled = not blocked and provider_service.operation_enabled(
+        service, { mutating = false }),
+    })
+  end
   return operations
 end
 

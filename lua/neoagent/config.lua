@@ -1,7 +1,10 @@
 local util = require("neoagent.util")
 local api_key = require("neoagent.auth.api_key")
+local alibaba_dashboard_auth = require("neoagent.auth.alibaba_dashboard")
+local alibaba_token_plan_auth = require("neoagent.auth.alibaba_token_plan")
 local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
+local provider_auth = require("neoagent.provider_auth")
 
 local M = {}
 
@@ -24,6 +27,8 @@ local defaults = {
     methods = {
       openai = api_key.new({ name = "OpenAI API key" }),
       deepseek = api_key.new({ name = "DeepSeek API key" }),
+      ["alibaba-token-plan"] = alibaba_token_plan_auth.new(),
+      ["alibaba-token-plan-dashboard"] = alibaba_dashboard_auth.new(),
       zai = api_key.new({ name = "Z.AI API and Plan key" }),
       anthropic = api_key.new({
         name = "Anthropic API key",
@@ -166,6 +171,7 @@ local provider_fields = {
   api_key = true,
   auth = true,
   auth_optional = true,
+  auth_scopes = true,
   base_url = true,
   catalog = true,
   diagnostics = true,
@@ -177,6 +183,7 @@ local provider_fields = {
 
 local catalog_fields = {
   account_scoped = true,
+  additions = true,
   discover = true,
   seed = true,
   source_id = true,
@@ -186,10 +193,19 @@ local catalog_fields = {
   transform_model = true,
 }
 
+local function model_configuration_maps(provider)
+  return {
+    provider.models or {},
+    provider.catalog and provider.catalog.additions or {},
+  }
+end
+
 local function provider_uses_api(provider, name)
   if provider.api == name then return true end
-  for _, model in pairs(provider.models or {}) do
-    if type(model) == "table" and model.api == name then return true end
+  for _, models in ipairs(model_configuration_maps(provider)) do
+    for _, model in pairs(models) do
+      if type(model) == "table" and model.api == name then return true end
+    end
   end
   return false
 end
@@ -332,18 +348,50 @@ local function validate(opts)
       assert(seed, seed_err and seed_err.message
         or "provider catalog seed is invalid")
     end
-    local uses_built_in_api = built_in_apis[provider.api] == true
-    for _, model in pairs(provider.models) do
-      if type(model) == "table" and built_in_apis[model.api] then
-        uses_built_in_api = true
-        break
+    assert(provider.catalog.additions == nil
+        or type(provider.catalog.additions) == "table"
+          and (next(provider.catalog.additions) == nil
+            or not util.is_list(provider.catalog.additions)),
+      "provider " .. id .. " catalog.additions must be a keyed table")
+    for model_id, model in pairs(provider.catalog.additions or {}) do
+      assert(model_config.safe_id(model_id)
+          and (model == false or type(model) == "table"
+            and (next(model) == nil or not util.is_list(model))),
+        "provider " .. id
+          .. " catalog.additions must contain keyed tables or false")
+      if model ~= false then
+        local validated, model_err = model_config.validate(id, model_id, model)
+        assert(validated, model_err and model_err.message
+          or "catalog model addition is invalid")
       end
+    end
+    local uses_built_in_api = built_in_apis[provider.api] == true
+    for _, models in ipairs(model_configuration_maps(provider)) do
+      for _, model in pairs(models) do
+        if type(model) == "table" and built_in_apis[model.api] then
+          uses_built_in_api = true
+          break
+        end
+      end
+      if uses_built_in_api then break end
     end
     if uses_built_in_api then
       assert(type(provider.base_url) == "string" and provider.base_url ~= "", "provider " .. id .. " requires base_url")
     end
     if provider.auth ~= nil then
       assert(type(provider.auth) == "string" and provider.auth ~= "", "provider auth must be a method name")
+    end
+    assert(provider.auth_scopes == nil
+        or type(provider.auth_scopes) == "table"
+          and not util.is_list(provider.auth_scopes),
+      "provider auth_scopes must be an object")
+    for scope, method in pairs(provider.auth_scopes or {}) do
+      assert(type(scope) == "string" and scope ~= ""
+          and #scope <= 128 and scope:match("^[%w_.-]+$")
+          and scope ~= "inference",
+        "provider auth scope must be safe text other than inference")
+      assert(type(method) == "string" and method ~= "",
+        "provider auth scope must name an authentication method")
     end
     assert(provider.auth_optional == nil
         or type(provider.auth_optional) == "boolean",
@@ -393,6 +441,17 @@ local function validate(opts)
       "auth method public_metadata must be a function")
     assert(method.cache_identity == nil or type(method.cache_identity) == "function",
       "auth method cache_identity must be a function")
+    assert(method.validate_credential == nil
+        or type(method.validate_credential) == "function",
+      "auth method validate_credential must be a function")
+    assert(method.login_with_ambient == nil
+        or type(method.login_with_ambient) == "boolean",
+      "auth method login_with_ambient must be a boolean")
+    for _, field in ipairs({ "login_label", "logout_label" }) do
+      local value = method[field]
+      assert(value == nil or model_config.safe_id(value) and #value <= 128,
+        "auth method " .. field .. " must be safe text of at most 128 bytes")
+    end
     assert(method._with_transport == nil
         or type(method._with_transport) == "function",
       "auth method _with_transport must be a function")
@@ -404,9 +463,11 @@ local function validate(opts)
     end
   end
   for id, provider in pairs(opts.providers) do
-    if provider.auth ~= nil then
-      assert(opts.auth.methods[provider.auth] ~= nil,
-        "provider " .. id .. " uses unknown auth method " .. provider.auth)
+    for _, entry in ipairs(provider_auth.entries(provider)) do
+      if entry.method ~= nil then
+        assert(opts.auth.methods[entry.method] ~= nil,
+          "provider " .. id .. " uses unknown auth method " .. entry.method)
+      end
     end
   end
   assert(type(opts.persistence) == "table", "persistence must be a table")

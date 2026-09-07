@@ -413,7 +413,7 @@ def run_case(backend, terminal_kind, terminal, nvim, importer, image_tool,
                 for layer_name in ("main", "detail", "badge"):
                     layer = layers[layer_name]
                     if not layer["open"] or not layer["visible"] \
-                            or not layer["geometry"]:
+                            or not layer.get("geometry"):
                         raise RuntimeError(
                             f"{name} did not settle the {layer_name} "
                             f"image layer: {layer}")

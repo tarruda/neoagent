@@ -1,5 +1,6 @@
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
+local request_context = require("neoagent.api.request_context")
 local util = require("neoagent.util")
 
 local M = {}
@@ -20,6 +21,15 @@ local function session_commit(session)
     if not ok then return nil, err end
     return true, nil, persisted_message(message, entry)
   end
+end
+
+local function model_options(session, opts)
+  local result = util.copy(opts.model_options or {})
+  if type(session.id) == "function" then
+    result.request_context = request_context.resolve(
+      { session_id = session:id() }, result.request_context)
+  end
+  return result
 end
 
 local function diagnostic_report(report)
@@ -173,7 +183,7 @@ function M.send(session, prompt, opts)
   return start_reserved(session, reservation, function()
     local run
     run = async.run(function()
-      local model_opts = util.copy(opts.model_options or {})
+      local model_opts = model_options(session, opts)
       model_opts.messages = context_messages(session, opts)
       model_opts.system_prompt = opts.system_prompt
       model_opts.on_event = function(event) run:emit(event) end
@@ -216,7 +226,7 @@ local function run_agent(session, opts)
       messages = context_messages(session, opts),
       system_prompt = opts.system_prompt,
       tools = opts.tools,
-      model_options = opts.model_options,
+      model_options = model_options(session, opts),
       context = opts.context,
       execute_tool = opts.execute_tool,
       get_steering_messages = opts.get_steering_messages,

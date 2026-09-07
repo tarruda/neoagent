@@ -24,7 +24,12 @@ describe("neoagent Provider Shell", function()
   end
 
   local function presenter()
-    local value = { notifications = {}, requests = {}, uris = {} }
+    local value = {
+      notifications = {},
+      requests = {},
+      uris = {},
+      confirm_value = true,
+    }
     local function resolved(result)
       return async.run(function() return { ok = true, value = result } end)
     end
@@ -39,7 +44,10 @@ describe("neoagent Provider Shell", function()
     end
     function value:confirm(request)
       self.requests[#self.requests + 1] = { kind = "confirm", request = request }
-      return resolved(true)
+      if self.confirm_error then
+        return async.run(function() error(self.confirm_error, 0) end)
+      end
+      return resolved(self.confirm_value)
     end
     function value:notice(request)
       self.requests[#self.requests + 1] = { kind = "notice", request = request }
@@ -403,7 +411,12 @@ describe("neoagent Provider Shell", function()
     local surface = view()
     local value = shell({
       config = config({
-        fake = { api = "fake", models = {}, auth = "key" },
+        fake = {
+          api = "fake",
+          catalog = { discover = function() end },
+          models = {},
+          auth = "key",
+        },
       }, "fake"),
       auth = auth,
       runtimes = { fake = service("fake", "Fake") },
@@ -558,18 +571,21 @@ describe("neoagent Provider Shell", function()
       config = config({
         configured = {
           api = "fake",
+          catalog = { discover = function() end },
           models = {},
           auth = "key",
           api_key = "literal",
         },
         environment = {
           api = "fake",
+          catalog = { discover = function() end },
           models = {},
           auth = "key",
           api_key = function() return "ambient" end,
         },
         optional = {
           api = "fake",
+          catalog = { discover = function() end },
           models = {},
           auth = "key",
           auth_optional = true,
@@ -618,6 +634,188 @@ describe("neoagent Provider Shell", function()
       value:info().state.blocks[1].value)
   end)
 
+  it("allows a login method to augment an ambient credential", function()
+    local configured = config({ fake = {
+      api = "fake",
+      models = {},
+      auth = "key",
+      api_key = function() return "ambient" end,
+    } }, "fake")
+    configured.auth.methods.key.login_with_ambient = true
+    local value = shell({
+      config = configured,
+      auth = authentication(),
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert.are.same({ "Log in", "Inspect" },
+      labels(value:info().operations))
+    assert.is_true(wait(assert(value:login())).ok)
+    assert.are.same({ "Inspect", "Log out" },
+      labels(value:info().operations))
+  end)
+
+  it("keeps primary and scoped authentication actions independent", function()
+    local configured = config({ fake = {
+      api = "fake",
+      models = {},
+      auth = "key",
+      auth_scopes = { dashboard = "dashboard" },
+    } }, "fake")
+    configured.auth.methods.key.login_label = "Login"
+    configured.auth.methods.key.logout_label = "Logout"
+    configured.auth.methods.dashboard = {
+      name = "Dashboard authorization",
+      type = "api_key",
+      login_label = "Login to dashboard (optional to see quotas)",
+      logout_label = "Logout from dashboard",
+    }
+    local auth = authentication()
+    local value = shell({
+      config = configured,
+      auth = auth,
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert.are.same({
+      "Login",
+      "Login to dashboard (optional to see quotas)",
+    },
+      labels(value:info().operations))
+    assert.is_true(wait(assert(value:run(
+      "neoagent.auth.login:dashboard"))).ok)
+    assert.is_nil(auth.credentials.key)
+    assert.are.equal("api_key", auth.credentials.dashboard)
+    assert.are.same({ "Login", "Logout from dashboard" },
+      labels(value:info().operations))
+    assert.are.equal("Logged out", value:info().state.blocks[1].value)
+    assert.are.equal("Dashboard authorization",
+      value:info().state.blocks[2].label)
+    assert.are.equal("Logged in", value:info().state.blocks[2].value)
+
+    assert.is_true(wait(assert(value:login())).ok)
+    assert.are.equal("api_key", auth.credentials.key)
+    assert.are.same({ "Inspect", "Logout", "Logout from dashboard" },
+      labels(value:info().operations))
+
+    assert.is_true(wait(assert(value:run(
+      "neoagent.auth.logout:dashboard"))).ok)
+    assert.are.equal("api_key", auth.credentials.key)
+    assert.is_nil(auth.credentials.dashboard)
+    assert.are.same({
+      "Login to dashboard (optional to see quotas)",
+      "Inspect",
+      "Logout",
+    }, labels(value:info().operations))
+  end)
+
+  it("gates Provider Service operations by their authentication scope", function()
+    local resolved_method
+    local managed = service("fake", "Fake", {
+      hidden = {
+        label = "Hidden management action",
+        auth_scope = "unconfigured",
+        run = function() error("must not run") end,
+      },
+      inspect = operation("Inspect"),
+      quotas = {
+        label = "Show quotas",
+        auth_scope = "dashboard",
+        run = function(ctx)
+          return async.run(function()
+            local resolved = ctx.resolve_auth("dashboard"):await()
+            resolved_method = resolved.method
+            return { ok = true }
+          end)
+        end,
+      },
+    })
+    local configured = config({ fake = {
+      api = "fake",
+      models = {},
+      auth = "key",
+      auth_scopes = { dashboard = "dashboard" },
+    } }, "fake")
+    configured.auth.methods.dashboard = {
+      name = "Dashboard authorization",
+      type = "api_key",
+      login_label = "Log in to dashboard",
+      logout_label = "Log out from dashboard",
+    }
+    local value = shell({
+      config = configured,
+      auth = authentication({ dashboard = "api_key" }),
+      runtimes = { fake = managed },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert.are.same({ "Log in", "Show quotas", "Log out from dashboard" },
+      labels(value:info().operations))
+    assert.are.same({ "quotas" }, ids(value:operations()))
+    assert.is_true(wait(assert(value:run("quotas"))).ok)
+    assert.are.equal("dashboard", resolved_method)
+    local unavailable, err = value:run("inspect")
+    assert.is_nil(unavailable)
+    assert.matches("Log in", err.message)
+    unavailable, err = value:run("hidden")
+    assert.is_nil(unavailable)
+    assert.matches("scope is unavailable", err.message)
+  end)
+
+  it("confirms logout before removing stored credentials", function()
+    local auth = authentication({ key = "api_key" })
+    local presented = presenter()
+    presented.confirm_value = false
+    local value = shell({
+      config = config({ fake = {
+        api = "fake",
+        models = {},
+        auth = "key",
+      } }, "fake"),
+      auth = auth,
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presented,
+      view = function() return view() end,
+    })
+
+    local rejected = wait(assert(value:logout()))
+    assert.is_false(rejected.ok)
+    assert.are.equal("cancelled", rejected.error.kind)
+    assert.are.equal("api_key", auth.credentials.key)
+    assert.are.same({
+      prompt = "Log out of API key?",
+      accept_label = "Log out",
+      reject_label = "Cancel",
+    }, presented.requests[1].request)
+
+    presented.confirm_error = util.error(
+      "presentation", "confirmation unavailable")
+    local unavailable = wait(assert(value:logout()))
+    assert.is_false(unavailable.ok)
+    assert.matches("confirmation unavailable", unavailable.error.message)
+    assert.are.equal("api_key", auth.credentials.key)
+
+    presented.confirm_error = nil
+    presented.confirm_value = true
+    local logout = value.authentication.logout
+    value.authentication.logout = function()
+      return nil, util.error("auth", "logout unavailable")
+    end
+    unavailable = wait(assert(value:logout()))
+    assert.is_false(unavailable.ok)
+    assert.matches("logout unavailable", unavailable.error.message)
+    assert.are.equal("api_key", auth.credentials.key)
+
+    value.authentication.logout = logout
+    assert.is_true(wait(assert(value:logout())).ok)
+    assert.is_nil(auth.credentials.key)
+  end)
+
   it("forces catalog refreshes and projects catalog status", function()
     local selected_catalog = catalog({ one = {}, two = {} }, {
       source = "cache",
@@ -633,7 +831,11 @@ describe("neoagent Provider Shell", function()
       auth = authentication(),
       runtimes = { fake = {
         id = "fake",
-        definition = { api = "fake", catalog = {}, models = {} },
+        definition = {
+          api = "fake",
+          catalog = { discover = function() end },
+          models = {},
+        },
         catalog = selected_catalog,
         service = managed,
       } },
@@ -653,6 +855,25 @@ describe("neoagent Provider Shell", function()
     assert.are.equal("source · fresh", info.state.blocks[3].value)
     assert.are.equal("success", info.state.blocks[3].level)
     assert.are.equal("succeeded", info.state.operation.state)
+  end)
+
+  it("omits catalog refresh for static catalogs", function()
+    local value = shell({
+      config = config({ fake = {
+        api = "fake",
+        catalog = { seed = { { id = "model" } } },
+        models = {},
+      } }, "fake"),
+      auth = authentication(),
+      runtimes = { fake = service("fake", "Fake") },
+      presenter = presenter(),
+      view = function() return view() end,
+    })
+
+    assert.are.same({ "Inspect" }, labels(value:info().operations))
+    local run, err = value:run("neoagent.catalog.refresh")
+    assert.is_nil(run)
+    assert.matches("Unknown provider operation", err.message)
   end)
 
   it("reports disabled persistence for a usable catalog", function()
@@ -825,8 +1046,9 @@ describe("neoagent Provider Shell", function()
 
   it("cancels logout through the Shell action owner", function()
     local auth = authentication({ key = "api_key" })
-    local cancelled = false
+    local started, cancelled = false, false
     function auth:logout(_, opts)
+      started = true
       return async.run(function()
         return async.await(function(done)
           return function()
@@ -856,6 +1078,7 @@ describe("neoagent Provider Shell", function()
 
     local run = assert(value:logout())
     assert.is_true(value:is_active())
+    assert(vim.wait(1000, function() return started end, 5))
     assert.is_true(value:cancel())
     assert.is_false(wait(run).ok)
     assert.is_true(cancelled)
@@ -1542,7 +1765,11 @@ describe("neoagent Provider Shell", function()
     })
     local selected_runtime = {
       id = "fake",
-      definition = { api = "fake", models = {} },
+      definition = {
+        api = "fake",
+        catalog = { discover = function() end },
+        models = {},
+      },
       catalog = selected_catalog,
       service = managed,
     }

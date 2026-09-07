@@ -399,10 +399,7 @@ end
 function Authentication:cancel()
   local cancelled = false
   if self:_close_login_notice() then cancelled = true end
-  for _, operation in ipairs({
-    self.login_operation,
-    self.logout_operation,
-  }) do
+  for _, operation in pairs({ login = self.login_operation, logout = self.logout_operation }) do
     if operation and operation.run then
       cancelled = true
       operation.run:cancel()

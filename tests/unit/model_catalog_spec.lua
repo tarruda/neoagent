@@ -549,6 +549,64 @@ describe("neoagent ModelCatalog", function()
     assert.is_nil(models.removed)
   end)
 
+  it("removes a discovered model even when it has exact configuration", function()
+    local include_configured = true
+    local catalog = model_catalog.new({
+      provider_id = "example",
+      provider = {},
+      definition = discovery({
+        seed = {
+          { id = "remaining" },
+          { id = "removed" },
+        },
+        discover = function()
+          return async.run(function()
+            local models = { { id = "remaining" } }
+            if include_configured then
+              models[#models + 1] = { id = "removed" }
+            end
+            return { ok = true, models = models }
+          end)
+        end,
+      }),
+      models = {
+        removed = { context_window = 32000 },
+      },
+    })
+
+    assert.is_true(wait(catalog:refresh({ force = true })).ok)
+    assert.are.equal(32000,
+      catalog:snapshot().models.removed.context_window)
+    include_configured = false
+    assert.is_true(wait(catalog:refresh({ force = true })).ok)
+
+    assert.are.equal("remaining", catalog:snapshot().models.remaining.id)
+    assert.is_nil(catalog:snapshot().models.removed)
+    catalog:destroy()
+  end)
+
+  it("keeps explicit catalog additions across source snapshots", function()
+    local catalog = model_catalog.new({
+      provider_id = "example",
+      provider = {},
+      definition = discovery({
+        additions = {
+          manual = { input = { "text" }, context_window = 32000 },
+        },
+      }),
+      models = {
+        manual = { context_window = 64000 },
+      },
+    })
+
+    assert(catalog:publish_discoveries({ { id = "reported" } }))
+
+    local models = catalog:snapshot().models
+    assert.are.equal(64000, models.manual.context_window)
+    assert.are.equal("reported", models.reported.id)
+    catalog:destroy()
+  end)
+
   it("runs transforms before applying exact removals", function()
     local transformed = {}
     local catalog = model_catalog.new({

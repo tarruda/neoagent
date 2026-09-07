@@ -130,7 +130,8 @@ function M.find_cut_point(entries, start_index, end_index, keep_recent_tokens)
     end
     if accumulated >= keep_recent_tokens then
       for _, candidate in ipairs(cut_points) do
-        if candidate >= index then cut_index = candidate break end
+        if candidate > index then break end
+        cut_index = candidate
       end
       break
     end

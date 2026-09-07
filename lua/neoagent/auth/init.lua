@@ -90,8 +90,13 @@ local function valid_credential(credential)
 end
 
 local function valid_for(method, credential)
-  return valid_credential(credential)
-    and (method.type == nil or method.type == credential_type(credential))
+  if not valid_credential(credential)
+      or method.type ~= nil and method.type ~= credential_type(credential) then
+    return false
+  end
+  if type(method.validate_credential) ~= "function" then return true end
+  local ok, valid = pcall(method.validate_credential, util.copy(credential))
+  return ok and valid == true
 end
 
 local function method_for(self, id)
@@ -167,8 +172,9 @@ function Manager:login(id, opts)
         if opts.notify then opts.notify(event) end
       end,
     }
-    local credential = credential_from(method.login(interaction):await(), "Login", method)
-    modify_store(self, id, function() return credential end)
+    local credential = credential_from(method.login(interaction):await(),
+      "Login", method)
+    credential = modify_store(self, id, function() return credential end)
     local revision = publish(self, id, "login")
     return {
       ok = true,
@@ -182,6 +188,11 @@ end
 function Manager:resolve(id, opts)
   opts = opts or {}
   return async.run(function()
+    if opts.scope ~= nil and (type(opts.scope) ~= "string"
+        or opts.scope == "" or #opts.scope > 128
+        or not opts.scope:match("^[%w_.-]+$")) then
+      error(util.error("auth", "Authentication scope is invalid"), 0)
+    end
     local method = method_for(self, id)
     local credential, read_err = self.store:read(id)
     if read_err then error(read_err, 0) end
@@ -215,7 +226,8 @@ function Manager:resolve(id, opts)
         publish(self, id, "refresh")
       end
     end
-    local override = method.request_opts(util.copy(credential))
+    local override = method.request_opts(
+      util.copy(credential), opts.scope)
     if type(override) ~= "table" then
       error(util.error("auth", "Login method request_opts must return a table"), 0)
     end

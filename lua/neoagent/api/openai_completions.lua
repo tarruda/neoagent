@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local messages = require("neoagent.api.messages")
 local model_contract = require("neoagent.model")
+local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
@@ -192,16 +193,21 @@ local function partial_message(message, calls_complete, err)
 end
 
 local function usage_from(raw)
-  local details = raw.prompt_tokens_details or {}
-  local input = raw.prompt_tokens or 0
-  local output = raw.completion_tokens or 0
-  local cache_read = details.cached_tokens or raw.prompt_cache_hit_tokens or 0
+  local details = type(raw.prompt_tokens_details) == "table"
+    and raw.prompt_tokens_details or {}
+  local input = type(raw.prompt_tokens) == "number" and raw.prompt_tokens or 0
+  local output = type(raw.completion_tokens) == "number" and raw.completion_tokens or 0
+  local cache_read = type(details.cached_tokens) == "number" and details.cached_tokens
+    or type(raw.prompt_cache_hit_tokens) == "number" and raw.prompt_cache_hit_tokens
+    or 0
   return {
     input = input,
     output = output,
     cacheRead = cache_read,
-    cacheWrite = details.cache_write_tokens or 0,
-    totalTokens = raw.total_tokens or (input + output),
+    cacheWrite = type(details.cache_write_tokens) == "number"
+      and details.cache_write_tokens or 0,
+    totalTokens = type(raw.total_tokens) == "number" and raw.total_tokens
+      or (input + output),
     cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
   }
 end
@@ -361,24 +367,26 @@ function Model:_request(call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
+    request_context = request_context.resolve(
+      self._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, ctx)
   end
   request = request_opts.apply(request, call_opts.request_opts, ctx)
-  return request
+  return request, ctx.request_context
 end
 
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local transport = self._transport
   local message
   local calls
   local calls_complete = false
   return async.run(function(run)
     local ok, outcome = pcall(function()
-      local request = self:_request(opts)
+      local request, identity = self:_request(opts)
+      local transport = request_context.bind_transport(self._transport, identity)
       message = {
         role = "assistant",
         content = {},
@@ -477,7 +485,8 @@ function Model:stream(opts)
           thinking_block.thinking = thinking_block.thinking .. thinking
           run:emit({ type = "thinking_delta", text = thinking })
         end
-        for _, raw_call in ipairs(delta.tool_calls or {}) do
+        local tool_calls = type(delta.tool_calls) == "table" and delta.tool_calls or {}
+        for _, raw_call in ipairs(tool_calls) do
           local index = raw_call.index or 0
           local call = calls[index]
           if not call then
@@ -488,7 +497,7 @@ function Model:stream(opts)
           if type(raw_call.id) == "string" and raw_call.id ~= "" and call.id == "" then
             call.id = raw_call.id
           end
-          local fn = raw_call["function"] or {}
+          local fn = type(raw_call["function"]) == "table" and raw_call["function"] or {}
           if type(fn.name) == "string" and fn.name ~= "" then
             call.name = call.name .. fn.name
           end
@@ -555,7 +564,8 @@ function Model:stream(opts)
       local partial = partial_message(message, calls_complete, err)
       return { ok = false, message = partial, error = err }
     end
-    local message, message_err = semantic_message.normalize(outcome)
+    local message, message_err =
+      semantic_message.normalize_model_response(outcome)
     if not message then
       return {
         ok = false,
@@ -600,6 +610,7 @@ function M.new(opts)
     _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
+    _request_context = request_context.copy(opts.request_context),
     _timeout_ms = opts.timeout_ms,
     _transport = opts.transport or curl,
   }, Model), "OpenAI Chat Completions constructor")

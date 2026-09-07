@@ -812,6 +812,119 @@ describe("neoagent native Renderer protocol", function()
     assert.matches("complete output", text)
   end)
 
+  it("renders physical shell command newlines in card details", function()
+    local details = assert(protocol.render_details(renderers.codex, {
+      key = "multiline-shell-details",
+      kind = "tool",
+      state = "running",
+      call = { name = "shell", arguments = {
+        command = table.concat({
+          "printf 'literal\\n'",
+          "printf second-line",
+          "printf third-line",
+          "printf fourth-line",
+        }, "\n"),
+      } },
+    }, {
+      width = 80,
+      spinner = "*",
+      tool = require("neoagent.tools.shell").new(),
+    }))
+
+    assert.are.same({
+      "• Running printf 'literal\\n'",
+      "  │ printf second-line",
+      "  │ printf third-line",
+      "  │ printf fourth-line",
+    }, layout(details, renderers.codex.theme, 80).lines)
+  end)
+
+  it("separates Codex tool headings and commands from their bodies", function()
+    local cases = {
+      {
+        tool = require("neoagent.tools.write_file").new(),
+        header_end = "Written write.lua",
+        body = "return true",
+        block = {
+          key = "spaced-write",
+          kind = "tool",
+          state = "success",
+          call = { name = "write_file", arguments = {
+            path = "write.lua",
+            content = "return true",
+          } },
+          message = {
+            toolName = "write_file",
+            isError = false,
+            content = { { type = "text", text = "wrote write.lua" } },
+          },
+        },
+      },
+      {
+        tool = require("neoagent.tools.edit_file").new(),
+        header_end = "Edited edit.lua",
+        body = "-old",
+        block = {
+          key = "spaced-edit",
+          kind = "tool",
+          state = "success",
+          call = { name = "edit_file", arguments = {
+            path = "edit.lua",
+            edits = {},
+          } },
+          message = {
+            toolName = "edit_file",
+            isError = false,
+            content = { { type = "text", text = "edited edit.lua" } },
+            details = { patch = "@@ -1 +1 @@\n-old\n+new" },
+          },
+        },
+      },
+      {
+        tool = require("neoagent.tools.shell").new(),
+        header_end = "printf second-command",
+        body = "command-output",
+        block = {
+          key = "spaced-shell",
+          kind = "tool",
+          state = "success",
+          call = { name = "shell", arguments = {
+            command = "printf first-command\nprintf second-command",
+          } },
+          message = {
+            toolName = "shell",
+            isError = false,
+            content = { { type = "text", text = "command-output" } },
+          },
+        },
+      },
+    }
+
+    local function row_containing(lines, text)
+      for index, line in ipairs(lines) do
+        if line:find(text, 1, true) then return index end
+      end
+    end
+
+    for _, case in ipairs(cases) do
+      for _, surface in ipairs({ "transcript", "details" }) do
+        local render = surface == "transcript"
+            and protocol.render_block or protocol.render_details
+        local node = assert(render(renderers.codex, case.block, {
+          width = 80,
+          spinner = "*",
+          tool = case.tool,
+        }))
+        local lines = layout(node, renderers.codex.theme, 80).lines
+        local header = assert(row_containing(lines, case.header_end))
+        local body = assert(row_containing(lines, case.body))
+        assert.are.equal(header + 2, body,
+          surface .. " " .. case.block.key)
+        assert.is_nil(lines[header + 1]:find("%S"))
+      end
+    end
+  end)
+
   it("converts rich line metadata into native ranges", function()
     local tree = require("neoagent.ui.tree")
     local node = tree.content("converted", {

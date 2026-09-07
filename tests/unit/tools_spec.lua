@@ -775,9 +775,90 @@ describe("neoagent bundled tools", function()
     }, ctx(workspace))
     local changed = assert(fs.read(path))
     assert.are.equal("\239\187\191", changed:sub(1, 3))
-    assert.matches("ONE\r\nsmart quote\r\nlast", changed)
+    assert.matches("ONE  \r\nsmart quote\r\nlast", changed)
     assert.is_nil(changed:gsub("\r\n", ""):find("\n", 1, true))
     assert.is_true(#result.details.patch > 0)
+  end)
+
+  it("preserves original bytes outside fuzzy edit spans", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local cases = {
+      {
+        before = 'keep “exact”  \nchange “this”\n',
+        edits = { { oldText = 'change "this"', newText = "replacement" } },
+        after = 'keep “exact”  \nreplacement\n',
+      },
+      {
+        before = 'const text = “hello”; // keep “comment”  \n',
+        edits = { { oldText = '“hello” ', newText = '“world”' } },
+        after = 'const text = “world”; // keep “comment”  \n',
+      },
+      {
+        before = '“keep” first  \n  “second”\nlast “keep”  \n',
+        edits = {
+          { oldText = 'first\n  "second"', newText = "joined" },
+          { oldText = "last", newText = "LAST" },
+        },
+        after = '“keep” joined\nLAST “keep”  \n',
+      },
+      {
+        before = 'pick "one"\npick “one”\nchange “this”\n',
+        edits = {
+          { oldText = 'pick "one"', newText = "picked" },
+          { oldText = 'change "this"', newText = "changed" },
+        },
+        after = 'picked\npick “one”\nchanged\n',
+      },
+      {
+        before = 'keep 😀\n“start”\n\nwith\194\160space — end  ',
+        edits = {
+          { oldText = '"start"', newText = "start" },
+          { oldText = "with space - end", newText = "finish" },
+        },
+        after = 'keep 😀\nstart\n\nfinish  ',
+      },
+    }
+    for _, case in ipairs(cases) do
+      local path = root .. "/edit.txt"
+      assert(fs.write_all(path, case.before, "w"))
+      execute(require("neoagent.tools.edit_file"), {
+        path = "edit.txt", edits = case.edits,
+      }, ctx(workspace))
+      assert.are.equal(case.after, assert(fs.read(path)))
+    end
+  end)
+
+  it("rejects empty fuzzy needles and overlapping original edit spans", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local path = root .. "/edit.txt"
+    local before = '“one”  \ntwo'
+    assert(fs.write_all(path, before, "w"))
+    for _, edits in ipairs({
+      { { oldText = "\t", newText = "insert" } },
+      { { oldText = '"one"\ntwo', newText = "joined" }, { oldText = "two", newText = "TWO" } },
+    }) do
+      assert.has_error(function()
+        execute(require("neoagent.tools.edit_file"), { path = "edit.txt", edits = edits }, ctx(workspace))
+      end)
+      assert.are.equal(before, assert(fs.read(path)))
+    end
+  end)
+
+  it("rejects overlapping occurrences of an edit without changing the file", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    for _, case in ipairs({ { "aaa", "aa" }, { "ababa", "aba" } }) do
+      local path = root .. "/edit.txt"
+      assert(fs.write_all(path, case[1], "w"))
+      assert.error_matches(function()
+        execute(require("neoagent.tools.edit_file"), {
+          path = "edit.txt", edits = { { oldText = case[2], newText = "X" } },
+        }, ctx(workspace))
+      end, "Each oldText must be unique")
+      assert.are.equal(case[1], assert(fs.read(path)))
+    end
   end)
 
   it("atomically replaces user files under a regular-file policy", function()

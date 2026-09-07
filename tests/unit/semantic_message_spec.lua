@@ -14,6 +14,19 @@ describe("neoagent semantic messages", function()
       require("neoagent.util").json_encode(message.content[1].arguments))
   end)
 
+  it("requires tool-use completions to contain a Tool call", function()
+    local message = {
+      role = "assistant",
+      content = { { type = "thinking", thinking = "I should inspect." } },
+      stopReason = "toolUse",
+    }
+    assert(semantic_message.normalize(message))
+    local normalized, err = semantic_message.normalize_model_response(message)
+
+    assert.is_nil(normalized)
+    assert.matches("declared tool use without supplying a tool call", err)
+  end)
+
   it("normalizes one complete linked conversation without mutating input", function()
     local messages = {
       { role = "user", content = { {

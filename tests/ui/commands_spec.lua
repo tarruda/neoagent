@@ -277,7 +277,7 @@ describe("neoagent commands", function()
 
     vim.cmd("NeoagentProvider")
     assert.is_true(applet:provider_shell_open())
-    assert.are.same({ "neoagent.catalog.refresh", "inspect", "wait" },
+    assert.are.same({ "inspect", "wait" },
       vim.fn.getcompletion("NeoagentProvider ", "cmdline"))
     assert.are.same({ "first", "second" },
       vim.fn.getcompletion("NeoagentProvider inspect ", "cmdline"))

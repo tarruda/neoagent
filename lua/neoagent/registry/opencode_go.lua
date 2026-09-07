@@ -54,6 +54,20 @@ local function toggle_thinking(enabled_type)
   }
 end
 
+-- Go attributes metered inference to the calling conversation. Omit the header
+-- instead of failing a request when the composition has no Session identity
+-- or when an identity is not a safe header value.
+local function session_header(context)
+  local identity = context.request_context
+  local session_id = type(identity) == "table" and identity.session_id or nil
+  if type(session_id) ~= "string" or session_id == "" or #session_id > 512
+      or not util.is_valid_utf8(session_id)
+      or session_id:find("[%z\1-\31\127]") then
+    return {}
+  end
+  return { headers = { ["x-opencode-session"] = session_id } }
+end
+
 local function model(context_window, max_output_tokens, options)
   local result = {
     context_window = context_window,
@@ -240,6 +254,7 @@ return {
   base_url = "https://opencode.ai/zen/go/v1",
   api_key = function() return vim.env.OPENCODE_API_KEY end,
   auth = "opencode-go",
+  request_opts = session_header,
   catalog = {
     source_id = "opencode-go-models",
     source_revision = 1,
