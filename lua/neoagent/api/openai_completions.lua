@@ -12,6 +12,22 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.CompletionsOptions: Neoagent.ApiModelOptions
+---@field requires_reasoning_content? boolean
+
+---@class Neoagent.CompletionsCall
+---@field block Neoagent.ToolCallBlock
+---@field raw string
+
+---@class Neoagent.GenerationSample
+---@field tokens number
+---@field elapsed_ms number
+
+---@class Neoagent.GenerationSamples
+---@field generation_samples Neoagent.GenerationSample[]
+---@field generation_head integer
+
+---@return Neoagent.Usage
 local function zero_usage()
   return {
     input = 0,
@@ -23,6 +39,8 @@ local function zero_usage()
   }
 end
 
+---@param content string|Neoagent.InputBlock[]
+---@return string|Neoagent.JsonObject[]
 local function encode_content(content)
   if type(content) == "string" then
     return content
@@ -45,6 +63,54 @@ local reasoning_fields = { "reasoning_content", "reasoning", "reasoning_text" }
 local reasoning_field = {}
 for _, field in ipairs(reasoning_fields) do reasoning_field[field] = true end
 
+---@param message Neoagent.AssistantMessage
+---@param requires_reasoning_content? boolean
+---@return Neoagent.JsonObject?
+local function encode_assistant(message, requires_reasoning_content)
+  local text = {}
+  local calls = {}
+  local reasoning = {}
+  for _, block in ipairs(message.content or {}) do
+    if block.type == "text" then
+      text[#text + 1] = block.text or ""
+    elseif block.type == "thinking" then
+      if type(block.thinking) == "string" and block.thinking ~= "" then
+        local field = requires_reasoning_content and "reasoning_content" or block.thinkingSignature
+        if reasoning_field[field] then
+          reasoning[field] = reasoning[field] or {}
+          reasoning[field][#reasoning[field] + 1] = block.thinking
+        end
+      end
+    elseif block.type == "toolCall" then
+      calls[#calls + 1] = {
+        id = block.id,
+        type = "function",
+        ["function"] = { name = block.name, arguments = util.json_encode(block.arguments or vim.empty_dict()) },
+      }
+    end
+  end
+  if #text > 0 or #calls > 0 then
+    local encoded = {
+      role = "assistant",
+      content = #text > 0 and table.concat(text) or vim.NIL,
+    }
+    for field, values in pairs(reasoning) do
+      encoded[field] = table.concat(values, "\n")
+    end
+    if requires_reasoning_content and encoded.reasoning_content == nil then
+      encoded.reasoning_content = ""
+    end
+    if #calls > 0 then
+      encoded.tool_calls = calls
+    end
+    return encoded
+  end
+end
+
+---@param messages Neoagent.Message[]
+---@param system_prompt? string
+---@param requires_reasoning_content? boolean
+---@return Neoagent.JsonObject[]
 local function encode_messages(messages, system_prompt, requires_reasoning_content)
   local result = {}
   if system_prompt and system_prompt ~= "" then
@@ -59,42 +125,8 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
     if message.role == "user" then
       result[#result + 1] = { role = "user", content = encode_content(message.content) }
     elseif message.role == "assistant" then
-      local text = {}
-      local calls = {}
-      local reasoning = {}
-      for _, block in ipairs(message.content or {}) do
-        if block.type == "text" then
-          text[#text + 1] = block.text or ""
-        elseif block.type == "thinking" and type(block.thinking) == "string" and block.thinking ~= "" then
-          local field = requires_reasoning_content and "reasoning_content" or block.thinkingSignature
-          if reasoning_field[field] then
-            reasoning[field] = reasoning[field] or {}
-            reasoning[field][#reasoning[field] + 1] = block.thinking
-          end
-        elseif block.type == "toolCall" then
-          calls[#calls + 1] = {
-            id = block.id,
-            type = "function",
-            ["function"] = { name = block.name, arguments = util.json_encode(block.arguments or vim.empty_dict()) },
-          }
-        end
-      end
-      if #text > 0 or #calls > 0 then
-        local encoded = {
-          role = "assistant",
-          content = #text > 0 and table.concat(text) or vim.NIL,
-        }
-        for field, values in pairs(reasoning) do
-          encoded[field] = table.concat(values, "\n")
-        end
-        if requires_reasoning_content and encoded.reasoning_content == nil then
-          encoded.reasoning_content = ""
-        end
-        if #calls > 0 then
-          encoded.tool_calls = calls
-        end
-        result[#result + 1] = encoded
-      end
+      local encoded = encode_assistant(message, requires_reasoning_content)
+      if encoded then result[#result + 1] = encoded end
     elseif message.role == "toolResult" then
       local text = {}
       local images = {}
@@ -132,6 +164,8 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
   return result
 end
 
+---@param tools? Neoagent.ToolDefinition[]
+---@return Neoagent.JsonObject[]
 local function encode_tools(tools)
   local result = {}
   for _, tool in ipairs(tools or {}) do
@@ -147,6 +181,8 @@ local function encode_tools(tools)
   return result
 end
 
+---@param reason unknown
+---@return string
 local function stop_reason(reason)
   if reason == "tool_calls" or reason == "function_call" then
     return "toolUse"
@@ -158,6 +194,10 @@ local function stop_reason(reason)
   return "error"
 end
 
+---@param message? Neoagent.AssistantMessage
+---@param calls_complete boolean
+---@param err Neoagent.Error
+---@return Neoagent.AssistantMessage?
 local function partial_message(message, calls_complete, err)
   if type(message) ~= "table" then return nil end
   local candidate = util.copy(message)
@@ -182,6 +222,8 @@ local function partial_message(message, calls_complete, err)
   return semantic_message.normalize_partial_assistant(candidate)
 end
 
+---@param raw Neoagent.JsonObject|Neoagent.JsonArray
+---@return Neoagent.Usage
 local function usage_from(raw)
   local details = type(raw.prompt_tokens_details) == "table"
     and raw.prompt_tokens_details or {}
@@ -202,6 +244,8 @@ local function usage_from(raw)
   }
 end
 
+---@param value unknown
+---@return number?
 local function positive_number(value)
   if type(value) == "string" then value = tonumber(value) end
   if type(value) ~= "number" or value <= 0 or value ~= value
@@ -211,6 +255,8 @@ local function positive_number(value)
   return value
 end
 
+---@param value unknown
+---@return number?
 local function nonnegative_number(value)
   if type(value) == "string" then value = tonumber(value) end
   if type(value) ~= "number" or value < 0 or value ~= value
@@ -220,6 +266,10 @@ local function nonnegative_number(value)
   return value
 end
 
+---@param tokens unknown
+---@param duration unknown
+---@param scale? number
+---@return number?
 local function tokens_per_second(tokens, duration, scale)
   tokens = positive_number(tokens)
   duration = positive_number(duration)
@@ -229,6 +279,11 @@ end
 
 local GENERATION_WINDOW_MS = 3000
 
+---@param timings Neoagent.JsonObject|Neoagent.JsonArray
+---@param state Neoagent.GenerationSamples
+---@return number? rate
+---@return boolean cumulative
+---@return number? tokens
 local function rolling_generation_rate(timings, state)
   local tokens = nonnegative_number(timings.predicted_n)
   local elapsed_ms = nonnegative_number(timings.predicted_ms)
@@ -249,15 +304,17 @@ local function rolling_generation_rate(timings, state)
     state.generation_samples = samples
     state.generation_head = 1
     head = 1
-    previous = nil
   end
+  previous = samples[#samples]
   if previous and tokens == previous.tokens then
     return nil, true, tokens
   end
   samples[#samples + 1] = { tokens = tokens, elapsed_ms = elapsed_ms }
   local cutoff = elapsed_ms - GENERATION_WINDOW_MS
-  while head < #samples and samples[head + 1].elapsed_ms <= cutoff do
+  local next_sample = samples[head + 1]
+  while next_sample and next_sample.elapsed_ms <= cutoff do
     head = head + 1
+    next_sample = samples[head + 1]
   end
   if head > 128 then
     local retained = {}
@@ -270,11 +327,17 @@ local function rolling_generation_rate(timings, state)
   end
   state.generation_head = head
   local baseline = samples[head]
+  -- A sample was appended and head advances only to an existing sample.
+  ---@cast baseline Neoagent.GenerationSample
   if baseline == samples[#samples] then return nil, true, tokens end
   return tokens_per_second(tokens - baseline.tokens,
     elapsed_ms - baseline.elapsed_ms, 1000), true, tokens
 end
 
+---@param chunk Neoagent.JsonObject|Neoagent.JsonArray
+---@param timings Neoagent.JsonObject|Neoagent.JsonArray
+---@return number? rate
+---@return number? elapsed_ms
 local function prompt_rate(chunk, timings)
   local progress = type(chunk.prompt_progress) == "table"
     and chunk.prompt_progress or nil
@@ -290,6 +353,9 @@ local function prompt_rate(chunk, timings)
     or tokens_per_second(timings.prompt_n, elapsed_ms, 1000), elapsed_ms
 end
 
+---@param chunk Neoagent.JsonObject|Neoagent.JsonArray
+---@param state Neoagent.GenerationSamples
+---@return Neoagent.ModelInferenceStats?
 local function inference_stats(chunk, state)
   local timings = type(chunk.timings) == "table" and chunk.timings or {}
   local generation, cumulative, generated =
@@ -314,9 +380,21 @@ local function inference_stats(chunk, state)
   end
 end
 
+---@class Neoagent.CompletionsModel: Neoagent.Model
+---@field _base_url string
+---@field _api_key? string|fun(): string?
+---@field _max_output_tokens? number
+---@field _requires_reasoning_content boolean
+---@field _request_opts Neoagent.RequestLayer[]
+---@field _request_context? Neoagent.RequestIdentity
+---@field _timeout_ms? integer
+---@field _transport Neoagent.HttpClient
 local Model = {}
 Model.__index = Model
 
+---@param call_opts Neoagent.StreamOptions
+---@return Neoagent.ApiRequest
+---@return Neoagent.RequestIdentity?
 function Model:_request(call_opts)
   local headers = { ["Content-Type"] = "application/json" }
   local api_key = self._api_key
@@ -326,6 +404,7 @@ function Model:_request(call_opts)
   if api_key ~= nil and api_key ~= "" then
     headers.Authorization = "Bearer " .. api_key
   end
+  ---@type Neoagent.JsonObject
   local body = {
     model = self.id,
     messages = encode_messages(messages.for_model(call_opts.messages, self),
@@ -340,11 +419,13 @@ function Model:_request(call_opts)
   if #schemas > 0 then
     body.tools = schemas
   end
+  ---@type Neoagent.ApiRequest
   local request = {
     url = self._base_url .. "/chat/completions",
     headers = headers,
     body = body,
   }
+  ---@type number|false|nil
   local timeout = self._timeout_ms
   if call_opts.timeout_ms ~= nil then timeout = call_opts.timeout_ms end
   if timeout == false then
@@ -367,13 +448,20 @@ function Model:_request(call_opts)
   return request, ctx.request_context
 end
 
+---@param opts Neoagent.StreamOptions
+---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
+  ---@type Neoagent.AssistantMessage?
   local message
+  ---@type table<integer, Neoagent.CompletionsCall>
   local calls
   local calls_complete = false
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+  ---@return Neoagent.ModelResult
+  function(run)
     local ok, outcome = pcall(function()
       local request, identity = self:_request(opts)
       local transport = request_context.bind_transport(self._transport, identity)
@@ -387,21 +475,25 @@ function Model:stream(opts)
         stopReason = "stop",
         timestamp = util.now_ms(),
       }
+      ---@type Neoagent.TextBlock?
       local text_block
+      ---@type Neoagent.ThinkingBlock?
       local thinking_block
       calls = {}
       local finish_seen = false
       local done_seen = false
       local protocol_error
+      ---@type Neoagent.ModelInferenceStats?
       local last_inference_stats
       local inference_state = { generation_samples = {}, generation_head = 1 }
 
+      ---@param chunk Neoagent.JsonValue
       local function process_payload(chunk)
         if type(chunk) ~= "table" then
           error(util.error("protocol", "Expected an object in SSE response"), 0)
         end
         if type(chunk.error) == "table" then
-          error(util.error("model", chunk.error.message or "Provider returned an error", util.json_encode(chunk)), 0)
+          error(util.error("model", http_response.error_message(chunk, "Provider returned an error"), util.json_encode(chunk)), 0)
         end
         if type(chunk.usage) == "table" then
           message.usage = usage_from(chunk.usage)
@@ -415,7 +507,7 @@ function Model:stream(opts)
             or stats.generation_tokens_per_second ~= last_inference_stats.generation_tokens_per_second
             or stats.elapsed_ms ~= last_inference_stats.elapsed_ms
         end
-        if stats_changed then
+        if stats and stats_changed then
           last_inference_stats = stats
           run:emit(util.copy(stats))
         end
@@ -563,6 +655,8 @@ function Model:stream(opts)
   })
 end
 
+---@param opts Neoagent.CompletionsOptions
+---@return Neoagent.CompletionsModel
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
@@ -580,7 +674,7 @@ function M.new(opts)
       and opts.timeout_ms % 1 == 0,
       "timeout_ms must be a positive integer")
   end
-  return model_contract.assert(setmetatable({
+  local model = model_contract.assert(setmetatable({
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
@@ -597,6 +691,9 @@ function M.new(opts)
     _timeout_ms = opts.timeout_ms,
     _transport = http.new(opts.transport),
   }, Model), "OpenAI Chat Completions constructor")
+  -- Validation normalizes public capabilities while retaining the adapter fields.
+  ---@cast model Neoagent.CompletionsModel
+  return model
 end
 
 M._encode_messages = encode_messages

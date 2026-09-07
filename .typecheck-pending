@@ -44,7 +44,6 @@ lua/neoagent/agent_loop.lua
 lua/neoagent/api/anthropic_messages.lua
 lua/neoagent/api/anthropic_messages/request.lua
 lua/neoagent/api/openai_codex_responses.lua
-lua/neoagent/api/openai_completions.lua
 lua/neoagent/api/openai_responses.lua
 lua/neoagent/api/openai_responses/decoder.lua
 lua/neoagent/api/openai_responses/request.lua

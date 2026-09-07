@@ -2,12 +2,6 @@ local semantic_message = require("neoagent.semantic_message")
 
 local M = {}
 
----@class Neoagent.MessageTarget
----@field input ("text"|"image")[]
----@field api? string
----@field provider? string
----@field id? string
-
 local USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)"
 local TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"
 

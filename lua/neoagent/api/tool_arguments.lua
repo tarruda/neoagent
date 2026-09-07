@@ -15,14 +15,17 @@ function M.normalize(value)
 end
 
 ---@param raw string
----@return table<unknown, unknown> arguments
+---@return Neoagent.JsonObject arguments
 ---@return string? error
 function M.decode(raw)
   local decoded, value = pcall(vim.json.decode, raw ~= "" and raw or "{}")
   if not decoded then
     return vim.empty_dict(), "Tool arguments are not valid JSON"
   end
-  return M.normalize(value)
+  local arguments, err = M.normalize(value)
+  -- JSON decoding validates the value tree; normalize requires an outer object.
+  ---@cast arguments Neoagent.JsonObject
+  return arguments, err
 end
 
 return M

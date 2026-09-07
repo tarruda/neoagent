@@ -2,6 +2,21 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ApiModelOptions
+---@field provider string
+---@field model string
+---@field base_url string
+---@field api_key? string|fun(): string?
+---@field input? ('text'|'image')[]
+---@field context_window? number
+---@field thinking? Neoagent.ThinkingOptions
+---@field max_output_tokens? number
+---@field timeout_ms? integer
+---@field request_opts? Neoagent.RequestLayer
+---@field request_opts_layers? Neoagent.RequestLayer[]
+---@field request_context? Neoagent.RequestIdentity
+---@field transport? Neoagent.ByteBackend
+
 ---@class Neoagent.ApiRequest
 ---@field url string
 ---@field headers? table<string, unknown>

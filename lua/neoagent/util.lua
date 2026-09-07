@@ -394,7 +394,7 @@ function M.schedule(fn)
   vim.schedule(fn)
 end
 
----@return number
+---@return integer
 function M.now_ms()
   local seconds, microseconds = vim.uv.gettimeofday()
   assert(seconds, microseconds)

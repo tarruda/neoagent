@@ -2,14 +2,17 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@overload fun(body: unknown, fallback: string): string
 ---@param body unknown
+---@param fallback? string
 ---@return string?
-local function error_message(body)
-  if type(body) ~= "table" then return nil end
+function M.error_message(body, fallback)
+  if type(body) ~= "table" then return fallback end
   local message = body.error
   if type(message) == "table" then message = message.message or message.code end
   if type(message) ~= "string" then message = body.message or body.detail end
   if type(message) == "string" then return message end
+  return fallback
 end
 
 -- API adapters classify unsuccessful HTTP responses. The HTTP client itself
@@ -24,7 +27,7 @@ function M.check(result)
   if status and (status < 200 or status >= 300) then
     ---@type Neoagent.HttpError
     local err = failure or util.error("transport", "HTTP " .. status)
-    local message = error_message(result.ok and result.body or nil)
+    local message = M.error_message(result.ok and result.body or nil)
     if type(message) ~= "string" and err.kind ~= "transport" then message = err.message end
     err.message = "HTTP " .. status .. (type(message) == "string" and ": " .. message or "")
     err.response = { status = status, headers = response.headers or {} }

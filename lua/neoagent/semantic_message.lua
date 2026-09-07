@@ -545,6 +545,8 @@ end
 ---@param message unknown
 ---@return Neoagent.AssistantMessage? message
 ---@return Neoagent.AssistantValidationError? error
+---@return_overload Neoagent.AssistantMessage
+---@return_overload nil, Neoagent.AssistantValidationError
 function M.normalize_model_response(message)
   local result, err = M.normalize(message)
   if not result then

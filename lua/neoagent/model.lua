@@ -63,7 +63,13 @@ local M = {}
 ---@field on_event? fun(event: Neoagent.ModelEvent)
 ---@field on_done? fun(result: Neoagent.ModelResult)
 
----@class Neoagent.Model
+---@class Neoagent.MessageTarget
+---@field input ("text"|"image")[]
+---@field api? string
+---@field provider? string
+---@field id? string
+
+---@class Neoagent.Model: Neoagent.MessageTarget
 ---@field api string
 ---@field provider string
 ---@field id string

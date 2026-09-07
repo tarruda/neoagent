@@ -119,11 +119,15 @@ def correct_luv_lstat():
 function uv.fs_lstat(path) end"""
     corrected = original.replace("path                  integer", "path                  string")
     corrected = corrected.replace("fun(path:integer", "fun(path:string")
+    correct_definition(path, original, corrected)
+
+
+def correct_definition(path, original, corrected):
     source = path.read_text()
     if source.count(original) == 1:
         path.write_text(source.replace(original, corrected))
     elif source.count(corrected) != 1:
-        raise RuntimeError("Pinned fs_lstat declaration changed; review its correction.")
+        raise RuntimeError(f"Pinned declaration changed in {path.name}; review its correction.")
 
 
 def main():
@@ -142,6 +146,9 @@ def main():
         "0631e73045be8fa37042df1eef6617d82e1f9786b8bd4191f1ed479fb738458f",
         ("library", "LICENSE"))
     correct_luv_lstat()
+    # Neovim creates vim.NIL with lua_newuserdata (src/nvim/lua/executor.c).
+    correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_meta/builtin.lua",
+        "---@class vim.NIL\n", "---@class vim.NIL: userdata\n")
     print(f"EmmyLua {VERSION}, Neovim v0.10.2 and pinned libuv declarations ready.")
 
 
