@@ -486,6 +486,8 @@ end
 ---@param message unknown
 ---@return Neoagent.Message? message
 ---@return string? error
+---@return_overload Neoagent.Message
+---@return_overload nil, string
 function M.normalize(message)
   if not object(message) then return failure("message must be an object") end
   local role = message.role
