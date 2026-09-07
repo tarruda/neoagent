@@ -4,8 +4,54 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.HttpRequest
+---@field url string
+---@field method? string
+---@field headers? table<string, unknown>
+---@field body? string
+---@field timeout_ms? number|false
+---@field max_response_bytes? integer
+
+---@class Neoagent.HttpMetadata
+---@field status? number
+---@field headers table<string, string>
+
+---@class Neoagent.HttpError: Neoagent.Error
+---@field response? Neoagent.HttpMetadata
+---@field exit_code? integer
+---@field stderr? string
+---@field detail? unknown
+
+---@class Neoagent.ByteFetchSuccess: Neoagent.HttpMetadata
+---@field ok true
+---@field body string
+
+---@class Neoagent.ByteStreamSuccess
+---@field ok true
+---@field response Neoagent.HttpMetadata
+
+---@alias Neoagent.ByteFetchResult Neoagent.ByteFetchSuccess|Neoagent.AsyncFailure
+---@alias Neoagent.ByteStreamResult Neoagent.ByteStreamSuccess|Neoagent.AsyncFailure
+
+---@class Neoagent.ByteFetchOptions
+---@field request Neoagent.HttpRequest
+---@field on_done? fun(result: Neoagent.ByteFetchResult)
+
+---@class Neoagent.ByteStreamOptions
+---@field request Neoagent.HttpRequest
+---@field on_chunk? fun(chunk: string)
+---@field on_done? fun(result: Neoagent.ByteStreamResult)
+
+---@class Neoagent.ByteBackend
+---@field fetch? fun(opts: Neoagent.ByteFetchOptions): Neoagent.Run<Neoagent.ByteFetchResult, nil>
+---@field request? fun(opts: Neoagent.ByteStreamOptions): Neoagent.Run<Neoagent.ByteStreamResult, nil>
+---@field with_context? fun(context?: Neoagent.RequestIdentity): Neoagent.ByteBackend
+
 local STDERR_LIMIT = 64 * 1024
 
+---@param current string
+---@param chunk? string
+---@return string
 local function append_bounded(current, chunk)
   current = current .. (chunk or "")
   if #current > STDERR_LIMIT then
@@ -14,9 +60,12 @@ local function append_bounded(current, chunk)
   return current
 end
 
+---@param command string[]
+---@param headers? table<string, unknown>
 local function append_headers(command, headers)
+  headers = headers or {}
   local names = {}
-  for name in pairs(headers or {}) do names[#names + 1] = name end
+  for name in pairs(headers) do names[#names + 1] = name end
   table.sort(names, function(a, b)
     local left, right = a:lower(), b:lower()
     if left == right then return a < b end
@@ -28,9 +77,14 @@ local function append_headers(command, headers)
   end
 end
 
+---@param path string
+---@return table<string, string> headers
+---@return number? status
 local function response_headers(path)
   local ok, lines = pcall(vim.fn.readfile, path, "b")
   if not ok then return {}, nil end
+  -- Neovim readfile in binary mode returns a list of lines.
+  ---@cast lines string[]
   local headers = {}
   local status
   for _, line in ipairs(lines) do
@@ -46,6 +100,9 @@ local function response_headers(path)
   return headers, status
 end
 
+---@param code integer
+---@param stderr? string
+---@return Neoagent.Error
 local function curl_error(code, stderr)
   local detail = util.trim(stderr or "")
   local message = "curl exited with status " .. tostring(code)
@@ -54,12 +111,14 @@ local function curl_error(code, stderr)
     if #summary > 300 then summary = summary:sub(1, 297) .. "..." end
     message = message .. ": " .. summary
   end
+  ---@type Neoagent.HttpError
   local err = util.error("transport", message, detail)
   err.exit_code = code
   if detail ~= "" then err.stderr = detail end
   return err
 end
 
+---@return string
 local function header_file()
   local path, err = fs.create_temp("neoagent-curl-headers-")
   if not path then
@@ -68,6 +127,9 @@ local function header_file()
   return path
 end
 
+---@param request Neoagent.HttpRequest
+---@param header_path string
+---@return string[]
 local function fetch_command(request, header_path)
   local command = {
     "curl", "--silent", "--show-error", "-X", request.method or "POST",
@@ -89,6 +151,9 @@ local function fetch_command(request, header_path)
   return command
 end
 
+---@param request Neoagent.HttpRequest
+---@param header_path? string
+---@return string[]
 function M.command(request, header_path)
   assert(type(request) == "table", "request must be a table")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
@@ -119,11 +184,15 @@ function M.command(request, header_path)
   return command
 end
 
+---@param opts Neoagent.ByteFetchOptions
+---@return Neoagent.Run<Neoagent.ByteFetchResult, nil>
 function M.fetch(opts)
   opts = opts or {}
   local request = assert(opts.request, "request is required")
   assert(type(request.url) == "string" and request.url ~= "", "request.url is required")
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.ByteFetchSuccess
+  function()
     local maximum = request.max_response_bytes
     if maximum ~= nil then
       assert(type(maximum) == "number" and maximum >= 0
@@ -133,10 +202,14 @@ function M.fetch(opts)
     local header_path = header_file()
     local completed_ok, completed = pcall(function()
       local command = fetch_command(request, header_path)
-      return async.await(function(done)
+      return async.await(
+      ---@param done Neoagent.AwaitCallbacks<vim.SystemCompleted>
+      function(done)
+        ---@type vim.SystemObj?
         local process
         local stdout = ""
         local ok, err = pcall(function()
+          ---@type vim.SystemOpts
           local system_opts = {
             stdin = request.body or "",
             text = false,
@@ -177,6 +250,8 @@ function M.fetch(opts)
       error(util.error(
         "protocol", "curl response is missing an HTTP status"), 0)
     end
+    -- Both captures exist when the trailing HTTP status matched.
+    ---@cast body string
     return {
       ok = true,
       status = header_status or tonumber(status),
@@ -186,15 +261,22 @@ function M.fetch(opts)
   end, { on_done = opts.on_done, error_kind = "transport" })
 end
 
+---@param opts Neoagent.ByteStreamOptions
+---@return Neoagent.Run<Neoagent.ByteStreamResult, nil>
 function M.request(opts)
   opts = opts or {}
   local request = assert(opts.request, "request is required")
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.ByteStreamSuccess
+  function()
     local header_path = header_file()
     local stderr = ""
     local stdout = ""
     local completed, result = pcall(function()
-      return async.await(function(done)
+      return async.await(
+      ---@param done Neoagent.AwaitCallbacks<{ code: integer, stdout: string, stderr: string, headers?: table<string, string>, status?: number }>
+      function(done)
+        ---@type vim.SystemObj?
         local process
         local ok, err = pcall(function()
           process = vim.system(M.command(request, header_path), {
@@ -240,14 +322,17 @@ function M.request(opts)
     local headers, status = response_headers(header_path)
     pcall(vim.fn.delete, header_path)
     if not completed then
+      ---@type Neoagent.HttpError
       local err = util.normalize_error(result, "transport")
       if status or next(headers) ~= nil then
         err.response = { status = status, headers = headers }
       end
       error(err, 0)
     end
-    result.headers, result.status = headers, status
-    return { ok = true, response = result }
+    return { ok = true, response = {
+      headers = headers, status = status,
+      code = result.code, stdout = result.stdout, stderr = result.stderr,
+    } }
   end, {
     on_done = opts.on_done,
     error_kind = "transport",
