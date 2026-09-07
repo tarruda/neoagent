@@ -2,5 +2,8 @@
 NVIM := nvim
 PLENARY_DIR := $(CURDIR)/.deps/plenary.nvim
 
+# Override the pinned checker installed by make typecheck-deps if necessary.
+# EMMYLUA_CHECK := /path/to/emmylua_check
+
 # Uncomment if tools such as fd are installed outside PATH.
 # export PATH := /path/to/extra/bin:$(PATH)

@@ -8,6 +8,22 @@ permissions:
   contents: read
 
 jobs:
+  typecheck:
+    name: EmmyLua type checking
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .deps/emmylua
+            .deps/typecheck
+          key: typecheck-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/typecheck_deps.py') }}
+      - name: Install pinned checker and definitions
+        run: make typecheck-deps
+      - name: Check Lua types
+        run: make typecheck
+
   test:
     runs-on: ubuntu-24.04
     strategy:

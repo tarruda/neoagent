@@ -1,6 +1,7 @@
 -include local.mk
 
 NVIM ?= nvim
+EMMYLUA_CHECK ?= $(CURDIR)/.deps/emmylua/bin/emmylua_check
 PLENARY_DIR ?= $(CURDIR)/.deps/plenary.nvim
 TEST_CMD = $(NVIM) --headless --noplugin -u tests/minimal_init.lua
 TEST_ENV = PATH=$(dir $(NVIM)):$(PATH) NEOAGENT_NVIM=$(NVIM) PLENARY_DIR=$(PLENARY_DIR)
@@ -8,7 +9,13 @@ UI_TEST_TIMEOUT ?= 120000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet coverage coverage-ci coverage-report coverage-check clean
+.PHONY: deps typecheck-deps typecheck test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet coverage coverage-ci coverage-report coverage-check clean
+
+typecheck-deps:
+	python3 scripts/typecheck_deps.py
+
+typecheck:
+	python3 scripts/typecheck.py --checker "$(EMMYLUA_CHECK)"
 
 .deps/plenary.nvim/.git:
 	mkdir -p .deps

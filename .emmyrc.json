@@ -1,0 +1,35 @@
+{
+  "runtime": {
+    "version": "LuaJIT",
+    "requirePattern": [
+      "lua/?.lua",
+      "lua/?/init.lua",
+      "?.lua",
+      "?/init.lua"
+    ]
+  },
+  "workspace": {
+    "library": [
+      ".deps/typecheck/neovim/runtime/lua",
+      ".deps/typecheck/luv/library"
+    ],
+    "ignoreGlobs": [
+      "**/.git/**",
+      "**/.deps/**",
+      "**/.test-data/**",
+      "**/.coverage/**"
+    ]
+  },
+  "strict": {
+    "arrayIndex": true,
+    "requirePath": true,
+    "typeCall": true
+  },
+  "$schema": "https://raw.githubusercontent.com/EmmyLuaLs/emmylua-analyzer-rust/0.25.1/crates/emmylua_code_analysis/resources/schema.json",
+  "diagnostics": {
+    "severity": {
+      "unnecessary-if": "hint",
+      "unnecessary-assert": "hint"
+    }
+  }
+}
