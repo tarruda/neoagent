@@ -17,6 +17,20 @@ local function fetch(body, status, maximum)
 end
 
 describe("decoded HTTP client", function()
+  it("reports unsupported backend operations through the returned Run", function()
+    local request = { url = "https://example.test" }
+    local result = wait(http.new({ request = function() end }).fetch({ request = request }))
+    assert.is_false(result.ok)
+    assert.are.equal("transport", result.error.kind)
+    assert.matches("HTTP backend does not support fetch", result.error.message)
+    result = wait(http.new({ fetch = function() end }).stream({
+      request = request, on_event = function() end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("transport", result.error.kind)
+    assert.matches("HTTP backend does not support streaming", result.error.message)
+  end)
+
   it("preserves JSON values, nulls, empty collections and HTTP metadata", function()
     for _, case in ipairs({
       { "false", false }, { "true", true }, { "42", 42 },

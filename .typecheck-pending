@@ -43,7 +43,6 @@ lua/neoagent/agent_instructions.lua
 lua/neoagent/agent_loop.lua
 lua/neoagent/api/anthropic_messages.lua
 lua/neoagent/api/anthropic_messages/request.lua
-lua/neoagent/api/http_response.lua
 lua/neoagent/api/messages.lua
 lua/neoagent/api/openai_codex_responses.lua
 lua/neoagent/api/openai_completions.lua
@@ -166,7 +165,6 @@ lua/neoagent/tools/shell.lua
 lua/neoagent/tools/truncate.lua
 lua/neoagent/tools/update_plan.lua
 lua/neoagent/tools/write_file.lua
-lua/neoagent/transport/http.lua
 lua/neoagent/ui.lua
 lua/neoagent/ui/applet_view.lua
 lua/neoagent/ui/panes/details.lua

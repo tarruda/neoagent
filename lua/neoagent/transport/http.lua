@@ -4,13 +4,44 @@ local sse = require("neoagent.transport.sse")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.HttpSuccess: Neoagent.HttpMetadata
+---@field ok true
+---@field body? Neoagent.JsonValue
+---@field detail? string
+
+---@alias Neoagent.HttpResult Neoagent.HttpSuccess|Neoagent.AsyncFailure
+
+---@class Neoagent.HttpFetchOptions
+---@field request Neoagent.HttpRequest
+---@field on_done? fun(result: Neoagent.HttpResult)
+
+---@class Neoagent.HttpStreamOptions: Neoagent.HttpFetchOptions
+---@field on_event fun(value: Neoagent.JsonValue)
+---@field on_done_marker? fun()
+---@field max_buffer? integer
+---@field max_event_bytes? integer
+
+---@class Neoagent.HttpClient
+---@field with_context fun(context?: Neoagent.RequestIdentity): Neoagent.HttpClient
+---@field fetch fun(opts: Neoagent.HttpFetchOptions): Neoagent.Run<Neoagent.HttpResult, nil>
+---@field stream fun(opts: Neoagent.HttpStreamOptions): Neoagent.Run<Neoagent.HttpResult, nil>
+
 local DETAIL_LIMIT = 64 * 1024
 
+---@param body string
+---@return boolean ok
+---@return Neoagent.JsonValue value_or_error
 local function decode(body)
-  return pcall(vim.json.decode, body)
+  local ok, value = pcall(vim.json.decode, body)
+  return ok, value
 end
 
+---@param message string
+---@param response Neoagent.HttpMetadata
+---@param detail? unknown
+---@return Neoagent.HttpError
 local function response_error(message, response, detail)
+  ---@type Neoagent.HttpError
   local err = util.error("protocol", message, detail)
   err.response = { status = response.status, headers = response.headers or {} }
   return err
@@ -18,6 +49,8 @@ end
 
 -- The byte backend owns I/O and recording. Consumers see HTTP metadata and
 -- decoded JSON, regardless of whether the bytes came from curl or replay.
+---@param backend? Neoagent.ByteBackend
+---@return Neoagent.HttpClient
 function M.new(backend)
   backend = backend or curl
   assert(type(backend) == "table" and
@@ -25,14 +58,21 @@ function M.new(backend)
     "HTTP backend requires request or fetch")
   local client = {}
 
+  ---@param context? Neoagent.RequestIdentity
+  ---@return Neoagent.HttpClient
   function client.with_context(context)
     return M.new(type(backend.with_context) == "function"
       and backend.with_context(context) or backend)
   end
 
+  ---@param opts Neoagent.HttpFetchOptions
+  ---@return Neoagent.Run<Neoagent.HttpResult, nil>
   function client.fetch(opts)
-    return async.run(function()
-      local result = backend.fetch({ request = opts.request }):await()
+    return async.run(
+    ---@return Neoagent.HttpResult
+    function()
+      local fetch = assert(backend.fetch, "HTTP backend does not support fetch")
+      local result = fetch({ request = opts.request }):await()
       if not result.ok then return result end
       local body = result.body
       if type(body) ~= "string" then
@@ -45,12 +85,13 @@ function M.new(backend)
       if body == "" and (result.status == 204 or result.status == 304) then
         return { ok = true, status = result.status, headers = result.headers or {} }
       end
-      local ok, value = decode(body)
+      local ok, decoded = decode(body)
       if not ok and (not result.status or result.status >= 200 and result.status < 300) then
         error(response_error("HTTP response contains invalid JSON", result,
           body:sub(1, DETAIL_LIMIT)), 0)
       end
-      if not ok then value = nil end
+      local value
+      if ok then value = decoded end
       return {
         ok = true, status = result.status, headers = result.headers or {},
         body = value,
@@ -59,9 +100,15 @@ function M.new(backend)
     end, { on_done = opts.on_done, error_kind = "transport" })
   end
 
+  ---@param opts Neoagent.HttpStreamOptions
+  ---@return Neoagent.Run<Neoagent.HttpResult, nil>
   function client.stream(opts)
     assert(type(opts.on_event) == "function", "HTTP stream requires on_event")
-    return async.run(function(run)
+    return async.run(
+    ---@param run Neoagent.Run<Neoagent.HttpResult, nil>
+    ---@return Neoagent.HttpResult
+    function(run)
+      local request = assert(backend.request, "HTTP backend does not support streaming")
       local active = true
       local tail, prefix = "", ""
       local json_body
@@ -86,7 +133,7 @@ function M.new(backend)
         end,
       })
       local completed, result = pcall(function()
-        return backend.request({
+        return request({
           request = opts.request,
           on_chunk = function(chunk)
             if not alive() then return end
@@ -115,20 +162,32 @@ function M.new(backend)
           end,
         }):await()
       end)
-      local response = completed and (result.response
-        or result.error and result.error.response) or nil
-      response = response or {}
+      if not completed then
+        active = false
+        error(result, 0)
+      end
+      local response
+      ---@type Neoagent.HttpError?
+      local failure = not result.ok and result.error or nil
+      if result.ok then
+        response = result.response
+      elseif failure then
+        response = failure.response
+      end
+      response = response or { headers = {} }
       local status = response.status
       local failed_http = status and (status < 200 or status >= 300)
       local decoded, value
       if json_body then decoded, value = decode(json_body) end
-      if completed and result.ok then
-        local finished, failure = pcall(function()
+      if result.ok then
+        local finished, finish_error = pcall(function()
           if mode == "json" then
             if not failed_http then
               if not decoded then
                 error(response_error("HTTP response contains invalid JSON", response, tail), 0)
               end
+              -- A successfully decoded JSON value cannot be nil.
+              ---@cast value Neoagent.JsonValue
               opts.on_event(value)
             end
           else
@@ -137,15 +196,16 @@ function M.new(backend)
           end
         end)
         if not finished then
-          result = { ok = false, error = util.normalize_error(failure, "protocol") }
-          result.error.response = { status = status, headers = response.headers or {} }
+          ---@type Neoagent.HttpError
+          local err = util.normalize_error(finish_error, "protocol")
+          err.response = { status = status, headers = response.headers or {} }
+          failure = err
         end
       end
       active = false
-      if not completed then error(result, 0) end
-      if not result.ok then
-        if failed_http and tail ~= "" then result.error.detail = tail end
-        return result
+      if failure then
+        if failed_http and tail ~= "" then failure.detail = tail end
+        return { ok = false, error = failure }
       end
       if not decoded then value = nil end
       return {

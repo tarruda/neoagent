@@ -34,6 +34,8 @@ end
 ---@param line string
 ---@return true? ok
 ---@return string? error
+---@return_overload true
+---@return_overload nil, string
 local function consume_line(self, line)
   if line == "" then
     return dispatch(self)
@@ -63,6 +65,8 @@ end
 ---@param chunk? string
 ---@return true? ok
 ---@return string? error
+---@return_overload true
+---@return_overload nil, string
 function Parser:feed(chunk)
   if self.closed then
     return nil, "SSE parser is closed"
@@ -90,6 +94,8 @@ end
 
 ---@return true? ok
 ---@return string? error
+---@return_overload true
+---@return_overload nil, string
 function Parser:finish()
   if self.closed then
     if self.error then return nil, self.error end
