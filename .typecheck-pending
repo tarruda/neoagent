@@ -15,7 +15,6 @@ lua/applet/pane/compile.lua
 lua/applet/pane/input.lua
 lua/applet/pane/nodes.lua
 lua/applet/pane/reconcile.lua
-lua/applet/pane/scene.lua
 lua/applet/pane/widgets.lua
 lua/applet/presentation.lua
 lua/applet/presenter.lua

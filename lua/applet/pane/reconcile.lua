@@ -1141,7 +1141,7 @@ local function apply_scene_content(
   else
     state.content_result = "unchanged"
   end
-  scene.update(state.scene_provider, surface, layout)
+  scene.update(state.scene_provider, surface, layout.scene)
   state.runtime_scene = layout.scene
 end
 
