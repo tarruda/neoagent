@@ -40,7 +40,7 @@ describe("neoagent.transport.curl", function()
 
   it("builds an argument vector without a shell", function()
     assert.are.same({
-      "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
+      "curl", "--no-buffer", "--silent", "--show-error",
       "-X", "POST", "-H", "Authorization: Bearer x", "-H",
       "Content-Type: application/json", "http://localhost",
     }, curl.command({
@@ -70,7 +70,7 @@ describe("neoagent.transport.curl", function()
       "http://localhost",
     }, vim.list_slice(fetch_command, 8))
     assert.are.same({
-      "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
+      "curl", "--no-buffer", "--silent", "--show-error",
       "-X", "GET", "--max-time", "1.500", "http://localhost",
     }, curl.command({ url = "http://localhost", method = "GET", timeout_ms = 1500 }))
   end)

@@ -1,5 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
+local http_client = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
 local M = {}
@@ -105,8 +105,9 @@ end
 
 function M.new(opts)
   opts = opts or {}
-  local transport = opts.transport or curl
-  assert(type(transport) == "table" and type(transport.fetch) == "function",
+  local transport = http_client.new(opts.transport)
+  assert(opts.transport == nil or type(opts.transport) == "table"
+      and type(opts.transport.fetch) == "function",
     "Alibaba Token Plan transport requires fetch")
   local gateway_url = (opts.gateway_url or DEFAULT_GATEWAY_URL):gsub("/+$", "")
   assert(gateway_url:match("^https?://[^/]+"),
@@ -168,18 +169,8 @@ function M.new(opts)
         err.status = status
         error(err, 0)
       end
-      local body = fetched.body
-      if type(body) ~= "string" then
-        error(util.error("provider",
-          "Alibaba Cloud quota response body must be text"), 0)
-      end
-      if #body > maximum then
-        error(util.error("provider",
-          "Alibaba Cloud quota response exceeds "
-            .. tostring(maximum) .. " bytes"), 0)
-      end
-      local decoded, value = pcall(vim.json.decode, body)
-      if not decoded or type(value) ~= "table" then
+      local value = fetched.body
+      if type(value) ~= "table" then
         error(util.error("provider",
           "Alibaba Cloud quota response contains invalid JSON"), 0)
       end

@@ -4,8 +4,8 @@ local request = require("neoagent.api.anthropic_messages.request")
 local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
-local curl = require("neoagent.transport.curl")
-local sse = require("neoagent.transport.sse")
+local http = require("neoagent.transport.http")
+local http_response = require("neoagent.api.http_response")
 local util = require("neoagent.util")
 
 local M = {}
@@ -232,16 +232,15 @@ function Model:stream(opts)
         state.block.argumentsError = arguments_error
       end
 
-      local function process_payload(payload)
-        local decoded, event = pcall(vim.json.decode, payload)
-        if not decoded or type(event) ~= "table" then
-          error(util.error("protocol", "Invalid JSON in Anthropic SSE response", decoded and payload or event), 0)
+      local function process_payload(event)
+        if type(event) ~= "table" then
+          error(util.error("protocol", "Expected an object in Anthropic SSE response"), 0)
         end
         if event.type == "ping" then
           return
         elseif event.type == "error" then
           local provider_error = type(event.error) == "table" and event.error or {}
-          error(util.error("model", provider_error.message or "Provider returned an error", payload), 0)
+          error(util.error("model", provider_error.message or "Provider returned an error", util.json_encode(event)), 0)
         elseif event.type == "message_start" then
           if message_start_seen or type(event.message) ~= "table" then
             error(util.error("protocol", "Invalid Anthropic message_start"), 0)
@@ -269,25 +268,17 @@ function Model:stream(opts)
         end
       end
 
-      local parser = sse.new({ on_event = process_payload })
-      local child = transport.request({
+      local child = transport.stream({
         request = {
           url = outgoing.url,
           headers = outgoing.headers,
           body = util.json_encode(outgoing.body),
         },
-        on_chunk = function(chunk)
-          local parsed, err = parser:feed(chunk)
-          if not parsed then error(util.error("protocol", err), 0) end
-        end,
+        on_event = process_payload,
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
-      if transport_ok and transport_result.ok then
-        local finished, finish_err = parser:finish()
-        if not finished then error(util.error("protocol", finish_err), 0) end
-      end
       if not transport_ok then error(transport_result, 0) end
-      if not transport_result.ok then error(transport_result.error, 0) end
+      http_response.check(transport_result)
       if not message_start_seen then
         error(util.error("protocol", "Anthropic stream ended without message_start"), 0)
       end
@@ -348,7 +339,7 @@ function M.new(opts)
     _anthropic_version = "2023-06-01",
     _request_opts = layers,
     _request_context = request_context.copy(opts.request_context),
-    _transport = opts.transport or curl,
+    _transport = http.new(opts.transport),
   }, Model), "Anthropic Messages constructor")
 end
 

@@ -46,15 +46,6 @@ local function response_headers(path)
   return headers, status
 end
 
-local function response_error(body)
-  local ok, decoded = pcall(vim.json.decode, body or "")
-  if not ok or type(decoded) ~= "table" then return nil end
-  local value = decoded.error
-  if type(value) == "table" then value = value.message or value.code end
-  if type(value) ~= "string" then value = decoded.message or decoded.detail end
-  return type(value) == "string" and value ~= "" and value or nil
-end
-
 local function curl_error(code, stderr)
   local detail = util.trim(stderr or "")
   local message = "curl exited with status " .. tostring(code)
@@ -107,7 +98,6 @@ function M.command(request, header_path)
     "--no-buffer",
     "--silent",
     "--show-error",
-    "--fail-with-body",
     "-X",
     method,
   }
@@ -253,14 +243,6 @@ function M.request(opts)
       local err = util.normalize_error(result, "transport")
       if status or next(headers) ~= nil then
         err.response = { status = status, headers = headers }
-      end
-      if status and (status < 200 or status >= 300) then
-        local message = response_error(stdout)
-        if not message and err.kind ~= "transport" then
-          message = err.message
-        end
-        err.message = "HTTP " .. tostring(status) .. (message and ": " .. message or "")
-        if stdout ~= "" then err.detail = stdout end
       end
       error(err, 0)
     end

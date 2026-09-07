@@ -1,5 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
+local http_client = require("neoagent.transport.http")
 local local_callback = require("neoagent.auth.local_callback")
 local util = require("neoagent.util")
 
@@ -172,10 +172,8 @@ end
 
 function M.new(opts)
   opts = opts or {}
-  local http = opts.http or curl
-  if type(http) == "table" and type(http.with_context) == "function" then
-    http = http.with_context({ credential_response_body = true })
-  end
+  local http = http_client.new(opts.http)
+  http = http.with_context({ credential_response_body = true })
   local now = opts.now or util.now_ms
   local auth_base = opts.auth_base_url or AUTH_BASE_URL
   local token_url = auth_base .. "/oauth/token"
@@ -186,8 +184,8 @@ function M.new(opts)
   local function post(url, headers, body)
     local result = http.fetch({ request = { url = url, headers = headers, body = body } }):await()
     if not result.ok then error(result.error, 0) end
-    local decoded, value = pcall(vim.json.decode, result.body or "")
-    if not decoded or type(value) ~= "table" then
+    local value = result.body
+    if type(value) ~= "table" then
       error(util.error("auth", "OpenAI returned invalid JSON", result.body), 0)
     end
     if result.status < 200 or result.status >= 300 then
@@ -299,15 +297,15 @@ function M.new(opts)
       } }):await()
       if not result.ok then error(result.error, 0) end
       if result.status == 200 then
-        local ok, code = pcall(vim.json.decode, result.body or "")
-        if not ok or type(code) ~= "table" or type(code.authorization_code) ~= "string"
+        local code = result.body
+        if type(code) ~= "table" or type(code.authorization_code) ~= "string"
             or type(code.code_verifier) ~= "string" then
           error(util.error("auth", "Invalid OpenAI device authorization response"), 0)
         end
         return exchange(code.authorization_code, code.code_verifier, DEVICE_REDIRECT_URI)
       elseif result.status ~= 403 and result.status ~= 404 then
-        local ok, failure = pcall(vim.json.decode, result.body or "")
-        local detail = ok and type(failure) == "table" and failure.error or nil
+        local failure = result.body
+        local detail = type(failure) == "table" and failure.error or nil
         local code = type(detail) == "table" and detail.code or detail
         if code == "deviceauth_authorization_pending" then
           -- Keep polling at the current interval.

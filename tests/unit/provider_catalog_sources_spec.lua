@@ -301,11 +301,11 @@ describe("bundled model catalog sources", function()
       },
       {
         response = { body = {} },
-        message = "response is invalid",
+        message = "body must be text",
       },
       {
         response = { body = "not json" },
-        message = "invalid model catalog",
+        message = "invalid JSON",
       },
     }
     for _, case in ipairs(cases) do

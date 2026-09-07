@@ -1,5 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
+local http_client = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
 local M = {}
@@ -26,8 +26,9 @@ function M.new(opts)
   opts = opts or {}
   assert(type(opts.base_url) == "string" and opts.base_url ~= "",
     "Codex management base_url is required")
-  local transport = opts.transport or curl
-  assert(type(transport) == "table" and type(transport.fetch) == "function",
+  local transport = http_client.new(opts.transport)
+  assert(opts.transport == nil or type(opts.transport) == "table"
+      and type(opts.transport.fetch) == "function",
     "Codex management transport requires fetch")
   local maximum = opts.max_response_bytes or DEFAULT_MAX_RESPONSE_BYTES
   assert(type(maximum) == "number" and maximum >= 1024
@@ -78,18 +79,8 @@ function M.new(opts)
         err.status = status
         error(err, 0)
       end
-      local response_body = fetched.body or ""
-      if type(response_body) ~= "string" then
-        error(util.error("provider",
-          "Codex account response body must be text"), 0)
-      end
-      if #response_body > maximum then
-        error(util.error("provider",
-          "Codex account response exceeds " .. tostring(maximum)
-            .. " bytes"), 0)
-      end
-      local ok, decoded = pcall(vim.json.decode, response_body)
-      if not ok or type(decoded) ~= "table" or util.is_list(decoded) then
+      local decoded = fetched.body
+      if type(decoded) ~= "table" or util.is_list(decoded) then
         error(util.error("provider",
           "Codex account response contains invalid JSON"), 0)
       end

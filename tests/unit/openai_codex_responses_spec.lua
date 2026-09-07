@@ -459,16 +459,11 @@ describe("neoagent.api.openai_codex_responses", function()
 
   it("derives provider status from rate-limit error headers", function()
     local transport = fake_transport.new({ {
-      error = {
-        kind = "transport",
-        message = "HTTP 429: The usage limit has been reached",
-        response = {
-          status = 429,
-          headers = {
-            ["X-Codex-Primary-Used-Percent"] = "100",
-            ["X-Codex-Primary-Window-Minutes"] = "10080",
-          },
-        },
+      status = 429,
+      chunks = { ' {"error":{"message":"The usage limit has been reached"}}' },
+      headers = {
+        ["X-Codex-Primary-Used-Percent"] = "100",
+        ["X-Codex-Primary-Window-Minutes"] = "10080",
       },
     } })
     local result = wait(codex.new({

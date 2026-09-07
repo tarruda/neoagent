@@ -8,6 +8,17 @@ describe("neoagent llama.cpp client", function()
     return run:result()
   end
 
+  it("rejects an unauthorized event subscription without delivering a model event", function()
+    local transport = fake_transport.new({ {
+      status = 401, chunks = { '{"error":"API key required"}' },
+    } })
+    local value = client.new({ server_url = "http://localhost:8080", transport = transport })
+    local result = wait(value:watch(function() error("unauthorized event delivered") end))
+    assert.is_false(result.ok)
+    assert.are.equal("provider", result.error.kind)
+    assert.are.equal("API key required", result.error.message)
+  end)
+
   it("normalizes server URLs and formats bytes", function()
     assert.are.equal("http://127.0.0.1:8080",
       client.normalize_server_url("http://127.0.0.1:8080/v1"))
