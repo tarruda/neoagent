@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local config = require("neoagent.config")
 local fs = require("neoagent.fs")
+local util = require("neoagent.util")
 
 local function tempdir()
   local path = vim.fn.tempname()
@@ -1134,6 +1135,96 @@ else:
     local diagnostic = table.concat(reports, "\n")
     assert.matches("failed to open a recording", diagnostic)
   end)
+
+  for _, failure in ipairs({
+    { name = "header encoding", encode = "exchange",
+      diagnostic = "failed to encode a recording header", partial = 0 },
+    { name = "event encoding", encode = "response_chunk",
+      diagnostic = "failed to encode exchange", partial = 1 },
+    { name = "staging creation", suffix = ".partial.ndjson",
+      diagnostic = "failed to create a recording", partial = 0 },
+    { name = "event append", append = true,
+      diagnostic = "failed to append exchange", partial = 1 },
+    { name = "YAML publication", suffix = ".yaml", format = "yaml",
+      diagnostic = "failed to write YAML recording", partial = 1 },
+  }) do
+    for _, operation in ipairs({ "fetch", "request" }) do
+      it("preserves " .. operation .. " results across " .. failure.name
+          .. " failures and records later requests", function()
+        local directory = tempdir()
+        directories[#directories + 1] = directory
+        local reports = {}
+        local recording = assert(require("neoagent.http_recording").new({
+          config = { enabled = true, format = failure.format or "json" },
+          directory = directory,
+          report = function(message) reports[#reports + 1] = message end,
+          yq = {
+            available = function() return true end,
+            convert = function(_, done) done("recorded: true\n") end,
+          },
+        }))
+        local response = { ok = true, status = 200, body = "provider body",
+          response = { status = 200, headers = {} } }
+        local http = recording:transport(transport({ response.body }, response), {
+          provider = "example", origin = "model",
+        })
+        local original_encode = util.json_encode
+        local original_replace = fs.atomic_replace
+        local original_open = fs.open_regular
+        local called, err = xpcall(function()
+          util.json_encode = function(value, ...)
+            if failure.encode and value.type == failure.encode then
+              error("injected encoding failure")
+            end
+            return original_encode(value, ...)
+          end
+          fs.atomic_replace = function(path, ...)
+            if failure.suffix and path:sub(-#failure.suffix) == failure.suffix then
+              return nil, "injected write failure"
+            end
+            return original_replace(path, ...)
+          end
+          fs.open_regular = function(path, ...)
+            local file, open_err = original_open(path, ...)
+            if file and failure.append then
+              file.append = function() return nil, "injected append failure" end
+            end
+            return file, open_err
+          end
+          local chunks, completed = {}, {}
+          local result = wait(http[operation]({
+            request = { url = "https://example.test/recording-failure" },
+            on_chunk = function(chunk) chunks[#chunks + 1] = chunk end,
+            on_done = function(value) completed[#completed + 1] = value end,
+          }))
+          assert.are.same(response, result)
+          assert.are.same({ response }, completed)
+          assert.are.same(operation == "request" and { response.body } or {}, chunks)
+          assert.are.equal(failure.partial, #files(directory, ".partial.ndjson"))
+          assert.are.equal(0, #files(directory, ".jsonl"))
+          assert.are.equal(0, #files(directory, ".yaml"))
+          assert.matches(failure.diagnostic, table.concat(reports, "\n"))
+        end, debug.traceback)
+        util.json_encode = original_encode
+        fs.atomic_replace = original_replace
+        fs.open_regular = original_open
+        if not called then
+          recording:destroy()
+          error(err, 0)
+        end
+
+        local report_count = #reports
+        local result = wait(http[operation]({
+          request = { url = "https://example.test/recovered" },
+        }))
+        recording:destroy()
+        assert.are.same(response, result)
+        assert.are.equal(report_count, #reports)
+        assert.are.equal(1, #files(directory,
+          failure.format == "yaml" and ".yaml" or ".jsonl"))
+      end)
+    end
+  end
 
   it("records synchronous transport failures before rethrowing them", function()
     local directory, workspace = tempdir(), tempdir()
