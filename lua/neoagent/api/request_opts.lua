@@ -2,6 +2,32 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ApiRequest
+---@field url string
+---@field headers? table<string, unknown>
+---@field body? Neoagent.JsonObject
+---@field timeout_ms? number|false
+
+---@class Neoagent.RequestOverride
+---@field url? string
+---@field headers? table<string, unknown>
+---@field body? Neoagent.JsonObject
+
+---@class Neoagent.RequestOptionsInput
+---@field model Neoagent.Model
+---@field messages Neoagent.Message[]
+---@field system_prompt? string
+---@field tools Neoagent.ToolDefinition[]
+---@field request_context? Neoagent.RequestIdentity
+
+---@class Neoagent.RequestOptionsContext: Neoagent.RequestOptionsInput
+---@field request Neoagent.ApiRequest
+
+---@alias Neoagent.RequestLayer Neoagent.RequestOverride|fun(context: Neoagent.RequestOptionsContext): Neoagent.RequestOverride
+
+---@param request Neoagent.ApiRequest
+---@param override Neoagent.RequestOverride
+---@return Neoagent.ApiRequest
 local function merge(request, override)
   for key in pairs(override) do
     if key ~= "url" and key ~= "headers" and key ~= "body" then
@@ -32,13 +58,23 @@ local function merge(request, override)
   return result
 end
 
+---@param request Neoagent.ApiRequest
+---@param layer? Neoagent.RequestLayer
+---@param context Neoagent.RequestOptionsInput
+---@return Neoagent.ApiRequest
 function M.apply(request, layer, context)
   if layer == nil then return request end
   local override = layer
   if type(layer) == "function" then
     local snapshot = util.copy(context)
-    snapshot.request = util.copy(request)
-    override = layer(snapshot)
+    override = layer({
+      model = snapshot.model,
+      messages = snapshot.messages,
+      system_prompt = snapshot.system_prompt,
+      tools = snapshot.tools,
+      request_context = snapshot.request_context,
+      request = util.copy(request),
+    })
   end
   if type(override) ~= "table" then
     error(util.error("model", "request_opts must be a table or return a table"), 0)

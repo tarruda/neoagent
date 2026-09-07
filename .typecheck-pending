@@ -50,8 +50,6 @@ lua/neoagent/api/openai_completions.lua
 lua/neoagent/api/openai_responses.lua
 lua/neoagent/api/openai_responses/decoder.lua
 lua/neoagent/api/openai_responses/request.lua
-lua/neoagent/api/request_context.lua
-lua/neoagent/api/request_opts.lua
 lua/neoagent/applet.lua
 lua/neoagent/auth/alibaba_dashboard.lua
 lua/neoagent/auth/alibaba_token_plan.lua
@@ -77,11 +75,9 @@ lua/neoagent/http_replay.lua
 lua/neoagent/init.lua
 lua/neoagent/input_history.lua
 lua/neoagent/markdown.lua
-lua/neoagent/model.lua
 lua/neoagent/model_catalog.lua
 lua/neoagent/model_catalog/source.lua
 lua/neoagent/model_config.lua
-lua/neoagent/model_efforts.lua
 lua/neoagent/model_rules.lua
 lua/neoagent/models.lua
 lua/neoagent/presenter.lua
@@ -158,7 +154,6 @@ lua/neoagent/skills.lua
 lua/neoagent/state_store.lua
 lua/neoagent/storage.lua
 lua/neoagent/system_prompt.lua
-lua/neoagent/thinking.lua
 lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/common.lua
 lua/neoagent/tools/edit_file.lua

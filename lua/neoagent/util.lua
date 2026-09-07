@@ -3,8 +3,7 @@ local M = {}
 ---@class Neoagent.JsonArray
 ---@field [integer] Neoagent.JsonValue
 
----@class Neoagent.JsonObject
----@field [string] Neoagent.JsonValue
+---@class Neoagent.JsonObject: table<string, Neoagent.JsonValue>
 
 ---@alias Neoagent.JsonValue boolean|number|string|vim.NIL|Neoagent.JsonArray|Neoagent.JsonObject
 
