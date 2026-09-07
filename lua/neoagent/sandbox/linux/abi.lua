@@ -1,5 +1,13 @@
 local M = {}
 
+---@class Neoagent.LinuxSandboxAbi
+---@field audit_arch integer
+---@field pivot_root integer
+---@field mount_setattr integer
+---@field close_range integer
+---@field capset integer
+
+---@type table<string, Neoagent.LinuxSandboxAbi>
 local values = {
   x64 = {
     audit_arch = 0xC000003E,
@@ -17,10 +25,14 @@ local values = {
   },
 }
 
+---@param arch? string
+---@return Neoagent.LinuxSandboxAbi?
 function M.current(arch)
   return values[arch or jit.arch]
 end
 
+---@param arch? string
+---@return boolean
 function M.supported(arch)
   return values[arch or jit.arch] ~= nil
 end

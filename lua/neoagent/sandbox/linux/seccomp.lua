@@ -1,5 +1,23 @@
 local M = {}
 
+---@class Neoagent.LinuxSandboxSyscalls
+---@field socket integer
+---@field socketpair integer
+---@field clone integer
+---@field clone3 integer
+---@field network_deny integer[]
+---@field deny integer[]
+
+---@class Neoagent.LinuxSeccompRules
+---@field deny integer[]
+---@field socket? integer
+---@field socketpair? integer
+---@field network_deny? integer[]
+---@field clone integer
+---@field clone3 integer
+---@field namespace_flags integer
+
+---@type table<string, Neoagent.LinuxSandboxSyscalls>
 local syscalls = {
   x64 = {
     socket = 41,
@@ -32,12 +50,17 @@ local syscalls = {
   },
 }
 
+---@param arch string?
+---@param network Neoagent.SandboxNetwork?
+---@return Neoagent.LinuxSeccompRules?
 function M.rules(arch, network)
   local source = syscalls[arch or jit.arch]
   if not source then return nil end
+  ---@type integer[]
   local result = {}
   for _, number in ipairs(source.deny) do result[#result + 1] = number end
   table.sort(result)
+  ---@type integer[]?
   local network_deny
   if network == "restricted" then
     network_deny = {}
