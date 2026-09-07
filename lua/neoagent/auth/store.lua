@@ -18,7 +18,7 @@ local M = {}
 
 ---@alias Neoagent.CredentialMutationResult Neoagent.CredentialMutationSuccess|Neoagent.AsyncFailure
 
----@class Neoagent.CredentialStore
+---@class Neoagent.CredentialStore: Neoagent.AuthStorage
 ---@field path string
 ---@field lock_timeout_ms integer
 ---@field lock_poll_ms integer
