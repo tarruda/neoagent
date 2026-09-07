@@ -146,6 +146,10 @@ def main():
         "0631e73045be8fa37042df1eef6617d82e1f9786b8bd4191f1ed479fb738458f",
         ("library", "LICENSE"))
     correct_luv_lstat()
+    # v0.10.2 forwards clear_env directly to uv.spawn, which accepts a list.
+    correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_system.lua",
+        "--- @field env? table<string,string|number>\n",
+        "--- @field env? table<string,string|number>|string[]\n")
     # Neovim creates vim.NIL with lua_newuserdata (src/nvim/lua/executor.c).
     correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_meta/builtin.lua",
         "---@class vim.NIL\n", "---@class vim.NIL: userdata\n")

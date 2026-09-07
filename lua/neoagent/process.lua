@@ -3,11 +3,34 @@ local util = require("neoagent.util")
 local process_tree = require(jit.os == "Windows"
   and "neoagent.process.windows" or "neoagent.process.posix")
 
+---@class Neoagent.ProcessOptions
+---@field cwd? string
+---@field env? table<string, string|number>|string[]
+---@field clear_env? boolean
+---@field stdin? string|string[]|true
+---@field capture? boolean
+---@field max_capture_bytes? integer
+---@field timeout_ms? integer
+---@field kill_grace_ms? integer
+---@field on_output? fun(data: string, is_stderr: boolean, stdout: string, stderr: string, output: string)
+
+---@class Neoagent.ProcessResult
+---@field code integer
+---@field signal integer
+---@field stdout string
+---@field stderr string
+---@field output string
+---@field timed_out boolean
+
 local M = {}
 
+---@param env? table<string, string|number>|string[]
+---@param clear? boolean
+---@return table<string, string|number>|string[]|nil
 local function spawn_environment(env, clear)
   if clear and env ~= nil and vim.fn.has("nvim-0.12") == 0
       and not vim.islist(env) then
+    ---@cast env table<string, string|number>
     return vim.tbl_map(function(name)
       return name .. "=" .. tostring(env[name])
     end, vim.tbl_keys(env))
@@ -15,6 +38,10 @@ local function spawn_environment(env, clear)
   return env
 end
 
+---@async
+---@param command string[]
+---@param opts? Neoagent.ProcessOptions
+---@return Neoagent.ProcessResult
 function M.run(command, opts)
   opts = opts or {}
   if opts.max_capture_bytes ~= nil then
@@ -27,10 +54,15 @@ function M.run(command, opts)
   local capture = opts.capture ~= false
   local captured_bytes = 0
   local timed_out = false
-  local result = async.await(function(done)
+  local result = async.await(---@param done Neoagent.AwaitCallbacks<Neoagent.ProcessResult>
+  function(done)
+    ---@type vim.SystemObj?
     local process
+    ---@type Neoagent.PosixProcessTree|Neoagent.WindowsProcessTree|nil
     local tree
+    ---@type uv.uv_timer_t?
     local timer
+    ---@type uv.uv_timer_t?
     local kill_timer
     local timer_closed = false
     local kill_timer_closed = false
@@ -50,6 +82,7 @@ function M.run(command, opts)
         kill_timer:close()
       end
     end
+    ---@param value integer
     local function signal(value)
       local signalled = tree and tree:terminate(value)
       if not signalled and process then pcall(process.kill, process, value) end
@@ -63,13 +96,16 @@ function M.run(command, opts)
         return
       end
       if not kill_timer then
-        kill_timer = vim.uv.new_timer()
+        kill_timer = assert(vim.uv.new_timer())
         kill_timer:start(opts.kill_grace_ms or 1000, 0, function()
           close_kill_timer()
           signal(9)
         end)
       end
     end
+    ---@param data string
+    ---@param is_stderr boolean
+    ---@return true?
     local function retain(data, is_stderr)
       if not capture then return true end
       local next_bytes = captured_bytes + #data
@@ -150,7 +186,7 @@ function M.run(command, opts)
     end
     if termination_requested then terminate() end
     if opts.timeout_ms then
-      timer = vim.uv.new_timer()
+      timer = assert(vim.uv.new_timer())
       timer:start(opts.timeout_ms, 0, function()
         timed_out = true
         terminate()
