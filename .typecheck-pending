@@ -87,7 +87,6 @@ lua/neoagent/sandbox/windows/protocol.lua
 lua/neoagent/session.lua
 lua/neoagent/session_tree.lua
 lua/neoagent/skills.lua
-lua/neoagent/state_store.lua
 lua/neoagent/storage.lua
 lua/neoagent/system_prompt.lua
 lua/neoagent/tools/activity_presentation.lua

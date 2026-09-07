@@ -61,13 +61,15 @@ describe("neoagent state store", function()
     vim.uv.fs_rename = original_rename
     vim.uv.fs_unlink = original_unlink
     assert.is_nil(result)
-    assert.is_not_nil(err)
+    assert.are.equal("state_store", err.kind)
+    assert.matches("rename failed", err.message)
 
     value:write("entry", { models = {} })
     vim.fn.mkdir(value:path("directory"), "p")
     result, err = value:delete("directory")
     assert.is_nil(result)
-    assert.is_not_nil(err)
+    assert.are.equal("state_store", err.kind)
+    assert.is_true(#err.message > 0)
   end)
 
   it("tolerates unusable state directories and reports failures through operations", function()
