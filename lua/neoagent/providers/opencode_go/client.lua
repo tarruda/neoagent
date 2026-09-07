@@ -3,14 +3,40 @@ local http_client = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.OpenCodeClientOptions
+---@field base_url string
+---@field transport? Neoagent.ByteBackend
+---@field max_response_bytes? integer
+---@field timeout_ms? number
+---@field ambient_api_key? fun(): string?
+
+---@class Neoagent.OpenCodeQuotaWindow
+---@field remaining number
+---@field resets_at integer
+---@field rate_limited boolean
+
+---@alias Neoagent.OpenCodeUsage table<"rolling"|"weekly"|"monthly", Neoagent.OpenCodeQuotaWindow>
+
+---@class Neoagent.OpenCodeUsageSuccess
+---@field ok true
+---@field usage Neoagent.OpenCodeUsage
+
+---@class Neoagent.OpenCodeModelsSuccess
+---@field ok true
+---@field models string[]
+
 local DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
 local DEFAULT_TIMEOUT_MS = 15 * 1000
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_id(value)
   return type(value) == "string" and value ~= "" and #value <= 512
     and util.is_valid_utf8(value)
@@ -19,16 +45,18 @@ end
 
 -- Howard Hinnant's civil-date conversion keeps UTC parsing independent from
 -- the host timezone. OpenCode emits JavaScript Date.toISOString() values.
+---@param value unknown
+---@return integer?
 local function iso_timestamp(value)
   if type(value) ~= "string" then return nil end
-  local year, month, day, hour, minute, second = value:match(
+  local year_text, month_text, day_text, hour_text, minute_text, second_text = value:match(
     "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.%d+Z$")
-  if not year then
-    year, month, day, hour, minute, second = value:match(
+  if not year_text then
+    year_text, month_text, day_text, hour_text, minute_text, second_text = value:match(
       "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)Z$")
   end
-  year, month, day = tonumber(year), tonumber(month), tonumber(day)
-  hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+  local year, month, day = tonumber(year_text), tonumber(month_text), tonumber(day_text)
+  local hour, minute, second = tonumber(hour_text), tonumber(minute_text), tonumber(second_text)
   if not year or not month or month < 1 or month > 12
       or not day or day < 1 or day > 31
       or not hour or hour > 23 or not minute or minute > 59
@@ -43,8 +71,8 @@ local function iso_timestamp(value)
   local day_of_era = year_of_era * 365 + math.floor(year_of_era / 4)
     - math.floor(year_of_era / 100) + day_of_year
   local days = era * 146097 + day_of_era - 719468
-  local timestamp = days * 86400 + hour * 3600 + minute * 60
-    + math.min(second, 59)
+  local timestamp = math.floor(days * 86400 + hour * 3600 + minute * 60
+    + math.min(second, 59))
   local roundtrip = os.date("!*t", timestamp)
   if not roundtrip or roundtrip.year ~= year or roundtrip.month ~= month
       or roundtrip.day ~= day or roundtrip.hour ~= hour
@@ -54,6 +82,9 @@ local function iso_timestamp(value)
   return timestamp
 end
 
+---@param status number
+---@param resource string
+---@return string
 local function response_error(status, resource)
   if status == 401 then
     return "OpenCode Go " .. resource .. " requires a valid API key"
@@ -68,6 +99,8 @@ local function response_error(status, resource)
     .. tostring(status) .. ")"
 end
 
+---@param headers? table<string, unknown>
+---@return string?
 local function bearer_from(headers)
   for name, value in pairs(headers or {}) do
     if type(name) == "string" and type(value) == "string" then
@@ -82,11 +115,14 @@ local function bearer_from(headers)
   end
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.OpenCodeUsage?
 local function parse_usage(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.usage) ~= "table" or util.is_list(value.usage) then
     return nil
   end
+  ---@type Neoagent.OpenCodeUsage
   local result = {}
   for _, id in ipairs({ "rolling", "weekly", "monthly" }) do
     local source = value.usage[id]
@@ -109,6 +145,8 @@ local function parse_usage(value)
   return result
 end
 
+---@param value Neoagent.JsonValue
+---@return string[]?
 local function parse_models(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.data) ~= "table" or not util.is_list(value.data)
@@ -126,6 +164,8 @@ local function parse_models(value)
   return result
 end
 
+---@param opts Neoagent.OpenCodeClientOptions
+---@return Neoagent.OpenCodeClient
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.base_url) == "string" and opts.base_url ~= "",
@@ -146,10 +186,17 @@ function M.new(opts)
     or function() return vim.env.OPENCODE_API_KEY end
   assert(type(ambient_api_key) == "function",
     "OpenCode Go ambient_api_key must be a function")
+  ---@class Neoagent.OpenCodeClient
   local client = {}
 
+  ---@param path string
+  ---@param resource string
+  ---@param headers table<string, string>
+  ---@return Neoagent.Run<Neoagent.ProviderHttpResult, nil>
   local function request(path, resource, headers)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.ProviderHttpSuccess
+    function()
       local fetched = transport.fetch({ request = {
         url = base_url .. path,
         method = "GET",
@@ -166,6 +213,7 @@ function M.new(opts)
           "OpenCode Go " .. resource .. " response has no HTTP status"), 0)
       end
       if status < 200 or status >= 300 then
+        ---@type Neoagent.ProviderHttpError
         local err = util.error("provider", response_error(status, resource))
         err.status = status
         error(err, 0)
@@ -179,10 +227,14 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.OpenCodeUsageSuccess|Neoagent.AsyncFailure, nil>
   function client:usage(ctx)
     assert(type(ctx) == "table" and type(ctx.resolve_auth) == "function",
       "OpenCode Go usage requires auth resolution")
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.OpenCodeUsageSuccess
+    function()
       local resolved = ctx.resolve_auth():await()
       if resolved.ok == false then error(resolved.error, 0) end
       local key
@@ -218,8 +270,11 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@return Neoagent.Run<Neoagent.OpenCodeModelsSuccess|Neoagent.AsyncFailure, nil>
   function client:models()
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.OpenCodeModelsSuccess
+    function()
       local fetched = request("/models", "model catalog", {
         Accept = "application/json",
       }):await()
