@@ -3,22 +3,96 @@ local detect = require("applet.image.detect")
 local cell_size = require("applet.image.cell_size")
 local geometry = require("applet.image.geometry")
 
+---@alias Applet.ImageOwner string|number|boolean|table|function|userdata|thread
+
+---@class Applet.ImageRequest: Applet.ImagePlacement
+---@field key string
+---@field resource Applet.ImageContent
+---@field cell_width? number
+---@field cell_height? number
+
+---@class Applet.KittyOptions
+---@field cell_width? number
+---@field cell_height? number
+---@field cell_size? fun(): Applet.CellDimensions?
+---@field available? boolean
+---@field transport_available? fun(): boolean
+---@field write? fun(data: string): boolean?
+---@field schedule_output? Applet.ScheduleOutput
+---@field uis? unknown[]
+---@field env? {TERM?: unknown, TMUX?: unknown}
+---@field first_content_id? integer
+---@field first_placement_id? integer
+
+---@class Applet.KittyResource
+---@field resource Applet.ImageContent
+---@field content_id integer
+---@field uploaded boolean
+---@field released boolean
+
+---@class Applet.KittyPlacement
+---@field key string
+---@field id integer
+---@field record Applet.KittyResource
+---@field geometry Applet.ImageGeometry
+
+---@class Applet.KittyPresentation
+---@field placements Applet.KittyPlacement[]
+
+---@class Applet.KittyRedraw: Applet.KittyPresentation
+---@field sequence integer
+
+---@class Applet.KittyPending: Applet.KittyRedraw
+---@field owner Applet.ImageOwner
+
+---@class Applet.OutputOperation
+---@field cancel? Applet.CancelOutput
+
+---@class Applet.Kitty
+---@field name "kitty"
+---@field available boolean
+---@field write fun(data: string): boolean?
+---@field schedule_output Applet.ScheduleOutput
+---@field envelope? "tmux"
+---@field cell_width? number
+---@field cell_height? number
+---@field cell_size fun(): Applet.CellDimensions?
+---@field next_content? integer
+---@field next_placement integer
+---@field resources table<Applet.ImageContent, Applet.KittyResource>
+---@field owners table<Applet.ImageOwner, Applet.KittyPresentation>
+---@field pending table<Applet.ImageOwner, Applet.KittyPending>
+---@field redraws table<Applet.ImageOwner, integer>
+---@field sequence integer
+---@field destroyed boolean
+---@field on_error? fun(err: string)
+---@field last_error? string
+---@field output_operation? Applet.OutputOperation
 local Kitty = {}
 Kitty.__index = Kitty
 
 local uv = vim.uv or vim.loop
 local MAX_PORTABLE_ID = 2147483647
 
+---@param value integer
+---@return integer
 local function portable_id(value)
   return ((value - 1) % MAX_PORTABLE_ID) + 1
 end
 
-local next_content = portable_id(uv.os_getpid() * 65537 + 1000000)
+-- Process identifiers are integral even though luv declares a Lua number.
+local pid = uv.os_getpid()
+---@cast pid integer
+local next_content = portable_id(pid * 65537 + 1000000)
 
+---@param value integer
+---@return integer
 local function increment(value)
   return (value % MAX_PORTABLE_ID) + 1
 end
 
+---@param callback Applet.OutputCallback
+---@return Applet.CancelOutput
 local function injected_schedule(callback)
   local active = true
   vim.schedule(function()
@@ -27,6 +101,8 @@ local function injected_schedule(callback)
   return function() active = false end
 end
 
+---@param opts? Applet.KittyOptions
+---@return Applet.Kitty
 function Kitty.new(opts)
   opts = opts or {}
   assert(opts.cell_width == nil
@@ -73,6 +149,7 @@ function Kitty.new(opts)
   }, Kitty)
 end
 
+---@return integer
 function Kitty:_content_id()
   local id = self.next_content or next_content
   if self.next_content then
@@ -83,17 +160,20 @@ function Kitty:_content_id()
   return id
 end
 
+---@return integer
 function Kitty:_placement_id()
   local id = self.next_placement
   self.next_placement = increment(id)
   return id
 end
 
+---@param callback fun(err: string)
 function Kitty:set_error_handler(callback)
   assert(type(callback) == "function", "error handler must be a function")
   self.on_error = callback
 end
 
+---@param err unknown
 function Kitty:_fail(err)
   if self.destroyed or not self.available then return end
   self.available = false
@@ -105,11 +185,16 @@ function Kitty:_fail(err)
   if self.on_error then pcall(self.on_error, self.last_error) end
 end
 
+---@param parameters Applet.ImageCommand
+---@param payload? string
+---@return string
 function Kitty:_command(parameters, payload)
   return transport.envelope(
     transport.command(parameters, payload), self.envelope)
 end
 
+---@param resource Applet.ImageContent
+---@return Applet.KittyResource
 function Kitty:_resource(resource)
   assert(type(resource) == "table" and type(resource.data) == "string",
     "Kitty resources require image bytes")
@@ -126,11 +211,15 @@ function Kitty:_resource(resource)
   return record
 end
 
+---@param record Applet.KittyResource
+---@param output string[]
+---@param uploads table<Applet.KittyResource, true>
 function Kitty:_upload(record, output, uploads)
   if record.uploaded or uploads[record] then return end
   uploads[record] = true
   local chunks = transport.chunks(record.resource.data)
   for index, payload in ipairs(chunks) do
+    ---@type Applet.ImageCommand
     local command = { m = index < #chunks and 1 or 0, q = 2 }
     if index == 1 then
       command.a = "t"
@@ -141,8 +230,11 @@ function Kitty:_upload(record, output, uploads)
   end
 end
 
+---@param placement Applet.KittyPlacement
+---@return string
 function Kitty:_placement_output(placement)
   local dimensions = placement.geometry
+  ---@type Applet.ImageCommand
   local command = {
     a = "p",
     C = 1,
@@ -164,6 +256,8 @@ function Kitty:_placement_output(placement)
   return transport.envelope(sequence, self.envelope)
 end
 
+---@param placement Applet.KittyPlacement
+---@return string
 function Kitty:_delete_placement(placement)
   return self:_command({
     a = "d",
@@ -174,6 +268,8 @@ function Kitty:_delete_placement(placement)
   })
 end
 
+---@param record Applet.KittyResource
+---@return string
 function Kitty:_delete_content(record)
   return self:_command({
     a = "d",
@@ -183,6 +279,7 @@ function Kitty:_delete_content(record)
   })
 end
 
+---@return Applet.CellDimensions
 function Kitty:cell_dimensions()
   local ok, detected = pcall(self.cell_size)
   if not ok or type(detected) ~= "table" then detected = nil end
@@ -192,6 +289,8 @@ function Kitty:cell_dimensions()
   }
 end
 
+---@param placements? Applet.KittyPlacement[]
+---@return Applet.KittyPlacement[]
 local function sorted_placements(placements)
   local result = {}
   for index, placement in ipairs(placements or {}) do result[index] = placement end
@@ -206,6 +305,8 @@ local function sorted_placements(placements)
   return result
 end
 
+---@param requests Applet.ImageRequest[]
+---@return Applet.KittyPlacement[]
 function Kitty:_candidate(requests)
   local cells = self:cell_dimensions()
   local result = {}
@@ -225,6 +326,8 @@ function Kitty:_candidate(requests)
   return sorted_placements(result)
 end
 
+---@param owner Applet.ImageOwner
+---@param placements Applet.KittyPlacement[]
 function Kitty:_queue(owner, placements)
   self.sequence = self.sequence + 1
   self.pending[owner] = {
@@ -236,6 +339,8 @@ function Kitty:_queue(owner, placements)
   self:_schedule_output()
 end
 
+---@param owner Applet.ImageOwner
+---@param requests Applet.ImageRequest[]
 function Kitty:replace(owner, requests)
   assert(not self.destroyed, "Kitty backend is destroyed")
   assert(owner ~= nil, "Kitty presentation owner is required")
@@ -244,6 +349,8 @@ function Kitty:replace(owner, requests)
   self:_queue(owner, self:_candidate(requests))
 end
 
+---@param owner Applet.ImageOwner
+---@return boolean
 function Kitty:clear(owner)
   if self.destroyed then return false end
   assert(owner ~= nil, "Kitty presentation owner is required")
@@ -252,6 +359,8 @@ function Kitty:clear(owner)
   return changed
 end
 
+---@param owner Applet.ImageOwner
+---@return boolean
 function Kitty:redraw(owner)
   if self.destroyed or self.pending[owner] or not self.owners[owner] then
     return false
@@ -262,6 +371,7 @@ function Kitty:redraw(owner)
   return true
 end
 
+---@param resource Applet.ImageContent
 function Kitty:release(resource)
   if self.destroyed then return end
   local record = self.resources[resource]
@@ -272,6 +382,7 @@ end
 
 function Kitty:_schedule_output()
   if self.output_operation or self.destroyed or not self.available then return end
+  ---@type Applet.OutputOperation
   local operation = {}
   self.output_operation = operation
   local ok, cancel = pcall(self.schedule_output, function(err)
@@ -287,6 +398,7 @@ function Kitty:_schedule_output()
   end
 end
 
+---@return Applet.KittyPending[]
 function Kitty:_take_pending()
   local result = {}
   for owner, operation in pairs(self.pending) do
@@ -299,6 +411,8 @@ function Kitty:_take_pending()
   return result
 end
 
+---@param replaced table<Applet.ImageOwner, true>
+---@return Applet.KittyRedraw[]
 function Kitty:_take_redraws(replaced)
   local result = {}
   for owner, sequence in pairs(self.redraws) do
@@ -316,6 +430,8 @@ function Kitty:_take_redraws(replaced)
   return result
 end
 
+---@param owners table<Applet.ImageOwner, Applet.KittyPresentation>
+---@return table<Applet.KittyResource, true>
 local function used_records(owners)
   local result = {}
   for _, presentation in pairs(owners) do
@@ -326,6 +442,9 @@ local function used_records(owners)
   return result
 end
 
+---@param output string[]
+---@return true
+---@return_overload false, unknown
 function Kitty:_write(output)
   if #output == 0 then return true end
   local ok, result = pcall(self.write, table.concat(output))
@@ -334,13 +453,18 @@ function Kitty:_write(output)
   return true
 end
 
+---@param schedule_error? string
+---@return boolean
 function Kitty:_flush_output(schedule_error)
   if schedule_error then
     self:_fail(schedule_error)
     return false
   end
   local operations = self:_take_pending()
-  local replaced, future = {}, {}
+  ---@type table<Applet.ImageOwner, true>
+  local replaced = {}
+  ---@type table<Applet.ImageOwner, Applet.KittyPresentation>
+  local future = {}
   for owner, presentation in pairs(self.owners) do future[owner] = presentation end
   for _, operation in ipairs(operations) do
     replaced[operation.owner] = true
@@ -348,7 +472,10 @@ function Kitty:_flush_output(schedule_error)
         and { placements = operation.placements } or nil
   end
   local redraws = self:_take_redraws(replaced)
-  local output, uploads = {}, {}
+  ---@type string[]
+  local output = {}
+  ---@type table<Applet.KittyResource, true>
+  local uploads = {}
   for _, operation in ipairs(operations) do
     for _, placement in ipairs(operation.placements) do
       self:_upload(placement.record, output, uploads)
@@ -416,6 +543,7 @@ function Kitty:destroy()
   self.redraws = {}
 end
 
+---@return Applet.ImageDiagnostic[]
 local function diagnostics()
   return { {
     level = "ok",
