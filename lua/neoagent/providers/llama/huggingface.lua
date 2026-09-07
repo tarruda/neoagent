@@ -4,6 +4,28 @@ local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.HuggingFaceOptions
+---@field token? string
+---@field base_url? string
+---@field transport? Neoagent.ByteBackend
+
+---@class Neoagent.HuggingFaceSearchEntry
+---@field id string
+---@field downloads number
+
+---@class Neoagent.HuggingFaceQuantization
+---@field name string
+---@field size? number
+
+---@class Neoagent.HuggingFaceDetails
+---@field id string
+---@field gated "auto"|"manual"|false
+---@field quantizations Neoagent.HuggingFaceQuantization[]
+
+---@class Neoagent.HuggingFaceResponse
+---@field ok true
+---@field value? Neoagent.JsonValue
+
 local DEFAULT_BASE_URL = "https://huggingface.co"
 local REQUEST_TIMEOUT_MS = 15000
 local QUANTIZATION_ALTS = {
@@ -16,6 +38,8 @@ local QUANTIZATION_ALTS = {
 }
 local SHARD_SUFFIX_PATTERN = "%-%d+%-of%-%d+$"
 
+---@param path string
+---@return string?
 local function read_token(path)
   local value = fs.read(path)
   if not value then return nil end
@@ -23,18 +47,26 @@ local function read_token(path)
   return value ~= "" and value or nil
 end
 
+---@param env? table<string, string>
+---@return string?
 function M.find_token(env)
-  env = env or vim.env
-  local from_environment = util.trim(env.HF_TOKEN or "")
+  local environment = env or vim.env
+  -- Neovim environment reads return strings or nil.
+  ---@cast environment table<string, string>
+  local from_environment = util.trim(environment.HF_TOKEN or "")
   if from_environment ~= "" then return from_environment end
   local paths = {}
+  ---@param path? string
   local function add(path)
     if type(path) == "string" and path ~= "" then paths[#paths + 1] = path end
   end
-  add(env.HF_TOKEN_PATH)
-  add(env.HF_HOME and fs.join(env.HF_HOME, "token"))
-  add(env.XDG_CACHE_HOME and fs.join(env.XDG_CACHE_HOME, "huggingface", "token"))
-  add(fs.join(vim.fn.expand("~"), ".cache", "huggingface", "token"))
+  add(environment.HF_TOKEN_PATH)
+  add(environment.HF_HOME and fs.join(environment.HF_HOME, "token"))
+  add(environment.XDG_CACHE_HOME and fs.join(environment.XDG_CACHE_HOME, "huggingface", "token"))
+  local home_directory = vim.fn.expand("~")
+  -- expand without the list flag returns a string.
+  ---@cast home_directory string
+  add(fs.join(home_directory, ".cache", "huggingface", "token"))
   local seen = {}
   for _, path in ipairs(paths) do
     if not seen[path] then
@@ -45,24 +77,34 @@ function M.find_token(env)
   end
 end
 
+---@param payload? Neoagent.JsonValue
+---@param fallback string
+---@return string
 local function payload_error(payload, fallback)
   if type(payload) ~= "table" then return fallback end
   local error = payload.error
   return type(error) == "string" and error ~= "" and error or fallback
 end
 
+---@async
+---@param run Neoagent.Run<Neoagent.HuggingFaceResponse|Neoagent.AsyncFailure, nil>
+---@return Neoagent.HuggingFaceResponse
 local function await_ok(run)
   local result = run:await()
   if not result.ok then error(result.error, 0) end
   return result
 end
 
+---@param value string
+---@return string
 local function uri_encode_component(value)
   return (tostring(value):gsub("[^%w%-_%.~]", function(char)
     return string.format("%%%02X", char:byte())
   end))
 end
 
+---@param id string
+---@return string
 local function encoded_id(id)
   local parts = {}
   for part in vim.gsplit(id, "/") do
@@ -71,17 +113,27 @@ local function encoded_id(id)
   return table.concat(parts, "/")
 end
 
+---@class Neoagent.HuggingFaceClient
+---@field token? string
+---@field base_url string
+---@field transport Neoagent.HttpClient
 local Client = {}
 Client.__index = Client
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_id(value)
   return type(value) == "string" and value ~= "" and #value <= 512
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param path string
+---@return Neoagent.Run<Neoagent.HuggingFaceResponse|Neoagent.AsyncFailure, nil>
 function Client:request(path)
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.HuggingFaceResponse
+  function()
     local headers = {}
     if self.token then headers.Authorization = "Bearer " .. self.token end
     local fetched = self.transport.fetch({
@@ -103,6 +155,8 @@ function Client:request(path)
   end, { error_kind = "provider" })
 end
 
+---@param query string
+---@return Neoagent.Run<Neoagent.HuggingFaceSearchEntry[], nil>
 function Client:search(query)
   local params = {
     "search=" .. uri_encode_component(query),
@@ -111,7 +165,9 @@ function Client:search(query)
     "direction=-1",
     "limit=20",
   }
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.HuggingFaceSearchEntry[]
+  function()
     local payload = await_ok(self:request("/api/models?" .. table.concat(params, "&"))).value
     if type(payload) ~= "table" or not util.is_list(payload) then
       error(util.error("provider", "Hugging Face returned invalid search results"), 0)
@@ -129,6 +185,8 @@ function Client:search(query)
   end, { error_kind = "provider" })
 end
 
+---@param stem string
+---@return string?
 local function quantization_name(stem)
   for _, alternative in ipairs(QUANTIZATION_ALTS) do
     local matched = stem:match("(UD%-" .. alternative .. ")$")
@@ -138,7 +196,11 @@ local function quantization_name(stem)
   end
 end
 
+---@param siblings? Neoagent.JsonValue
+---@return Neoagent.HuggingFaceQuantization[]
 local function quantization_size(siblings)
+  assert(siblings == nil or type(siblings) == "table",
+    "Hugging Face model files must be a list")
   local sizes = {}
   for _, value in ipairs(siblings or {}) do
     if type(value) == "table" and type(value.rfilename) == "string" then
@@ -177,13 +239,18 @@ local function quantization_size(siblings)
   return result
 end
 
+---@param id string
+---@return Neoagent.Run<Neoagent.HuggingFaceDetails, nil>
 function Client:details(id)
   assert(safe_id(id), "Hugging Face model id must be safe non-empty text")
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.HuggingFaceDetails
+  function()
     local payload = await_ok(self:request("/api/models/" .. encoded_id(id) .. "?blobs=true")).value
     if type(payload) ~= "table" then
       error(util.error("provider", "Hugging Face returned invalid model details"), 0)
     end
+    ---@type "auto"|"manual"|false
     local gated = false
     if payload.gated == "auto" or payload.gated == "manual" then
       gated = payload.gated
@@ -196,6 +263,8 @@ function Client:details(id)
   end, { error_kind = "provider" })
 end
 
+---@param opts? Neoagent.HuggingFaceOptions
+---@return Neoagent.HuggingFaceClient
 function M.new(opts)
   opts = opts or {}
   return setmetatable({
