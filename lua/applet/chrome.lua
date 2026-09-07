@@ -2,14 +2,62 @@ local util = require("applet.util")
 
 local M = {}
 
+---@class Applet.ChromeRun
+---@field [1]? string
+---@field [2]? string
+---@field text? string
+---@field group? string
+
+---@class Applet.ChromeValue
+---@field title? Applet.ChromeRun[]
+---@field footer? Applet.ChromeRun[]
+---@field title_pos? Applet.Alignment
+---@field footer_pos? Applet.Alignment
+---@field options? Applet.Options
+
+---@class Applet.ChromeRecord
+---@field window? integer
+---@field descriptor {chrome: Applet.Insets}
+---@field adopted_window_options? Applet.Options
+
+---@class Applet.WrittenOption
+---@field original? Applet.OptionValue
+---@field written? Applet.OptionValue
+
+---@class Applet.ChromeState
+---@field window? integer
+---@field options table<string, Applet.WrittenOption>
+---@field config? vim.api.keyset.win_config
+---@field written_config? vim.api.keyset.win_config
+---@field metrics Applet.Insets
+
+---@class Applet.WindowChrome
+---@field kind "floating"|"split"
+---@field apply fun(value: Applet.ChromeValue, window_options?: Applet.Options)
+---@field measure fun(): Applet.Insets
+---@field restore fun()
+
+
+---@generic T
+---@param value T
+---@return T
 local function copy_value(value)
-  return type(value) == "table" and util.copy(value) or value
+  if type(value) ~= "table" then return value end
+  local original = value
+  ---@cast original table
+  local result = util.copy(original)
+  ---@cast result T
+  return result
 end
 
+---@param window? integer
+---@return TypeGuard<integer>
 local function valid_window(window)
-  return window and vim.api.nvim_win_is_valid(window)
+  return window ~= nil and vim.api.nvim_win_is_valid(window)
 end
 
+---@param runs? Applet.ChromeRun[]
+---@return string
 local function statusline(runs)
   local result = {}
   for _, run in ipairs(runs or {}) do
@@ -21,6 +69,8 @@ local function statusline(runs)
   return table.concat(result)
 end
 
+---@param runs? Applet.ChromeRun[]
+---@return string|[string, string?][]
 local function float_runs(runs)
   if not runs or #runs == 0 then return "" end
   local result = {}
@@ -30,11 +80,17 @@ local function float_runs(runs)
   return result
 end
 
+---@param window integer
+---@param option string
+---@return Applet.OptionValue?
 local function current_option(window, option)
   local ok, value = pcall(vim.api.nvim_get_option_value, option, { win = window })
   if ok then return value end
 end
 
+---@param window integer
+---@param option string
+---@param state Applet.WrittenOption
 local function restore_option(window, option, state)
   local current = current_option(window, option)
   if current ~= nil and util.equal(current, state.written) then
@@ -44,6 +100,9 @@ end
 
 local config_fields = { "title", "title_pos", "footer", "footer_pos" }
 
+---@param window integer
+---@param original? vim.api.keyset.win_config
+---@param written? vim.api.keyset.win_config
 local function restore_config(window, original, written)
   if not original or not written then return end
   local ok, current = pcall(vim.api.nvim_win_get_config, window)
@@ -62,7 +121,11 @@ local function restore_config(window, original, written)
   if changed then pcall(vim.api.nvim_win_set_config, window, current) end
 end
 
+---@param record Applet.ChromeRecord
+---@param kind "floating"|"split"
+---@return Applet.WindowChrome
 function M.new(record, kind)
+  ---@type Applet.ChromeState
   local state = {
     window = nil,
     options = {},
@@ -86,6 +149,7 @@ function M.new(record, kind)
     state.metrics = { top = 0, right = 0, bottom = 0, left = 0 }
   end
 
+  ---@param window integer
   local function capture(window)
     if state.window == window then return end
     restore()
@@ -99,11 +163,13 @@ function M.new(record, kind)
     end
   end
 
+  ---@param value Applet.ChromeValue
+  ---@param window_options? Applet.Options
   local function apply(value, window_options)
     local window = record.window
     if not valid_window(window) then return end
     capture(window)
-    local desired = util.copy(window_options)
+    local desired = util.copy(window_options or {})
     for option, option_value in pairs(value.options or {}) do
       desired[option] = option_value
     end
@@ -140,6 +206,9 @@ function M.new(record, kind)
     end
     if kind == "floating" then
       local config = vim.api.nvim_win_get_config(window)
+      -- Capture populated the original configuration for this floating window.
+      local original_config = state.config
+      ---@cast original_config vim.api.keyset.win_config
       local previous = state.written_config or {}
       local written, changed = {}, false
       local title = value.title and #value.title > 0 and float_runs(value.title) or nil
@@ -157,7 +226,7 @@ function M.new(record, kind)
           written[field] = copy_value(desired)
           changed = true
         elseif previous[field] ~= nil and util.equal(config[field], previous[field]) then
-          local original = state.config[field]
+          local original = original_config[field]
           if original == nil and (field == "title" or field == "footer") then
             original = ""
           end
