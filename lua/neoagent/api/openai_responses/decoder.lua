@@ -4,6 +4,30 @@ local http_response = require("neoagent.api.http_response")
 
 local M = {}
 
+---@class Neoagent.ResponsesTextSlot
+---@field type "text"
+---@field block Neoagent.TextBlock
+
+---@class Neoagent.ResponsesThinkingSlot
+---@field type "thinking"
+---@field block Neoagent.ThinkingBlock
+---@field summary_index? number
+---@field summary_part_pending? boolean
+
+---@class Neoagent.ResponsesToolSlot
+---@field type "toolCall"
+---@field block Neoagent.ToolCallBlock
+---@field raw string
+
+---@alias Neoagent.ResponsesSlot Neoagent.ResponsesTextSlot|Neoagent.ResponsesThinkingSlot|Neoagent.ResponsesToolSlot
+
+---@class Neoagent.ResponsesDecoder
+---@field message Neoagent.AssistantMessage
+---@field process fun(event: Neoagent.JsonValue)
+---@field is_terminal fun(): boolean
+---@field partial fun(): Neoagent.AssistantMessage
+
+
 ---@param value unknown
 ---@param field string
 ---@return string?
@@ -35,7 +59,8 @@ local function content_text(value, separator, refusal)
   local values = {}
   for _, raw in ipairs(json_table(value, "content")) do
     local part = json_table(raw, "content part")
-    local text = part.text or (refusal and part.refusal) or ""
+    local text, refusal_text = part.text, part.refusal
+    text = text or (refusal and refusal_text) or ""
     if type(text) ~= "string" and type(text) ~= "number" then
       error(util.error("protocol", "Invalid OpenAI Responses content text"), 0)
     end
@@ -44,6 +69,7 @@ local function content_text(value, separator, refusal)
   return table.concat(values, separator)
 end
 
+---@return Neoagent.Usage
 local function zero_usage()
   return {
     input = 0,
@@ -56,6 +82,8 @@ local function zero_usage()
   }
 end
 
+---@param raw Neoagent.JsonObject|Neoagent.JsonArray
+---@return Neoagent.Usage
 local function usage_from(raw)
   local input_details = type(raw.input_tokens_details) == "table" and raw.input_tokens_details or {}
   local output_details = type(raw.output_tokens_details) == "table" and raw.output_tokens_details or {}
@@ -76,7 +104,11 @@ local function usage_from(raw)
   }
 end
 
+---@param model Neoagent.Model
+---@param emit fun(event: Neoagent.ModelEvent)
+---@return Neoagent.ResponsesDecoder
 function M.new(model, emit)
+  ---@type Neoagent.AssistantMessage
   local message = {
     role = "assistant",
     content = {},
@@ -87,14 +119,22 @@ function M.new(model, emit)
     stopReason = "stop",
     timestamp = util.now_ms(),
   }
+  ---@type table<integer, Neoagent.ResponsesSlot>
   local slots = {}
+  ---@type table<integer, true>
   local finished = {}
+  ---@type table<Neoagent.AssistantBlock, integer>
   local block_indexes = {}
+  ---@type table<string, Neoagent.ThinkingBlock>
   local reasoning = {}
+  ---@type table<string, integer>
   local item_indexes = {}
   local next_index = 0
   local terminal = false
 
+  ---@param raw_index unknown
+  ---@param raw_id unknown
+  ---@return integer
   local function register_index(raw_index, raw_id)
     ---@type integer?
     local index
@@ -119,13 +159,18 @@ function M.new(model, emit)
     return index
   end
 
+  ---@param index integer
+  ---@param item Neoagent.JsonObject|Neoagent.JsonArray
+  ---@return Neoagent.ResponsesSlot?
   local function create_slot(index, item)
     if item.type == "reasoning" then
+      ---@type Neoagent.ThinkingBlock
       local block = { type = "thinking", thinking = "", index = index }
       message.content[#message.content + 1] = block
       block_indexes[block] = index
       slots[index] = { type = "thinking", block = block }
     elseif item.type == "message" then
+      ---@type Neoagent.TextBlock
       local block = { type = "text", text = "", index = index }
       if type(item.phase) == "string" and item.phase ~= "" then block.phase = item.phase end
       message.content[#message.content + 1] = block
@@ -135,6 +180,7 @@ function M.new(model, emit)
       local call_id = optional_string(item.call_id, "call id") or ""
       local item_id = optional_string(item.id, "item id") or ""
       local arguments = optional_string(item.arguments, "tool arguments") or ""
+      ---@type Neoagent.ToolCallBlock
       local block = {
         type = "toolCall",
         id = item_id ~= "" and (call_id .. "|" .. item_id) or call_id,
@@ -154,53 +200,80 @@ function M.new(model, emit)
     return slots[index]
   end
 
-  local function append_delta(slot, value, field, event_type, event_fields)
+  ---@param previous string
+  ---@param value string
+  ---@return string
+  local function appended_text(previous, value)
     if not util.is_valid_utf8(value) then
       error(util.error("protocol",
         "OpenAI Responses delta must contain valid UTF-8"), 0)
     end
-    local previous = slot.block[field]
-    local delta = value:sub(1, #previous) == previous and value:sub(#previous + 1) or ""
-    slot.block[field] = value
-    if delta ~= "" then
-      local emitted = vim.tbl_extend("force", { type = event_type, text = delta }, event_fields or {})
-      emit(emitted)
-    end
+    return value:sub(1, #previous) == previous and value:sub(#previous + 1) or ""
   end
 
+  ---@param slot Neoagent.ResponsesThinkingSlot
+  ---@param index integer
+  ---@param item Neoagent.JsonObject|Neoagent.JsonArray
+  ---@param item_id? string
+  local function finalize_thinking(slot, index, item, item_id)
+    local summary = content_text(item.summary, "\n\n")
+    local text = summary ~= "" and summary or content_text(item.content, "\n\n")
+    if text == "" then text = slot.block.thinking end
+    local delta = appended_text(slot.block.thinking, text)
+    slot.block.thinking = text
+    if delta ~= "" then emit({ type = "thinking_delta", text = delta, index = index }) end
+    slot.block.thinkingSignature = vim.json.encode(item)
+    if item_id then reasoning[item_id] = slot.block end
+  end
+
+  ---@param slot Neoagent.ResponsesTextSlot
+  ---@param index integer
+  ---@param item Neoagent.JsonObject|Neoagent.JsonArray
+  ---@param item_id? string
+  local function finalize_text(slot, index, item, item_id)
+    local text = content_text(item.content, "", true)
+    if type(item.phase) == "string" and item.phase ~= "" then slot.block.phase = item.phase end
+    local delta = appended_text(slot.block.text, text)
+    slot.block.text = text
+    if delta ~= "" then
+      emit({ type = "text_delta", text = delta, index = index, phase = slot.block.phase })
+    end
+    if item_id then slot.block.textSignature = item_id end
+  end
+
+  ---@param slot Neoagent.ResponsesToolSlot
+  ---@param index integer
+  ---@param item Neoagent.JsonObject|Neoagent.JsonArray
+  local function finalize_tool(slot, index, item)
+    local raw = optional_string(item.arguments, "tool arguments") or slot.raw or "{}"
+    local delta = raw:sub(1, #slot.raw) == slot.raw and raw:sub(#slot.raw + 1) or ""
+    if delta ~= "" then
+      emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
+    end
+    if slot.block.id == "" then error(util.error("protocol", "Tool call is missing an id"), 0) end
+    if slot.block.name == "" then error(util.error("protocol", "Tool call is missing a name"), 0) end
+    slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
+  end
+
+  ---@param index integer
+  ---@param item Neoagent.JsonObject|Neoagent.JsonArray
   local function finalize_item(index, item)
     if finished[index] then return end
     local slot = slots[index] or create_slot(index, item)
     local item_id = optional_string(item.id, "item id")
     if item.type == "reasoning" and slot and slot.type == "thinking" then
-      local summary = content_text(item.summary, "\n\n")
-      local text = summary ~= "" and summary or content_text(item.content, "\n\n")
-      append_delta(slot, text ~= "" and text or slot.block.thinking,
-        "thinking", "thinking_delta", { index = index })
-      slot.block.thinkingSignature = vim.json.encode(item)
-      if item_id then reasoning[item_id] = slot.block end
+      finalize_thinking(slot, index, item, item_id)
     elseif item.type == "message" and slot and slot.type == "text" then
-      local text = content_text(item.content, "", true)
-      if type(item.phase) == "string" and item.phase ~= "" then slot.block.phase = item.phase end
-      append_delta(slot, text, "text", "text_delta", {
-        index = index,
-        phase = slot.block.phase,
-      })
-      if item_id then slot.block.textSignature = item_id end
+      finalize_text(slot, index, item, item_id)
     elseif item.type == "function_call" and slot and slot.type == "toolCall" then
-      local raw = optional_string(item.arguments, "tool arguments") or slot.raw or "{}"
-      local delta = raw:sub(1, #slot.raw) == slot.raw and raw:sub(#slot.raw + 1) or ""
-      if delta ~= "" then
-        emit({ type = "tool_call_delta", index = index, arguments_delta = delta })
-      end
-      if slot.block.id == "" then error(util.error("protocol", "Tool call is missing an id"), 0) end
-      if slot.block.name == "" then error(util.error("protocol", "Tool call is missing a name"), 0) end
-      slot.block.arguments, slot.block.argumentsError = tool_arguments.decode(raw)
+      finalize_tool(slot, index, item)
     end
     slots[index] = nil
     finished[index] = true
   end
 
+  ---@param response Neoagent.JsonObject|Neoagent.JsonArray
+  ---@param incomplete boolean
   local function finish_response(response, incomplete)
     local output = json_table(response.output, "output")
     local items = {}
@@ -234,6 +307,7 @@ function M.new(model, emit)
     terminal = true
   end
 
+  ---@param event Neoagent.JsonValue
   local function process_payload(event)
     if type(event) ~= "table" then
       error(util.error("protocol", "Expected an object in SSE response"), 0)
