@@ -457,6 +457,16 @@ describe("neoagent.api.openai_codex_responses", function()
       emitted[#emitted].details.limits[1].primary.remaining)
   end)
 
+  it("reports a secondary quota when the primary window is absent", function()
+    local text, details = codex.rate_limit_status({
+      ["X-Codex-Secondary-Used-Percent"] = "25",
+      ["X-Codex-Secondary-Window-Minutes"] = "10080",
+    })
+    assert.are.equal("weekly 75% left", text)
+    assert.is_nil(details.limits[1].primary)
+    assert.are.equal(0.75, details.limits[1].secondary.remaining)
+  end)
+
   it("derives provider status from rate-limit error headers", function()
     local transport = fake_transport.new({ {
       status = 429,

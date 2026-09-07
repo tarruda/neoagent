@@ -147,10 +147,8 @@ local function rate_limit_status(headers)
   for _, limit in ipairs(details and details.limits or {}) do
     if limit.id == "codex" then default = limit break end
   end
-  for _, window in ipairs(default and {
-    default.primary,
-    default.secondary,
-  } or {}) do
+  for _, name in ipairs({ "primary", "secondary" }) do
+    local window = default and default[name]
     if window and window.window_minutes then
       local remaining = window.remaining * 100
       local formatted = string.format("%.1f", remaining):gsub("%.0$", "")
