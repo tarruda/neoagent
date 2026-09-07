@@ -269,8 +269,8 @@ timer:start(10, 10, vim.schedule_wrap(function()
     view_signature = current_signature
     view_changed = now
   end
-  if pending_action and drained_action == pending_action
-      and is_settled and now - view_changed >= 100 * 1e6 then
+  local view_settled = is_settled and now - view_changed >= 100 * 1e6
+  if pending_action and drained_action == pending_action and view_settled then
     acknowledged_action = pending_action
     pending_action = nil
     drained_action = nil
@@ -279,9 +279,20 @@ timer:start(10, 10, vim.schedule_wrap(function()
     last_state = now
     publish(state_path, snapshot(is_settled))
   end
-  if not ready and active.centered and is_settled then
-    ready = true
-    publish(ready_path, snapshot(true))
+  if not ready and active.centered and view_settled then
+    local initial = snapshot(true)
+    local complete = true
+    for _, name in ipairs(layer_order) do
+      local layer = initial.layers[name]
+      if not layer.open or not layer.visible or not layer.geometry then
+        complete = false
+        break
+      end
+    end
+    if complete then
+      ready = true
+      publish(ready_path, initial)
+    end
   end
   if vim.fn.filereadable(stop_path) == 1 then
     timer:stop()
