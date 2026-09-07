@@ -16,7 +16,6 @@ lua/neoagent/agent.lua
 lua/neoagent/agent/run_lifecycle.lua
 lua/neoagent/agent/session_choices.lua
 lua/neoagent/agent/session_lifecycle.lua
-lua/neoagent/agent/steering.lua
 lua/neoagent/agent_applet.lua
 lua/neoagent/applet.lua
 lua/neoagent/authentication.lua
