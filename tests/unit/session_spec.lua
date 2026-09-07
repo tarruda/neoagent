@@ -494,6 +494,19 @@ describe("neoagent.session", function()
     assert.are.equal("one", calls.leaf)
   end)
 
+  it("keeps metadata optional for stores accepted by the Session constructor", function()
+    local session = assert(Session.new({ id = "minimal-store", store = {
+      load = function() return {} end,
+      append = function() return true end,
+    } }))
+    assert.is_nil(session:metadata())
+    local snapshot, err = session:snapshot()
+    assert.is_nil(err)
+    assert.are.equal("minimal-store", snapshot.id)
+    assert.is_nil(snapshot.metadata)
+    assert.are.same({}, snapshot.entries)
+  end)
+
   it("reports optional store failures without mutating cached messages", function()
     local store = {
       load = function() return {} end,

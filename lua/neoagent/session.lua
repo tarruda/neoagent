@@ -238,7 +238,9 @@ function Session:move_to(entry_id)
 end
 
 function Session:metadata()
-  if self._store then return util.copy(self._store:metadata()) end
+  if self._store and type(self._store.metadata) == "function" then
+    return util.copy(self._store:metadata())
+  end
   if not self._header then return nil end
   return {
     id = self._id,
