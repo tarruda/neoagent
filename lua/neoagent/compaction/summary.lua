@@ -121,7 +121,7 @@ local function add_usage(first, second)
   if not second then return util.copy(first) end
   local result = {}
   for _, key in ipairs({
-    "input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens",
+    "input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens",
   }) do
     result[key] = (first[key] or 0) + (second[key] or 0)
   end

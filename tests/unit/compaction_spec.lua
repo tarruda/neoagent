@@ -322,10 +322,10 @@ describe("neoagent.compaction", function()
 
   it("combines history and turn-prefix summaries", function()
     local history = fake_model.assistant({ { type = "text", text = "history" } })
-    history.message.usage.cacheWrite1h = 2
+    history.message.usage.cacheWrite = 2
     history.message.usage.cost.total = 1.5
     local prefix = fake_model.assistant({ { type = "text", text = "prefix" } })
-    prefix.message.usage.cacheWrite1h = 3
+    prefix.message.usage.cacheWrite = 3
     prefix.message.usage.cost.total = 2.5
     local model = fake_model.new({ { result = history }, { result = prefix } })
     local run = compaction.run({
@@ -342,8 +342,13 @@ describe("neoagent.compaction", function()
     })
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.matches("history.-Turn Context %(split turn%):.-prefix", run:result().summary)
-    assert.are.equal(5, run:result().usage.cacheWrite1h)
+    assert.are.equal(5, run:result().usage.cacheWrite)
     assert.are.equal(4, run:result().usage.cost.total)
+    local normalized, err = require("neoagent.semantic_message").normalize({
+      role = "assistant", content = {}, usage = run:result().usage,
+    })
+    assert.is_nil(err)
+    assert.are.same(run:result().usage, normalized.usage)
     assert.matches("<previous%-summary>\nprevious", model.requests[1].messages[1].content[1].text)
     assert.matches("PREFIX of a turn", model.requests[2].messages[1].content[1].text)
   end)
