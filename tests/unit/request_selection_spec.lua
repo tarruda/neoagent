@@ -175,8 +175,10 @@ describe("neoagent upper-layer request selection", function()
   it("binds Workspace, Agent, and Session identity to resolved HTTP", function()
     local configured = configuration()
     local seen
+    local seen_identity
     configured._apis.fake = function(resolved)
       seen = resolved.transport.context
+      seen_identity = resolved.request_context
       return {
         api = resolved.api,
         provider = resolved.provider_id,
@@ -199,7 +201,7 @@ describe("neoagent upper-layer request selection", function()
     local selection = RequestSelection.new({
       config = configured,
       runtimes = provider_runtimes,
-      http_context = {
+      request_context = {
         workspace = "/workspace",
         agent_id = "agent-2",
         session_id = "session-9",
@@ -207,6 +209,11 @@ describe("neoagent upper-layer request selection", function()
     })
 
     assert(selection:resolve())
+    assert.are.same({
+      workspace = "/workspace",
+      agent_id = "agent-2",
+      session_id = "session-9",
+    }, seen_identity)
     assert.are.same({
       origin = "model",
       provider = "fake",

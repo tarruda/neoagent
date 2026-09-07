@@ -214,7 +214,7 @@ function M.from_config(options, runtime)
     auth = auth_manager,
     runtimes = state.provider_runtimes,
     initial_selection = runtime.initial_selection,
-    http_context = function()
+    request_context = function()
       return {
         workspace = workspace_root,
         agent_id = agent_id,

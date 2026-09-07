@@ -84,7 +84,17 @@ event so a composer clears only input that the Session accepted.
 Provider definitions describe API connections, Authentication methods, model
 catalogs, and optional Provider Services. Each runtime shares concrete
 credentials, catalog, service, and transport values across its consumers.
-Provider operations receive provider-scoped state, not Agent state.
+Provider operations receive provider-scoped state, not Agent state. Request
+shaping is the single exception: resolution gives each Model the copied request
+identity that the owning composition supplied (Workspace, Agent, and Session
+values), and provider `request_opts` layers may place it on outgoing requests.
+Resolution is per-Agent, so that identity is fixed for the Model's lifetime.
+Standalone chat supplies Session identity per call. API adapters combine it
+with the Model's bound identity, reject conflicting fields, and give copied
+values to request shaping and transport observation. An unbound Model can
+serve independent Sessions without retaining their identities.
+Shared runtimes, catalog and Service operations, and Authentication receive no
+Agent state.
 
 ModelCatalog owns selectable inventory and publishes complete revisioned
 snapshots. Selection and resolution use the same snapshot; resolved Models

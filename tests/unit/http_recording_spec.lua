@@ -422,6 +422,7 @@ else:
         ["X-Debug-Mode"] = "streaming",
         ["X-Echo"] = "header-envelope-secret",
         ["X-Body-Echo"] = "body-content-secret",
+        ["X-Opencode-Session"] = "session-42",
         ["X-Url-Echo"] = "query-envelope-secret",
         ["X-Empty-Token"] = "",
         ["Z-Trace"] = "last",
@@ -457,6 +458,8 @@ else:
     assert.is_true(first_header < last_header)
     local parsed = records(paths[1])
     assert.are.equal("exchange", parsed[1].type)
+    assert.matches("2026%-09%-02%-session%-42$",
+      vim.fs.basename(vim.fn.fnamemodify(paths[1], ":h")))
     assert.are.equal(workspace, parsed[1].workspace.root)
     assert.are.equal("session-42", parsed[1].context.session_id)
     assert.are.equal("agent-7", parsed[1].context.agent_id)
@@ -465,6 +468,7 @@ else:
     assert.are.equal("*", parsed[1].request.headers.Authorization)
     assert.are.equal("streaming", parsed[1].request.headers["X-Debug-Mode"])
     assert.are.equal("*", parsed[1].request.headers["X-Echo"])
+    assert.are.equal("*", parsed[1].request.headers["X-Opencode-Session"])
     assert.are.equal("body-content-secret",
       parsed[1].request.headers["X-Body-Echo"])
     assert.are.equal("*", parsed[1].request.headers["X-Url-Echo"])

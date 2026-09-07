@@ -218,6 +218,19 @@ table or callback. The layers merge in that order across `url`, `headers`,
 and `body`. Header names are case-insensitive, maps merge recursively, and
 lists replace inherited lists.
 
+A callback receives `{ model, messages, system_prompt, tools, request_context,
+request }`. `request_context` is the request identity supplied by the
+composition that resolved the Model: an Agent contributes `workspace`,
+`agent_id`, and `session_id`; a Profile draft contributes only `workspace`.
+Direct Model constructors accept optional `request_context` objects.
+
+`stream({ request_context = ... })` can supply additional identity fields.
+Fields bound when constructing the Model remain fixed; conflicting values
+fail before sending HTTP. Each request callback receives its own copy of the
+resolved identity, which also supplies HTTP recording context. The Session
+adapters `chat.send`, `chat.run`, and `chat.continue` supply `session_id` on
+each call, allowing an unbound Model to serve independent Sessions.
+
 A model's `thinking` table maps levels to request options. Levels are ordered
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`.
 Missing levels are unavailable; `false` removes an inherited level. Selecting
@@ -280,6 +293,11 @@ Configure or disable the sink under the provider: >lua
     },
   }
 <
+OpenCode Go model requests carry the calling Session ID in
+`x-opencode-session`. Calls without a valid Session identity omit the header.
+Model catalog and usage requests are shared across Agents and carry no Session
+ID.
+
 AGENTS AND APPLETS                                   *neoagent-agents*
 
 `setup(opts)` creates the command-facing Neoagent Applet and registers the Neo
@@ -719,7 +737,9 @@ base64 with an encoding marker.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive
-are replaced by `*`.
+are replaced by `*`. Identifier-named request headers such as the OpenCode Go
+`x-opencode-session` are masked the same way, while the Session ID stays
+readable in `context.session_id` and in the Workspace recording directory name.
 
 Model request bodies and ordinary provider response bodies are not sanitized.
 Recordings can therefore contain prompts, tool schemas and results, images,
@@ -933,7 +953,9 @@ Other constructors are `neoagent.api.anthropic_messages`,
 `neoagent.api.openai_codex_responses`. Optional settings include `api_key`,
 `context_window`, `max_output_tokens`, and `request_opts`; `stream()` also
 accepts `system_prompt`, `tools`, and `request_opts`. The Codex constructor adds
-`responses_lite`, `request_max_retries`, and `on_diagnostic`.
+`responses_lite`, `request_max_retries`, and `on_diagnostic`. A constructor also
+accepts the copied `request_context` identity described above, and `stream()`
+may supply additional identity fields using the same option.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
 unique `input` list containing `text` and optionally `image`. Optional context,

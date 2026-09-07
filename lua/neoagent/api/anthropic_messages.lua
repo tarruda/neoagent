@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
+local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local curl = require("neoagent.transport.curl")
@@ -88,12 +89,12 @@ end
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local transport = self._transport
   local message
   local blocks
   return async.run(function(run)
     local ok, outcome = pcall(function()
-      local outgoing = self:_request(opts)
+      local outgoing, identity = self:_request(opts)
+      local transport = request_context.bind_transport(self._transport, identity)
       message = {
         role = "assistant",
         content = {},
@@ -346,6 +347,7 @@ function M.new(opts)
     _max_output_tokens = opts.max_output_tokens or 4096,
     _anthropic_version = "2023-06-01",
     _request_opts = layers,
+    _request_context = request_context.copy(opts.request_context),
     _transport = opts.transport or curl,
   }, Model), "Anthropic Messages constructor")
 end

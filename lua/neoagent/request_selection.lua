@@ -38,15 +38,15 @@ function RequestSelection.new(opts)
   assert(opts.initial_selection == nil
       or valid_selection(opts.initial_selection),
     "RequestSelection initial_selection must contain a model and optional thinking level")
-  assert(opts.http_context == nil or type(opts.http_context) == "table"
-      or type(opts.http_context) == "function",
-    "RequestSelection HTTP context must be a table or function")
+  assert(opts.request_context == nil or type(opts.request_context) == "table"
+      or type(opts.request_context) == "function",
+    "RequestSelection request_context must be a table or function")
   local self = setmetatable({
     config = opts.config,
     auth = opts.auth,
     runtimes = opts.runtimes or {},
-    http_context = type(opts.http_context) == "function"
-      and opts.http_context or util.copy(opts.http_context or {}),
+    request_context = type(opts.request_context) == "function"
+      and opts.request_context or util.copy(opts.request_context or {}),
     defaults = {
       default_model = util.copy(opts.config.default_model),
       default_thinking_level = opts.config.default_thinking_level,
@@ -144,11 +144,13 @@ function RequestSelection:resolve(selected, preferred)
   end
   if preferred == nil then preferred = initial_thinking(self, selected) end
   local ok, model = pcall(function()
-    local http_context = self.http_context
-    if type(http_context) == "function" then http_context = http_context() end
+    local request_context = self.request_context
+    if type(request_context) == "function" then
+      request_context = request_context()
+    end
     local resolved = require("neoagent.models").resolve(
       selected.provider, selected.model, self.config, self.auth,
-      self.runtimes, http_context)
+      self.runtimes, request_context)
     return self:bind(selected, resolved, preferred)
   end)
   if not ok then return nil, util.normalize_error(model, "model") end

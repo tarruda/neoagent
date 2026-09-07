@@ -1,4 +1,5 @@
 local messages = require("neoagent.api.messages")
+local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
@@ -163,11 +164,14 @@ function M.build(model, call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
+    request_context = request_context.resolve(
+      model._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(model._request_opts) do
     request = request_opts.apply(request, layer, context)
   end
-  return request_opts.apply(request, call_opts.request_opts, context)
+  request = request_opts.apply(request, call_opts.request_opts, context)
+  return request, context.request_context
 end
 
 M.encode_messages = encode_messages

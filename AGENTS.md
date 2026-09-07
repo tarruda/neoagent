@@ -38,7 +38,8 @@ Architecture is the canonical ownership reference. Changes must preserve:
 - Top-level Applet ownership of drafts, Agent registration and selection,
   Session claims, shared provider runtimes, and the Provider Shell.
 - Explicit runtime sharing and coordination at the Service or Authentication
-  boundary; provider operations receive no Agent state.
+  boundary; request shaping receives copied request identity from the owning
+  composition, and shared provider operations receive no Agent state.
 - Copied semantic state for Views, content Trees from Renderers, Pane-owned
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.

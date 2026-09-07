@@ -2,6 +2,7 @@ local async = require("neoagent.async")
 local decoder = require("neoagent.api.openai_responses.decoder")
 local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
+local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local curl = require("neoagent.transport.curl")
 local sse = require("neoagent.transport.sse")
@@ -19,12 +20,12 @@ end
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local transport = self._transport
   local message
   local stream
   return async.run(function(run)
     local ok, outcome = pcall(function()
-      local request = self:_request(opts)
+      local request, identity = self:_request(opts)
+      local transport = request_context.bind_transport(self._transport, identity)
       stream = decoder.new(self, function(event) run:emit(event) end)
       message = stream.message
       local parser = sse.new({ on_event = stream.process })
@@ -118,6 +119,7 @@ function M.new(opts)
     _response_status = opts.response_status,
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
+    _request_context = request_context.copy(opts.request_context),
     _transport = opts.transport or curl,
   }, Model), "OpenAI Responses constructor")
 end

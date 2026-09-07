@@ -525,12 +525,33 @@ local function sensitive_header(name)
   return false
 end
 
-local function collect_header_secrets(headers, secrets, authentication)
+-- Values a recording publishes itself: exchange context, the Workspace index,
+-- and the Session directory name. A header that carries one of them, such as a
+-- provider conversation-attribution header, identifies the conversation instead
+-- of protecting a credential, so it never enters the redaction set.
+local function published_identity(context, workspace)
+  local result = {}
+  for _, key in ipairs({ "session_id", "agent_id" }) do
+    local value = context[key]
+    if type(value) == "string" and value ~= "" then result[value] = true end
+  end
+  if type(workspace) == "string" and workspace ~= "" then
+    result[workspace] = true
+  end
+  return result
+end
+
+local function collect_header_secrets(headers, secrets, authentication,
+    identity)
+  local published = identity or {}
+  local function register(value)
+    if not published[value] then add_secret(secrets, value) end
+  end
   for _, name in ipairs(sorted_keys(headers)) do
     local value = headers[name]
     local text = safe_string(value)
     if text ~= "" and sensitive_header(name) then
-      add_secret(secrets, text)
+      register(text)
       local selected = normalized_key(name)
       if selected:find("cookie", 1, true) then
         local index = 0
@@ -539,7 +560,7 @@ local function collect_header_secrets(headers, secrets, authentication)
           index = index + 1
           if entry and entry ~= ""
               and (selected ~= "set_cookie" or index == 1) then
-            add_secret(secrets, entry)
+            register(entry)
           end
         end
       end
@@ -694,11 +715,12 @@ function Recorder:_start(operation, request, supplied_context)
   local authentication = context.origin == "authentication"
   local model_exchange = context.origin == "model"
   local credential_response_body = context.credential_response_body == true
+  local identity = published_identity(context, workspace)
   local request_url = url_state(request.url)
   local request_body = model_exchange and raw_body_state(request.body)
     or body_state(request.body, request.headers)
   collect_url_secrets(request_url, secrets, authentication)
-  collect_header_secrets(request.headers, secrets, authentication)
+  collect_header_secrets(request.headers, secrets, authentication, identity)
   if not model_exchange then
     collect_body_secrets(request_body, secrets, authentication)
   end
@@ -829,6 +851,7 @@ function Recorder:_start(operation, request, supplied_context)
     chunks = {},
     secrets = secrets,
     authentication = authentication,
+    identity = identity,
     credential_response_body = credential_response_body,
     failed = false,
     closed = false,
@@ -977,7 +1000,8 @@ function Recorder:_finish(exchange, result, operation)
       and body_state(raw_body, response.headers)
     or raw_body_state(raw_body)
   collect_header_secrets(
-    response.headers, exchange.secrets, exchange.authentication)
+    response.headers, exchange.secrets, exchange.authentication,
+    exchange.identity)
   if exchange.credential_response_body then
     collect_body_secrets(
       response_body, exchange.secrets, exchange.authentication)

@@ -371,6 +371,38 @@ describe("neoagent.api.openai_completions", function()
     assert.are.same({ provider = true }, provider_opts.body.nested)
   end)
 
+  it("hands the composition request context to request callbacks", function()
+    local fake = fake_transport.new({ { chunks = {
+      "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+    } } })
+    local identity = { session_id = "session-4" }
+    local model = openai.new({
+      provider = "local",
+      model = "test",
+      base_url = "http://localhost/v1",
+      request_context = identity,
+      request_opts = function(context)
+        return { headers = {
+          ["x-conversation"] = context.request_context.session_id,
+        } }
+      end,
+      transport = fake,
+    })
+    identity.session_id = "later-session"
+
+    assert.is_true(wait(model:stream({ messages = {} })).ok)
+    assert.are.equal("session-4", fake.requests[1].headers["x-conversation"])
+
+    local rejected, err = pcall(openai.new, {
+      provider = "local",
+      model = "test",
+      base_url = "http://localhost/v1",
+      request_context = { "session-4" },
+    })
+    assert.is_false(rejected)
+    assert.are.equal("request_context must be an object", err.message)
+  end)
+
   it("encodes multimodal history, tools, and dynamic model options", function()
     local key_calls = 0
     local model = openai.new({

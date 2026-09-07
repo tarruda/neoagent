@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local messages = require("neoagent.api.messages")
 local model_contract = require("neoagent.model")
+local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
@@ -366,24 +367,26 @@ function Model:_request(call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
+    request_context = request_context.resolve(
+      self._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, ctx)
   end
   request = request_opts.apply(request, call_opts.request_opts, ctx)
-  return request
+  return request, ctx.request_context
 end
 
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
-  local transport = self._transport
   local message
   local calls
   local calls_complete = false
   return async.run(function(run)
     local ok, outcome = pcall(function()
-      local request = self:_request(opts)
+      local request, identity = self:_request(opts)
+      local transport = request_context.bind_transport(self._transport, identity)
       message = {
         role = "assistant",
         content = {},
@@ -607,6 +610,7 @@ function M.new(opts)
     _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
+    _request_context = request_context.copy(opts.request_context),
     _timeout_ms = opts.timeout_ms,
     _transport = opts.transport or curl,
   }, Model), "OpenAI Chat Completions constructor")
