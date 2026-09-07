@@ -45,7 +45,6 @@ lua/neoagent/sandbox/linux/seccomp.lua
 lua/neoagent/sandbox/macos/init.lua
 lua/neoagent/sandbox/macos/profile.lua
 lua/neoagent/sandbox/platform.lua
-lua/neoagent/sandbox/result.lua
 lua/neoagent/sandbox/windows/compile.lua
 lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/sandbox/windows/protocol.lua
