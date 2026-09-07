@@ -1,0 +1,36 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/deepseek/models
+  headers:
+    authorization: Bearer integration-key
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 114
+---
+type: response_body
+at_us: 0
+body:
+  object: list
+  data:
+  - id: deepseek-v4-pro
+    object: model
+  - id: deepseek-v5-preview
+    object: model
+bytes: 114
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

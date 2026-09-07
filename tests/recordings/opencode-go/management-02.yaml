@@ -1,0 +1,44 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/v1/usage
+  headers:
+    Accept: application/json
+    Authorization: Bearer go-key
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 229
+---
+type: response_body
+at_us: 0
+body:
+  usage:
+    rolling:
+      status: ok
+      percent: 45
+      resetsAt: '2026-09-08T00:00:00Z'
+    weekly:
+      status: ok
+      percent: 12
+      resetsAt: '2026-09-08T00:00:00Z'
+    monthly:
+      status: ok
+      percent: 70
+      resetsAt: '2026-09-08T00:00:00Z'
+bytes: 229
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

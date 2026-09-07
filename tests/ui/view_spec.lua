@@ -144,6 +144,35 @@ describe("neoagent.ui", function()
     return result
   end
 
+  it("renders recovery warnings with warning styling between streamed blocks", function()
+    local result = view()
+    assert(result:open())
+    result:apply({ type = "thinking_delta", text = "Original reasoning." })
+    result:apply({ type = "warning", message = "Provider bug. Trying one follow-up request." })
+    result:apply({ type = "thinking_delta", index = 1, text = "Continued reasoning." })
+    result:apply({ type = "message_end", message = { role = "assistant", content = {
+      { type = "thinking", thinking = "Original reasoning." },
+      { type = "thinking", index = 1, thinking = "Continued reasoning." },
+    } } })
+    result:finish({ ok = true })
+    assert(vim.wait(1000, function()
+      return text(result):find("Warning: Provider bug.", 1, true) ~= nil
+    end))
+    local rendered = text(result)
+    local first = assert(rendered:find("Original reasoning.", 1, true))
+    local warning = assert(rendered:find("Warning: Provider bug.", 1, true))
+    local continued = assert(rendered:find("Continued reasoning.", 1, true))
+    assert.is_true(first < warning and warning < continued)
+    local highlighted = false
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
+        view_handles.buffer(result, "transcript"), result.transcript.pane.namespace,
+        0, -1, { details = true, hl_name = true })) do
+      if mark[4].hl_group == "NeoagentWarning" then highlighted = true end
+    end
+    assert.is_true(highlighted)
+    assert.are.equal("DiagnosticWarn", vim.api.nvim_get_hl(0, { name = "NeoagentWarning", link = true }).link)
+  end)
+
   it("uses configured border characters in the transcript footer", function()
     local cases = {
       { border = {

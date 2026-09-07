@@ -33,7 +33,7 @@ function M.assert(value, prefix)
 end
 
 local block_fields = {
-  "key", "revision", "kind", "content", "text", "extra", "error",
+  "key", "revision", "kind", "content", "text", "extra", "error", "warning",
   "name", "state", "call", "raw", "update", "message", "finished",
   "summary", "tokens_before", "header", "resting_header", "overflow",
   "image_scope", "text_epoch",

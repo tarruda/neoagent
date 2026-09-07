@@ -4,8 +4,8 @@ local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
 local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
-local curl = require("neoagent.transport.curl")
-local sse = require("neoagent.transport.sse")
+local http = require("neoagent.transport.http")
+local http_response = require("neoagent.api.http_response")
 local util = require("neoagent.util")
 
 local M = {}
@@ -28,28 +28,20 @@ function Model:stream(opts)
       local transport = request_context.bind_transport(self._transport, identity)
       stream = decoder.new(self, function(event) run:emit(event) end)
       message = stream.message
-      local parser = sse.new({ on_event = stream.process })
-      local child = transport.request({
+      local child = transport.stream({
         request = {
           url = request.url,
           headers = request.headers,
           body = util.json_encode(request.body),
         },
-        on_chunk = function(chunk)
-          local parsed, err = parser:feed(chunk)
-          if not parsed then error(util.error("protocol", err), 0) end
-        end,
+        on_event = stream.process,
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
-      if transport_ok and transport_result.ok then
-        local finished, finish_err = parser:finish()
-        if not finished then error(util.error("protocol", finish_err), 0) end
-      end
       if not transport_ok then error(transport_result, 0) end
-      if not transport_result.ok then error(transport_result.error, 0) end
+      http_response.check(transport_result)
       if self._response_status then
         local status, details = self._response_status(
-          transport_result.response.headers or {})
+          transport_result.headers or {})
         if type(status) == "string" and status ~= ""
             or type(details) == "table" then
           run:emit({
@@ -80,7 +72,7 @@ function Model:stream(opts)
     if not normalized then
       return {
         ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
+        error = message_err,
       }
     end
     return { ok = true, message = normalized,
@@ -120,7 +112,7 @@ function M.new(opts)
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _request_context = request_context.copy(opts.request_context),
-    _transport = opts.transport or curl,
+    _transport = http.new(opts.transport),
   }, Model), "OpenAI Responses constructor")
 end
 

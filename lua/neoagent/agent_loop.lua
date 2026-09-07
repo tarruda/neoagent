@@ -204,7 +204,7 @@ function M.run(opts)
           and semantic_message.normalize_model_response
         or semantic_message.normalize
       local normalized, err = normalize(message)
-      if not normalized then error(util.error(owner, err), 0) end
+      if not normalized then error(util.normalize_error(err, owner), 0) end
       if normalized.role ~= expected_role then
         error(util.error(owner, expected_role .. " message is required"), 0)
       end

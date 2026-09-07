@@ -1,0 +1,36 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/deepseek/user/balance
+  headers:
+    authorization: Bearer integration-key
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 133
+---
+type: response_body
+at_us: 0
+body:
+  is_available: true
+  balance_infos:
+  - currency: USD
+    total_balance: '8.50'
+    granted_balance: '1.00'
+    topped_up_balance: '7.50'
+bytes: 133
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

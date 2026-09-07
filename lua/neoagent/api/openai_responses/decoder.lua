@@ -180,14 +180,12 @@ function M.new(model, emit)
     terminal = true
   end
 
-  local function process_payload(payload)
-    if payload == "[DONE]" then return end
-    local decoded, event = pcall(vim.json.decode, payload)
-    if not decoded or type(event) ~= "table" then
-      error(util.error("protocol", "Invalid JSON in SSE response", decoded and payload or event), 0)
+  local function process_payload(event)
+    if type(event) ~= "table" then
+      error(util.error("protocol", "Expected an object in SSE response"), 0)
     end
     if type(event.error) == "table" and event.type == nil then
-      error(util.error("model", event.error.message or "Provider returned an error", payload), 0)
+      error(util.error("model", event.error.message or "Provider returned an error", util.json_encode(event)), 0)
     end
     local item = event.item or {}
     local item_id = event.item_id or item.id
@@ -268,12 +266,12 @@ function M.new(model, emit)
     elseif event.type == "response.incomplete" then
       finish_response(event.response or {}, true)
     elseif event.type == "error" then
-      error(util.error("model", event.message or "Provider returned an error", payload), 0)
+      error(util.error("model", event.message or "Provider returned an error", util.json_encode(event)), 0)
     elseif event.type == "response.failed" then
       terminal = true
       local response = event.response or {}
       local detail = response.error or {}
-      error(util.error("model", detail.message or "Provider response failed", payload), 0)
+      error(util.error("model", detail.message or "Provider response failed", util.json_encode(event)), 0)
     end
   end
 

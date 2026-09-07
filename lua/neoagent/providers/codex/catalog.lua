@@ -1,5 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
+local http_client = require("neoagent.transport.http")
 local model_config = require("neoagent.model_config")
 local util = require("neoagent.util")
 
@@ -130,7 +130,7 @@ function M.discover(ctx)
   local service_opts = provider.service_opts or {}
   local timeout_ms = service_opts.timeout_ms or DEFAULT_TIMEOUT_MS
   local maximum = service_opts.max_response_bytes or DEFAULT_MAX_RESPONSE_BYTES
-  local transport = ctx.transport or curl
+  local transport = http_client.new(ctx.transport)
   return async.run(function()
     local resolved = ctx.resolve_auth():await()
     if resolved.ok == false then error(resolved.error, 0) end
@@ -168,12 +168,7 @@ function M.discover(ctx)
       err.status = fetched.status
       error(err, 0)
     end
-    if type(fetched.body) ~= "string" or #fetched.body > maximum then
-      error(util.error("provider",
-        "Codex model catalog response is invalid"), 0)
-    end
-    local ok, decoded = pcall(vim.json.decode, fetched.body)
-    local models = ok and parse(decoded) or nil
+    local models = parse(fetched.body)
     if not models then
       error(util.error("provider",
         "Codex returned an invalid model catalog"), 0)

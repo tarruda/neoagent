@@ -40,7 +40,7 @@ describe("neoagent.transport.curl", function()
 
   it("builds an argument vector without a shell", function()
     assert.are.same({
-      "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
+      "curl", "--no-buffer", "--silent", "--show-error",
       "-X", "POST", "-H", "Authorization: Bearer x", "-H",
       "Content-Type: application/json", "http://localhost",
     }, curl.command({
@@ -70,7 +70,7 @@ describe("neoagent.transport.curl", function()
       "http://localhost",
     }, vim.list_slice(fetch_command, 8))
     assert.are.same({
-      "curl", "--no-buffer", "--silent", "--show-error", "--fail-with-body",
+      "curl", "--no-buffer", "--silent", "--show-error",
       "-X", "GET", "--max-time", "1.500", "http://localhost",
     }, curl.command({ url = "http://localhost", method = "GET", timeout_ms = 1500 }))
   end)
@@ -129,5 +129,92 @@ describe("neoagent.transport.curl", function()
     vim.system = original_system
     assert.is_false(fetched.ok)
     assert.matches("max_response_bytes", fetched.error.message)
+  end)
+end)
+
+describe("curl process boundary", function()
+  local original, create_temp, files
+  before_each(function()
+    original, create_temp, files = vim.system, require("neoagent.fs").create_temp, {}
+  end)
+  after_each(function()
+    vim.system, require("neoagent.fs").create_temp = original, create_temp
+    for _, path in ipairs(files) do
+      local retained = vim.uv.fs_stat(path)
+      vim.fn.delete(path)
+      assert.is_nil(retained)
+    end
+  end)
+  local function wait(run)
+    assert(vim.wait(1000, function() return run:is_done() end))
+    return run:result()
+  end
+  local function process(header_lines)
+    local callbacks, completion, killed
+    vim.system = function(command, opts, done)
+      local flag = vim.fn.index(command, "--dump-header")
+      assert(flag >= 0, "curl must collect response headers")
+      local index = flag + 2
+      files[#files + 1] = command[index]
+      vim.fn.writefile(header_lines, command[index], "b")
+      callbacks, completion = opts, done
+      return { kill = function() killed = true end }
+    end
+    return function() return callbacks, completion, killed end
+  end
+
+  it("preserves final header blocks and streamed bytes across process completion", function()
+    local state = process({ "HTTP/1.1 100 Continue", "X-Interim: gone", "",
+      "HTTP/2 201 Created", "X-Request-Id: final", "" })
+    local chunks = {}
+    local run = curl.request({ request = { url = "https://api.test", body = "{}" },
+      on_chunk = function(chunk) chunks[#chunks + 1] = chunk end })
+    local callbacks, finish = state()
+    assert.are.equal("{}", callbacks.stdin)
+    callbacks.stdout(nil, "first\000")
+    callbacks.stdout(nil, "second")
+    finish({ code = 0 })
+    local result = wait(run)
+    assert.is_true(result.ok)
+    assert.are.same({ "first\000", "second" }, chunks)
+    assert.are.equal("first\000second", result.response.stdout)
+    assert.are.equal(201, result.response.status)
+    assert.are.same({ ["x-request-id"] = "final" }, result.response.headers)
+  end)
+
+  it("stops the process on consumer failure and retains parsed response metadata", function()
+    local state = process({ "HTTP/2 200 OK", "X-Request-Id: failed-stream", "" })
+    local run = curl.request({ request = { url = "https://api.test" },
+      on_chunk = function() error(util.error("protocol", "broken event"), 0) end })
+    local callbacks = state()
+    callbacks.stdout(nil, "data: broken\n\n")
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.are.equal("broken event", result.error.message)
+    assert.are.equal("failed-stream", result.error.response.headers["x-request-id"])
+    local _, _, killed = state()
+    assert.is_true(killed)
+  end)
+
+  it("sends fetched bodies on stdin and rejects missing status output", function()
+    local state = process({})
+    local run = curl.fetch({ request = { url = "https://api.test", body = "private body" } })
+    local callbacks, finish = state()
+    assert.are.equal("private body", callbacks.stdin)
+    finish({ code = 0, stdout = "body without a status suffix" })
+    local result = wait(run)
+    assert.is_false(result.ok)
+    assert.are.equal("protocol", result.error.kind)
+    assert.matches("missing an HTTP status", result.error.message)
+  end)
+
+  it("reports private header file allocation failures before starting a process", function()
+    require("neoagent.fs").create_temp = function() return nil, "disk full" end
+    vim.system = function() error("process started without private header storage") end
+    local result = wait(curl.request({ request = { url = "https://api.test" } }))
+    assert.is_false(result.ok)
+    assert.matches("Failed to create curl header file", result.error.message)
+    assert.are.equal("disk full", result.error.detail)
   end)
 end)

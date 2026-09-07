@@ -127,6 +127,10 @@ function M.new(opts, resources)
   function service:state() return dashboard:state() end
   function service:subscribe(listener) return dashboard:subscribe(listener) end
 
+  function service:wrap_model(model)
+    return require("neoagent.providers.opencode_go.model").wrap(model)
+  end
+
   service.operations.refresh = {
     label = "Refresh usage",
     description = "Load shared 5-hour, weekly, and monthly Go quotas",

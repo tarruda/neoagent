@@ -392,7 +392,7 @@ function Manager:wrap(model, id, opts)
       end
       call.on_event = function(event) run:emit(event) end
       call.on_done = nil
-      return self._model:stream(call):await()
+      return model_contract.await_result(self._model:stream(call))
     end, { on_event = call_opts.on_event, on_done = call_opts.on_done, error_kind = "auth" })
   end
   wrapped._manager, wrapped._method, wrapped._model = self, id, model

@@ -6,8 +6,8 @@ local request_opts = require("neoagent.api.request_opts")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local tool_schema = require("neoagent.api.tool_schema")
-local curl = require("neoagent.transport.curl")
-local sse = require("neoagent.transport.sse")
+local http = require("neoagent.transport.http")
+local http_response = require("neoagent.api.http_response")
 local util = require("neoagent.util")
 
 local M = {}
@@ -406,18 +406,12 @@ function Model:stream(opts)
       local last_inference_stats
       local inference_state = { generation_samples = {}, generation_head = 1 }
 
-      local function process_payload(payload)
-        if payload == "[DONE]" then
-          done_seen = true
-          calls_complete = true
-          return
-        end
-        local decoded_ok, chunk = pcall(vim.json.decode, payload)
-        if not decoded_ok or type(chunk) ~= "table" then
-          error(util.error("protocol", "Invalid JSON in SSE response", decoded_ok and payload or chunk), 0)
+      local function process_payload(chunk)
+        if type(chunk) ~= "table" then
+          error(util.error("protocol", "Expected an object in SSE response"), 0)
         end
         if type(chunk.error) == "table" then
-          error(util.error("model", chunk.error.message or "Provider returned an error", payload), 0)
+          error(util.error("model", chunk.error.message or "Provider returned an error", util.json_encode(chunk)), 0)
         end
         if type(chunk.usage) == "table" then
           message.usage = usage_from(chunk.usage)
@@ -516,26 +510,20 @@ function Model:stream(opts)
         end
       end
 
-      local parser = sse.new({ on_event = process_payload })
-      local child = transport.request({
+      local child = transport.stream({
         request = {
           url = request.url,
           headers = request.headers,
           body = util.json_encode(request.body),
           timeout_ms = request.timeout_ms,
         },
-        on_chunk = function(chunk)
-          local parsed, err = parser:feed(chunk)
-          if not parsed then
-            error(util.error("protocol", err), 0)
-          end
+        on_event = process_payload,
+        on_done_marker = function()
+          done_seen = true
+          calls_complete = true
         end,
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
-      if transport_ok and transport_result.ok then
-        local finished, finish_err = parser:finish()
-        if not finished then error(util.error("protocol", finish_err), 0) end
-      end
       for _, call in pairs(calls) do
         if calls_complete then complete_call(call) end
         if calls_complete and call.id == "" then
@@ -547,9 +535,7 @@ function Model:stream(opts)
       if not transport_ok then
         error(transport_result, 0)
       end
-      if not transport_result.ok then
-        error(transport_result.error, 0)
-      end
+      http_response.check(transport_result)
       if protocol_error then
         error(protocol_error, 0)
       end
@@ -569,7 +555,7 @@ function Model:stream(opts)
     if not message then
       return {
         ok = false,
-        error = util.error("model", "Invalid assistant message", message_err),
+        error = message_err,
       }
     end
     return { ok = true, message = message, text = util.text_content(message.content) }
@@ -612,7 +598,7 @@ function M.new(opts)
     _request_opts = layers,
     _request_context = request_context.copy(opts.request_context),
     _timeout_ms = opts.timeout_ms,
-    _transport = opts.transport or curl,
+    _transport = http.new(opts.transport),
   }, Model), "OpenAI Chat Completions constructor")
 end
 

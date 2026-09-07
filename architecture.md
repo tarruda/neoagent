@@ -31,6 +31,12 @@ encode requests, decode provider streams, and recover meaningful partial
 output. They adapt images and provider-specific metadata in request copies;
 the original conversation remains unchanged.
 
+The shared HTTP client supplies parsed response headers, status, and JSON
+values or decoded SSE events to API adapters, Authentication, catalogs, and
+Services. It owns JSON decoding and SSE framing; consumers own provider
+semantics. A byte transport beneath it owns network I/O, allowing the HTTP
+client to use curl or replayed responses without changing those consumers.
+
 The Agent Loop receives its Model, messages, toolset, executor, context,
 steering source, and commit function explicitly. It validates the turn before
 starting. Assistant, tool-result, and steering messages commit before dependent
@@ -188,7 +194,8 @@ placements and leaves text fallbacks.
 
 ## HTTP recording
 
-Recording observes the provider transport. It cannot change provider results.
+Recording observes the byte transport beneath the shared HTTP client, preserving
+response content before decoding. It cannot change provider results.
 Exchanges carry request correlation, protocol data, timing, and terminal
 results; Workspace/Session recordings and shared-provider recordings have
 separate retention scopes.

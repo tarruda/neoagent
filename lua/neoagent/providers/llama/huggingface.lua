@@ -1,5 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
+local http_client = require("neoagent.transport.http")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
@@ -94,14 +94,12 @@ function Client:request(path)
     }):await()
     if not fetched.ok then error(fetched.error, 0) end
     if fetched.status and (fetched.status < 200 or fetched.status >= 300) then
-      local ok, payload = pcall(vim.json.decode, fetched.body or "")
+      local payload = fetched.body
       local fallback = "Hugging Face returned HTTP " .. tostring(fetched.status)
       error(util.error("provider",
-        ok and payload_error(payload, fallback) or fallback), 0)
+        payload_error(payload, fallback)), 0)
     end
-    local ok, payload = pcall(vim.json.decode, fetched.body or "")
-    if not ok then error(util.error("provider", "Hugging Face returned an invalid response"), 0) end
-    return { ok = true, value = payload }
+    return { ok = true, value = fetched.body }
   end, { error_kind = "provider" })
 end
 
@@ -203,7 +201,7 @@ function M.new(opts)
   return setmetatable({
     token = opts.token,
     base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", ""),
-    transport = opts.transport or curl,
+    transport = http_client.new(opts.transport),
   }, Client)
 end
 

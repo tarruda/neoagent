@@ -1,0 +1,38 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.test/backend-api/wham/rate-limit-reset-credits/consume
+  headers:
+    Authorization: Bearer secret-token
+    chatgpt-account-id: secret-account
+    Content-Type: application/json
+  body:
+    redeem_request_id: stable-request
+    credit_id: credit-1
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 34
+---
+type: response_body
+at_us: 0
+body:
+  code: reset
+  windows_reset: 2
+bytes: 34
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

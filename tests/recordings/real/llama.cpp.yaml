@@ -1,0 +1,51 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/chat/completions
+  headers:
+    Authorization: Bearer replay-key
+  body:
+    model: deepseek-v4-flash-vision-exp
+    messages:
+    - role: user
+      content: Hello
+    stream: true
+    stream_options:
+      include_usage: true
+    return_progress: true
+    timings_per_token: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 408
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":null}}]}
+
+  data: {"choices":[{"index":0,"finish_reason":null,"delta":{"content":"Recorded reply."}}]}
+
+  data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}
+
+  data: {"choices":[],"usage":{"completion_tokens":214,"prompt_tokens":8,"total_tokens":222,"prompt_tokens_details":{"cached_tokens":0}}}
+
+  data: [DONE]
+
+bytes: 408
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

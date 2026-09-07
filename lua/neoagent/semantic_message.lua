@@ -374,15 +374,20 @@ end
 
 function M.normalize_model_response(message)
   local result, err = M.normalize(message)
-  if not result then return nil, err end
+  if not result then
+    return nil, { kind = "protocol", code = "invalid_assistant_message",
+      message = "Invalid assistant message: " .. err, detail = err }
+  end
   if result.role ~= "assistant" then
-    return failure("assistant message is required")
+    return nil, { kind = "protocol", code = "invalid_assistant_message",
+      message = "assistant message is required" }
   end
   if result.stopReason == "toolUse" then
     for _, block in ipairs(result.content) do
       if block.type == "toolCall" then return result end
     end
-    return failure("Provider declared tool use without supplying a tool call")
+    return nil, { kind = "protocol", code = "missing_tool_call",
+      message = "Provider declared tool use without supplying a tool call" }
   end
   return result
 end

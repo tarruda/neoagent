@@ -24,7 +24,9 @@ describe("neoagent semantic messages", function()
     local normalized, err = semantic_message.normalize_model_response(message)
 
     assert.is_nil(normalized)
-    assert.matches("declared tool use without supplying a tool call", err)
+    assert.are.equal("protocol", err.kind)
+    assert.are.equal("missing_tool_call", err.code)
+    assert.matches("declared tool use without supplying a tool call", err.message)
   end)
 
   it("normalizes one complete linked conversation without mutating input", function()

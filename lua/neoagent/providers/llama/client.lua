@@ -1,6 +1,5 @@
 local async = require("neoagent.async")
-local curl = require("neoagent.transport.curl")
-local sse = require("neoagent.transport.sse")
+local http_client = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
 local M = {}
@@ -174,17 +173,14 @@ function Client:request(path, opts)
     local fetched = self.transport.fetch({ request = request }):await()
     if not fetched.ok then error(fetched.error, 0) end
     if fetched.status and (fetched.status < 200 or fetched.status >= 300) then
-      local ok, payload = pcall(vim.json.decode, fetched.body or "")
-      local message = ok and payload_error(payload,
+      local payload = fetched.body
+      local message = payload_error(payload,
         "llama.cpp returned HTTP " .. tostring(fetched.status))
-        or "llama.cpp returned HTTP " .. tostring(fetched.status)
       local err = util.error("provider", message)
       err.status = fetched.status
       error(err, 0)
     end
-    local ok, payload = pcall(vim.json.decode, fetched.body or "")
-    if not ok then error(util.error("provider", "llama.cpp returned an invalid response"), 0) end
-    return { ok = true, value = payload }
+    return { ok = true, value = fetched.body }
   end, { error_kind = "provider" })
 end
 
@@ -252,30 +248,23 @@ function Client:watch(on_event)
   return async.run(function()
     local headers = {}
     if self.api_key then headers.Authorization = "Bearer " .. self.api_key end
-    local parser = sse.new({
-      on_event = function(data)
-        if data == "" then return end
-        local ok, value = pcall(vim.json.decode, data)
-        if ok and type(value) == "table"
-            and type(value.model) == "string"
-            and type(value.event) == "string" then
-          on_event(value)
-        end
-      end,
-    })
-    local fetched = self.transport.request({
+    local fetched = self.transport.stream({
       request = {
         url = self.server_url .. "/models/sse",
         method = "GET",
         headers = headers,
         timeout_ms = nil,
       },
-      on_chunk = function(chunk)
-        local ok, err = parser:feed(chunk)
-        if not ok then error(util.error("protocol", err), 0) end
+      on_event = function(value)
+        if type(value) == "table" and type(value.model) == "string"
+            and type(value.event) == "string" then on_event(value) end
       end,
     }):await()
     if not fetched.ok then error(fetched.error, 0) end
+    if fetched.status and (fetched.status < 200 or fetched.status >= 300) then
+      error(util.error("provider", payload_error(fetched.body,
+        "llama.cpp returned HTTP " .. fetched.status)), 0)
+    end
   end, { error_kind = "provider" })
 end
 
@@ -425,7 +414,7 @@ function M.new(opts)
   return setmetatable({
     server_url = M.normalize_server_url(opts.server_url),
     api_key = opts.api_key,
-    transport = opts.transport or curl,
+    transport = http_client.new(opts.transport),
     wait_timeout_ms = wait_timeout_ms,
     download_timeout_ms = download_timeout_ms,
     poll_interval_ms = poll_interval_ms,

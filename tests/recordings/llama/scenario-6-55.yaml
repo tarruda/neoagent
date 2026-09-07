@@ -1,0 +1,75 @@
+---
+operation: request
+request:
+  body_bytes: 0
+  headers: {}
+  method: GET
+  url: https://api.test/models/sse
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 12991
+bytes: 84
+index: 1
+type: response_chunk
+---
+at_us: 54408
+bytes: 172
+index: 2
+type: response_chunk
+---
+at_us: 94409
+bytes: 147
+index: 3
+type: response_chunk
+---
+at_us: 167782
+bytes: 100
+index: 4
+type: response_chunk
+---
+at_us: 182467
+bytes: 83
+index: 5
+type: response_chunk
+---
+at_us: 222957
+bytes: 171
+index: 6
+type: response_chunk
+---
+at_us: 262916
+bytes: 100
+index: 7
+type: response_chunk
+---
+at_us: 268956
+body: |+
+  data: {"model":"fake/unloaded","event":"model_status","data":{"status":"loading"}}
+
+  data: {"model":"fake/unloaded","event":"status_change","data":{"status":"loading","progress":{"stages":["text_model","mmproj_model"],"current":"text_model","value":0.5}}}
+
+  data: {"model":"fake/unloaded","event":"status_change","data":{"status":"loaded","info":{"meta":{"n_ctx":4096,"n_params":500000,"size":524288}}}}
+
+  data: {"model":"fake/unloaded","event":"status_change","data":{"status":"unloaded","exit_code":0}}
+
+  data: {"model":"fake/failing","event":"model_status","data":{"status":"loading"}}
+
+  data: {"model":"fake/failing","event":"status_change","data":{"status":"loading","progress":{"stages":["text_model","mmproj_model"],"current":"text_model","value":0.5}}}
+
+  data: {"model":"fake/failing","event":"status_change","data":{"status":"unloaded","exit_code":42}}
+
+bytes: 857
+type: response_body
+---
+at_us: 268956
+headers: {}
+type: response
+---
+at_us: 268956
+error:
+  kind: cancelled
+  message: Operation cancelled
+ok: false
+type: complete

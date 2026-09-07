@@ -24,6 +24,7 @@ local highlight_links = {
   NeoagentThinking = "Comment",
   NeoagentToolOutput = "Comment",
   NeoagentError = "DiagnosticError",
+  NeoagentWarning = "DiagnosticWarn",
   NeoagentMuted = "Comment",
   NeoagentBorder = "FloatBorder",
   NeoagentMarkdownHeading = "Title",
@@ -1251,7 +1252,8 @@ function M.block(self, block, neighbors)
   end
   return decorate_block(self, block,
     prose(plain(block.text,
-      block.error and "NeoagentError" or "NeoagentMuted")), neighbors)
+      block.error and "NeoagentError"
+        or block.warning and "NeoagentWarning" or "NeoagentMuted")), neighbors)
 end
 
 function M.details(self, block, options)

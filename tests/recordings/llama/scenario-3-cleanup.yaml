@@ -1,0 +1,34 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.test/models/unload
+  headers:
+    Authorization: Bearer router-key
+    Content-Type: application/json
+  body:
+    model: fake/unloaded
+  body_format: json
+---
+type: response_chunk
+index: 1
+bytes: 2
+at_us: 0
+---
+type: response_body
+body: {}
+bytes: 2
+at_us: 0
+body_format: json
+---
+type: response
+status: 200
+headers: {}
+at_us: 0
+---
+type: complete
+ok: true
+at_us: 0

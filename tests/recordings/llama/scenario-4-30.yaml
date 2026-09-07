@@ -1,0 +1,48 @@
+---
+operation: request
+request:
+  body_bytes: 0
+  headers:
+    Authorization: Bearer router-key
+  method: GET
+  url: https://api.test/models/sse
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 14475
+bytes: 97
+index: 1
+type: response_chunk
+---
+at_us: 57858
+bytes: 211
+index: 2
+type: response_chunk
+---
+at_us: 305408
+bytes: 70
+index: 3
+type: response_chunk
+---
+at_us: 327234
+body: |+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"model_status","data":{"status":"downloading"}}
+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"download_progress","data":{"progress":{"https://fake.invalid/model.gguf":{"done":256,"total":512},"https://fake.invalid/mmproj.gguf":{"done":256,"total":512}}}}
+
+  data: {"model":"fake/downloaded:Q4_K_M","event":"download_finished"}
+
+bytes: 378
+type: response_body
+---
+at_us: 327234
+headers: {}
+type: response
+---
+at_us: 327234
+error:
+  kind: cancelled
+  message: Operation cancelled
+ok: false
+type: complete

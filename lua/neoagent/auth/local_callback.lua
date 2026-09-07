@@ -99,7 +99,7 @@ local function parsed_request(buffer, maximum)
   }
 end
 
-function M.listen(opts)
+function M._listen(opts, new_connection)
   opts = opts or {}
   assert(type(opts.handler) == "function",
     "local callback handler is required")
@@ -118,7 +118,7 @@ function M.listen(opts)
       and timeout_ms > 0 and timeout_ms < math.huge,
     "local callback timeout_ms must be positive and finite")
 
-  local listener = vim.uv.new_tcp()
+  local listener = new_connection()
   local bound, bind_err = listener:bind(host, port)
   if not bound then close_handle(listener) return nil, bind_err end
   local address, address_err = listener:getsockname()
@@ -158,7 +158,7 @@ function M.listen(opts)
 
   local listened, listen_err = listener:listen(16, function(accept_err)
     if accept_err or closed then return end
-    local client = vim.uv.new_tcp()
+    local client = new_connection()
     if not listener:accept(client) then close_handle(client) return end
     clients[client] = true
     local buffer = ""
@@ -225,6 +225,10 @@ function M.listen(opts)
     end,
     close = function() return close(true) end,
   }
+end
+
+function M.listen(opts)
+  return M._listen(opts, vim.uv.new_tcp)
 end
 
 return M

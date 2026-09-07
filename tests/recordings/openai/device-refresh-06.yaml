@@ -1,0 +1,34 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.test/oauth/token
+  headers:
+    Content-Type: application/x-www-form-urlencoded
+  body: grant_type=authorization_code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&code=authorization&code_verifier=verifier&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 266
+---
+type: response_body
+at_us: 0
+body:
+  access_token: header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJkZXZpY2UtYWNjb3VudCIsICJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwbHVzIn0sICJlbWFpbCI6ICJzeW50aGV0aWNAZXhhbXBsZS50ZXN0In0.signature
+  refresh_token: first-refresh
+  expires_in: 1
+bytes: 266
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

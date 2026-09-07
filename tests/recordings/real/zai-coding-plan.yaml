@@ -1,0 +1,45 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/v1/chat/completions
+  headers:
+    Authorization: Bearer replay-key
+  body:
+    model: glm-5.3
+    messages:
+    - role: user
+      content: Hello
+    stream: true
+    stream_options:
+      include_usage: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 377
+---
+type: response_body
+at_us: 0
+body: |+
+  data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Recorded reply."}}]}
+
+  data: {"choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":74254,"completion_tokens":50,"total_tokens":74304,"prompt_tokens_details":{"cached_tokens":74112},"completion_tokens_details":{"reasoning_tokens":0}}}
+
+  data: [DONE]
+
+bytes: 377
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

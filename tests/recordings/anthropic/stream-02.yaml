@@ -1,0 +1,96 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.test/messages
+  headers:
+    x-api-key: anthropic-key
+    anthropic-version: '2023-06-01'
+  body:
+    model: claude-test
+    messages:
+    - role: user
+      content: Inspect it
+    - role: assistant
+      content:
+      - type: thinking
+        thinking: I should inspect.
+        signature: sig-1
+      - type: tool_use
+        id: call-1
+        name: inspect
+        input:
+          path: x.lua
+    - role: user
+      content:
+      - type: tool_result
+        tool_use_id: call-1
+        content: return true
+    system: Be concise
+    max_tokens: 128
+    stream: true
+    thinking:
+      type: enabled
+      budget_tokens: 32
+    tools:
+    - name: inspect
+      description: Inspect a path
+      input_schema:
+        type: object
+        properties:
+          path:
+            type: string
+        required:
+        - path
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 235
+---
+type: response_chunk
+index: 2
+at_us: 0
+bytes: 243
+---
+type: response_chunk
+index: 3
+at_us: 0
+bytes: 261
+---
+type: response_body
+at_us: 0
+body: |+
+  event: message_start
+  data: {"type":"message_start","message":{"id":"msg-2","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":24,"output_tokens":0}}}
+
+  event: content_block_start
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Looks good."}}
+
+  event: content_block_stop
+  data: {"type":"content_block_stop","index":0}
+
+  event: message_delta
+  data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":6}}
+
+  event: message_stop
+  data: {"type":"message_stop"}
+
+bytes: 739
+---
+type: response
+at_us: 0
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 0
+ok: true

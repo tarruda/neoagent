@@ -1,0 +1,38 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/v1/organization/costs?start_time=1784678400&end_time=1787270400&bucket_width=1d&limit=31
+  headers:
+    Authorization: Bearer admin-key
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 117
+---
+type: response_body
+at_us: 0
+body:
+  object: page
+  has_more: false
+  next_page: null
+  data:
+  - results:
+    - amount:
+        value: 1.25
+        currency: usd
+bytes: 117
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

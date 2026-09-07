@@ -1,0 +1,40 @@
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.test/backend-api/wham/usage
+  headers:
+    authorization: Bearer integration-secret
+    chatgpt-account-id: integration-account
+---
+type: response_chunk
+index: 1
+at_us: 0
+bytes: 186
+---
+type: response_body
+at_us: 0
+body:
+  plan_type: plus
+  rate_limit:
+    allowed: true
+    limit_reached: false
+    primary_window:
+      used_percent: 25
+      limit_window_seconds: 18000
+      reset_after_seconds: 300
+      reset_at: 1787793900
+bytes: 186
+body_format: json
+---
+type: response
+at_us: 0
+status: 200
+headers: {}
+---
+type: complete
+at_us: 0
+ok: true

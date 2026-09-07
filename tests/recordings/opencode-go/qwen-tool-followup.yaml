@@ -1,0 +1,93 @@
+# Synthetic continuation used with qwen-missing-tool.yaml.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+request:
+  method: POST
+  url: https://api.test/v1/messages
+  headers:
+    Authorization: Bearer replay-key
+    x-api-key: replay-key
+    x-opencode-session: recovery-session
+  body:
+    model: qwen3.8-flash
+  body_format: json
+---
+type: response_chunk
+at_us: 1000
+index: 1
+bytes: 188
+---
+type: response_chunk
+at_us: 2000
+index: 2
+bytes: 98
+---
+type: response_chunk
+at_us: 3000
+index: 3
+bytes: 125
+---
+type: response_chunk
+at_us: 4000
+index: 4
+bytes: 47
+---
+type: response_chunk
+at_us: 5000
+index: 5
+bytes: 132
+---
+type: response_chunk
+at_us: 6000
+index: 6
+bytes: 128
+---
+type: response_chunk
+at_us: 7000
+index: 7
+bytes: 47
+---
+type: response_chunk
+at_us: 8000
+index: 8
+bytes: 142
+---
+type: response_chunk
+at_us: 9000
+index: 9
+bytes: 31
+---
+type: response_body
+at_us: 9000
+body: |+
+  data: {"type":"message_start","message":{"id":"followup-response","type":"message","role":"assistant","model":"qwen3.8-flash","content":[],"usage":{"input_tokens":20,"output_tokens":0}}}
+
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I will inspect the condition."}}
+
+  data: {"type":"content_block_stop","index":0}
+
+  data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"inspect-call","name":"inspect","input":{}}}
+
+  data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"example.lua\"}"}}
+
+  data: {"type":"content_block_stop","index":1}
+
+  data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":20,"output_tokens":10,"cache_read_input_tokens":0}}
+
+  data: {"type":"message_stop"}
+
+bytes: 938
+---
+type: response
+at_us: 9000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 9000
+ok: true

@@ -1,0 +1,41 @@
+---
+operation: fetch
+request:
+  body:
+    model: fake/unloaded
+  body_bytes: 26
+  body_format: json
+  headers:
+    Authorization: Bearer router-key
+    Content-Type: application/json
+  method: POST
+  timeout_ms: 15000
+  url: https://api.test/models/unload
+schema: neoagent-http-recording
+type: exchange
+version: 1
+---
+at_us: 7427
+bytes: 16
+index: 1
+type: response_chunk
+---
+at_us: 7427
+body:
+  success: true
+body_format: json
+bytes: 16
+type: response_body
+---
+at_us: 7427
+headers:
+  content-length: '16'
+  content-type: application/json
+  date: Mon, 07 Sep 2026 12:35:03 GMT
+  server: BaseHTTP/0.6 Python/3.13.5
+status: 200
+type: response
+---
+at_us: 7427
+ok: true
+type: complete
