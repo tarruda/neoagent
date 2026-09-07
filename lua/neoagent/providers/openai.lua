@@ -1,28 +1,14 @@
 local async = require("neoagent.async")
 local client_module = require("neoagent.providers.openai.client")
+local provider_http = require("neoagent.providers.http")
 local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
 local M = {}
 local DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-local function validate_service_opts(value)
-  value = value or {}
-  assert(type(value) == "table"
-      and (next(value) == nil or not util.is_list(value)),
-    "openai service_opts must be an object")
-  local allowed = { timeout_ms = true, max_response_bytes = true }
-  for name, setting in pairs(value) do
-    assert(allowed[name], "unknown openai service option: " .. tostring(name))
-    assert(type(setting) == "number" and setting > 0
-        and setting < math.huge and setting % 1 == 0,
-      "openai service option " .. name .. " must be a positive integer")
-  end
-  return util.copy(value)
-end
-
 local function client(provider, resources)
-  local service_opts = validate_service_opts(provider.service_opts)
+  local service_opts = provider_http.service_options(provider.service_opts, "openai")
   return client_module.new({
     base_url = (provider.base_url or DEFAULT_BASE_URL):gsub("/+$", ""),
     transport = resources.transport,

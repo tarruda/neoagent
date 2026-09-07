@@ -20,6 +20,29 @@ local M = {}
 ---@class Neoagent.ProviderHttpError: Neoagent.Error
 ---@field status? number
 
+---@class Neoagent.ProviderHttpServiceOptions
+---@field timeout_ms? integer
+---@field max_response_bytes? integer
+
+---@param value unknown
+---@param provider string
+---@return Neoagent.ProviderHttpServiceOptions
+function M.service_options(value, provider)
+  value = value or {}
+  assert(type(value) == "table"
+      and (next(value) == nil or not util.is_list(value)),
+    provider .. " service_opts must be an object")
+  local allowed = { timeout_ms = true, max_response_bytes = true }
+  for name, setting in pairs(value) do
+    assert(allowed[name], "unknown " .. provider .. " service option: " .. tostring(name))
+    assert(type(setting) == "number" and setting > 0
+        and setting < math.huge and setting % 1 == 0,
+      provider .. " service option " .. name .. " must be a positive integer")
+  end
+  ---@cast value Neoagent.ProviderHttpServiceOptions
+  return util.copy(value)
+end
+
 local DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
 local DEFAULT_TIMEOUT_MS = 15 * 1000
 
