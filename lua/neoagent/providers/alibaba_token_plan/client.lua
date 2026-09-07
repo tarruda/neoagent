@@ -4,6 +4,24 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.AlibabaTokenPlanClientOptions
+---@field gateway_url? string
+---@field transport? Neoagent.ByteBackend
+---@field max_response_bytes? integer
+---@field timeout_ms? number
+
+---@class Neoagent.AlibabaQuotaWindow
+---@field used? number
+---@field resets_at? integer
+
+---@class Neoagent.AlibabaQuotaUsage
+---@field five_hour? Neoagent.AlibabaQuotaWindow
+---@field seven_day? Neoagent.AlibabaQuotaWindow
+
+---@class Neoagent.AlibabaQuotaSuccess
+---@field ok true
+---@field usage Neoagent.AlibabaQuotaUsage
+
 local DEFAULT_GATEWAY_URL =
   "https://bailian-singapore-cs.alibabacloud.com"
 local DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
@@ -14,6 +32,8 @@ local PRODUCT = "sfm_bailian"
 local USAGE_API =
   "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
 
+---@param fields table<string, string>
+---@return string
 local function encode_fields(fields)
   local names = vim.tbl_keys(fields)
   table.sort(names)
@@ -25,11 +45,15 @@ local function encode_fields(fields)
   return table.concat(result, "&")
 end
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@return integer?
 local function timestamp(value)
   if not finite(value) or value <= 0 then return nil end
   if value > 100000000000 then value = value / 1000 end
@@ -37,6 +61,10 @@ local function timestamp(value)
   return value > 0 and value or nil
 end
 
+---@param value Neoagent.JsonObject|Neoagent.JsonArray
+---@param percentage_name string
+---@param reset_name string
+---@return Neoagent.AlibabaQuotaWindow|false|nil
 local function window(value, percentage_name, reset_name)
   local percentage = value[percentage_name]
   local reset = value[reset_name]
@@ -53,6 +81,8 @@ local function window(value, percentage_name, reset_name)
   return result
 end
 
+---@param value Neoagent.JsonObject|Neoagent.JsonArray
+---@return Neoagent.JsonObject|Neoagent.JsonArray
 local function unwrap(value)
   local data = type(value.data) == "table" and value.data or nil
   if not data then return value end
@@ -65,6 +95,8 @@ local function unwrap(value)
   return type(data.data) == "table" and data.data or data
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.AlibabaQuotaUsage?
 local function parse_usage(value)
   if type(value) ~= "table" or util.is_list(value) then return nil end
   value = unwrap(value)
@@ -80,6 +112,8 @@ local function parse_usage(value)
   return result
 end
 
+---@param resolved Neoagent.AuthResolution
+---@return string
 local function authorization(resolved)
   if type(resolved) ~= "table" or resolved.ok == false then
     error(type(resolved) == "table" and resolved.error
@@ -103,6 +137,8 @@ local function authorization(resolved)
     "Alibaba Cloud dashboard authorization returned no bearer token"), 0)
 end
 
+---@param opts? Neoagent.AlibabaTokenPlanClientOptions
+---@return Neoagent.AlibabaTokenPlanClient
 function M.new(opts)
   opts = opts or {}
   local transport = http_client.new(opts.transport)
@@ -120,12 +156,17 @@ function M.new(opts)
   assert(type(timeout_ms) == "number" and timeout_ms > 0
       and timeout_ms < math.huge,
     "Alibaba Token Plan timeout_ms must be positive and finite")
+  ---@class Neoagent.AlibabaTokenPlanClient
   local client = {}
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.AlibabaQuotaSuccess|Neoagent.AsyncFailure, nil>
   function client:usage(ctx)
     assert(type(ctx) == "table" and type(ctx.resolve_auth) == "function",
       "Alibaba Token Plan usage requires auth resolution")
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.AlibabaQuotaSuccess
+    function()
       local bearer = authorization(ctx.resolve_auth("dashboard"):await())
       local params = util.json_encode({
         Api = USAGE_API,
@@ -163,6 +204,7 @@ function M.new(opts)
           "Alibaba Cloud quota response has no HTTP status"), 0)
       end
       if status < 200 or status >= 300 then
+        ---@type Neoagent.ProviderHttpError
         local err = util.error("provider",
           "Alibaba Cloud quota request failed (HTTP "
             .. tostring(status) .. ")")
