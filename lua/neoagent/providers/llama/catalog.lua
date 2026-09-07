@@ -9,16 +9,13 @@ local M = {}
 ---@field failed? boolean
 ---@field exit_code? number
 
----@class Neoagent.LlamaCatalogModel: Neoagent.JsonObject
+---@class Neoagent.LlamaCatalogModel: Neoagent.JsonObject, Neoagent.DiscoveredModel
 ---@field id string
 ---@field status Neoagent.LlamaCatalogStatus
 ---@field context_window? integer
 ---@field source? "preset"|"models_dir"
 ---@field meta? {size: number}
 ---@field architecture? {input_modalities: ("text"|"image")[]}
-
----@class Neoagent.LlamaCatalogProvider
----@field base_url string
 
 ---@param value unknown
 ---@param maximum integer
@@ -159,7 +156,7 @@ local function bearer_key(resolved)
   return type(value) == "string" and value:match("^[Bb]earer%s+(.+)$") or nil
 end
 
----@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.LlamaCatalogProvider>
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.CatalogSourceProjection>
 ---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.LlamaCatalogModel>, nil>
 function M.discover(ctx)
   return async.run(

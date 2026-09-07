@@ -58,7 +58,7 @@ local function trim_path(path)
   return path
 end
 
----@param value string
+---@param value unknown
 ---@return string
 function M.normalize_server_url(value)
   assert(type(value) == "string" and value ~= "",

@@ -27,6 +27,7 @@ local M = {}
 
 ---@type {openai: Neoagent.ProviderDefinition, ["openai-codex"]: Neoagent.ProviderDefinition}
 local openai = require("neoagent.registry.openai")
+---@type table<string, Neoagent.ProviderDefinition>
 local defaults = {
   openai = openai.openai,
   ["openai-codex"] = openai["openai-codex"],
@@ -60,6 +61,9 @@ local defaults = {
   },
 }
 
+---@param base? table<string, Neoagent.ModelConfigInput|false>
+---@param user? table<string, Neoagent.ModelConfigInput|false>
+---@return table<string, Neoagent.ModelConfigInput|false>
 local function compose_models(base, user)
   if user == nil then return util.copy(base or {}) end
   assert(type(user) == "table"
@@ -72,18 +76,26 @@ local function compose_models(base, user)
       result[id] = false
     else
       assert(type(model) == "table", "models must contain tables or false")
-      result[id] = util.deep_merge(result[id], model)
+      local merged = util.deep_merge(result[id] or {}, model)
+      ---@cast merged Neoagent.ModelConfigInput
+      result[id] = merged
     end
   end
   return result
 end
 
+---@param value? Neoagent.CatalogTransform
+---@return Neoagent.CatalogTransform?
 local function assert_transform(value)
   assert(value == nil or type(value) == "function",
     "provider catalog transform_model must be a function")
   return value
 end
 
+---@param transform? Neoagent.CatalogTransform
+---@param model Neoagent.ModelConfigInput
+---@param ctx Neoagent.CatalogTransformContext
+---@return Neoagent.ModelConfigInput|false
 local function transformed(transform, model, ctx)
   if not transform then return util.copy(model) end
   local result = transform(util.copy(model), util.copy(ctx))
@@ -93,6 +105,9 @@ local function transformed(transform, model, ctx)
   return util.copy(result)
 end
 
+---@param base? Neoagent.CatalogTransform
+---@param user? Neoagent.CatalogTransform
+---@return Neoagent.CatalogTransform?
 local function compose_transform(base, user)
   base = assert_transform(base)
   user = assert_transform(user)
@@ -105,6 +120,9 @@ local function compose_transform(base, user)
   end
 end
 
+---@param base? Neoagent.CatalogDefinition
+---@param user? Neoagent.CatalogDefinition
+---@return Neoagent.CatalogDefinition
 local function compose_catalog(base, user)
   base = base or {}
   user = user or {}
@@ -128,17 +146,23 @@ local function compose_catalog(base, user)
   base_values.transform_model = nil
   user_values.transform_model = nil
   local result = util.deep_merge(base_values, user_values)
+  ---@cast result Neoagent.CatalogDefinition
   result.transform_model = compose_transform(
     base.transform_model, user.transform_model)
   return result
 end
 
+---@return table<string, Neoagent.ProviderDefinition>
 function M.defaults()
   return util.copy(defaults)
 end
 
+---@param user table<string, Neoagent.ProviderOptions|false>
+---@param include_defaults? boolean
+---@return table<string, Neoagent.ProviderOptions>
 function M.compose(user, include_defaults)
   assert(type(user) == "table", "providers must be a table")
+  ---@type table<string, Neoagent.ProviderOptions>
   local result = include_defaults == false and {} or M.defaults()
   for id, provider in pairs(user) do
     assert(type(id) == "string", "providers must use string ids")
@@ -150,9 +174,11 @@ function M.compose(user, include_defaults)
       local override = util.copy(provider)
       override.models = nil
       override.catalog = nil
-      result[id] = util.deep_merge(base, override)
-      result[id].models = compose_models(base.models, provider.models)
-      result[id].catalog = compose_catalog(base.catalog, provider.catalog)
+      local merged = util.deep_merge(base, override)
+      ---@cast merged Neoagent.ProviderOptions
+      merged.models = compose_models(base.models, provider.models)
+      merged.catalog = compose_catalog(base.catalog, provider.catalog)
+      result[id] = merged
     end
   end
   return result

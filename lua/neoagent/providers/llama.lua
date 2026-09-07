@@ -14,8 +14,6 @@ local M = {}
 ---@field poll_interval_ms? integer
 
 ---@class Neoagent.LlamaServiceConfig: Neoagent.ProviderServiceConfig, Neoagent.ProviderAuthConfig
----@field base_url string
----@field service_opts? Neoagent.LlamaServiceOptions
 ---@field catalog? {additions?: table<string, unknown>}
 
 ---@class Neoagent.LlamaServiceResources: Neoagent.ProviderServiceResources

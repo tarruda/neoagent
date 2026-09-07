@@ -44,7 +44,6 @@ lua/neoagent/profile_sessions.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_runtimes.lua
 lua/neoagent/provider_shell.lua
-lua/neoagent/registry.lua
 lua/neoagent/request_selection.lua
 lua/neoagent/sandbox/approval_summary.lua
 lua/neoagent/sandbox/composition.lua
