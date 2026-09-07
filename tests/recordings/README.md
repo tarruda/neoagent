@@ -37,10 +37,22 @@ previous recording settings afterward.
    Mike Farah `yq` v4. A partial filename alone does not prove that
    the exchange is incomplete. Missing bodies/completions cannot be recovered.
    Invalid YAML needs inspection or a new JSON capture.
-2. Make a minimal YAML adaptation. Keep the failing response shape, relevant
-   headers/status, event order and malformed bytes. Remove private prompt,
-   response, account and tool content unrelated to the issue. Replace masked
-   credentials with consistent nonfunctional values in requests and responses.
+2. Create a minimal YAML fixture with synthetic content. Original recordings
+   are local evidence, never reproduction or test inputs. Replace all prompts,
+   assistant responses and thinking, tool arguments/results, code, attachments,
+   and personal/account metadata with invented values. Do not retain excerpts
+   or paraphrases of the personal conversation, even when relevant to the bug.
+   Masking credentials or trimming history alone is insufficient.
+
+   Preserve the behavior through protocol structure: request/response roles,
+   field presence and types, headers/status, event order, stop reasons, and
+   relationships between requests, responses and tool calls. Use consistent
+   synthetic identifiers, paths and nonfunctional credentials throughout.
+   When content triggers the failure, construct unrelated synthetic content
+   with the same relevant syntax, encoding, size or malformed-byte pattern.
+   Verify that it still reproduces the reported failure; do not fall back to
+   the original conversation if the first adaptation fails.
+
    Authentication response bodies are deliberately masked: use synthetic token
    envelopes and unsigned fake JWT claims when needed. Never disable masking.
 3. Rebuild response chunk/body byte counts after editing bytes. Lua string
@@ -50,7 +62,11 @@ previous recording settings afterward.
    an exact byte capture. For byte-sensitive regressions, retain a string or
    base64 body instead of converting it to a native JSON value. The reader
    also accepts JSONL, so existing JSON recordings need no format migration.
-4. Add a test through the real affected composition. Supply replay below the
+4. Review the complete adaptation, assertions and provenance comments for
+   personal content and credentials before adding them to the repository.
+   A source recording hash can identify provenance without copying its private
+   path or conversation. Leave originals unchanged.
+5. Add a test through the real affected composition. Supply replay below the
    shared HTTP decoder, assert the product failure, and check consumption in
    teardown. Verify a bug regression fails against the unmodified code for
    the reported reason, then passes with the fix.

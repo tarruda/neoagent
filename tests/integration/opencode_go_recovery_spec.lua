@@ -9,7 +9,7 @@ local function wait(run)
   return run:result()
 end
 
-local thought = "Let me quickly grep for the condition at ~2270-2340."
+local thought = "I will inspect the example condition."
 
 describe("OpenCode Go Qwen missing-tool recovery", function()
   local player, runtimes, directory

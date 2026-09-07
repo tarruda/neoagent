@@ -1,5 +1,5 @@
-# Minimized from the user's 2026-09-07 OpenCode Go response: thinking followed
-# by tool_use without a tool block. Request, identifiers and timing are synthetic.
+# Synthetic adaptation of a 2026-09-07 OpenCode Go response: thinking followed
+# by tool_use without a tool block. Conversation, identifiers and timing are synthetic.
 # Source SHA-256: 7c9b2d272f55d4e7f58fdacb1ff1d16c038bac2a6828722c1a050cd6caa6fb27
 ---
 schema: neoagent-http-recording
@@ -29,7 +29,7 @@ bytes: 113
 type: response_chunk
 at_us: 3000
 index: 3
-bytes: 148
+bytes: 133
 ---
 type: response_chunk
 at_us: 4000
@@ -53,7 +53,7 @@ body: |+
 
   data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
 
-  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me quickly grep for the condition at ~2270-2340."}}
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I will inspect the example condition."}}
 
   data: {"type":"content_block_stop","index":0}
 
@@ -61,7 +61,7 @@ body: |+
 
   data: {"type":"message_stop"}
 
-bytes: 715
+bytes: 700
 ---
 type: response
 at_us: 6000

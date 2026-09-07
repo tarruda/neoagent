@@ -191,8 +191,14 @@ Look for the user's relevant recordings under `~/.local/state/nvim/neoagent`
 If evidence is missing, ask them to enable recording, restart and
 reproduce the interaction. Start with default rolling retention; use
 `retention = "all"` only when the last exchange cannot explain the issue.
-Inspect metadata first, minimize private content, and adapt masked credentials
-to consistent synthetic values.
+Inspect metadata first and read only the content needed to understand the
+failure. Originals are local evidence only: never use personal conversation
+data in reproduction inputs, regression fixtures, test assertions, or docs.
+Create a synthetic adaptation that preserves the relevant protocol structure
+and failure. Replace all conversation content, including prompts, responses,
+thinking, tool arguments/results, code and attachments, plus private metadata
+and credentials. Trimming a conversation or masking secrets is not sufficient.
+Keep user recordings unchanged; see the adaptation workflow below.
 Keep real Authentication and HTTP decoding in the regression. Do not invoke a
 live API merely to create test data.
 
