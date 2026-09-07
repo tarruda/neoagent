@@ -21,7 +21,7 @@ local M = {}
 ---@field label string
 ---@field value? number
 ---@field detail? string
----@field level Neoagent.ProviderLevel
+---@field level? Neoagent.ProviderLevel
 
 ---@class Neoagent.ProviderLimitBlock
 ---@field type "limit"

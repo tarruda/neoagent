@@ -30,6 +30,21 @@ local M = {}
 
 ---@alias Neoagent.CatalogDiscoveryResult<T> Neoagent.CatalogDiscovered<T>|Neoagent.CatalogUnchanged|Neoagent.AsyncFailure
 
+---@class Neoagent.CatalogSnapshot
+---@field revision integer
+---@field models table<string, Neoagent.ModelConfig>
+---@field validated_at? number
+---@field stale boolean
+---@field source string
+---@field refresh {state: "refreshing"|"failed"|"idle", error?: Neoagent.Error}
+---@field persistence {configured: boolean, enabled: boolean, error?: Neoagent.Error}
+
+---@class Neoagent.CatalogPublishOptions
+---@field source? string
+---@field validated_at? number
+---@field validator? Neoagent.CatalogValidator
+
+---@class Neoagent.ModelCatalog
 local Catalog = {}
 Catalog.__index = Catalog
 
@@ -429,6 +444,7 @@ function Catalog:_resolve_api_key()
   return source
 end
 
+---@return Neoagent.CatalogSnapshot
 function Catalog:snapshot()
   local stale = self._discover ~= nil and (self._last_error ~= nil
     or self._validated_at == nil
@@ -452,10 +468,13 @@ function Catalog:snapshot()
   }
 end
 
+---@return Neoagent.DiscoveredModel[]
 function Catalog:discoveries()
   return util.copy(self._discoveries)
 end
 
+---@param listener fun(snapshot: Neoagent.CatalogSnapshot)
+---@return fun(): boolean
 function Catalog:subscribe(listener)
   assert(type(listener) == "function",
     "model catalog subscriber must be a function")
@@ -647,6 +666,9 @@ function Catalog:refresh(opts)
   return run
 end
 
+---@param discoveries unknown
+---@param opts? Neoagent.CatalogPublishOptions
+---@return true?, Neoagent.Error?
 function Catalog:publish_discoveries(discoveries, opts)
   opts = opts or {}
   if self._destroyed then
@@ -682,6 +704,7 @@ function Catalog:destroy()
   return true
 end
 
+---@return Neoagent.ModelCatalog
 function M.new(opts)
   opts = opts or {}
   assert(model_config.safe_provider_id(opts.provider_id),
