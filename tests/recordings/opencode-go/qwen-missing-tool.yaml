@@ -1,0 +1,74 @@
+# Minimized from the user's 2026-09-07 OpenCode Go response: thinking followed
+# by tool_use without a tool block. Request, identifiers and timing are synthetic.
+# Source SHA-256: 7c9b2d272f55d4e7f58fdacb1ff1d16c038bac2a6828722c1a050cd6caa6fb27
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+request:
+  method: POST
+  url: https://api.test/v1/messages
+  headers:
+    Authorization: Bearer replay-key
+    x-api-key: replay-key
+    x-opencode-session: recovery-session
+  body:
+    model: qwen3.8-flash
+  body_format: json
+---
+type: response_chunk
+at_us: 1000
+index: 1
+bytes: 195
+---
+type: response_chunk
+at_us: 2000
+index: 2
+bytes: 113
+---
+type: response_chunk
+at_us: 3000
+index: 3
+bytes: 148
+---
+type: response_chunk
+at_us: 4000
+index: 4
+bytes: 47
+---
+type: response_chunk
+at_us: 5000
+index: 5
+bytes: 181
+---
+type: response_chunk
+at_us: 6000
+index: 6
+bytes: 31
+---
+type: response_body
+at_us: 6000
+body: |+
+  data: {"type":"message_start","message":{"id":"missing-tool-response","type":"message","role":"assistant","model":"qwen3.8-flash","content":[],"usage":{"input_tokens":30473,"output_tokens":0}}}
+
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me quickly grep for the condition at ~2270-2340."}}
+
+  data: {"type":"content_block_stop","index":0}
+
+  data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":3950,"output_tokens":355,"cache_creation_input_tokens":0,"cache_read_input_tokens":81920}}
+
+  data: {"type":"message_stop"}
+
+bytes: 715
+---
+type: response
+at_us: 6000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 6000
+ok: true
