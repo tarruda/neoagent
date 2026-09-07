@@ -158,18 +158,6 @@ local function stop_reason(reason)
   return "error"
 end
 
-local function complete_call(call)
-  if type(call.id) ~= "string" or call.id == ""
-      or type(call.name) ~= "string" or call.name == "" then
-    return nil
-  end
-  if call._raw ~= nil then
-    call.arguments, call.argumentsError = tool_arguments.decode(call._raw)
-    call._raw = nil
-  end
-  return call
-end
-
 local function partial_message(message, calls_complete, err)
   if type(message) ~= "table" then return nil end
   local candidate = util.copy(message)
@@ -182,8 +170,10 @@ local function partial_message(message, calls_complete, err)
     elseif block.type == "thinking" and type(block.thinking) == "string"
         and block.thinking ~= "" then
       retained = util.copy(block)
-    elseif block.type == "toolCall" and calls_complete then
-      retained = complete_call(util.copy(block))
+    elseif block.type == "toolCall" and calls_complete
+        and type(block.id) == "string" and block.id ~= ""
+        and type(block.name) == "string" and block.name ~= "" then
+      retained = util.copy(block)
     end
     if retained then candidate.content[#candidate.content + 1] = retained end
   end
@@ -482,12 +472,16 @@ function Model:stream(opts)
         local tool_calls = type(delta.tool_calls) == "table" and delta.tool_calls or {}
         for _, raw_call in ipairs(tool_calls) do
           local index = raw_call.index or 0
-          local call = calls[index]
-          if not call then
-            call = { type = "toolCall", id = "", name = "", arguments = vim.empty_dict(), _raw = "" }
-            calls[index] = call
-            message.content[#message.content + 1] = call
+          local pending = calls[index]
+          if not pending then
+            pending = {
+              block = { type = "toolCall", id = "", name = "", arguments = vim.empty_dict() },
+              raw = "",
+            }
+            calls[index] = pending
+            message.content[#message.content + 1] = pending.block
           end
+          local call = pending.block
           if type(raw_call.id) == "string" and raw_call.id ~= "" and call.id == "" then
             call.id = raw_call.id
           end
@@ -498,7 +492,7 @@ function Model:stream(opts)
           local arguments_delta
           if type(fn.arguments) == "string" and fn.arguments ~= "" then
             arguments_delta = fn.arguments
-            call._raw = call._raw .. arguments_delta
+            pending.raw = pending.raw .. arguments_delta
           end
           run:emit({
             type = "tool_call_delta",
@@ -524,8 +518,11 @@ function Model:stream(opts)
         end,
       })
       local transport_ok, transport_result = pcall(function() return child:await() end)
-      for _, call in pairs(calls) do
-        if calls_complete then complete_call(call) end
+      for _, pending in pairs(calls) do
+        local call = pending.block
+        if calls_complete and call.id ~= "" and call.name ~= "" then
+          call.arguments, call.argumentsError = tool_arguments.decode(pending.raw)
+        end
         if calls_complete and call.id == "" then
           protocol_error = util.error("protocol", "Tool call is missing an id")
         elseif calls_complete and call.name == "" then
