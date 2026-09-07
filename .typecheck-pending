@@ -74,7 +74,6 @@ lua/neoagent/providers/llama/catalog.lua
 lua/neoagent/providers/llama/client.lua
 lua/neoagent/providers/llama/huggingface.lua
 lua/neoagent/providers/openai.lua
-lua/neoagent/providers/openai/client.lua
 lua/neoagent/providers/opencode_go.lua
 lua/neoagent/providers/opencode_go/client.lua
 lua/neoagent/providers/opencode_go/model.lua
