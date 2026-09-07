@@ -50,7 +50,6 @@ lua/neoagent/provider_log.lua
 lua/neoagent/provider_runtimes.lua
 lua/neoagent/provider_service.lua
 lua/neoagent/provider_shell.lua
-lua/neoagent/provider_state.lua
 lua/neoagent/providers/alibaba_token_plan.lua
 lua/neoagent/providers/anthropic.lua
 lua/neoagent/providers/codex.lua
