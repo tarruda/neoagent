@@ -34,7 +34,7 @@ local M = {}
 ---@field context_window? integer
 ---@field max_output_tokens? integer
 ---@field request_timeout_ms? integer
----@field thinking? Neoagent.ThinkingOptions|false
+---@field thinking? Neoagent.ThinkingOptions
 ---@field request_opts? Neoagent.RequestLayer
 ---@field reasoning? boolean
 ---@field responses_lite? boolean
@@ -174,6 +174,7 @@ function M.validate(provider_id, model_id, value)
         field .. " must be safe non-empty text")
     end
   end
+  if model.thinking == false then model.thinking = nil end
   -- All declared configuration fields have passed their runtime validators.
   ---@cast model Neoagent.ModelConfig
   return model

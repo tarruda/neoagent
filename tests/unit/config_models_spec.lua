@@ -136,6 +136,28 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal(64000, model.context_window)
   end)
 
+  it("resolves models whose configuration explicitly disables thinking", function()
+    for _, api in ipairs({
+      "openai-completions", "openai-responses", "openai-codex-responses",
+      "anthropic-messages", "custom",
+    }) do
+      local configured = config.setup({
+        default_registry = false,
+        providers = { local_model = {
+          api = api, base_url = "http://localhost/v1", diagnostics = false,
+          catalog = { seed = { { id = "plain", thinking = {
+            high = { body = { reasoning_effort = "high" } },
+          } } } },
+          models = { plain = { thinking = false } },
+        } },
+        _apis = { custom = runtime_model },
+      })
+      local model = models.resolve("local_model", "plain", configured)
+      assert.are.same({}, require("neoagent.thinking").levels(model), api)
+      assert.is_nil(require("neoagent.thinking").clamp(model, "high"))
+    end
+  end)
+
   it("resolves configured Anthropic Messages models", function()
     config.setup({
       default_registry = false,
