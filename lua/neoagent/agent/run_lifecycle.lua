@@ -650,7 +650,9 @@ function M.new(opts)
       outer, activity, selected, call, "interaction Run", function()
         if not current(activity) or state.destroyed then return end
         state.pending_events = {}
-        opts.publish_messages(opts.transcript_messages(state.session))
+        if continuing or not activity.accepted then
+          opts.publish_messages(opts.transcript_messages(state.session))
+        end
         opts.update_context()
       end)
     if current(activity) and not state.destroyed then provider_result_event(result) end
@@ -680,6 +682,8 @@ function M.new(opts)
       activity.steering_claim:commit()
       activity.steering_claim = nil
     end
+    opts.publish_messages(opts.transcript_messages(state.session))
+    opts.update_context()
     publish_submission(activity, activity.submission_id, prompt,
       type(entry) == "table" and entry.id or nil)
     local called, committed, commit_err = pcall(opts.commit_model_preference)

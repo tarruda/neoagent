@@ -138,6 +138,7 @@ function AgentApplet.new(opts)
     input_value = "",
     input_submission_id = nil,
     pending_submission = nil,
+    submitting = false,
     submissions = {},
     destroyed = false,
   }, AgentApplet)
@@ -437,6 +438,7 @@ function AgentApplet:_apply(update)
     "Agent publication revision must be a positive integer")
   if update.revision <= (snapshot.revision or 0) then return false end
   self.agent_snapshot = snapshot
+  snapshot.revision = update.revision
   if update.type == "context" then
     snapshot.context = util.copy(update.context)
   elseif update.type == "messages" then
@@ -456,8 +458,6 @@ function AgentApplet:_apply(update)
   elseif update.type == "submission_accepted" then
     self:_submission_accepted(update)
   end
-  snapshot.revision = update.revision
-
   local view = self.view_value
   if not view or view.destroyed then
     if update.type == "finish" then self:_finish_submissions(update.result) end
@@ -611,7 +611,6 @@ function AgentApplet:_submission_accepted(update)
   table.remove(self.submissions, index)
   if selected.created then self:_accept_agent(selected.agent) end
   self.pending_submission = nil
-  self:_record_history(selected.text)
   local view = self.view_value
   local current = self:_capture_input(view)
   if self.input_submission_id == selected.id then
@@ -628,6 +627,7 @@ function AgentApplet:_submission_accepted(update)
       if not cleared then self:_notify(err.message, vim.log.levels.ERROR) end
     end
   end
+  self:_record_history(selected.text)
   return true
 end
 
@@ -670,6 +670,13 @@ function AgentApplet:_attempt_submission(text)
     return nil, agent_err
   end
   self:_restore_input(text)
+  local represented = self.input_submission_id and self:_submission(
+    self.input_submission_id) or nil
+  if represented and represented.agent == agent
+      and represented.kind == "turn" and represented.text == text
+      and agent:is_running() then
+    return true
+  end
   local provisional = created or self.binding_restore ~= nil
   local prepared, prepare_err = agent:prepare()
   if not prepared then
@@ -683,8 +690,6 @@ function AgentApplet:_attempt_submission(text)
     end
     return nil, prepare_err
   end
-  local represented = self.input_submission_id and self:_submission(
-    self.input_submission_id) or nil
   if represented and represented.agent == agent
       and represented.kind == "steering" then
     if agent:is_running() then return true end
@@ -714,13 +719,18 @@ function AgentApplet:_attempt_submission(text)
 end
 
 function AgentApplet:_submit(text)
-  return self:_attempt_submission(text)
+  if self.submitting then return true end
+  self.submitting = true
+  local called, result, err = pcall(self._attempt_submission, self, text)
+  self.submitting = false
+  if not called then error(result, 0) end
+  return result, err
 end
 
 function AgentApplet:retry_submission()
   local text = self.pending_submission
   if not text or not self:_agent_or_nil() then return false end
-  return self:_attempt_submission(text)
+  return self:_submit(text)
 end
 
 function AgentApplet:trust_submission_result(result)

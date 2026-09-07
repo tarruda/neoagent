@@ -98,6 +98,117 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
   end)
 
+  it("admits one first submission during reentrant Agent construction", function()
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "created" } }),
+    } })
+    setup(model)
+    assert(applet:toggle())
+    local draft = applet:foreground_applet()
+    local profile = applet:profile("neo")
+    local create_agent = profile.create_agent
+    local constructions = 0
+    profile.create_agent = function(context)
+      constructions = constructions + 1
+      if constructions == 1 then
+        draft:view():_submit(draft:get_input())
+      end
+      return create_agent(context)
+    end
+
+    submit("first prompt")
+    assert.are.equal(1, constructions)
+    assert(vim.wait(1000, function()
+      local agent = draft:agent()
+      return agent and not agent:is_running()
+    end))
+
+    assert.are.equal(1, #applet:agents())
+    assert.are.equal(1, #model.requests)
+    assert.are.equal("first prompt", draft:agent():get_session():messages()[1].content)
+  end)
+
+  it("submits an unchanged first prompt once while acceptance is pending", function()
+    local pending
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "created" } }),
+    } })
+    applet = neoagent._setup(configuration(model), {
+      interaction = function(options)
+        return async.run(function()
+          async.await(function(done) pending = done end)
+          return require("neoagent.chat").run(
+            options.session, options.prompt, options):await()
+        end, { on_event = options.on_event, on_done = options.on_done })
+      end,
+    })
+    assert(applet:toggle())
+    local draft = applet:foreground_applet()
+    submit("first prompt")
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    local agent = assert(draft:agent())
+    local view = draft:view()
+    assert.are.equal("first prompt", view:get_input())
+    assert.are.same({}, agent:get_session():messages())
+
+    for _ = 1, 3 do view:_submit(view:get_input()) end
+
+    assert.are.same({}, agent:snapshot().context.steering)
+    assert.are.equal("first prompt", view:get_input())
+    pending.resolve(true)
+    assert(vim.wait(1000, function() return not agent:is_running() end))
+    assert.are.equal("", view:get_input())
+    assert.are.equal(1, #model.requests)
+    assert.are.same({ "user", "assistant" }, vim.tbl_map(function(message)
+      return message.role
+    end, agent:get_session():messages()))
+  end)
+
+  it("publishes and clears the first prompt before saving input history", function()
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "created" } }),
+    } })
+    setup(model, { persistence = {
+      enabled = true, directory = directory, workspace_settings = false,
+    } })
+    assert(applet:toggle())
+    local draft = applet:foreground_applet()
+    local view = draft:view()
+    draft:input_history()
+    local history = assert(draft.history_stores[draft.workspace_root])
+    local add = history.add
+    local observed
+    history.add = function(self, text)
+      if not observed then
+        local agent = assert(draft:agent())
+        observed = {
+          input = view:get_input(),
+          messages = vim.deepcopy(view.messages),
+          committed = agent:get_session():messages(),
+        }
+        -- A storage lock can process another Enter while saving history.
+        for _ = 1, 3 do view:_submit(view:get_input()) end
+        observed.steering = agent:snapshot().context.steering
+      end
+      return add(self, text)
+    end
+
+    submit("first prompt")
+    assert(vim.wait(1000, function()
+      local agent = draft:agent()
+      return observed ~= nil and agent and not agent:is_running()
+    end))
+
+    assert.are.equal("first prompt", observed.committed[1].content)
+    assert.are.equal("", observed.input)
+    assert.are.equal(1, #observed.messages)
+    assert.are.equal("first prompt", observed.messages[1].content)
+    assert.are.same({}, observed.steering)
+    assert.are.equal(1, #model.requests)
+  end)
+
   it("keeps the top-level Provider Shell independent from draft construction", function()
     local service = {
       id = "fake",

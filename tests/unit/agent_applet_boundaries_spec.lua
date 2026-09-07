@@ -766,6 +766,31 @@ describe("Agent Applet boundaries", function()
     value.agent_value = nil
   end)
 
+  it("allows submission again after an owner binding callback throws", function()
+    local owned_agent = agent()
+    local fail = true
+    local value = applet({
+      presenter = owned_agent:presenter(),
+      dialogs = owned_agent:dialogs(),
+      callbacks = {
+        on_bind = function(selected)
+          if fail then error("binding interrupted") end
+          return selected:bind(owned_agent)
+        end,
+      },
+    })
+
+    local called, err = pcall(value.send, value, "retry binding")
+    assert.is_false(called)
+    assert.matches("binding interrupted", err)
+    fail = false
+
+    local run = assert(value:send("retry binding"))
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.equal("retry binding",
+      owned_agent:get_session():messages()[1].content)
+  end)
+
   it("contains submission restoration and steering dequeue failures", function()
     local record = {}
     local running = false
