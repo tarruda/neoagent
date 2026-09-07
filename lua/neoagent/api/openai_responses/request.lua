@@ -6,7 +6,10 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@param content string|Neoagent.InputBlock[]
+---@return Neoagent.JsonObject[]
 local function input_content(content)
+  ---@type Neoagent.JsonObject[]
   local result = util.list()
   if type(content) == "string" then
     result[1] = { type = "input_text", text = content }
@@ -26,6 +29,9 @@ local function input_content(content)
   return result
 end
 
+---@param signature? string
+---@param fallback string
+---@return string
 local function signature_id(signature, fallback)
   if type(signature) ~= "string" or signature == "" then return fallback end
   if signature:sub(1, 1) ~= "{" then return signature end
@@ -33,12 +39,87 @@ local function signature_id(signature, fallback)
   return ok and type(value) == "table" and type(value.id) == "string" and value.id or fallback
 end
 
+---@param value? string
+---@return string, string?
 local function split_call_id(value)
   local call_id, item_id = tostring(value or ""):match("^([^|]+)|(.+)$")
   return call_id or tostring(value or ""), item_id
 end
 
+---@param result Neoagent.JsonObject[]
+---@param message Neoagent.AssistantMessage
+---@param message_index integer
+local function encode_assistant(result, message, message_index)
+  local text_index = 0
+  for _, block in ipairs(message.content or {}) do
+    if block.type == "thinking" and type(block.thinkingSignature) == "string" then
+      local ok, item = pcall(vim.json.decode, block.thinkingSignature)
+      if not ok or type(item) ~= "table" or item.type ~= "reasoning" then
+        error(util.error("model", "Invalid reasoning signature"), 0)
+      end
+      result[#result + 1] = item
+    elseif block.type == "text" then
+      text_index = text_index + 1
+      local item = {
+        type = "message",
+        role = "assistant",
+        status = "completed",
+        id = signature_id(block.textSignature,
+          string.format("msg_neoagent_%d_%d", message_index, text_index)),
+        content = { {
+          type = "output_text",
+          text = block.text or "",
+          annotations = util.list(),
+        } },
+      }
+      if type(block.phase) == "string" and block.phase ~= "" then item.phase = block.phase end
+      result[#result + 1] = item
+    elseif block.type == "toolCall" then
+      local call_id, item_id = split_call_id(block.id)
+      local item = {
+        type = "function_call",
+        call_id = call_id,
+        name = block.name,
+        arguments = util.json_encode(block.arguments or vim.empty_dict()),
+      }
+      if item_id then item.id = item_id end
+      result[#result + 1] = item
+    end
+  end
+end
+
+---@param content Neoagent.InputBlock[]
+---@return string|Neoagent.JsonObject[]
+local function tool_output(content)
+  local text = {}
+  ---@type Neoagent.JsonObject[]
+  local output = util.list()
+  for _, block in ipairs(content) do
+    if block.type == "text" then
+      text[#text + 1] = block.text or ""
+    elseif block.type == "image" then
+      output[#output + 1] = {
+        type = "input_image",
+        detail = "auto",
+        image_url = "data:" .. block.mimeType .. ";base64," .. block.data,
+      }
+    end
+  end
+  local joined = table.concat(text, "\n")
+  if #output > 0 then
+    if joined ~= "" then table.insert(output, 1, { type = "input_text", text = joined }) end
+  else
+    return joined ~= "" and joined or "(no tool output)"
+  end
+  return output
+end
+
+---@param messages Neoagent.Message[]
+---@param system_prompt? string
+---@param include_system? boolean
+---@return Neoagent.JsonObject[]
 local function encode_messages(messages, system_prompt, include_system)
+  ---@type Neoagent.JsonObject[]
   local result = util.list()
   if include_system ~= false and system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
@@ -48,63 +129,10 @@ local function encode_messages(messages, system_prompt, include_system)
       local content = input_content(message.content)
       if #content > 0 then result[#result + 1] = { role = "user", content = content } end
     elseif message.role == "assistant" then
-      local text_index = 0
-      for _, block in ipairs(message.content or {}) do
-        if block.type == "thinking" and type(block.thinkingSignature) == "string" then
-          local ok, item = pcall(vim.json.decode, block.thinkingSignature)
-          if not ok or type(item) ~= "table" or item.type ~= "reasoning" then
-            error(util.error("model", "Invalid reasoning signature"), 0)
-          end
-          result[#result + 1] = item
-        elseif block.type == "text" then
-          text_index = text_index + 1
-          local item = {
-            type = "message",
-            role = "assistant",
-            status = "completed",
-            id = signature_id(block.textSignature,
-              string.format("msg_neoagent_%d_%d", message_index, text_index)),
-            content = { {
-              type = "output_text",
-              text = block.text or "",
-              annotations = util.list(),
-            } },
-          }
-          if type(block.phase) == "string" and block.phase ~= "" then item.phase = block.phase end
-          result[#result + 1] = item
-        elseif block.type == "toolCall" then
-          local call_id, item_id = split_call_id(block.id)
-          local item = {
-            type = "function_call",
-            call_id = call_id,
-            name = block.name,
-            arguments = util.json_encode(block.arguments or vim.empty_dict()),
-          }
-          if item_id then item.id = item_id end
-          result[#result + 1] = item
-        end
-      end
+      encode_assistant(result, message, message_index)
     elseif message.role == "toolResult" then
       local call_id = split_call_id(message.toolCallId)
-      local text = {}
-      local output = util.list()
-      for _, block in ipairs(message.content or {}) do
-        if block.type == "text" then
-          text[#text + 1] = block.text or ""
-        elseif block.type == "image" then
-          output[#output + 1] = {
-            type = "input_image",
-            detail = "auto",
-            image_url = "data:" .. block.mimeType .. ";base64," .. block.data,
-          }
-        end
-      end
-      local joined = table.concat(text, "\n")
-      if #output > 0 then
-        if joined ~= "" then table.insert(output, 1, { type = "input_text", text = joined }) end
-      else
-        output = joined ~= "" and joined or "(no tool output)"
-      end
+      local output = tool_output(message.content)
       result[#result + 1] = { type = "function_call_output", call_id = call_id, output = output }
     else
       error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
@@ -113,7 +141,11 @@ local function encode_messages(messages, system_prompt, include_system)
   return result
 end
 
+---@param tools? Neoagent.ToolDefinition[]
+---@param strict? boolean|vim.NIL
+---@return Neoagent.JsonObject[]
 local function encode_tools(tools, strict)
+  ---@type Neoagent.JsonObject[]
   local result = util.list()
   if strict == nil then strict = false end
   for _, tool in ipairs(tools or {}) do
@@ -128,6 +160,8 @@ local function encode_tools(tools, strict)
   return result
 end
 
+---@param text string
+---@return Neoagent.JsonObject
 local function developer_message(text)
   return {
     type = "message",
@@ -136,13 +170,20 @@ local function developer_message(text)
   }
 end
 
+---@param prefix? Neoagent.JsonObject[]
+---@param input? Neoagent.JsonObject[]
+---@return Neoagent.JsonObject[]
 local function prepend_input(prefix, input)
+  ---@type Neoagent.JsonObject[]
   local result = util.list()
   vim.list_extend(result, prefix or {})
   vim.list_extend(result, input or {})
   return result
 end
 
+---@param self Neoagent.ResponsesModel
+---@param call_opts Neoagent.StreamOptions
+---@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
 function M.build(self, call_opts)
   local headers = {
     ["Accept"] = "text/event-stream",
@@ -155,9 +196,11 @@ function M.build(self, call_opts)
   local codex = self._profile == "codex"
   local responses_lite = codex and self._responses_lite == true
   local model_messages = messages.for_model(call_opts.messages, self)
+  local input = encode_messages(model_messages, call_opts.system_prompt, not codex)
+  ---@type Neoagent.JsonObject
   local body = {
     model = self.id,
-    input = encode_messages(model_messages, call_opts.system_prompt, not codex),
+    input = input,
     stream = true,
     store = false,
   }
@@ -172,7 +215,7 @@ function M.build(self, call_opts)
       if call_opts.system_prompt and call_opts.system_prompt ~= "" then
         prefix[#prefix + 1] = developer_message(call_opts.system_prompt)
       end
-      body.input = prepend_input(prefix, body.input)
+      body.input = prepend_input(prefix, input)
       body.parallel_tool_calls = false
     else
       body.instructions = call_opts.system_prompt or "You are a helpful assistant."
@@ -193,11 +236,13 @@ function M.build(self, call_opts)
     body.include = { "reasoning.encrypted_content" }
   end
 
+  ---@type Neoagent.ApiRequest
   local request = {
     url = self._base_url .. "/responses",
     headers = headers,
     body = body,
   }
+  ---@type Neoagent.RequestOptionsInput
   local context = {
     model = self,
     messages = util.copy(call_opts.messages),

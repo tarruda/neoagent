@@ -10,6 +10,33 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.ResponseStatus fun(headers: table<string, string>): string?, Neoagent.JsonObject?
+
+---@class Neoagent.ResponsesOptions: Neoagent.ApiModelOptions
+---@field reasoning? boolean
+---@field reasoning_effort? string
+---@field reasoning_summary? string
+---@field reasoning_context? string
+---@field profile? "codex"
+---@field responses_lite? boolean
+---@field text_verbosity? string
+---@field response_status? Neoagent.ResponseStatus
+
+---@class Neoagent.ResponsesModel: Neoagent.Model
+---@field _base_url string
+---@field _api_key? string|fun(): string?
+---@field _max_output_tokens? number
+---@field _reasoning boolean
+---@field _reasoning_effort? string
+---@field _reasoning_summary? string
+---@field _reasoning_context? string
+---@field _profile? "codex"
+---@field _responses_lite boolean
+---@field _text_verbosity? string
+---@field _response_status? Neoagent.ResponseStatus
+---@field _request_opts Neoagent.RequestLayer[]
+---@field _request_context? Neoagent.RequestIdentity
+---@field _transport Neoagent.HttpClient
 local Model = {}
 Model.__index = Model
 
