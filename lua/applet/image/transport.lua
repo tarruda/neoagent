@@ -1,7 +1,24 @@
 local M = {}
 
-local ffi
-local bits
+---@alias Applet.ImageCommand table<string, string|number>
+---@alias Applet.OutputCallback fun(err?: string)
+---@alias Applet.CancelOutput fun()
+---@alias Applet.ScheduleOutput fun(callback: Applet.OutputCallback): Applet.CancelOutput?
+
+---@class Applet.OutputStream
+---@field write fun(self: Applet.OutputStream, data: string): unknown, string?
+---@field flush fun(self: Applet.OutputStream): unknown, string?
+
+---@class Applet.TerminalNative
+---@field ffi ffilib
+---@field bits bitlib
+---@field nonblocking integer
+
+---@class Applet.TerminalConnection: Applet.TerminalNative
+---@field fd integer
+
+---@type Applet.TerminalNative?
+local native
 local O_WRONLY = 1
 local F_SETFD = 2
 local F_GETFL = 3
@@ -22,21 +39,24 @@ if nonblocking then
     long write(int fd, const void *buffer, unsigned long count);
     int fcntl(int fd, int command, ...);
   ]]) then
-    ffi = value
-    bits = require("bit")
+    ---@cast value ffilib
+    native = { ffi = value, bits = require("bit"), nonblocking = nonblocking }
   end
 end
 
-local terminal_fd
+---@type Applet.TerminalConnection|false|nil
+local terminal
 
+---@return Applet.TerminalConnection?
 local function terminal_descriptor()
-  if terminal_fd ~= nil then
-    return terminal_fd ~= false and terminal_fd or nil
+  if terminal ~= nil then
+    return terminal ~= false and terminal or nil
   end
-  if not ffi then
-    terminal_fd = false
+  if not native then
+    terminal = false
     return nil
   end
+  local ffi = native.ffi
   local descriptor = ffi.C.open("/dev/tty", O_WRONLY)
   if descriptor < 0 then
     for _, candidate in ipairs({ 1, 2, 0 }) do
@@ -49,28 +69,37 @@ local function terminal_descriptor()
   if descriptor < 0
       or ffi.C.fcntl(descriptor, F_SETFD, FD_CLOEXEC) < 0 then
     if descriptor >= 0 then ffi.C.close(descriptor) end
-    terminal_fd = false
+    terminal = false
     return nil
   end
-  terminal_fd = descriptor
-  return descriptor
+  terminal = {
+    fd = descriptor, ffi = native.ffi, bits = native.bits,
+    nonblocking = native.nonblocking,
+  }
+  return terminal
 end
 
+---@return integer?
 local function builtin_tui_channel()
   local listed, uis = pcall(vim.api.nvim_list_uis)
   if not listed or type(uis) ~= "table" then return nil end
   for _, ui in ipairs(uis) do
     if type(ui.chan) == "number" and ui.stdin_tty == true
         and ui.stdout_tty == true then
-      local inspected, channel = pcall(vim.api.nvim_get_chan_info, ui.chan)
+      -- Neovim channel handles are integral, including those listed by the UI API.
+      local id = ui.chan
+      ---@cast id integer
+      local inspected, channel = pcall(vim.api.nvim_get_chan_info, id)
       if inspected and type(channel) == "table"
           and channel.mode == "rpc" and channel.stream == "stdio" then
-        return ui.chan
+        return id
       end
     end
   end
 end
 
+---@return true?
+---@return_overload false, string
 local function synchronize_builtin_tui()
   local channel = builtin_tui_channel()
   if not channel then return nil end
@@ -84,14 +113,18 @@ local function synchronize_builtin_tui()
   return false, tostring(result)
 end
 
+---@return boolean
 function M.available()
   return type(vim.api.nvim_ui_send) == "function"
     or (builtin_tui_channel() ~= nil and terminal_descriptor() ~= nil)
 end
 
+---@param data string
+---@return boolean
 local function descriptor_write(data)
-  local descriptor = terminal_descriptor()
-  if not descriptor then return false end
+  local connection = terminal_descriptor()
+  if not connection then return false end
+  local descriptor, ffi, bits = connection.fd, connection.ffi, connection.bits
   local synchronized, synchronize_error = synchronize_builtin_tui()
   if synchronized == nil then return false end
   if synchronized == false then
@@ -99,14 +132,16 @@ local function descriptor_write(data)
   end
   local flags = ffi.C.fcntl(descriptor, F_GETFL)
   if flags < 0 then return false end
-  local blocking_flags = bits.band(flags, bits.bnot(nonblocking))
+  local blocking_flags = bits.band(flags, bits.bnot(connection.nonblocking))
   if blocking_flags ~= flags
       and ffi.C.fcntl(descriptor, F_SETFL, blocking_flags) < 0 then
     return false
   end
   local pointer = ffi.cast("const unsigned char *", data)
   local interrupted = ({ Linux = 4, OSX = 4, BSD = 4 })[jit.os]
-  local offset, failure = 0, nil
+  ---@type number
+  local offset = 0
+  local failure
   while offset < #data do
     local count = tonumber(ffi.C.write(
       descriptor, pointer + offset, #data - offset))
@@ -127,19 +162,28 @@ local function descriptor_write(data)
   return true
 end
 
+---@param data string
+---@return string
 function M.base64(data)
   return vim.base64.encode(data)
 end
 
+---@param parameters? Applet.ImageCommand
+---@param payload? string
+---@return string
 function M.command(parameters, payload)
+  parameters = parameters or {}
   local keys = {}
-  for key in pairs(parameters or {}) do keys[#keys + 1] = key end
+  for key in pairs(parameters) do keys[#keys + 1] = key end
   table.sort(keys)
   local values = {}
   for _, key in ipairs(keys) do values[#values + 1] = key .. "=" .. tostring(parameters[key]) end
   return "\27_G" .. table.concat(values, ",") .. ";" .. (payload or "") .. "\27\\"
 end
 
+---@param command string
+---@param kind? "tmux"
+---@return string
 function M.envelope(command, kind)
   if kind == "tmux" then
     return "\27Ptmux;" .. command:gsub("\27", "\27\27") .. "\27\\"
@@ -147,6 +191,10 @@ function M.envelope(command, kind)
   return command
 end
 
+---@param data string
+---@param callback? Applet.OutputCallback
+---@param stream? Applet.OutputStream
+---@return true?
 function M.write(data, callback, stream)
   if not stream and vim.api.nvim_ui_send then
     vim.api.nvim_ui_send(data)
@@ -160,6 +208,8 @@ function M.write(data, callback, stream)
   if not flushed then error(flush_error or "terminal output flush failed", 0) end
 end
 
+---@param callback Applet.OutputCallback
+---@return Applet.CancelOutput
 function M.after_redraw(callback)
   assert(type(callback) == "function", "terminal output callback is required")
   local active = true
@@ -183,13 +233,16 @@ function M.after_redraw(callback)
   return function() active = false end
 end
 
+---@param callback Applet.OutputCallback
+---@return Applet.CancelOutput
 function M.schedule(callback)
   assert(type(callback) == "function", "terminal output callback is required")
   local active = true
+  ---@type Applet.CancelOutput?
   local cancel_wait
   vim.schedule(function()
     if not active then return end
-    local redrawn, redraw_error = pcall(vim.cmd, "redraw")
+    local redrawn, redraw_error = pcall(function() vim.cmd("redraw") end)
     if not redrawn then
       callback("terminal UI flush failed: " .. tostring(redraw_error))
       return
@@ -204,6 +257,9 @@ function M.schedule(callback)
   end
 end
 
+---@param data string
+---@param size? integer
+---@return string[]
 function M.chunks(data, size)
   size = size or 4096
   local encoded, result = M.base64(data), {}
