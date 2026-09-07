@@ -203,8 +203,9 @@ function RegularFile:identity()
 end
 
 function RegularFile:stat()
-  if self._closed then return nil, "regular file handle is closed" end
-  local stat, err = self._uv.fs_fstat(self._fd)
+  local fd = self._fd
+  if not fd then return nil, "regular file handle is closed" end
+  local stat, err = self._uv.fs_fstat(fd)
   if not stat then return nil, err end
   if not same_regular_identity(self._identity, stat) then
     return nil, "regular file handle identity changed", "ownership"
@@ -240,11 +241,12 @@ function RegularFile:append(data, offset)
   assert(type(data) == "string", "regular file append data must be a string")
   assert(type(offset) == "number" and offset >= 0 and offset % 1 == 0,
     "regular file append offset must be a non-negative integer")
-  if self._closed then return nil, "regular file handle is closed", "write" end
+  local fd = self._fd
+  if not fd then return nil, "regular file handle is closed", "write" end
   local written = 0
   while written < #data do
     local count, write_err = self._uv.fs_write(
-      self._fd, data:sub(written + 1), offset + written)
+      fd, data:sub(written + 1), offset + written)
     if type(count) ~= "number" or count <= 0
         or count > #data - written then
       return nil, write_err or "invalid write length", "write"
@@ -257,8 +259,9 @@ end
 function RegularFile:truncate(size)
   assert(type(size) == "number" and size >= 0 and size % 1 == 0,
     "regular file truncate size must be a non-negative integer")
-  if self._closed then return nil, "regular file handle is closed" end
-  local truncated, truncate_err = self._uv.fs_ftruncate(self._fd, size)
+  local fd = self._fd
+  if not fd then return nil, "regular file handle is closed" end
+  local truncated, truncate_err = self._uv.fs_ftruncate(fd, size)
   if not truncated then return nil, truncate_err, "truncate" end
   local stat, stat_err, stat_code = self:stat()
   if not stat then return nil, stat_err, stat_code end
@@ -269,10 +272,10 @@ function RegularFile:truncate(size)
 end
 
 function RegularFile:close()
-  if self._closed then return true end
-  local closed, close_err = self._uv.fs_close(self._fd)
+  local fd = self._fd
+  if not fd then return true end
+  local closed, close_err = self._uv.fs_close(fd)
   if not closed then return nil, close_err, "close" end
-  self._closed = true
   self._fd = nil
   return true
 end
@@ -316,7 +319,6 @@ function M.open_regular(path, opts)
     _fd = fd,
     _identity = identity,
     _uv = vim.uv,
-    _closed = false,
   }, RegularFile)
 end
 
