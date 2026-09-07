@@ -1,10 +1,59 @@
 local bit = require("bit")
 
 local M = {}
+---@class Neoagent.Win32LockBuffer: ffi.cdata*
+---@field [integer] integer
+
+---@class Neoagent.Win32LockOffset: ffi.cdata*
+---@field QuadPart integer
+
+---@class Neoagent.Win32LockFileInfo: ffi.cdata*
+---@field dwFileAttributes integer
+---@field dwVolumeSerialNumber integer
+---@field nFileIndexHigh integer
+---@field nFileIndexLow integer
+
+---@class Neoagent.Win32LockApi
+---@field GetLastError fun(): integer
+---@field GetFileInformationByHandle fun(handle: ffi.cdata*, info: Neoagent.Win32LockFileInfo): integer
+---@field MultiByteToWideChar fun(codepage: integer, flags: integer, text: string, bytes: integer, output: Neoagent.Win32LockBuffer?, capacity: integer): integer
+---@field CreateFileW fun(path: Neoagent.Win32LockBuffer, access: integer, share: integer, security: nil, disposition: integer, flags: integer, template: nil): ffi.cdata*
+---@field CloseHandle fun(handle: ffi.cdata*): integer
+---@field LockFileEx fun(handle: ffi.cdata*, flags: integer, reserved: integer, low: integer, high: integer, overlapped: ffi.cdata*): integer
+---@field UnlockFileEx fun(handle: ffi.cdata*, reserved: integer, low: integer, high: integer, overlapped: ffi.cdata*): integer
+---@field SetFilePointerEx fun(handle: ffi.cdata*, offset: Neoagent.Win32LockOffset, result: nil, origin: integer): integer
+---@field SetEndOfFile fun(handle: ffi.cdata*): integer
+---@field ReadFile fun(handle: ffi.cdata*, buffer: ffi.cdata*, bytes: integer, count: Neoagent.Win32LockBuffer, overlapped: nil): integer
+---@field WriteFile fun(handle: ffi.cdata*, buffer: string, bytes: integer, count: Neoagent.Win32LockBuffer, overlapped: nil): integer
+---@field FlushFileBuffers fun(handle: ffi.cdata*): integer
+
+---@alias Neoagent.Win32EncodePath fun(path: string): Neoagent.Win32LockBuffer?, string?
+
+---@class Neoagent.Win32LockOptions
+---@field ffi? ffilib
+---@field kernel? Neoagent.Win32LockApi
+---@field encode_path? Neoagent.Win32EncodePath
+---@field uv? uv
+
+---@class Neoagent.Win32LockBackend: Neoagent.LockBackend
+---@field ffi ffilib
+---@field kernel Neoagent.Win32LockApi
+---@field encode_path Neoagent.Win32EncodePath
+---@field uv uv
 local Backend = {}
 Backend.__index = Backend
+---@class Neoagent.Win32LockHandle: Neoagent.LockHandle
+---@field path string
+---@field native? ffi.cdata*
+---@field uv uv
+---@field ffi ffilib
+---@field kernel Neoagent.Win32LockApi
+---@field encode_path Neoagent.Win32EncodePath
+---@field overlapped ffi.cdata*
+---@field locked boolean
 local Handle = {}
 Handle.__index = Handle
+---@type table<ffilib, boolean>
 local declared = {}
 
 local LOCKFILE_FAIL_IMMEDIATELY = 0x00000001
@@ -29,10 +78,17 @@ local ERROR_PATH_NOT_FOUND = 3
 local ERROR_LOCK_VIOLATION = 33
 local ERROR_SHARING_VIOLATION = 32
 
+---@param code string
+---@param message string
+---@param detail? unknown
+---@return Neoagent.LockBackendError
 local function backend_error(code, message, detail)
   return { code = code, message = message, detail = detail }
 end
 
+---@param ffi ffilib
+---@param handle? ffi.cdata*
+---@return boolean
 local function invalid_handle(ffi, handle)
   if handle == nil then return true end
   local ok, value = pcall(ffi.cast, "intptr_t", handle)
@@ -40,19 +96,28 @@ local function invalid_handle(ffi, handle)
   return tonumber(handle) == -1
 end
 
+---@param kernel Neoagent.Win32LockApi
+---@param ffi ffilib
+---@param native ffi.cdata*
+---@return {attributes: integer, identity: string}?
 local function file_information(kernel, ffi, native)
   local info = ffi.new("NEOAGENT_BY_HANDLE_FILE_INFORMATION")
+  ---@cast info Neoagent.Win32LockFileInfo
   if kernel.GetFileInformationByHandle(native, info) == 0 then return nil end
   return {
-    attributes = tonumber(info.dwFileAttributes),
+    attributes = info.dwFileAttributes,
     identity = table.concat({
-      tonumber(info.dwVolumeSerialNumber),
-      tonumber(info.nFileIndexHigh),
-      tonumber(info.nFileIndexLow),
+      info.dwVolumeSerialNumber,
+      info.nFileIndexHigh,
+      info.nFileIndexLow,
     }, ":"),
   }
 end
 
+---@param kernel Neoagent.Win32LockApi
+---@param ffi ffilib
+---@param path string
+---@return Neoagent.Win32LockBuffer?, string?
 local function default_encode_path(kernel, ffi, path)
   if path:find("\0", 1, true) then return nil, "path contains a NUL byte" end
   local count = kernel.MultiByteToWideChar(
@@ -61,6 +126,7 @@ local function default_encode_path(kernel, ffi, path)
     return nil, "Win32 error " .. tostring(tonumber(kernel.GetLastError()))
   end
   local encoded = ffi.new("uint16_t[?]", count + 1)
+  ---@cast encoded Neoagent.Win32LockBuffer
   if kernel.MultiByteToWideChar(
       CP_UTF8, MB_ERR_INVALID_CHARS, path, #path, encoded, count) ~= count then
     return nil, "Win32 error " .. tostring(tonumber(kernel.GetLastError()))
@@ -69,8 +135,14 @@ local function default_encode_path(kernel, ffi, path)
   return encoded
 end
 
+---@return ffi.cdata*
+function Handle:_descriptor()
+  return (assert(self.native, "file lock handle is closed"))
+end
+
+---@return {attributes: integer, identity: string}?, Neoagent.LockBackendError?
 function Handle:_verify_identity()
-  local held = file_information(self.kernel, self.ffi, self.native)
+  local held = file_information(self.kernel, self.ffi, self:_descriptor())
   if not held then
     return nil, backend_error("ownership",
       "Failed to inspect held file lock", self:_last_error())
@@ -121,14 +193,16 @@ function Handle:_verify_identity()
   return held
 end
 
+---@return string
 function Handle:_last_error()
   return "Win32 error " .. tostring(tonumber(self.kernel.GetLastError()))
 end
 
+---@return boolean?, Neoagent.LockBackendError?
 function Handle:try_acquire()
   local flags = bit.bor(LOCKFILE_FAIL_IMMEDIATELY, LOCKFILE_EXCLUSIVE_LOCK)
   if self.kernel.LockFileEx(
-      self.native, flags, 0, 0xffffffff, 0xffffffff, self.overlapped) ~= 0 then
+      self:_descriptor(), flags, 0, 0xffffffff, 0xffffffff, self.overlapped) ~= 0 then
     self.locked = true
     return true
   end
@@ -140,6 +214,8 @@ function Handle:try_acquire()
     "Win32 error " .. tostring(code))
 end
 
+---@param mode integer
+---@return true?, Neoagent.LockBackendError?
 function Handle:prepare(mode)
   local identity, identity_err = self:_verify_identity()
   if not identity then return nil, identity_err end
@@ -152,27 +228,33 @@ function Handle:prepare(mode)
   return true
 end
 
+---@param code string
+---@return true?, Neoagent.LockBackendError?
 function Handle:_seek_start(code)
   local offset = self.ffi.new("NEOAGENT_LARGE_INTEGER")
+  ---@cast offset Neoagent.Win32LockOffset
   offset.QuadPart = 0
   if self.kernel.SetFilePointerEx(
-      self.native, offset, nil, FILE_BEGIN) == 0 then
+      self:_descriptor(), offset, nil, FILE_BEGIN) == 0 then
     return nil, backend_error(code,
       "Failed to seek held file lock", self:_last_error())
   end
   return true
 end
 
+---@param token string
+---@return true?, Neoagent.LockBackendError?
 function Handle:write_token(token)
   local positioned, position_err = self:_seek_start("write")
   if not positioned then return nil, position_err end
-  if self.kernel.SetEndOfFile(self.native) == 0 then
+  if self.kernel.SetEndOfFile(self:_descriptor()) == 0 then
     return nil, backend_error("write",
       "Failed to truncate held file lock", self:_last_error())
   end
   local written = self.ffi.new("unsigned long[1]")
+  ---@cast written Neoagent.Win32LockBuffer
   if self.kernel.WriteFile(
-      self.native, token, #token, written, nil) == 0 then
+      self:_descriptor(), token, #token, written, nil) == 0 then
     return nil, backend_error("write", "Failed to write file lock token",
       self:_last_error())
   end
@@ -180,13 +262,15 @@ function Handle:write_token(token)
     return nil, backend_error("write",
       "Failed to write file lock token", "short write")
   end
-  if self.kernel.FlushFileBuffers(self.native) == 0 then
+  if self.kernel.FlushFileBuffers(self:_descriptor()) == 0 then
     return nil, backend_error("write",
       "Failed to sync file lock token", self:_last_error())
   end
   return true
 end
 
+---@param token string
+---@return true?, Neoagent.LockBackendError?
 function Handle:verify_token(token)
   local identity, identity_err = self:_verify_identity()
   if not identity then return nil, identity_err end
@@ -194,22 +278,24 @@ function Handle:verify_token(token)
   if not positioned then return nil, position_err end
   local buffer = self.ffi.new("uint8_t[?]", #token + 1)
   local read = self.ffi.new("unsigned long[1]")
+  ---@cast read Neoagent.Win32LockBuffer
   if self.kernel.ReadFile(
-      self.native, buffer, #token + 1, read, nil) == 0 then
+      self:_descriptor(), buffer, #token + 1, read, nil) == 0 then
     return nil, backend_error("release",
       "Failed to read held file lock", self:_last_error())
   end
-  local contents = self.ffi.string(buffer, tonumber(read[0]))
+  local contents = self.ffi.string(buffer, read[0])
   if contents ~= token then
     return nil, backend_error("ownership", "File lock ownership changed")
   end
   return true
 end
 
+---@return true?, Neoagent.LockBackendError?
 function Handle:release()
   if not self.locked then return true end
   if self.kernel.UnlockFileEx(
-      self.native, 0, 0xffffffff, 0xffffffff, self.overlapped) == 0 then
+      self:_descriptor(), 0, 0xffffffff, 0xffffffff, self.overlapped) == 0 then
     return nil, backend_error("release", "Failed to unlock file lock",
       self:_last_error())
   end
@@ -217,17 +303,20 @@ function Handle:release()
   return true
 end
 
+---@return true?, Neoagent.LockBackendError?
 function Handle:close()
-  if self.closed then return true end
+  if not self.native then return true end
   if self.kernel.CloseHandle(self.native) == 0 then
     return nil, backend_error("release",
       "Failed to close file lock", self:_last_error())
   end
-  self.closed = true
   self.native = nil
   return true
 end
 
+---@param path string
+---@param mode integer
+---@return Neoagent.Win32LockHandle?, Neoagent.LockBackendError?
 function Backend:open(path, mode)
   local encoded, encode_err = self.encode_path(path)
   if not encoded then
@@ -270,7 +359,6 @@ function Backend:open(path, mode)
     encode_path = self.encode_path,
     overlapped = self.ffi.new("NEOAGENT_OVERLAPPED"),
     locked = false,
-    closed = false,
   }, Handle)
   local identity, identity_err = handle:_verify_identity()
   if not identity then
@@ -280,6 +368,8 @@ function Backend:open(path, mode)
   return handle
 end
 
+---@param opts? Neoagent.Win32LockOptions
+---@return Neoagent.Win32LockBackend
 function M.new(opts)
   opts = opts or {}
   local ffi = opts.ffi or require("ffi")
@@ -334,6 +424,7 @@ unsigned long __stdcall GetLastError(void);
     declared[ffi] = true
   end
   local kernel = opts.kernel or ffi.load("kernel32")
+  ---@cast kernel Neoagent.Win32LockApi
   local encode_path = opts.encode_path or function(path)
     return default_encode_path(kernel, ffi, path)
   end
