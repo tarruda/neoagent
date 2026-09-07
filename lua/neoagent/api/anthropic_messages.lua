@@ -54,6 +54,17 @@ local function nonempty(value)
   return type(value) == "string" and value ~= ""
 end
 
+---@param value unknown
+---@param field string
+---@return string
+local function block_string(value, field)
+  if not value then return "" end
+  if type(value) ~= "string" then
+    error(util.error("protocol", "Invalid Anthropic " .. field .. ": expected a string"), 0)
+  end
+  return value
+end
+
 local function partial_message(message, blocks, err)
   if type(message) ~= "table" then return nil end
   local states = {}
@@ -127,7 +138,8 @@ function Model:stream(opts)
       local function start_block(event)
         local index = event.index
         local raw = event.content_block
-        if type(index) ~= "number" or type(raw) ~= "table" then
+        if type(index) ~= "number" or index < 0 or index % 1 ~= 0
+            or type(raw) ~= "table" then
           error(util.error("protocol", "Invalid Anthropic content_block_start"), 0)
         end
         if blocks[index] then
@@ -151,7 +163,7 @@ function Model:stream(opts)
           block = {
             type = "thinking",
             thinking = "[Reasoning redacted]",
-            thinkingSignature = raw.data or "",
+            thinkingSignature = block_string(raw.data, "redacted thinking data"),
             redacted = true,
           }
           state.block = block
@@ -161,8 +173,8 @@ function Model:stream(opts)
         elseif raw.type == "tool_use" then
           block = {
             type = "toolCall",
-            id = raw.id or "",
-            name = raw.name or "",
+            id = block_string(raw.id, "tool id"),
+            name = block_string(raw.name, "tool name"),
             arguments = vim.empty_dict(),
           }
           state.block = block

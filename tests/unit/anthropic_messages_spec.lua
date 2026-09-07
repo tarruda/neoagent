@@ -661,6 +661,48 @@ describe("neoagent.api.anthropic_messages", function()
     assert.are.same({ path = "x.lua" }, result.message.content[1].arguments)
   end)
 
+  it("rejects malformed block metadata before publishing it and keeps prior text", function()
+    local cases = {
+      { index = 1, block = { type = "tool_use", id = 42, name = "inspect", input = {} } },
+      { index = 1, block = { type = "tool_use", id = "call_1", name = { "inspect" }, input = {} } },
+      { index = 1, block = { type = "redacted_thinking", data = { signature = "invalid" } } },
+      { index = -1, block = { type = "tool_use", id = "call_1", name = "inspect", input = {} } },
+      { index = 0.5, block = { type = "tool_use", id = "call_1", name = "inspect", input = {} } },
+    }
+    for _, case in ipairs(cases) do
+      local block, index = case.block, case.index
+      local chunks = {
+        message_start(),
+        event({ type = "content_block_start", index = 0,
+          content_block = { type = "text", text = "Checking." } }),
+        event({ type = "content_block_stop", index = 0 }),
+        event({ type = "content_block_start", index = index, content_block = block }),
+      }
+      if block.type == "tool_use" then
+        chunks[#chunks + 1] = event({ type = "content_block_delta", index = index,
+          delta = { type = "input_json_delta", partial_json = "{}" } })
+      end
+      chunks[#chunks + 1] = event({ type = "content_block_stop", index = index })
+      chunks[#chunks + 1] = event({ type = "message_delta",
+        delta = { stop_reason = "end_turn" } })
+      chunks[#chunks + 1] = event({ type = "message_stop" })
+      local published = {}
+      local result = wait(anthropic.new({
+        provider = "p", model = "m", base_url = "http://x",
+        transport = fake_transport.new({ { chunks = chunks } }),
+      }):stream({
+        messages = {},
+        on_event = function(value)
+          if value.type ~= "usage" then published[#published + 1] = value end
+        end,
+      }))
+      assert.are.same({ { type = "text_delta", text = "Checking." } }, published)
+      assert.is_false(result.ok)
+      assert.are.equal("protocol", result.error.kind)
+      assert.are.same({ { type = "text", text = "Checking." } }, result.message.content)
+    end
+  end)
+
   it("rejects non-UTF-8 Anthropic deltas and thinking signatures", function()
     local original = util.is_valid_utf8
     util.is_valid_utf8 = function(value)
