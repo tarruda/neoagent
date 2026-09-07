@@ -6,19 +6,43 @@ local M = {}
 local followup = "Your previous response indicated tool use but contained no tool call. "
   .. "Supply the intended tool call, or finish your answer."
 
-local function add_usage(left, right)
+---@param left? Neoagent.UsageCost
+---@param right Neoagent.UsageCost
+---@return Neoagent.UsageCost
+local function add_cost(left, right)
   local result = util.copy(left or {})
-  for key, value in pairs(right or {}) do
-    if type(value) == "table" then
-      result[key] = add_usage(result[key], value)
-    else
-      result[key] = (result[key] or 0) + value
-    end
+  for key, value in pairs(right) do
+    result[key] = (result[key] or 0) + value
   end
   return result
 end
 
+---@param left? Neoagent.Usage
+---@param right? Neoagent.Usage
+---@return Neoagent.Usage
+local function add_usage(left, right)
+  local result = util.copy(left or {})
+  for _, key in ipairs({
+    "input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens",
+  }) do
+    local value = right and right[key]
+    if value ~= nil then result[key] = (result[key] or 0) + value end
+  end
+  if right and right.cost then result.cost = add_cost(result.cost, right.cost) end
+  return result
+end
+
+---@param err Neoagent.Error
+---@return boolean
+local function missing_tool_call(err)
+  return err.kind == "protocol" and rawget(err, "code") == "missing_tool_call"
+end
+
+---@param first Neoagent.AssistantMessage
+---@param result Neoagent.ModelResult
+---@return Neoagent.ModelResult
 local function combine(first, result)
+  local failure = result.ok == false and result.error or nil
   local message = util.copy(result.message or first)
   message.content = util.copy(first.content)
   for _, block in ipairs(result.message and result.message.content or {}) do
@@ -29,28 +53,34 @@ local function combine(first, result)
     message.content[#message.content + 1] = copied
   end
   message.usage = add_usage(first.usage, result.message and result.message.usage)
-  if not result.ok then
-    message.stopReason = result.error.kind == "cancelled" and "aborted" or "error"
-    message.errorMessage = result.error.message
+  if failure then
+    message.stopReason = failure.kind == "cancelled" and "aborted" or "error"
+    message.errorMessage = failure.message
   end
-  result = util.copy(result)
-  result.message = message
-  result.text = util.text_content(message.content)
-  return result
+  local combined = util.copy(result)
+  combined.message = message
+  combined.text = util.text_content(message.content)
+  return combined
 end
 
+---@param model Neoagent.Model
+---@return Neoagent.Model
 function M.wrap(model)
   if model.id ~= "qwen3.8-flash" or model.api ~= "anthropic-messages" then return model end
   local wrapped = assert(contract.capabilities(model))
+  ---@param opts Neoagent.StreamOptions
+  ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function wrapped:stream(opts)
     opts = opts or {}
-    return async.run(function(run)
+    return async.run(
+    ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+    ---@return Neoagent.ModelResult
+    function(run)
       local call = util.copy(opts)
       call.on_done = nil
       call.on_event = function(event) run:emit(event) end
       local first = contract.await_result(model:stream(call))
-      if first.ok or not first.error or first.error.kind ~= "protocol"
-          or first.error.code ~= "missing_tool_call"
+      if first.ok or not first.error or not missing_tool_call(first.error)
           or not first.message or run:is_cancelled() then return first end
 
       run:emit({ type = "warning", message = "Provider bug: OpenCode Go's qwen3.8-flash "
