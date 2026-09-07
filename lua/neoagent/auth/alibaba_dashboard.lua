@@ -4,14 +4,23 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.AlibabaDashboardAuthOptions
+---@field random_state? fun(): string
+---@field start_callback_server? fun(state: string, host: string): Neoagent.CallbackListener<string>?, string?
+---@field callback_host? string
+---@field console_origin? string
+
 local CONSOLE_ORIGIN = "https://modelstudio.console.alibabacloud.com"
 local CALLBACK_TIMEOUT_MS = 15 * 60 * 1000
 
+---@param value? string
+---@return table<string, string>
 local function decode_fields(value)
   local result = {}
   for pair in (value or ""):gmatch("[^&]+") do
     local key, item = pair:match("^([^=]+)=?(.*)$")
     if key then
+      ---@cast item string
       result[vim.uri_decode(key:gsub("+", " "))] =
         vim.uri_decode(item:gsub("+", " "))
     end
@@ -19,12 +28,16 @@ local function decode_fields(value)
   return result
 end
 
+---@return string
 local function random_state()
-  return (vim.uv.random(16):gsub(".", function(byte)
+  return (assert(vim.uv.random(16)):gsub(".", function(byte)
     return string.format("%02x", byte:byte())
   end))
 end
 
+---@param value unknown
+---@param names string[]
+---@return string?
 local function field_from_object(value, names)
   if type(value) ~= "table" or util.is_list(value) then return nil end
   for _, name in ipairs(names) do
@@ -36,6 +49,10 @@ local function field_from_object(value, names)
   return field_from_object(value.data, names)
 end
 
+---@param body string
+---@param content_type string
+---@param names string[]
+---@return string?
 local function field_from_multipart(body, content_type, names)
   local boundary = content_type:match(
     '[Bb][Oo][Uu][Nn][Dd][Aa][Rr][Yy]%s*=%s*"([^";]+)"')
@@ -72,6 +89,8 @@ end
 
 local ACCESS_NAMES = { "access_token", "accessToken" }
 
+---@param request Neoagent.CallbackRequest
+---@return string?
 local function access_token_from_request(request)
   local result = field_from_object(decode_fields(
     request.target:match("%?(.*)$") or ""), ACCESS_NAMES)
@@ -92,6 +111,9 @@ local function access_token_from_request(request)
   return result
 end
 
+---@param expected_state string
+---@param host string
+---@return Neoagent.CallbackListener<string>?, string?
 local function callback_server(expected_state, host)
   return local_callback.listen({
     host = host,
@@ -131,6 +153,8 @@ local function callback_server(expected_state, host)
   })
 end
 
+---@param opts? Neoagent.AlibabaDashboardAuthOptions
+---@return Neoagent.AuthMethod<Neoagent.ApiKeyCredential>
 function M.new(opts)
   opts = opts or {}
   local state_source = opts.random_state or random_state
