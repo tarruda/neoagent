@@ -33,7 +33,6 @@ lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
 lua/neoagent/http_replay.lua
 lua/neoagent/init.lua
-lua/neoagent/input_history.lua
 lua/neoagent/markdown.lua
 lua/neoagent/model_catalog.lua
 lua/neoagent/models.lua

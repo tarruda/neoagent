@@ -3,13 +3,25 @@ local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.InputHistoryOptions: Neoagent.WorkspaceSettingsOptions
+---@field limit? integer
+
+---@class Neoagent.InputHistory
+---@field root string
+---@field directory string
+---@field path string
+---@field limit integer
 local History = {}
 History.__index = History
 
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function history_error(message, detail)
   return util.error("history", message, detail)
 end
 
+---@return string[]?, Neoagent.Error?
 function History:load()
   if not vim.uv.fs_stat(self.path) then return {} end
   local content, err = fs.read(self.path)
@@ -29,6 +41,9 @@ function History:load()
   return history
 end
 
+---@param self Neoagent.InputHistory
+---@param history string[]
+---@return string
 local function encode_history(self, history)
   assert(util.is_list(history), "history must be a list")
   local lines = {}
@@ -40,12 +55,18 @@ local function encode_history(self, history)
   return table.concat(lines, "\n") .. "\n"
 end
 
+---@param self Neoagent.InputHistory
+---@return true?, Neoagent.Error?
 local function prepare_directory(self)
   local ok, err = fs.ensure_private_directory(self.directory, 448)
   if not ok then return nil, history_error("Failed to create workspace directory", err) end
   return true
 end
 
+---@param self Neoagent.InputHistory
+---@param history string[]
+---@param encoded string
+---@return string[]?, Neoagent.Error?
 local function replace(self, history, encoded)
   local ok, err, stage = fs.atomic_replace(
     self.path, encoded, { mode = 384 })
@@ -59,17 +80,22 @@ local function replace(self, history, encoded)
   return vim.list_slice(history, 1, self.limit)
 end
 
+---@param self Neoagent.InputHistory
+---@param fn fun(): string[]?, Neoagent.Error?
+---@return string[]?, Neoagent.Error?
 local function with_lock(self, fn)
   local result, err = file_lock.new({ path = self.path .. ".lock" }):with(fn)
   if not result and type(err) == "table" and err.kind == "file_lock" then
     local releasing = err.code == "release" or err.code == "ownership"
     local action = releasing and "release" or "acquire"
     return nil, history_error("Failed to " .. action .. " input history lock",
-      err.detail or err.message)
+      rawget(err, "detail") or err.message)
   end
   return result, err
 end
 
+---@param history string[]
+---@return string[]?, Neoagent.Error?
 function History:write(history)
   local encoded = encode_history(self, history)
   local prepared, prepare_err = prepare_directory(self)
@@ -77,6 +103,8 @@ function History:write(history)
   return with_lock(self, function() return replace(self, history, encoded) end)
 end
 
+---@param text string
+---@return string[]?, Neoagent.Error?
 function History:add(text)
   assert(type(text) == "string", "history input must be a string")
   text = util.trim(text)
@@ -93,6 +121,8 @@ function History:add(text)
   end)
 end
 
+---@param opts Neoagent.InputHistoryOptions
+---@return Neoagent.InputHistory
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
