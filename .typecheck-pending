@@ -120,7 +120,6 @@ lua/neoagent/ui/tool_presentation.lua
 lua/neoagent/ui/tree.lua
 lua/neoagent/workspace.lua
 lua/neoagent/workspace_preferences.lua
-lua/neoagent/workspace_settings.lua
 lua/neoagent/workspace_trust.lua
 plugin/neoagent.lua
 scripts/applet-image-harness.lua
