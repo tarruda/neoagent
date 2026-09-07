@@ -14,10 +14,15 @@ local M = {
   serialize = summary.serialize,
 }
 
+---@param configured? Neoagent.CompactionOptions
+---@param context_window? number
+---@return Neoagent.CompactionSettings
 function M.settings(configured, context_window)
   return plan.settings(configured, context_window, M.defaults)
 end
 
+---@param opts Neoagent.CompactionRunOptions
+---@return Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 function M.run(opts)
   return summary.run(opts, M.system_prompt)
 end

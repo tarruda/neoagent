@@ -22,9 +22,6 @@ lua/neoagent/agent_applet.lua
 lua/neoagent/applet.lua
 lua/neoagent/authentication.lua
 lua/neoagent/chat.lua
-lua/neoagent/compaction.lua
-lua/neoagent/compaction/plan.lua
-lua/neoagent/compaction/summary.lua
 lua/neoagent/config.lua
 lua/neoagent/dialog.lua
 lua/neoagent/health.lua
