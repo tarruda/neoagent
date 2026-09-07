@@ -63,7 +63,6 @@ lua/neoagent/sandbox/windows/compile.lua
 lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/sandbox/windows/protocol.lua
 lua/neoagent/session.lua
-lua/neoagent/session_tree.lua
 lua/neoagent/storage.lua
 lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/common.lua
