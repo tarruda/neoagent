@@ -4,16 +4,68 @@ local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
 local M = {}
+---@alias Neoagent.TrustRequestState "trusted"|"active"|"scheduled"
+---@alias Neoagent.TrustSandboxStatus {enabled: boolean, active: boolean, platform?: string, message?: string}
+
+---@class Neoagent.WorkspaceTrustError: Neoagent.Error
+---@field pending? true
+---@field request_state? Neoagent.TrustRequestState
+
+---@alias Neoagent.TrustStoreResult Neoagent.AsyncSuccess|Neoagent.AsyncFailure
+---@alias Neoagent.TrustStoreRun Neoagent.Run<Neoagent.TrustStoreResult, nil>
+
+---@class Neoagent.WorkspaceTrustStore
+---@field path string
 local Store = {}
 Store.__index = Store
+---@class Neoagent.WorkspaceTrustSuccess
+---@field ok true
+---@field target string
+---@field persistent boolean
+---@field already_trusted? true
+
+---@alias Neoagent.WorkspaceTrustResult Neoagent.WorkspaceTrustSuccess|Neoagent.DialogFailure
+---@alias Neoagent.WorkspaceTrustRun Neoagent.Run<Neoagent.WorkspaceTrustResult, nil>
+
+---@class Neoagent.WorkspaceTrustAttachment
+---@field activate? fun()
+---@field close? fun()
+---@field on_trusted? fun(target: string)
+---@field on_result? fun(result: Neoagent.WorkspaceTrustResult)
+
+---@class Neoagent.WorkspaceTrustCompositionOptions
+---@field path? string
+---@field dialogs Neoagent.Dialogs
+---@field sandbox_status? Neoagent.TrustSandboxStatus
+---@field notify? fun(error: Neoagent.Error)
+---@field agent? string
+---@field store? Neoagent.WorkspaceTrustStore
+---@field session? table<string, boolean>
+
+---@class Neoagent.WorkspaceTrustOptions: Neoagent.WorkspaceTrustCompositionOptions
+---@field path string
+
+---@class Neoagent.WorkspaceTrust: Neoagent.WorkspaceTrustAttachment
+---@field agent_name? string
+---@field store Neoagent.WorkspaceTrustStore
+---@field dialogs Neoagent.Dialogs
+---@field sandbox_status? Neoagent.TrustSandboxStatus
+---@field notify fun(error: Neoagent.Error)
+---@field session table<string, boolean>
+---@field pending table<string, Neoagent.WorkspaceTrustRun>
+---@field scheduled table<string, boolean>
 local Policy = {}
 Policy.__index = Policy
+---@type table<string, boolean>
 local process_session = {}
 
 local DIRECTORY_MODE = 448
 local FILE_MODE = 384
 local LOCK_TIMEOUT_MS = 3000
 
+---@param message string
+---@param detail? unknown
+---@return Neoagent.WorkspaceTrustError
 local function failure(message, detail)
   if detail ~= nil then
     detail = tostring(detail):gsub("[%z\1-\31\127]", " ")
@@ -22,11 +74,15 @@ local function failure(message, detail)
   return util.error("workspace_trust", message, detail)
 end
 
+---@param path string
+---@return string
 local function absolute(path)
   if fs.is_absolute(path) then return path end
   return fs.join(vim.fn.getcwd(), path)
 end
 
+---@param directory string
+---@return boolean
 local function git_marker(directory)
   local marker = fs.join(directory, ".git")
   local stat = vim.uv.fs_stat(marker)
@@ -36,6 +92,8 @@ local function git_marker(directory)
     and vim.uv.fs_stat(fs.join(marker, "HEAD")) ~= nil
 end
 
+---@param cwd string
+---@return string
 function M.target(cwd)
   assert(type(cwd) == "string" and cwd ~= "",
     "workspace trust cwd is required")
@@ -50,12 +108,17 @@ function M.target(cwd)
   return canonical
 end
 
+---@param path string
+---@param os_name? string
+---@return string
 function M.key(path, os_name)
   local value = fs.normalize(path)
   if (os_name or jit.os) == "Windows" then value = value:lower() end
   return value
 end
 
+---@param value unknown
+---@return string[]?, string?
 local function validate_document(value)
   if type(value) ~= "table" or util.is_list(value) then
     return nil, "expected an object"
@@ -90,6 +153,7 @@ local function validate_document(value)
   return util.copy(value.trusted)
 end
 
+---@return string[]?, Neoagent.Error?
 function Store:_read_all()
   local stat, stat_err = vim.uv.fs_stat(self.path)
   if not stat then
@@ -116,12 +180,15 @@ function Store:_read_all()
   return trusted
 end
 
+---@return string[]?, Neoagent.Error?
 function Store:list()
   local trusted, err = self:_read_all()
   if not trusted then return nil, err end
   return util.copy(trusted)
 end
 
+---@param cwd string
+---@return boolean?, Neoagent.Error?
 function Store:is_trusted(cwd)
   local trusted, err = self:_read_all()
   if not trusted then return nil, err end
@@ -132,18 +199,23 @@ function Store:is_trusted(cwd)
   return false
 end
 
+---@param err unknown
+---@param releasing boolean
+---@return Neoagent.Error
 local function trust_lock_error(err, releasing)
   err = util.normalize_error(err, "file_lock")
   if err.kind == "cancelled" then return err end
   if releasing then
-    return failure("Failed to release workspace trust lock", err.detail or err.message)
+    return failure("Failed to release workspace trust lock", rawget(err, "detail") or err.message)
   end
-  if err.code == "timeout" then
-    return failure("Timed out waiting for workspace trust lock", err.detail)
+  if rawget(err, "code") == "timeout" then
+    return failure("Timed out waiting for workspace trust lock", rawget(err, "detail"))
   end
-  return failure("Failed to acquire workspace trust lock", err.detail or err.message)
+  return failure("Failed to acquire workspace trust lock", rawget(err, "detail") or err.message)
 end
 
+---@async
+---@return fun(): true?, Neoagent.Error?
 function Store:_lock()
   local lock = file_lock.new({
     path = self.path .. ".lock",
@@ -160,6 +232,8 @@ function Store:_lock()
   end
 end
 
+---@param trusted string[]
+---@return true?, Neoagent.Error?
 function Store:_write_all(trusted)
   local document = { version = 1, trusted = util.copy(trusted) }
   local written, write_err, stage = fs.atomic_replace(
@@ -174,8 +248,13 @@ function Store:_write_all(trusted)
   return true
 end
 
+---@param cwd string
+---@param remove boolean
+---@return Neoagent.TrustStoreRun
 function Store:_modify(cwd, remove)
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.TrustStoreResult
+  function()
     local directory = vim.fs.dirname(self.path)
     local created, create_err = fs.ensure_private_directory(
       directory, DIRECTORY_MODE)
@@ -214,10 +293,14 @@ function Store:_modify(cwd, remove)
   end, { error_kind = "workspace_trust" })
 end
 
+---@param cwd string
+---@return Neoagent.TrustStoreRun
 function Store:trust(cwd)
   return self:_modify(cwd, false)
 end
 
+---@param cwd string
+---@return Neoagent.TrustStoreRun
 function Store:remove(cwd)
   if not vim.uv.fs_stat(self.path) then
     return async.run(function() return { ok = true } end,
@@ -226,12 +309,16 @@ function Store:remove(cwd)
   return self:_modify(cwd, true)
 end
 
+---@param path string
+---@return Neoagent.WorkspaceTrustStore
 function M.new_store(path)
   assert(type(path) == "string" and path ~= "",
     "workspace trust path is required")
   return setmetatable({ path = fs.normalize(absolute(path)) }, Store)
 end
 
+---@param status? Neoagent.TrustSandboxStatus
+---@return string
 local function sandbox_text(status)
   status = status or { enabled = false, active = false }
   if status.active then
@@ -247,7 +334,10 @@ local function sandbox_text(status)
   return "Tools run on the host because sandbox activation failed: " .. reason
 end
 
+---@param target string
+---@return Neoagent.DialogRequest
 function Policy:_dialog(target)
+  ---@type Neoagent.DialogRequest
   local request = {
     placement = "transcript",
     title = "Trust workspace?",
@@ -271,6 +361,8 @@ function Policy:_dialog(target)
   return request
 end
 
+---@param cwd string
+---@return boolean?, Neoagent.Error?, string
 function Policy:is_trusted(cwd)
   local target = M.target(cwd)
   if self.session[M.key(target)] then return true, nil, target end
@@ -278,6 +370,8 @@ function Policy:is_trusted(cwd)
   return trusted, err, target
 end
 
+---@param cwd string
+---@return true
 function Policy:trust_session(cwd)
   local target = M.target(cwd)
   self.session[M.key(target)] = true
@@ -288,10 +382,12 @@ function Policy:_close()
   if self.close then pcall(self.close) end
 end
 
+---@param err Neoagent.Error
 function Policy:_notify(err)
   self.notify(err)
 end
 
+---@param result Neoagent.WorkspaceTrustResult
 function Policy:_finish(result)
   if self.on_result then
     local ok, err = pcall(self.on_result, util.copy(result))
@@ -300,6 +396,7 @@ function Policy:_finish(result)
     end
   end
   if result.ok and self.on_trusted then
+    ---@cast result Neoagent.WorkspaceTrustSuccess
     local ok, err = pcall(self.on_trusted, result.target)
     if not ok then
       self:_notify(util.normalize_error(err, "workspace_trust"))
@@ -307,6 +404,8 @@ function Policy:_finish(result)
   end
 end
 
+---@param cwd string
+---@return boolean?, Neoagent.Error?, Neoagent.TrustRequestState?
 function Policy:request(cwd)
   local trusted, err, target = self:is_trusted(cwd)
   if trusted then return true, nil, "trusted" end
@@ -346,13 +445,20 @@ function Policy:request(cwd)
         return
       end
     end
+    ---@type Neoagent.WorkspaceTrustRun
     local run
-    run = async.run(function()
+    run = async.run(
+    ---@return Neoagent.WorkspaceTrustResult
+    function()
       local result = self.dialogs:show(self:_dialog(target)):await()
       if not result.ok or result.action == "cancel" then
         self:_close()
-        return result.ok and { ok = false,
-          error = failure("Workspace trust was cancelled") } or result
+        if result.ok then
+          return { ok = false,
+            error = failure("Workspace trust was cancelled") }
+        end
+        ---@cast result Neoagent.DialogFailure
+        return result
       end
       if result.action == "session" then
         self:trust_session(target)
@@ -379,6 +485,8 @@ function Policy:request(cwd)
   return false, nil, "scheduled"
 end
 
+---@param cwd string
+---@return true?, Neoagent.Error?
 function Policy:check(cwd)
   local trusted, err, target = self:is_trusted(cwd)
   if trusted then return true end
@@ -394,10 +502,13 @@ function Policy:check(cwd)
   return nil, err
 end
 
+---@param status Neoagent.TrustSandboxStatus
 function Policy:set_sandbox_status(status)
   self.sandbox_status = util.copy(status)
 end
 
+---@param opts? Neoagent.WorkspaceTrustAttachment
+---@return Neoagent.WorkspaceTrust
 function Policy:attach(opts)
   opts = opts or {}
   assert(opts.activate == nil or type(opts.activate) == "function",
@@ -415,6 +526,8 @@ function Policy:attach(opts)
   return self
 end
 
+---@param opts Neoagent.WorkspaceTrustOptions
+---@return Neoagent.WorkspaceTrust
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table" and not util.is_list(opts),
@@ -441,6 +554,9 @@ function M.new(opts)
   }, Policy)
 end
 
+---@param configured {name: string, workspace_trust?: {path: string}|false}
+---@param opts Neoagent.WorkspaceTrustCompositionOptions
+---@return Neoagent.WorkspaceTrust
 function M.compose(configured, opts)
   assert(type(configured) == "table" and not util.is_list(configured),
     "workspace trust Agent configuration must be an object")
@@ -454,7 +570,7 @@ function M.compose(configured, opts)
     path = configured.workspace_trust.path
   end
   local policy = M.new({
-    path = path,
+    path = assert(path, "workspace trust path is required"),
     dialogs = opts.dialogs,
     sandbox_status = opts.sandbox_status,
     notify = opts.notify,
