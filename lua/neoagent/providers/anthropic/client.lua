@@ -4,49 +4,108 @@ local http = require("neoagent.providers.http")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.AnthropicClientOptions
+---@field base_url string
+---@field name? string
+---@field environment? string
+---@field ambient_api_key? fun(): string?
+---@field ambient_headers? fun(key: string): table<string, unknown>
+---@field now? fun(): number
+---@field transport? Neoagent.ByteBackend
+---@field timeout_ms? number
+---@field max_response_bytes? integer
+
+---@class Neoagent.AnthropicCatalogModel: Neoagent.ModelConfig
+---@field thinking_type? "adaptive"|"enabled"|false
+---@field reasoning_levels? Neoagent.ThinkingLevel[]
+
+---@class Neoagent.AnthropicModelsSuccess
+---@field ok true
+---@field models Neoagent.AnthropicCatalogModel[]
+
+---@class Neoagent.AnthropicOrganizationUsage
+---@field uncached_input_tokens integer
+---@field cache_read_input_tokens integer
+---@field cache_creation_input_tokens integer
+---@field output_tokens integer
+
+---@class Neoagent.AnthropicOrganizationCost
+---@field currency string
+---@field value number
+
+---@class Neoagent.AnthropicOrganizationSuccess
+---@field ok true
+---@field start_time integer
+---@field end_time integer
+---@field usage Neoagent.AnthropicOrganizationUsage
+---@field costs Neoagent.AnthropicOrganizationCost[]
+
+---@class Neoagent.AnthropicCapability: Neoagent.JsonObject
+---@field supported boolean
+
+---@class Neoagent.AnthropicReportingPage: Neoagent.JsonObject
+---@field has_more boolean
+---@field data Neoagent.JsonArray
+
 local MODEL_PAGE_LIMIT = 1000
 local MAX_MODEL_PAGES = 32
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_id(value)
   return type(value) == "string" and value ~= "" and #value <= 512
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@return TypeGuard<integer>
 local function count(value)
   return finite(value) and value >= 0 and value % 1 == 0
 end
 
+---@param value unknown
+---@return boolean
 local function absent(value)
   return value == nil or value == vim.NIL
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_name(value)
   return type(value) == "string" and value ~= "" and #value <= 256
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param value? Neoagent.JsonValue
+---@return Neoagent.AnthropicCapability?, boolean
 local function capability(value)
   if absent(value) then return nil, true end
   if type(value) ~= "table" or util.is_list(value)
       or type(value.supported) ~= "boolean" then
     return nil, false
   end
-  return value.supported, true
+  ---@cast value Neoagent.AnthropicCapability
+  return value, true
 end
 
+---@param entry Neoagent.JsonValue
+---@return Neoagent.AnthropicCatalogModel?
 local function model_entry(entry)
   if type(entry) ~= "table" or util.is_list(entry)
       or not safe_id(entry.id)
       or entry.type ~= nil and entry.type ~= "model" then
     return nil
   end
+  ---@type Neoagent.AnthropicCatalogModel
   local result = { id = entry.id }
   if entry.display_name ~= nil then
     if not safe_name(entry.display_name) then return nil end
@@ -69,14 +128,13 @@ local function model_entry(entry)
   local image, image_ok = capability(capabilities.image_input)
   if not image_ok then return nil end
   if image ~= nil then
-    result.input = image and { "text", "image" } or { "text" }
+    result.input = image.supported and { "text", "image" } or { "text" }
   end
 
-  local thinking = capabilities.thinking
-  if not absent(thinking) then
-    local thinking_supported, thinking_ok = capability(thinking)
-    if not thinking_ok then return nil end
-    if not thinking_supported then
+  local thinking, thinking_ok = capability(capabilities.thinking)
+  if not thinking_ok then return nil end
+  if thinking then
+    if not thinking.supported then
       result.thinking_type = false
     else
       local adaptive, enabled
@@ -89,28 +147,29 @@ local function model_entry(entry)
         enabled, enabled_ok = capability(thinking.types.enabled)
         if not adaptive_ok or not enabled_ok then return nil end
       end
-      result.thinking_type = adaptive and "adaptive"
-        or enabled and "enabled" or nil
+      result.thinking_type = adaptive and adaptive.supported and "adaptive"
+        or enabled and enabled.supported and "enabled" or nil
     end
   end
 
-  local effort = capabilities.effort
-  if not absent(effort) then
-    local effort_supported, effort_ok = capability(effort)
-    if not effort_ok then return nil end
-    if effort_supported then
-      local levels = {}
-      for _, level in ipairs({ "low", "medium", "high", "xhigh", "max" }) do
-        local supported, supported_ok = capability(effort[level])
-        if not supported_ok then return nil end
-        if supported then levels[#levels + 1] = level end
-      end
-      if #levels > 0 then result.reasoning_levels = levels end
+  local effort, effort_ok = capability(capabilities.effort)
+  if not effort_ok then return nil end
+  if effort and effort.supported then
+    local levels = {}
+    for _, level in ipairs({ "low", "medium", "high", "xhigh", "max" }) do
+      local supported, supported_ok = capability(effort[level])
+      if not supported_ok then return nil end
+      if supported and supported.supported then levels[#levels + 1] = level end
     end
+    if #levels > 0 then result.reasoning_levels = levels end
   end
   return result
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.AnthropicCatalogModel[]?, string?, "invalid"|"incomplete"?
+---@return_overload Neoagent.AnthropicCatalogModel[], string?
+---@return_overload nil, nil, "invalid"|"incomplete"
 local function parse_model_page(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.has_more) ~= "boolean"
@@ -129,9 +188,14 @@ local function parse_model_page(value)
     if not model then return nil, nil, "invalid" end
     result[#result + 1] = model
   end
-  return result, value.has_more and value.last_id or nil
+  local next_cursor = value.has_more and value.last_id or nil
+  -- A continuing page has a validated, non-empty last_id.
+  ---@cast next_cursor string?
+  return result, next_cursor
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.AnthropicReportingPage?
 local function page(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.has_more) ~= "boolean"
@@ -139,19 +203,22 @@ local function page(value)
       or #value.data > 31 then
     return nil
   end
+  ---@cast value Neoagent.AnthropicReportingPage
   return value
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.AnthropicOrganizationUsage?, "invalid"|"incomplete"?
 local function parse_usage(value)
-  value = page(value)
-  if not value or value.has_more then return nil, value and "incomplete" or "invalid" end
+  local parsed = page(value)
+  if not parsed or parsed.has_more then return nil, parsed and "incomplete" or "invalid" end
   local total = {
     uncached_input_tokens = 0,
     cache_read_input_tokens = 0,
     cache_creation_input_tokens = 0,
     output_tokens = 0,
   }
-  for _, bucket in ipairs(value.data) do
+  for _, bucket in ipairs(parsed.data) do
     if type(bucket) ~= "table" or util.is_list(bucket)
         or type(bucket.results) ~= "table" or not util.is_list(bucket.results)
         or #bucket.results > 1000 then
@@ -180,11 +247,14 @@ local function parse_usage(value)
   return total
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.AnthropicOrganizationCost[]?, "invalid"|"incomplete"?
 local function parse_costs(value)
-  value = page(value)
-  if not value or value.has_more then return nil, value and "incomplete" or "invalid" end
+  local parsed = page(value)
+  if not parsed or parsed.has_more then return nil, parsed and "incomplete" or "invalid" end
+  ---@type table<string, number>
   local totals = {}
-  for _, bucket in ipairs(value.data) do
+  for _, bucket in ipairs(parsed.data) do
     if type(bucket) ~= "table" or util.is_list(bucket)
         or type(bucket.results) ~= "table" or not util.is_list(bucket.results)
         or #bucket.results > 1000 then
@@ -210,6 +280,9 @@ local function parse_costs(value)
   return result
 end
 
+---@param status number
+---@param resource string
+---@return string?
 local function status_message(status, resource)
   if status == 401 then
     return "Anthropic " .. resource .. " requires a valid API key"
@@ -222,6 +295,8 @@ local function status_message(status, resource)
   end
 end
 
+---@param opts Neoagent.AnthropicClientOptions
+---@return Neoagent.AnthropicClient
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.base_url) == "string" and opts.base_url ~= "",
@@ -244,16 +319,24 @@ function M.new(opts)
     max_response_bytes = opts.max_response_bytes,
     status_message = status_message,
   })
+  ---@class Neoagent.AnthropicClient
   local client = {}
 
+  ---@param headers table<string, unknown>
+  ---@return table<string, unknown>
   local function versioned(headers)
-    headers.Accept = "application/json"
-    headers["anthropic-version"] = "2023-06-01"
-    return headers
+    return util.deep_merge(headers, {
+      Accept = "application/json",
+      ["anthropic-version"] = "2023-06-01",
+    })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.AnthropicModelsSuccess|Neoagent.AsyncFailure, nil>
   function client:models(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.AnthropicModelsSuccess
+    function()
       local resolved = auth_headers.resolve(ctx, {
         name = name,
         environment = environment,
@@ -265,11 +348,12 @@ function M.new(opts)
       if resolved.ok == false then error(resolved.error, 0) end
       local headers = versioned(resolved.headers)
       local models, seen, cursors = {}, {}, {}
+      ---@type string?
       local cursor
       for _ = 1, MAX_MODEL_PAGES do
-        local path = "/models?limit=" .. tostring(MODEL_PAGE_LIMIT)
-        if cursor then path = path .. "&after_id=" .. vim.uri_encode(cursor) end
-        local fetched = request:get(path, "model catalog", headers):await()
+        local after = cursor and ("&after_id=" .. vim.uri_encode(cursor)) or ""
+        local fetched = request:get("/models?limit=" .. tostring(MODEL_PAGE_LIMIT)
+          .. after, "model catalog", headers):await()
         if fetched.ok == false then error(fetched.error, 0) end
         local entries, next_cursor, reason = parse_model_page(fetched.value)
         if not entries then
@@ -300,8 +384,12 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.AnthropicOrganizationSuccess|Neoagent.AsyncFailure, nil>
   function client:organization(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.AnthropicOrganizationSuccess
+    function()
       local resolved = auth_headers.resolve(ctx, {
         name = "Anthropic organization reporting",
         environment = environment,
