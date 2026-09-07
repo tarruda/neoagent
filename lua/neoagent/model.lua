@@ -59,9 +59,8 @@ local M = {}
 
 ---@alias Neoagent.ModelResult Neoagent.ModelSuccess|Neoagent.ModelFailure
 
----@class Neoagent.StreamOptions
+---@class Neoagent.StreamOverrides
 ---@field retry_attempt? integer
----@field messages Neoagent.Message[]
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]
 ---@field request_opts? Neoagent.RequestLayer
@@ -69,6 +68,9 @@ local M = {}
 ---@field timeout_ms? number|false
 ---@field on_event? fun(event: Neoagent.ModelEvent)
 ---@field on_done? fun(result: Neoagent.ModelResult)
+
+---@class Neoagent.StreamOptions: Neoagent.StreamOverrides
+---@field messages Neoagent.Message[]
 
 ---@class Neoagent.MessageTarget
 ---@field input ("text"|"image")[]

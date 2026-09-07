@@ -655,6 +655,8 @@ end
 ---@param opts? Neoagent.ContentOptions
 ---@return Neoagent.ToolResult? result
 ---@return string? error
+---@return_overload Neoagent.ToolResult
+---@return_overload nil, string
 function M.normalize_tool_result(result, opts)
   if not object(result) then
     return failure("Tool must return a result with content blocks")

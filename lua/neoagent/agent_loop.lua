@@ -5,21 +5,130 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.Tool<C>: Neoagent.ToolDefinition
+---@field execute fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+---@field capabilities? {read_files?: boolean}
+---@field on_messages? fun(messages: Neoagent.Message[], context: C)
+---@field current? fun(context: C): unknown
+---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
+---@field _neoagent_sandbox_options_added? boolean
+
+---@class Neoagent.ToolPresentationOptions
+---@field arguments Neoagent.JsonObject
+---@field result? Neoagent.ToolResult|Neoagent.ToolResultMessage
+---@field state string
+
+---@alias Neoagent.ToolExecutor<C> fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
+
+---@class Neoagent.ToolContext<C>
+---@field model Neoagent.Model
+---@field run Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+---@field execute_tool Neoagent.ToolExecutor<C>
+---@field context? C
+---@field call Neoagent.ToolCallBlock
+---@field on_update fun(update: Neoagent.ToolResult)
+
+---@class Neoagent.ObservedUserMessage: Neoagent.UserMessage
+---@field _neoagent_entry_id? string
+
+---@class Neoagent.ObservedAssistantMessage: Neoagent.AssistantMessage
+---@field _neoagent_entry_id? string
+
+---@class Neoagent.ObservedToolResultMessage: Neoagent.ToolResultMessage
+---@field _neoagent_entry_id? string
+
+---@alias Neoagent.ObservedMessage Neoagent.ObservedUserMessage|Neoagent.ObservedAssistantMessage|Neoagent.ObservedToolResultMessage
+---@alias Neoagent.MessageCommit fun(message: Neoagent.Message): boolean?, unknown?, Neoagent.ObservedMessage?
+---@alias Neoagent.SteeringAcknowledgement fun(committed: boolean, observation?: Neoagent.ObservedMessage)
+---@alias Neoagent.SteeringMessages fun(): Neoagent.UserMessage[], Neoagent.SteeringAcknowledgement?
+
+---@class Neoagent.MessageEndEvent
+---@field type "message_end"
+---@field message Neoagent.ObservedMessage
+
+---@class Neoagent.ToolStartEvent
+---@field type "tool_start"
+---@field call Neoagent.ToolCallBlock
+
+---@class Neoagent.ToolUpdateEvent
+---@field type "tool_update"
+---@field call Neoagent.ToolCallBlock
+---@field result Neoagent.ToolResult
+
+---@class Neoagent.ToolEndEvent
+---@field type "tool_end"
+---@field call Neoagent.ToolCallBlock
+---@field message Neoagent.ObservedToolResultMessage
+
+---@alias Neoagent.AgentLoopEvent Neoagent.ModelEvent|Neoagent.MessageEndEvent|Neoagent.ToolStartEvent|Neoagent.ToolUpdateEvent|Neoagent.ToolEndEvent
+
+---@class Neoagent.AgentLoopSuccess
+---@field ok true
+---@field new_messages Neoagent.Message[]
+---@field message Neoagent.AssistantMessage
+---@field text string
+
+---@class Neoagent.AgentLoopFailure: Neoagent.AsyncFailure
+---@field new_messages? Neoagent.Message[]
+---@field message? Neoagent.Message
+
+---@alias Neoagent.AgentLoopResult Neoagent.AgentLoopSuccess|Neoagent.AgentLoopFailure
+
+---@class Neoagent.Toolset<C>
+---@field tools Neoagent.Tool<C>[]
+---@field lookup table<string, Neoagent.Tool<C>>
+---@field execute_tool Neoagent.ToolExecutor<C>
+
+---@class Neoagent.AgentLoopOptions<C>: Neoagent.RunOptions<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+---@field model Neoagent.Model
+---@field messages Neoagent.Message[]
+---@field system_prompt? string
+---@field tools? Neoagent.Tool<C>[]
+---@field execute_tool? Neoagent.ToolExecutor<C>
+---@field context? C
+---@field model_options? Neoagent.StreamOverrides
+---@field get_steering_messages? Neoagent.SteeringMessages
+---@field commit_message Neoagent.MessageCommit
+
+---@class Neoagent.PreparedAgentLoop<C>: Neoagent.RunOptions<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+---@field model Neoagent.Model
+---@field messages Neoagent.Message[]
+---@field system_prompt? string
+---@field context? C
+---@field commit_message Neoagent.MessageCommit
+---@field tools Neoagent.Tool<C>[]
+---@field tool_schemas Neoagent.ToolDefinition[]
+---@field tool_lookup table<string, Neoagent.Tool<C>>
+---@field execute_tool Neoagent.ToolExecutor<C>
+---@field model_options Neoagent.StreamOverrides
+---@field get_steering_messages Neoagent.SteeringMessages
+
+
+---@generic C
+---@param tool Neoagent.Tool<C>
+---@param arguments Neoagent.JsonObject
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.ToolResult
 local function default_execute(tool, arguments, ctx)
   return tool.execute(arguments, ctx)
 end
 
+---@param value unknown
+---@return boolean
 local function object(value)
   return type(value) == "table"
     and (next(value) == nil or not util.is_list(value))
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_tool_name(value)
   return type(value) == "string" and value ~= "" and #value <= 512
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@type table<string, boolean>
 local tool_fields = {
   name = true,
   description = true,
@@ -32,6 +141,9 @@ local tool_fields = {
   _neoagent_sandbox_options_added = true,
 }
 
+---@generic C
+---@param tools Neoagent.Tool<C>[]
+---@return Neoagent.ToolDefinition[]
 local function schemas(tools)
   local result = {}
   for _, tool in ipairs(tools) do
@@ -44,6 +156,10 @@ local function schemas(tools)
   return result
 end
 
+---@generic C
+---@param tools Neoagent.Tool<C>[]
+---@param execute_tool? Neoagent.ToolExecutor<C>
+---@return Neoagent.Toolset<C>
 function M.validate_toolset(tools, execute_tool)
   assert(type(tools) == "table" and util.is_list(tools),
     "tools must be a list")
@@ -97,6 +213,9 @@ function M.validate_toolset(tools, execute_tool)
   }
 end
 
+---@generic C
+---@param opts Neoagent.AgentLoopOptions<C>
+---@return Neoagent.PreparedAgentLoop<C>
 function M.prepare(opts)
   opts = opts or {}
   assert(type(opts.model) == "table"
@@ -138,14 +257,22 @@ function M.prepare(opts)
   }
 end
 
+---@param tool Neoagent.ToolDefinition
+---@param arguments unknown
+---@return boolean, string?, Neoagent.JsonObject?
+---@return_overload true, nil, Neoagent.JsonObject
+---@return_overload false, string
 local function validate_arguments(tool, arguments)
   local valid, message = tool_schema.validate({ type = "object" }, arguments)
   if not valid then return false, message end
   valid, message = tool_schema.validate(tool.input_schema or {}, arguments)
   if not valid then return false, message end
+  ---@cast arguments Neoagent.JsonObject
   return true, nil, arguments
 end
 
+---@param message Neoagent.AssistantMessage
+---@return Neoagent.ToolCallBlock[]
 local function tool_calls(message)
   local result = {}
   for _, block in ipairs(message.content or {}) do
@@ -156,16 +283,22 @@ local function tool_calls(message)
   return result
 end
 
+---@param err unknown
+---@return Neoagent.ToolResult
 local function error_result(err)
   err = util.normalize_error(err, "tool")
+  local detail = rawget(err, "detail")
   local result = {
     content = { { type = "text", text = util.text_from_bytes(err.message) } },
     isError = true,
-    details = err.detail and { detail = err.detail } or nil,
+    details = detail and { detail = detail } or nil,
   }
-  return assert(semantic_message.normalize_tool_result(result))
+  return (assert(semantic_message.normalize_tool_result(result)))
 end
 
+---@param result unknown
+---@param transient? boolean
+---@return Neoagent.ToolResult
 local function validate_tool_result(result, transient)
   local normalized, err = semantic_message.normalize_tool_result(result, {
     transient = transient == true,
@@ -174,17 +307,27 @@ local function validate_tool_result(result, transient)
   return normalized
 end
 
+---@generic C
+---@param opts Neoagent.AgentLoopOptions<C>
+---@return Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
 function M.run(opts)
   local prepared = M.prepare(opts)
   local tools = prepared.tools
   local lookup = prepared.tool_lookup
   local execute = prepared.execute_tool
   local get_steering_messages = prepared.get_steering_messages
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+  ---@return Neoagent.AgentLoopResult
+  function(run)
     local working = util.copy(prepared.messages)
+    ---@type Neoagent.Message[]
     local generated = {}
+    ---@type Neoagent.Message?
     local last_message
+    ---@type table<string, boolean>
     local seen_calls = {}
+    ---@type table<string, string>
     local pending_calls = {}
     for _, message in ipairs(working) do
       if message.role == "assistant" then
@@ -199,6 +342,10 @@ function M.run(opts)
       end
     end
 
+    ---@param message unknown
+    ---@param expected_role "assistant"|"user"|"toolResult"
+    ---@param owner string
+    ---@return Neoagent.Message
     local function normalize_candidate(message, expected_role, owner)
       local normalize = owner == "model"
           and semantic_message.normalize_model_response
@@ -219,8 +366,10 @@ function M.run(opts)
       return normalized
     end
 
+    ---@param normalized Neoagent.Message
     local function record(normalized)
       if normalized.role == "assistant" then
+        ---@cast normalized Neoagent.AssistantMessage
         for _, block in ipairs(normalized.content) do
           if block.type == "toolCall" then
             seen_calls[block.id] = true
@@ -234,6 +383,11 @@ function M.run(opts)
       generated[#generated + 1] = normalized
     end
 
+    ---@param normalized Neoagent.Message
+    ---@param observation? Neoagent.ObservedMessage
+    ---@return Neoagent.ObservedMessage?, Neoagent.Error?
+    ---@return_overload Neoagent.ObservedMessage
+    ---@return_overload nil, Neoagent.Error
     local function observation_message(normalized, observation)
       if observation == nil then return util.copy(normalized) end
       if type(observation) ~= "table" then
@@ -255,10 +409,20 @@ function M.run(opts)
         return nil, util.error("session",
           "commit_message observation entry id is invalid")
       end
-      semantic._neoagent_entry_id = entry_id
-      return semantic
+      ---@type Neoagent.ObservedMessage
+      local observed = semantic
+      observed._neoagent_entry_id = entry_id
+      return observed
     end
 
+    ---@param message unknown
+    ---@param expected_role "assistant"|"user"|"toolResult"
+    ---@param owner string
+    ---@param before_observe? fun(observation: Neoagent.ObservedMessage)
+    ---@param on_committed? fun(observation?: Neoagent.ObservedMessage)
+    ---@return Neoagent.Message?, Neoagent.Error?, Neoagent.Message?
+    ---@return_overload Neoagent.Message
+    ---@return_overload nil, Neoagent.Error, Neoagent.Message?
     local function commit(
         message, expected_role, owner, before_observe, on_committed)
       local normalized = normalize_candidate(message, expected_role, owner)
@@ -292,6 +456,9 @@ function M.run(opts)
       return normalized
     end
 
+    ---@param candidate? Neoagent.Message
+    ---@param err Neoagent.Error
+    ---@return Neoagent.AgentLoopFailure
     local function commit_failure(candidate, err)
       return {
         ok = false,
@@ -303,6 +470,7 @@ function M.run(opts)
 
     while true do
       local model_opts = util.copy(prepared.model_options)
+      ---@cast model_opts Neoagent.StreamOptions
       model_opts.messages = util.copy(working)
       model_opts.system_prompt = prepared.system_prompt
       model_opts.tools = util.copy(prepared.tool_schemas)
@@ -332,9 +500,11 @@ function M.run(opts)
       last_message, commit_err, candidate = commit(
         model_result.message, "assistant", "model")
       if not last_message then return commit_failure(candidate, commit_err) end
+      ---@cast last_message Neoagent.AssistantMessage
       local calls = tool_calls(last_message)
       for _, call in ipairs(calls) do
         run:emit({ type = "tool_start", call = util.copy(call) })
+        ---@type Neoagent.ToolResult
         local result
         local tool = lookup[call.name]
         if type(call.argumentsError) == "string" and call.argumentsError ~= "" then
@@ -348,15 +518,8 @@ function M.run(opts)
             result = error_result(util.error("tool", arguments_error))
           else
             local active = true
-            local ctx = {
-              model = prepared.model,
-              run = run,
-              execute_tool = execute,
-              context = prepared.context,
-              call = util.copy(call),
-            }
-            ctx.call.arguments = util.copy(arguments)
-            ctx.on_update = function(update)
+            ---@param update Neoagent.ToolResult
+            local function on_update(update)
               if not active or run:is_cancelled() or run:is_done() then
                 return
               end
@@ -365,7 +528,19 @@ function M.run(opts)
                 run:emit({ type = "tool_update", call = util.copy(call), result = util.copy(normalized) })
               end
             end
-            local executed, value = pcall(execute, tool, util.copy(arguments), ctx)
+            ---@type Neoagent.ToolContext<C>
+            local ctx = {
+              model = prepared.model,
+              run = run,
+              execute_tool = execute,
+              context = prepared.context,
+              call = util.copy(call),
+              on_update = on_update,
+            }
+            ctx.call.arguments = util.copy(arguments)
+            local executed, value = pcall(function()
+              return execute(tool, util.copy(arguments), ctx)
+            end)
             active = false
             if run:is_cancelled() then error(async.cancelled_error, 0) end
             if executed then
@@ -379,6 +554,7 @@ function M.run(opts)
           end
         end
 
+        ---@type Neoagent.ToolResultMessage
         local message = {
           role = "toolResult",
           toolCallId = call.id,
@@ -396,6 +572,7 @@ function M.run(opts)
         local committed
         committed, commit_err, candidate = commit(
           message, "toolResult", "tool", function(observed)
+            ---@cast observed Neoagent.ObservedToolResultMessage
             run:emit({
               type = "tool_end",
               call = util.copy(call),
@@ -415,6 +592,9 @@ function M.run(opts)
       assert(acknowledge == nil or #steering == 1,
         "steering acknowledgement requires one message")
       local acknowledged = false
+      ---@param committed boolean
+      ---@param observation? Neoagent.ObservedMessage
+      ---@return boolean
       local function settle_steering(committed, observation)
         if not acknowledge or acknowledged then return true end
         acknowledged = true
@@ -435,6 +615,7 @@ function M.run(opts)
         end
         if not committed then
           settle_steering(false)
+          ---@cast commit_err Neoagent.Error
           return commit_failure(candidate, commit_err)
         end
       end
