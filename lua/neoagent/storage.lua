@@ -44,10 +44,6 @@ local function encode_session_value(value, label)
   return encoded
 end
 
-local function is_null(value)
-  return value == nil or value == vim.NIL
-end
-
 local function copy_metadata(value)
   if type(value) == "table" and next(value) == nil then return vim.empty_dict() end
   return util.copy(value)
@@ -166,7 +162,7 @@ local function commit_entry(store, entry)
   store._entries[#store._entries + 1] = stored
   store._by_id[stored.id] = stored
   if stored.type == "leaf" then
-    store._leaf_id = is_null(stored.targetId) and nil or stored.targetId
+    store._leaf_id = stored.targetId ~= vim.NIL and stored.targetId or nil
     local rebuilt, err = rebuild(store)
     if not rebuilt then return nil, err end
     return true, { type = "replace", messages = util.copy(store._messages) }
@@ -796,7 +792,7 @@ function M.fork(source, opts)
       if target.type ~= "message" or target.message.role ~= "user" then
         return nil, storage_error("Failed to fork session", "before position requires a user message")
       end
-      leaf_id = is_null(target.parentId) and nil or target.parentId
+      leaf_id = target.parentId ~= vim.NIL and target.parentId or nil
     elseif opts.position ~= "at" then
       return nil, storage_error("Failed to fork session", "position must be before or at")
     end

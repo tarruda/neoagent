@@ -124,6 +124,23 @@ describe("neoagent.storage", function()
     assert.are.equal("first", reopened:load()[1].content)
   end)
 
+  it("reopens and forks a session with no active leaf", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "one" }))
+    assert(store:set_leaf(nil))
+    assert.is_nil(store:leaf_id())
+    local reopened = assert(storage.open(store:metadata().path))
+    assert.is_nil(reopened:leaf_id())
+    local forked = assert(storage.fork(reopened, { directory = directory }))
+    assert.is_nil(forked:leaf_id())
+    assert.are.same({}, assert(forked:context_messages()))
+    assert(forked:append({ role = "user", content = "new branch" }))
+    assert.are.equal(1, #forked:load())
+    assert.are.equal("new branch", forked:load()[1].content)
+  end)
+
   it("journals the selected model atomically with each message", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory

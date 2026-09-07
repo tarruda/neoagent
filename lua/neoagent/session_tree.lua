@@ -483,7 +483,7 @@ function M.validate_entries(entries)
     local references, reference_err = M.validate_references(entry, by_id)
     if not references then return nil, reference_err, index end
     if entry.type == "leaf" then
-      leaf_id = is_null(entry.targetId) and nil or entry.targetId
+      leaf_id = entry.targetId ~= vim.NIL and entry.targetId or nil
     else
       leaf_id = entry.id
     end

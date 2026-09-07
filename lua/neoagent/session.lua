@@ -102,7 +102,7 @@ local function memory_append(self, entry_type, values)
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
   if entry.type == "leaf" then
-    self._leaf_id = (entry.targetId == nil or entry.targetId == vim.NIL) and nil or entry.targetId
+    self._leaf_id = entry.targetId ~= vim.NIL and entry.targetId or nil
     local path = assert(tree.indexed_path(self._by_id,
       self._leaf_id == nil and vim.NIL or self._leaf_id))
     self._messages = tree.messages(path, false)
