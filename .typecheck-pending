@@ -57,7 +57,6 @@ lua/neoagent/sandbox/result.lua
 lua/neoagent/sandbox/windows/compile.lua
 lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/sandbox/windows/protocol.lua
-lua/neoagent/storage.lua
 lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/common.lua
 lua/neoagent/tools/edit_file.lua
