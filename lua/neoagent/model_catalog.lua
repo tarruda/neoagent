@@ -59,9 +59,11 @@ local M = {}
 ---@field transform_model? Neoagent.CatalogTransform
 ---@field ttl_ms? integer
 
----@class Neoagent.CatalogAuthentication: Neoagent.CatalogAccountIdentity
----@field resolve fun(self: Neoagent.CatalogAuthentication, id: string, opts?: Neoagent.AuthResolveOptions): Neoagent.Run<Neoagent.AuthResolution, nil>
----@field subscribe? fun(self: Neoagent.CatalogAuthentication, id: string, listener: fun(event: Neoagent.AuthRevision)): fun(): boolean
+---@alias Neoagent.CatalogAuthentication {
+---  resolve: (fun(self: Neoagent.CatalogAuthentication, id: string, opts?: Neoagent.AuthResolveOptions): Neoagent.Run<Neoagent.AuthResolution, nil>),
+---  subscribe?: (fun(self: Neoagent.CatalogAuthentication, id: string, listener: fun(event: Neoagent.AuthRevision)): fun(): boolean),
+---  cache_identity?: (fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?),
+---}
 
 ---@class Neoagent.CatalogCacheValue
 ---@field version 2
@@ -79,8 +81,7 @@ local M = {}
 ---@field read fun(self: Neoagent.CatalogStorage, id: string): unknown, Neoagent.Error?
 ---@field write fun(self: Neoagent.CatalogStorage, id: string, value: Neoagent.CatalogCacheValue): true?, Neoagent.Error?
 
----@class Neoagent.CatalogUseLease
----@field release fun(self: Neoagent.CatalogUseLease): boolean?, Neoagent.Error?
+---@alias Neoagent.CatalogUseLease {release: fun(self: Neoagent.CatalogUseLease): boolean?, Neoagent.Error?}
 
 ---@class Neoagent.CatalogOptions
 ---@field provider_id string
@@ -475,13 +476,15 @@ end
 
 ---@return string?, Neoagent.Error?
 function Catalog:_refresh_source_fingerprint()
-  local fingerprint, err = catalog_source.fingerprint({
+  ---@type Neoagent.CatalogFingerprintOptions
+  local options = {
     provider_id = self._provider_id,
     provider = self._provider,
     definition = self._definition,
     authentication = self._auth,
     credentials = self._credentials,
-  })
+  }
+  local fingerprint, err = catalog_source.fingerprint(options)
   self._source_fingerprint = fingerprint
   self._persistence_error = self._store and self._definition.source_id
       and not fingerprint and util.copy(err) or nil

@@ -15,8 +15,7 @@ local M = {}
 ---@field source_options? fun(provider: Neoagent.CatalogSourceProjection): unknown
 ---@field account_scoped? boolean
 
----@class Neoagent.CatalogAccountIdentity
----@field cache_identity? fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?
+---@alias Neoagent.CatalogAccountIdentity {cache_identity?: (fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?)}
 
 ---@class Neoagent.CatalogFingerprintOptions
 ---@field provider_id? string

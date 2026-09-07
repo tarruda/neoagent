@@ -9,7 +9,7 @@ local M = {}
 
 ---@alias Neoagent.ProviderFactory fun(config: Neoagent.ProviderCompositionConfig, resources: Neoagent.ProviderCompositionResources): Neoagent.ProviderService
 
----@class Neoagent.ProviderOptions: Neoagent.ProviderCredentialConfig
+---@class Neoagent.ProviderOptions: Neoagent.CatalogSourceProvider
 ---@field api? string
 ---@field base_url? string
 ---@field models? table<string, Neoagent.ModelConfigInput|false>
