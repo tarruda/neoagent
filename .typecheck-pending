@@ -1,11 +1,9 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 lua/applet/applet.lua
 lua/applet/chrome.lua
-lua/applet/host.lua
 lua/applet/host/base.lua
 lua/applet/host/float.lua
 lua/applet/host/tab.lua
-lua/applet/host_effects.lua
 lua/applet/init.lua
 lua/applet/interaction_domain.lua
 lua/applet/layout.lua
