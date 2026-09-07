@@ -73,8 +73,6 @@ lua/neoagent/input_history.lua
 lua/neoagent/markdown.lua
 lua/neoagent/model_catalog.lua
 lua/neoagent/model_catalog/source.lua
-lua/neoagent/model_config.lua
-lua/neoagent/model_rules.lua
 lua/neoagent/models.lua
 lua/neoagent/presenter.lua
 lua/neoagent/process.lua
