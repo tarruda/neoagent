@@ -2,6 +2,16 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.SystemPromptContext
+---@field workspace {cwd: string}
+---@field model? Neoagent.Model
+---@field tools? Neoagent.ToolDefinition[]
+---@field agent_instructions? Neoagent.InstructionFile[]
+---@field skills? Neoagent.Skill[]
+
+
+---@param context Neoagent.SystemPromptContext
+---@return string
 function M.default(context)
   local available = {}
   local names = {}
@@ -36,6 +46,9 @@ function M.default(context)
   return table.concat(sections, "\n\n")
 end
 
+---@param prompt string
+---@param context Neoagent.SystemPromptContext
+---@return string
 function M.compose(prompt, context)
   local sections = { prompt }
   local instructions = require("neoagent.agent_instructions").format(
