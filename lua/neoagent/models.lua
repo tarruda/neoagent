@@ -6,10 +6,29 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ResolvedApi
+---@field api string
+---@field provider_id string
+---@field model_id string
+---@field provider Neoagent.ProviderDefinition
+---@field model Neoagent.ModelConfig
+---@field report? fun(message: string, level: integer)
+---@field request_context? Neoagent.RequestIdentity
+---@field transport? Neoagent.ByteBackend
+
+---@alias Neoagent.ApiFactory fun(resolved: Neoagent.ResolvedApi): Neoagent.Model
+---@alias Neoagent.ModelResolutionConfig {default_model?: Neoagent.ModelSelection, auth: Neoagent.AuthConfig, _apis: table<string, Neoagent.ApiFactory>}
+
+
+---@param value unknown
+---@param owner string
+---@return Neoagent.Model
 local function validated_model(value, owner)
   return model_contract.assert(value, owner)
 end
 
+---@param runtimes Neoagent.ProviderRuntimes
+---@return Neoagent.ProviderRuntimes
 local function assert_runtimes(runtimes)
   assert(type(runtimes) == "table"
       and (next(runtimes) == nil or not util.is_list(runtimes)),
@@ -17,6 +36,12 @@ local function assert_runtimes(runtimes)
   return runtimes
 end
 
+---@param provider_id string
+---@param provider Neoagent.ProviderDefinition
+---@param configured Neoagent.ModelResolutionConfig
+---@param manager? Neoagent.AuthManager
+---@param runtime? Neoagent.ProviderRuntime
+---@return Neoagent.ProviderCredentials
 local function credentials(provider_id, provider, configured, manager, runtime)
   if manager == nil and runtime and runtime.credentials then
     return runtime.credentials
@@ -30,10 +55,16 @@ local function credentials(provider_id, provider, configured, manager, runtime)
   })
 end
 
+---@param configured Neoagent.ModelResolutionConfig?
+---@param manager Neoagent.AuthManager?
+---@param runtimes Neoagent.ProviderRuntimes
+---@return string[]?, Neoagent.Error?
 function M.available(configured, manager, runtimes)
   configured = configured or config.get()
+  ---@cast configured Neoagent.ModelResolutionConfig
   runtimes = assert_runtimes(runtimes)
   manager = manager or require("neoagent.auth").configured(configured)
+  ---@type string[]
   local result = {}
   for provider_id, runtime in pairs(runtimes) do
     local provider = runtime.definition
@@ -54,21 +85,32 @@ function M.available(configured, manager, runtimes)
   return result
 end
 
+---@param configured Neoagent.ModelResolutionConfig?
+---@param manager Neoagent.AuthManager?
+---@param runtimes Neoagent.ProviderRuntimes
+---@return Neoagent.ModelSelection?, Neoagent.Error?
 function M.first_available(configured, manager, runtimes)
   local available, err = M.available(configured, manager, runtimes)
   if not available then return nil, err end
   local selected = available[1]
   if not selected then return nil end
   local provider, model = selected:match("^([^/]+)/(.+)$")
-  return { provider = provider, model = model }
+  return { provider = assert(provider), model = assert(model) }
 end
 
+---@param configured Neoagent.ModelResolutionConfig?
+---@param manager Neoagent.AuthManager?
+---@param runtimes Neoagent.ProviderRuntimes
+---@param listener fun(choices?: string[], err?: Neoagent.Error)
+---@return fun(): boolean
 function M.subscribe_available(configured, manager, runtimes, listener)
   runtimes = assert_runtimes(runtimes)
   assert(type(listener) == "function",
     "available-model subscriber must be a function")
   local active = true
+  ---@type (fun())[]
   local unsubscribes = {}
+  ---@type {choices?: string[], error?: Neoagent.Error}?
   local previous
   local function publish()
     if not active then return end
@@ -82,7 +124,7 @@ function M.subscribe_available(configured, manager, runtimes, listener)
   local ids = vim.tbl_keys(runtimes)
   table.sort(ids)
   for _, provider_id in ipairs(ids) do
-    local catalog = runtimes[provider_id].catalog
+    local catalog = assert(runtimes[provider_id]).catalog
     assert(type(catalog) == "table" and type(catalog.subscribe) == "function",
       "provider runtime catalog must support subscriptions")
     unsubscribes[#unsubscribes + 1] = catalog:subscribe(publish)
@@ -97,7 +139,10 @@ function M.subscribe_available(configured, manager, runtimes, listener)
   end
 end
 
-local function api_factory(module, resolved)
+---@param resolved Neoagent.ResolvedApi
+---@return Neoagent.Model
+local function api_factory(resolved)
+  ---@type Neoagent.RequestLayer[]
   local layers = {}
   if resolved.provider.request_opts ~= nil then
     layers[#layers + 1] = resolved.provider.request_opts
@@ -106,7 +151,7 @@ local function api_factory(module, resolved)
     layers[#layers + 1] = resolved.model.request_opts
   end
   local on_diagnostic
-  if module == "neoagent.api.openai_codex_responses"
+  if resolved.api == "openai-codex-responses"
       and resolved.provider.diagnostics ~= false then
     local logger = require("neoagent.provider_log")
     local selected = resolved.provider.diagnostics
@@ -114,10 +159,10 @@ local function api_factory(module, resolved)
       or logger.codex_path()
     on_diagnostic = logger.callback(path, { report = resolved.report })
   end
-  return require(module).new({
+  local options = {
     provider = resolved.provider_id,
     model = resolved.model_id,
-    base_url = resolved.provider.base_url,
+    base_url = assert(resolved.provider.base_url, "base_url is required"),
     api_key = resolved.provider.api_key,
     input = resolved.model.input,
     context_window = resolved.model.context_window,
@@ -134,12 +179,28 @@ local function api_factory(module, resolved)
     request_opts_layers = layers,
     on_diagnostic = on_diagnostic,
     transport = resolved.transport,
-  })
+  }
+  if resolved.api == "openai-completions" then
+    return require("neoagent.api.openai_completions").new(options)
+  elseif resolved.api == "openai-responses" then
+    return require("neoagent.api.openai_responses").new(options)
+  elseif resolved.api == "openai-codex-responses" then
+    return require("neoagent.api.openai_codex_responses").new(options)
+  end
+  return require("neoagent.api.anthropic_messages").new(options)
 end
 
+---@param provider_id string?
+---@param model_id string?
+---@param configured Neoagent.ModelResolutionConfig?
+---@param manager Neoagent.AuthManager?
+---@param runtimes Neoagent.ProviderRuntimes
+---@param supplied_identity? Neoagent.RequestIdentity
+---@return Neoagent.Model
 function M.resolve(provider_id, model_id, configured, manager, runtimes,
     supplied_identity)
   configured = configured or config.get()
+  ---@cast configured Neoagent.ModelResolutionConfig
   runtimes = assert_runtimes(runtimes)
   if provider_id == nil or model_id == nil then
     local default = configured.default_model
@@ -157,6 +218,15 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
   end
   local api = model.api or provider.api
   local supplied_context = request_context.copy(supplied_identity)
+  local transport = runtime.transport
+  if transport then
+    transport = request_context.bind_transport(transport, util.deep_merge({
+      provider = provider_id,
+      model = model_id,
+      origin = "model",
+    }, supplied_context or {}))
+  end
+  ---@type Neoagent.ResolvedApi
   local resolved = {
     api = api,
     provider_id = provider_id,
@@ -165,11 +235,7 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
     model = util.copy(model),
     report = runtime.report,
     request_context = supplied_context,
-    transport = request_context.bind_transport(runtime.transport, util.deep_merge({
-      provider = provider_id,
-      model = model_id,
-      origin = "model",
-    }, supplied_context or {})),
+    transport = transport,
   }
   if provider.auth and manager == nil then
     manager = require("neoagent.auth").configured(configured)
@@ -177,22 +243,10 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
   local provider_credential = credentials(
     provider_id, provider, configured, manager, runtime)
   local factory = configured._apis[api]
-  if not factory and api == "openai-completions" then
-    factory = function(value)
-      return api_factory("neoagent.api.openai_completions", value)
-    end
-  elseif not factory and api == "openai-responses" then
-    factory = function(value)
-      return api_factory("neoagent.api.openai_responses", value)
-    end
-  elseif not factory and api == "openai-codex-responses" then
-    factory = function(value)
-      return api_factory("neoagent.api.openai_codex_responses", value)
-    end
-  elseif not factory and api == "anthropic-messages" then
-    factory = function(value)
-      return api_factory("neoagent.api.anthropic_messages", value)
-    end
+  if not factory and (api == "openai-completions"
+      or api == "openai-responses" or api == "openai-codex-responses"
+      or api == "anthropic-messages") then
+    factory = api_factory
   end
   if not factory then error("Unknown API: " .. tostring(api)) end
   if provider.api_key ~= nil then
@@ -209,6 +263,7 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes,
   end
   concrete = validated_model(concrete, "API factory")
   if provider.auth then
+    assert(manager)
     concrete = validated_model(manager:wrap(concrete, provider.auth, {
       optional = provider.auth_optional == true or provider.api_key ~= nil,
     }), "Authentication Model wrapper")

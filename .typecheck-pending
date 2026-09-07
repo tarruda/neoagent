@@ -27,7 +27,6 @@ lua/neoagent/http_recording.lua
 lua/neoagent/http_replay.lua
 lua/neoagent/init.lua
 lua/neoagent/markdown.lua
-lua/neoagent/models.lua
 lua/neoagent/presenter.lua
 lua/neoagent/process.lua
 lua/neoagent/process/posix.lua
