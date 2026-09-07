@@ -20,12 +20,15 @@ local M = {}
 ---@field source_options? fun(provider: Neoagent.CatalogSourceProjection): unknown
 ---@field account_scoped? boolean
 
+---@class Neoagent.CatalogAccountIdentity
+---@field cache_identity? fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?
+
 ---@class Neoagent.CatalogFingerprintOptions
 ---@field provider_id? string
 ---@field provider? Neoagent.CatalogSourceProvider
 ---@field definition? Neoagent.CatalogSourceDefinition
 ---@field credentials? Neoagent.ProviderCredentials
----@field authentication? Neoagent.AuthManager
+---@field authentication? Neoagent.CatalogAccountIdentity
 
 
 local MAX_SOURCE_OPTIONS_BYTES = 16 * 1024
@@ -153,9 +156,11 @@ local function account_identity(opts, provider, definition)
     ok, identity, err = pcall(opts.credentials.cache_identity, opts.credentials)
   else
     local authentication = opts.authentication
-    ---@cast authentication Neoagent.AuthManager
+    ---@cast authentication Neoagent.CatalogAccountIdentity
+    local lookup = authentication.cache_identity
+    ---@cast lookup fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?
     ok, identity, err = pcall(function()
-      return authentication:cache_identity(assert(provider.auth))
+      return lookup(authentication, assert(provider.auth))
     end)
   end
   if not ok then

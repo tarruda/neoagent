@@ -73,7 +73,7 @@ function Store:read(id)
 end
 
 ---@param id string
----@param entry Neoagent.JsonObject
+---@param entry unknown
 ---@return true?, Neoagent.Error?
 function Store:write(id, entry)
   if self.directory_error then return nil, util.copy(self.directory_error) end

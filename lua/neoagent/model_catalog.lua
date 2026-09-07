@@ -44,7 +44,114 @@ local M = {}
 ---@field validated_at? number
 ---@field validator? Neoagent.CatalogValidator
 
+---@class Neoagent.CatalogTransformContext
+---@field provider_id string
+---@field source_model Neoagent.DiscoveredModel
+
+---@alias Neoagent.CatalogTransform fun(model: Neoagent.DiscoveredModel, context: Neoagent.CatalogTransformContext): Neoagent.ModelConfigInput|false
+---@alias Neoagent.CatalogDiscover fun(context: Neoagent.CatalogDiscoveryContext<Neoagent.CatalogSourceProjection>): Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
+
+---@class Neoagent.CatalogDefinition: Neoagent.CatalogSourceDefinition
+---@field source_revision? integer
+---@field additions? table<string, Neoagent.ModelConfigInput|false>
+---@field discover? Neoagent.CatalogDiscover
+---@field seed? (Neoagent.DiscoveredModel|string)[]
+---@field transform_model? Neoagent.CatalogTransform
+---@field ttl_ms? integer
+
+---@class Neoagent.CatalogAuthentication: Neoagent.CatalogAccountIdentity
+---@field resolve fun(self: Neoagent.CatalogAuthentication, id: string, opts?: Neoagent.AuthResolveOptions): Neoagent.Run<Neoagent.AuthResolution, nil>
+---@field subscribe? fun(self: Neoagent.CatalogAuthentication, id: string, listener: fun(event: Neoagent.AuthRevision)): fun(): boolean
+
+---@class Neoagent.CatalogCacheValue
+---@field version 2
+---@field source_fingerprint? string
+---@field validated_at? number
+---@field validator? Neoagent.CatalogValidator
+---@field models Neoagent.DiscoveredModel[]
+
+---@class Neoagent.CatalogCacheRecord
+---@field models Neoagent.DiscoveredModel[]
+---@field validated_at integer
+---@field validator? Neoagent.CatalogValidator
+
+---@class Neoagent.CatalogStorage
+---@field read fun(self: Neoagent.CatalogStorage, id: string): unknown, Neoagent.Error?
+---@field write fun(self: Neoagent.CatalogStorage, id: string, value: Neoagent.CatalogCacheValue): true?, Neoagent.Error?
+
+---@class Neoagent.CatalogUseLease
+---@field release fun(self: Neoagent.CatalogUseLease): boolean?, Neoagent.Error?
+
+---@class Neoagent.CatalogOptions
+---@field provider_id string
+---@field provider? Neoagent.CatalogSourceProvider
+---@field definition? Neoagent.CatalogDefinition
+---@field models? table<string, Neoagent.ModelConfigInput|false>
+---@field store? Neoagent.CatalogStorage
+---@field authentication? Neoagent.CatalogAuthentication
+---@field credentials? Neoagent.ProviderCredentials
+---@field transport? Neoagent.ByteBackend
+---@field acquire_use? fun(): Neoagent.CatalogUseLease?, Neoagent.Error?
+---@field report? fun(message: string, level: integer)
+---@field now? fun(): number
+---@field new_timer? fun(): uv.uv_timer_t?
+
+---@class Neoagent.CatalogRefreshSuccess
+---@field ok true
+---@field changed boolean
+---@field persistence_error? Neoagent.Error
+---@field snapshot Neoagent.CatalogSnapshot
+
+---@alias Neoagent.CatalogRefreshResult Neoagent.CatalogRefreshSuccess|Neoagent.AsyncFailure
+---@alias Neoagent.CatalogRefreshRun Neoagent.Run<Neoagent.CatalogRefreshResult, nil>
+
+---@class Neoagent.CatalogRefreshOptions
+---@field force? boolean
+---@field retry? boolean
+---@field on_done? fun(result: Neoagent.CatalogRefreshResult)
+
+---@class Neoagent.CatalogPublication: Neoagent.CatalogPublishOptions
+---@field allow_empty? boolean
+---@field validator_set? boolean
+---@field error? Neoagent.Error
+
 ---@class Neoagent.ModelCatalog
+---@field _provider_id string
+---@field _provider Neoagent.CatalogSourceProvider
+---@field _definition Neoagent.CatalogDefinition
+---@field _seed (Neoagent.DiscoveredModel|string)[]
+---@field _discover? Neoagent.CatalogDiscover
+---@field _transform? Neoagent.CatalogTransform
+---@field _additions table<string, Neoagent.ModelConfigInput>
+---@field _overrides table<string, Neoagent.ModelConfigInput>
+---@field _removals table<string, true>
+---@field _configured_inventory Neoagent.DiscoveredModel[]
+---@field _store? Neoagent.CatalogStorage
+---@field _auth Neoagent.CatalogAuthentication
+---@field _credentials? Neoagent.ProviderCredentials
+---@field _transport? Neoagent.ByteBackend
+---@field _acquire_use fun(): Neoagent.CatalogUseLease?, Neoagent.Error?
+---@field _report fun(message: string, level: integer)
+---@field _now fun(): number
+---@field _new_timer fun(): uv.uv_timer_t?
+---@field _ttl_ms integer
+---@field _models table<string, Neoagent.ModelConfig>
+---@field _discoveries Neoagent.DiscoveredModel[]
+---@field _validated_at? number
+---@field _validator? Neoagent.CatalogValidator
+---@field _source string
+---@field _revision integer
+---@field _generation integer
+---@field _retry_attempt integer
+---@field _listeners table<fun(snapshot: Neoagent.CatalogSnapshot), true>
+---@field _started boolean
+---@field _destroyed boolean
+---@field _auth_unsubscribe? fun(): boolean
+---@field _source_fingerprint? string
+---@field _persistence_error? Neoagent.Error
+---@field _last_error? Neoagent.Error
+---@field _active? Neoagent.CatalogRefreshRun
+---@field _timer? uv.uv_timer_t
 local Catalog = {}
 Catalog.__index = Catalog
 
@@ -75,6 +182,7 @@ local VALIDATOR_FIELDS = {
   last_modified = true,
 }
 
+---@param timer? uv.uv_timer_t
 local function close_timer(timer)
   if not timer then return end
   local closing = false
@@ -87,11 +195,15 @@ local function close_timer(timer)
   if type(timer.close) == "function" then pcall(timer.close, timer) end
 end
 
+---@param value unknown
+---@return TypeGuard<integer>
 local function finite_timestamp(value)
   return type(value) == "number" and value >= 0 and value % 1 == 0
     and value == value and value ~= math.huge
 end
 
+---@param value unknown
+---@return Neoagent.CatalogValidator?
 local function validator(value)
   if value == nil then return nil end
   if type(value) ~= "table" or util.is_list(value) then return nil end
@@ -113,6 +225,10 @@ local function validator(value)
   return next(result) and result or nil
 end
 
+---@param provider_id string
+---@param value unknown
+---@param expected_fingerprint? string
+---@return Neoagent.CatalogCacheRecord?, string?
 local function cache_record(provider_id, value, expected_fingerprint)
   if type(value) ~= "table" or util.is_list(value) then return nil end
   for key in pairs(value) do
@@ -143,11 +259,18 @@ local function cache_record(provider_id, value, expected_fingerprint)
   }
 end
 
+---@param provider_id string
+---@param model_id string
+---@param value unknown
+---@return Neoagent.Error
 local function callback_error(provider_id, model_id, value)
   return util.error("model", "Model transform failed for "
     .. provider_id .. "/" .. model_id, value)
 end
 
+---@param err unknown
+---@param kind string
+---@return Neoagent.Error
 local function bounded_error(err, kind)
   local selected = util.normalize_error(err, kind)
   local message = util.text_from_bytes(selected.message)
@@ -158,6 +281,9 @@ local function bounded_error(err, kind)
   return { kind = selected.kind, message = message }
 end
 
+---@param values unknown
+---@param label string
+---@return table<string, Neoagent.ModelConfigInput>, table<string, true>
 local function model_configuration(values, label)
   local overrides, removals = {}, {}
   assert(values == nil or type(values) == "table"
@@ -178,6 +304,10 @@ local function model_configuration(values, label)
   return overrides, removals
 end
 
+---@param additions table<string, Neoagent.ModelConfigInput>
+---@param overrides table<string, Neoagent.ModelConfigInput>
+---@param source_free boolean
+---@return Neoagent.DiscoveredModel[]
 local function configured_inventory(additions, overrides, source_free)
   local inventory, seen = {}, {}
   for model_id in pairs(additions) do
@@ -195,16 +325,23 @@ local function configured_inventory(additions, overrides, source_free)
   return inventory
 end
 
+---@param catalog Neoagent.ModelCatalog
+---@return "packaged"|"configured"|"empty"
 local function fallback_source(catalog)
   if #catalog._seed > 0 then return "packaged" end
   if #catalog._configured_inventory > 0 then return "configured" end
   return "empty"
 end
 
+---@param discoveries unknown
+---@return table<string, Neoagent.ModelConfig>?, Neoagent.Error?, Neoagent.DiscoveredModel[]?
+---@return_overload table<string, Neoagent.ModelConfig>, nil, Neoagent.DiscoveredModel[]
+---@return_overload nil, Neoagent.Error
 function Catalog:_build(discoveries)
   local normalized, normalize_err = model_config.normalize_discoveries(
     self._provider_id, discoveries)
   if not normalized then return nil, normalize_err end
+  ---@type table<string, Neoagent.DiscoveredModel>
   local sources = {}
   for _, entry in ipairs(normalized) do sources[entry.id] = entry end
   for _, entry in ipairs(self._configured_inventory) do
@@ -215,9 +352,10 @@ function Catalog:_build(discoveries)
   local result = {}
   for _, model_id in ipairs(ids) do
     local source = util.copy(sources[model_id])
+    ---@type Neoagent.ModelConfigInput|false
     local model = util.copy(source)
     if self._transform then
-      local ok, transformed = pcall(self._transform, util.copy(model), {
+      local ok, transformed = pcall(self._transform, util.copy(source), {
         provider_id = self._provider_id,
         source_model = util.copy(source),
       })
@@ -233,15 +371,12 @@ function Catalog:_build(discoveries)
         model = util.copy(transformed)
       end
     end
-    if model ~= false and not self._removals[model_id] then
-      local addition = self._additions[model_id]
-      if addition then model = util.deep_merge(model, addition) end
-      local override = self._overrides[model_id]
-      if type(override) == "table" then
-        model = util.deep_merge(model, override)
-      end
+    if type(model) == "table" and not self._removals[model_id] then
+      local combined = util.deep_merge(model, self._additions[model_id])
+      combined = util.deep_merge(combined, self._overrides[model_id])
+      ---@cast combined Neoagent.ModelConfigInput
       local valid, valid_err = model_config.validate(
-        self._provider_id, model_id, model)
+        self._provider_id, model_id, combined)
       if not valid then return nil, valid_err end
       result[model_id] = valid
     end
@@ -249,6 +384,10 @@ function Catalog:_build(discoveries)
   return result, nil, normalized
 end
 
+---@param message string
+---@param err unknown
+---@param level? integer
+---@return Neoagent.Error
 function Catalog:_report_diagnostic(message, err, level)
   local selected = bounded_error(err, "provider")
   pcall(self._report, "neoagent: " .. message .. ": "
@@ -256,12 +395,17 @@ function Catalog:_report_diagnostic(message, err, level)
   return selected
 end
 
+---@param err unknown
+---@return Neoagent.Error
 function Catalog:_record_error(err)
   local selected = bounded_error(err, "provider")
   self._last_error = selected
   return selected
 end
 
+---@param message string
+---@param err unknown
+---@param level? integer
 function Catalog:_diagnose(message, err, level)
   local selected = self:_report_diagnostic(message, err, level)
   self._last_error = selected
@@ -278,6 +422,9 @@ function Catalog:_notify()
   end
 end
 
+---@param discoveries unknown
+---@param opts? Neoagent.CatalogPublication
+---@return true?, Neoagent.Error?
 function Catalog:_publish(discoveries, opts)
   opts = opts or {}
   local models, err, normalized = self:_build(discoveries)
@@ -297,6 +444,7 @@ function Catalog:_publish(discoveries, opts)
   return true
 end
 
+---@return Neoagent.CatalogCacheValue
 function Catalog:_cache_value()
   return {
     version = 2,
@@ -307,6 +455,7 @@ function Catalog:_cache_value()
   }
 end
 
+---@return Neoagent.Error?
 function Catalog:_persist()
   if not self._store or self._definition.source_id == nil then return nil end
   if not self._source_fingerprint then
@@ -324,6 +473,7 @@ function Catalog:_persist()
     .. " model catalog", failure)
 end
 
+---@return string?, Neoagent.Error?
 function Catalog:_refresh_source_fingerprint()
   local fingerprint, err = catalog_source.fingerprint({
     provider_id = self._provider_id,
@@ -338,6 +488,8 @@ function Catalog:_refresh_source_fingerprint()
   return fingerprint, err
 end
 
+---@param message? string
+---@return true?, Neoagent.Error?
 function Catalog:_reset_inventory(message)
   self._validated_at = nil
   self._validator = nil
@@ -354,6 +506,7 @@ function Catalog:_reset_inventory(message)
   return published, err
 end
 
+---@param event Neoagent.AuthRevision
 function Catalog:_auth_changed(event)
   if self._destroyed then return end
   local previous = self._source_fingerprint
@@ -377,6 +530,8 @@ function Catalog:_cancel_timer()
   self._timer = nil
 end
 
+---@param milliseconds number
+---@param retry boolean
 function Catalog:_schedule(milliseconds, retry)
   self:_cancel_timer()
   if self._destroyed or not self._started or not self._discover then return end
@@ -393,6 +548,7 @@ function Catalog:_schedule(milliseconds, retry)
       vim.log.levels.ERROR)
     return
   end
+  ---@cast timer uv.uv_timer_t
   self._timer = timer
   local started, start_err = pcall(timer.start, timer,
     math.max(1, math.floor(milliseconds)), 0,
@@ -415,6 +571,7 @@ function Catalog:_schedule_validation()
   self:_schedule(math.max(1, base + self._ttl_ms - self._now()), false)
 end
 
+---@param err? Neoagent.Error
 function Catalog:_schedule_retry(err)
   if err and err.kind == "auth" then return end
   self._retry_attempt = math.min(self._retry_attempt + 1, 8)
@@ -423,6 +580,7 @@ function Catalog:_schedule_retry(err)
   self:_schedule(delay, true)
 end
 
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 function Catalog:_resolve_auth()
   if type(self._provider.auth) ~= "string" then
     return async.run(function()
@@ -435,6 +593,7 @@ function Catalog:_resolve_auth()
   })
 end
 
+---@return string?
 function Catalog:_resolve_api_key()
   if self._credentials then
     return self._credentials:ambient_api_key()
@@ -494,6 +653,7 @@ function Catalog:subscribe(listener)
   end
 end
 
+---@return boolean
 function Catalog:start()
   if self._destroyed or self._started then return false end
   self._started = true
@@ -508,6 +668,8 @@ function Catalog:start()
   return true
 end
 
+---@param opts? Neoagent.CatalogRefreshOptions
+---@return Neoagent.CatalogRefreshRun
 function Catalog:refresh(opts)
   opts = opts or {}
   if self._destroyed then
@@ -543,7 +705,9 @@ function Catalog:refresh(opts)
   end
   local previous = util.copy(self._discoveries)
   local run
-  run = async.run(function()
+  run = async.run(
+  ---@return Neoagent.CatalogRefreshSuccess
+  function()
     local source_run = self._discover({
       provider_id = self._provider_id,
       provider = catalog_source.provider_projection(self._provider),
@@ -691,6 +855,7 @@ function Catalog:publish_discoveries(discoveries, opts)
   return true, persistence_error
 end
 
+---@return boolean
 function Catalog:destroy()
   if self._destroyed then return false end
   self._destroyed = true
@@ -704,6 +869,7 @@ function Catalog:destroy()
   return true
 end
 
+---@param opts Neoagent.CatalogOptions
 ---@return Neoagent.ModelCatalog
 function M.new(opts)
   opts = opts or {}
