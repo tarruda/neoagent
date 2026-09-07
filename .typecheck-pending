@@ -21,7 +21,6 @@ lua/neoagent/agent/steering.lua
 lua/neoagent/agent_applet.lua
 lua/neoagent/agent_instructions.lua
 lua/neoagent/agent_loop.lua
-lua/neoagent/api/openai_codex_responses.lua
 lua/neoagent/applet.lua
 lua/neoagent/auth/alibaba_dashboard.lua
 lua/neoagent/auth/alibaba_token_plan.lua

@@ -60,6 +60,7 @@ local M = {}
 ---@alias Neoagent.ModelResult Neoagent.ModelSuccess|Neoagent.ModelFailure
 
 ---@class Neoagent.StreamOptions
+---@field retry_attempt? integer
 ---@field messages Neoagent.Message[]
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]

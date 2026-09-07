@@ -5,19 +5,86 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.CodexQuotaWindow: Neoagent.JsonObject
+---@field used_percent number
+---@field remaining number
+---@field window_minutes? number
+---@field resets_at? number
+
+---@class Neoagent.CodexQuota: Neoagent.JsonObject
+---@field id string
+---@field name? string
+---@field primary? Neoagent.CodexQuotaWindow
+---@field secondary? Neoagent.CodexQuotaWindow
+
+---@class Neoagent.CodexCredits: Neoagent.JsonObject
+---@field has_credits boolean
+---@field unlimited boolean
+---@field balance? string
+
+---@class Neoagent.CodexQuotaDetails: Neoagent.JsonObject
+---@field source "headers"
+---@field limits Neoagent.CodexQuota[]
+---@field credits? Neoagent.CodexCredits
+
+---@class Neoagent.CodexError: Neoagent.HttpError
+---@field code? string
+---@field status? number
+---@field request_id? string
+---@field cf_ray? string
+---@field authorization_error? string
+---@field provider_status? string
+---@field provider_status_details? Neoagent.CodexQuotaDetails
+---@field retry_after_ms? number
+---@field retryable? boolean
+---@field stream_max_retries? integer
+
+---@class Neoagent.CodexRequestDiagnostic
+---@field type "request_retry"|"request_failed"
+---@field timestamp integer
+---@field api string
+---@field provider string
+---@field model string
+---@field request_attempt integer
+---@field request_max_attempts integer
+---@field stream_attempt integer
+---@field kind string
+---@field message string
+---@field code? string
+---@field status? number
+---@field retryable boolean
+---@field retry_after_ms? number
+---@field request_id? string
+---@field cf_ray? string
+---@field authorization_error? string
+---@field exit_code? integer
+
+---@class Neoagent.CodexOptions: Neoagent.ResponsesOptions
+---@field request_max_retries? integer
+---@field sleep? fun(milliseconds: number)
+---@field on_diagnostic? fun(event: Neoagent.CodexRequestDiagnostic)
+
+---@class Neoagent.CodexModel: Neoagent.ResponsesModel
+---@field _request_max_retries integer
+---@field _sleep fun(milliseconds: number)
+---@field _on_diagnostic? fun(event: Neoagent.CodexRequestDiagnostic)
+
 local REQUEST_MAX_RETRIES = 4
 local STREAM_MAX_RETRIES = 5
 local INITIAL_RETRY_DELAY_MS = 200
 local MAX_RETRY_DELAY_MS = 60 * 1000
 
+---@param timer? uv.uv_timer_t
 local function close_timer(timer)
   if timer and not timer:is_closing() then timer:close() end
 end
 
+---@async
+---@param milliseconds number
 local function delay(milliseconds)
   return async.await(function(done)
-    local timer = vim.uv.new_timer()
-    timer:start(math.max(1, milliseconds), 0, function()
+    local timer = assert(vim.uv.new_timer())
+    timer:start(math.max(1, math.floor(milliseconds)), 0, function()
       timer:stop()
       close_timer(timer)
       done.resolve(true)
@@ -29,17 +96,25 @@ local function delay(milliseconds)
   end)
 end
 
+---@param minutes number
+---@return string
 local function window_label(minutes)
   return ({ [300] = "5h", [10080] = "weekly" })[minutes]
     or tostring(minutes) .. "m"
 end
 
+---@generic T
+---@param headers? table<string, T>
+---@return table<string, T>
 local function normalized_headers(headers)
+  ---@type table<string, T>
   local result = {}
   for name, value in pairs(headers or {}) do result[name:lower()] = value end
   return result
 end
 
+---@param value unknown
+---@return number?
 local function finite_number(value)
   value = tonumber(value)
   if value == nil or value ~= value
@@ -49,6 +124,9 @@ local function finite_number(value)
   return value
 end
 
+---@param value unknown
+---@param maximum integer
+---@return string?
 local function safe_header_text(value, maximum)
   if type(value) ~= "string" then return nil end
   value = util.trim(value)
@@ -60,6 +138,8 @@ local function safe_header_text(value, maximum)
   return value
 end
 
+---@param value unknown
+---@return boolean?
 local function header_boolean(value)
   if type(value) ~= "string" then return nil end
   value = value:lower()
@@ -68,6 +148,10 @@ local function header_boolean(value)
   return nil
 end
 
+---@param headers table<string, string>
+---@param prefix string
+---@param name string
+---@return Neoagent.CodexQuotaWindow?
 local function rate_limit_window(headers, prefix, name)
   local base = "x-" .. prefix .. "-" .. name .. "-"
   local used = finite_number(headers[base .. "used-percent"])
@@ -86,6 +170,21 @@ local function rate_limit_window(headers, prefix, name)
   }
 end
 
+---@param headers table<string, string>
+---@return Neoagent.CodexCredits?
+local function rate_limit_credits(headers)
+  local has_credits = header_boolean(headers["x-codex-credits-has-credits"])
+  local unlimited = header_boolean(headers["x-codex-credits-unlimited"])
+  if has_credits == nil or unlimited == nil then return nil end
+  return {
+    has_credits = has_credits,
+    unlimited = unlimited,
+    balance = safe_header_text(headers["x-codex-credits-balance"], 128),
+  }
+end
+
+---@param headers? table<string, string>
+---@return Neoagent.CodexQuotaDetails?
 local function rate_limit_details(headers)
   local normalized = normalized_headers(headers)
   local prefixes = {}
@@ -99,20 +198,8 @@ local function rate_limit_details(headers)
     prefixes.codex = true
   end
 
-  local credits
-  local has_credits = header_boolean(
-    normalized["x-codex-credits-has-credits"])
-  local unlimited = header_boolean(
-    normalized["x-codex-credits-unlimited"])
-  if has_credits ~= nil and unlimited ~= nil then
-    credits = {
-      has_credits = has_credits,
-      unlimited = unlimited,
-      balance = safe_header_text(
-        normalized["x-codex-credits-balance"], 128),
-    }
-    prefixes.codex = true
-  end
+  local credits = rate_limit_credits(normalized)
+  if credits then prefixes.codex = true end
 
   local names = {}
   for prefix in pairs(prefixes) do names[#names + 1] = prefix end
@@ -121,6 +208,7 @@ local function rate_limit_details(headers)
     if right == "codex" then return false end
     return left < right
   end)
+  ---@type Neoagent.CodexQuota[]
   local limits = {}
   for _, prefix in ipairs(names) do
     if #limits >= 32 then break end
@@ -140,9 +228,12 @@ local function rate_limit_details(headers)
   return { source = "headers", limits = limits, credits = credits }
 end
 
+---@param headers? table<string, string>
+---@return string?, Neoagent.CodexQuotaDetails?
 local function rate_limit_status(headers)
   local details = rate_limit_details(headers)
   local parts = {}
+  ---@type Neoagent.CodexQuota?
   local default
   for _, limit in ipairs(details and details.limits or {}) do
     if limit.id == "codex" then default = limit break end
@@ -159,6 +250,8 @@ local function rate_limit_status(headers)
   return #parts > 0 and table.concat(parts, " · ") or nil, details
 end
 
+---@param value string
+---@return string
 local function base_url(value)
   local normalized = value:gsub("/+$", "")
   if normalized:sub(-10) == "/responses" then normalized = normalized:sub(1, -11) end
@@ -166,6 +259,8 @@ local function base_url(value)
   return normalized
 end
 
+---@param detail unknown
+---@return table<string, unknown>?
 local function decoded_detail(detail)
   if type(detail) == "table" then return detail end
   if type(detail) ~= "string" or detail == "" then return nil end
@@ -173,6 +268,8 @@ local function decoded_detail(detail)
   return ok and type(value) == "table" and value or nil
 end
 
+---@param value unknown
+---@return string?, string?
 local function error_fields(value)
   if type(value) ~= "table" then return nil, nil end
   local nested = type(value.error) == "table" and value.error or nil
@@ -184,9 +281,12 @@ local function error_fields(value)
   local message = type(value.message) == "string" and value.message
     or nested and type(nested.message) == "string" and nested.message
     or response_error and type(response_error.message) == "string" and response_error.message
-  return code, message
+  return code or nil, message or nil
 end
 
+---@param code? string
+---@param message? string
+---@return boolean
 local function terminal_error(code, message)
   local text = ((code or "") .. " " .. (message or "")):lower()
   for _, pattern in ipairs({
@@ -201,6 +301,8 @@ local function terminal_error(code, message)
   return false
 end
 
+---@param err Neoagent.HttpError
+---@return number?, table<string, string>
 local function response_context(err)
   local response = type(err.response) == "table" and err.response or {}
   local status = tonumber(response.status)
@@ -208,6 +310,8 @@ local function response_context(err)
   return status, headers
 end
 
+---@param headers table<string, string>
+---@return number?
 local function retry_after(headers)
   local milliseconds = tonumber(headers["retry-after-ms"])
   if milliseconds then return math.max(0, math.min(MAX_RETRY_DELAY_MS, milliseconds)) end
@@ -215,11 +319,14 @@ local function retry_after(headers)
   if seconds then return math.max(0, math.min(MAX_RETRY_DELAY_MS, seconds * 1000)) end
 end
 
+---@param code? string
+---@param message? string
+---@return number?
 local function message_retry_after(code, message)
   if code ~= "rate_limit_exceeded" or type(message) ~= "string" then return nil end
-  local amount, unit = message:lower():match("try again in%s+([%d%.]+)%s*([%a]+)")
-  amount = tonumber(amount)
-  if not amount then return nil end
+  local amount_text, unit = message:lower():match("try again in%s+([%d%.]+)%s*([%a]+)")
+  local amount = tonumber(amount_text)
+  if not amount or not unit then return nil end
   local milliseconds
   if unit == "ms" then
     milliseconds = amount
@@ -229,7 +336,10 @@ local function message_retry_after(code, message)
   return milliseconds and math.max(0, math.min(MAX_RETRY_DELAY_MS, milliseconds)) or nil
 end
 
+---@param value unknown
+---@return Neoagent.CodexError
 local function enrich_error(value)
+  ---@type Neoagent.CodexError
   local err = util.normalize_error(value, "model")
   local status, headers = response_context(err)
   local code, message = error_fields(decoded_detail(err.detail))
@@ -259,11 +369,21 @@ local function enrich_error(value)
   return err
 end
 
+---@param err Neoagent.CodexError
+---@param attempt integer
+---@return number
 local function retry_delay(err, attempt)
   return err.retry_after_ms or math.min(
     MAX_RETRY_DELAY_MS, INITIAL_RETRY_DELAY_MS * (2 ^ attempt))
 end
 
+---@param self Neoagent.CodexModel
+---@param call_opts Neoagent.StreamOptions
+---@param event_type "request_retry"|"request_failed"
+---@param err Neoagent.CodexError
+---@param attempt integer
+---@param max_attempts integer
+---@param delay_ms? number
 local function emit_diagnostic(self, call_opts, event_type, err, attempt, max_attempts, delay_ms)
   if not self._on_diagnostic then return end
   local value = {
@@ -274,7 +394,7 @@ local function emit_diagnostic(self, call_opts, event_type, err, attempt, max_at
     model = self.id,
     request_attempt = attempt,
     request_max_attempts = max_attempts,
-    stream_attempt = (tonumber(call_opts.retry_attempt) or 0) + 1,
+    stream_attempt = (call_opts.retry_attempt or 0) + 1,
     kind = err.kind,
     message = err.message,
     code = err.code,
@@ -289,8 +409,12 @@ local function emit_diagnostic(self, call_opts, event_type, err, attempt, max_at
   pcall(self._on_diagnostic, value)
 end
 
+---@param model Neoagent.ResponsesModel
+---@param opts Neoagent.CodexOptions
+---@return Neoagent.CodexModel
 local function wrap_stream(model, opts)
   local base_stream = model.stream
+  ---@cast model Neoagent.CodexModel
   model._request_max_retries = opts.request_max_retries == nil
       and REQUEST_MAX_RETRIES or opts.request_max_retries
   assert(type(model._request_max_retries) == "number" and model._request_max_retries >= 0
@@ -298,13 +422,20 @@ local function wrap_stream(model, opts)
   model._sleep = opts.sleep or delay
   model._on_diagnostic = opts.on_diagnostic
 
-  function model:stream(call_opts)
+  ---@param self Neoagent.CodexModel
+  ---@param call_opts Neoagent.StreamOptions
+  ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+  function model.stream(self, call_opts)
     call_opts = call_opts or {}
-    return async.run(function(run)
+    return async.run(
+    ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+    ---@return Neoagent.ModelResult
+    function(run)
       local reconnecting = false
       local ok, outcome = pcall(function()
         local max_retries = self._request_max_retries
-        for attempt = 0, max_retries do
+        local attempt = 0
+        while true do
           local call = util.copy(call_opts)
           call.on_event = function(event) run:emit(event) end
           call.on_done = nil
@@ -318,12 +449,14 @@ local function wrap_stream(model, opts)
 
           local should_retry = err.retryable and result.message == nil
             and attempt < max_retries
-          local wait = should_retry and retry_delay(err, attempt) or nil
-          emit_diagnostic(self, call_opts,
-            should_retry and "request_retry" or "request_failed",
+          if not should_retry then
+            emit_diagnostic(self, call_opts, "request_failed",
+              err, attempt + 1, max_retries + 1)
+            return result
+          end
+          local wait = retry_delay(err, attempt)
+          emit_diagnostic(self, call_opts, "request_retry",
             err, attempt + 1, max_retries + 1, wait)
-          if not should_retry then return result end
-
           reconnecting = true
           run:emit({
             type = "provider_status",
@@ -332,6 +465,7 @@ local function wrap_stream(model, opts)
             reconnecting = true,
           })
           self._sleep(wait)
+          attempt = attempt + 1
         end
       end)
       if reconnecting then
@@ -345,8 +479,11 @@ local function wrap_stream(model, opts)
       error_kind = "model",
     })
   end
+  return model
 end
 
+---@param opts Neoagent.CodexOptions
+---@return Neoagent.CodexModel
 function M.new(opts)
   opts = util.copy(opts or {})
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
@@ -355,8 +492,9 @@ function M.new(opts)
   opts.response_status = rate_limit_status
   local model = responses.new(opts)
   model.api = "openai-codex-responses"
-  wrap_stream(model, opts)
-  return model_contract.assert(model, "OpenAI Codex Responses constructor")
+  local wrapped = wrap_stream(model, opts)
+  model_contract.assert(wrapped, "OpenAI Codex Responses constructor")
+  return wrapped
 end
 
 M.rate_limit_status = rate_limit_status
