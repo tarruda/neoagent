@@ -209,6 +209,8 @@ end
 ---@param message unknown
 ---@param state? Neoagent.RequestStateInput
 ---@return true?, Neoagent.Error?, Neoagent.JournalEntry?
+---@return_overload true, nil, Neoagent.JournalEntry?
+---@return_overload nil, Neoagent.Error
 function Session:append(message, state)
   assert(type(message) == "table", "message must be a table")
   assert(state == nil or type(state) == "table"

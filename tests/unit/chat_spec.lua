@@ -506,25 +506,20 @@ describe("neoagent.chat", function()
 
   it("surfaces user and assistant persistence failures", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
-    local rejecting = {
-      append = function() return nil, { kind = "storage", message = "read only" } end,
-      messages = function() return {} end,
-    }
+    local rejecting = assert(Session.new())
+    rejecting.append = function() return nil, { kind = "storage", message = "read only" } end
     local ok, err = pcall(chat.send, rejecting, "hello", { model = model })
     assert.is_false(ok)
     assert.are.equal("storage", err.kind)
 
-    local messages = {}
     local writes = 0
-    local flaky = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then return nil, { kind = "storage", message = "disk full" } end
-        messages[#messages + 1] = message
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local flaky = assert(Session.new())
+    local append = flaky.append
+    flaky.append = function(self, message, state)
+      writes = writes + 1
+      if writes == 2 then return nil, { kind = "storage", message = "disk full" } end
+      return append(self, message, state)
+    end
     model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "lost" } }) },
       { result = fake_model.assistant({ { type = "text", text = "saved" } }) },
@@ -537,17 +532,14 @@ describe("neoagent.chat", function()
   end)
 
   it("stops persisting an agent run after the first storage failure", function()
-    local messages = {}
     local writes = 0
-    local session = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then return nil, { kind = "storage", message = "unavailable" } end
-        messages[#messages + 1] = message
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local session = assert(Session.new())
+    local append = session.append
+    session.append = function(self, message, state)
+      writes = writes + 1
+      if writes == 2 then return nil, { kind = "storage", message = "unavailable" } end
+      return append(self, message, state)
+    end
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "answer" } }) } })
     local result = wait(chat.run(session, "question", { model = model }))
     assert.is_false(result.ok)
@@ -556,19 +548,16 @@ describe("neoagent.chat", function()
   end)
 
   it("commits a tool call before allowing its effect", function()
-    local messages = {}
     local writes = 0
-    local session = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then
-          return nil, { kind = "storage", message = "journal unavailable" }
-        end
-        messages[#messages + 1] = vim.deepcopy(message)
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local session = assert(Session.new())
+    local append = session.append
+    session.append = function(self, message, state)
+      writes = writes + 1
+      if writes == 2 then
+        return nil, { kind = "storage", message = "journal unavailable" }
+      end
+      return append(self, message, state)
+    end
     local model = fake_model.new({
       { result = fake_model.assistant({ {
         type = "toolCall", id = "effect", name = "mutate", arguments = {},

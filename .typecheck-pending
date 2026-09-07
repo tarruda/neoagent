@@ -20,7 +20,6 @@ lua/neoagent/agent/steering.lua
 lua/neoagent/agent_applet.lua
 lua/neoagent/applet.lua
 lua/neoagent/authentication.lua
-lua/neoagent/chat.lua
 lua/neoagent/config.lua
 lua/neoagent/dialog.lua
 lua/neoagent/health.lua
