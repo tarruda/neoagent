@@ -34,8 +34,6 @@ tests/unit/config_models_spec.lua
 tests/unit/curl_spec.lua
 tests/unit/dialog_spec.lua
 tests/unit/health_spec.lua
-tests/unit/http_recording_spec.lua
-tests/unit/http_replay_spec.lua
 tests/unit/llama_provider_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
 tests/unit/pane_compile_spec.lua
