@@ -1,6 +1,7 @@
 local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
+local request_opts = require("neoagent.api.request_opts")
 local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
@@ -134,6 +135,7 @@ end
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
 ---@field _max_output_tokens integer
+---@field _timeout_ms? integer
 ---@field _anthropic_version string
 ---@field _request_opts Neoagent.RequestLayer[]
 ---@field _request_context? Neoagent.RequestIdentity
@@ -382,6 +384,7 @@ function Model:stream(opts)
           url = outgoing.url,
           headers = outgoing.headers,
           body = util.json_encode(outgoing.body),
+          timeout_ms = outgoing.timeout_ms,
         },
         on_event = process_payload,
       })
@@ -431,6 +434,7 @@ function M.new(opts)
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
   assert(type(opts.model) == "string" and opts.model ~= "", "model is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
+  local timeout_ms = request_opts.timeout(opts.timeout_ms)
   assert(opts.max_output_tokens == nil or (type(opts.max_output_tokens) == "number"
     and opts.max_output_tokens > 0 and opts.max_output_tokens % 1 == 0),
     "max_output_tokens must be a positive integer")
@@ -443,6 +447,8 @@ function M.new(opts)
     id = opts.model,
     input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
+    timeout_ms = timeout_ms,
+    _timeout_ms = timeout_ms,
     thinking = util.copy(opts.thinking),
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,

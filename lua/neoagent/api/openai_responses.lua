@@ -3,6 +3,7 @@ local decoder = require("neoagent.api.openai_responses.decoder")
 local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
 local request_context = require("neoagent.api.request_context")
+local request_opts = require("neoagent.api.request_opts")
 local semantic_message = require("neoagent.semantic_message")
 local http = require("neoagent.transport.http")
 local http_response = require("neoagent.api.http_response")
@@ -26,6 +27,7 @@ local M = {}
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
 ---@field _max_output_tokens? number
+---@field _timeout_ms? integer
 ---@field _reasoning boolean
 ---@field _reasoning_effort? string
 ---@field _reasoning_summary? string
@@ -66,6 +68,7 @@ function Model:stream(opts)
           url = request.url,
           headers = request.headers,
           body = util.json_encode(request.body),
+          timeout_ms = request.timeout_ms,
         },
         on_event = stream.process,
       })
@@ -124,6 +127,7 @@ function M.new(opts)
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
   assert(type(opts.model) == "string" and opts.model ~= "", "model is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
+  local timeout_ms = request_opts.timeout(opts.timeout_ms)
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do layers[#layers + 1] = layer end
   if opts.request_opts ~= nil then layers[#layers + 1] = opts.request_opts end
@@ -133,6 +137,8 @@ function M.new(opts)
     id = opts.model,
     input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
+    timeout_ms = timeout_ms,
+    _timeout_ms = timeout_ms,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,

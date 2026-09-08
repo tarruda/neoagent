@@ -40,6 +40,22 @@ local M = {}
 
 ---@alias Neoagent.RequestLayer Neoagent.RequestOverride|fun(context: Neoagent.RequestOptionsContext): Neoagent.RequestOverride
 
+---@overload fun(default?: integer): integer?
+---@param default? integer
+---@param override? number|false
+---@return integer|false|nil
+function M.timeout(default, override)
+  if override == false then return false end
+  ---@type number?
+  local value = default
+  if override ~= nil then value = override end
+  assert(value == nil or type(value) == "number" and value > 0
+      and value < math.huge and value % 1 == 0,
+    "timeout_ms must be a positive integer")
+  ---@cast value integer?
+  return value
+end
+
 ---@param request Neoagent.ApiRequest
 ---@param override Neoagent.RequestOverride
 ---@return Neoagent.ApiRequest

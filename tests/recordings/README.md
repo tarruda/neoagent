@@ -151,9 +151,9 @@ All credentials, browser inputs and account IDs in fixtures are synthetic.
 | OpenCode Go Completions, Responses and Messages routing, both credential headers, Session header | `recorded_providers_spec.lua` | Minimized real Completions; real Responses and Messages needed. |
 | OpenAI `/models`, organization usage/completions and costs | `provider_management_spec.lua`, `provider_surfaces_spec.lua` | Synthetic success/reporting denial; successful real organization reports needed. |
 | Anthropic paginated `/models`, organization messages usage and cost reports | Same two management suites | Synthetic; real catalog and reports needed. |
-| DeepSeek `/models`, `/user/balance` | `provider_management_spec.lua` | Synthetic adaptations; real management recordings exist locally for follow-up promotion. |
+| DeepSeek `/models`, `/user/balance` | `provider_management_spec.lua`, `provider_surfaces_spec.lua` | Balance adapted from a real response; catalog remains synthetic. |
 | Z.AI and Coding Plan `/models`, balance and quota/limit | `provider_management_spec.lua` | Synthetic adaptations; real management recordings exist locally for follow-up promotion. |
-| OpenCode Go `/models`, `/usage` | `provider_surfaces_spec.lua` | Synthetic adaptations; real catalog/usage recordings exist locally for follow-up promotion. |
+| OpenCode Go `/models`, `/usage` | `provider_surfaces_spec.lua` | Catalog adapted from a real response; usage remains synthetic. |
 | Alibaba console callback and TokenPlanOverview gateway query | `alibaba_token_plan_auth_spec.lua`, `provider_management_spec.lua` | Synthetic JSON/form/multipart callbacks and query; real overview exists, real login capture needed. |
 | Codex browser PKCE callback, pasted redirect, device code/pending/slow-down, code exchange, refresh rotation and concurrent resolution | `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; real browser, manual and device flows plus refresh needed. Token bodies will remain masked. |
 | Codex Responses, retry, usage headers and OAuth-wrapped inference | `openai_http_spec.lua`, `openai_codex_oauth_spec.lua`, `provider_surfaces_spec.lua` | Synthetic; real Codex inference needed. |
@@ -161,11 +161,12 @@ All credentials, browser inputs and account IDs in fixtures are synthetic.
 | llama.cpp anonymous/key probes, `/models`, load/unload, downloads, `/models/sse`, polling, catalog reload and multimodal Completions | `llama_http_spec.lua`, `provider_surfaces_spec.lua`, `recorded_providers_spec.lua` | Minimized real inference; router workflows captured from the former synthetic server. Real load/download/cancel flows needed. |
 | Hugging Face model search and repository details with optional token | `provider_surfaces_spec.lua` | Synthetic; real public and authenticated queries needed. |
 
-The five fixtures under `real/` adapt selected frames from user recordings.
-All conversation text, identities, tool content and credentials were replaced
-with synthetic values; null fields, selected event order and usage shapes were
-preserved, and byte counts were rebuilt. These are minimized protocol examples,
-not complete real conversations. Source file hashes identify their provenance:
+The fixtures below adapt selected frames or response structures from user
+recordings. Conversation text, identities, tool content, credentials, balances,
+and other account metadata were replaced with synthetic values. Relevant field
+types, selected event order, and response shapes were preserved; byte counts
+were rebuilt. These are minimized protocol examples, not complete real
+conversations. Source file hashes identify their provenance:
 
 | Fixture | Original recording SHA-256 |
 | --- | --- |
@@ -174,6 +175,8 @@ not complete real conversations. Source file hashes identify their provenance:
 | [`real/llama.cpp.yaml`](real/llama.cpp.yaml) | `2a4bbb2446ef9b1ce49637d1bc48b6210de57cddb2665f0d3e74c51b5e1a9834` |
 | [`real/opencode-go.yaml`](real/opencode-go.yaml) | `0514eb4d892ba09e45e13027620436ecff7bd8410af058a11f25c00b4cbb78ec` |
 | [`real/zai-coding-plan.yaml`](real/zai-coding-plan.yaml) | `f6db25a27b2a167a2d27b2d5c5cfb5519c2eab520bcaf7fe8c9cf4956750b43c` |
+| [`providers/management-02.yaml`](providers/management-02.yaml) | `a34c98f253bf912178695881b56bf75c09925b305c8cab222f652496088cdc77` |
+| [`opencode-go/management-01.yaml`](opencode-go/management-01.yaml) | `cbc3b82891cb3392d1cf7f2fa5c64fb2525c88a16058d05b10d8690ac1e02ae2` |
 
 Original user files are unchanged. Other fixtures are synthetic scenarios,
 including adaptations of the former HTTP integration servers. The final cleanup

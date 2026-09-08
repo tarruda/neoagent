@@ -44,12 +44,18 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
+- RegularFile relinquishes descriptor ownership before native close; a close
+  error must not authorize retrying a potentially recycled descriptor.
+  Preserve the error independently of resource ownership.
+- Tool execution blocked when requested sandbox activation fails; host
+  execution requires explicitly disabling sandboxing.
 - Private atomic credential storage; credentials excluded from provider state
   and diagnostics; HTTP and conversation bodies excluded from provider
   diagnostics. Persistence uncertainty blocks later Store mutations.
 - HTTP recording as an observer: mask protocol credentials, preserve model
   and ordinary provider bodies, and mask response bodies only when
   Authentication explicitly classifies them as sensitive.
+  Bound response buffering and never spool classified sensitive bodies.
 
 ## Repository and documentation
 
@@ -137,6 +143,14 @@ network access. UI tests inspect isolated headless Neovim children.
 `make test-http-live` runs the small localhost curl/callback suite;
 `make test-native-sandbox` runs native enforcement tests and requires working
 platform isolation. Neither is part of `make test`.
+Windows CI also runs portable core and API unit specs alongside its native
+platform suite.
+
+`make benchmark-applet` checks container update budgets.
+`make benchmark-transcript` measures streaming updates with a long response and
+400 prior messages, checking latency, retained memory, and native mutations.
+Run benchmarks separately from other suites for useful timings. Linux stable
+CI runs both targets.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.

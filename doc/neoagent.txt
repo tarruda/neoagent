@@ -143,9 +143,43 @@ Provider tables recursively override the built-in registry. Assign `false` to
 remove a provider, or set `default_registry = false` to use only configured
 providers. For a source-free provider, a table under `models[id]` adds or
 overrides that model. For a discovery-backed provider, it overrides the ID
-while the current catalog contains it. Put a permanent model and its base
-configuration under `catalog.additions[id]`. `false` under `models[id]`
-removes the ID. A model may set `api` to override its provider's adapter.
+while the current catalog contains it. Add a static entry under
+`catalog.additions[id]` to keep that model selectable independently of
+discovery. This extends the provider's catalog and preserves its discovery
+source. `false` under `models[id]` removes the ID. A model may set `api` to
+override its provider's adapter.
+
+Static additions can supply capabilities for preview or unlisted models from
+your `init.lua`. Set `model_id` to the provider's model ID and supply its known
+limits and thinking levels: >lua
+
+  local model_id = "deepseek-v4-flash"
+  local efforts = require("neoagent.model_efforts")
+
+  require("neoagent").setup({
+    providers = {
+      deepseek = {
+        catalog = {
+          additions = {
+            [model_id] = {
+              input = { "text" },
+              context_window = 1000000,
+              max_output_tokens = 384000,
+              thinking = efforts.thinking_completions({
+                "off", "low", "high", "max",
+              }),
+            },
+          },
+        },
+      },
+    },
+  })
+<
+Additions survive catalog refreshes, including responses that omit the ID.
+Their fields override discovered metadata; `models[id]` takes final precedence.
+For a temporary model, remove its addition from your configuration when it is
+no longer available, then restart Neovim. Additions do not expire automatically.
+
 Built-in adapter names are
 `openai-completions`, `openai-responses`,
 `openai-codex-responses`, and `anthropic-messages`: >lua
@@ -462,6 +496,10 @@ state for the built-in Neo Profile with: >lua
 `:NeoagentSandboxInfo` reports the selected backend and capabilities. A tool
 call keeps the mode it started with.
 
+If sandbox activation fails, tool execution is blocked. Inspect the reason
+with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly turn
+sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
+
 The default profile grants read-only host access, writes within the Workspace
 and shared temporary directory, read-only access to `.git`, restricted
 networking, and a small inherited environment. Override it with a table or
@@ -731,9 +769,17 @@ Failed finalization preserves the previous recording and the partial file.
   `yaml`   Require compatible `yq` v4 and publish `.yaml`.
   `json`   Publish `.jsonl` without a `yq` dependency.
 
-YAML recordings represent JSON bodies as native values; machine replay requires
-`yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies use
-base64 with an encoding marker.
+YAML recordings represent buffered JSON bodies as native values; machine replay
+requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
+and response bodies larger than 1 MiB use base64 with an encoding marker,
+preserving their exact bytes and chunk boundaries.
+
+Response buffering is limited to 1 MiB per exchange. Larger ordinary responses
+use private `.body` spool files, removed after successful serialization.
+YAML conversion also streams its output. Sensitive authentication responses
+are never spooled; exceeding the buffering limit stops that recording without
+changing the provider's result. Failed finalization can leave private spool
+files beside the partial recording for recovery.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive
@@ -951,11 +997,17 @@ Models can be constructed without `setup()`: >lua
 Other constructors are `neoagent.api.anthropic_messages`,
 `neoagent.api.openai_responses`, and
 `neoagent.api.openai_codex_responses`. Optional settings include `api_key`,
-`context_window`, `max_output_tokens`, and `request_opts`; `stream()` also
-accepts `system_prompt`, `tools`, and `request_opts`. The Codex constructor adds
+`context_window`, `max_output_tokens`, `timeout_ms`, and `request_opts`;
+`stream()` also accepts `system_prompt`, `tools`, and `request_opts`.
+The Codex constructor adds
 `responses_lite`, `request_max_retries`, and `on_diagnostic`. A constructor also
 accepts the copied `request_context` identity described above, and `stream()`
 may supply additional identity fields using the same option.
+
+`timeout_ms` is a positive integer deadline in milliseconds. A per-stream
+`timeout_ms` overrides the constructor default; `false` disables that default
+for one stream. Configured catalog entries use `request_timeout_ms` to supply
+the constructor default.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
 unique `input` list containing `text` and optionally `image`. Optional context,

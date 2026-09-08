@@ -63,6 +63,9 @@ jobs:
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
         run: make test test-http-live test-native-sandbox
+      - name: Check container and transcript performance budgets
+        if: matrix.neovim == 'stable'
+        run: make benchmark-applet benchmark-transcript
 
   terminal-images:
     name: terminal images (Linux, stable)
@@ -158,4 +161,21 @@ jobs:
           $testExit = $LASTEXITCODE
           if ($testExit -ne 0) {
             throw "Windows tests failed (Neovim exit code $testExit)"
+          }
+      - name: Run portable core and API suites
+        shell: pwsh
+        run: |
+          $specs = @(
+            "async", "agent_loop", "model", "semantic_message",
+            "api_messages", "tool_schema", "sse", "http",
+            "openai_completions", "openai_responses", "anthropic_messages",
+            "openai_codex_responses", "api_timeouts", "model_rules", "thinking"
+          )
+          foreach ($spec in $specs) {
+            & $env:NEOAGENT_NVIM --headless --noplugin `
+              -u tests/minimal_init.lua `
+              -c "lua require('plenary.busted').run('tests/unit/${spec}_spec.lua')"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Portable suite $spec failed (Neovim exit code $LASTEXITCODE)"
+            }
           }

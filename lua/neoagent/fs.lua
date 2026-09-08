@@ -322,23 +322,38 @@ function RegularFile:verify_path()
   return held
 end
 
----@return string? data
+---@param on_chunk fun(data: string)
+---@return true? ok
 ---@return string? error
 ---@return Neoagent.FileFailureStage? stage
-function RegularFile:read_all()
+function RegularFile:read_chunks(on_chunk)
+  assert(type(on_chunk) == "function", "regular file reader is required")
   local stat, stat_err, stat_code = self:stat()
   if not stat then return nil, stat_err, stat_code end
   -- Successful synchronous stat verifies that this handle is open.
   local fd = self._fd
   ---@cast fd integer
-  local chunks, offset = {}, 0
+  local offset = 0
   while true do
     local chunk, read_err = self._uv.fs_read(fd, 64 * 1024, offset)
     if chunk == nil then return nil, read_err, "read" end
     if chunk == "" then break end
-    chunks[#chunks + 1] = chunk
+    local accepted, callback_err = pcall(on_chunk, chunk)
+    if not accepted then return nil, util.safe_message(callback_err), "read" end
     offset = offset + #chunk
   end
+  return true
+end
+
+---@return string? data
+---@return string? error
+---@return Neoagent.FileFailureStage? stage
+function RegularFile:read_all()
+  local chunks = {}
+  local read, err, stage = self:read_chunks(function(chunk)
+    chunks[#chunks + 1] = chunk
+  end)
+  if not read then return nil, err, stage end
   return table.concat(chunks)
 end
 
@@ -391,9 +406,11 @@ end
 function RegularFile:close()
   local fd = self._fd
   if not fd then return true end
+  -- Native close can release the descriptor before reporting an error.
+  -- Retire ownership first so cleanup cannot close a reused descriptor.
+  self._fd = nil
   local closed, close_err = self._uv.fs_close(fd)
   if not closed then return nil, close_err, "close" end
-  self._fd = nil
   return true
 end
 

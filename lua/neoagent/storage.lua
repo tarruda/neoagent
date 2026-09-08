@@ -786,62 +786,9 @@ function M.new(opts)
 end
 
 ---@param path string
----@return string?, Neoagent.FileIdentity|string|nil
----@return_overload string, Neoagent.FileIdentity
----@return_overload nil, string?
-local function read_session_file(path)
-  local file, open_err = fs.open_regular(path, { mode = 384 })
-  if not file then return nil, open_err end
-  ---@param err? string
-  ---@return nil, string?
-  local function failure(err)
-    local closed, close_err = file:close()
-    return nil, closed and err or close_err
-  end
-  local data, read_err = file:read_all()
-  if not data then return failure(read_err) end
-  if data:sub(-1) ~= "\n" then
-    local boundary
-    for index = #data, 1, -1 do
-      if data:byte(index) == 10 then
-        boundary = index
-        break
-      end
-    end
-    if not boundary then
-      return failure("session contains no complete JSONL record")
-    end
-    local recovered, recovery_err = file:truncate(boundary)
-    if not recovered then
-      return failure("failed to recover incomplete final record: "
-        .. tostring(recovery_err))
-    end
-    data = data:sub(1, boundary)
-  end
-  local current, current_err = file:verify_path()
-  if not current then return failure(current_err) end
-  local identity = file:identity()
-  local closed, close_err = file:close()
-  if not closed then return nil, close_err end
-  return data, identity
-end
-
----@param path string
+---@param data string
 ---@return Neoagent.SessionStore?, Neoagent.Error?
----@return_overload Neoagent.SessionStore
----@return_overload nil, Neoagent.Error
-function M.open(path)
-  path = fs.normalize(path)
-  local data, identity_or_err = session_lock(path):with(function()
-    return read_session_file(path)
-  end)
-  if not data then
-    local read_err = identity_or_err
-    if type(read_err) == "table" and read_err.kind == "file_lock" then
-      read_err = rawget(read_err, "detail") or read_err.message
-    end
-    return nil, storage_error("Failed to read session", read_err)
-  end
+local function decode_session_file(path, data)
   local lines = vim.tbl_filter(function(line) return util.trim(line) ~= "" end,
     vim.split(data, "\n", { plain = true }))
   ---@type Neoagent.StoredSessionRecord[]
@@ -903,13 +850,80 @@ function M.open(path)
     _pending = {},
     _leaf_id = validated.leaf_id,
     _state = {},
-    _file_identity = identity_or_err,
+    _file_identity = nil,
     _parent_session = header.parentSession ~= vim.NIL and header.parentSession or nil,
     _metadata = header.metadata ~= vim.NIL and header.metadata or nil,
     _index_attributes = nil,
   }, Store)
   local rebuilt, rebuild_err = rebuild(store)
   if not rebuilt then return nil, storage_error("Failed to open session", rebuild_err) end
+  return store
+end
+
+---@param path string
+---@return Neoagent.SessionStore?, string|Neoagent.Error|nil
+local function read_session_file(path)
+  local file, open_err = fs.open_regular(path, { mode = 384 })
+  if not file then return nil, open_err end
+  ---@param err? string|Neoagent.Error
+  ---@return nil, string|Neoagent.Error|nil
+  local function failure(err)
+    local closed, close_err = file:close()
+    return nil, closed and err or close_err
+  end
+  local data, read_err = file:read_all()
+  if not data then return failure(read_err) end
+  local boundary
+  if data:sub(-1) ~= "\n" then
+    for index = #data, 1, -1 do
+      if data:byte(index) == 10 then
+        boundary = index
+        break
+      end
+    end
+    if not boundary then
+      return failure("session contains no complete JSONL record")
+    end
+    data = data:sub(1, boundary)
+  end
+  local decoded, store, decode_err = pcall(decode_session_file, path, data)
+  if not decoded then
+    return failure(storage_error("Failed to decode session", store))
+  end
+  if not store then return failure(decode_err) end
+  if boundary then
+    local recovered, recovery_err = file:truncate(boundary)
+    if not recovered then
+      return failure("failed to recover incomplete final record: "
+        .. tostring(recovery_err))
+    end
+  end
+  local current, current_err = file:verify_path()
+  if not current then return failure(current_err) end
+  store._file_identity = file:identity()
+  local closed, close_err = file:close()
+  if not closed then return nil, close_err end
+  return store
+end
+
+---@param path string
+---@return Neoagent.SessionStore?, Neoagent.Error?
+---@return_overload Neoagent.SessionStore
+---@return_overload nil, Neoagent.Error
+function M.open(path)
+  path = fs.normalize(path)
+  local store, read_err = session_lock(path):with(function()
+    return read_session_file(path)
+  end)
+  if not store then
+    if type(read_err) == "table" then
+      if read_err.kind == "storage" then return nil, read_err end
+      if read_err.kind == "file_lock" then
+        read_err = rawget(read_err, "detail") or read_err.message
+      end
+    end
+    return nil, storage_error("Failed to read session", read_err)
+  end
   return store
 end
 

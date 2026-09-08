@@ -222,6 +222,7 @@ function M.update(provider, surface, retained)
       win = window,
       range = { 0, retained.height },
       valid = false,
+      flush = false,
     })
   end
 end

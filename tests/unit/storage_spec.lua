@@ -789,6 +789,56 @@ describe("neoagent.storage", function()
     assert.matches("truncate denied", tostring(assert(err).detail))
   end)
 
+  it("rejects invalid session prefixes without truncating their final bytes", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "complete" }))
+    local complete = assert(original_read(store:metadata().path))
+    for index, prefix in ipairs({
+      '{"type":"foreign-document"}\n',
+      complete .. '{broken-json}\n',
+      complete .. vim.json.encode({ type = "message", id = "invalid-entry" }) .. "\n",
+    }) do
+      local path = directory .. "/invalid-" .. index .. ".jsonl"
+      local contents = prefix .. "valuable unterminated data"
+      assert(original_write_all(path, contents, "w", 384))
+
+      local reopened, err = storage.open(path)
+
+      assert.is_nil(reopened)
+      assert.matches("Invalid session", assert(err).message)
+      assert.are.equal(contents, assert(original_read(path)))
+    end
+  end)
+
+  it("closes a recovery handle when projection throws before truncation", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "complete" }))
+    local path = store:metadata().path
+    local contents = assert(original_read(path)) .. '{"unfinished":'
+    assert(original_write_all(path, contents, "w", 384))
+    local closed = 0
+    intercept_regular(function(file)
+      local close = file.close
+      function file:close()
+        closed = closed + 1
+        return close(self)
+      end
+    end)
+    tree.indexed_path = function() error("projection failed") end
+
+    local reopened, err = storage.open(path)
+
+    assert.is_nil(reopened)
+    assert.matches("Failed to decode session", assert(err).message)
+    assert.matches("projection failed", tostring(assert(err).detail))
+    assert.are.equal(1, closed)
+    assert.are.equal(contents, assert(original_read(path)))
+  end)
+
   it("preserves file-lock diagnostics for append and open failures", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory

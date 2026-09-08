@@ -1449,6 +1449,47 @@ describe("Pane buffer surfaces", function()
     assert.are.equal("upper", chosen)
   end)
 
+  it("defers drawing retained layer movements until the screen redraws", function()
+    local value = pane({ key = "deferred-layer-movement" })
+    local host, window = surface("applet-deferred-layer-movement", true)
+    value:_connect(host)
+    value:update(ui.container({
+      key = "stage", width = 12, height = 3,
+      layers = { ui.container({
+        key = "moving",
+        position = { mode = "absolute", row = 0, col = 0 },
+        width = 4, height = 1,
+        child = ui.text({ key = "label", text = "MOVE" }),
+      }) },
+    }))
+    assert.is_true((value:flush()))
+    vim.api.nvim__redraw({ win = window(), valid = false, flush = true })
+
+    local marks = {}
+    local set_extmark = vim.api.nvim_buf_set_extmark
+    vim.api.nvim_buf_set_extmark = function(buffer, namespace, row, col, opts)
+      if namespace == value.scene_namespace and opts.ephemeral then
+        marks[#marks + 1] = {
+          row = row, col = opts.virt_text_win_col, text = opts.virt_text,
+        }
+      end
+      return set_extmark(buffer, namespace, row, col, opts)
+    end
+    local ok, err = pcall(function()
+      for col = 1, 4 do
+        assert.is_true(value:set_position("moving", { row = 2, col = col }))
+        assert.is_true((value:flush()))
+      end
+      assert.are.equal(0, #marks, "movement drew before the screen redraw")
+      vim.api.nvim__redraw({ win = window(), valid = false, flush = true })
+      assert.are.same({ {
+        row = 2, col = 4, text = { { "MOVE", "Normal" } },
+      } }, marks)
+    end)
+    vim.api.nvim_buf_set_extmark = set_extmark
+    assert(ok, err)
+  end)
+
   it("moves retained container layers without rebuilding their surface", function()
     ---@type Applet.ActionEvent<Applet.Pane>?
     local chosen

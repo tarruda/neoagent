@@ -407,6 +407,8 @@ function M.set_sandbox_enabled(enabled)
   local status, err = state.runtime:set_enabled(enabled)
   if not status then
     assert(err)
+    state.status = state.runtime:status()
+    if state.trust then state.trust:set_sandbox_status(state.status) end
     M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end

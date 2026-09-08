@@ -183,6 +183,7 @@ function M.build(model, call_opts)
     url = model._base_url .. "/messages",
     headers = headers,
     body = body,
+    timeout_ms = request_opts.timeout(model._timeout_ms, call_opts.timeout_ms),
   }
   ---@type Neoagent.RequestOptionsInput
   local context = {

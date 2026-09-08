@@ -2748,7 +2748,8 @@ describe("neoagent default agent", function()
     assert(ok, err)
   end)
 
-  it("keeps host tools when runtime sandbox activation is unavailable", function()
+  it("blocks tools after failed activation until sandboxing is explicitly disabled", function()
+    local executions = 0
     local tool = {
       name = "inspect",
       description = "Inspect",
@@ -2757,7 +2758,10 @@ describe("neoagent default agent", function()
         properties = {},
         additionalProperties = false,
       },
-      execute = function() error("unused") end,
+      execute = function()
+        executions = executions + 1
+        return { content = { { type = "text", text = "host" } } }
+      end,
     }
     setup_bundled_model(fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "ready" } }),
@@ -2781,22 +2785,49 @@ describe("neoagent default agent", function()
       local run = assert(neoagent.send("initialize sandbox controls"))
       assert(type(run) == "table")
       assert(vim.wait(1000, function() return run:is_done() end))
+      local toolset = assert(neoagent.default()):get_toolset()
+      local function execute()
+        local loop = require("neoagent.agent_loop").run({
+          model = fake_model.new({
+            { result = fake_model.assistant({ {
+              type = "toolCall", id = "inspect", name = "inspect", arguments = {},
+            } }, "toolUse") },
+            { result = fake_model.assistant({}) },
+          }),
+          messages = {}, tools = toolset.tools, execute_tool = toolset.execute_tool,
+          commit_message = function() return true end,
+        })
+        assert(vim.wait(1000, function() return loop:is_done() end))
+        local completed = assert(loop:result())
+        assert(completed.ok)
+        local tool_result = assert(completed.new_messages[2])
+        assert(tool_result.role == "toolResult")
+        return tool_result.isError
+      end
       local status = assert(neoagent.toggle_sandbox())
       assert.is_true(status.enabled)
       assert.is_false(status.active)
       assert.are.equal("inspect",
         assert(assert(neoagent.default()):get_toolset().tools[1]).name)
-      assert.matches("tools will run without a sandbox",
+      assert.matches("tool execution is blocked",
         notifications[#notifications][1])
       assert.are.equal(vim.log.levels.WARN,
         notifications[#notifications][2])
+      assert.is_true(execute())
+      assert.are.equal(0, executions)
       status = assert(neoagent.toggle_sandbox())
       assert.is_false(status.enabled)
+      assert.is_false(execute())
+      assert.are.equal(1, executions)
       dispatch.select = function() error("sandbox probe exploded") end
       local failed, failure = neoagent.toggle_sandbox()
       assert.is_nil(failed)
       assert.are.equal("sandbox", assert(failure).kind)
       assert.matches("sandbox probe exploded", assert(failure).message)
+      assert.is_true(neoagent.sandbox_info().enabled)
+      assert.is_false(neoagent.sandbox_info().active)
+      assert.is_true(execute())
+      assert.are.equal(1, executions)
     end)
     vim.notify = original_notify
     dispatch.select = original_select

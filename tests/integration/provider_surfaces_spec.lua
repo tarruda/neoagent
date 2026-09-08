@@ -77,13 +77,29 @@ describe("provider API surface replay", function()
     assert.are.same({ { currency = "USD", value = 2 } }, result.costs)
   end)
 
-  it("retrieves public OpenCode Go models and authenticated usage", function()
+  it("retrieves an adapted DeepSeek balance through real key authentication", function()
+    local scenario = open({ {
+      path = "tests/recordings/providers/management-02.yaml", headers_subset = true,
+    } })
+    local client = require("neoagent.providers.deepseek.client").new({
+      base_url = scenario.url .. "/deepseek", transport = scenario,
+    })
+    local result = wait(client:balance(key_context("integration-key")))
+    assert.are.same({
+      is_available = true,
+      currencies = { {
+        currency = "USD", total = "12.75", granted = "2.25", topped_up = "10.50",
+      } },
+    }, result.balance)
+  end)
+
+  it("retrieves an adapted public OpenCode Go catalog and authenticated usage", function()
     local scenario = open({
       { path = "tests/recordings/opencode-go/management-01.yaml", headers_subset = true },
       { path = "tests/recordings/opencode-go/management-02.yaml", headers_subset = true },
     })
     local client = require("neoagent.providers.opencode_go.client").new({ base_url = scenario.url .. "/v1", transport = scenario })
-    assert.are.same({ "glm-5.3", "minimax-m3" }, wait(client:models()).models)
+    assert.are.same({ "synth-glm", "synth-minimax" }, wait(client:models()).models)
     assert.is_nil(rawget(assert(assert(scenario.requests[1]).headers), "Authorization"))
     local result = wait(client:usage(key_context("go-key")))
     assert.are.equal(0.55, assert(assert(result.usage).rolling).remaining)

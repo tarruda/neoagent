@@ -556,8 +556,10 @@ function M.retained_markdown(key, view, opts, retained)
   local document = assert(view.markdown_document,
     "retained Markdown content requires a document")
   local first = math.max(1, view.markdown_first or 1)
-  local last = math.min(document:finish(),
-    view.markdown_last or document:finish())
+  local last = document:finish()
+  if view.markdown_last and view.markdown_last < last then
+    last = view.markdown_last
+  end
   local attachments = opts.attachments
   if type(attachments) == "table" and #attachments > 0 then
     local slice = document:slice(first, last)

@@ -424,15 +424,8 @@ function Model:_request(call_opts)
     url = self._base_url .. "/chat/completions",
     headers = headers,
     body = body,
+    timeout_ms = request_opts.timeout(self._timeout_ms, call_opts.timeout_ms),
   }
-  ---@type number|false|nil
-  local timeout = self._timeout_ms
-  if call_opts.timeout_ms ~= nil then timeout = call_opts.timeout_ms end
-  if timeout == false then
-    request.timeout_ms = false
-  elseif type(timeout) == "number" and timeout > 0 then
-    request.timeout_ms = timeout
-  end
   local ctx = {
     model = self,
     messages = util.copy(call_opts.messages),
@@ -669,18 +662,14 @@ function M.new(opts)
   if opts.request_opts ~= nil then
     layers[#layers + 1] = opts.request_opts
   end
-  if opts.timeout_ms ~= nil then
-    assert(type(opts.timeout_ms) == "number" and opts.timeout_ms > 0
-      and opts.timeout_ms % 1 == 0,
-      "timeout_ms must be a positive integer")
-  end
+  local timeout_ms = request_opts.timeout(opts.timeout_ms)
   local model = model_contract.assert(setmetatable({
     api = "openai-completions",
     provider = opts.provider,
     id = opts.model,
     input = util.copy(opts.input or { "text", "image" }),
     context_window = opts.context_window,
-    timeout_ms = opts.timeout_ms,
+    timeout_ms = timeout_ms,
     _base_url = opts.base_url:gsub("/+$", ""),
     _api_key = opts.api_key,
     _max_output_tokens = opts.max_output_tokens,
@@ -688,7 +677,7 @@ function M.new(opts)
     thinking = util.copy(opts.thinking),
     _request_opts = layers,
     _request_context = request_context.copy(opts.request_context),
-    _timeout_ms = opts.timeout_ms,
+    _timeout_ms = timeout_ms,
     _transport = http.new(opts.transport),
   }, Model), "OpenAI Chat Completions constructor")
   -- Validation normalizes public capabilities while retaining the adapter fields.

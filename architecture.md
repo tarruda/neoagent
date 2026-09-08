@@ -143,6 +143,8 @@ The Agent adds configured AGENTS.md and skill resources to its prompt.
 Workspace trust guards project resource loading and tool-capable execution in
 Neo. Sandboxing decorates the executor with restricted capabilities;
 escalation supplies host capabilities for one approved call.
+Requested sandboxing blocks tool execution when activation fails; host
+execution requires explicitly disabling sandboxing.
 
 ## Sessions and persistence
 
@@ -158,8 +160,8 @@ No file is created for an empty Session.
 
 Persistence uses private files, verified atomic publication, and cross-process
 locks. Uncertain write outcomes make the affected Store reject later
-mutations. Opening a Session can recover an incomplete final record before
-validating the tree.
+mutations. Opening a Session validates its complete document prefix before
+recovering an incomplete final record under the file lock.
 
 Accepted user messages record model and thinking choices. Resuming or
 branching restores choices from the selected path. Workspace settings store
@@ -203,8 +205,20 @@ separate retention scopes.
 Publication precedes pruning. A failed finalization preserves the previous
 completed recording and current staging evidence.
 
-Sanitization masks protocol credentials and Authentication-classified
-sensitive response bodies. Model and ordinary provider bodies retain their
-content. Recordings use private storage; failures emit content-free
-diagnostics. Storage, formats, and sharing precautions are documented in
+The recorder owns bounded response buffers and private spool files through
+finalization. Ordinary bodies and converted output can spill to disk and are
+serialized incrementally. Authentication-classified sensitive bodies remain
+in memory until masking; exceeding the buffer limit fails only the recording.
+Observer failure ends capture without stopping the underlying request. Cleanup
+retains handles whose native close has not started, independently of exchange
+completion. RegularFile relinquishes descriptor ownership before native close,
+including when that call reports an error; cleanup cannot retry a potentially
+recycled descriptor. Close errors still prevent recording publication.
+
+Each exchange's sanitizer owns protocol credentials and Authentication's
+response sensitivity classification. It prepares masked protocol fields and
+sensitive bodies for the recorder, without owning transport or files. Model
+and ordinary provider bodies retain their content. Recordings use private
+storage; failures emit content-free diagnostics. Storage, formats, and sharing
+precautions are documented in
 `:help neoagent-recording`.
