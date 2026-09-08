@@ -4,12 +4,20 @@ local model_catalog = require("neoagent.model_catalog")
 local util = require("neoagent.util")
 
 describe("neoagent ModelCatalog", function()
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>
+  ---@return Neoagent.RunResult<T>
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
+    return (assert(run:result()))
   end
 
+  ---@param value? Neoagent.JsonValue
+  ---@return Neoagent.TestCatalogStorage
   local function store(value)
+    ---@class Neoagent.TestCatalogStorage: Neoagent.CatalogStorage
+    ---@field value? Neoagent.JsonValue|Neoagent.CatalogCacheValue
+    ---@field writes Neoagent.CatalogCacheValue[]
     local state = { value = util.copy(value), writes = {} }
     function state:read() return util.copy(self.value) end
     function state:write(_, next_value)
@@ -20,11 +28,13 @@ describe("neoagent ModelCatalog", function()
     return state
   end
 
+  ---@param value? Neoagent.CatalogDefinition
+  ---@return Neoagent.CatalogDefinition
   local function discovery(value)
-    return util.deep_merge({
-      source_id = "test-models",
-      source_revision = 1,
-    }, value or {})
+    ---@type Neoagent.CatalogDefinition
+    local defaults = { source_id = "test-models", source_revision = 1 }
+    for key, item in pairs(value or {}) do rawset(defaults, key, util.copy(item)) end
+    return defaults
   end
 
   local TEST_FINGERPRINT = assert(model_catalog.source_fingerprint({
@@ -33,6 +43,8 @@ describe("neoagent ModelCatalog", function()
     definition = discovery(),
   }))
 
+  ---@param value Neoagent.JsonObject
+  ---@return Neoagent.JsonObject
   local function cache(value)
     local result = util.copy(value)
     result.version = 2
@@ -40,10 +52,21 @@ describe("neoagent ModelCatalog", function()
     return result
   end
 
+  ---@return Neoagent.TestCatalogTimer[], fun(): uv.uv_timer_t
   local function timers()
+    ---@type Neoagent.TestCatalogTimer[]
     local values = {}
     local function new_timer()
+      ---@class Neoagent.TestCatalogTimer
+      ---@field stopped boolean
+      ---@field closed boolean
+      ---@field timeout? number
+      ---@field repeat_ms? number
+      ---@field callback? fun()
       local timer = { stopped = false, closed = false }
+      ---@param timeout number
+      ---@param repeat_ms number
+      ---@param callback fun()
       function timer:start(timeout, repeat_ms, callback)
         self.timeout = timeout
         self.repeat_ms = repeat_ms
@@ -53,9 +76,17 @@ describe("neoagent ModelCatalog", function()
       function timer:close() self.closed = true end
       function timer:is_closing() return self.closed end
       values[#values + 1] = timer
-      return timer
+      return timer --[[@as uv.uv_timer_t]]
     end
     return values, new_timer
+  end
+
+  ---@param overrides {cache_identity?: (fun(): string?), ambient_api_key?: (fun(): string?)}
+  ---@return Neoagent.ProviderCredentials
+  local function credentials(overrides)
+    local value = require("neoagent.provider_credentials").new({ provider_id = "test", provider = {} })
+    for key, callback in pairs(overrides) do rawset(value, key, callback) end
+    return value
   end
 
   it("fingerprints the complete discovery source without credential data", function()
@@ -105,10 +136,10 @@ describe("neoagent ModelCatalog", function()
     }) do
       assert.are_not.equal(initial, fingerprint(override))
     end
-    assert.is_nil(initial:find("safe-account", 1, true))
-    assert.is_nil(fingerprint({ authentication = {
+    assert.is_nil((initial:find("safe-account", 1, true)))
+    assert.is_nil((fingerprint({ authentication = {
       cache_identity = function() return nil end,
-    } }))
+    } })))
   end)
 
   it("persists and restores account catalogs for stored and ambient keys", function()
@@ -116,6 +147,7 @@ describe("neoagent ModelCatalog", function()
     local api_key = require("neoagent.auth.api_key")
     local ProviderCredentials = require("neoagent.provider_credentials")
     for _, source in ipairs({ "stored", "ambient" }) do
+      ---@type Neoagent.JsonValue?
       local credential
       if source == "stored" then
         credential = { type = "api_key", key = "same-secret" }
@@ -138,7 +170,7 @@ describe("neoagent ModelCatalog", function()
         provider_id = "account-" .. source,
         provider = provider,
         authentication = manager,
-        method = { name = "Example API key" },
+        method = api_key.new({ name = "Example API key" }),
       })
       local state = store()
       local discoveries = 0
@@ -184,7 +216,7 @@ describe("neoagent ModelCatalog", function()
       model_catalog.new({
         provider_id = "example",
         provider = { service_opts = { tenant = "one" } },
-        definition = discovery({ discover = function() end }),
+        definition = discovery({ discover = function() error("unexpected discovery") end }),
       })
     end, "ModelCatalog discovery with service_opts requires source_options")
 
@@ -208,8 +240,8 @@ describe("neoagent ModelCatalog", function()
         definition = discovery({ source_options = source_options }),
       })
       assert.is_nil(fingerprint)
-      assert.are.equal("provider", err.kind)
-      assert.not_matches("private%-source%-value", err.message)
+      assert.are.equal("provider", assert(err).kind)
+      assert.is_not_matches("private%-source%-value", assert(err).message)
     end
   end)
 
@@ -249,9 +281,9 @@ describe("neoagent ModelCatalog", function()
     }) do
       local value, err = fingerprint(case.authentication)
       assert.is_nil(value)
-      assert.are.equal("auth", err.kind)
-      assert.matches(case.pattern, err.message)
-      assert.not_matches("private identity failure", err.message)
+      assert.are.equal("auth", assert(err).kind)
+      assert.matches(case.pattern, assert(err).message)
+      assert.is_not_matches("private identity failure", assert(err).message)
     end
   end)
 
@@ -272,7 +304,7 @@ describe("neoagent ModelCatalog", function()
         cache_identity = function() return nil end,
         resolve = function()
           return async.run(function()
-            return { ok = true, configured = true, request_opts = {} }
+            return { ok = true, configured = true, method = "test", credential_type = "oauth", request_opts = {} }
           end)
         end,
       },
@@ -280,8 +312,8 @@ describe("neoagent ModelCatalog", function()
     })
 
     local result = wait(catalog:refresh())
-    assert.is_true(result.ok)
-    assert.are.equal("auth", result.persistence_error.kind)
+    assert(result.ok)
+    assert.are.equal("auth", assert(result.persistence_error).kind)
     assert.are.same({
       configured = true,
       enabled = false,
@@ -326,6 +358,7 @@ describe("neoagent ModelCatalog", function()
     })
     assert.are.equal("cached", matching:snapshot().models.cached.id)
 
+    ---@type string[]
     local reports = {}
     local mismatched = model_catalog.new({
       provider_id = "shared",
@@ -339,12 +372,13 @@ describe("neoagent ModelCatalog", function()
     })
     assert.is_nil(mismatched:snapshot().models.cached)
     assert.are.equal("packaged", mismatched:snapshot().models.packaged.id)
-    assert.matches("source does not match", reports[1])
+    assert.matches("source does not match", (assert(reports[1])))
     matching:destroy()
     mismatched:destroy()
   end)
 
   it("invalidates account caches at authentication revisions", function()
+    ---@type fun(event: Neoagent.AuthRevision)?
     local listener
     local authentication = {
       identity = "account-one",
@@ -355,7 +389,7 @@ describe("neoagent ModelCatalog", function()
       end,
       resolve = function()
         return async.run(function()
-          return { ok = true, configured = true, request_opts = {} }
+          return { ok = true, configured = true, method = "test", credential_type = "oauth", request_opts = {} }
         end)
       end,
     }
@@ -395,13 +429,13 @@ describe("neoagent ModelCatalog", function()
     assert.are.equal("cached", catalog:snapshot().models.cached.id)
 
     authentication.identity = "account-two"
-    listener({ method = "plan", kind = "login", revision = 1 })
+    assert(listener)({ method = "plan", kind = "login", revision = 1 })
     assert.is_nil(catalog:snapshot().models.cached)
     assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
     assert.is_nil(catalog:snapshot().validated_at)
 
     authentication.identity = nil
-    listener({ method = "plan", kind = "logout", revision = 2 })
+    assert(listener)({ method = "plan", kind = "logout", revision = 2 })
     assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
     assert.is_nil(catalog:snapshot().validated_at)
     assert.is_true(catalog:destroy())
@@ -410,15 +444,16 @@ describe("neoagent ModelCatalog", function()
 
   it("discards discovery when account identity changes in flight", function()
     local identity = "account-one"
+    ---@type Neoagent.AwaitCallbacks<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>>?
     local pending
-    local credentials = {
+    local source = credentials({
       cache_identity = function() return identity end,
       ambient_api_key = function() end,
-    }
+    })
     local catalog = model_catalog.new({
       provider_id = "example",
       provider = { api = "fake", auth = "plan" },
-      credentials = credentials,
+      credentials = source,
       store = store(),
       definition = discovery({
         account_scoped = true,
@@ -433,11 +468,11 @@ describe("neoagent ModelCatalog", function()
     local refresh = catalog:refresh()
     assert(vim.wait(1000, function() return pending ~= nil end))
     identity = "account-two"
-    pending.resolve({ ok = true, models = { { id = "wrong-account" } } })
+    assert(pending).resolve({ ok = true, models = { { id = "wrong-account" } } })
     local result = wait(refresh)
 
     assert.is_false(result.ok)
-    assert.matches("source changed", result.error.message)
+    assert.matches("source changed", assert(result.error).message)
     assert.is_nil(catalog:snapshot().models["wrong-account"])
     assert.are.equal("packaged", catalog:snapshot().models.packaged.id)
     catalog:destroy()
@@ -456,12 +491,8 @@ describe("neoagent ModelCatalog", function()
       store = state,
       now = function() return 1100 end,
       new_timer = function()
-        return {
-          start = function() end,
-          stop = function() end,
-          close = function() end,
-          is_closing = function() return false end,
-        }
+        local _, create = timers()
+        return create()
       end,
       definition = discovery({
         ttl_ms = 1000,
@@ -487,6 +518,7 @@ describe("neoagent ModelCatalog", function()
   end)
 
   it("rejects empty discovery caches during construction", function()
+    ---@type string[]
     local reports = {}
     local state = store(cache({
       validated_at = 1000,
@@ -515,7 +547,7 @@ describe("neoagent ModelCatalog", function()
     assert.are.equal("packaged", snapshot.models.packaged.id)
     assert.are.equal("packaged", snapshot.source)
     assert.is_true(snapshot.stale)
-    assert.matches("empty model catalog cache", reports[1])
+    assert.matches("empty model catalog cache", (assert(reports[1])))
     assert.are.same({}, state.writes)
   end)
 
@@ -530,8 +562,9 @@ describe("neoagent ModelCatalog", function()
         },
         transform_model = function(model)
           model.input = { "text", "image" }
-          model.nested = model.nested or {}
-          model.nested.transformed = true
+          local nested = rawget(model, "nested") or {}
+          nested.transformed = true
+          rawset(model, "nested", nested)
           return model
         end,
       },
@@ -544,7 +577,7 @@ describe("neoagent ModelCatalog", function()
     local models = catalog:snapshot().models
     assert.are.same({ "text", "image" }, models["family-one"].input)
     assert.are.same({ source = true, transformed = true, final = true },
-      models["family-one"].nested)
+      rawget(assert(models["family-one"]), "nested"))
     assert.are.equal(32000, models["family-one"].context_window)
     assert.are.same({ "text" }, models.added.input)
     assert.is_nil(models.removed)
@@ -660,9 +693,9 @@ describe("neoagent ModelCatalog", function()
       }),
     })
     local result = wait(catalog:refresh())
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("new", catalog:snapshot().models.new.id)
-    assert.are.equal("state_store", result.persistence_error.kind)
+    assert.are.equal("state_store", assert(result.persistence_error).kind)
     assert.are.equal("idle", catalog:snapshot().refresh.state)
     assert.is_nil(catalog:snapshot().refresh.error)
   end)
@@ -684,9 +717,9 @@ describe("neoagent ModelCatalog", function()
     })
 
     local result = wait(catalog:refresh())
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("published", catalog:snapshot().models.published.id)
-    assert.matches("write exploded", result.persistence_error.message)
+    assert.matches("write exploded", assert(result.persistence_error).message)
   end)
 
   it("retains the published snapshot across source and transform failures", function()
@@ -714,7 +747,7 @@ describe("neoagent ModelCatalog", function()
     mode = "transform"
     result = wait(catalog:refresh())
     assert.is_false(result.ok)
-    assert.matches("transform failed", result.error.detail)
+    assert.matches("transform failed", tostring(assert(result.error).detail))
     assert.are.equal("stable", catalog:snapshot().models.stable.id)
   end)
 
@@ -749,7 +782,7 @@ describe("neoagent ModelCatalog", function()
       local result = wait(catalog:refresh())
 
       assert.is_false(result.ok)
-      assert.matches("empty effective inventory", result.error.message)
+      assert.matches("empty effective inventory", assert(result.error).message)
       assert.are.equal("stable", catalog:snapshot().models.stable.id)
       assert.are.equal("packaged", catalog:snapshot().source)
       assert.are.same({ { id = "stable" } }, catalog:discoveries())
@@ -787,6 +820,7 @@ describe("neoagent ModelCatalog", function()
         end,
       },
     })
+    ---@type Neoagent.CatalogRefreshResult?
     local first_done
     local first = catalog:refresh({
       on_done = function(result) first_done = result end,
@@ -794,7 +828,7 @@ describe("neoagent ModelCatalog", function()
     local second = catalog:refresh()
     assert.is_true(first:is_cancelled())
     assert(vim.wait(1000, function() return first_done ~= nil end))
-    assert.are.equal("cancelled", first_done.error.kind)
+    assert.are.equal("cancelled", assert(assert(first_done).error).kind)
     pending[1].resolve({ ok = true, models = { { id = "old" } } })
     pending[2].resolve({ ok = true, models = { { id = "new" } } })
     assert.is_true(wait(second).ok)
@@ -835,20 +869,23 @@ describe("neoagent ModelCatalog", function()
     })
     assert.is_true(wait(catalog:refresh()).ok)
     assert.are.same({ etag = "first" }, seen)
-    assert.are.equal(5000, state.value.validated_at)
-    assert.are.same({ etag = "second" }, state.value.validator)
-    assert.are.equal("cached", state.value.models[1].id)
-    assert.is_nil(state.value.ttl_ms)
-    assert.is_nil(state.value.cache_enabled)
+    local persisted = assert(state.writes[#state.writes])
+    assert.are.equal(5000, persisted.validated_at)
+    assert.are.same({ etag = "second" }, persisted.validator)
+    assert.are.equal("cached", assert(persisted.models[1]).id)
+    assert.is_nil(rawget(persisted, "ttl_ms"))
+    assert.is_nil(rawget(persisted, "cache_enabled"))
 
     changed = true
     now = 6000
     assert.is_true(wait(catalog:refresh()).ok)
-    assert.is_nil(state.value.validator)
-    assert.are.equal("changed", state.value.models[1].id)
+    persisted = assert(state.writes[#state.writes])
+    assert.is_nil(persisted.validator)
+    assert.are.equal("changed", assert(persisted.models[1]).id)
   end)
 
   it("accepts only its single cache schema", function()
+    ---@type string[]
     local reports = {}
     local state = store({
       version = 99,
@@ -865,7 +902,7 @@ describe("neoagent ModelCatalog", function()
     local snapshot = catalog:snapshot()
     assert.is_nil(snapshot.models.foreign)
     assert.are.equal("packaged", snapshot.models.packaged.id)
-    assert.matches("invalid model catalog cache", reports[1])
+    assert.matches("invalid model catalog cache", (assert(reports[1])))
 
     local policy_state = store({
       version = 1,
@@ -929,6 +966,7 @@ describe("neoagent ModelCatalog", function()
   end)
 
   it("bounds subscriber diagnostics without changing catalog status", function()
+    ---@type string[]
     local reports = {}
     local catalog = model_catalog.new({
       provider_id = "example",
@@ -942,14 +980,15 @@ describe("neoagent ModelCatalog", function()
     end)
 
     assert.are.equal(1, #reports)
-    assert.is_true(vim.fn.strchars(reports[1]) < 1200)
-    assert.matches("model catalog subscriber failed for example", reports[1])
+    assert.is_true(vim.fn.strchars((assert(reports[1]))) < 1200)
+    assert.matches("model catalog subscriber failed for example", (assert(reports[1])))
     assert.are.equal("idle", catalog:snapshot().refresh.state)
     assert.is_nil(catalog:snapshot().refresh.error)
     catalog:destroy()
   end)
 
   it("restores stale data before starting an automatic refresh", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>>?
     local pending
     local state = store(cache({
       validated_at = 1000,
@@ -975,7 +1014,7 @@ describe("neoagent ModelCatalog", function()
     assert.is_true(catalog:start())
     assert.is_table(pending)
     assert.are.equal("cached", catalog:snapshot().models.cached.id)
-    pending.resolve({ ok = true, models = { { id = "remote" } } })
+    assert(pending).resolve({ ok = true, models = { { id = "remote" } } })
     assert(vim.wait(1000, function()
       return catalog:snapshot().models.remote ~= nil
     end))
@@ -1007,20 +1046,21 @@ describe("neoagent ModelCatalog", function()
       }),
     })
     assert.is_true(catalog:start())
-    assert.are.equal(500, scheduled[1].timeout)
+    assert.are.equal(500, assert(scheduled[1]).timeout)
     assert.are.equal(0, #force_values)
     now = 2000
-    scheduled[1].callback()
+    assert(assert(scheduled[1]).callback)()
     assert(vim.wait(1000, function() return #force_values == 1 end))
     assert.is_false(force_values[1])
     assert.are.equal("remote", catalog:snapshot().models.remote.id)
-    assert.are.equal(1000, scheduled[2].timeout)
+    assert.are.equal(1000, assert(scheduled[2]).timeout)
     assert.is_true(wait(catalog:refresh({ force = true })).ok)
     assert.is_true(force_values[2])
     catalog:destroy()
   end)
 
   it("schedules validation through Neovim timer handles", function()
+    ---@type string[]
     local reports = {}
     local catalog = model_catalog.new({
       provider_id = "example",
@@ -1049,6 +1089,7 @@ describe("neoagent ModelCatalog", function()
   it("retries transient failures exponentially and suspends auth failures", function()
     local kind = "transport"
     local calls = 0
+    ---@type string[]
     local reports = {}
     local scheduled, new_timer = timers()
     local catalog = model_catalog.new({
@@ -1071,19 +1112,19 @@ describe("neoagent ModelCatalog", function()
     })
     assert.is_true(catalog:start())
     assert(vim.wait(1000, function() return #scheduled == 1 end))
-    assert.are.equal(30000, scheduled[1].timeout)
-    scheduled[1].callback()
+    assert.are.equal(30000, assert(scheduled[1]).timeout)
+    assert(assert(scheduled[1]).callback)()
     assert(vim.wait(1000, function() return #scheduled == 2 end))
-    assert.are.equal(60000, scheduled[2].timeout)
+    assert.are.equal(60000, assert(scheduled[2]).timeout)
     kind = "auth"
-    scheduled[2].callback()
+    assert(assert(scheduled[2]).callback)()
     assert(vim.wait(1000, function() return calls == 3 end))
     assert.are.equal(2, #scheduled)
     assert.are.equal("stable", catalog:snapshot().models.stable.id)
     assert.are.equal("failed", catalog:snapshot().refresh.state)
-    assert.are.equal("auth", catalog:snapshot().refresh.error.kind)
+    assert.are.equal("auth", assert(catalog:snapshot().refresh.error).kind)
     assert.is_true(vim.fn.strchars(
-      catalog:snapshot().refresh.error.message) <= 1025)
+      assert(catalog:snapshot().refresh.error).message) <= 1025)
     assert.are.equal(2, #reports)
     catalog:destroy()
   end)
@@ -1110,6 +1151,7 @@ describe("neoagent ModelCatalog", function()
   end)
 
   it("rejects empty discovery inventories and cancels owned work", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>>?
     local pending
     local scheduled, new_timer = timers()
     local catalog = model_catalog.new({
@@ -1135,8 +1177,8 @@ describe("neoagent ModelCatalog", function()
     local active = catalog._active
     assert.is_table(active)
     assert.is_true(catalog:destroy())
-    assert.is_true(active:is_cancelled())
-    pending.resolve({ ok = true, models = { { id = "late" } } })
+    assert.is_true(assert(active):is_cancelled())
+    assert(pending).resolve({ ok = true, models = { { id = "late" } } })
     assert.is_nil(catalog:snapshot().models.late)
 
     local empty = model_catalog.new({
@@ -1157,7 +1199,7 @@ describe("neoagent ModelCatalog", function()
     end))
     assert.are.equal("seed", empty:snapshot().models.seed.id)
     assert.matches("empty effective inventory",
-      empty:snapshot().refresh.error.message)
+      assert(empty:snapshot().refresh.error).message)
     assert.is_true(empty:destroy())
     assert.is_true(scheduled[#scheduled].closed)
     assert.is_false(empty:destroy())
@@ -1169,7 +1211,7 @@ describe("neoagent ModelCatalog", function()
         provider_id = "example",
         definition = {
           seed = { { id = "bad" } },
-          transform_model = function() return "not a model" end,
+          transform_model = function() return "not a model" --[[@as Neoagent.ModelConfigInput]] end,
         },
       })
     end)
@@ -1233,7 +1275,7 @@ describe("neoagent ModelCatalog", function()
       })
       local result = wait(catalog:refresh())
       assert.is_false(result.ok)
-      assert.matches(case.message, result.error.message)
+      assert.matches(case.message, assert(result.error).message)
       catalog:destroy()
     end
   end)
@@ -1256,7 +1298,7 @@ describe("neoagent ModelCatalog", function()
           seed = { { id = "stable" } },
           discover = function()
             return async.run(function()
-              return { ok = true, models = inventory }
+              return { ok = true, models = inventory --[[@as Neoagent.DiscoveredModel[] ]] }
             end)
           end,
         },
@@ -1297,9 +1339,9 @@ describe("neoagent ModelCatalog", function()
       provider = {
         api_key = function() error("provider key fallback must not run") end,
       },
-      credentials = {
+      credentials = credentials({
         ambient_api_key = function() return "credential-key" end,
-      },
+      }),
       definition = {
         discover = function(ctx)
           return async.run(function()
@@ -1355,11 +1397,12 @@ describe("neoagent ModelCatalog", function()
     })
 
     assert.is_true(wait(catalog:refresh()).ok)
-    assert.are.same({ etag = "cached" }, state.value.validator)
+    assert.are.same({ etag = "cached" }, assert(state.writes[#state.writes]).validator)
     catalog:destroy()
   end)
 
   it("contains timer allocation and startup failures", function()
+    ---@type string[]
     local reports = {}
     local function configured(new_timer)
       return model_catalog.new({
@@ -1408,9 +1451,10 @@ describe("neoagent ModelCatalog", function()
   end)
 
   it("reports listener and unclassified persistence failures", function()
+    ---@type string[]
     local reports = {}
     local state = store()
-    function state:write() return false end
+    function state:write() return false --[[@as true?]] end
     local catalog = model_catalog.new({
       provider_id = "example",
       store = state,
@@ -1427,12 +1471,13 @@ describe("neoagent ModelCatalog", function()
       { id = "published" },
     })
     assert.is_true(published)
-    assert.are.equal("state store write failed", persistence_error.message)
-    assert.matches("subscriber failed", reports[1])
+    assert.are.equal("state store write failed", assert(persistence_error).message)
+    assert.matches("subscriber failed", (assert(reports[1])))
     catalog:destroy()
   end)
 
   it("reports cache read failures and falls back from unusable caches", function()
+    ---@type string[]
     local reports = {}
     local thrown = store()
     function thrown:read() error("read exploded") end
@@ -1487,18 +1532,19 @@ describe("neoagent ModelCatalog", function()
       models = { configured = {} },
     })
     local unchanged = wait(static:refresh())
-    assert.is_true(unchanged.ok)
+    assert(unchanged.ok)
     assert.is_false(unchanged.changed)
     assert.is_true(static:destroy())
     local destroyed = wait(static:refresh())
     assert.is_false(destroyed.ok)
-    assert.matches("destroyed", destroyed.error.message)
+    assert.matches("destroyed", assert(destroyed.error).message)
     local published, err = static:publish_discoveries({ { id = "late" } })
     assert.is_nil(published)
-    assert.matches("destroyed", err.message)
+    assert.matches("destroyed", assert(err).message)
   end)
 
   it("contains unavailable cache identities and bounded cache diagnostics", function()
+    ---@type string[]
     local reports = {}
     local state = store(cache({
       validated_at = 1000,
@@ -1510,7 +1556,7 @@ describe("neoagent ModelCatalog", function()
       authentication = {
         cache_identity = function() return nil end,
         resolve = function()
-          return async.run(function() return { ok = true } end)
+          return async.run(function() return { ok = true, configured = false } end)
         end,
       },
       store = state,
@@ -1521,7 +1567,7 @@ describe("neoagent ModelCatalog", function()
       }),
     })
     assert.are.equal("seed", catalog:snapshot().models.seed.id)
-    assert.matches("source identity is unavailable", reports[1])
+    assert.matches("source identity is unavailable", (assert(reports[1])))
     catalog:destroy()
 
     reports = {}
@@ -1534,7 +1580,7 @@ describe("neoagent ModelCatalog", function()
       store = state,
       report = function(message) reports[#reports + 1] = message end,
     })
-    assert.is_true(vim.fn.strchars(reports[1]) < 1200)
+    assert.is_true(vim.fn.strchars((assert(reports[1]))) < 1200)
     catalog:destroy()
 
     reports = {}
@@ -1542,7 +1588,8 @@ describe("neoagent ModelCatalog", function()
       validated_at = 1000,
       models = { { id = "cached" } },
     }))
-    state.value.source_fingerprint = "invalid"
+    assert(type(state.value) == "table")
+    rawset(state.value, "source_fingerprint", "invalid")
     catalog = model_catalog.new({
       provider_id = "example",
       store = state,
@@ -1550,11 +1597,12 @@ describe("neoagent ModelCatalog", function()
       definition = discovery({ seed = { { id = "seed" } } }),
     })
     assert.are.equal("seed", catalog:snapshot().models.seed.id)
-    assert.matches("invalid model catalog cache", reports[1])
+    assert.matches("invalid model catalog cache", (assert(reports[1])))
     catalog:destroy()
   end)
 
   it("refreshes changed authentication sources and contains reset failures", function()
+    ---@type fun(event: Neoagent.AuthRevision)?
     local listener
     local identity = "first"
     local discoveries = 0
@@ -1591,14 +1639,14 @@ describe("neoagent ModelCatalog", function()
     assert.is_true(catalog:start())
     assert(vim.wait(1000, function() return discoveries == 1 end))
     identity = "second"
-    listener({ kind = "refresh" })
+    assert(listener)({ kind = "refresh", method = "test", revision = 1 })
     assert(vim.wait(1000, function() return discoveries == 2 end))
 
     fail_transform = true
     identity = "third"
-    listener({ kind = "login" })
+    assert(listener)({ kind = "login", method = "test", revision = 2 })
     assert.matches("Model transform failed",
-      catalog:snapshot().refresh.error.message)
+      assert(catalog:snapshot().refresh.error).message)
     catalog:destroy()
   end)
 
@@ -1610,14 +1658,15 @@ describe("neoagent ModelCatalog", function()
       local catalog = model_catalog.new({
         provider_id = "lease",
         acquire_use = acquire_use,
-        definition = discovery({ discover = function() end }),
+        definition = discovery({ discover = function() error("unexpected discovery") end }),
       })
       local result = wait(catalog:refresh())
       assert.is_false(result.ok)
-      assert.are.equal("provider", result.error.kind)
+      assert.are.equal("provider", assert(result.error).kind)
       catalog:destroy()
     end
 
+    ---@type string[]
     local reports = {}
     local catalog = model_catalog.new({
       provider_id = "release",
@@ -1636,18 +1685,15 @@ describe("neoagent ModelCatalog", function()
     local result = wait(catalog:refresh({
       on_done = function() error("completion callback failed") end,
     }))
-    assert.is_true(result.ok)
-    assert(vim.iter(reports):any(function(message)
-      return message:match("failed to release model catalog use") ~= nil
-    end))
-    assert(vim.iter(reports):any(function(message)
-      return message:match("callback failed") ~= nil
-    end))
+    assert(result.ok)
+    assert.matches("failed to release model catalog use", table.concat(reports, "\n"))
+    assert.matches("callback failed", table.concat(reports, "\n"))
     catalog:destroy()
   end)
 
   it("resolves provider keys and cancels superseded discovery generations", function()
     local seen_key
+    ---@type Neoagent.ModelCatalog?
     local catalog
     catalog = model_catalog.new({
       provider_id = "keyed",
@@ -1656,7 +1702,7 @@ describe("neoagent ModelCatalog", function()
         discover = function(ctx)
           return async.run(function()
             seen_key = ctx.resolve_api_key()
-            catalog:publish_discoveries({ { id = "superseding" } })
+            assert(catalog):publish_discoveries({ { id = "superseding" } })
             return { ok = true, models = { { id = "late" } } }
           end)
         end,
@@ -1665,7 +1711,7 @@ describe("neoagent ModelCatalog", function()
     local result = wait(catalog:refresh())
     assert.are.equal("ambient-key", seen_key)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.are.equal("superseding", catalog:snapshot().models.superseding.id)
     assert.is_nil(catalog:snapshot().models.late)
     catalog:destroy()
@@ -1673,14 +1719,14 @@ describe("neoagent ModelCatalog", function()
 
   it("resets inventory when an account fingerprint changes before refresh", function()
     local identity = "first"
-    local credentials = {
+    local source = credentials({
       cache_identity = function() return identity end,
       ambient_api_key = function() return nil end,
-    }
+    })
     local catalog = model_catalog.new({
       provider_id = "account",
       provider = { auth = "plan" },
-      credentials = credentials,
+      credentials = source,
       definition = discovery({
         account_scoped = true,
         seed = { { id = "seed" } },
