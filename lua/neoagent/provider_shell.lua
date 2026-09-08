@@ -6,6 +6,13 @@ local provider_service = require("neoagent.provider_service")
 local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
+---@class Neoagent.ProviderListEntry
+---@field id string
+---@field name string
+---@field selected? boolean
+---@field enabled? boolean
+---@field authentication? {connected: boolean, source?: 'stored'|'environment'|'configured', error: boolean}
+
 local M = {}
 local ProviderShell = {}
 ProviderShell.__index = ProviderShell

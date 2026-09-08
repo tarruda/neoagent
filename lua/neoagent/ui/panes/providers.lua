@@ -4,9 +4,31 @@ local util = require("neoagent.util")
 local ui = Applet.Pane.nodes
 local widgets = Applet.Pane.widgets
 
+---@class Neoagent.ProvidersPaneState
+---@field providers Neoagent.ProviderListEntry[]
+---@field config Neoagent.UIConfigInput
+
+---@class Neoagent.ProvidersPaneCallbacks
+---@field select? fun(provider: string): unknown
+---@field close? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.ProvidersPaneState>>): unknown
+
+---@class Neoagent.ProvidersPaneOptions
+---@field config? Neoagent.UIConfigInput
+---@field theme? Applet.Theme
+---@field callbacks? Neoagent.ProvidersPaneCallbacks
+---@field on_error? fun(error: Applet.PaneError)
+
+---@class Neoagent.ProvidersPane
+---@field config Neoagent.UIConfigInput
+---@field theme? Applet.Theme
+---@field callbacks Neoagent.ProvidersPaneCallbacks
+---@field state Neoagent.ProvidersPaneState
+---@field pane Applet.Pane<Neoagent.ProvidersPaneState>
 local Providers = {}
 Providers.__index = Providers
 
+---@param value Neoagent.UIMapping?
+---@return string[]
 local function values(value)
   if type(value) == "string" then return { value } end
   if type(value) == "table" then return value end
@@ -17,6 +39,8 @@ local credential_source_icons = {
   environment = "📤",
 }
 
+---@param authentication? {connected: boolean, source?: string, error: boolean}
+---@return string?
 local function authentication_icons(authentication)
   if type(authentication) ~= "table" then return nil end
   local icons = { authentication.connected and "✅" or "⭕" }
@@ -26,7 +50,10 @@ local function authentication_icons(authentication)
   return table.concat(icons)
 end
 
+---@param state Neoagent.ProvidersPaneState
+---@return Applet.Tree
 local function render(state)
+  ---@type Applet.MenuItem[]
   local items = {}
   for _, provider in ipairs(state.providers or {}) do
     local marker = provider.selected and "● " or "  "
@@ -42,8 +69,7 @@ local function render(state)
       label = label,
       disabled = provider.enabled == false,
       focus_style = "menu_selected",
-      action = provider.enabled == false and nil
-        or ui.action("providers.select", { provider = provider.id }),
+      action = ui.action("providers.select", { provider = provider.id }),
     }
   end
   local mappings = state.config.mappings or {}
@@ -61,6 +87,7 @@ local function render(state)
     gap = 0,
     title_gap = 0,
   })
+  ---@type Applet.Binding[]
   local bindings = {}
   local claimed = {}
   for _, name in ipairs({ "provider_close", "toggle_provider_shell" }) do
@@ -97,6 +124,8 @@ local function render(state)
   }
 end
 
+---@param opts? Neoagent.ProvidersPaneOptions
+---@return Neoagent.ProvidersPane
 function Providers.new(opts)
   opts = opts or {}
   local self = setmetatable({
@@ -113,7 +142,8 @@ function Providers.new(opts)
     render = render,
     handlers = {
       ["providers.select"] = function(event)
-        return self.callbacks.select(event.payload.provider)
+        return assert(self.callbacks.select)(
+          (event.payload --[[@as {provider: string}]]).provider)
       end,
       ["providers.close"] = self.callbacks.close or function() end,
     },
@@ -123,6 +153,7 @@ function Providers.new(opts)
   return self
 end
 
+---@param providers? Neoagent.ProviderListEntry[]
 function Providers:set(providers)
   self.state = {
     providers = util.copy(providers or {}),
@@ -131,6 +162,7 @@ function Providers:set(providers)
   self.pane:set_state(self.state)
 end
 
+---@param theme Applet.Theme
 function Providers:set_theme(theme)
   self.theme = theme
   self.pane:set_theme(theme)

@@ -14,7 +14,6 @@ lua/neoagent/ui/panes/details.lua
 lua/neoagent/ui/panes/dialog.lua
 lua/neoagent/ui/panes/input.lua
 lua/neoagent/ui/panes/provider.lua
-lua/neoagent/ui/panes/providers.lua
 lua/neoagent/ui/panes/transcript.lua
 lua/neoagent/ui/presentation_surface.lua
 lua/neoagent/ui/provider_shell.lua
