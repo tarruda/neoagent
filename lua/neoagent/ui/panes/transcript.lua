@@ -1048,7 +1048,7 @@ function Transcript:apply(event)
   self:_publish(not streaming)
 end
 
----@param result Neoagent.AgentLoopResult
+---@param result Neoagent.ActivityOutcome
 function Transcript:finish(result)
   self:_finish_text_streams()
   local cancelled = not result.ok

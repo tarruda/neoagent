@@ -73,7 +73,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field backend? 'kitty'
 ---@field display? 'always'|'expanded'
 
----@class Neoagent.UIConfig
+---@class Neoagent.UIConfig: Neoagent.UIConfigInput
 ---@field style 'codex'|'pi'
 ---@field renderer? Neoagent.Renderer<unknown>
 ---@field position Neoagent.UiPosition

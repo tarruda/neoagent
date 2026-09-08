@@ -1,3 +1,13 @@
+---@class Neoagent.ActivityOutcome
+---@field ok boolean
+---@field error? Neoagent.Error
+
+---@class Neoagent.AgentCompletion: Neoagent.ActivityOutcome
+---@field status 'succeeded'|'cancelled'|'failed'
+---@field message_count integer
+---@field stop_reason? string
+---@field usage? Neoagent.Usage
+
 ---@class Neoagent.AgentContext
 ---@field name? string|false
 ---@field model? string

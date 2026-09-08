@@ -10,14 +10,112 @@ local util = require("neoagent.util")
 
 local layout = Applet.layout
 
+---@class Neoagent.ViewCallbacks
+---@field on_submit fun(text: string): unknown
+---@field on_stop fun(): unknown
+---@field on_dequeue_steering fun(): string[]
+---@field on_input_history fun(): string[]
+---@field on_select_history fun(): unknown
+---@field on_cycle_thinking fun(): unknown
+---@field on_agents fun(): unknown
+---@field on_select_model fun(): unknown
+---@field on_resume_session fun(): unknown
+---@field on_dialog_action fun(id: string, action: string, input?: string): unknown
+---@field on_dialog_dismiss fun(id: string): unknown
+---@field on_provider_shell? fun(): unknown
+---@field on_help fun(request: Neoagent.NoticeRequest): unknown
+---@field on_close fun(): unknown
+---@field on_presentation_resolve fun(id: string, value: string): unknown
+---@field on_presentation_cancel fun(id: string): unknown
+---@field resolve_tool fun(name?: string): Neoagent.RenderTool?
+
+---@alias Neoagent.ViewHostFactory Applet.HostInput|fun(state: Neoagent.ViewState, config: Neoagent.UIConfig): Applet.HostInput
+
 ---@class Neoagent.ViewOptions
 ---@field config Neoagent.UIConfig
 ---@field renderer? Neoagent.Renderer<unknown>
+---@field image_system? Applet.ImageSystem|false
+---@field host_factory? Neoagent.ViewHostFactory
+---@field host? Neoagent.ViewHostFactory
+---@field on_error? fun(error: Applet.Error|Applet.PaneError)
+---@field notify? fun(message: string, level?: integer)
+---@field open_uri? fun(uri: string): vim.SystemObj?, string?
+---@field on_submit? fun(text: string): unknown
+---@field on_stop? fun(): unknown
+---@field on_dequeue_steering? fun(): string[]
+---@field on_input_history? fun(): string[]
+---@field on_select_history? fun(): unknown
+---@field on_cycle_thinking? fun(): unknown
+---@field on_agents? fun(): unknown
+---@field on_select_model? fun(): unknown
+---@field on_resume_session? fun(): unknown
+---@field on_dialog_action? fun(id: string, action: string, input?: string): unknown
+---@field on_dialog_dismiss? fun(id: string): unknown
+---@field on_provider_shell? fun(): unknown
+---@field on_help? fun(request: Neoagent.NoticeRequest): unknown
+---@field on_close? fun(): unknown
+---@field on_presentation_resolve? fun(id: string, value: string): unknown
+---@field on_presentation_cancel? fun(id: string): unknown
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
 
----@class Neoagent.View
+---@class Neoagent.ViewState
+---@field revision integer
+---@field position Neoagent.UiPosition
+---@field focus_intent? {key: string, revision: integer}
+---@field config {border: Applet.WindowBorder, input_height: integer}
+---@field host_config Neoagent.UIConfig
+---@field transcript Neoagent.TranscriptPane
+---@field input Neoagent.InputPane
+---@field bindings {transcript: Applet.Binding[], input: Applet.Binding[]}
+---@field inline_dialog boolean
+---@field details? Neoagent.DetailsPane
+---@field dialog? {component: Neoagent.DialogPane, editable: boolean, enter: boolean}
+---@field presentation? {component: Applet.Presentation, request: Neoagent.PublicPresentation}
+
+---@class Neoagent.ViewPaneOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field owns_pane? boolean
+---@field required? boolean
+---@field mount_revision? string|number
+---@field filetype? string
+---@field sensitive? boolean
+---@field border? Applet.WindowBorder
+---@field window_options? Applet.Options
+---@field mode? 'normal'|'insert'|'preserve'
+---@field cursor? 'preserve'|'start'|'end'
+---@field bindings? Applet.Binding[]
+
+---@class Neoagent.View: Neoagent.PresentationSurfaceView
+---@field config Neoagent.UIConfig
+---@field renderer Neoagent.Renderer<unknown>
+---@field applet_theme Applet.Theme
+---@field image_system? Applet.ImageSystem
+---@field owns_image_system boolean
+---@field callbacks Neoagent.ViewCallbacks
+---@field on_error? fun(error: Applet.Error|Applet.PaneError)
+---@field host_factory? Neoagent.ViewHostFactory
+---@field context Neoagent.AgentContext
+---@field position Neoagent.UiPosition
+---@field dialog? Neoagent.ActiveDialogSnapshot
+---@field details? Neoagent.DetailsPane
+---@field details_component? Neoagent.DetailsPane
+---@field dialog_component? Neoagent.DialogPane
+---@field destroyed boolean
+---@field spinner_frames string[]
+---@field spinner_frame integer
+---@field spinner_timer? uv.uv_timer_t
+---@field frame_revision integer
+---@field focus_revision integer
+---@field transcript Neoagent.TranscriptPane
+---@field input Neoagent.InputPane
+---@field applet Applet.Applet<Neoagent.ViewState>
+---@field blocks Neoagent.TranscriptBlock[]
+---@field messages Neoagent.TranscriptMessage[]
+---@field has_opened? boolean
 local View = {}
 View.__index = View
 
+---@type Applet.Options
 local common_window_options = {
   wrap = true,
   linebreak = true,
@@ -31,23 +129,36 @@ local common_window_options = {
     .. "FloatTitle:NeoagentWindowTitle",
 }
 
+---@generic T
+---@param base T
+---@param values T?
+---@return T
 local function copy_extend(base, values)
   local result = util.copy(base or {})
   for key, value in pairs(values or {}) do result[key] = value end
   return result
 end
 
+---@param value Neoagent.UIMapping?
+---@return string?
 local function mapping_hint(value)
   if type(value) == "string" then return value end
   if type(value) == "table" then return value[1] end
 end
 
+---@param value Neoagent.UIMapping?
+---@return string[]
 local function mapping_values(value)
   if type(value) == "string" then return { value } end
   if type(value) == "table" then return value end
   return {}
 end
 
+---@param result Applet.Binding[]
+---@param modes string|string[]
+---@param lhs Neoagent.UIMapping?
+---@param action Applet.Action
+---@param desc string
 local function add_applet_binding(result, modes, lhs, action, desc)
   modes = type(modes) == "table" and modes or { modes }
   for _, mode in ipairs(modes) do
@@ -62,11 +173,16 @@ local function add_applet_binding(result, modes, lhs, action, desc)
   end
 end
 
+---@param context Neoagent.AgentContext
+---@return boolean
 local function active_state(context)
   return context.state == "running" or context.state == "stopping"
     or context.state == "compacting"
 end
 
+---@param config Neoagent.UIConfig
+---@param width integer
+---@return string
 local function input_footer(config, width)
   local key = mapping_hint((config.mappings or {}).help)
   if not key then return "" end
@@ -75,6 +191,10 @@ local function input_footer(config, width)
   return Applet.Pane.text.truncate(result, width)
 end
 
+---@param title string
+---@param bindings Applet.Binding[]
+---@param annotate_modes boolean
+---@return string
 local function mapping_help_section(title, bindings, annotate_modes)
   local rows, by_description = {}, {}
   for _, binding in ipairs(bindings or {}) do
@@ -106,13 +226,19 @@ local function mapping_help_section(title, bindings, annotate_modes)
   return table.concat(lines, "\n")
 end
 
+---@param transcript Neoagent.TranscriptPane?
+---@param key string?
+---@return Neoagent.TranscriptBlock?
 local function find_block(transcript, key)
-  return transcript and transcript:block(key) or nil
+  return transcript and key and transcript:block(key) or nil
 end
 
-local function pane_node(key, component, opts)
+---@param key string
+---@param pane Applet.Pane
+---@param opts Neoagent.ViewPaneOptions?
+---@return Applet.MountNode
+local function pane_node(key, pane, opts)
   opts = opts or {}
-  local pane = component.pane or component
   assert(pane:key() == key,
     ("Pane key %q does not match layout key %q"):format(pane:key(), key))
   return layout.mount(pane, {
@@ -142,8 +268,13 @@ local function pane_node(key, component, opts)
   })
 end
 
+---@param config Neoagent.UIConfig
+---@param position Neoagent.UiPosition
+---@return Applet.HostInput
 local function default_host(config, position)
-  local side = position == "auto" and "center" or position
+  ---@type Applet.HostSide
+  local side
+  if position == "auto" then side = "center" else side = position end
   local horizontal = side == "left" or side == "right"
   local vertical = side == "top" or side == "bottom"
   return Applet.host.floating({
@@ -158,14 +289,16 @@ local function default_host(config, position)
   })
 end
 
+---@type fun(state: Neoagent.ViewState, env: Applet.RenderEnvironment): Applet.LayoutTree
 local render_view_state
 
+---@param opts Neoagent.ViewOptions
+---@return Neoagent.View
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
-  local selected = opts.renderer or opts.config.renderer
-    or renderers.get(opts.config.style)
-  protocol.assert(selected, "Applet UI Renderer")
+  local selected = protocol.assert(opts.renderer or opts.config.renderer
+    or renderers.get(opts.config.style), "Applet UI Renderer")
   assert(selected.theme, "Applet UI Renderer requires a theme")
   local defined, define_err = protocol.define_highlights(selected)
   assert(defined, define_err and define_err.message
@@ -323,9 +456,12 @@ function View.new(opts)
   return self
 end
 
+---@param pane string
+---@return Applet.Binding[]
 function View:_applet_bindings(pane)
   local mappings = self.config.mappings or {}
   local modes = pane == "input" and { "n", "i" } or "n"
+  ---@type Applet.Binding[]
   local bindings = {}
   for _, descriptor in ipairs({
     { mappings.help, "neoagent.help", "Show mapping help" },
@@ -369,6 +505,7 @@ function View:_applet_bindings(pane)
   return bindings
 end
 
+---@return string
 function View:mapping_help()
   local function combined(component, pane)
     local result = component:mapping_bindings()
@@ -384,6 +521,7 @@ function View:mapping_help()
   return input .. "\n\n" .. transcript
 end
 
+---@return unknown
 function View:_show_mapping_help()
   return self.callbacks.on_help({
     prompt = "Neoagent mappings · <C-c>/q close",
@@ -391,21 +529,25 @@ function View:_show_mapping_help()
   })
 end
 
+---@param state Neoagent.ViewState
+---@param env Applet.RenderEnvironment
+---@return Applet.LayoutTree
 render_view_state = function(state, env)
-  local transcript = pane_node("transcript", state.transcript, {
+  local transcript = pane_node("transcript", state.transcript.pane, {
     filetype = state.inline_dialog and "neoagent-dialog" or "neoagent",
     border = state.config.border,
     required = true,
     mode = "normal",
     bindings = state.bindings.transcript,
   })
-  local input = pane_node("input", state.input, {
+  local input = pane_node("input", state.input.pane, {
     filetype = "neoagent-input",
     border = state.config.border,
     required = true,
     mode = "insert",
     bindings = state.bindings.input,
   })
+  ---@type Applet.LayoutLayerNode[]
   local layers = {}
   if state.details then
     layers[#layers + 1] = layout.layer({
@@ -418,7 +560,7 @@ render_view_state = function(state, env)
       zindex = 70,
       enter = true,
       restore_focus = true,
-      child = pane_node("details", state.details, {
+      child = pane_node("details", state.details.pane, {
         lifecycle = "transient",
         filetype = "neoagent",
         border = state.config.border,
@@ -440,7 +582,7 @@ render_view_state = function(state, env)
       modal = false,
       enter = state.dialog.enter,
       restore_focus = true,
-      child = pane_node("dialog", state.dialog.component, {
+      child = pane_node("dialog", state.dialog.component.pane, {
         lifecycle = "transient",
         filetype = editable and "neoagent-dialog-input" or "neoagent-dialog",
         border = state.config.border,
@@ -454,9 +596,16 @@ render_view_state = function(state, env)
     local presentation = state.presentation.component
     local editable = request.kind == "input"
     local secret = editable and request.secret == true
+    ---@type Applet.LayoutNode
     local child
     if editable then
-      child = pane_node("presentation", presentation, {
+      ---@type Applet.Options
+      local input_options = { wrap = request.multiline == true, cursorline = false }
+      if secret then
+        input_options.conceallevel = 2
+        input_options.concealcursor = "niv"
+      end
+      child = pane_node("presentation", presentation.pane, {
         lifecycle = "transient",
         owns_pane = true,
         mount_revision = request.id,
@@ -464,15 +613,10 @@ render_view_state = function(state, env)
         sensitive = secret,
         border = state.config.border,
         mode = "insert",
-        window_options = {
-          wrap = request.multiline == true,
-          cursorline = false,
-          conceallevel = secret and 2 or nil,
-          concealcursor = secret and "niv" or nil,
-        },
+        window_options = input_options,
       })
     elseif request.kind == "notice" then
-      child = pane_node("presentation", presentation, {
+      child = pane_node("presentation", presentation.pane, {
         lifecycle = "transient",
         owns_pane = true,
         mount_revision = request.id,
@@ -491,7 +635,7 @@ render_view_state = function(state, env)
             key = "filter",
             basis = { content = true },
             grow = 0,
-            child = pane_node("presentation-filter", presentation.filter, {
+            child = pane_node("presentation-filter", assert(presentation.filter), {
               lifecycle = "transient",
               owns_pane = true,
               mount_revision = request.id .. ":filter",
@@ -505,7 +649,7 @@ render_view_state = function(state, env)
             key = "results",
             basis = { content = true },
             grow = 0,
-            child = pane_node("presentation-results", presentation.results, {
+            child = pane_node("presentation-results", assert(presentation.results), {
               lifecycle = "transient",
               owns_pane = true,
               mount_revision = request.id .. ":results",
@@ -554,6 +698,8 @@ render_view_state = function(state, env)
   }
 end
 
+---@param focus string?
+---@return boolean
 function View:_submit_frame(focus)
   if self.destroyed then return false end
   self.frame_revision = self.frame_revision + 1
@@ -604,32 +750,45 @@ function View:_submit_frame(focus)
   return true
 end
 
+---@return true?, Applet.Error?
 function View:_flush_frame()
   local ok, err = self.applet:flush()
   if ok == nil then return nil, err end
   return true
 end
 
+---@param key string
+---@return Applet.Pane?
 function View:pane(key)
   return self.applet and self.applet:pane(key) or nil
 end
 
+---@param message string
+---@param level integer?
 function View:notify(message, level)
   return self.applet:notify(message, level)
 end
 
+---@param uri string
+---@return vim.SystemObj?, string?
 function View:open_uri(uri)
   return self.applet:open_uri(uri)
 end
 
+---@param active Neoagent.PublicPresentation
+---@return Applet.Presentation
 function View:_new_presentation_component(active)
   return presentation_surface.new_component(self, active)
 end
 
+---@return boolean
 function View:_ensure_presentation_component()
   return presentation_surface.ensure(self)
 end
 
+---@param origin integer?
+---@param opts? {preserve_scroll?: boolean}
+---@return true?, Applet.Error?
 function View:open(origin, opts)
   opts = opts or {}
   assert(not self.destroyed, "View is destroyed")
@@ -668,6 +827,7 @@ function View:close()
   if was_open then self.callbacks.on_close() end
 end
 
+---@return boolean
 function View:is_open()
   return self.applet and self.applet:is_open() or false
 end
@@ -683,9 +843,10 @@ function View:destroy()
   self.details, self.details_component, self.dialog_component = nil, nil, nil
   self.transcript:destroy()
   self.input:destroy()
-  if self.owns_image_system then self.image_system:destroy() end
+  if self.owns_image_system then assert(self.image_system):destroy() end
 end
 
+---@param context Neoagent.AgentContext?
 function View:set_context(context)
   self.context = copy_extend(self.context, context)
   if context and context.position and context.position ~= self.position then
@@ -696,6 +857,7 @@ function View:set_context(context)
   self:_sync_spinner()
 end
 
+---@param messages Neoagent.TranscriptMessage[]?
 function View:set_messages(messages)
   self.transcript:set_messages(messages)
   self.blocks = self.transcript.blocks
@@ -703,6 +865,7 @@ function View:set_messages(messages)
   self:_refresh_details()
 end
 
+---@param event Neoagent.AgentEvent
 function View:apply(event)
   self.transcript:apply(event)
   self.blocks = self.transcript.blocks
@@ -710,6 +873,7 @@ function View:apply(event)
   self:_refresh_details()
 end
 
+---@param result Neoagent.ActivityOutcome
 function View:finish(result)
   self.transcript:finish(result)
   self.blocks = self.transcript.blocks
@@ -717,6 +881,7 @@ function View:finish(result)
   self:_refresh_details()
 end
 
+---@return string
 function View:get_input()
   local pane = self:pane("input")
   if pane then
@@ -726,6 +891,8 @@ function View:get_input()
   return self.input and self.input.pending_text or ""
 end
 
+---@param value string
+---@return string
 function View:set_input(value)
   assert(type(value) == "string", "input must be a string")
   if not self.input.pane:is_connected() then
@@ -736,6 +903,8 @@ function View:set_input(value)
   return value
 end
 
+---@param current string
+---@param previous string?
 function View:_applet_focus(current, previous)
   if previous == "transcript" and current ~= "transcript"
       and self.config.scroll_on_transcript_leave and not self.details_component then
@@ -753,18 +922,21 @@ function View:_refresh_input_footer()
   if self.input.pane:is_connected() then self.input.pane:flush() end
 end
 
+---@return boolean
 function View:focus_transcript()
   local pane = self:pane("transcript")
   if pane then return pane:focus() end
   return false
 end
 
+---@return boolean
 function View:focus_input()
   local pane = self:pane("input")
   if pane then return pane:focus() end
   return false
 end
 
+---@return boolean
 function View:_focus_dialog_menu()
   local dialog = self.dialog and self.dialog.active
   if not dialog or dialog.input then return false end
@@ -778,23 +950,29 @@ function View:_focus_dialog_menu()
   return pane and pane:focus_target_intent() or false
 end
 
+---@return boolean
 function View:_scroll_transcript_to_bottom()
   local pane = self:pane("transcript")
   return pane and pane:scroll({ target = "end", align = "bottom" }) or false
 end
 
+---@param value string
+---@return unknown
 function View:_submit(value)
   local pane = self:pane("input")
   if pane and pane:completion_visible() then return pane:completion_accept() end
   return self.callbacks.on_submit(value)
 end
 
+---@param value string?
+---@return true
 function View:submission_accepted(value)
   if value == nil or self:get_input() == value then self:set_input("") end
   if self.config.scroll_on_submit then self:_scroll_transcript_to_bottom() end
   return true
 end
 
+---@return integer
 function View:_restore_steering()
   local messages = util.copy(self.callbacks.on_dequeue_steering())
   if type(messages) ~= "table" or #messages == 0 then return 0 end
@@ -805,6 +983,7 @@ function View:_restore_steering()
   return #messages
 end
 
+---@return unknown
 function View:_interrupt()
   if self:get_input() ~= "" then
     self:set_input("")
@@ -818,6 +997,9 @@ function View:_interrupt()
   return false
 end
 
+---@param direction integer
+---@param count integer?
+---@return boolean
 function View:_navigate_transcript(direction, count)
   if direction > 0 and self.dialog and self.dialog.active
       and self.dialog.active.placement == "transcript" then
@@ -837,6 +1019,8 @@ function View:_navigate_transcript(direction, count)
   return moved
 end
 
+---@param count integer?
+---@return boolean
 function View:_focus_previous_card(count)
   local pane = self:pane("transcript")
   if not pane then return false end
@@ -849,6 +1033,7 @@ function View:_focus_previous_card(count)
   }, count)
 end
 
+---@return Neoagent.TranscriptBlock?
 function View:_current_block()
   local pane = self:pane("transcript")
   local target = pane and pane:focused_target() or nil
@@ -856,6 +1041,7 @@ function View:_current_block()
   return key and find_block(self.transcript, key) or nil
 end
 
+---@return boolean
 function View:_refresh_details()
   if not self.details or not self.details.block then return false end
   local block = find_block(self.transcript, self.details.block.key)
@@ -864,6 +1050,8 @@ function View:_refresh_details()
   return true
 end
 
+---@param key string?
+---@return boolean
 function View:show_card_details(key)
   local block = find_block(self.transcript, key) or self:_current_block()
   if not block then return false end
@@ -893,6 +1081,8 @@ function View:show_card_details(key)
   return true
 end
 
+---@param direction integer
+---@return boolean
 function View:_details_move(direction)
   if not self.details or not self.details.block then return false end
   local index
@@ -913,6 +1103,7 @@ function View:_details_move(direction)
   return true
 end
 
+---@return boolean
 function View:_center_details()
   if not self.details or not self.details.block then return false end
   local pane = self:pane("transcript")
@@ -923,6 +1114,8 @@ function View:_center_details()
   return pane:scroll({ align = "center" })
 end
 
+---@param focus boolean
+---@return boolean
 function View:_close_details(focus)
   local details = self.details_component
   if not details then return false end
@@ -934,12 +1127,17 @@ function View:_close_details(focus)
   return true
 end
 
+---@param id string
+---@param action string
+---@return unknown
 function View:_choose_dialog(id, action)
   local input = self.dialog and self.dialog.active and self.dialog.active.input
     and self.dialog_component and self.dialog_component:text() or nil
   return self.callbacks.on_dialog_action(id, action, input)
 end
 
+---@param focus boolean?
+---@return boolean?, Applet.Error?
 function View:_show_dialog(focus)
   if not self.dialog then return false end
   if self.dialog.active.placement == "transcript" then
@@ -983,6 +1181,8 @@ function View:_show_dialog(focus)
   return true
 end
 
+---@param focus boolean
+---@return boolean
 function View:_close_dialog_surface(focus)
   local dialog = self.dialog_component
   if dialog then
@@ -996,6 +1196,8 @@ function View:_close_dialog_surface(focus)
   return dialog ~= nil
 end
 
+---@param snapshot Neoagent.ActiveDialogSnapshot?
+---@return boolean?, Applet.Error?
 function View:set_dialog(snapshot)
   local previous_id = self.dialog and self.dialog.active
     and self.dialog.active.id or nil
@@ -1009,14 +1211,19 @@ function View:set_dialog(snapshot)
   return self:_show_dialog(previous_id ~= self.dialog.active.id)
 end
 
+---@return boolean
 function View:_seed_presentation()
   return presentation_surface.seed(self)
 end
 
+---@param snapshot Neoagent.PresentationSnapshot?
+---@return true?, Applet.Error?
 function View:set_presentation(snapshot)
   return presentation_surface.set(self, snapshot)
 end
 
+---@param key string?
+---@param default fun(): boolean
 function View:_pane_detached(key, default)
   default()
   if key == "transcript" or key == "input" then
@@ -1039,8 +1246,9 @@ function View:_sync_spinner()
   local active = active_state(self.context) and not self.dialog
   if not active or not self:is_open() then self:_stop_spinner() return end
   if self.spinner_timer then return end
-  local timer = vim.uv.new_timer()
+  local timer = assert(vim.uv.new_timer())
   self.spinner_timer = timer
+  ---@type fun()
   local arm
   arm = function()
     if self.destroyed or self.spinner_timer ~= timer then return end
@@ -1049,7 +1257,7 @@ function View:_sync_spinner()
       local pane = self.transcript.pane
       if pane:is_settled() then
         self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
-        self.transcript:set_spinner(self.spinner_frames[self.spinner_frame])
+        self.transcript:set_spinner((assert(self.spinner_frames[self.spinner_frame])))
         vim.schedule(arm)
       else
         arm()
@@ -1066,6 +1274,8 @@ function View:_stop_spinner()
   self.spinner_timer = nil
 end
 
+---@param position Neoagent.UiPosition
+---@return true?, Applet.Error?
 function View:set_position(position)
   assert(({ auto = true, left = true, right = true, top = true,
     bottom = true, center = true })[position], "invalid position")
@@ -1075,6 +1285,7 @@ function View:set_position(position)
   return true
 end
 
+---@return true?, string?
 function View:_reposition()
   if not self:is_open() then return true end
   self:_submit_frame()
@@ -1083,6 +1294,8 @@ function View:_reposition()
   return true
 end
 
+---@param renderer unknown
+---@return Neoagent.Renderer<unknown>?, Neoagent.Error?
 function View:set_renderer(renderer)
   local selected, err = protocol.validate(renderer)
   if not selected then return nil, err end
@@ -1106,7 +1319,8 @@ function View:set_renderer(renderer)
   presentation_surface.set_theme(self, selected.theme)
   if dialog_visible then self:_show_dialog(dialog_focused) end
   if details_key and self:show_card_details(details_key) and details_raw then
-    self.details:set(self.details.block, true)
+    local details = assert(self.details)
+    details:set(details.block, true)
   end
   self:_refresh_input_footer()
   return selected

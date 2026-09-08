@@ -4,6 +4,8 @@ local M = {
   View = applet_view.View,
 }
 
+---@param opts Neoagent.ViewOptions
+---@return Neoagent.View
 function M.new(opts)
   return applet_view.new(opts)
 end
