@@ -1,6 +1,30 @@
 local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
 
+---@class Neoagent.LinuxSandboxServices: Neoagent.SandboxServices
+---@field fs Neoagent.SandboxFilesystemService
+
+---@class Neoagent.LinuxSandboxRoot
+---@field path string
+---@field stat uv.fs_stat.result
+
+---@alias Neoagent.LinuxSandboxMode 'exec'|'fs'|'probe'
+
+---@class Neoagent.LinuxSandboxRequest: Neoagent.SandboxProcessRequest
+---@field fs? Neoagent.SandboxFilesystemOperation
+
+---@class Neoagent.LinuxSandboxSpec
+---@field v 1
+---@field mode Neoagent.LinuxSandboxMode
+---@field root string
+---@field root_identity {dev: integer, ino: integer}
+---@field profile Neoagent.SandboxProfile
+---@field cwd string
+---@field env table<string, string>
+---@field fs? Neoagent.SandboxFilesystemOperation
+---@field procfs 'fresh'|'host'
+---@field protected_create Neoagent.SandboxFilesystemEntry[]
+
 local M = { name = "linux" }
 local FS_TIMEOUT_MS = 30000
 local STAGING_DIRECTORIES = vim.uv.os_uname().sysname == "Linux" and {
@@ -13,12 +37,15 @@ local PROCFS_STAGES = {
   ["mask-proc"] = true,
 }
 
+---@param value unknown
+---@return string
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
   if #value > 1000 then value = value:sub(1, 997) .. "..." end
   return value
 end
 
+---@return string?
 local function runtime_file()
   local matches = vim.api.nvim_get_runtime_file(
     "scripts/sandbox_linux_runtime.lua", false)
@@ -28,6 +55,8 @@ local function runtime_file()
   return stat and stat.type == "file" and path or nil
 end
 
+---@param path unknown
+---@return string?
 local function executable(path)
   if type(path) ~= "string" or path == "" then return nil end
   local candidate = path
@@ -36,11 +65,13 @@ local function executable(path)
   end
   local resolved = candidate ~= "" and vim.uv.fs_realpath(candidate) or nil
   local stat = resolved and vim.uv.fs_stat(resolved)
-  if stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
+  if resolved and stat and stat.type == "file"
+      and vim.fn.executable(resolved) == 1 then
     return vim.fs.normalize(resolved)
   end
 end
 
+---@return string[]?
 local function process_commandline()
   local fd = vim.uv.fs_open("/proc/self/cmdline", "r", 0)
   if not fd then return nil end
@@ -52,19 +83,24 @@ local function process_commandline()
   return values
 end
 
+---@param command string[]
+---@return string[]
 local function resolved_command(command)
   command[1] = executable(command[1]) or command[1]
   return command
 end
 
+---@param configured? string|string[]
+---@return string[]
 local function nvim_command(configured)
-  local command
-  if type(configured) == "string" then command = { configured } end
+  if type(configured) == "string" then
+    return resolved_command({ configured })
+  end
   if type(configured) == "table" and util.is_list(configured)
       and #configured > 0 then
-    command = util.copy(configured)
+    ---@cast configured string[]
+    return resolved_command(util.copy(configured))
   end
-  if command then return resolved_command(command) end
   local actual = vim.v.argv[1]
   local commandline = process_commandline()
   if type(actual) == "string" and commandline then
@@ -79,27 +115,39 @@ local function nvim_command(configured)
   return resolved_command({ vim.v.progpath })
 end
 
+---@param left? {sec: integer, nsec: integer}
+---@param right? {sec: integer, nsec: integer}
+---@return boolean?
 local function same_time(left, right)
   return left and right
     and left.sec == right.sec and left.nsec == right.nsec
 end
 
+---@param left? uv.fs_stat.result
+---@param right? uv.fs_stat.result
+---@return boolean?
 local function same_identity(left, right)
   return left and right and left.dev == right.dev and left.ino == right.ino
     and same_time(left.birthtime, right.birthtime)
 end
 
+---@param root string
+---@param path string
+---@return boolean
 local function contains(root, path)
   return root == "/" or path == root
     or path:sub(1, #root + 1) == root .. "/"
 end
 
+---@param fs Neoagent.SandboxFilesystemService
+---@param profile? Neoagent.SandboxProfile
+---@return Neoagent.LinuxSandboxRoot?, string?
 local function temporary_root(fs, profile)
   local problems = {}
   for _, source in ipairs(STAGING_DIRECTORIES) do
     local directory = vim.uv.fs_realpath(source)
     local directory_stat = directory and vim.uv.fs_stat(directory)
-    if not directory_stat or directory_stat.type ~= "directory" then
+    if not directory or not directory_stat or directory_stat.type ~= "directory" then
       problems[#problems + 1] = source .. " is unavailable"
     else
       local exposed = false
@@ -132,12 +180,16 @@ local function temporary_root(fs, profile)
     .. table.concat(problems, "; ")
 end
 
+---@param root Neoagent.LinuxSandboxRoot
+---@return boolean?
 local function valid_root(root)
   local stat = vim.uv.fs_lstat(root.path)
   return stat and stat.type == "directory"
     and same_identity(stat, root.stat)
 end
 
+---@param root Neoagent.LinuxSandboxRoot
+---@return boolean?, string?, string?
 local function cleanup(root)
   if not valid_root(root) then
     return nil, "sandbox root identity changed: " .. root.path
@@ -145,9 +197,13 @@ local function cleanup(root)
   return vim.uv.fs_rmdir(root.path)
 end
 
+---@param nvim string[]
+---@param script string
+---@param command? string[]
+---@return string[]
 local function runtime_argv(nvim, script, command)
   local argv = util.copy(nvim)
-  local version = vim.version()
+  local version = (vim.version --[[@as fun(): vim.Version]])()
   -- Neovim 0.10-0.12 expose -ll for Lua execution before editor
   -- initialization. Neovim 0.13+ provides script mode through headless -l.
   if version.major == 0 and version.minor < 13 then
@@ -164,11 +220,14 @@ local function runtime_argv(nvim, script, command)
   return argv
 end
 
+---@param argv string[]
+---@param env table<string, string>
+---@return string?
 local function resolved_program(argv, env)
-  local program = argv[1]
+  local program = assert(argv[1])
   if program:sub(1, 1) == "/" then
     local resolved = vim.uv.fs_realpath(program)
-    return executable(resolved) and vim.fs.normalize(resolved) or nil
+    return resolved and executable(resolved) and vim.fs.normalize(resolved) or nil
   end
   for directory in tostring(env.PATH or ""):gmatch("[^:]+") do
     local candidate = vim.fs.joinpath(directory, program)
@@ -179,9 +238,14 @@ local function resolved_program(argv, env)
   return nil
 end
 
-local function specification(request, root, capabilities)
+---@param request Neoagent.LinuxSandboxRequest
+---@param root Neoagent.LinuxSandboxRoot
+---@param capabilities? Neoagent.SandboxCapabilities
+---@param mode Neoagent.LinuxSandboxMode
+---@return Neoagent.LinuxSandboxSpec, string[]?
+local function specification(request, root, capabilities, mode)
   local command
-  if request.mode == "exec" then
+  if mode == "exec" then
     command = util.copy(request.argv or {})
     local program = resolved_program(command, request.env or {})
     if not program then
@@ -194,7 +258,7 @@ local function specification(request, root, capabilities)
   local profile = util.copy(request.profile)
   return {
     v = 1,
-    mode = request.mode,
+    mode = mode,
     root = root.path,
     root_identity = {
       dev = root.stat.dev,
@@ -209,6 +273,8 @@ local function specification(request, root, capabilities)
   }, command
 end
 
+---@param procfs "fresh"|"host"
+---@return Neoagent.SandboxCapabilities
 local function capabilities(procfs)
   return {
     filesystem = true,
@@ -228,20 +294,39 @@ local function capabilities(procfs)
   }
 end
 
+---@param terminal Neoagent.SandboxTerminalEvent|string|nil
+---@return boolean
 local function procfs_fallback(terminal)
-  return terminal and terminal.type == "error"
+  return type(terminal) == "table" and terminal.type == "error"
     and PROCFS_STAGES[terminal.stage] == true
 end
 
+---@param terminal Neoagent.SandboxTerminalEvent|string
+---@param stderr string?
+---@return string?
+local function probe_failure(terminal, stderr)
+  if type(terminal) == "string" then return terminal end
+  if terminal.type == "error" then
+    return string.format("%s failed (errno=%s)",
+      terminal.stage, tostring(terminal.errno))
+  elseif terminal.code ~= 0 then
+    return bounded(stderr)
+  end
+end
+
+---@param spec Neoagent.LinuxSandboxSpec
+---@return table<string, string>
 local function environment(spec)
   return {
     NEOAGENT_SANDBOX_SPEC = util.json_encode(spec),
   }
 end
 
+---@param spec Neoagent.LinuxSandboxSpec
+---@return table<string, string>|string[]
 local function system_environment(spec)
   local variables = environment(spec)
-  if not vim.version.lt(vim.version(), { 0, 11, 0 }) then
+  if not vim.version.lt((vim.version --[[@as fun(): vim.Version]])(), { 0, 11, 0 }) then
     return variables
   end
   local result = {}
@@ -252,8 +337,12 @@ local function system_environment(spec)
   return result
 end
 
+---@param profile Neoagent.SandboxProfile
+---@param path string
+---@return Neoagent.SandboxAccess
 local function parent_access(profile, path)
   local parent = vim.fs.dirname(path)
+  ---@type Neoagent.SandboxAccess
   local selected = profile.filesystem.default
   local specificity = -1
   for _, entry in ipairs(profile.filesystem.entries) do
@@ -268,6 +357,8 @@ local function parent_access(profile, path)
   return selected
 end
 
+---@param profile Neoagent.SandboxProfile
+---@return Neoagent.SandboxFilesystemEntry[]
 local function protected_create_paths(profile)
   local selected = {}
   for _, entry in ipairs(profile.filesystem.entries) do
@@ -284,6 +375,10 @@ local function protected_create_paths(profile)
   return result
 end
 
+---@param request Neoagent.LinuxSandboxRequest
+---@param services Neoagent.LinuxSandboxServices
+---@param mode Neoagent.LinuxSandboxMode
+---@return Neoagent.ProcessResult
 local function process_request(request, services, mode)
   local runtime = runtime_file()
   if not runtime then
@@ -295,11 +390,9 @@ local function process_request(request, services, mode)
     error(util.error("sandbox_unavailable",
       "Could not create Linux sandbox root", root_err), 0)
   end
-  local copied = util.copy(request)
-  copied.mode = mode
   local nvim = nvim_command(services.nvim)
   local prepared, spec, command = pcall(
-    specification, copied, root, services.capabilities)
+    specification, request, root, services.capabilities, mode)
   if not prepared then
     local cleaned, cleanup_err = cleanup(root)
     if not cleaned then
@@ -319,6 +412,7 @@ local function process_request(request, services, mode)
   local decoder = protocol.new({
     on_event = function(event)
       if event.type ~= "output" then return end
+      ---@cast event Neoagent.SandboxOutputEvent
       local is_stderr = event.stream == "stderr"
       if capture then
         if is_stderr then stderr = stderr .. event.data
@@ -392,6 +486,7 @@ local function process_request(request, services, mode)
       "Linux sandbox setup failed at " .. terminal.stage,
       "errno=" .. tostring(terminal.errno)), 0)
   end
+  ---@cast terminal Neoagent.SandboxExitEvent
   return {
     code = terminal.code,
     signal = terminal.signal,
@@ -402,10 +497,16 @@ local function process_request(request, services, mode)
   }
 end
 
+---@param request Neoagent.SandboxProcessRequest
+---@param services Neoagent.LinuxSandboxServices
+---@return Neoagent.ProcessResult
 function M.exec(request, services)
   return process_request(request, services, "exec")
 end
 
+---@param request Neoagent.SandboxFilesystemRequest
+---@param services Neoagent.LinuxSandboxServices
+---@return string|true|nil, string?
 function M.fs(request, services)
   local value = process_request({
     profile = request.profile,
@@ -432,6 +533,8 @@ function M.fs(request, services)
   return true
 end
 
+---@param services? Neoagent.SandboxCheckServices
+---@return Neoagent.SandboxStatus
 function M.check(services)
   services = services or {}
   local runtime = runtime_file()
@@ -470,6 +573,7 @@ function M.check(services)
       message = bounded(root_err),
     }
   end
+  ---@type Neoagent.SandboxProfile
   local profile = {
     id = "activation-probe",
     filesystem = { default = "read", entries = {} },
@@ -477,12 +581,11 @@ function M.check(services)
     environment = { clear = true, inherit = {}, set = {} },
   }
   local spec = specification({
-    mode = "probe",
     profile = profile,
     cwd = "/",
     argv = {},
     env = {},
-  }, root, capabilities("fresh"))
+  }, root, capabilities("fresh"), "probe")
   spec.protected_create = {
     {
       path = vim.fs.joinpath(root.path, "protected-create-probe"),
@@ -506,9 +609,10 @@ function M.check(services)
   if completed then
     events, terminal = protocol.decode_all(completed.stdout or "")
     if procfs_fallback(terminal) then
+      local fallback = terminal --[[@as Neoagent.SandboxErrorEvent]]
       degraded_reason = string.format(
         "fresh procfs setup failed at %s (errno=%s); inherited host procfs is active",
-        terminal.stage, tostring(terminal.errno))
+        fallback.stage, tostring(fallback.errno))
       spec.procfs = "host"
       completed = run_probe()
       if completed then
@@ -539,17 +643,9 @@ function M.check(services)
   if not events then
     events, terminal = protocol.decode_all(completed.stdout or "")
   end
-  if completed.code ~= 0 or not events or terminal.type ~= "exit"
-      or terminal.code ~= 0 then
-    local reason
-    if not events then
-      reason = terminal
-    elseif terminal.type == "error" then
-      reason = string.format("%s failed (errno=%s)",
-        terminal.stage, tostring(terminal.errno))
-    else
-      reason = bounded(completed.stderr)
-    end
+  local reason = probe_failure((assert(terminal)), completed.stderr)
+  if completed.code ~= 0 or reason then
+    reason = reason or bounded(completed.stderr)
     return {
       ok = false,
       platform = M.name,

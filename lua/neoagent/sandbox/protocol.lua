@@ -111,7 +111,6 @@ local function validate(value, state)
       error("invalid sandbox exit event")
     end
     ---@cast value Neoagent.SandboxExitEvent
-    ---@cast value Neoagent.SandboxErrorEvent
     state.terminal = util.copy(value)
   elseif value.type == "error" then
     if state.terminal or type(value.stage) ~= "string"
