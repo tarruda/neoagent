@@ -21,7 +21,6 @@ lua/neoagent/authentication.lua
 lua/neoagent/config.lua
 lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
-lua/neoagent/http_replay.lua
 lua/neoagent/init.lua
 lua/neoagent/markdown.lua
 lua/neoagent/presenter.lua
@@ -61,7 +60,6 @@ scripts/sandbox_macos_runtime.lua
 scripts/sandbox_windows_runtime.lua
 tests/helpers/applet_direct_focus.lua
 tests/helpers/http_live.lua
-tests/helpers/http_replay.lua
 tests/helpers/presentation.lua
 tests/helpers/read_only_focus.lua
 tests/helpers/switcher.lua
