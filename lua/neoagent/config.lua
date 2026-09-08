@@ -313,7 +313,7 @@ local input_fields = {
   _view = true,
 }
 
----@type Neoagent.Config?
+---@type Neoagent.Config<Neoagent.AgentToolEnvironment>?
 local current
 local built_in_apis = {
   ["openai-completions"] = true,
@@ -760,14 +760,14 @@ function M.resolve(opts)
   return util.copy(configured)
 end
 
----@param opts? Neoagent.ConfigInput
----@return Neoagent.Config
+---@param opts? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
+---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
 function M.setup(opts)
   current = M.resolve(opts)
   return util.copy(current)
 end
 
----@return Neoagent.Config
+---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
 function M.get()
   if not current then M.setup({}) end
   return util.copy((assert(current)))
@@ -777,7 +777,7 @@ function M._reset()
   current = nil
 end
 
----@param value Neoagent.Config
+---@param value Neoagent.Config<Neoagent.AgentToolEnvironment>
 function M._set(value)
   validate(value)
   current = util.copy(value)

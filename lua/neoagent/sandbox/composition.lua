@@ -7,7 +7,7 @@ local path_module = require("neoagent.sandbox.path")
 ---@field enabled boolean
 ---@field profile? Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>
 
----@class Neoagent.SandboxActivation: Neoagent.SandboxAvailability
+---@class Neoagent.SandboxActivation: Neoagent.SandboxInfo
 ---@field enabled boolean
 ---@field active boolean
 

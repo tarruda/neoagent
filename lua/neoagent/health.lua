@@ -1,5 +1,7 @@
 local M = {}
 
+---@param name string
+---@return boolean
 local function executable(name)
   if vim.fn.executable(name) == 1 then
     vim.health.ok(name .. " is available")
@@ -9,6 +11,9 @@ local function executable(name)
   return false
 end
 
+---@param version number[]
+---@param minimum number[]
+---@return boolean
 local function at_least(version, minimum)
   for index = 1, math.max(#version, #minimum) do
     local actual = version[index] or 0
@@ -24,7 +29,7 @@ local function curl()
   local major, minor, patch = output:match("^curl%s+(%d+)%.(%d+)%.(%d+)")
   if vim.v.shell_error ~= 0 or not major then
     vim.health.error("could not determine the curl version")
-  elseif at_least({ tonumber(major), tonumber(minor), tonumber(patch) }, { 7, 76, 0 }) then
+  elseif at_least({ assert(tonumber(major)), assert(tonumber(minor)), (assert(tonumber(patch))) }, { 7, 76, 0 }) then
     vim.health.ok(string.format("curl %s.%s.%s satisfies the 7.76+ requirement", major, minor, patch))
   else
     vim.health.error(string.format("curl %s.%s.%s is too old; version 7.76+ is required", major, minor, patch))
@@ -33,10 +38,11 @@ end
 
 local function check_configuration()
   local configured = require("neoagent.config").get()
+  ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
   local tools = configured._tools_supplied and configured.tools
     or require("neoagent.tools").coding({
       shell_timeout = configured.shell_timeout,
-    })
+    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
   require("neoagent.agent_loop").validate_toolset(
     tools, configured.execute_tool)
   local applet, resources

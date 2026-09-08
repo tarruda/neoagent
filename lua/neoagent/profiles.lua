@@ -30,8 +30,13 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field initial_selection? Neoagent.InitialSelection
 ---@field resources? Neoagent.ProfileResources
 
+---@class Neoagent.ProfileSandboxState
+---@field runtime Neoagent.SandboxRuntime<Neoagent.AgentToolEnvironment>
+---@field status Neoagent.SandboxActivation
+---@field trust? Neoagent.WorkspaceTrust
+
 ---@class Neoagent.ProfileAgentResources
----@field sandbox? {runtime: Neoagent.SandboxRuntime<Neoagent.AgentToolEnvironment>, status: Neoagent.SandboxActivation, trust?: Neoagent.WorkspaceTrust}
+---@field sandbox? Neoagent.ProfileSandboxState
 
 ---@class Neoagent.ProfileRuntimeOptions
 ---@field transport? Neoagent.ByteBackend
