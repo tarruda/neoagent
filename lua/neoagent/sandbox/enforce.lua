@@ -5,6 +5,37 @@ local result = require("neoagent.sandbox.result")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.SandboxEnforcementOptions<C>
+---@field profile Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>
+---@field platform Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
+---@field paths? Neoagent.SandboxPaths
+---@field temporary_root? string
+---@field fs? Neoagent.SandboxFilesystemService
+---@field process? fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field environ? fun(): table<string, string>
+---@field nvim? string
+---@field capabilities? Neoagent.SandboxCapabilities
+
+---@class Neoagent.SandboxTemporaryFile
+---@field lexical string
+---@field canonical string
+---@field dev integer
+---@field ino integer
+
+---@class Neoagent.SandboxDenial: Neoagent.Error
+---@field sandbox Neoagent.JsonObject
+
+---@class Neoagent.SandboxEnforcement<C>
+---@field _profile_source Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>
+---@field _configured_profile? Neoagent.SandboxProfile
+---@field _fingerprint? string
+---@field _platform Neoagent.SandboxPlatform<Neoagent.ToolContext<C>>
+---@field _paths Neoagent.SandboxPaths
+---@field _temporary_root? string
+---@field _fs Neoagent.SandboxFilesystemService
+---@field _temporary_paths table<string, Neoagent.SandboxTemporaryFile>
+---@field _environ fun(): table<string, string>
+---@field _services Neoagent.SandboxExecutionServices
 local Enforcement = {}
 Enforcement.__index = Enforcement
 
@@ -24,12 +55,19 @@ local QUICK_REJECT_EXIT_CODES = {
   [127] = true,
 }
 
+---@generic T: table
+---@param ctx T
+---@return T
 local function copy_context(ctx)
   local copied = {}
   for key, value in pairs(ctx or {}) do copied[key] = value end
-  return copied
+  return copied --[[@as T]]
 end
 
+---@param parts string[]
+---@param size integer
+---@param value unknown
+---@return integer
 local function append_evidence(parts, size, value)
   if type(value) ~= "string" or value == ""
       or size >= DENIAL_EVIDENCE_MAX_BYTES then
@@ -40,6 +78,8 @@ local function append_evidence(parts, size, value)
   return size + #part
 end
 
+---@param value string
+---@return boolean
 local function contains_denial_keyword(value)
   value = value:lower()
   for _, keyword in ipairs(DENIAL_KEYWORDS) do
@@ -48,9 +88,16 @@ local function contains_denial_keyword(value)
   return false
 end
 
+---@param platform string
+---@param value Neoagent.ProcessResult
+---@param streamed_stdout string
+---@param streamed_stderr string
+---@return boolean
 local function likely_sandbox_denied(
     platform, value, streamed_stdout, streamed_stderr)
   if value.code == 0 then return false end
+  ---@param section unknown
+  ---@return boolean
   local function section_denied(section)
     return type(section) == "string"
       and contains_denial_keyword(section:sub(
@@ -63,17 +110,23 @@ local function likely_sandbox_denied(
     return true
   end
   if QUICK_REJECT_EXIT_CODES[value.code] then return false end
-  local constants = vim.uv.constants
+  local constants = (vim.uv --[[@as {constants?: table<string, integer>}]]).constants
   local sigsys = constants and constants.SIGSYS
   return platform == "linux" and sigsys ~= nil
     and value.code == 128 + sigsys
 end
 
+---@param ctx {context?: {cwd?: string, workspace?: {cwd?: string}}}
+---@return {cwd?: string}?
 local function workspace(ctx)
   local context = ctx and ctx.context
   return context and context.workspace or context
 end
 
+---@param profile Neoagent.SandboxProfile
+---@param source table<string, string>?
+---@param paths Neoagent.SandboxPaths
+---@return table<string, string>
 local function effective_environment(profile, source, paths)
   source = source or vim.fn.environ()
   local environment = profile.environment
@@ -85,6 +138,8 @@ local function effective_environment(profile, source, paths)
     local key = paths.environment_key(name)
     if not by_key[key] then by_key[key] = name end
   end
+  ---@param name string
+  ---@param value string
   local function assign(name, value)
     local key = paths.environment_key(name)
     local existing = by_key[key]
@@ -102,6 +157,12 @@ local function effective_environment(profile, source, paths)
   return values
 end
 
+---@param operation string
+---@param path string?
+---@param profile Neoagent.SandboxProfile
+---@param platform string
+---@param granted Neoagent.SandboxAccess
+---@return Neoagent.SandboxDenial
 local function denied(operation, path, profile, platform, granted)
   local action = operation == "filesystem.read" and "Read"
     or operation == "filesystem.write" and "Write"
@@ -115,12 +176,14 @@ local function denied(operation, path, profile, platform, granted)
       operation = operation,
       path = path,
       profile = profile.id,
-      backend = platform.name,
+      backend = platform,
       granted = granted,
     },
   }
 end
 
+---@param argv unknown
+---@return string[]
 local function validate_argv(argv)
   if type(argv) ~= "table" or not util.is_list(argv) or #argv == 0 then
     error(util.error("sandbox", "Sandbox argv must be a non-empty list"), 0)
@@ -137,10 +200,12 @@ local function validate_argv(argv)
   return copied
 end
 
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.SandboxProfile, string
 function Enforcement:_resolve_profile(ctx)
   local profile, fingerprint
   if self._fingerprint then
-    profile, fingerprint = self._configured_profile, self._fingerprint
+    profile, fingerprint = assert(self._configured_profile), self._fingerprint
   else
     profile, fingerprint = profile_module.resolve(
       self._profile_source, ctx, { paths = self._paths })
@@ -151,14 +216,22 @@ function Enforcement:_resolve_profile(ctx)
   return profile, fingerprint
 end
 
+---@param ctx Neoagent.ToolContext<C>
+---@param profile Neoagent.SandboxProfile
+---@param require_active fun()
+---@return Neoagent.ToolFilesystem
 function Enforcement:_guarded_fs(ctx, profile, require_active)
   local temporary = {}
   local raw, platform = self._fs, self._platform
   local remembered = self._temporary_paths
+  ---@param record Neoagent.SandboxTemporaryFile
   local function forget(record)
     remembered[record.lexical] = nil
     remembered[record.canonical] = nil
   end
+  ---@param lexical string
+  ---@param canonical string
+  ---@return Neoagent.SandboxTemporaryFile?
   local function remembered_file(lexical, canonical)
     local record = remembered[lexical] or remembered[canonical]
     if not record then return end
@@ -170,24 +243,35 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
     end
     return record
   end
+  ---@overload fun(operation: 'read', path: string): string?, string?
+  ---@overload fun(operation: 'mkdirp', path?: string): true?, unknown
+  ---@overload fun(operation: 'write_all', path: string, arguments: {data: string, flags?: string, mode?: integer}): true?, string?
+  ---@overload fun(operation: 'atomic_replace', path: string, arguments: {data: string, policy: Neoagent.AtomicPolicy, suffix: string}): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?
+  ---@param operation 'read'|'write_all'|'mkdirp'|'atomic_replace'
+  ---@param path string
+  ---@param arguments? {data: string, flags?: string, mode?: integer, policy?: Neoagent.AtomicPolicy, suffix?: string}
+  ---@return string|true|nil, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?
   local function dispatch(operation, path, arguments)
     require_active()
     if temporary[path] then
       if operation == "read" then return raw.read(path) end
       if operation == "write_all" then
+        arguments = assert(arguments)
         return raw.write_all(path, arguments.data, arguments.flags, arguments.mode)
       end
       if operation == "atomic_replace" then
-        return raw.atomic_replace(path, arguments.data, arguments.policy)
+        arguments = assert(arguments)
+        return raw.atomic_replace(path, arguments.data, (assert(arguments.policy)))
       end
     end
-    local lexical, canonical = policy.resolve_path(ctx, path, self._paths)
+    local lexical, canonical = policy.resolve_path(
+      ctx --[[@as Neoagent.SandboxPathContext]], path, self._paths)
     local required = operation == "read" and "read" or "write"
     local allowed, granted = policy.allows(
       profile, lexical, canonical, required, self._paths)
     if not allowed then
       error(denied("filesystem." .. required, lexical,
-        profile, platform, granted), 0)
+        profile, platform.name, granted), 0)
     end
     local effective_profile = profile
     local record = operation == "read"
@@ -277,6 +361,11 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
   }
 end
 
+---@param ctx Neoagent.ToolContext<C>
+---@param profile Neoagent.SandboxProfile
+---@param observed {sandbox_denied: boolean}
+---@param require_active fun()
+---@return fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 function Enforcement:_guarded_process(
     ctx, profile, observed, require_active)
   return function(argv, opts)
@@ -285,22 +374,24 @@ function Enforcement:_guarded_process(
     if type(opts) ~= "table" or util.is_list(opts) then
       error(util.error("sandbox", "Sandbox process options must be an object"), 0)
     end
-    local active_workspace = workspace(ctx)
+    local active_workspace = workspace(ctx --[[@as {context?: {cwd?: string, workspace?: {cwd?: string}}}]])
     local cwd = opts.cwd or active_workspace and active_workspace.cwd
     if type(cwd) ~= "string" or cwd == "" then
       error(util.error("sandbox", "Sandbox process cwd is required"), 0)
     end
     local lexical, canonical =
-      policy.resolve_path(ctx, cwd, self._paths)
+      policy.resolve_path(
+        ctx --[[@as Neoagent.SandboxPathContext]], cwd, self._paths)
     local allowed, granted = policy.allows(
       profile, lexical, canonical, "read", self._paths)
     if not allowed then
       error(denied("filesystem.read", lexical,
-        profile, self._platform, granted), 0)
+        profile, self._platform.name, granted), 0)
     end
     local stdout_evidence, stdout_evidence_bytes = {}, 0
     local stderr_evidence, stderr_evidence_bytes = {}, 0
     local on_output = opts.on_output
+    ---@type Neoagent.SandboxProcessRequest
     local request = {
       argv = validate_argv(argv),
       cwd = canonical,
@@ -318,7 +409,7 @@ function Enforcement:_guarded_process(
           stdout_evidence_bytes = append_evidence(
             stdout_evidence, stdout_evidence_bytes, data)
         end
-        if on_output then return on_output(data, is_stderr, ...) end
+        if on_output then on_output(data, is_stderr, ...) end
       end,
       profile = profile,
     }
@@ -336,6 +427,8 @@ function Enforcement:_guarded_process(
   end
 end
 
+---@param next_execute_tool? Neoagent.ToolExecutor<C>
+---@return Neoagent.ToolExecutor<C>
 function Enforcement:wrap(next_execute_tool)
   next_execute_tool = next_execute_tool or function(tool, arguments, ctx)
     return tool.execute(arguments, ctx)
@@ -370,8 +463,10 @@ function Enforcement:wrap(next_execute_tool)
     active = false
     if not executed then
       local err = util.normalize_error(value, "tool")
-      if err.kind == "sandbox_denied" and err.sandbox then
-        return result.sandbox(result.denied(err.message), err.sandbox)
+      local sandbox = rawget(err, "sandbox")
+      if err.kind == "sandbox_denied" and sandbox then
+        return result.sandbox(result.denied(err.message),
+          sandbox --[[@as Neoagent.JsonObject]])
       elseif err.kind == "sandbox_unavailable" or err.kind == "sandbox" then
         return result.sandbox(err.message, {
           unavailable = true,
@@ -400,6 +495,9 @@ function Enforcement:wrap(next_execute_tool)
   end
 end
 
+---@generic C
+---@param opts Neoagent.SandboxEnforcementOptions<C>
+---@return Neoagent.SandboxEnforcement<C>
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "sandbox enforcement options must be a table")
@@ -412,10 +510,10 @@ function M.new(opts)
   local raw_fs = opts.fs or require("neoagent.fs")
   local raw_process = opts.process or require("neoagent.process").run
   local paths = opts.paths or opts.platform.paths or path_module.posix
-  local configured_profile, fingerprint = opts.profile, nil
-  if type(configured_profile) == "table" then
+  local configured_profile, fingerprint
+  if type(opts.profile) == "table" then
     configured_profile, fingerprint = profile_module.validate(
-      configured_profile, { paths = paths })
+      opts.profile, { paths = paths })
   end
   return setmetatable({
     _profile_source = opts.profile,

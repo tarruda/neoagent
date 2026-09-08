@@ -10,7 +10,6 @@ lua/neoagent/init.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_shell.lua
 lua/neoagent/sandbox/composition.lua
-lua/neoagent/sandbox/enforce.lua
 lua/neoagent/sandbox/escalation.lua
 lua/neoagent/sandbox/init.lua
 lua/neoagent/ui.lua
