@@ -74,7 +74,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field display? 'always'|'expanded'
 
 ---@class Neoagent.UIConfig: Neoagent.UIConfigInput
----@field style 'codex'|'pi'
+---@field style string
 ---@field renderer? Neoagent.Renderer<unknown>
 ---@field position Neoagent.UiPosition
 ---@field width? number
@@ -93,7 +93,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field mappings table<string, Neoagent.UIMapping>
 
 ---@class Neoagent.UIConfigInput
----@field style? 'codex'|'pi'
+---@field style? string
 ---@field renderer? Neoagent.Renderer<unknown>
 ---@field position? Neoagent.UiPosition
 ---@field width? number
@@ -147,7 +147,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field default_thinking_level? Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection
 ---@field providers? table<string, Neoagent.ProviderOptions|false>
----@field auth? {path?: string, methods?: table<string, Neoagent.AuthMethodInput<Neoagent.Credential>>}
+---@field auth? {path?: string, methods?: table<string, Neoagent.AuthMethodInput<Neoagent.Credential>|Neoagent.AuthMethod<Neoagent.Credential>>}
 ---@field _apis? table<string, Neoagent.ApiFactory>
 ---@field persistence? Neoagent.PersistenceConfigInput
 ---@field recording? Neoagent.RecordingConfigInput
