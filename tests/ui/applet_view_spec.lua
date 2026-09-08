@@ -1381,6 +1381,28 @@ describe("neoagent Applet View composition", function()
     assert.is_true(heading.NeoagentMarkdownUnderline)
   end)
 
+  it("removes thinking follow controls when an interrupted stream finishes", function()
+    local value = view({ mappings = { card_follow = "F" } })
+    value:set_context({ state = "running" })
+    value:apply({ type = "thinking_delta", text = "Unfinished reasoning" })
+    assert(value:open())
+    assert(value:show_card_details(value.transcript.blocks[1].key))
+    local details = value.details
+    assert(details.pane:flush())
+    local function has_follow_binding()
+      for _, binding in ipairs(vim.api.nvim_buf_get_keymap(
+        view_handles.buffer(value, "details"), "n")) do
+        if binding.lhs == "F" then return true end
+      end
+      return false
+    end
+    assert.is_true(has_follow_binding())
+    value:finish({ ok = false, error = { kind = "cancelled", message = "Cancelled" } })
+    assert(details.pane:flush())
+    assert.is_false(has_follow_binding())
+    assert.matches("Unfinished reasoning", details:text(), 1, true)
+  end)
+
   it("preserves transcript highlights while scrolling during streaming", function()
     local value = view({ height = 12, input_height = 3 })
     local messages = {}

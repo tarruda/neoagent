@@ -480,6 +480,8 @@ function Transcript.new(opts)
     messages = {},
     calls = {},
     pending_calls = {},
+    live_texts = {},
+    live_thinkings = {},
     response = 1,
     counter = 0,
     text_epoch = 0,
