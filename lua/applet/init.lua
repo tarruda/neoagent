@@ -10,8 +10,20 @@ local modules = {
   host_effects = "applet.host_effects",
 }
 
+---@class Applet.Package: Applet.Factory
+---@field Pane Applet.PaneModule
+---@field layout Applet.LayoutModule
+---@field host Applet.HostModule
+---@field Theme Applet.ThemeModule
+---@field InteractionDomain Applet.DomainModule
+---@field ImageSystem Applet.ImageModule
+---@field Presenter Applet.NativePresenter
+---@field presentation Applet.PresentationModule
+---@field host_effects Applet.HostEffectsModule
 local M = {}
 
+---@param key string
+---@return unknown
 local function load(key)
   local module = modules[key]
   local value
@@ -21,7 +33,9 @@ local function load(key)
   return value
 end
 
-return setmetatable(M, {
+local exports = setmetatable(M, {
   __index = function(_, key) return load(key) end,
   __call = function(_, opts) return M.new(opts) end,
 })
+
+return exports --[[@as Applet.Package]]

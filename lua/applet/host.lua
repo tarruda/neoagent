@@ -1,6 +1,7 @@
 local util = require("applet.util")
 local applet_expect = util.expect
 
+---@class Applet.HostModule
 local M = {}
 
 ---@alias Applet.HostContainer "editor"|"largest_window"|"auto"

@@ -2,6 +2,7 @@ local Pane = require("applet.pane")
 local nodes = require("applet.pane.nodes")
 local util = require("applet.util")
 
+---@class Applet.PresentationModule
 local M = {}
 local Presentation = {}
 Presentation.__index = Presentation

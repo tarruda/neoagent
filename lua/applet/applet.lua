@@ -1848,6 +1848,9 @@ function Applet:destroy()
   self._windows = {}
 end
 
-return setmetatable({ new = Applet.new }, {
+---@class Applet.Factory
+local module = { new = Applet.new }
+
+return setmetatable(module, {
   __call = function(_, opts) return Applet.new(opts) end,
 })

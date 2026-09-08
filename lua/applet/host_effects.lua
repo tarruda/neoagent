@@ -1,5 +1,6 @@
 local util = require("applet.util")
 
+---@class Applet.HostEffectsModule
 local M = {}
 
 ---@class Applet.FileRefreshResult

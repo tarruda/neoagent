@@ -309,6 +309,9 @@ end
 
 Theme.Palette = Palette
 
-return setmetatable({ new = Theme.new, Palette = Palette }, {
+---@class Applet.ThemeModule
+local module = { new = Theme.new, Palette = Palette }
+
+return setmetatable(module, {
   __call = function(_, opts) return Theme.new(opts) end,
 })

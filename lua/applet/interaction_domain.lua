@@ -283,6 +283,9 @@ function Domain:destroy()
   self.active_count = 0
 end
 
-return setmetatable({ new = Domain.new }, {
+---@class Applet.DomainModule
+local module = { new = Domain.new }
+
+return setmetatable(module, {
   __call = function(_, opts) return Domain.new(opts) end,
 })

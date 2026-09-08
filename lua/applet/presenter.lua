@@ -28,6 +28,7 @@
 ---@field accept_label string
 ---@field reject_label string
 
+---@class Applet.NativePresenter
 local M = {}
 
 ---@param message string

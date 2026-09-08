@@ -1688,13 +1688,16 @@ function Pane:destroy()
   self.owned_buffers = {}
 end
 
-return setmetatable({
+---@class Applet.PaneModule
+local module = {
   new = Pane.new,
   is = Pane.is,
   nodes = require("applet.pane.nodes"),
   widgets = require("applet.pane.widgets"),
   text = require("applet.pane.text"),
   compile = require("applet.pane.compile").compile,
-}, {
+}
+
+return setmetatable(module, {
   __call = function(_, opts) return Pane.new(opts) end,
 })

@@ -622,12 +622,15 @@ function ImageSystem:destroy()
   self.cache_bytes = 0
 end
 
-return setmetatable({
+---@class Applet.ImageModule
+local module = {
   new = ImageSystem.new,
   diagnostics = ImageSystem.diagnostics,
   _new = ImageSystem._new,
   _diagnostics = ImageSystem._diagnostics,
   png_info = source.png_info,
-}, {
+}
+
+return setmetatable(module, {
   __call = function(_, opts) return ImageSystem.new(opts) end,
 })

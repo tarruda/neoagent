@@ -1,6 +1,7 @@
 local Pane = require("applet.pane")
 local util = require("applet.util")
 
+---@class Applet.LayoutModule
 local M = {}
 
 local function node(kind, opts)
