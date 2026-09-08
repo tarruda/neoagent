@@ -12,7 +12,7 @@ function describe(name, callback) end
 function it(name, callback) end
 
 ---@param name string
----@param callback fun()
+---@param callback? fun()
 function pending(name, callback) end
 
 ---@param callback fun()

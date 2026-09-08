@@ -97,5 +97,4 @@ tests/unit/ui_renderer_spec.lua
 tests/unit/workspace_settings_spec.lua
 tests/unit/workspace_trust_spec.lua
 tests/unit/zai_client_spec.lua
-tests/windows/process_spec.lua
 tests/windows/sandbox_spec.lua
