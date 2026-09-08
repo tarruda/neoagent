@@ -1,16 +1,84 @@
 local Pane = require("applet.pane")
 local nodes = require("applet.pane.nodes")
 local util = require("applet.util")
+local applet_expect = util.expect
 
 ---@class Applet.PresentationModule
 local M = {}
+---@class Applet.PresentationItem: Applet.SelectItem
+---@field label string
+
+---@class Applet.SelectPresentationRequest: Applet.SelectRequest
+---@field kind 'select'
+---@field id string
+---@field items Applet.PresentationItem[]
+
+---@class Applet.InputPresentationRequest: Applet.InputRequest
+---@field kind 'input'
+---@field id string
+---@field multiline? boolean
+---@field mask? string
+
+---@class Applet.NoticePresentationRequest: Applet.NoticeRequest
+---@field kind 'notice'
+---@field id string
+
+---@alias Applet.PresentationRequest Applet.SelectPresentationRequest|Applet.InputPresentationRequest|Applet.NoticePresentationRequest
+
+---@class Applet.PresentationState<R>
+---@field request R
+
+---@class Applet.PickerResultsState: Applet.PresentationState<Applet.SelectPresentationRequest>
+---@field items Applet.PresentationItem[]
+---@field selected? string
+---@field revision integer
+
+---@class Applet.PickerResults
+---@field query string
+---@field count integer
+---@field selected? string
+
+---@class Applet.PresentationOptions
+---@field request Applet.PresentationRequest
+---@field on_choose fun(value: string)
+---@field on_cancel fun()
+---@field on_results? fun(results: Applet.PickerResults)
+---@field on_error? fun(error: Applet.PaneError)
+---@field theme? Applet.Theme|Applet.ThemeOptions
+---@field key? string
+---@field filter_key? string
+---@field results_key? string
+
+---@class Applet.Presentation
+---@field request Applet.PresentationRequest
+---@field on_choose fun(value: string)
+---@field on_cancel fun()
+---@field on_results? fun(results: Applet.PickerResults)
+---@field pane Applet.Pane
+---@field filter? Applet.Pane<Applet.PresentationState<Applet.SelectPresentationRequest>>
+---@field results? Applet.Pane<Applet.PickerResultsState>
+---@field query? string
+---@field visible Applet.PresentationItem[]
+---@field selected? string
+---@field revision integer
+---@field finished boolean
+---@field destroyed boolean
 local Presentation = {}
 Presentation.__index = Presentation
 
+---@param name string
+---@param payload? Applet.Data
+---@return Applet.Action
 local function action(name, payload)
   return nodes.action("presentation." .. name, payload)
 end
 
+---@param result Applet.Binding[]
+---@param modes string|string[]
+---@param keys string|string[]
+---@param name string
+---@param payload Applet.Data
+---@param desc string
 local function append_binding(result, modes, keys, name, payload, desc)
   modes = type(modes) == "table" and modes or { modes }
   keys = type(keys) == "table" and keys or { keys }
@@ -26,6 +94,8 @@ local function append_binding(result, modes, keys, name, payload, desc)
   end
 end
 
+---@param editable boolean
+---@return Applet.Binding[]
 local function cancel_bindings(editable)
   local result = {}
   append_binding(result, "n", { "q", "<Esc>", "<C-c>" },
@@ -36,6 +106,7 @@ local function cancel_bindings(editable)
   return result
 end
 
+---@return Applet.Binding[]
 local function picker_bindings()
   local result = cancel_bindings(true)
   append_binding(result, { "n", "i" }, { "<Down>", "<C-j>", "<C-n>" },
@@ -51,6 +122,8 @@ local function picker_bindings()
   return result
 end
 
+---@param state Applet.PresentationState<Applet.InputPresentationRequest>
+---@return Applet.Tree
 local function render_input(state)
   local request = state.request
   local bindings = cancel_bindings(true)
@@ -59,6 +132,9 @@ local function render_input(state)
     append_binding(bindings, "i", lhs, "submit", nil, "Submit prompt")
   end
   append_binding(bindings, "n", "<CR>", "submit", nil, "Submit prompt")
+  ---@type Applet.Options
+  local window_options = { cursorline = true }
+  if request.multiline ~= nil then window_options.wrap = request.multiline end
   local help = request.multiline and "<C-s> submit · <C-c> cancel"
     or "<CR> submit · <C-c> cancel"
   return {
@@ -78,12 +154,14 @@ local function render_input(state)
     chrome = {
       title = { { text = " " .. request.prompt .. " ", style = "window_title" } },
       title_pos = "center",
-      options = { wrap = request.multiline, cursorline = true },
+      options = window_options,
     },
     edit = { mask = request.secret and request.mask or nil },
   }
 end
 
+---@param state Applet.PresentationState<Applet.NoticePresentationRequest>
+---@return Applet.Tree
 local function render_notice(state)
   local request = state.request
   return {
@@ -105,6 +183,8 @@ local function render_notice(state)
   }
 end
 
+---@param state Applet.PresentationState<Applet.SelectPresentationRequest>
+---@return Applet.Tree
 local function render_filter(state)
   local request = state.request
   return {
@@ -127,6 +207,9 @@ local function render_filter(state)
   }
 end
 
+---@param item Applet.PresentationItem
+---@param selected boolean
+---@return Applet.TextRun[]
 local function item_runs(item, selected)
   local selected_style = selected and "menu_selected" or nil
   local result = {
@@ -140,6 +223,8 @@ local function item_runs(item, selected)
   return result
 end
 
+---@param state Applet.PickerResultsState
+---@return Applet.Tree
 local function render_results(state)
   local request = state.request
   local children = {}
@@ -190,6 +275,9 @@ local function render_results(state)
   }
 end
 
+---@param text string
+---@param query string
+---@return integer?
 local function fuzzy_score(text, query)
   query = vim.fn.tolower(query):gsub("^%s+", ""):gsub("%s+$", "")
   if query == "" then return 0 end
@@ -197,14 +285,16 @@ local function fuzzy_score(text, query)
   local needle = util.characters(query, "picker query")
   local previous, score = 0, 0
   for _, character in ipairs(needle) do
+    ---@type integer?
     local found
     for index = previous + 1, #haystack do
+      ---@cast index integer
       if haystack[index] == character then found = index break end
     end
     if not found then return nil end
     local gap = found - previous - 1
     score = score + gap * 4
-    if found == 1 or haystack[found - 1]:match("[%s%p]") then
+    if found == 1 or assert(haystack[found - 1]):match("[%s%p]") then
       score = score - 3
     elseif gap == 0 then
       score = score - 1
@@ -214,33 +304,37 @@ local function fuzzy_score(text, query)
   return score + #haystack - previous
 end
 
+---@param item Applet.PresentationItem
+---@return string
 local function searchable_text(item)
   return item.label .. (item.detail and (" " .. item.detail) or "")
 end
 
+---@param items Applet.PresentationItem[]
+---@return Applet.PresentationItem[]
 local function copy_items(items)
-  util.expect(type(items) == "table", "presentation items",
+  applet_expect(type(items) == "table", "presentation items",
     "must be a list", 4)
   local count = 0
   for key in pairs(items) do
-    util.expect(type(key) == "number" and key >= 1 and key % 1 == 0,
+    applet_expect(type(key) == "number" and key >= 1 and key % 1 == 0,
       "presentation items", "must be a list", 4)
     count = count + 1
   end
-  util.expect(count == #items, "presentation items", "must be a list", 4)
+  applet_expect(count == #items, "presentation items", "must be a list", 4)
   local selected, seen = {}, {}
   for index, item in ipairs(items) do
-    util.expect(type(item) == "table", "presentation item " .. index,
+    applet_expect(type(item) == "table", "presentation item " .. index,
       "must be a table", 4)
-    util.expect(util.nonempty_string(item.id), "presentation item " .. index,
+    applet_expect(util.nonempty_string(item.id), "presentation item " .. index,
       "requires an id", 4)
-    util.expect(type(item.label) == "string", "presentation item " .. index,
+    applet_expect(type(item.label) == "string", "presentation item " .. index,
       "requires a label", 4)
-    util.expect(item.detail == nil or type(item.detail) == "string",
+    applet_expect(item.detail == nil or type(item.detail) == "string",
       "presentation item " .. index .. ".detail", "must be a string", 4)
-    util.expect(item.disabled == nil or type(item.disabled) == "boolean",
+    applet_expect(item.disabled == nil or type(item.disabled) == "boolean",
       "presentation item " .. index .. ".disabled", "must be a boolean", 4)
-    util.expect(not seen[item.id], "presentation item " .. index,
+    applet_expect(not seen[item.id], "presentation item " .. index,
       "id must be unique", 4)
     seen[item.id] = true
     selected[#selected + 1] = util.copy(item)
@@ -248,9 +342,11 @@ local function copy_items(items)
   return selected
 end
 
+---@param query string
 function Presentation:_publish_results(query)
+  local request = self.request --[[@as Applet.SelectPresentationRequest]]
   local matches = {}
-  for index, item in ipairs(self.request.items) do
+  for index, item in ipairs(request.items) do
     local score = fuzzy_score(searchable_text(item), query)
     if score ~= nil then
       matches[#matches + 1] = { item = item, score = score, index = index }
@@ -276,8 +372,8 @@ function Presentation:_publish_results(query)
   end
   self.query, self.visible, self.selected = query, items, selected
   self.revision = self.revision + 1
-  self.results:set_state({
-    request = self.request,
+  assert(self.results):set_state({
+    request = request,
     items = items,
     selected = selected,
     revision = self.revision,
@@ -291,7 +387,10 @@ function Presentation:_publish_results(query)
   end
 end
 
+---@param direction integer
+---@return boolean
 function Presentation:_move(direction)
+  local request = self.request --[[@as Applet.SelectPresentationRequest]]
   if not self.selected then return false end
   local enabled, current = {}, nil
   for _, item in ipairs(self.visible) do
@@ -304,8 +403,8 @@ function Presentation:_move(direction)
   local next_index = ((current - 1 + direction) % #enabled) + 1
   self.selected = enabled[next_index]
   self.revision = self.revision + 1
-  self.results:set_state({
-    request = self.request,
+  assert(self.results):set_state({
+    request = request,
     items = self.visible,
     selected = self.selected,
     revision = self.revision,
@@ -313,6 +412,8 @@ function Presentation:_move(direction)
   return true
 end
 
+---@param id? string
+---@return boolean
 function Presentation:_choose(id)
   id = id or self.selected
   if self.finished or not id then return false end
@@ -331,6 +432,7 @@ function Presentation:_choose(id)
   return false
 end
 
+---@return boolean
 function Presentation:_cancel()
   if self.finished then return false end
   self.finished = true
@@ -338,9 +440,11 @@ function Presentation:_cancel()
   return true
 end
 
+---@param self Applet.Presentation
+---@param opts Applet.PresentationOptions
 local function new_input(self, opts)
-  local request = self.request
-  self.pane = Pane.new({
+  local request = self.request --[[@as Applet.InputPresentationRequest]]
+  local pane = Pane.new({
     key = opts.key or "presentation-input",
     extent = "document",
     buffer_mode = "editable",
@@ -354,12 +458,15 @@ local function new_input(self, opts)
     },
     on_error = opts.on_error,
   })
-  self.pane:set_state({ request = request })
+  self.pane = pane
+  pane:set_state({ request = request })
 end
 
+---@param self Applet.Presentation
+---@param opts Applet.PresentationOptions
 local function new_notice(self, opts)
-  local request = self.request
-  self.pane = Pane.new({
+  local request = self.request --[[@as Applet.NoticePresentationRequest]]
+  local pane = Pane.new({
     key = opts.key or "presentation-notice",
     extent = "document",
     buffer_mode = "managed",
@@ -370,11 +477,14 @@ local function new_notice(self, opts)
     },
     on_error = opts.on_error,
   })
-  self.pane:set_state({ request = request })
+  self.pane = pane
+  pane:set_state({ request = request })
 end
 
+---@param self Applet.Presentation
+---@param opts Applet.PresentationOptions
 local function new_picker(self, opts)
-  local request = self.request
+  local request = self.request --[[@as Applet.SelectPresentationRequest]]
   self.filter = Pane.new({
     key = opts.filter_key or (opts.key or "presentation-select")
       .. "-filter",
@@ -384,10 +494,10 @@ local function new_picker(self, opts)
     render = render_filter,
     handlers = {
       ["presentation.filter"] = function()
-        self:_publish_results(self.filter:text())
+        self:_publish_results(assert(self.filter):text())
       end,
       ["presentation.move"] = function(event)
-        return self:_move(event.payload.direction)
+        return self:_move((event.payload --[[@as {direction: integer}]]).direction)
       end,
       ["presentation.choose"] = function() return self:_choose() end,
       ["presentation.cancel"] = function() return self:_cancel() end,
@@ -403,35 +513,38 @@ local function new_picker(self, opts)
     render = render_results,
     handlers = {
       ["presentation.move"] = function(event)
-        return self:_move(event.payload.direction)
+        return self:_move((event.payload --[[@as {direction: integer}]]).direction)
       end,
       ["presentation.choose"] = function() return self:_choose() end,
       ["presentation.choose_item"] = function(event)
-        return self:_choose(event.payload.id)
+        return self:_choose((event.payload --[[@as {id: string}]]).id)
       end,
       ["presentation.cancel"] = function() return self:_cancel() end,
     },
     on_error = opts.on_error,
   })
   self.pane = self.results
-  self.filter:set_state({ request = request })
+  assert(self.filter):set_state({ request = request })
   self:_publish_results("")
 end
 
+---@param opts Applet.PresentationOptions
+---@return Applet.Presentation
 function Presentation.new(opts)
   opts = opts or {}
-  util.expect(type(opts) == "table", "presentation", "options must be a table", 3)
-  util.expect(type(opts.request) == "table", "presentation.request", "must be a table", 3)
-  util.expect(type(opts.on_choose) == "function", "presentation.on_choose",
+  applet_expect(type(opts) == "table", "presentation", "options must be a table", 3)
+  applet_expect(type(opts.request) == "table", "presentation.request", "must be a table", 3)
+  applet_expect(type(opts.on_choose) == "function", "presentation.on_choose",
     "must be a function", 3)
-  util.expect(type(opts.on_cancel) == "function", "presentation.on_cancel",
+  applet_expect(type(opts.on_cancel) == "function", "presentation.on_cancel",
     "must be a function", 3)
-  util.expect(opts.on_results == nil or type(opts.on_results) == "function",
+  applet_expect(opts.on_results == nil or type(opts.on_results) == "function",
     "presentation.on_results", "must be a function", 3)
   local request = util.copy(opts.request)
-  util.expect(request.kind == "input" or request.kind == "select"
+  applet_expect(request.kind == "input" or request.kind == "select"
       or request.kind == "notice",
     "presentation.request.kind", "must be select, input, or notice", 3)
+  ---@type Applet.Presentation
   local self = setmetatable({
     request = request,
     on_choose = opts.on_choose,
@@ -449,46 +562,57 @@ function Presentation.new(opts)
   elseif request.kind == "notice" then
     new_notice(self, opts)
   else
+    ---@cast request Applet.SelectPresentationRequest
     request.items = copy_items(request.items)
     new_picker(self, opts)
   end
   return self
 end
 
+---@return boolean
 function Presentation:is_picker()
   return self.filter ~= nil
 end
 
+---@return boolean
 function Presentation:is_destroyed()
   return self.destroyed == true
 end
 
+---@return Applet.Pane|Applet.Pane<Applet.PresentationState<Applet.SelectPresentationRequest>>
 function Presentation:editable_pane()
   return self.filter or self.pane
 end
 
+---@return string
 function Presentation:text()
   return self:editable_pane():text()
 end
 
+---@param value string
+---@return boolean
 function Presentation:set_text(value)
-  util.expect(type(value) == "string", "presentation text", "must be a string", 3)
+  applet_expect(type(value) == "string", "presentation text", "must be a string", 3)
   local editable = self:editable_pane()
   local changed = editable:replace_text(value)
   if changed and self:is_picker() then self:_publish_results(value) end
   return changed
 end
 
+---@param theme? Applet.Theme|Applet.ThemeOptions
 function Presentation:set_theme(theme)
   self.pane:set_theme(theme)
   if self.filter then self.filter:set_theme(theme) end
 end
 
+---@param items Applet.PresentationItem[]
+---@return integer
 function Presentation:set_items(items)
-  util.expect(self:is_picker(), "presentation items",
+  applet_expect(self:is_picker(), "presentation items",
     "require a selection presentation", 3)
   local selected = copy_items(items)
-  self.request.items = selected
+  local request = self.request --[[@as Applet.SelectPresentationRequest]]
+  request.items = selected
   self:_publish_results(self.query or "")
   return #selected
 end
