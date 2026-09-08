@@ -2,6 +2,7 @@ local assert = require("luassert")
 local history_module = require("neoagent.input_history")
 
 describe("neoagent input history", function()
+  ---@type string[]
   local paths = {}
 
   after_each(function()
@@ -29,11 +30,11 @@ describe("neoagent input history", function()
       assert(require("neoagent.fs").read(history.path)))
 
     local bit = require("bit")
-    assert.are.equal(448, bit.band(vim.uv.fs_stat(history.directory).mode, 511))
-    assert.are.equal(384, bit.band(vim.uv.fs_stat(history.path).mode, 511))
+    assert.are.equal(448, bit.band(assert(vim.uv.fs_stat(history.directory)).mode, 511))
+    assert.are.equal(384, bit.band(assert(vim.uv.fs_stat(history.path)).mode, 511))
     assert.are.same({ "direct" }, assert(history:write({ "direct" })))
     assert.are.same({ "direct" }, assert(history:load()))
-    assert.has_error(function() history:write({ false }) end)
+    assert.has_error(function() history:write({ false } --[[@as string[] ]]) end)
     assert.has_error(function()
       history_module.new({ directory = directory, root = root, limit = 0 })
     end)
@@ -77,8 +78,8 @@ describe("neoagent input history", function()
     vim.fn.writefile({ "not-json" }, history.path)
     local value, err = history:load()
     assert.is_nil(value)
-    assert.are.equal("history", err.kind)
-    assert.matches("line 1", err.detail)
+    assert.are.equal("history", assert(err).kind)
+    assert.matches("line 1", tostring(assert(err).detail))
 
     vim.fn.writefile({ '"valid"' }, history.path)
     local original_rename = vim.uv.fs_rename
@@ -86,7 +87,7 @@ describe("neoagent input history", function()
     value, err = history:add("new")
     vim.uv.fs_rename = original_rename
     assert.is_nil(value)
-    assert.matches("replace", err.message)
+    assert.matches("replace", assert(err).message)
 
     local original_random = vim.uv.random
     local random_calls = 0
@@ -98,14 +99,14 @@ describe("neoagent input history", function()
     value, err = history:add("without random bytes")
     vim.uv.random = original_random
     assert.is_nil(value)
-    assert.matches("temporary file", err.message)
-    assert.are.equal("entropy unavailable", err.detail)
+    assert.matches("temporary file", assert(err).message)
+    assert.are.equal("entropy unavailable", assert(err).detail)
 
     vim.fn.delete(history.path)
     vim.fn.mkdir(history.path, "p")
     value, err = history:load()
     assert.is_nil(value)
-    assert.matches("read", err.message)
+    assert.matches("read", assert(err).message)
 
     vim.fn.delete(history.path, "rf")
     local original_open = vim.uv.fs_open
@@ -116,6 +117,6 @@ describe("neoagent input history", function()
     value, err = history:write({ "blocked" })
     vim.uv.fs_open = original_open
     assert.is_nil(value)
-    assert.matches("acquire input history lock", err.message)
+    assert.matches("acquire input history lock", assert(err).message)
   end)
 end)

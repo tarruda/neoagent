@@ -4,6 +4,7 @@ local fs = require("neoagent.fs")
 local skills = require("neoagent.skills")
 
 describe("neoagent contextual resources", function()
+  ---@type string[]
   local paths = {}
 
   after_each(function()
@@ -11,17 +12,26 @@ describe("neoagent contextual resources", function()
     paths = {}
   end)
 
+  ---@param path string
+  ---@return string
   local function directory(path)
     assert.are.equal(1, vim.fn.mkdir(path, "p"))
     return path
   end
 
+  ---@param path string
+  ---@param content string
+  ---@return string
   local function write(path, content)
     directory(vim.fs.dirname(path))
     assert(fs.write_all(path, content, "w"))
     return path
   end
 
+  ---@param root string
+  ---@param folder string
+  ---@param content string
+  ---@return string
   local function skill(root, folder, content)
     return write(vim.fs.joinpath(root, folder, "SKILL.md"), content)
   end
@@ -53,14 +63,17 @@ describe("neoagent contextual resources", function()
       "module instructions",
     }, vim.tbl_map(function(file) return file.content end, result.files))
     assert.are.equal(1, #result.diagnostics)
-    assert.matches("not a file", result.diagnostics[1].message)
+    assert.matches("not a file", assert(result.diagnostics[1]).message)
 
     local prompt = agent_instructions.format(result.files)
     assert.matches("ordered from broadest to most specific", prompt)
     assert.matches("A&amp;&quot;&apos;%.md", prompt)
-    assert.is_nil(prompt:find("outside repository", 1, true))
+    assert.is_nil((prompt:find("outside repository", 1, true)))
     assert.are.equal("", agent_instructions.format({}))
-    assert.has_error(function() agent_instructions.discover({}) end)
+    local missing_cwd = {}
+    assert.has_error(function()
+      agent_instructions.discover(missing_cwd --[[@as Neoagent.InstructionDiscoveryOptions]])
+    end)
   end)
 
   it("reports AGENTS.md read failures and supports paths outside a repository", function()
@@ -82,7 +95,7 @@ describe("neoagent contextual resources", function()
     fs.read = original
     assert(ok)
     assert.are.equal(0, #result.files)
-    assert.matches("denied", result.diagnostics[1].message)
+    assert.matches("denied", assert(result.diagnostics[1]).message)
 
     local original_find = vim.fs.find
     vim.fs.find = function() return {} end
@@ -133,20 +146,23 @@ describe("neoagent contextual resources", function()
     })
     assert.are.same({ "alpha", "beta", "gamma" },
       vim.tbl_map(function(item) return item.name end, result.skills))
-    assert.are.equal("project alpha", result.skills[1].description)
-    assert.are.equal("project", result.skills[1].source)
-    assert.are.equal("inspect <code> carefully", result.skills[2].description)
-    assert.are.equal("first line\nsecond line", result.skills[3].description)
+    assert.are.equal("project alpha", assert(result.skills[1]).description)
+    assert.are.equal("project", assert(result.skills[1]).source)
+    assert.are.equal("inspect <code> carefully", assert(result.skills[2]).description)
+    assert.are.equal("first line\nsecond line", assert(result.skills[3]).description)
     assert.are.equal(1, #result.diagnostics)
 
     local prompt = skills.format(result.skills)
     assert.matches("<available_skills>", prompt)
     assert.matches("inspect &lt;code&gt; carefully", prompt)
     assert.matches("Use read_file", prompt)
-    assert.is_nil(prompt:find("BETA BODY MUST STAY ON DISK", 1, true))
-    assert.is_nil(prompt:find("SHARED WORKFLOW MUST STAY ON DISK", 1, true))
+    assert.is_nil((prompt:find("BETA BODY MUST STAY ON DISK", 1, true)))
+    assert.is_nil((prompt:find("SHARED WORKFLOW MUST STAY ON DISK", 1, true)))
     assert.are.equal("", skills.format(nil))
-    assert.has_error(function() skills.discover({}) end)
+    local missing_cwd = {}
+    assert.has_error(function()
+      skills.discover(missing_cwd --[[@as Neoagent.SkillDiscoveryOptions]])
+    end)
   end)
 
   it("reports malformed and unreadable skills without hiding valid ones", function()
@@ -179,15 +195,17 @@ describe("neoagent contextual resources", function()
     fs.read = original
     assert(ok)
     assert.are.same({ "x" }, vim.tbl_map(function(item) return item.name end, result.skills))
-    assert.are.equal(vim.uv.fs_realpath(valid), result.skills[1].path)
+    assert.are.equal(vim.uv.fs_realpath(valid), assert(result.skills[1]).path)
     assert.are.equal(7, #result.diagnostics)
     assert.is_true(vim.tbl_contains(vim.tbl_map(function(item) return item.message end,
       result.diagnostics), "skill name is required"))
   end)
 
   it("adds interaction guidance for Codex response models", function()
+    local model = require("tests.helpers.fake_model").new()
+    model.api = "openai-codex-responses"
     local prompt = require("neoagent.system_prompt").default({
-      model = { api = "openai-codex-responses" },
+      model = model,
       workspace = { cwd = "/workspace" },
       tools = {},
     })
@@ -223,6 +241,6 @@ describe("neoagent contextual resources", function()
     assert(ok)
     assert.are.same({ "linked" }, vim.tbl_map(function(item) return item.name end, result.skills))
     assert.are.equal(1, #result.diagnostics)
-    assert.matches("failed to scan skills", result.diagnostics[1].message)
+    assert.matches("failed to scan skills", assert(result.diagnostics[1]).message)
   end)
 end)

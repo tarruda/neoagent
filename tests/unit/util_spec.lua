@@ -92,9 +92,9 @@ describe("neoagent.util", function()
     }
     local normalized = util.normalize_error(source, "other")
     assert.are_not.equal(source, normalized)
-    assert.are_not.equal(source.metadata, normalized.metadata)
+    assert.are_not.equal(source.metadata, rawget(normalized, "metadata"))
     assert.are.equal("provider", normalized.kind)
-    assert.are.equal(429, normalized.status)
+    assert.are.equal(429, rawget(normalized, "status"))
     assert.is_true(util.is_valid_utf8(normalized.message))
     assert.is_true(vim.fn.strchars(normalized.message) <= 1024)
 
@@ -123,17 +123,19 @@ describe("neoagent.util", function()
         label = string.rep("x", util.MAX_ERROR_STRING_CHARACTERS + 100),
       },
     }, { __pairs = function() error("top-level pairs must not run") end }))
+    local metadata = rawget(bounded, "metadata")
+      --[[@as {nested: {value: string, closure?: unknown}, self?: unknown}]]
     assert.is_nil(getmetatable(bounded))
-    assert.is_nil(getmetatable(bounded.metadata))
-    assert.is_nil(getmetatable(bounded.metadata.nested))
-    assert.are.equal("safe", bounded.metadata.nested.value)
-    assert.is_nil(bounded.metadata.nested.closure)
-    assert.is_nil(bounded.metadata.self)
-    assert.is_true(bounded.retryable)
-    assert.are.equal(429, bounded.status)
-    assert.are.equal(25, bounded.retry_after_ms)
+    assert.is_nil(getmetatable(metadata))
+    assert.is_nil(getmetatable(metadata.nested))
+    assert.are.equal("safe", metadata.nested.value)
+    assert.is_nil(metadata.nested.closure)
+    assert.is_nil(metadata.self)
+    assert.is_true(rawget(bounded, "retryable"))
+    assert.are.equal(429, rawget(bounded, "status"))
+    assert.are.equal(25, rawget(bounded, "retry_after_ms"))
     assert.is_true(vim.fn.strchars(
-      bounded.provider_status_details.label)
+      rawget(bounded, "provider_status_details").label)
       <= util.MAX_ERROR_STRING_CHARACTERS)
   end)
 
@@ -157,7 +159,7 @@ describe("neoagent.util", function()
     local ok, err = pcall(util.now_ms)
     vim.uv.gettimeofday = gettimeofday
     assert.is_false(ok)
-    assert.matches("clock unavailable", err)
+    assert.matches("clock unavailable", tostring(err))
   end)
 
   it("normalizes list and message content values", function()
@@ -174,7 +176,7 @@ describe("neoagent.util", function()
     assert.are.same({ { type = "text", text = "plain" } }, util.content_blocks("plain"))
     local content = { { type = "text", text = "copied" } }
     local blocks = util.content_blocks(content)
-    blocks[1].text = "changed"
+    assert(blocks[1]).text = "changed"
     assert.are.equal("copied", content[1].text)
   end)
 end)
