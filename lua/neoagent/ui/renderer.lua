@@ -1,11 +1,56 @@
 local util = require("neoagent.util")
 
+---@class Neoagent.RenderBlock: Neoagent.CardFocus
+---@field kind string
+---@field key? string
+---@field revision? string|number
+---@field content? string|Neoagent.Block[]
+---@field text? string
+---@field extra? string
+---@field error? boolean
+---@field warning? boolean
+---@field name? string
+---@field state? string
+---@field call? Neoagent.ToolCallBlock
+---@field raw? string
+---@field update? Neoagent.ToolResult
+---@field message? Neoagent.ToolResultMessage
+---@field finished? boolean
+---@field summary? string
+---@field tokens_before? number
+---@field image_scope? string
+---@field text_epoch? unknown
+
+---@class Neoagent.RenderOptions
+---@field previous? Neoagent.RenderBlock
+---@field following? Neoagent.RenderBlock
+---@field width? integer
+---@field surface_width? integer
+---@field spinner? string
+---@field details_key? string
+---@field wrap_cards? boolean
+---@field tool? Neoagent.Tool<unknown>
+---@field key? string
+---@field show_images? boolean
+---@field image_mode? 'details'
+
+---@class Neoagent.Renderer<C>
+---@field name string
+---@field theme Applet.Theme
+---@field render_block fun(self: Neoagent.Renderer<C>, block: Neoagent.RenderBlock, env: Neoagent.RenderOptions, continuation?: C): Applet.Node?, C?
+---@field render_details fun(self: Neoagent.Renderer<C>, block: Neoagent.RenderBlock, env: Neoagent.RenderOptions, continuation?: C): Applet.Node?, C?
+
 local M = {}
 
+---@param message string
+---@return nil, Neoagent.Error
 local function failure(message)
   return nil, util.error("ui", message)
 end
 
+---@param value unknown
+---@return_overload Neoagent.Renderer<unknown>, nil
+---@return_overload nil, Neoagent.Error
 function M.validate(value)
   if type(value) ~= "table" then
     return failure("Renderer must be a table")
@@ -23,12 +68,15 @@ function M.validate(value)
       return failure("Renderer must implement " .. method)
     end
   end
-  return value
+  return value --[[@as Neoagent.Renderer<unknown>]]
 end
 
+---@param value unknown
+---@param prefix? string
+---@return Neoagent.Renderer<unknown>
 function M.assert(value, prefix)
   local renderer, err = M.validate(value)
-  if not renderer then error((prefix or "Renderer") .. ": " .. err.message, 2) end
+  if not renderer then error((prefix or "Renderer") .. ": " .. assert(err).message, 2) end
   return renderer
 end
 
@@ -39,14 +87,24 @@ local block_fields = {
   "image_scope", "text_epoch",
 }
 
+---@param block Neoagent.RenderBlock
+---@return Neoagent.RenderBlock
 function M.copy_block(block)
   local result = {}
   for _, key in ipairs(block_fields) do
     if block[key] ~= nil then result[key] = util.copy(block[key]) end
   end
-  return result
+  return result --[[@as Neoagent.RenderBlock]]
 end
 
+---@generic C
+---@param renderer Neoagent.Renderer<C>
+---@param method "render_block"|"render_details"
+---@param block Neoagent.RenderBlock
+---@param env? Neoagent.RenderOptions
+---@param optional boolean
+---@param continuation? C
+---@return Applet.Node?, C|Neoagent.Error|nil
 local function invoke(renderer, method, block, env, optional, continuation)
   local copied = M.copy_block(block)
   local options = util.copy(env or {})
@@ -65,17 +123,31 @@ local function invoke(renderer, method, block, env, optional, continuation)
       .. " returned no Pane content node")
   end
   if value == nil then return nil end
-  return value, next_continuation
+  return value --[[@as Applet.Node]], next_continuation
 end
 
+---@generic C
+---@param renderer Neoagent.Renderer<C>
+---@param block Neoagent.RenderBlock
+---@param env? Neoagent.RenderOptions
+---@param continuation? C
+---@return Applet.Node?, C|Neoagent.Error|nil
 function M.render_block(renderer, block, env, continuation)
   return invoke(renderer, "render_block", block, env, false, continuation)
 end
 
+---@generic C
+---@param renderer Neoagent.Renderer<C>
+---@param block Neoagent.RenderBlock
+---@param env? Neoagent.RenderOptions
+---@param continuation? C
+---@return Applet.Node?, C|Neoagent.Error|nil
 function M.render_details(renderer, block, env, continuation)
   return invoke(renderer, "render_details", block, env, true, continuation)
 end
 
+---@param renderer Neoagent.Renderer<unknown>
+---@return true?, Neoagent.Error?
 function M.define_highlights(renderer)
   local ok, err = pcall(renderer.theme.define, renderer.theme)
   if not ok then
