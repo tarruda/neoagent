@@ -9,6 +9,9 @@ local Scene = require("applet.pane.scene")
 local Base = require("applet.host.base")
 local Mode = require("applet.mode")
 
+---@class Applet.Pane
+---@field _key string
+---@field buffer_mode "managed"|"editable"
 local Pane = {}
 Pane.__index = Pane
 
@@ -360,10 +363,13 @@ function Pane.new(opts)
   return self
 end
 
+---@param value unknown
+---@return TypeGuard<Applet.Pane>
 function Pane.is(value)
   return getmetatable(value) == Pane
 end
 
+---@return string
 function Pane:key()
   return self._key
 end
@@ -1689,6 +1695,7 @@ function Pane:destroy()
 end
 
 ---@class Applet.PaneModule
+---@field is fun(value: unknown): boolean
 local module = {
   new = Pane.new,
   is = Pane.is,
@@ -1700,4 +1707,4 @@ local module = {
 
 return setmetatable(module, {
   __call = function(_, opts) return Pane.new(opts) end,
-})
+}) --[[@as Applet.PaneModule]]

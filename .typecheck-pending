@@ -3,8 +3,6 @@ lua/applet/applet.lua
 lua/applet/host/base.lua
 lua/applet/host/float.lua
 lua/applet/host/tab.lua
-lua/applet/layout.lua
-lua/applet/layout/compile.lua
 lua/applet/pane.lua
 lua/applet/pane/compile.lua
 lua/applet/pane/reconcile.lua

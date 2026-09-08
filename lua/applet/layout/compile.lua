@@ -1,6 +1,210 @@
 local host_api = require("applet.host")
 local Pane = require("applet.pane")
 local util = require("applet.util")
+local applet_expect = util.expect
+
+---@class Applet.LayoutMeasurement
+---@field screen_lines? integer
+---@field content_lines? integer
+---@field screen_width? integer
+---@field content_width? integer
+---@field chrome? Applet.Insets
+
+---@class Applet.SplitOverride
+---@field signature string
+---@field sizes integer[]
+
+---@class Applet.LayoutRectangleInput
+---@field row? integer
+---@field col? integer
+---@field width integer
+---@field height integer
+
+---@class Applet.LayoutContainer: Applet.LayoutRectangleInput
+---@field available? true
+
+---@alias Applet.ContainerGeometry Applet.LayoutContainer|{available: false}
+
+---@class Applet.LayoutEnvironmentOptions
+---@field host Applet.HostInput
+---@field editor? Applet.LayoutRectangleInput
+---@field container? Applet.ContainerGeometry
+
+---@class Applet.LayoutEnvironment
+---@field bounds Applet.Rectangle
+---@field container Applet.Rectangle
+---@field capabilities {native_splits: boolean, overlays: boolean}
+
+---@class Applet.LayoutCompileOptions: Applet.LayoutEnvironmentOptions
+---@field tree Applet.LayoutTree
+---@field measurements? table<string, Applet.LayoutMeasurement>
+---@field overrides? table<string, Applet.SplitOverride>
+---@field handlers? table<string, function>
+---@field has_action? fun(action: string): boolean
+
+---@class Applet.LayoutBinding: Applet.Binding
+---@field mode string
+---@field nowait boolean
+---@field silent boolean
+
+---@class Applet.LayoutScope
+---@field key string
+---@field kind 'root'|'layout'|'modal'|'pane'
+---@field modal? boolean
+---@field bindings Applet.LayoutBinding[]
+
+---@class Applet.MountBuffer: Applet.MountBufferOptions
+---@field name string
+---@field sensitive boolean
+---@field options Applet.Options
+
+---@class Applet.MountWindow: Applet.MountWindowOptions
+---@field options Applet.Options
+---@field host_options {floating: Applet.Options, tab: Applet.Options}
+
+---@class Applet.MountFocus: Applet.MountFocusOptions
+---@field mode 'normal'|'insert'|'preserve'
+---@field cursor 'preserve'|'start'|'end'
+
+---@class Applet.FloatingProjection
+---@field kind 'floating'
+---@field config vim.api.keyset.win_config
+
+---@class Applet.SplitProjection
+---@field kind 'split'
+---@field width integer
+---@field height integer
+
+---@alias Applet.MountProjection Applet.FloatingProjection|Applet.SplitProjection
+
+---@class Applet.MountDescriptor
+---@field key string
+---@field pane Applet.Pane
+---@field lifecycle Applet.MountLifecycle
+---@field owns_pane boolean
+---@field required boolean
+---@field mount_revision? number|string
+---@field buffer Applet.MountBuffer
+---@field window Applet.MountWindow
+---@field focus Applet.MountFocus
+---@field bindings Applet.LayoutBinding[]
+---@field scopes Applet.LayoutScope[]
+---@field outer Applet.Rectangle
+---@field content Applet.Rectangle
+---@field chrome Applet.Insets
+---@field projection Applet.MountProjection
+---@field layer? string
+---@field modal boolean
+---@field focusable boolean
+
+---@class Applet.PaneTopology
+---@field type 'pane'
+---@field key string
+
+---@class Applet.ScopeTopology
+---@field type 'scope'
+---@field key string
+---@field child Applet.LayoutTopology
+
+---@class Applet.SplitTopologyChild
+---@field key string
+---@field size integer
+---@field min integer
+---@field max? integer
+---@field child Applet.LayoutTopology
+
+---@class Applet.SplitTopology
+---@field type 'split'
+---@field key string
+---@field axis Applet.LayoutAxis
+---@field revision? string|number
+---@field signature string
+---@field children Applet.SplitTopologyChild[]
+
+---@alias Applet.LayoutTopology Applet.PaneTopology|Applet.ScopeTopology|Applet.SplitTopology
+
+---@class Applet.LayoutSplit: Applet.SplitOverride
+---@field key string
+---@field axis Applet.LayoutAxis
+---@field revision? string|number
+
+---@class Applet.LayoutLayer
+---@field key string
+---@field container string
+---@field anchor Applet.LayerAnchor
+---@field rect Applet.Rectangle
+---@field zindex integer
+---@field modal boolean
+---@field enter boolean
+---@field restore_focus boolean
+---@field panes string[]
+---@field order integer
+---@field width_request boolean
+---@field height_request boolean
+---@field child Applet.LayoutTopology
+
+---@class Applet.LayoutFocus: Applet.LayoutFocusOptions
+---@field layer_entry? string
+
+---@class Applet.CompiledLayout
+---@field host Applet.Host
+---@field plan {kind: 'floating'|'tab', bounds: Applet.Rectangle, container: Applet.Rectangle, topology: Applet.LayoutTopology}
+---@field frame {key: string}
+---@field bounds Applet.Rectangle
+---@field topology Applet.LayoutTopology
+---@field panes table<string, Applet.MountDescriptor>
+---@field pane_order string[]
+---@field splits table<string, Applet.LayoutSplit>
+---@field split_order string[]
+---@field layers Applet.LayoutLayer[]
+---@field modal_boundary string[]
+---@field bindings Applet.LayoutBinding[]
+---@field focus Applet.LayoutFocus
+
+---@class Applet.LayoutCompileContext
+---@field host Applet.Host
+---@field editor Applet.Rectangle
+---@field bounds Applet.Rectangle
+---@field container Applet.Rectangle
+---@field measurements table<string, Applet.LayoutMeasurement>
+---@field overrides table<string, Applet.SplitOverride>
+---@field handlers table<string, function>
+---@field has_action? fun(action: string): boolean
+---@field active table<table, boolean>
+---@field node_keys table<string, string>
+---@field pane_keys table<string, string>
+---@field child_keys table<string, string>
+---@field mounted_panes table<Applet.Pane, string>
+---@field panes table<string, Applet.MountDescriptor>
+---@field pane_order string[]
+---@field splits table<string, Applet.LayoutSplit>
+---@field split_order string[]
+---@field layers Applet.LayoutLayer[]
+---@field root_scopes Applet.LayoutScope[]
+
+---@class Applet.LayoutWalkState
+---@field scopes Applet.LayoutScope[]
+---@field layer? string
+---@field layer_panes? string[]
+---@field modal boolean
+---@field zindex? integer
+---@field focusable boolean
+
+---@class Applet.LayoutAllocation
+---@field key string
+---@field node Applet.LayoutNode
+---@field basis? Applet.LayoutDimension
+---@field min integer
+---@field max? integer
+---@field size integer
+---@field grow number
+---@field shrink number
+---@field signature string
+
+---@class Applet.AllocationCandidate
+---@field index integer
+---@field capacity integer
+---@field weight number
 
 local M = {}
 
@@ -66,76 +270,103 @@ local borders = {
   solid = true, shadow = true,
 }
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@return TypeGuard<integer>
 local function integer(value)
   return finite(value) and value % 1 == 0
 end
 
+---@param value table
+---@param accepted table<string, boolean>
+---@param path string
 local function fields(value, accepted, path)
-  util.expect(type(value) == "table", path, "must be a table", 4)
-  util.expect(getmetatable(value) == nil, path, "must be a plain table", 4)
+  applet_expect(type(value) == "table", path, "must be a table", 4)
+  applet_expect(getmetatable(value) == nil, path, "must be a plain table", 4)
   for key in pairs(value) do
-    util.expect(accepted[key] == true, path .. "." .. tostring(key),
+    applet_expect(accepted[key] == true, path .. "." .. tostring(key),
       "is not a recognized field", 4)
   end
 end
 
+---@generic T: Applet.Data
+---@param value T
+---@param path string
+---@param active? table<table, boolean>
+---@return T
 local function copy_value(value, path, active)
   local kind = type(value)
   if kind == "nil" or kind == "boolean" or kind == "string" then return value end
   if kind == "number" then
-    util.expect(finite(value), path, "must contain only finite numbers", 4)
+    applet_expect(finite(value), path, "must contain only finite numbers", 4)
     return value
   end
-  util.expect(kind == "table", path,
+  applet_expect(kind == "table", path,
     "must contain only plain data values", 4)
-  util.expect(getmetatable(value) == nil, path, "must be a plain table", 4)
+  applet_expect(getmetatable(value) == nil, path, "must be a plain table", 4)
+  ---@cast value Applet.DataTable
   active = active or {}
-  util.expect(not active[value], path, "must not contain a cycle", 4)
+  applet_expect(not active[value], path, "must not contain a cycle", 4)
   active[value] = true
   local result = {}
   for key, item in pairs(value) do
     local key_kind = type(key)
-    util.expect(key_kind == "string" or key_kind == "number", path,
+    applet_expect(key_kind == "string" or key_kind == "number", path,
       "must use string or number keys", 4)
     result[key] = copy_value(item, path .. "." .. tostring(key), active)
   end
   active[value] = nil
-  return result
+  return result --[[@as T]]
 end
 
+---@param value string
+---@param path string
+---@return string
 local function nonempty(value, path)
-  util.expect(util.nonempty_string(value), path, "must be a non-empty string", 4)
+  applet_expect(util.nonempty_string(value), path, "must be a non-empty string", 4)
   return value
 end
 
+---@param value? Applet.LayoutDimension
+---@return string
 local function dimension_signature(value)
   if type(value) ~= "table" then return tostring(value) end
   return table.concat({ "content", tostring(value.content), "min",
     tostring(value.min), "max", tostring(value.max) }, ":")
 end
 
+---@param value number
+---@param path string
+---@param allow_zero? boolean
+---@return number
 local function validate_scalar_dimension(value, path, allow_zero)
-  util.expect(finite(value) and (allow_zero and value >= 0 or value > 0),
+  applet_expect(finite(value) and (allow_zero and value >= 0 or value > 0),
     path, allow_zero and "must be a non-negative finite number"
       or "must be a positive finite number", 4)
-  util.expect(value <= 1 or value % 1 == 0, path,
+  applet_expect(value <= 1 or value % 1 == 0, path,
     "must be a fraction in (0, 1] or an integral cell count", 4)
   return value
 end
 
+---@overload fun(value: number, path: string, content?: boolean): number
+---@param value Applet.LayoutDimension
+---@param path string
+---@param content? boolean
+---@return Applet.LayoutDimension
 local function validate_dimension(value, path, content)
   if type(value) == "number" then
     return validate_scalar_dimension(value, path)
   end
-  util.expect(content and type(value) == "table", path,
+  applet_expect(content and type(value) == "table", path,
     "must be a number or content request", 4)
   fields(value, content_dimension_fields, path)
-  util.expect(value.content == true
+  applet_expect(value.content == true
       or (finite(value.content) and value.content >= 0
         and value.content % 1 == 0),
     path .. ".content", "must be true or a non-negative integral cell count", 4)
@@ -148,46 +379,52 @@ local function validate_dimension(value, path, content)
   }
 end
 
+---@param value number
+---@param total integer
+---@return integer
 local function resolve_scalar(value, total)
   if value <= 1 then return math.max(1, math.floor(total * value + 0.5)) end
-  return value
+  -- Scalar validation guarantees integral cell counts above one.
+  return value --[[@as integer]]
 end
 
+---@param border? Applet.WindowBorder
+---@return Applet.Insets
 local function border_metrics(border)
   if border == nil or border == "" or border == "none" then
     return { top = 0, right = 0, bottom = 0, left = 0 }
   end
   if type(border) == "string" then
-    util.expect(borders[border] == true, "Pane.window.border",
+    applet_expect(borders[border] == true, "Pane.window.border",
       "must be a recognized border name or plain border table", 4)
     return { top = 1, right = 1, bottom = 1, left = 1 }
   end
-  util.expect(type(border) == "table" and getmetatable(border) == nil,
+  applet_expect(type(border) == "table" and getmetatable(border) == nil,
     "Pane.window.border", "must be a string or plain border table", 4)
-  util.expect(#border == 8, "Pane.window.border",
+  applet_expect(#border == 8, "Pane.window.border",
     "border tables must contain eight cells", 4)
   local count = 0
   for _ in pairs(border) do count = count + 1 end
-  util.expect(count == 8, "Pane.window.border",
+  applet_expect(count == 8, "Pane.window.border",
     "border tables must contain a dense list of eight cells", 4)
   local occupied = {}
   for index, cell in ipairs(border) do
     if type(cell) == "table" then
-      util.expect(getmetatable(cell) == nil and #cell >= 1 and #cell <= 2,
+      applet_expect(getmetatable(cell) == nil and #cell >= 1 and #cell <= 2,
         "Pane.window.border." .. index,
         "must be a string or { text, highlight }", 4)
       local cell_count = 0
       for _ in pairs(cell) do cell_count = cell_count + 1 end
-      util.expect(cell_count == #cell, "Pane.window.border." .. index,
+      applet_expect(cell_count == #cell, "Pane.window.border." .. index,
         "must be a dense border cell", 4)
-      util.expect(cell[2] == nil or type(cell[2]) == "string",
+      applet_expect(cell[2] == nil or type(cell[2]) == "string",
         "Pane.window.border." .. index .. ".2",
         "highlight must be a string", 4)
       cell = cell[1]
     end
-    util.expect(type(cell) == "string", "Pane.window.border." .. index,
+    applet_expect(type(cell) == "string", "Pane.window.border." .. index,
       "must be a string or { text, highlight }", 4)
-    util.expect(util.display_width(cell) <= 1, "Pane.window.border." .. index,
+    applet_expect(util.display_width(cell) <= 1, "Pane.window.border." .. index,
       "must occupy at most one display cell", 4)
     occupied[index] = cell ~= ""
   end
@@ -199,6 +436,8 @@ local function border_metrics(border)
   }
 end
 
+---@param rect Applet.Rectangle
+---@return Applet.Rectangle
 local function copy_rect(rect)
   return {
     row = rect.row,
@@ -208,24 +447,32 @@ local function copy_rect(rect)
   }
 end
 
+---@param value Applet.LayoutRectangleInput
+---@param path string
+---@return Applet.Rectangle
 local function normalize_rect(value, path)
-  util.expect(type(value) == "table", path, "must be a table", 4)
+  applet_expect(type(value) == "table", path, "must be a table", 4)
   local result = {
     row = value.row or 0,
     col = value.col or 0,
     width = value.width,
     height = value.height,
   }
-  util.expect(integer(result.row) and integer(result.col), path,
+  applet_expect(integer(result.row) and integer(result.col), path,
     "row and col must be integral cells", 4)
-  util.expect(integer(result.width) and result.width > 0
+  applet_expect(integer(result.width) and result.width > 0
       and integer(result.height) and result.height > 0,
     path, "width and height must be positive integral cells", 4)
   return result
 end
 
+---@param host Applet.Host
+---@param editor Applet.Rectangle
+---@param container? Applet.ContainerGeometry
+---@return Applet.Rectangle, Applet.Rectangle
 local function host_bounds(host, editor, container)
   if host.kind == "tab" then return copy_rect(editor), copy_rect(editor) end
+  ---@cast host Applet.FloatingHost
   local selected
   if host.container == "editor" then
     selected = editor
@@ -238,11 +485,11 @@ local function host_bounds(host, editor, container)
   end
   local available_width = selected.width - host.margin * 2
   local available_height = selected.height - host.margin * 2
-  util.expect(available_width > 0 and available_height > 0,
+  applet_expect(available_width > 0 and available_height > 0,
     "Applet floating Host", "margin leaves no available cells", 4)
   local width = math.min(available_width, resolve_scalar(host.width, selected.width))
   local height = math.min(available_height, resolve_scalar(host.height, selected.height))
-  util.expect(width > 0 and height > 0, "Applet floating Host",
+  applet_expect(width > 0 and height > 0, "Applet floating Host",
     "resolved bounds must contain cells", 4)
   local row = selected.row + host.margin
   local col = selected.col + host.margin
@@ -257,8 +504,10 @@ local function host_bounds(host, editor, container)
   return { row = row, col = col, width = width, height = height }, copy_rect(selected)
 end
 
+---@param opts Applet.LayoutEnvironmentOptions
+---@return Applet.LayoutEnvironment
 function M.environment(opts)
-  util.expect(type(opts) == "table", "Applet environment",
+  applet_expect(type(opts) == "table", "Applet environment",
     "options must be a table", 3)
   local selected = host_api.validate(opts.host)
   local editor = normalize_rect(opts.editor or {
@@ -275,30 +524,42 @@ function M.environment(opts)
   }
 end
 
+---@param value? Applet.Options
+---@param path string
+---@param reserved? table<string, boolean>
+---@return Applet.Options
 local function validate_options(value, path, reserved)
   if value == nil then return {} end
-  util.expect(type(value) == "table" and getmetatable(value) == nil,
+  applet_expect(type(value) == "table" and getmetatable(value) == nil,
     path, "must be a plain table", 4)
   local result = copy_value(value, path)
   for option in pairs(result) do
-    util.expect(not (reserved and reserved[option]), path .. "." .. tostring(option),
+    applet_expect(not (reserved and reserved[option]), path .. "." .. tostring(option),
       "is owned by Applet", 4)
   end
   return result
 end
 
+---@param value Applet.Action
+---@param path string
+---@param ctx Applet.LayoutCompileContext
+---@return Applet.Action
 local function normalize_action(value, path, ctx)
   fields(value, action_fields, path)
   local name = nonempty(value.action, path .. ".action")
-  util.expect(applet_actions[name] or ctx.handlers[name]
+  applet_expect(applet_actions[name] or ctx.handlers[name]
       or (ctx.has_action and ctx.has_action(name)),
     path .. ".action", "is unknown: " .. string.format("%q", name), 4)
   return { action = name, payload = copy_value(value.payload, path .. ".payload") }
 end
 
+---@param value? Applet.Binding[]
+---@param path string
+---@param ctx Applet.LayoutCompileContext
+---@return Applet.LayoutBinding[]
 local function normalize_bindings(value, path, ctx)
   if value == nil then return {} end
-  util.expect(type(value) == "table" and getmetatable(value) == nil,
+  applet_expect(type(value) == "table" and getmetatable(value) == nil,
     path, "must be a plain list", 4)
   local result, seen_pairs = {}, {}
   for index, binding in ipairs(value) do
@@ -307,10 +568,10 @@ local function normalize_bindings(value, path, ctx)
     local mode = binding.mode or "n"
     nonempty(mode, item_path .. ".mode")
     local lhs = nonempty(binding.lhs, item_path .. ".lhs")
-    util.expect(type(binding.action) == "table", item_path .. ".action",
+    applet_expect(type(binding.action) == "table", item_path .. ".action",
       "must be an action", 4)
     local pair = mode .. "\0" .. lhs
-    util.expect(not seen_pairs[pair], item_path,
+    applet_expect(not seen_pairs[pair], item_path,
       "duplicates an equal-precedence mode and lhs", 4)
     seen_pairs[pair] = true
     result[#result + 1] = {
@@ -321,39 +582,56 @@ local function normalize_bindings(value, path, ctx)
       nowait = binding.nowait == true,
       silent = binding.silent ~= false,
     }
-    util.expect(binding.desc == nil or type(binding.desc) == "string",
+    applet_expect(binding.desc == nil or type(binding.desc) == "string",
       item_path .. ".desc", "must be a string", 4)
-    util.expect(binding.nowait == nil or type(binding.nowait) == "boolean",
+    applet_expect(binding.nowait == nil or type(binding.nowait) == "boolean",
       item_path .. ".nowait", "must be a boolean", 4)
-    util.expect(binding.silent == nil or type(binding.silent) == "boolean",
+    applet_expect(binding.silent == nil or type(binding.silent) == "boolean",
       item_path .. ".silent", "must be a boolean", 4)
   end
   local count = 0
   for _ in pairs(value) do count = count + 1 end
-  util.expect(count == #value, path, "must be a dense list", 4)
+  applet_expect(count == #value, path, "must be a dense list", 4)
   return result
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param key string
+---@param path string
+---@param domain 'node_keys'|'pane_keys'|'child_keys'
+---@return string
 local function register_key(ctx, key, path, domain)
   nonempty(key, path)
   local keys = ctx[domain]
-  util.expect(not keys[key], path, "duplicates " .. string.format("%q", key), 4)
+  applet_expect(not keys[key], path, "duplicates " .. string.format("%q", key), 4)
   keys[key] = path
   return key
 end
 
+---@type fun(ctx: Applet.LayoutCompileContext, node: Applet.LayoutNode, axis: Applet.LayoutAxis): integer
 local child_decoration
 
+---@param node Applet.LayoutNode
+---@return string
 local function layout_key(node)
-  if node.type == "mount" and Pane.is(node.pane) then return node.pane:key() end
-  return node.key
+  if node.type == "mount" then
+    ---@cast node Applet.MountNode
+    if Pane.is(node.pane) then return node.pane:key() end
+  end
+  return node.key --[[@as string]]
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutNode
+---@param axis Applet.LayoutAxis
+---@return integer
 local function measured_content(ctx, node, axis)
   if node.type == "scope" then
+    ---@cast node Applet.LayoutScopeNode
     return measured_content(ctx, node.child, axis)
   end
   if node.type == "split" then
+    ---@cast node Applet.LayoutSplitNode
     local measured = node.axis == axis and 0 or 1
     for _, item in ipairs(node.children or {}) do
       local child = measured_content(ctx, item.child, axis)
@@ -372,15 +650,19 @@ local function measured_content(ctx, node, axis)
   return measured.screen_width or measured.content_width or 1
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param key string
+---@param border? Applet.WindowBorder
+---@return Applet.Insets
 local function chrome_metrics(ctx, key, border)
   if ctx.host.kind == "floating" then return border_metrics(border) end
   local measured = ctx.measurements[key]
   local metrics = measured and measured.chrome or nil
   if not metrics then return { top = 0, right = 0, bottom = 0, left = 0 } end
-  local result = {}
+  local result = { top = 0, right = 0, bottom = 0, left = 0 }
   for _, side in ipairs({ "top", "right", "bottom", "left" }) do
     local value = metrics[side] or 0
-    util.expect(integer(value) and value >= 0,
+    applet_expect(integer(value) and value >= 0,
       "measurements." .. key .. ".chrome." .. side,
       "must be a non-negative integral cell count", 4)
     result[side] = value
@@ -388,8 +670,15 @@ local function chrome_metrics(ctx, key, border)
   return result
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutNode
+---@param axis Applet.LayoutAxis
+---@return integer
 child_decoration = function(ctx, node, axis)
-  if node.type == "scope" then return child_decoration(ctx, node.child, axis) end
+  if node.type == "scope" then
+    ---@cast node Applet.LayoutScopeNode
+    return child_decoration(ctx, node.child, axis)
+  end
   if node.type ~= "mount" then return 0 end
   local window = node.window or {}
   local metrics = chrome_metrics(ctx, layout_key(node), window.border)
@@ -397,6 +686,12 @@ child_decoration = function(ctx, node, axis)
   return metrics.left + metrics.right
 end
 
+---@param value Applet.LayoutDimension
+---@param total integer
+---@param node Applet.LayoutNode
+---@param axis Applet.LayoutAxis
+---@param ctx Applet.LayoutCompileContext
+---@return integer
 local function resolve_content_dimension(value, total, node, axis, ctx)
   if type(value) == "number" then return resolve_scalar(value, total) end
   local content = value.content == true and measured_content(ctx, node, axis)
@@ -407,8 +702,15 @@ local function resolve_content_dimension(value, total, node, axis, ctx)
   return result
 end
 
+---@param items Applet.LayoutAllocation[]
+---@param amount integer
+---@param growing boolean
+---@return integer
 local function weighted_change(items, amount, growing)
-  local candidates, weight_total = {}, 0
+  ---@type Applet.AllocationCandidate[]
+  local candidates = {}
+  ---@type number
+  local weight_total = 0
   for index, item in ipairs(items) do
     local capacity = growing and (item.max or item.size + amount) - item.size
       or item.size - item.min
@@ -423,12 +725,14 @@ local function weighted_change(items, amount, growing)
     end
   end
   if #candidates == 0 then return 0 end
-  local changed, fractions = 0, {}
+  local changed = 0
+  ---@type {candidate: Applet.AllocationCandidate, fraction: number}[]
+  local fractions = {}
   for _, candidate in ipairs(candidates) do
     local exact = amount * candidate.weight / weight_total
     local cells = math.min(candidate.capacity, math.floor(exact))
     if cells > 0 then
-      local item = items[candidate.index]
+      local item = assert(items[candidate.index])
       item.size = item.size + (growing and cells or -cells)
       candidate.capacity = candidate.capacity - cells
       changed = changed + cells
@@ -447,7 +751,7 @@ local function weighted_change(items, amount, growing)
     for _, value in ipairs(fractions) do
       local candidate = value.candidate
       if candidate.capacity > 0 and remaining > 0 then
-        local item = items[candidate.index]
+        local item = assert(items[candidate.index])
         item.size = item.size + (growing and 1 or -1)
         candidate.capacity = candidate.capacity - 1
         remaining = remaining - 1
@@ -460,13 +764,21 @@ local function weighted_change(items, amount, growing)
   return changed
 end
 
+---@param children Applet.LayoutSplitChild[]
+---@param total integer
+---@param axis Applet.LayoutAxis
+---@param ctx Applet.LayoutCompileContext
+---@param path string
+---@return Applet.LayoutAllocation[]
 local function allocate(children, total, axis, ctx, path)
-  local items, used = {}, 0
+  ---@type Applet.LayoutAllocation[]
+  local items = {}
+  local used = 0
   for index, value in ipairs(children) do
     local item_path = path .. ".children." .. index
     fields(value, split_child_fields, item_path)
     register_key(ctx, value.key, item_path .. ".key", "child_keys")
-    util.expect(type(value.child) == "table", item_path .. ".child",
+    applet_expect(type(value.child) == "table", item_path .. ".child",
       "must be a layout node", 4)
     local basis = value.basis
     if basis ~= nil then basis = validate_dimension(basis, item_path .. ".basis", true) end
@@ -482,16 +794,16 @@ local function allocate(children, total, axis, ctx, path)
     local minimum = declared_min and resolve_scalar(declared_min, total) or intrinsic
     minimum = math.max(intrinsic, minimum)
     local maximum = declared_max and resolve_scalar(declared_max, total) or nil
-    util.expect((maximum == nil or maximum >= minimum), item_path, "max must be at least min", 4)
+    applet_expect((maximum == nil or maximum >= minimum), item_path, "max must be at least min", 4)
     local size = basis and resolve_content_dimension(
       basis, total, value.child, axis, ctx) or minimum
     size = math.max(minimum, maximum and math.min(maximum, size) or size)
     local grow = value.grow
     if grow == nil then grow = basis == nil and 1 or 0 end
     local shrink = value.shrink == nil and 1 or value.shrink
-    util.expect(finite(grow) and grow >= 0, item_path .. ".grow",
+    applet_expect(finite(grow) and grow >= 0, item_path .. ".grow",
       "must be a non-negative finite number", 4)
-    util.expect(finite(shrink) and shrink >= 0, item_path .. ".shrink",
+    applet_expect(finite(shrink) and shrink >= 0, item_path .. ".shrink",
       "must be a non-negative finite number", 4)
     items[#items + 1] = {
       key = value.key,
@@ -513,7 +825,7 @@ local function allocate(children, total, axis, ctx, path)
     local changed = weighted_change(items, remaining, true)
     if changed < remaining then
       for index = #items, 1, -1 do
-        local item = items[index]
+        local item = assert(items[index])
         local capacity = (item.max or item.size + remaining - changed) - item.size
         local cells = math.min(capacity, remaining - changed)
         item.size = item.size + cells
@@ -521,37 +833,42 @@ local function allocate(children, total, axis, ctx, path)
         if changed == remaining then break end
       end
     end
-    util.expect(changed == remaining, path,
+    applet_expect(changed == remaining, path,
       "maximum constraints leave unallocated cells", 4)
   elseif used > total then
     local needed = used - total
     local changed = weighted_change(items, needed, false)
-    util.expect(changed == needed, path,
+    applet_expect(changed == needed, path,
       "minimum constraints do not fit the available cells ("
         .. used .. " required, " .. total .. " available)", 4)
   end
   return items
 end
 
+---@param value? Applet.MountBufferOptions
+---@param key string
+---@param lifecycle Applet.MountLifecycle
+---@param path string
+---@return Applet.MountBuffer
 local function normalize_buffer(value, key, lifecycle, path)
   value = value or {}
   fields(value, buffer_fields, path)
   local name = value.name or key
   nonempty(name, path .. ".name")
-  util.expect(value.uri == nil or util.nonempty_string(value.uri),
+  applet_expect(value.uri == nil or util.nonempty_string(value.uri),
     path .. ".uri", "must be a non-empty string", 4)
-  util.expect(value.filetype == nil or type(value.filetype) == "string",
+  applet_expect(value.filetype == nil or type(value.filetype) == "string",
     path .. ".filetype", "must be a string", 4)
-  util.expect(value.sensitive == nil or type(value.sensitive) == "boolean",
+  applet_expect(value.sensitive == nil or type(value.sensitive) == "boolean",
     path .. ".sensitive", "must be a boolean", 4)
-  util.expect(not value.sensitive or lifecycle == "transient",
+  applet_expect(not value.sensitive or lifecycle == "transient",
     path .. ".sensitive", "requires a transient Pane", 4)
   local options = validate_options(value.options, path .. ".options",
     reserved_buffer_options)
   if value.sensitive then
-    util.expect(options.swapfile == nil or options.swapfile == false,
+    applet_expect(options.swapfile == nil or options.swapfile == false,
       path .. ".options.swapfile", "must be false for a sensitive Pane", 4)
-    util.expect(options.undofile == nil or options.undofile == false,
+    applet_expect(options.undofile == nil or options.undofile == false,
       path .. ".options.undofile", "must be false for a sensitive Pane", 4)
     options.swapfile, options.undofile = false, false
   end
@@ -564,6 +881,9 @@ local function normalize_buffer(value, key, lifecycle, path)
   }
 end
 
+---@param value? Applet.MountWindowOptions
+---@param path string
+---@return Applet.MountWindow
 local function normalize_window(value, path)
   value = value or {}
   fields(value, window_fields, path)
@@ -584,40 +904,51 @@ local function normalize_window(value, path)
   }
 end
 
+---@param value? Applet.MountFocusOptions
+---@param pane Applet.Pane
+---@param path string
+---@return Applet.MountFocus
 local function normalize_pane_focus(value, pane, path)
   value = value or {}
   fields(value, pane_focus_fields, path)
   local editable = pane.buffer_mode == "editable"
   local mode = value.mode or (editable and "insert" or "normal")
-  util.expect(mode == "normal" or mode == "insert" or mode == "preserve",
+  applet_expect(mode == "normal" or mode == "insert" or mode == "preserve",
     path .. ".mode", "must be normal, insert, or preserve", 4)
-  util.expect(not ((mode == "insert" or mode == "preserve") and not editable),
+  applet_expect(not ((mode == "insert" or mode == "preserve") and not editable),
     path .. ".mode", "requires an editable Pane", 4)
   local cursor = value.cursor or "preserve"
-  util.expect(cursor == "preserve" or cursor == "start" or cursor == "end",
+  applet_expect(cursor == "preserve" or cursor == "start" or cursor == "end",
     path .. ".cursor", "must be preserve, start, or end", 4)
   return { mode = mode, cursor = cursor }
 end
 
+---@type fun(ctx: Applet.LayoutCompileContext, node: Applet.LayoutNode, rect: Applet.Rectangle, state: Applet.LayoutWalkState, path: string): Applet.LayoutTopology
 local layout_node
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.MountNode
+---@param rect Applet.Rectangle
+---@param state Applet.LayoutWalkState
+---@param path string
+---@return Applet.PaneTopology
 local function project_mount(ctx, node, rect, state, path)
   fields(node, mount_fields, path)
   local pane = node.pane
-  util.expect(Pane.is(pane), path .. ".pane", "must be a Pane instance", 4)
+  applet_expect(Pane.is(pane), path .. ".pane", "must be a Pane instance", 4)
   local key = register_key(ctx, pane:key(), path .. ".pane", "pane_keys")
   register_key(ctx, key, path .. ".pane", "node_keys")
-  util.expect(not ctx.mounted_panes[pane], path .. ".pane",
+  applet_expect(not ctx.mounted_panes[pane], path .. ".pane",
     "is already mounted as " .. tostring(ctx.mounted_panes[pane]), 4)
   ctx.mounted_panes[pane] = key
   local lifecycle = node.lifecycle or "retained"
-  util.expect(lifecycle == "retained" or lifecycle == "transient",
+  applet_expect(lifecycle == "retained" or lifecycle == "transient",
     path .. ".lifecycle", "must be retained or transient", 4)
-  util.expect(node.owns_pane == nil or type(node.owns_pane) == "boolean",
+  applet_expect(node.owns_pane == nil or type(node.owns_pane) == "boolean",
     path .. ".owns_pane", "must be a boolean", 4)
-  util.expect(node.required == nil or type(node.required) == "boolean",
+  applet_expect(node.required == nil or type(node.required) == "boolean",
     path .. ".required", "must be a boolean", 4)
-  util.expect(node.mount_revision == nil
+  applet_expect(node.mount_revision == nil
       or type(node.mount_revision) == "string" or finite(node.mount_revision),
     path .. ".mount_revision", "must be a finite number or string", 4)
   local buffer = normalize_buffer(node.buffer, key, lifecycle, path .. ".buffer")
@@ -631,7 +962,7 @@ local function project_mount(ctx, node, rect, state, path)
     width = rect.width - metrics.left - metrics.right,
     height = rect.height - metrics.top - metrics.bottom,
   }
-  util.expect(content.width > 0 and content.height > 0, path,
+  applet_expect(content.width > 0 and content.height > 0, path,
     "decoration leaves no positive Pane content rectangle", 4)
   local scopes = {}
   for _, scope in ipairs(ctx.root_scopes) do scopes[#scopes + 1] = scope end
@@ -698,15 +1029,24 @@ local function project_mount(ctx, node, rect, state, path)
   }
   ctx.panes[key] = descriptor
   ctx.pane_order[#ctx.pane_order + 1] = key
-  if state.layer then state.layer_panes[#state.layer_panes + 1] = key end
+  if state.layer then
+    local layer_panes = assert(state.layer_panes)
+    layer_panes[#layer_panes + 1] = key
+  end
   return { type = "pane", key = key }
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutScopeNode
+---@param rect Applet.Rectangle
+---@param state Applet.LayoutWalkState
+---@param path string
+---@return Applet.ScopeTopology
 local function project_scope(ctx, node, rect, state, path)
   fields(node, scope_fields, path)
   local key = register_key(ctx, node.key, path .. ".key", "node_keys")
   local bindings = normalize_bindings(node.bindings, path .. ".bindings", ctx)
-  util.expect(type(node.child) == "table", path .. ".child",
+  applet_expect(type(node.child) == "table", path .. ".child",
     "must be a layout node", 4)
   local next_state = {
     scopes = {}, layer = state.layer, layer_panes = state.layer_panes,
@@ -725,27 +1065,36 @@ local function project_scope(ctx, node, rect, state, path)
   }
 end
 
+---@param node Applet.LayoutSplitNode
+---@param items Applet.LayoutAllocation[]
+---@return string
 local function split_signature(node, items)
   local values = { node.axis, tostring(node.revision) }
   for _, item in ipairs(items) do values[#values + 1] = item.signature end
   return table.concat(values, "\1")
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutSplitNode
+---@param rect Applet.Rectangle
+---@param state Applet.LayoutWalkState
+---@param path string
+---@return Applet.SplitTopology
 local function project_split(ctx, node, rect, state, path)
   fields(node, split_fields, path)
   local key = register_key(ctx, node.key, path .. ".key", "node_keys")
-  util.expect(node.axis == "vertical" or node.axis == "horizontal",
+  applet_expect(node.axis == "vertical" or node.axis == "horizontal",
     path .. ".axis", "must be vertical or horizontal", 4)
-  util.expect(node.revision == nil or type(node.revision) == "string"
+  applet_expect(node.revision == nil or type(node.revision) == "string"
       or finite(node.revision), path .. ".revision",
     "must be a finite number or string", 4)
-  util.expect(type(node.children) == "table" and #node.children > 0,
+  applet_expect(type(node.children) == "table" and #node.children > 0,
     path .. ".children", "must be a non-empty list", 4)
-  util.expect(getmetatable(node.children) == nil,
+  applet_expect(getmetatable(node.children) == nil,
     path .. ".children", "must be a plain list", 4)
   local child_count = 0
   for _ in pairs(node.children) do child_count = child_count + 1 end
-  util.expect(child_count == #node.children,
+  applet_expect(child_count == #node.children,
     path .. ".children", "must be a dense list", 4)
   local axis_total = node.axis == "vertical" and rect.height or rect.width
   local items = allocate(node.children, axis_total, node.axis, ctx, path)
@@ -755,15 +1104,16 @@ local function project_split(ctx, node, rect, state, path)
       and type(override.sizes) == "table" and #override.sizes == #items then
     local total = 0
     for index, size in ipairs(override.sizes) do
-      if not integer(size) or size < items[index].min
-          or (items[index].max and size > items[index].max) then
+      local item = assert(items[index])
+      if not integer(size) or size < item.min
+          or (item.max and size > item.max) then
         total = -1
         break
       end
       total = total + size
     end
     if total == axis_total then
-      for index, size in ipairs(override.sizes) do items[index].size = size end
+      for index, size in ipairs(override.sizes) do assert(items[index]).size = size end
     end
   end
   local children, offset = {}, 0
@@ -807,10 +1157,16 @@ local function project_split(ctx, node, rect, state, path)
   }
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutNode
+---@param rect Applet.Rectangle
+---@param state Applet.LayoutWalkState
+---@param path string
+---@return Applet.LayoutTopology
 layout_node = function(ctx, node, rect, state, path)
-  util.expect(type(node) == "table", path, "must be a layout node", 4)
-  util.expect(getmetatable(node) == nil, path, "must be a plain table", 4)
-  util.expect(not ctx.active[node], path, "must not contain a cycle", 4)
+  applet_expect(type(node) == "table", path, "must be a layout node", 4)
+  applet_expect(getmetatable(node) == nil, path, "must be a plain table", 4)
+  applet_expect(not ctx.active[node], path, "must not contain a cycle", 4)
   ctx.active[node] = true
   local result
   if node.type == "mount" then
@@ -826,12 +1182,24 @@ layout_node = function(ctx, node, rect, state, path)
   return result
 end
 
+---@param value? Applet.LayoutDimension
+---@param total integer
+---@param child Applet.LayoutNode
+---@param axis Applet.LayoutAxis
+---@param ctx Applet.LayoutCompileContext
+---@param path string
+---@return integer
 local function resolve_layer_dimension(value, total, child, axis, ctx, path)
   if value == nil then value = 0.8 end
   value = validate_dimension(value, path, true)
   return math.min(total, resolve_content_dimension(value, total, child, axis, ctx))
 end
 
+---@param container Applet.Rectangle
+---@param width integer
+---@param height integer
+---@param anchor Applet.LayerAnchor
+---@return Applet.Rectangle
 local function anchor_rect(container, width, height, anchor)
   local row, col = container.row, container.col
   if anchor == "center" then
@@ -858,10 +1226,15 @@ local function anchor_rect(container, width, height, anchor)
   return { row = row, col = col, width = width, height = height }
 end
 
+---@param ctx Applet.LayoutCompileContext
+---@param node Applet.LayoutLayerNode
+---@param index integer
+---@param path string
+---@return Applet.LayoutLayer
 local function project_layer(ctx, node, index, path)
   fields(node, layer_fields, path)
   local key = register_key(ctx, node.key, path .. ".key", "node_keys")
-  util.expect(type(node.child) == "table", path .. ".child",
+  applet_expect(type(node.child) == "table", path .. ".child",
     "must be a layout node", 4)
   local container_key = node.container or "applet"
   local container
@@ -870,24 +1243,24 @@ local function project_layer(ctx, node, index, path)
   else
     nonempty(container_key, path .. ".container")
     local pane = ctx.panes[container_key]
-    util.expect(pane ~= nil, path .. ".container",
+    applet_expect(pane ~= nil, path .. ".container",
       "must name an already-declared Pane", 4)
     container = pane.outer
   end
   local anchor = node.anchor or "center"
-  util.expect(anchors[anchor], path .. ".anchor", "is not recognized", 4)
+  applet_expect(anchors[anchor], path .. ".anchor", "is not recognized", 4)
   local width = resolve_layer_dimension(node.width, container.width,
     node.child, "horizontal", ctx, path .. ".width")
   local height = resolve_layer_dimension(node.height, container.height,
     node.child, "vertical", ctx, path .. ".height")
-  util.expect(width > 0 and height > 0, path,
+  applet_expect(width > 0 and height > 0, path,
     "must resolve to a positive rectangle", 4)
   local rect = anchor_rect(container, width, height, anchor)
   local zindex = node.zindex or ((ctx.host.base_zindex or 40) + 30 + index * 10)
-  util.expect(integer(zindex) and zindex > 0, path .. ".zindex",
+  applet_expect(integer(zindex) and zindex > 0, path .. ".zindex",
     "must be a positive integral value", 4)
   for _, field in ipairs({ "modal", "enter", "restore_focus" }) do
-    util.expect(node[field] == nil or type(node[field]) == "boolean",
+    applet_expect(node[field] == nil or type(node[field]) == "boolean",
       path .. "." .. field, "must be a boolean", 4)
   end
   local layer = {
@@ -909,12 +1282,15 @@ local function project_layer(ctx, node, index, path)
     modal = layer.modal, zindex = zindex, focusable = true,
   }
   layer.child = layout_node(ctx, node.child, rect, state, path .. ".child")
-  util.expect(not layer.modal or not layer.enter or #layer.panes > 0, path,
+  applet_expect(not layer.modal or not layer.enter or #layer.panes > 0, path,
     "modal entry requires a focusable Pane", 4)
   ctx.layers[#ctx.layers + 1] = layer
   return layer
 end
 
+---@param value? Applet.LayoutFocusOptions
+---@param ctx Applet.LayoutCompileContext
+---@return Applet.LayoutFocus
 local function normalize_tree_focus(value, ctx)
   value = value or {}
   fields(value, tree_focus_fields, "Applet layout.focus")
@@ -926,30 +1302,33 @@ local function normalize_tree_focus(value, ctx)
       key = nonempty(value.intent.key, "Applet layout.focus.intent.key"),
       revision = value.intent.revision,
     }
-    util.expect(intent.revision == nil or type(intent.revision) == "string"
+    applet_expect(intent.revision == nil or type(intent.revision) == "string"
         or finite(intent.revision), "Applet layout.focus.intent.revision",
       "must be a finite number or string", 4)
   end
   local initial = value.initial or ctx.pane_order[1]
-  util.expect(initial == nil or ctx.panes[initial] ~= nil,
+  applet_expect(initial == nil or ctx.panes[initial] ~= nil,
     "Applet layout.focus.initial", "must name a Pane", 4)
-  util.expect(intent == nil or ctx.panes[intent.key] ~= nil,
+  applet_expect(intent == nil or ctx.panes[intent.key] ~= nil,
     "Applet layout.focus.intent.key", "must name a Pane", 4)
   return { initial = initial, intent = intent }
 end
 
+---@param opts Applet.LayoutCompileOptions
+---@return Applet.CompiledLayout
 function M.compile(opts)
-  util.expect(type(opts) == "table", "Applet.layout.compile",
+  applet_expect(type(opts) == "table", "Applet.layout.compile",
     "options must be a table", 3)
   local tree = opts.tree
   fields(tree, tree_fields, "Applet layout")
-  util.expect(type(tree.root) == "table", "Applet layout.root",
+  applet_expect(type(tree.root) == "table", "Applet layout.root",
     "must be a frame node", 3)
   local host = host_api.validate(opts.host)
   local editor = normalize_rect(opts.editor or {
     row = 0, col = 0, width = 80, height = 24,
   }, "Applet editor")
   local bounds, container = host_bounds(host, editor, opts.container)
+  ---@type Applet.LayoutCompileContext
   local ctx = {
     host = host,
     editor = editor,
@@ -971,13 +1350,13 @@ function M.compile(opts)
     layers = {},
     root_scopes = {},
   }
-  util.expect(type(ctx.measurements) == "table", "Applet measurements",
+  applet_expect(type(ctx.measurements) == "table", "Applet measurements",
     "must be a table", 3)
-  util.expect(type(ctx.overrides) == "table", "Applet overrides",
+  applet_expect(type(ctx.overrides) == "table", "Applet overrides",
     "must be a table", 3)
-  util.expect(type(ctx.handlers) == "table", "Applet handlers",
+  applet_expect(type(ctx.handlers) == "table", "Applet handlers",
     "must be a table", 3)
-  util.expect(ctx.has_action == nil or type(ctx.has_action) == "function",
+  applet_expect(ctx.has_action == nil or type(ctx.has_action) == "function",
     "Applet has_action", "must be a function", 3)
   local root_bindings = normalize_bindings(tree.bindings,
     "Applet layout.bindings", ctx)
@@ -990,27 +1369,27 @@ function M.compile(opts)
   end
   local frame = tree.root
   fields(frame, frame_fields, "Applet layout.root")
-  util.expect(frame.type == "frame", "Applet layout.root.type",
+  applet_expect(frame.type == "frame", "Applet layout.root.type",
     "must be frame", 3)
   local frame_key = register_key(ctx, frame.key, "Applet layout.root.key",
     "node_keys")
-  util.expect(type(frame.child) == "table", "Applet layout.root.child",
+  applet_expect(type(frame.child) == "table", "Applet layout.root.child",
     "must be an Applet layout node", 3)
   local topology = layout_node(ctx, frame.child, bounds, {
     scopes = {}, layer = nil, layer_panes = nil, modal = false,
     zindex = host.base_zindex, focusable = true,
   }, "Applet layout.root.child")
   local declared_layers = frame.layers or {}
-  util.expect(type(declared_layers) == "table" and getmetatable(declared_layers) == nil,
+  applet_expect(type(declared_layers) == "table" and getmetatable(declared_layers) == nil,
     "Applet layout.root.layers", "must be a plain list", 3)
   for index, layer in ipairs(declared_layers) do
-    util.expect(type(layer) == "table" and layer.type == "layer",
+    applet_expect(type(layer) == "table" and layer.type == "layer",
       "Applet layout.root.layers." .. index, "must be a layer node", 3)
     project_layer(ctx, layer, index, "Applet layout.root.layers." .. index)
   end
   local layer_count = 0
   for _ in pairs(declared_layers) do layer_count = layer_count + 1 end
-  util.expect(layer_count == #declared_layers,
+  applet_expect(layer_count == #declared_layers,
     "Applet layout.root.layers", "must be a dense list", 3)
   table.sort(ctx.layers, function(left, right)
     if left.zindex == right.zindex then return left.order < right.order end
@@ -1031,7 +1410,8 @@ function M.compile(opts)
     for _, key in ipairs(modal_boundary) do allowed[key] = true end
     for key, pane in pairs(ctx.panes) do
       if pane.projection.kind == "floating" then
-        pane.projection.config.focusable = allowed[key] == true
+        local projection = pane.projection --[[@as Applet.FloatingProjection]]
+        projection.config.focusable = allowed[key] == true
       end
     end
   end
@@ -1047,7 +1427,7 @@ function M.compile(opts)
     local allowed = {}
     for _, key in ipairs(modal_boundary) do allowed[key] = true end
     if focus.intent then
-      util.expect(allowed[focus.intent.key], "Applet layout.focus.intent.key",
+      applet_expect(allowed[focus.intent.key], "Applet layout.focus.intent.key",
         "must target the active modal boundary", 3)
     end
     if not focus.layer_entry or not allowed[focus.layer_entry] then
