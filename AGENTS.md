@@ -140,6 +140,8 @@ network access. UI tests inspect isolated headless Neovim children.
 `make test-http-live` runs the small localhost curl/callback suite;
 `make test-native-sandbox` runs native enforcement tests and requires working
 platform isolation. Neither is part of `make test`.
+Windows CI also runs portable core and API unit specs alongside its native
+platform suite.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.
