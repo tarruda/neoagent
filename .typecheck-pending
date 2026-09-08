@@ -10,7 +10,6 @@ tests/ui/pane_spec.lua
 tests/ui/presenter_spec.lua
 tests/ui/provider_shell_spec.lua
 tests/ui/view_spec.lua
-tests/ui/workspace_trust_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
 tests/unit/authentication_spec.lua
 tests/unit/config_models_spec.lua

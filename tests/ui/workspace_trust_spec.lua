@@ -2,20 +2,30 @@ local assert = require("luassert")
 local fake_model = require("tests.helpers.fake_model")
 local view_handles = require("tests.helpers.view_handles")
 
+---@param keys string
 local function feed(keys)
   vim.api.nvim_feedkeys(
     vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
 end
 
 describe("neoagent workspace trust UI", function()
-  local neoagent
+  local neoagent = require("neoagent")
+  ---@type Neoagent.NeoagentApplet?
   local applet
+  ---@type string[]
   local paths
+  ---@type string
   local original_cwd
-  local original_agents_discover
-  local original_skills_discover
+  local original_agents_discover = require("neoagent.agent_instructions").discover
+  local original_skills_discover = require("neoagent.skills").discover
+  ---@type Neoagent.NeoagentApplet[]
   local custom_windows
+  ---@type Neoagent.Agent[]
   local custom_agents
+
+  local function current_applet()
+    return (assert(applet))
+  end
 
   before_each(function()
     original_agents_discover = require("neoagent.agent_instructions").discover
@@ -33,7 +43,7 @@ describe("neoagent workspace trust UI", function()
   after_each(function()
     for _, window in ipairs(custom_windows) do window:destroy() end
     for _, agent in ipairs(custom_agents) do agent:destroy() end
-    if applet and not applet:is_destroyed() then applet:destroy() end
+    if applet and not current_applet():is_destroyed() then current_applet():destroy() end
     vim.cmd("cd " .. vim.fn.fnameescape(original_cwd))
     require("neoagent.agent_instructions").discover = original_agents_discover
     require("neoagent.skills").discover = original_skills_discover
@@ -41,6 +51,8 @@ describe("neoagent workspace trust UI", function()
     vim.cmd("silent! only")
   end)
 
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
+  ---@param responses Neoagent.TestModelResponse[]?
   local function setup(extra, responses)
     local model = fake_model.new(responses or { {
       result = fake_model.assistant({ { type = "text", text = "done" } }),
@@ -48,6 +60,7 @@ describe("neoagent workspace trust UI", function()
     local directory = vim.fn.tempname()
     local trust_path = directory .. "/trust.json"
     paths[#paths + 1] = directory
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
     local options = {
       default_registry = false,
       persistence = { enabled = false },
@@ -78,33 +91,39 @@ describe("neoagent workspace trust UI", function()
     return model, trust_path
   end
 
+  ---@param agent Neoagent.Agent?
+  ---@return Neoagent.View
   local function view(agent)
     local owner = agent and agent:applet() or applet
-    return owner:view()
+    return (assert(assert(owner):view()))
   end
 
+  ---@param agent Neoagent.Agent?
   local function wait_for_dialog(agent)
     assert(vim.wait(1000, function()
       local current = view(agent)
       return current and current.dialog and current.dialog.active
         and vim.api.nvim_buf_is_valid(
-          view_handles.buffer(current, "transcript"))
+          (assert(view_handles.buffer(current, "transcript"))))
     end, 5))
     return view(agent)
   end
 
+  ---@param text string
   local function start(text)
-    assert(applet:open())
-    applet:set_input(text)
-    local run, err = applet:send(text)
+    assert(current_applet():open())
+    current_applet():set_input(text)
+    local run, err = current_applet():send(text)
     assert.is_nil(run)
-    assert.are.equal("workspace_trust", err.kind)
-    assert.are.equal(1, #applet:agents())
-    local agent = applet:agents()[1]
-    assert.are.equal(text, agent:applet():pending_message())
+    assert.are.equal("workspace_trust", assert(err).kind)
+    assert.are.equal(1, #current_applet():agents())
+    local agent = assert(assert(applet):agents()[1])
+    assert.are.equal(text, assert(agent:applet()):pending_message())
     return agent, wait_for_dialog(agent)
   end
 
+  ---@param active_view Neoagent.View
+  ---@param key string
   local function choose(active_view, key)
     active_view:focus_transcript()
     feed(key)
@@ -112,8 +131,8 @@ describe("neoagent workspace trust UI", function()
 
   it("creates the Agent at first submit and resumes the exact message after trust", function()
     local model, trust_path = setup()
-    assert(applet:open())
-    assert.are.same({}, applet:agents())
+    assert(current_applet():open())
+    assert.are.same({}, current_applet():agents())
     assert.is_nil(view().dialog)
 
     local agent, active_view = start("preserved first message")
@@ -121,11 +140,11 @@ describe("neoagent workspace trust UI", function()
     assert.is_nil(agent:get_model())
     assert.are.equal("waiting", agent:activity().state)
     assert.are.equal("preserved first message", active_view:get_input())
-    local body = active_view.dialog.active.body
-    assert.is_not_nil(body:find(
-      require("neoagent.workspace_trust").target(vim.fn.getcwd()), 1, true))
-    assert.is_not_nil(body:find("prompt injection", 1, true))
-    assert.is_not_nil(body:find("sandboxing is disabled", 1, true))
+    local body = assert(active_view.dialog).active.body
+    assert.is_not_nil((body:find(
+      require("neoagent.workspace_trust").target(vim.fn.getcwd()), 1, true)))
+    assert.is_not_nil((body:find("prompt injection", 1, true)))
+    assert.is_not_nil((body:find("sandboxing is disabled", 1, true)))
 
     active_view:focus_transcript()
     feed("<CR>")
@@ -134,26 +153,26 @@ describe("neoagent workspace trust UI", function()
         and not agent:is_running()
     end, 5))
     assert.are.equal("preserved first message",
-      agent:get_session():messages()[1].content)
+      assert(assert(agent:get_session()):messages()[1]).content)
     assert.are.equal(session, agent:get_session())
     assert.are.equal("", active_view:get_input())
-    assert.is_nil(agent:applet():pending_message())
+    assert.is_nil(assert(agent:applet()):pending_message())
     assert.is_not_nil(vim.uv.fs_stat(trust_path))
   end)
 
   it("keeps a background trust request closed until its Agent is selected", function()
     local model = setup()
     local agent = start("background request")
-    assert(applet:new("chat"))
-    local chat = applet:foreground_applet()
+    assert(current_applet():new("chat"))
+    local chat = assert(current_applet():foreground_applet())
     assert.are.equal("chat", chat.profile)
     assert.is_nil(chat:agent())
-    assert.is_false(agent:applet():is_open())
+    assert.is_false(assert(agent:applet()):is_open())
     assert.is_true(chat:is_open())
     assert.are.equal("waiting", agent:activity().state)
-    assert.is_nil(chat:view().dialog)
+    assert.is_nil(assert(chat:view()).dialog)
 
-    assert.are.equal(agent, applet:select(agent:id()))
+    assert.are.equal(agent, current_applet():select(agent:id()))
     local active_view = wait_for_dialog(agent)
     choose(active_view, "s")
     assert(vim.wait(1000, function()
@@ -165,49 +184,50 @@ describe("neoagent workspace trust UI", function()
   it("preserves a newer Agent when a provisional trust request fails", function()
     local model = setup()
     local provisional = start("provisional request")
-    local provisional_applet = provisional:applet()
-    assert(applet:new("chat"))
-    local chat_run = assert(applet:send("newer chat turn"))
+    local provisional_applet = assert(provisional:applet())
+    assert(current_applet():new("chat"))
+    local chat_run = assert(current_applet():send("newer chat turn"))
+    assert(type(chat_run) == "table" and type(chat_run.is_done) == "function")
     assert(vim.wait(1000, function()
-      local active = applet:active_agent()
+      local active = current_applet():active_agent()
       return chat_run:is_done() and active and active:profile_id() == "chat"
         and not active:is_running()
     end, 5))
-    local chat = assert(applet:active_agent())
+    local chat = assert(current_applet():active_agent())
 
     provisional:dialogs():cancel_pending("dialog dismissed by user")
 
     assert(vim.wait(1000, function()
-      return provisional:is_destroyed() and #applet:agents() == 1
+      return provisional:is_destroyed() and #current_applet():agents() == 1
     end, 5))
-    assert.are.equal(chat, applet:active_agent())
-    assert.are.equal(chat:applet(), applet:foreground_applet())
-    assert.are.equal(chat:applet(), applet:selected_applet())
-    assert.are.equal("newer chat turn", model.requests[1].messages[1].content)
-    assert.are.equal(provisional_applet, applet:retained_draft("neo"))
+    assert.are.equal(chat, current_applet():active_agent())
+    assert.are.equal(chat:applet(), current_applet():foreground_applet())
+    assert.are.equal(chat:applet(), current_applet():selected_applet())
+    assert.are.equal("newer chat turn", assert(assert(model.requests[1]).messages[1]).content)
+    assert.are.equal(provisional_applet, current_applet():retained_draft("neo"))
     assert.are.equal("provisional request", provisional_applet:get_input())
   end)
 
   it("retains the draft after cancellation and persists a later decision", function()
     local _, trust_path = setup()
     local agent, active_view = start("keep me")
-    local draft = agent:applet()
+    local draft = assert(agent:applet())
     choose(active_view, "q")
     assert(vim.wait(1000, function()
-      return not applet:is_open() and #applet:agents() == 0
+      return not current_applet():is_open() and #current_applet():agents() == 0
         and draft:agent() == nil
     end, 5))
     assert.is_true(agent:is_destroyed())
-    assert.are.equal(draft, applet:retained_draft("neo"))
+    assert.are.equal(draft, current_applet():retained_draft("neo"))
     assert.are.equal("keep me", draft:get_input())
     assert.is_nil(draft:pending_message())
     assert.is_nil(vim.uv.fs_stat(trust_path))
 
-    assert(applet:open())
-    local retry, retry_err = applet:send("keep me")
+    assert(current_applet():open())
+    local retry, retry_err = current_applet():send("keep me")
     assert.is_nil(retry)
-    assert.are.equal("workspace_trust", retry_err.kind)
-    local retried = assert(applet:agents()[1])
+    assert.are.equal("workspace_trust", assert(retry_err).kind)
+    local retried = assert(current_applet():agents()[1])
     active_view = wait_for_dialog(retried)
     choose(active_view, "t")
     assert(vim.wait(1000, function()
@@ -219,26 +239,26 @@ describe("neoagent workspace trust UI", function()
       .new_store(trust_path):list())
     assert.are.same({ require("neoagent.workspace_trust")
       .target(vim.fn.getcwd()) }, trusted)
-    assert.are.equal("keep me", retried:get_session():messages()[1].content)
+    assert.are.equal("keep me", assert(assert(retried:get_session()):messages()[1]).content)
   end)
 
   it("restores the draft when trust storage is unreadable", function()
     local _, trust_path = setup()
     assert(require("neoagent.fs").mkdirp(vim.fs.dirname(trust_path)))
     assert(require("neoagent.fs").write_all(trust_path, "{broken", "w", 384))
-    assert(applet:open())
-    local draft = assert(applet:foreground_applet())
+    assert(current_applet():open())
+    local draft = assert(current_applet():foreground_applet())
 
-    local run, err = applet:send("preserve unreadable trust draft")
+    local run, err = current_applet():send("preserve unreadable trust draft")
 
     assert.is_nil(run)
-    assert.matches("Invalid workspace trust store", err.message)
-    assert.are.same({}, applet:agents())
-    assert.are.equal(draft, applet:retained_draft("neo"))
+    assert.matches("Invalid workspace trust store", assert(err).message)
+    assert.are.same({}, current_applet():agents())
+    assert.are.equal(draft, current_applet():retained_draft("neo"))
     assert.is_nil(draft:agent())
     assert.is_nil(draft:pending_message())
     assert.are.equal("preserve unreadable trust draft", draft:get_input())
-    assert.is_nil(draft:view().dialog)
+    assert.is_nil(assert(draft:view()).dialog)
   end)
 
   it("binds each trusted Workspace to a distinct Agent and Session", function()
@@ -255,12 +275,12 @@ describe("neoagent workspace trust UI", function()
     vim.fn.mkdir(second, "p")
     paths[#paths + 1] = second
     vim.cmd("cd " .. vim.fn.fnameescape(second))
-    assert(applet:new("neo"))
-    local run, create_err = applet:send("second workspace")
+    assert(current_applet():new("neo"))
+    local run, create_err = current_applet():send("second workspace")
     assert.is_nil(run)
-    assert.are.equal("workspace_trust", create_err.kind)
-    assert.are.equal(2, #applet:agents())
-    local second_agent = applet:agents()[2]
+    assert.are.equal("workspace_trust", assert(create_err).kind)
+    assert.are.equal(2, #current_applet():agents())
+    local second_agent = assert(assert(applet):agents()[2])
     local second_session = second_agent:get_session()
     assert.are_not.equal(agent, second_agent)
     assert.are_not.equal(first_session, second_session)
@@ -273,9 +293,9 @@ describe("neoagent workspace trust UI", function()
     end, 5))
     assert.are.equal(second_session, second_agent:get_session())
     assert.are.equal("second workspace",
-      second_session:messages()[1].content)
+      assert(second_session:messages()[1]).content)
     assert.are.equal(require("neoagent.fs").canonical(second),
-      second_agent:get_workspace().root)
+      assert(second_agent:get_workspace()).root)
   end)
 
   it("supports an explicit custom Agent trust composition", function()
@@ -283,6 +303,7 @@ describe("neoagent workspace trust UI", function()
     local dialogs = require("neoagent.dialog").new()
     local trust_path = vim.fn.tempname() .. "/trust.json"
     paths[#paths + 1] = vim.fs.dirname(trust_path)
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment> & {name: string, workspace_trust: {path: string}}
     local opts = {
       name = "Review",
       default_registry = false,
@@ -315,18 +336,18 @@ describe("neoagent workspace trust UI", function()
     local window = neoagent._new_applet({ agents = { agent } })
     custom_windows[#custom_windows + 1] = window
     policy:attach({
-      close = function() agent:applet():close() end,
+      close = function() assert(agent:applet()):close() end,
       on_trusted = function() agent:prepare() end,
     })
 
     window:set_input("custom draft")
     assert(window:open())
     local active_view = wait_for_dialog(agent)
-    assert.are.equal("Review", active_view.dialog.active.agent)
-    assert.is_not_nil(active_view.dialog.active.body:find(
-      "Review can load AGENTS.md", 1, true))
-    assert.is_not_nil(active_view.dialog.active.body:find(
-      "native test sandbox", 1, true))
+    assert.are.equal("Review", assert(active_view.dialog).active.agent)
+    assert.is_not_nil((assert(active_view.dialog).active.body:find(
+      "Review can load AGENTS.md", 1, true)))
+    assert.is_not_nil((assert(active_view.dialog).active.body:find(
+      "native test sandbox", 1, true)))
     choose(active_view, "s")
     assert(vim.wait(1000, function()
       return active_view.dialog == nil and policy:is_trusted(vim.fn.getcwd())
@@ -371,6 +392,6 @@ describe("neoagent workspace trust UI", function()
         and discoveries.skills == 1 and not agent:is_running()
     end, 5))
     assert.are.same({ instructions = 1, skills = 1 }, discoveries)
-    assert.are.equal(2, #agent:get_session():messages())
+    assert.are.equal(2, #assert(agent:get_session()):messages())
   end)
 end)
