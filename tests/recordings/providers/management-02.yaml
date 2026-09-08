@@ -1,3 +1,6 @@
+# Adapted from a real DeepSeek balance response; all amounts and request
+# metadata are synthetic. JSON serialization and byte counts were rebuilt.
+# Source SHA-256: a34c98f253bf912178695881b56bf75c09925b305c8cab222f652496088cdc77
 ---
 schema: neoagent-http-recording
 version: 1
@@ -12,7 +15,7 @@ request:
 type: response_chunk
 index: 1
 at_us: 0
-bytes: 133
+bytes: 135
 ---
 type: response_body
 at_us: 0
@@ -20,16 +23,17 @@ body:
   is_available: true
   balance_infos:
   - currency: USD
-    total_balance: '8.50'
-    granted_balance: '1.00'
-    topped_up_balance: '7.50'
-bytes: 133
+    total_balance: '12.75'
+    granted_balance: '2.25'
+    topped_up_balance: '10.50'
+bytes: 135
 body_format: json
 ---
 type: response
 at_us: 0
 status: 200
-headers: {}
+headers:
+  content-type: application/json
 ---
 type: complete
 at_us: 0

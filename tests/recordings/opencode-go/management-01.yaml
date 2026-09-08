@@ -1,3 +1,7 @@
+# Adapted from a real OpenCode Go catalog response. Inventory was minimized
+# to two synthetic entries; IDs, ownership, timestamps, and request metadata
+# were replaced. JSON serialization and byte counts were rebuilt.
+# Source SHA-256: cbc3b82891cb3392d1cf7f2fa5c64fb2525c88a16058d05b10d8690ac1e02ae2
 ---
 schema: neoagent-http-recording
 version: 1
@@ -12,22 +16,29 @@ request:
 type: response_chunk
 index: 1
 at_us: 0
-bytes: 63
+bytes: 208
 ---
 type: response_body
 at_us: 0
 body:
   object: list
   data:
-  - id: glm-5.3
-  - id: minimax-m3
-bytes: 63
+  - id: synth-glm
+    created: 1700000000
+    object: model
+    owned_by: synthetic-provider
+  - id: synth-minimax
+    created: 1700000001
+    object: model
+    owned_by: synthetic-provider
+bytes: 208
 body_format: json
 ---
 type: response
 at_us: 0
 status: 200
-headers: {}
+headers:
+  content-type: application/json
 ---
 type: complete
 at_us: 0
