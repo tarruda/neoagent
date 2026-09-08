@@ -114,7 +114,22 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@field context Neoagent.AgentContext
 
 ---@alias Neoagent.AgentUpdate Neoagent.AgentRunPublication|Neoagent.AgentMessagesPublication|Neoagent.AgentContextPublication
----@alias Neoagent.AgentPublication Neoagent.AgentUpdate & {revision: integer}
+---@class Neoagent.PublishedAgentEvent: Neoagent.AgentEventPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentFinish: Neoagent.AgentFinishPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentMessages: Neoagent.AgentMessagesPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentContext: Neoagent.AgentContextPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentSubmission: Neoagent.AgentSubmissionAccepted
+---@field revision integer
+
+---@alias Neoagent.AgentPublication Neoagent.PublishedAgentEvent|Neoagent.PublishedAgentFinish|Neoagent.PublishedAgentMessages|Neoagent.PublishedAgentContext|Neoagent.PublishedAgentSubmission
 
 ---@class Neoagent.AgentSnapshot
 ---@field revision integer
@@ -578,7 +593,7 @@ function M.from_config(options, runtime)
     local publication = util.copy(update) --[[@as Neoagent.AgentPublication]]
     publication.revision = state.publication_revision
     for _, listener in pairs(state.listeners) do
-      local copied = util.copy(publication --[[@as Neoagent.AgentUpdate]]) --[[@as Neoagent.AgentPublication]]
+      local copied = util.copy(publication)
       local ok, err = pcall(listener, copied)
       if not ok then notify("agent listener failed: " .. tostring(err), vim.log.levels.ERROR) end
     end

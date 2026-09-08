@@ -93,9 +93,9 @@ local M = {}
 ---@field queue_count integer
 
 ---@class Neoagent.PresenterAttachment
----@field present fun(snapshot: Neoagent.PresentationSnapshot)
+---@field present fun(snapshot: Neoagent.PresentationSnapshot): unknown
 ---@field notify? fun(message: string, level?: integer): unknown
----@field open_uri? fun(uri: string): unknown
+---@field open_uri? fun(uri: string): unknown, unknown?
 
 ---@class Neoagent.PresenterHost
 ---@field select fun(request: Applet.SelectRequest, done: Applet.PresentationCallbacks<string>): Neoagent.CancelPresentation?
