@@ -1160,7 +1160,9 @@ describe("neoagent native Renderer protocol", function()
     local markdown = require("neoagent.markdown")
     local tree = require("neoagent.ui.tree")
     local view = {
-      markdown_document = markdown.new():update("**styled**"),
+      markdown_document = markdown.new():update("before\n**styled**\nafter"),
+      markdown_first = 2,
+      markdown_last = 2,
       markdown_groups = { "NeoagentThinking" },
     }
     local opts = {
