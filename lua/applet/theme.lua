@@ -310,8 +310,9 @@ end
 Theme.Palette = Palette
 
 ---@class Applet.ThemeModule
+---@field new fun(opts?: Applet.ThemeOptions): Applet.Theme
 local module = { new = Theme.new, Palette = Palette }
 
 return setmetatable(module, {
   __call = function(_, opts) return Theme.new(opts) end,
-})
+}) --[[@as Applet.ThemeModule]]
