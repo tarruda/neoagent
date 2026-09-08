@@ -5,7 +5,6 @@ tests/ui/pane_spec.lua
 tests/ui/provider_shell_spec.lua
 tests/ui/view_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
-tests/unit/authentication_spec.lua
 tests/unit/config_models_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
 tests/unit/provider_shell_spec.lua

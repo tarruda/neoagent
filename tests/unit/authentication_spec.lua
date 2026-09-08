@@ -4,10 +4,13 @@ local Authentication = require("neoagent.authentication")
 local Presenter = require("neoagent.presenter")
 local util = require("neoagent.util")
 
+---@param overrides? Partial<Neoagent.PresenterHost>
+---@return Neoagent.PresenterHost
 local function host(overrides)
+  ---@type Neoagent.PresenterHost
   local value = {
-    select = function(request, done) done.resolve(request.items[1].id) end,
-    input = function(request, done) done.resolve(request.default) end,
+    select = function(request, done) done.resolve(assert(request.items[1]).id) end,
+    input = function(request, done) done.resolve((assert(request.default))) end,
     notice = function(_, done) done.resolve(true) end,
     notify = function() end,
     open_uri = function() end,
@@ -16,64 +19,135 @@ local function host(overrides)
   return value
 end
 
+---@class Neoagent.TestAuthenticationManager: Neoagent.AuthManager
+---@field credentials Neoagent.AuthCredentialEntry[]
+---@field login_id? string
+---@field logout_id? string
+
+---@class Neoagent.TestAuthenticationManagerOverrides
+---@field credentials? Neoagent.AuthCredentialEntry[]
+---@field login? fun(self: Neoagent.TestAuthenticationManager, id: string, opts: Neoagent.AuthLoginOptions): Neoagent.AuthenticationLoginRun
+---@field logout? fun(self: Neoagent.TestAuthenticationManager, id: string, opts?: Neoagent.AuthLogoutOptions): Neoagent.AuthenticationLogoutRun
+
+---@param overrides? Neoagent.TestAuthenticationManagerOverrides
+---@return Neoagent.TestAuthenticationManager
 local function manager(overrides)
-  local value = {
-    credentials = {},
-    login = function(self, id, opts)
-      self.login_id = id
-      return async.run(function()
-        return { ok = true }
-      end, { on_done = opts.on_done, error_kind = "auth" })
-    end,
-    logout = function(self, id, opts)
-      self.logout_id = id
-      return async.run(function()
-        return { ok = true }
-      end, { on_done = opts.on_done, error_kind = "auth" })
-    end,
-    list_credentials = function(self)
-      return vim.deepcopy(self.credentials)
-    end,
-  }
-  for key, item in pairs(overrides or {}) do value[key] = item end
+  local value = require("tests.helpers.auth_manager").new()
+  ---@cast value Neoagent.TestAuthenticationManager
+  value.credentials = {}
+  function value:login(id, opts)
+    value.login_id = id
+    return async.run(function()
+      return { ok = true, method = id, revision = 1 }
+    end, { on_done = opts and opts.on_done, error_kind = "auth" })
+  end
+  function value:logout(id, opts)
+    value.logout_id = id
+    return async.run(function()
+      return { ok = true, method = id, revision = 1 }
+    end, { on_done = opts and opts.on_done, error_kind = "auth" })
+  end
+  function value:list_credentials() return vim.deepcopy(value.credentials) end
+  if overrides then
+    if overrides.credentials then value.credentials = overrides.credentials end
+    local login = overrides.login
+    if login then function value:login(id, opts) return login(value, id, opts) end end
+    local logout = overrides.logout
+    if logout then function value:logout(id, opts) return logout(value, id, opts) end end
+  end
   return value
 end
 
+---@param methods? table<string, Neoagent.ApiKeyOptions>
+---@param providers? table<string, {auth: string}>
+---@return Neoagent.AuthenticationConfig
 local function config(methods, providers)
+  local configured_methods, configured_providers = {}, {}
+  for id, opts in pairs(methods or { test = { name = "Test login" } }) do
+    configured_methods[id] = require("neoagent.auth.api_key").new(opts)
+  end
+  for id, provider in pairs(providers or {}) do
+    configured_methods[provider.auth] = configured_methods[provider.auth]
+      or require("neoagent.auth.api_key").new({ name = provider.auth })
+    configured_providers[id] = {
+      api = "openai-completions", base_url = "https://provider.test",
+      auth = provider.auth, catalog = {},
+    }
+  end
   return {
     auth = {
       path = "/test/credentials.json",
-      methods = methods or {
-        test = { name = "Test login" },
-      },
+      methods = configured_methods,
     },
-    providers = providers or {},
+    providers = configured_providers,
   }
 end
 
 describe("neoagent Authentication coordinator", function()
+  ---@type Neoagent.Authentication[]
   local values = {}
+  ---@type Neoagent.Presenter[]
   local presenters = {}
+  ---@type Neoagent.ProviderRuntimes[]
+  local runtimes_owned = {}
 
   after_each(function()
     for _, value in ipairs(values) do value:destroy() end
     for _, value in ipairs(presenters) do value:destroy() end
-    values, presenters = {}, {}
+    for _, runtimes in ipairs(runtimes_owned) do
+      require("neoagent.provider_runtimes").destroy(runtimes)
+    end
+    values, presenters, runtimes_owned = {}, {}, {}
   end)
 
-  local function presenter(value)
-    value = Presenter.new({ host = value or host() })
+  ---@param selected_host? Neoagent.PresenterHost
+  ---@return Neoagent.Presenter
+  local function presenter(selected_host)
+    local value = Presenter.new({ host = selected_host or host() })
     presenters[#presenters + 1] = value
     return value
   end
 
+  ---@class Neoagent.TestAuthenticationOptions
+  ---@field config? Neoagent.AuthenticationConfig
+  ---@field auth? Neoagent.AuthManager
+  ---@field presenter? Neoagent.AuthenticationPresenter
+  ---@field report? fun(message: string, level?: integer): unknown
+  ---@field on_activity? fun(active: boolean)
+  ---@field runtimes? table<string, {catalog: {refresh: fun(self: Neoagent.ModelCatalog, opts?: Neoagent.CatalogRefreshOptions): Neoagent.CatalogRefreshRun}, credentials?: {state: fun(self: Neoagent.ProviderCredentials): Neoagent.ProviderCredentialState}}>
+
+  ---@param opts? Neoagent.TestAuthenticationOptions
   local function authentication(opts)
     opts = opts or {}
+    local configured = opts.config or config()
+    local selected_auth = opts.auth or manager()
+    selected_auth.methods = configured.auth.methods
+    local runtimes
+    if opts.runtimes then
+      local err
+      runtimes, err = require("neoagent.provider_runtimes").compose(configured, {
+        auth = selected_auth, startup = false,
+      })
+      assert(runtimes, vim.inspect(err))
+      runtimes_owned[#runtimes_owned + 1] = runtimes
+      for id, overrides in pairs(opts.runtimes) do
+        local runtime = assert(assert(runtimes)[id])
+        function runtime.catalog:refresh(options)
+          return overrides.catalog.refresh(self, options)
+        end
+        if overrides.credentials then
+          local credentials = overrides.credentials
+          function runtime.credentials:state() return credentials.state(self) end
+        else
+          function runtime.credentials:state() return { usable = true, source = "environment" } end
+        end
+      end
+    end
     local value = Authentication.new({
-      config = opts.config or config(),
-      auth = opts.auth or manager(),
+      config = configured,
+      auth = selected_auth,
       presenter = opts.presenter or presenter(),
-      runtimes = opts.runtimes,
+      runtimes = runtimes,
       report = opts.report,
       on_activity = opts.on_activity,
     })
@@ -98,7 +172,7 @@ describe("neoagent Authentication coordinator", function()
       on_activity = function(active) states[#states + 1] = active end,
     })
 
-    assert.is_true(value:login())
+    assert.is_true((value:login()))
     assert.is_table(pending)
     assert.is_true(value:is_active())
     assert.are.same({ true }, states)
@@ -113,6 +187,7 @@ describe("neoagent Authentication coordinator", function()
   it("validates composition and reports empty or unknown methods", function()
     local valid_presenter = presenter()
     local valid_auth = manager()
+    ---@param overrides table<string, unknown>
     local function create(overrides)
       local opts = {
         config = config(),
@@ -120,7 +195,7 @@ describe("neoagent Authentication coordinator", function()
         presenter = valid_presenter,
       }
       for key, item in pairs(overrides) do opts[key] = item end
-      return Authentication.new(opts)
+      return Authentication.new(opts --[[@as Neoagent.AuthenticationOptions]])
     end
     assert.has_error(function() create({ config = false }) end,
       "authentication config is required")
@@ -144,22 +219,23 @@ describe("neoagent Authentication coordinator", function()
         end,
       })),
     })
-    assert.is_nil(value:login())
+    assert.is_nil((value:login()))
     assert.matches("no login methods configured", notifications[1][1])
-    assert.is_nil(value:login("missing"))
+    assert.is_nil((value:login("missing")))
     assert.matches("unknown login method", notifications[2][1])
     assert.are.equal(vim.log.levels.ERROR, notifications[2][2])
-    assert.has_error(function() value:set_activity_callback(true) end)
+    assert.has_error(function() value:set_activity_callback(true --[[@as fun(active: boolean)]]) end)
     assert.is_function(value:set_activity_callback(function() end))
 
     value:destroy()
     value:destroy()
     local run, err = value:login("missing")
     assert.is_nil(run)
-    assert.are.equal("Authentication is destroyed", err.message)
-    run, err = value:logout("missing")
-    assert.is_nil(run)
-    assert.are.equal("Authentication is destroyed", err.message)
+    assert.are.equal("Authentication is destroyed", assert(err).message)
+    local logout_run
+    logout_run, err = value:logout("missing")
+    assert.is_nil(logout_run)
+    assert.are.equal("Authentication is destroyed", assert(err).message)
 
     local rejected_notifications = {}
     local rejected = authentication({
@@ -178,7 +254,7 @@ describe("neoagent Authentication coordinator", function()
         end,
       })),
     })
-    assert.is_true(rejected:login())
+    assert.is_true((rejected:login()))
     assert(vim.wait(1000, function()
       return #rejected_notifications == 1
     end, 5))
@@ -188,28 +264,30 @@ describe("neoagent Authentication coordinator", function()
 
   it("maps providers, refreshes matching catalogs, and bounds failures", function()
     local notifications = {}
+    ---@type Applet.SelectItem[]?
     local selected_items
     local activity = {}
     local selected_manager = manager()
+    ---@type table<string, {catalog: {refresh: fun(self: Neoagent.ModelCatalog, opts?: Neoagent.CatalogRefreshOptions): Neoagent.CatalogRefreshRun}, credentials?: {state: fun(self: Neoagent.ProviderCredentials): Neoagent.ProviderCredentialState}}>
     local runtimes = {
       ready = { catalog = {
-        refresh = function(_, opts)
+        refresh = function(self, opts)
           assert.are.same({ force = true }, opts)
-          return async.run(function() return { ok = true, models = {} } end)
+          return async.run(function() return { ok = true, changed = false, snapshot = self:snapshot() } end)
         end,
       } },
       rejected = { catalog = {
-        refresh = function()
+        refresh = function(self)
           return async.run(function()
             return { ok = false, error = util.error("provider", "refresh rejected") }
           end)
         end,
       } },
-      invalid = { catalog = { refresh = function() return false end } },
-      crashed = { catalog = { refresh = function() error("refresh crashed") end } },
+      invalid = { catalog = { refresh = function(self) return false --[[@as Neoagent.CatalogRefreshRun]] end } },
+      crashed = { catalog = { refresh = function(self) error("refresh crashed") end } },
       bad_credentials = {
         credentials = { state = function() error("credential inspection failed") end },
-        catalog = { refresh = function() error("must not refresh") end },
+        catalog = { refresh = function(self) error("must not refresh") end },
       },
       error_credentials = {
         credentials = { state = function()
@@ -219,17 +297,17 @@ describe("neoagent Authentication coordinator", function()
             error = util.error("auth", "credential state failed"),
           }
         end },
-        catalog = { refresh = function() error("must not refresh") end },
+        catalog = { refresh = function(self) error("must not refresh") end },
       },
       invalid_result = {
         credentials = { state = function()
           return { usable = true, source = "stored" }
         end },
-        catalog = { refresh = function()
-          return async.run(function() return "invalid result" end)
+        catalog = { refresh = function(self)
+          return async.run(function() return "invalid result" --[[@as Neoagent.CatalogRefreshResult]] end)
         end },
       },
-      unrelated = { catalog = { refresh = function() error("must not run") end } },
+      unrelated = { catalog = { refresh = function(self) error("must not run") end } },
     }
     local value = authentication({
       auth = selected_manager,
@@ -260,14 +338,14 @@ describe("neoagent Authentication coordinator", function()
       on_activity = function(active) activity[#activity + 1] = active end,
     })
 
-    assert.is_true(value:login())
+    assert.is_true((value:login()))
     assert(vim.wait(1000, function()
       return selected_manager.login_id == "alpha"
         and #notifications >= 4 and not value:is_active()
     end, 5))
     assert.are.same({ "alpha", "zulu" }, vim.tbl_map(function(item)
       return item.id
-    end, selected_items))
+    end, (assert(selected_items))))
     local text = table.concat(vim.tbl_map(function(item) return item[1] end,
       notifications), "\n")
     assert.matches("logged in with Alpha login", text)
@@ -283,22 +361,24 @@ describe("neoagent Authentication coordinator", function()
     assert.is_true(vim.tbl_contains(activity, false))
 
     local alias_run = assert(value:login("alias"))
+    assert(type(alias_run) == "table")
     assert(vim.wait(1000, function() return alias_run:is_done() end, 5))
     assert.are.equal("alpha", selected_manager.login_id)
   end)
 
   it("translates login prompts and bounded authentication events", function()
     local notifications, opened, inputs, notices = {}, {}, {}, {}
+    ---@type string[]
+    local answers = {}
     local selected_manager = manager({
       login = function(self, id, opts)
         self.login_id = id
         return async.run(function()
-          opts.notify({ type = "auth_url", url = "https://login.example",
+          assert(opts.notify)({ type = "auth_url", url = "https://login.example",
             instructions = "Authenticate in a browser:" })
-          opts.notify({ type = "device_code", verificationUri = "https://device.example",
+          assert(opts.notify)({ type = "device_code", verificationUri = "https://device.example",
             userCode = "ABCD-EFGH" })
-          opts.notify({ type = "progress", message = "Waiting for login" })
-          local answers = {}
+          assert(opts.notify)({ type = "progress", message = "Waiting for login" })
           for _, prompt in ipairs({
             { type = "select", message = "Flow", options = {
               { id = "browser", label = "Browser" },
@@ -311,8 +391,8 @@ describe("neoagent Authentication coordinator", function()
               return opts.prompt(prompt, done)
             end)
           end
-          return { ok = true, answers = answers }
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = id, revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local value = authentication({
@@ -336,10 +416,11 @@ describe("neoagent Authentication coordinator", function()
       })),
     })
     local run = assert(value:login("test"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function()
       return run:is_done() and not value:is_active() and #notifications >= 2
     end, 5))
-    assert.are.same({ "browser", "hidden", "", "" }, run:result().answers)
+    assert.are.same({ "browser", "hidden", "", "" }, answers)
     assert.are.same({ "https://login.example" }, opened)
     assert.are.equal(2, #notices)
     assert.are.equal("Browser login · <C-c> close", notices[1].prompt)
@@ -359,9 +440,9 @@ describe("neoagent Authentication coordinator", function()
       login = function(_, _, opts)
         return async.run(function()
           return async.await(function(done)
-            return opts.prompt({ type = "unsupported", message = "Broken" }, done)
+            return opts.prompt({ type = "unsupported", message = "Broken" } --[[@as Neoagent.LoginPrompt]], done)
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local reports = {}
@@ -372,10 +453,11 @@ describe("neoagent Authentication coordinator", function()
       end,
     })
     run = assert(rejected:login("test"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function()
       return run:is_done() and #reports == 1
     end, 5))
-    assert.is_false(run:result().ok)
+    assert.is_false(assert(run:result()).ok)
     assert.matches("Unsupported login prompt", reports[1][1])
     assert.are.equal(vim.log.levels.ERROR, reports[1][2])
   end)
@@ -385,20 +467,21 @@ describe("neoagent Authentication coordinator", function()
     local selected_manager = manager({
       login = function(_, _, opts)
         return async.run(function()
-          opts.notify({
+          assert(opts.notify)({
             type = "auth_url",
             url = "https://login.example",
             instructions = "Authenticate in a browser:",
           })
-          opts.notify({
+          assert(opts.notify)({
             type = "device_code",
             verificationUri = "https://device.example",
             userCode = "ABCD-EFGH",
           })
-          return { ok = true }
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = "test", revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
+    ---@type Neoagent.AuthenticationPresenter
     local fallback_presenter = {
       select = function() error("selection is unused") end,
       input = function() error("input is unused") end,
@@ -415,6 +498,7 @@ describe("neoagent Authentication coordinator", function()
     })
 
     local run = assert(value:login("test"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function()
       return run:is_done() and #notifications >= 3
     end, 5))
@@ -429,13 +513,15 @@ describe("neoagent Authentication coordinator", function()
   end)
 
   it("presents browser authorization as a persistent login notice", function()
+    ---@type Neoagent.AwaitCallbacks<boolean>?
     local finish
     local notices, notifications, opened = {}, {}, {}
+    ---@type Neoagent.PresentationRun?
     local notice_run
     local selected_manager = manager({
       login = function(_, _, opts)
         return async.run(function()
-          opts.notify({
+          assert(opts.notify)({
             type = "auth_url",
             url = "https://login.example",
             instructions = "Complete login in your browser to finish.",
@@ -444,10 +530,11 @@ describe("neoagent Authentication coordinator", function()
             finish = done
             return function() finish = nil end
           end)
-          return { ok = true }
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = "test", revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
+    ---@type Neoagent.AuthenticationPresenter
     local persistent_presenter = {
       select = function() error("selection is unused") end,
       input = function() error("input is unused") end,
@@ -471,6 +558,7 @@ describe("neoagent Authentication coordinator", function()
     })
 
     local run = assert(value:login("test"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function()
       return #notices > 0 or #notifications > 0
     end, 5))
@@ -482,22 +570,24 @@ describe("neoagent Authentication coordinator", function()
     assert.matches("waiting for authorization", notices[1].body)
     assert.are.equal("https://login.example", opened[1].uri)
     assert.are.same({}, notifications)
-    assert.is_false(notice_run:is_done())
+    assert.is_false(assert(notice_run):is_done())
 
-    finish.resolve(true)
+    assert(finish).resolve(true)
     assert(vim.wait(1000, function()
-      return run:is_done() and notice_run:is_done()
+      return run:is_done() and assert(notice_run):is_done()
     end, 5))
   end)
 
   it("presents device codes persistently without opening their URI", function()
+    ---@type Neoagent.AwaitCallbacks<boolean>?
     local finish
     local notices, notifications, opened = {}, {}, {}
+    ---@type Neoagent.PresentationRun?
     local notice_run
     local selected_manager = manager({
       login = function(_, _, opts)
         return async.run(function()
-          opts.notify({
+          assert(opts.notify)({
             type = "device_code",
             verificationUri = "https://device.example",
             userCode = "ABCD-EFGH",
@@ -506,10 +596,11 @@ describe("neoagent Authentication coordinator", function()
             finish = done
             return function() finish = nil end
           end)
-          return { ok = true }
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = "test", revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
+    ---@type Neoagent.AuthenticationPresenter
     local persistent_presenter = {
       select = function() error("selection is unused") end,
       input = function() error("input is unused") end,
@@ -533,6 +624,7 @@ describe("neoagent Authentication coordinator", function()
     })
 
     local run = assert(value:login("test"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function()
       return #notices > 0 or #opened > 0
     end, 5))
@@ -543,11 +635,11 @@ describe("neoagent Authentication coordinator", function()
     assert.matches("ABCD%-EFGH", notices[1].body)
     assert.are.same({}, opened)
     assert.are.same({}, notifications)
-    assert.is_false(notice_run:is_done())
+    assert.is_false(assert(notice_run):is_done())
 
-    finish.resolve(true)
+    assert(finish).resolve(true)
     assert(vim.wait(1000, function()
-      return run:is_done() and notice_run:is_done()
+      return run:is_done() and assert(notice_run):is_done()
     end, 5))
   end)
 
@@ -560,7 +652,7 @@ describe("neoagent Authentication coordinator", function()
           return async.await(function(done)
             return opts.prompt({ type = "text", message = "Wait" }, done)
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local value = authentication({
@@ -575,9 +667,10 @@ describe("neoagent Authentication coordinator", function()
       })),
     })
     local run = assert(value:login("test"))
+    assert(type(run) == "table")
     assert.is_true(value:is_active())
-    assert.is_nil(value:login("test"))
-    assert.is_nil(value:logout("test"))
+    assert.is_nil((value:login("test")))
+    assert.is_nil((value:logout("test")))
     assert.are.equal(2, #notifications)
     assert.are.equal(vim.log.levels.WARN, notifications[1][2])
     assert.is_true(value:cancel())
@@ -590,7 +683,7 @@ describe("neoagent Authentication coordinator", function()
     selected_manager.login = function() error("login construction failed") end
     local ok, err = pcall(value.login, value, "test")
     assert.is_false(ok)
-    assert.matches("login construction failed", err)
+    assert.matches("login construction failed", tostring(err))
     assert.is_false(value:is_active())
   end)
 
@@ -603,14 +696,15 @@ describe("neoagent Authentication coordinator", function()
           return async.await(function()
             return function() cancelled = cancelled + 1 end
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     }) })
     local run = assert(value:logout("test"))
+    assert(type(run) == "table")
     assert.is_true(value:is_active())
     assert.is_true(value:cancel())
     assert(vim.wait(1000, function() return run:is_done() and not value:is_active() end, 5))
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.are.equal(1, cancelled)
     assert.is_false(value:cancel())
   end)
@@ -635,7 +729,7 @@ describe("neoagent Authentication coordinator", function()
         end,
       })),
     })
-    assert.is_true(value:logout())
+    assert.is_true((value:logout()))
     assert(vim.wait(1000, function()
       return selected_manager.logout_id == "oauth" and not value:is_active()
         and #notifications >= 1
@@ -646,15 +740,16 @@ describe("neoagent Authentication coordinator", function()
     assert.matches("logged out of Plan login", notifications[#notifications][1])
 
     local run = assert(value:logout("key"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function() return run:is_done() end, 5))
     assert(vim.wait(1000, function()
       return notifications[#notifications][1]:find("environment API keys", 1, true)
     end, 5))
-    assert.is_nil(value:logout("missing"))
+    assert.is_nil((value:logout("missing")))
     assert.matches("no stored credential", notifications[#notifications][1])
 
     selected_manager.credentials = {}
-    assert.is_nil(value:logout())
+    assert.is_nil((value:logout()))
     assert.matches("no stored credentials", notifications[#notifications][1])
 
     local list_error = util.error("auth", "credential list failed")
@@ -684,9 +779,9 @@ describe("neoagent Authentication coordinator", function()
           end,
         },
         catalog = {
-          refresh = function()
+          refresh = function(self)
             refreshes = refreshes + 1
-            return async.run(function() return { ok = true } end)
+            return async.run(function() return { ok = true, changed = false, snapshot = self:snapshot() } end)
           end,
         },
       }, offline = {
@@ -696,17 +791,18 @@ describe("neoagent Authentication coordinator", function()
           end,
         },
         catalog = {
-          refresh = function()
+          refresh = function(self)
             skipped = skipped + 1
-            return async.run(function() return { ok = true } end)
+            return async.run(function() return { ok = true, changed = false, snapshot = self:snapshot() } end)
           end,
         },
       } },
     })
 
     local run = assert(value:logout("key"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function() return run:is_done() end, 5))
-    assert.is_true(run:result().ok)
+    assert.is_true(assert(run:result()).ok)
     assert(vim.wait(1000, function()
       return refreshes == 1 and not value:is_active()
     end, 5))
@@ -714,6 +810,7 @@ describe("neoagent Authentication coordinator", function()
   end)
 
   it("publishes completion of an asynchronously settled logout", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.AuthChangeResult>?
     local finish
     local selected_manager = manager({
       credentials = {
@@ -725,7 +822,7 @@ describe("neoagent Authentication coordinator", function()
             finish = done
             return function() finish = nil end
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local activity = {}
@@ -735,8 +832,9 @@ describe("neoagent Authentication coordinator", function()
     })
 
     local run = assert(value:logout("test"))
+    assert(type(run) == "table")
     assert.is_true(value:is_active())
-    finish.resolve({ ok = true })
+    assert(finish).resolve({ ok = true, method = "test", revision = 1 })
     assert(vim.wait(1000, function()
       return run:is_done() and not value:is_active()
     end, 5))
@@ -755,18 +853,20 @@ describe("neoagent Authentication coordinator", function()
           async.await(function()
             return function() logout_cancelled = true end
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = "test", revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local value = authentication({
       auth = selected_manager,
       config = config(nil, { dynamic = { auth = "test" } }),
       runtimes = { dynamic = { catalog = {
-        refresh = function()
+        refresh = function(self)
           return async.run(function()
             async.await(function()
               return function() catalog_cancelled = true end
             end)
+            return { ok = true, changed = false, snapshot = self:snapshot() }
           end)
         end,
       } } },
@@ -779,6 +879,7 @@ describe("neoagent Authentication coordinator", function()
     })
 
     local login = assert(value:login("test"))
+    assert(type(login) == "table")
     assert(vim.wait(1000, function()
       return login:is_done() and value:is_active()
     end, 5))
@@ -793,7 +894,7 @@ describe("neoagent Authentication coordinator", function()
       logout = function(_, _, opts)
         return async.run(function()
           error(util.error("auth", "logout rejected"), 0)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local failed = authentication({
@@ -805,6 +906,7 @@ describe("neoagent Authentication coordinator", function()
       })),
     })
     local logout = assert(failed:logout("test"))
+    assert(type(logout) == "table")
     assert(vim.wait(1000, function()
       return logout:is_done()
         and notifications[#notifications][1]:find("logout rejected", 1, true)
@@ -816,7 +918,7 @@ describe("neoagent Authentication coordinator", function()
     end
     local ok, err = pcall(failed.logout, failed, "test")
     assert.is_false(ok)
-    assert.matches("logout construction failed", err)
+    assert.matches("logout construction failed", tostring(err))
     assert.is_false(failed:is_active())
 
     local pending = authentication({
@@ -824,6 +926,7 @@ describe("neoagent Authentication coordinator", function()
       presenter = presenter(host()),
     })
     local logout_run = assert(pending:logout("test"))
+    assert(type(logout_run) == "table")
     assert.is_true(pending:is_active())
     pending:destroy()
     assert(vim.wait(1000, function()
@@ -838,7 +941,8 @@ describe("neoagent Authentication coordinator", function()
           async.await(function()
             return function() login_cancelled = true end
           end)
-        end, { on_done = opts.on_done, error_kind = "auth" })
+          return { ok = true, method = "test", revision = 1 }
+        end, { on_done = opts and opts.on_done, error_kind = "auth" })
       end,
     })
     local logging_in = authentication({ auth = login_manager })
@@ -861,7 +965,7 @@ describe("neoagent Authentication coordinator", function()
         credentials = { state = function()
           return { usable = true, source = "stored" }
         end },
-        catalog = { refresh = function()
+        catalog = { refresh = function(self)
           return async.run(function()
             return async.await(function()
               return function() cancelled = true end
@@ -876,12 +980,14 @@ describe("neoagent Authentication coordinator", function()
     assert(vim.wait(1000, function()
       return refresh:is_done() and cancelled and not value:is_active()
     end, 5))
-    assert.are.equal("cancelled", refresh:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(refresh:result()).error).kind)
 
-    selected_manager.logout = function() return {} end
+    selected_manager.logout = function() return {} --[[@as Neoagent.AuthenticationLogoutRun]] end
     local ok, err = pcall(value.logout, value, "test")
     assert.is_false(ok)
-    assert.matches("logout must return a Run", err.message)
+    local failure = err --[[@as unknown]]
+    ---@cast failure Neoagent.Error
+    assert.matches("logout must return a Run", failure.message)
     assert.is_false(value:is_active())
   end)
 end)
