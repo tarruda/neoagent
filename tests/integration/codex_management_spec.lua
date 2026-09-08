@@ -3,12 +3,16 @@ local async = require("neoagent.async")
 local management = require("neoagent.providers.codex_management")
 local http_replay = require("tests.helpers.http_replay")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("Codex management HTTP integration", function()
+  ---@type Neoagent.TestHttpReplay?
   local scenario
 
   after_each(function()
@@ -29,6 +33,7 @@ describe("Codex management HTTP integration", function()
           return {
             ok = true,
             configured = true,
+            method = "test",
             credential_type = "oauth",
             request_opts = { headers = {
               Authorization = "Bearer integration-secret",
@@ -42,15 +47,15 @@ describe("Codex management HTTP integration", function()
         end)
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("plus", result.value.plan_type)
     assert.are.equal(25,
-      result.value.rate_limit.primary_window.used_percent)
+      assert(assert(result.value.rate_limit).primary_window).used_percent)
     assert.are.same({
       email = "account@example.com", plan = "Plus",
     }, result.metadata)
     assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
-    assert.are.equal("GET", scenario.requests[1].method)
-    assert.are.equal(scenario.url .. "/backend-api/wham/usage", scenario.requests[1].url)
+    assert.are.equal("GET", assert(scenario.requests[1]).method)
+    assert.are.equal(scenario.url .. "/backend-api/wham/usage", assert(scenario.requests[1]).url)
   end)
 end)

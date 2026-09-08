@@ -2,8 +2,6 @@
 tests/http_live/callback_spec.lua
 tests/http_live/curl_spec.lua
 tests/integration/alibaba_token_plan_auth_spec.lua
-tests/integration/anthropic_http_spec.lua
-tests/integration/codex_management_spec.lua
 tests/integration/http_recording_spec.lua
 tests/integration/llama_http_spec.lua
 tests/integration/local_callback_spec.lua

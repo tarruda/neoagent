@@ -2,11 +2,17 @@ local assert = require("luassert")
 local anthropic = require("neoagent.api.anthropic_messages")
 local http_replay = require("tests.helpers.http_replay")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param scenario Neoagent.TestHttpReplay
+---@param max_output_tokens? integer
+---@return Neoagent.AnthropicModel
 local function model(scenario, max_output_tokens)
   return anthropic.new({
     provider = "anthropic-test",
@@ -19,6 +25,7 @@ local function model(scenario, max_output_tokens)
 end
 
 describe("Anthropic Messages HTTP integration", function()
+  ---@type Neoagent.TestHttpReplay[]
   local scenarios = {}
 
   after_each(function()
@@ -33,6 +40,7 @@ describe("Anthropic Messages HTTP integration", function()
     })
     scenarios[#scenarios + 1] = scenario
     local anthropic_model = model(scenario)
+    ---@type Neoagent.ToolDefinition[]
     local tools = { {
       name = "inspect",
       description = "Inspect a path",
@@ -53,12 +61,12 @@ describe("Anthropic Messages HTTP integration", function()
       request_opts = request_opts,
     }))
 
-    assert.is_true(first.ok)
+    assert(first.ok)
     assert.are.equal("toolUse", first.message.stopReason)
-    assert.are.equal("sig-1", first.message.content[1].thinkingSignature)
-    assert.are.same({ path = "x.lua" }, first.message.content[2].arguments)
-    assert.are.equal(4, first.message.usage.cacheRead)
-    assert.are.equal(26, first.message.usage.totalTokens)
+    assert.are.equal("sig-1", assert(first.message.content[1]).thinkingSignature)
+    assert.are.same({ path = "x.lua" }, assert(first.message.content[2]).arguments)
+    assert.are.equal(4, assert(first.message.usage).cacheRead)
+    assert.are.equal(26, assert(first.message.usage).totalTokens)
 
     local second = wait(anthropic_model:stream({
       messages = {
@@ -73,7 +81,7 @@ describe("Anthropic Messages HTTP integration", function()
       request_opts = request_opts,
     }))
 
-    assert.is_true(second.ok)
+    assert(second.ok)
     assert.are.equal("Looks good.", second.text)
     assert.are.equal("stop", second.message.stopReason)
     assert(vim.wait(1000, function() return #scenario.requests >= 2 end))
@@ -84,18 +92,19 @@ describe("Anthropic Messages HTTP integration", function()
       { path = "tests/recordings/anthropic/cancel-01.yaml", body_subset = false, headers_subset = true },
     })
     scenarios[#scenarios + 1] = scenario
+    ---@type Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>?
     local run
     run = model(scenario, 64):stream({
       messages = {},
       on_event = function(event)
-        if event.type == "text_delta" then run:cancel() end
+        if event.type == "text_delta" then assert(run):cancel() end
       end,
     })
     local result = wait(run)
 
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
-    assert.are.equal("partial", result.message.content[1].text)
-    assert.are.equal("aborted", result.message.stopReason)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal("partial", assert(assert(result.message).content[1]).text)
+    assert.are.equal("aborted", assert(result.message).stopReason)
   end)
 end)
