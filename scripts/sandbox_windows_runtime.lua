@@ -17,10 +17,13 @@
 
 local ffi = require("ffi")
 local bit = require("bit")
+-- All sizeof calls use concrete allocations or fixed-size C types.
+local sizeof = ffi.sizeof --[[@as fun(value: string|ffi.cdata*): integer]]
+local exit = os.exit --[[@as fun(code: integer): never]]
 
 if jit.os ~= "Windows" then
   io.stderr:write("neoagent Windows sandbox runtime requires Windows\n")
-  os.exit(2)
+  exit(2)
 end
 
 -- LuaJIT FFI calls the Win32 ABI directly. These declarations cover process
@@ -431,6 +434,247 @@ USHORT __stdcall htons(USHORT);
 -- Each short name identifies the system DLL that owns a group of operations:
 -- kernel/process I/O, security, accounts, encryption, desktops, firewall, and
 -- sockets respectively.
+-- Native field contracts mirror the Win32 structures declared above.
+---@class Neoagent.Win32.SECURITY_ATTRIBUTES: ffi.cdata*
+---@field nLength integer
+---@field lpSecurityDescriptor ffi.cdata*
+---@field bInheritHandle integer
+
+---@class Neoagent.Win32.STARTUPINFOW: ffi.cdata*
+---@field cb integer
+---@field lpReserved ffi.cdata*?
+---@field lpDesktop ffi.cdata*?
+---@field lpTitle ffi.cdata*?
+---@field dwX integer
+---@field dwY integer
+---@field dwXSize integer
+---@field dwYSize integer
+---@field dwXCountChars integer
+---@field dwYCountChars integer
+---@field dwFillAttribute integer
+---@field dwFlags integer
+---@field wShowWindow integer
+---@field cbReserved2 integer
+---@field lpReserved2 ffi.cdata*?
+---@field hStdInput ffi.cdata*
+---@field hStdOutput ffi.cdata*
+---@field hStdError ffi.cdata*
+
+---@class Neoagent.Win32.STARTUPINFOEXW: ffi.cdata*
+---@field StartupInfo Neoagent.Win32.STARTUPINFOW
+---@field lpAttributeList ffi.cdata*?
+
+---@class Neoagent.Win32.PROCESS_INFORMATION: ffi.cdata*
+---@field hProcess ffi.cdata*
+---@field hThread ffi.cdata*
+---@field dwProcessId integer
+---@field dwThreadId integer
+
+---@class Neoagent.Win32.SID_AND_ATTRIBUTES: ffi.cdata*
+---@field Sid ffi.cdata*?
+---@field Attributes integer
+
+---@class Neoagent.Win32.TOKEN_USER: ffi.cdata*
+---@field User Neoagent.Win32.SID_AND_ATTRIBUTES
+
+---@class Neoagent.Win32.TOKEN_GROUPS: ffi.cdata*
+---@field GroupCount integer
+---@field Groups Neoagent.FfiArray<Neoagent.Win32.SID_AND_ATTRIBUTES>
+
+---@class Neoagent.Win32.TOKEN_DEFAULT_DACL: ffi.cdata*
+---@field DefaultDacl ffi.cdata*?
+
+---@class Neoagent.Win32.LUID: ffi.cdata*
+---@field LowPart integer
+---@field HighPart integer
+
+---@class Neoagent.Win32.LUID_AND_ATTRIBUTES: ffi.cdata*
+---@field Luid Neoagent.Win32.LUID
+---@field Attributes integer
+
+---@class Neoagent.Win32.TOKEN_PRIVILEGES: ffi.cdata*
+---@field PrivilegeCount integer
+---@field Privileges Neoagent.FfiArray<Neoagent.Win32.LUID_AND_ATTRIBUTES>
+
+---@class Neoagent.Win32.TRUSTEE_W: ffi.cdata*
+---@field pMultipleTrustee ffi.cdata*?
+---@field MultipleTrusteeOperation integer
+---@field TrusteeForm integer
+---@field TrusteeType integer
+---@field ptstrName ffi.cdata*?
+
+---@class Neoagent.Win32.EXPLICIT_ACCESS_W: ffi.cdata*
+---@field grfAccessPermissions integer
+---@field grfAccessMode integer
+---@field grfInheritance integer
+---@field Trustee Neoagent.Win32.TRUSTEE_W
+
+---@class Neoagent.Win32.IO_COUNTERS: ffi.cdata*
+---@field ReadOperationCount integer|ffi.cdata*
+---@field WriteOperationCount integer|ffi.cdata*
+---@field OtherOperationCount integer|ffi.cdata*
+---@field ReadTransferCount integer|ffi.cdata*
+---@field WriteTransferCount integer|ffi.cdata*
+---@field OtherTransferCount integer|ffi.cdata*
+
+---@class Neoagent.Win32.JOBOBJECT_BASIC_LIMIT_INFORMATION: ffi.cdata*
+---@field PerProcessUserTimeLimit integer|ffi.cdata*
+---@field PerJobUserTimeLimit integer|ffi.cdata*
+---@field LimitFlags integer
+---@field MinimumWorkingSetSize integer|ffi.cdata*
+---@field MaximumWorkingSetSize integer|ffi.cdata*
+---@field ActiveProcessLimit integer
+---@field Affinity integer|ffi.cdata*
+---@field PriorityClass integer
+---@field SchedulingClass integer
+
+---@class Neoagent.Win32.JOBOBJECT_EXTENDED_LIMIT_INFORMATION: ffi.cdata*
+---@field BasicLimitInformation Neoagent.Win32.JOBOBJECT_BASIC_LIMIT_INFORMATION
+---@field IoInfo Neoagent.Win32.IO_COUNTERS
+---@field ProcessMemoryLimit integer|ffi.cdata*
+---@field JobMemoryLimit integer|ffi.cdata*
+---@field PeakProcessMemoryUsed integer|ffi.cdata*
+---@field PeakJobMemoryUsed integer|ffi.cdata*
+
+---@class Neoagent.Win32.USER_INFO_1: ffi.cdata*
+---@field usri1_name ffi.cdata*?
+---@field usri1_password ffi.cdata*?
+---@field usri1_password_age integer
+---@field usri1_priv integer
+---@field usri1_home_dir ffi.cdata*?
+---@field usri1_comment ffi.cdata*?
+---@field usri1_flags integer
+---@field usri1_script_path ffi.cdata*?
+
+---@class Neoagent.Win32.USER_INFO_1003: ffi.cdata*
+---@field usri1003_password ffi.cdata*?
+
+---@class Neoagent.Win32.DATA_BLOB: ffi.cdata*
+---@field cbData integer
+---@field pbData ffi.cdata*?
+
+---@class Neoagent.Win32.BY_HANDLE_FILE_INFORMATION: ffi.cdata*
+---@field dwFileAttributes integer
+---@field ftCreationTimeLow integer
+---@field ftCreationTimeHigh integer
+---@field ftLastAccessTimeLow integer
+---@field ftLastAccessTimeHigh integer
+---@field ftLastWriteTimeLow integer
+---@field ftLastWriteTimeHigh integer
+---@field dwVolumeSerialNumber integer
+---@field nFileSizeHigh integer
+---@field nFileSizeLow integer
+---@field nNumberOfLinks integer
+---@field nFileIndexHigh integer
+---@field nFileIndexLow integer
+
+---@class Neoagent.Win32.GUID: ffi.cdata*
+---@field Data1 integer
+---@field Data2 integer
+---@field Data3 integer
+---@field Data4 Neoagent.FfiArray<integer>
+
+---@class Neoagent.Win32.FWP_BYTE_BLOB: ffi.cdata*
+---@field size integer
+---@field data ffi.cdata*?
+
+---@class Neoagent.Win32.FWP_VALUE0_UNION: ffi.cdata*
+---@field uint8 integer
+---@field uint16 integer
+---@field uint32 integer
+---@field uint64 ffi.cdata*?
+---@field int64 ffi.cdata*?
+---@field byteBlob ffi.cdata*?
+---@field sid ffi.cdata*?
+---@field sd ffi.cdata*?
+---@field unicodeString ffi.cdata*?
+---@field pointer ffi.cdata*?
+
+---@class Neoagent.Win32.FWP_VALUE0: ffi.cdata*
+---@field type integer
+---@field value Neoagent.Win32.FWP_VALUE0_UNION
+
+---@class Neoagent.Win32.FWPM_DISPLAY_DATA0: ffi.cdata*
+---@field name ffi.cdata*?
+---@field description ffi.cdata*?
+
+---@class Neoagent.Win32.FWPM_SESSION0: ffi.cdata*
+---@field sessionKey Neoagent.Win32.GUID
+---@field displayData Neoagent.Win32.FWPM_DISPLAY_DATA0
+---@field flags integer
+---@field txnWaitTimeoutInMSec integer
+---@field processId integer
+---@field sid ffi.cdata*?
+---@field username ffi.cdata*?
+---@field kernelMode integer
+
+---@class Neoagent.Win32.FWPM_PROVIDER0: ffi.cdata*
+---@field providerKey Neoagent.Win32.GUID
+---@field displayData Neoagent.Win32.FWPM_DISPLAY_DATA0
+---@field flags integer
+---@field providerData Neoagent.Win32.FWP_BYTE_BLOB
+---@field serviceName ffi.cdata*?
+
+---@class Neoagent.Win32.FWPM_SUBLAYER0: ffi.cdata*
+---@field subLayerKey Neoagent.Win32.GUID
+---@field displayData Neoagent.Win32.FWPM_DISPLAY_DATA0
+---@field flags integer
+---@field providerKey ffi.cdata*?
+---@field providerData Neoagent.Win32.FWP_BYTE_BLOB
+---@field weight integer
+
+---@class Neoagent.Win32.FWPM_FILTER_CONDITION0: ffi.cdata*
+---@field fieldKey Neoagent.Win32.GUID
+---@field matchType integer
+---@field conditionValue Neoagent.Win32.FWP_VALUE0
+
+---@class Neoagent.Win32.FWPM_ACTION0_UNION: ffi.cdata*
+---@field filterType Neoagent.Win32.GUID
+---@field calloutKey Neoagent.Win32.GUID
+
+---@class Neoagent.Win32.FWPM_ACTION0: ffi.cdata*
+---@field type integer
+---@field value Neoagent.Win32.FWPM_ACTION0_UNION
+
+---@class Neoagent.Win32.FWPM_FILTER0_UNION: ffi.cdata*
+---@field rawContext integer|ffi.cdata*
+---@field providerContextKey Neoagent.Win32.GUID
+
+---@class Neoagent.Win32.FWPM_FILTER0: ffi.cdata*
+---@field filterKey Neoagent.Win32.GUID
+---@field displayData Neoagent.Win32.FWPM_DISPLAY_DATA0
+---@field flags integer
+---@field providerKey ffi.cdata*?
+---@field providerData Neoagent.Win32.FWP_BYTE_BLOB
+---@field layerKey Neoagent.Win32.GUID
+---@field subLayerKey Neoagent.Win32.GUID
+---@field weight Neoagent.Win32.FWP_VALUE0
+---@field numFilterConditions integer
+---@field filterCondition ffi.cdata*?
+---@field action Neoagent.Win32.FWPM_ACTION0
+---@field context Neoagent.Win32.FWPM_FILTER0_UNION
+---@field reserved ffi.cdata*?
+---@field filterId integer|ffi.cdata*
+---@field effectiveWeight Neoagent.Win32.FWP_VALUE0
+
+---@class Neoagent.Win32.WSADATA: ffi.cdata*
+---@field wVersion integer
+---@field wHighVersion integer
+---@field iMaxSockets integer
+---@field iMaxUdpDg integer
+---@field lpVendorInfo ffi.cdata*?
+---@field szDescription Neoagent.FfiArray<integer>
+---@field szSystemStatus Neoagent.FfiArray<integer>
+
+---@class Neoagent.Win32.IN_ADDR: ffi.cdata*
+---@field s_addr integer
+
+---@class Neoagent.Win32.SOCKADDR_IN: ffi.cdata*
+---@field sin_family integer
+---@field sin_port integer
+---@field sin_addr Neoagent.Win32.IN_ADDR
+---@field sin_zero Neoagent.FfiArray<integer>
+
 local K = ffi.load("kernel32")
 local A = ffi.load("advapi32")
 local N = ffi.load("netapi32")
@@ -628,27 +872,102 @@ local RUNTIME = {
   PROCESS_SHUTDOWN_MS = 5000,
 }
 
+---@class Neoagent.WindowsRuntimeError
+---@field sandbox_runtime_error? boolean
+---@field stage string
+---@field errno integer
+
+---@class Neoagent.WindowsRuntimeAccount
+---@field name string
+---@field sid string
+---@field password string
+
+---@class Neoagent.WindowsPathIdentity
+---@field volume integer
+---@field high integer
+---@field low integer
+
+---@class Neoagent.WindowsPlaceholder
+---@field path string
+---@field marker string
+---@field nonce string
+---@field marker_ready boolean
+---@field volume? integer
+---@field high? integer
+---@field low? integer
+
+---@class Neoagent.WindowsRecovery
+---@field account_sid? string
+---@field capability_sid? string
+---@field paths? string[]
+---@field placeholders? Neoagent.WindowsPlaceholder[]
+
+---@class Neoagent.WindowsRuntimeState
+---@field v integer
+---@field owner_sid string
+---@field accounts table<'offline'|'online', Neoagent.WindowsRuntimeAccount>
+---@field recovery Neoagent.WindowsRecovery
+---@field acl? table
+---@field wfp? {filters: string[]}
+
+---@class Neoagent.WindowsRuntimeSpec: Neoagent.WindowsSandboxSpec
+---@field profile Neoagent.WindowsSandboxProfile
+---@field cwd string
+---@field temp_root? string
+
+---@class Neoagent.WindowsRunner
+---@field input? ffi.cdata*
+---@field output ffi.cdata*
+---@field process ffi.cdata*
+---@field job ffi.cdata*
+
+---@class Neoagent.WindowsProcessAttributes
+---@field storage ffi.cdata*
+---@field list? ffi.cdata*
+---@field handles Neoagent.FfiArray<ffi.cdata*>
+---@field jobs Neoagent.FfiArray<ffi.cdata*>
+
+---@class Neoagent.WindowsDesktop
+---@field desktop ffi.cdata*
+---@field name Neoagent.FfiArray<integer>
+
+---@class Neoagent.WindowsWireInput: Neoagent.SandboxProtocolInput
+---@field spec? unknown
+
+---@alias Neoagent.WindowsWireOutput Neoagent.SandboxProtocolEvent|{v: integer, spec: Neoagent.WindowsRuntimeSpec}|{v: integer, type: 'stdin', data: string}|{v: integer, type: 'stdin-end'}
+---@alias Neoagent.WindowsOutput fun(stream: 'stdout'|'stderr', data: string)
+
+---@param handle? ffi.cdata*
+---@return boolean
 local function invalid_handle(handle)
-  return handle == nil or handle == ffi.NULL
+  return handle == nil
     or handle == WIN32.HANDLE.INVALID
 end
 
+---@param handle? ffi.cdata*
 local function close_handle(handle)
   if not invalid_handle(handle) then K.CloseHandle(handle) end
 end
 
+---@return integer
 local function last_error()
-  return tonumber(K.GetLastError())
+  return (tonumber(K.GetLastError()) --[[@as integer]])
 end
 
+---@param stage string
+---@param code? integer
+---@return never
 local function failure(stage, code)
   error({
     sandbox_runtime_error = true,
     stage = stage,
-    errno = tonumber(code or last_error()),
+    errno = (tonumber(code or last_error()) --[[@as integer]]),
   }, 0)
 end
 
+---@param value unknown
+---@param fallback? string
+---@return Neoagent.WindowsRuntimeError
 local function error_value(value, fallback)
   if type(value) == "table" and value.sandbox_runtime_error then
     return value
@@ -659,12 +978,14 @@ local function error_value(value, fallback)
   }
 end
 
+---@param value string
+---@return Neoagent.FfiArray<integer>
 local function wide(value)
   value = tostring(value)
   if value:find("\0", 1, true) then failure("utf16", 0) end
   local length = K.MultiByteToWideChar(65001, 0x8, value, #value, nil, 0)
   if length <= 0 and #value > 0 then failure("utf16") end
-  local buffer = ffi.new("WCHAR[?]", length + 1)
+  local buffer = (ffi.new("WCHAR[?]", length + 1) --[[@as Neoagent.FfiArray<integer>]])
   if length > 0
       and K.MultiByteToWideChar(65001, 0x8, value, #value, buffer, length) ~= length then
     failure("utf16")
@@ -673,8 +994,12 @@ local function wide(value)
   return buffer
 end
 
+---@param pointer? ffi.cdata*
+---@param length? integer
+---@return string?
 local function utf8(pointer, length)
-  if pointer == nil or pointer == ffi.NULL then return nil end
+  ---@cast pointer Neoagent.FfiArray<integer>?
+  if pointer == nil then return nil end
   if length == nil then
     length = 0
     while pointer[length] ~= 0 do length = length + 1 end
@@ -682,7 +1007,7 @@ local function utf8(pointer, length)
   local size = K.WideCharToMultiByte(
     65001, 0, pointer, length, nil, 0, nil, nil)
   if size <= 0 and length > 0 then failure("utf8") end
-  local buffer = ffi.new("char[?]", math.max(size, 1))
+  local buffer = (ffi.new("char[?]", math.max(size, 1)) --[[@as Neoagent.FfiArray<integer>]])
   if size > 0
       and K.WideCharToMultiByte(
         65001, 0, pointer, length, buffer, size, nil, nil) ~= size then
@@ -691,6 +1016,8 @@ local function utf8(pointer, length)
   return ffi.string(buffer, size)
 end
 
+---@param bytes integer
+---@return string
 local function random_hex(bytes)
   local value = vim.uv.random(bytes)
   if type(value) ~= "string" or #value ~= bytes then failure("random", 0) end
@@ -704,31 +1031,40 @@ end
 -- Frames use a four-byte big-endian length followed by a MessagePack map. The
 -- same format is used between Neoagent and the host runtime and between the
 -- host and account runner.
+---@param handle ffi.cdata*
+---@param data string
+---@return true?, integer?
 local function write_all(handle, data)
   local offset = 0
-  local written = ffi.new("DWORD[1]")
+  local written = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   while offset < #data do
     local size = math.min(#data - offset, 65536)
     if K.WriteFile(handle, data:sub(offset + 1, offset + size),
         size, written, nil) == 0 then
       return nil, last_error()
     end
-    local count = tonumber(written[0])
+    local count = written[0]
     if count <= 0 then return nil, WIN32.ERROR.BROKEN_PIPE end
     offset = offset + count
   end
   return true
 end
 
+---@param handle ffi.cdata*
+---@param size integer
+---@return string?, integer?
 local function read_some(handle, size)
-  local buffer = ffi.new("BYTE[?]", size)
-  local count = ffi.new("DWORD[1]")
+  local buffer = (ffi.new("BYTE[?]", size) --[[@as Neoagent.FfiArray<integer>]])
+  local count = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.ReadFile(handle, buffer, size, count, nil) == 0 then
     return nil, last_error()
   end
-  return ffi.string(buffer, tonumber(count[0]))
+  return ffi.string(buffer, count[0])
 end
 
+---@param handle ffi.cdata*
+---@param size integer
+---@return string?, integer?
 local function read_exact(handle, size)
   local chunks, received = {}, 0
   while received < size do
@@ -741,6 +1077,8 @@ local function read_exact(handle, size)
   return table.concat(chunks)
 end
 
+---@param value integer
+---@return string
 local function u32(value)
   return string.char(
     math.floor(value / 16777216) % 256,
@@ -749,16 +1087,23 @@ local function u32(value)
     value % 256)
 end
 
+---@param value Neoagent.WindowsWireOutput
+---@return string
 local function frame_data(value)
   local payload = vim.mpack.encode(value)
   if #payload <= 0 or #payload > RUNTIME.MAX_FRAME then failure("protocol-size", 0) end
   return u32(#payload) .. payload
 end
 
+---@param handle ffi.cdata*
+---@param value Neoagent.WindowsWireOutput
+---@return true?, integer?
 local function write_frame(handle, value)
   return write_all(handle, frame_data(value))
 end
 
+---@param handle ffi.cdata*
+---@return Neoagent.WindowsWireInput?, integer?
 local function read_frame(handle)
   local header, header_err = read_exact(handle, 4)
   if not header then return nil, header_err end
@@ -772,13 +1117,16 @@ local function read_frame(handle)
   return value
 end
 
+---@param value Neoagent.WindowsWireOutput
 local function stdout_frame(value)
   local handle = K.GetStdHandle(WIN32.HANDLE.STD_OUTPUT)
   if invalid_handle(handle) or not write_frame(handle, value) then
-    os.exit(125)
+    exit(125)
   end
 end
 
+---@param handle? ffi.cdata*
+---@param value unknown
 local function emit_error(handle, value)
   value = error_value(value)
   local event = {
@@ -790,10 +1138,11 @@ local function emit_error(handle, value)
   if handle then
     write_frame(handle, event)
   else
-    stdout_frame(event)
+    stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
   end
 end
 
+---@return string
 local function read_standard_input()
   local handle = K.GetStdHandle(WIN32.HANDLE.STD_INPUT)
   if invalid_handle(handle) then return "" end
@@ -815,18 +1164,22 @@ end
 -- A SID is Windows' stable identity value for a user or capability. ACL
 -- entries grant or deny permissions to SIDs. These helpers convert SID forms,
 -- inspect tokens, and apply narrowly scoped entries to filesystem objects.
+---@param sid ffi.cdata*
+---@return string
 local function sid_string(sid)
-  local pointer = ffi.new("WCHAR *[1]")
+  local pointer = (ffi.new("WCHAR *[1]") --[[@as Neoagent.FfiArray<Neoagent.FfiArray<integer>>]])
   if A.ConvertSidToStringSidW(sid, pointer) == 0 then
     failure("sid-string")
   end
-  local result = utf8(pointer[0])
+  local result = assert(utf8(pointer[0]))
   K.LocalFree(pointer[0])
   return result
 end
 
+---@param value string
+---@return ffi.cdata*
 local function sid_from_string(value)
-  local pointer = ffi.new("SID *[1]")
+  local pointer = (ffi.new("SID *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local encoded = wide(value)
   if A.ConvertStringSidToSidW(encoded, pointer) == 0 then
     failure("sid-parse")
@@ -834,6 +1187,7 @@ local function sid_from_string(value)
   return pointer[0]
 end
 
+---@return ffi.cdata*
 local function current_token()
   local desired = bit.bor(
     WIN32.TOKEN.ASSIGN_PRIMARY,
@@ -842,44 +1196,55 @@ local function current_token()
     WIN32.TOKEN.ADJUST_PRIVILEGES,
     WIN32.TOKEN.ADJUST_DEFAULT,
     WIN32.TOKEN.ADJUST_SESSION_ID)
-  local token = ffi.new("HANDLE[1]")
+  local token = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   if A.OpenProcessToken(K.GetCurrentProcess(), desired, token) == 0 then
     failure("open-token")
   end
   return token[0]
 end
 
+---@param token ffi.cdata*
+---@param class integer
+---@return ffi.cdata*, integer
 local function token_information(token, class)
-  local needed = ffi.new("DWORD[1]")
+  local needed = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   A.GetTokenInformation(token, class, nil, 0, needed)
   if needed[0] == 0 then failure("token-information") end
-  local buffer = ffi.new("BYTE[?]", tonumber(needed[0]))
+  local buffer = (ffi.new("BYTE[?]", needed[0]) --[[@as Neoagent.FfiArray<integer>]])
   if A.GetTokenInformation(
       token, class, buffer, needed[0], needed) == 0 then
     failure("token-information")
   end
-  return buffer, tonumber(needed[0])
+  return buffer, needed[0]
 end
 
+---@param token ffi.cdata*
+---@return ffi.cdata*, ffi.cdata*
 local function token_user_sid(token)
   local buffer = token_information(token, WIN32.TOKEN.USER_CLASS)
-  return ffi.cast("TOKEN_USER *", buffer).User.Sid, buffer
+  return (ffi.cast("TOKEN_USER *", buffer) --[[@as Neoagent.Win32.TOKEN_USER]]).User.Sid --[[@as ffi.cdata*]], buffer
 end
 
+---@param token ffi.cdata*
+---@return ffi.cdata*, ffi.cdata*
 local function token_logon_sid(token)
   local buffer = token_information(token, WIN32.TOKEN.GROUPS_CLASS)
-  local groups = ffi.cast("TOKEN_GROUPS *", buffer)
-  local entries = ffi.cast("SID_AND_ATTRIBUTES *",
-    ffi.cast("BYTE *", buffer) + ffi.offsetof("TOKEN_GROUPS", "Groups"))
-  for index = 0, tonumber(groups.GroupCount) - 1 do
+  local groups = (ffi.cast("TOKEN_GROUPS *", buffer) --[[@as Neoagent.Win32.TOKEN_GROUPS]])
+  local entries = (ffi.cast("SID_AND_ATTRIBUTES *",
+    ffi.cast("BYTE *", buffer) + ffi.offsetof("TOKEN_GROUPS", "Groups")) --[[@as Neoagent.FfiArray<Neoagent.Win32.SID_AND_ATTRIBUTES>]])
+  local selected
+  for index = 0, groups.GroupCount - 1 do
     if bit.band(entries[index].Attributes, WIN32.SECURITY.GROUP_LOGON_ID)
         == WIN32.SECURITY.GROUP_LOGON_ID then
-      return entries[index].Sid, buffer
+      selected = entries[index].Sid
+      break
     end
   end
-  failure("token-logon-sid")
+  if not selected then failure("token-logon-sid") end
+  return selected, buffer
 end
 
+---@return string
 local function current_user_sid_string()
   local token = current_token()
   local sid, storage = token_user_sid(token)
@@ -889,16 +1254,18 @@ local function current_user_sid_string()
   return result
 end
 
+---@param name string
+---@return string?, integer?
 local function account_sid(name)
   local encoded = wide(name)
-  local sid_size = ffi.new("DWORD[1]")
-  local domain_size = ffi.new("DWORD[1]")
-  local use = ffi.new("LONG[1]")
+  local sid_size = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
+  local domain_size = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
+  local use = (ffi.new("LONG[1]") --[[@as Neoagent.FfiArray<integer>]])
   A.LookupAccountNameW(
     nil, encoded, nil, sid_size, nil, domain_size, use)
   if sid_size[0] == 0 then return nil, last_error() end
-  local sid = ffi.new("BYTE[?]", tonumber(sid_size[0]))
-  local domain = ffi.new("WCHAR[?]", math.max(tonumber(domain_size[0]), 1))
+  local sid = (ffi.new("BYTE[?]", sid_size[0]) --[[@as Neoagent.FfiArray<integer>]])
+  local domain = (ffi.new("WCHAR[?]", math.max(domain_size[0], 1)) --[[@as Neoagent.FfiArray<integer>]])
   if A.LookupAccountNameW(nil, encoded, ffi.cast("SID *", sid), sid_size,
       domain, domain_size, use) == 0 then
     return nil, last_error()
@@ -906,8 +1273,10 @@ local function account_sid(name)
   return sid_string(ffi.cast("SID *", sid))
 end
 
+---@param sddl string
+---@return ffi.cdata*
 local function security_descriptor(sddl)
-  local result = ffi.new("void *[1]")
+  local result = (ffi.new("void *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local encoded = wide(sddl)
   if A.ConvertStringSecurityDescriptorToSecurityDescriptorW(
       encoded, 1, result, nil) == 0 then
@@ -916,6 +1285,8 @@ local function security_descriptor(sddl)
   return result[0]
 end
 
+---@param path string
+---@param owner_sid string
 local function protect_path(path, owner_sid)
   local descriptor = security_descriptor(string.format(
     "D:P(A;OICI;FA;;;%s)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", owner_sid))
@@ -927,8 +1298,13 @@ local function protect_path(path, owner_sid)
   if ok == 0 then failure("protect-state") end
 end
 
+---@param sid ffi.cdata*
+---@param permissions integer
+---@param mode integer
+---@param inheritance integer
+---@return Neoagent.Win32.EXPLICIT_ACCESS_W
 local function explicit_access(sid, permissions, mode, inheritance)
-  local value = ffi.new("EXPLICIT_ACCESS_W")
+  local value = (ffi.new("EXPLICIT_ACCESS_W") --[[@as Neoagent.Win32.EXPLICIT_ACCESS_W]])
   value.grfAccessPermissions = permissions
   value.grfAccessMode = mode
   value.grfInheritance = inheritance or 0
@@ -936,22 +1312,24 @@ local function explicit_access(sid, permissions, mode, inheritance)
   value.Trustee.MultipleTrusteeOperation = 0
   value.Trustee.TrusteeForm = WIN32.SECURITY.TRUSTEE_SID
   value.Trustee.TrusteeType = WIN32.SECURITY.TRUSTEE_UNKNOWN
-  value.Trustee.ptstrName = ffi.cast("WCHAR *", sid)
+  value.Trustee.ptstrName = (ffi.cast("WCHAR *", sid) --[[@as Neoagent.FfiArray<integer>]])
   return value
 end
 
+---@param path string
+---@param entries Neoagent.Win32.EXPLICIT_ACCESS_W[]
 local function update_acl(path, entries)
   local encoded = wide(path)
-  local old_acl = ffi.new("ACL *[1]")
-  local descriptor = ffi.new("void *[1]")
+  local old_acl = (ffi.new("ACL *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local descriptor = (ffi.new("void *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local code = A.GetNamedSecurityInfoW(encoded, WIN32.SECURITY.FILE_OBJECT,
     WIN32.SECURITY.DACL_INFORMATION, nil, nil, old_acl, nil, descriptor)
   if code ~= WIN32.ERROR.SUCCESS then failure("acl-read", code) end
-  local array = ffi.new("EXPLICIT_ACCESS_W[?]", #entries)
+  local array = (ffi.new("EXPLICIT_ACCESS_W[?]", #entries) --[[@as Neoagent.FfiArray<Neoagent.Win32.EXPLICIT_ACCESS_W>]])
   for index, entry in ipairs(entries) do
     array[index - 1] = entry
   end
-  local new_acl = ffi.new("ACL *[1]")
+  local new_acl = (ffi.new("ACL *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   code = A.SetEntriesInAclW(#entries, array, old_acl[0], new_acl)
   if code ~= WIN32.ERROR.SUCCESS then
     if descriptor[0] ~= nil then K.LocalFree(descriptor[0]) end
@@ -964,6 +1342,10 @@ local function update_acl(path, entries)
   if code ~= WIN32.ERROR.SUCCESS then failure("acl-write", code) end
 end
 
+---@param path string
+---@param sids ffi.cdata*[]
+---@param permissions integer
+---@param inherited? boolean
 local function allow_path(path, sids, permissions, inherited)
   local entries = {}
   local inheritance = inherited
@@ -978,6 +1360,9 @@ local function allow_path(path, sids, permissions, inherited)
   update_acl(path, entries)
 end
 
+---@param path string
+---@param sid ffi.cdata*
+---@param permissions integer
 local function deny_path(path, sid, permissions)
   update_acl(path, {
     explicit_access(sid, permissions, WIN32.SECURITY.DENY_ACCESS,
@@ -985,6 +1370,8 @@ local function deny_path(path, sid, permissions)
   })
 end
 
+---@param path string
+---@param sid ffi.cdata*
 local function revoke_path(path, sid)
   local stat = vim.uv.fs_lstat(path)
   if not stat then return end
@@ -1001,20 +1388,23 @@ end
 -- random passwords are encrypted for the invoking user with DPAPI. Atomic
 -- replacement keeps the account, firewall, and recovery records well formed
 -- across interruption.
+---@param value string
+---@param decrypt boolean
+---@return string
 local function dpapi(value, decrypt)
-  local source = ffi.new("BYTE[?]", math.max(#value, 1))
+  local source = (ffi.new("BYTE[?]", math.max(#value, 1)) --[[@as Neoagent.FfiArray<integer>]])
   if #value > 0 then ffi.copy(source, value, #value) end
-  local input = ffi.new("DATA_BLOB")
+  local input = (ffi.new("DATA_BLOB") --[[@as Neoagent.Win32.DATA_BLOB]])
   input.cbData = #value
   input.pbData = source
   local entropy_value = "neoagent-windows-sandbox-state-v1"
-  local entropy_bytes = ffi.new("BYTE[?]", #entropy_value)
+  local entropy_bytes = (ffi.new("BYTE[?]", #entropy_value) --[[@as Neoagent.FfiArray<integer>]])
   ffi.copy(entropy_bytes, entropy_value, #entropy_value)
-  local entropy = ffi.new("DATA_BLOB")
+  local entropy = (ffi.new("DATA_BLOB") --[[@as Neoagent.Win32.DATA_BLOB]])
   entropy.cbData = #entropy_value
   entropy.pbData = entropy_bytes
-  local output = ffi.new("DATA_BLOB")
-  local description = ffi.new("WCHAR *[1]")
+  local output = (ffi.new("DATA_BLOB") --[[@as Neoagent.Win32.DATA_BLOB]])
+  local description = (ffi.new("WCHAR *[1]") --[[@as Neoagent.FfiArray<Neoagent.FfiArray<integer>>]])
   local ok
   if decrypt then
     ok = C.CryptUnprotectData(
@@ -1027,11 +1417,13 @@ local function dpapi(value, decrypt)
   end
   if description[0] ~= nil then K.LocalFree(description[0]) end
   if ok == 0 then failure(decrypt and "state-decrypt" or "state-encrypt") end
-  local result = ffi.string(output.pbData, tonumber(output.cbData))
+  local result = ffi.string(output.pbData, output.cbData)
   if output.pbData ~= nil then K.LocalFree(output.pbData) end
   return result
 end
 
+---@param path string
+---@return string?, string?
 local function read_file(path)
   local fd, err = vim.uv.fs_open(path, "r", 0)
   if not fd then return nil, err end
@@ -1045,6 +1437,8 @@ local function read_file(path)
   return data, read_err
 end
 
+---@param path string
+---@param data string
 local function atomic_write(path, data)
   local temporary = path .. "." .. random_hex(8) .. ".tmp"
   local fd, open_err = vim.uv.fs_open(temporary, "wx", 384)
@@ -1074,10 +1468,14 @@ local function atomic_write(path, data)
   end
 end
 
+---@param directory string
+---@return string
 local function state_path(directory)
   return vim.fs.joinpath(directory, "state.json")
 end
 
+---@param directory string
+---@return Neoagent.WindowsRuntimeState
 local function decode_state(directory)
   local data = read_file(state_path(directory))
   if type(data) ~= "string" then
@@ -1102,43 +1500,58 @@ local function decode_state(directory)
   return state
 end
 
+---@param directory string
+---@param state Neoagent.WindowsRuntimeState
 local function encode_state(directory, state)
   atomic_write(state_path(directory), vim.json.encode(state))
 end
 
+---@param account Neoagent.WindowsRuntimeAccount
+---@return string
 local function account_password(account)
   local ok, encrypted = pcall(vim.base64.decode, account.password)
   if not ok or type(encrypted) ~= "string" then failure("state-password", 0) end
   return dpapi(encrypted, true)
 end
 
+---@return string
 local function password_value()
   return "Aa1!" .. random_hex(24)
 end
 
+---@param prefix string
+---@return string
 local function account_name(prefix)
+  local selected
   for _ = 1, 32 do
     local name = prefix .. random_hex(3)
-    if not account_sid(name) then return name end
+    if not account_sid(name) then
+      selected = name
+      break
+    end
   end
-  failure("account-name", WIN32.ERROR.ALREADY_EXISTS)
+  if not selected then failure("account-name", WIN32.ERROR.ALREADY_EXISTS) end
+  return selected
 end
 
+---@param name string
+---@param password string
+---@return string
 local function create_or_update_account(name, password)
   local existing = account_sid(name)
   local encoded_password = wide(password)
   if existing then
-    local info = ffi.new("USER_INFO_1003")
+    local info = (ffi.new("USER_INFO_1003") --[[@as Neoagent.Win32.USER_INFO_1003]])
     info.usri1003_password = encoded_password
-    local parameter = ffi.new("DWORD[1]")
+    local parameter = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
     local code = N.NetUserSetInfo(
-      nil, wide(name), 1003, ffi.cast("BYTE *", info), parameter)
+      nil, wide(name), 1003, (ffi.cast("BYTE *", info) --[[@as Neoagent.FfiArray<integer>]]), parameter)
     if code ~= WIN32.ERROR.SUCCESS then failure("account-password", code) end
     return existing
   end
   local encoded_name = wide(name)
   local comment = wide("Neoagent Windows sandbox account")
-  local info = ffi.new("USER_INFO_1")
+  local info = (ffi.new("USER_INFO_1") --[[@as Neoagent.Win32.USER_INFO_1]])
   info.usri1_name = encoded_name
   info.usri1_password = encoded_password
   info.usri1_password_age = 0
@@ -1149,8 +1562,8 @@ local function create_or_update_account(name, password)
     WIN32.ACCOUNT.SCRIPT, WIN32.ACCOUNT.PASSWORD_CANNOT_CHANGE,
     WIN32.ACCOUNT.NORMAL, WIN32.ACCOUNT.PASSWORD_NEVER_EXPIRES)
   info.usri1_script_path = nil
-  local parameter = ffi.new("DWORD[1]")
-  local code = N.NetUserAdd(nil, 1, ffi.cast("BYTE *", info), parameter)
+  local parameter = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
+  local code = N.NetUserAdd(nil, 1, (ffi.cast("BYTE *", info) --[[@as Neoagent.FfiArray<integer>]]), parameter)
   if code ~= WIN32.ERROR.SUCCESS and code ~= WIN32.ERROR.USER_EXISTS then
     failure("account-create", code)
   end
@@ -1159,6 +1572,8 @@ local function create_or_update_account(name, password)
   return sid
 end
 
+---@param value string
+---@return Neoagent.Win32.GUID
 local function guid(value)
   local a, b, c, d, e = value:match(
     "^([0-9a-fA-F]+)%-([0-9a-fA-F]+)%-([0-9a-fA-F]+)%-"
@@ -1166,13 +1581,13 @@ local function guid(value)
   if not a or #a ~= 8 or #b ~= 4 or #c ~= 4 or #d ~= 4 or #e ~= 12 then
     failure("guid", 0)
   end
-  local result = ffi.new("GUID")
-  result.Data1 = tonumber(a, 16)
-  result.Data2 = tonumber(b, 16)
-  result.Data3 = tonumber(c, 16)
+  local result = (ffi.new("GUID") --[[@as Neoagent.Win32.GUID]])
+  result.Data1 = (tonumber(a, 16) --[[@as integer]])
+  result.Data2 = (tonumber(assert(b), 16) --[[@as integer]])
+  result.Data3 = (tonumber(assert(c), 16) --[[@as integer]])
   local tail = d .. e
   for index = 0, 7 do
-    result.Data4[index] = tonumber(tail:sub(index * 2 + 1, index * 2 + 2), 16)
+    result.Data4[index] = (tonumber(tail:sub(index * 2 + 1, index * 2 + 2), 16) --[[@as integer]])
   end
   return result
 end
@@ -1204,9 +1619,11 @@ local WFP = {
   },
 }
 
+---@return string
 function random_guid()
   local random = vim.uv.random(16)
   if type(random) ~= "string" or #random ~= 16 then failure("random", 0) end
+  ---@type integer[]
   local bytes = { random:byte(1, 16) }
   if #bytes ~= 16 then failure("random", 0) end
   bytes[7] = bit.bor(bit.band(bytes[7], 0x0f), 0x40)
@@ -1222,8 +1639,11 @@ function random_guid()
     .. "-" .. table.concat(hex, "", 11, 16)
 end
 
+---@param code integer
+---@param stage string
+---@param allowed? integer[]
 local function wfp_ok(code, stage, allowed)
-  code = tonumber(code)
+  code = code
   if code == WIN32.ERROR.SUCCESS then return end
   for _, value in ipairs(allowed or {}) do
     if code == value then return end
@@ -1231,29 +1651,33 @@ local function wfp_ok(code, stage, allowed)
   failure(stage, code)
 end
 
+---@param account_sid_string string
+---@return ffi.cdata*, Neoagent.FfiArray<Neoagent.Win32.FWP_BYTE_BLOB>
 local function wfp_user_condition(account_sid_string)
   local account = sid_from_string(account_sid_string)
-  local access = ffi.new("EXPLICIT_ACCESS_W[1]")
+  local access = (ffi.new("EXPLICIT_ACCESS_W[1]") --[[@as Neoagent.FfiArray<Neoagent.Win32.EXPLICIT_ACCESS_W>]])
   access[0] = explicit_access(
     account, WIN32.WFP.ACCESS_MATCH_FILTER, WIN32.SECURITY.GRANT_ACCESS, 0)
-  local descriptor = ffi.new("void *[1]")
-  local length = ffi.new("ULONG[1]")
+  local descriptor = (ffi.new("void *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local length = (ffi.new("ULONG[1]") --[[@as Neoagent.FfiArray<integer>]])
   local code = A.BuildSecurityDescriptorW(
     nil, nil, 1, access, 0, nil, nil, length, descriptor)
   K.LocalFree(account)
   if code ~= WIN32.ERROR.SUCCESS then failure("wfp-user", code) end
-  local blob = ffi.new("FWP_BYTE_BLOB[1]")
+  local blob = (ffi.new("FWP_BYTE_BLOB[1]") --[[@as Neoagent.FfiArray<Neoagent.Win32.FWP_BYTE_BLOB>]])
   blob[0].size = length[0]
-  blob[0].data = ffi.cast("BYTE *", descriptor[0])
+  blob[0].data = (ffi.cast("BYTE *", descriptor[0]) --[[@as Neoagent.FfiArray<integer>]])
   return descriptor[0], blob
 end
 
+---@param account_sid_string string
+---@param filter_keys string[]
 local function install_wfp(account_sid_string, filter_keys)
   local session_name = wide("Neoagent Windows sandbox")
-  local session = ffi.new("FWPM_SESSION0")
+  local session = (ffi.new("FWPM_SESSION0") --[[@as Neoagent.Win32.FWPM_SESSION0]])
   session.displayData.name = session_name
   session.txnWaitTimeoutInMSec = WIN32.WAIT.INFINITE
-  local engine = ffi.new("HANDLE[1]")
+  local engine = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   wfp_ok(F.FwpmEngineOpen0(nil, 10, nil, session, engine), "wfp-open")
 
   local transaction = false
@@ -1264,7 +1688,7 @@ local function install_wfp(account_sid_string, filter_keys)
     local provider_name = wide("Neoagent Windows sandbox")
     local provider_description =
       wide("Persistent network policy for Neoagent sandbox accounts")
-    local provider = ffi.new("FWPM_PROVIDER0")
+    local provider = (ffi.new("FWPM_PROVIDER0") --[[@as Neoagent.Win32.FWPM_PROVIDER0]])
     provider.providerKey = WFP.PROVIDER
     provider.displayData.name = provider_name
     provider.displayData.description = provider_description
@@ -1275,8 +1699,8 @@ local function install_wfp(account_sid_string, filter_keys)
     local sublayer_name = wide("Neoagent Windows sandbox")
     local sublayer_description =
       wide("Persistent outbound isolation for Neoagent sandbox accounts")
-    local provider_key = ffi.new("GUID[1]", WFP.PROVIDER)
-    local sublayer = ffi.new("FWPM_SUBLAYER0")
+    local provider_key = (ffi.new("GUID[1]", WFP.PROVIDER) --[[@as Neoagent.FfiArray<Neoagent.Win32.GUID>]])
+    local sublayer = (ffi.new("FWPM_SUBLAYER0") --[[@as Neoagent.Win32.FWPM_SUBLAYER0]])
     sublayer.subLayerKey = WFP.SUBLAYER
     sublayer.displayData.name = sublayer_name
     sublayer.displayData.description = sublayer_description
@@ -1288,21 +1712,21 @@ local function install_wfp(account_sid_string, filter_keys)
 
     local descriptor, user_blob =
       wfp_user_condition(account_sid_string)
-    local condition = ffi.new("FWPM_FILTER_CONDITION0[1]")
+    local condition = (ffi.new("FWPM_FILTER_CONDITION0[1]") --[[@as Neoagent.FfiArray<Neoagent.Win32.FWPM_FILTER_CONDITION0>]])
     condition[0].fieldKey = WFP.USER
     condition[0].matchType = WIN32.WFP.MATCH_EQUAL
     condition[0].conditionValue.type = WIN32.WFP.SECURITY_DESCRIPTOR_TYPE
     condition[0].conditionValue.value.sd = user_blob
     local sublayer_key = WFP.SUBLAYER
     for index, item in ipairs(WFP.FILTERS) do
-      local filter_key = guid(filter_keys[index])
+      local filter_key = guid(assert(filter_keys[index]))
       wfp_ok(F.FwpmFilterDeleteByKey0(
-        engine[0], ffi.new("GUID[1]", filter_key)),
+        engine[0], (ffi.new("GUID[1]", filter_key) --[[@as Neoagent.FfiArray<Neoagent.Win32.GUID>]])),
         "wfp-filter-delete", { WIN32.WFP.FILTER_NOT_FOUND, WIN32.WFP.NOT_FOUND })
       local name = wide(item.name)
       local description =
         wide("Block all network traffic from the offline sandbox account")
-      local filter = ffi.new("FWPM_FILTER0")
+      local filter = (ffi.new("FWPM_FILTER0") --[[@as Neoagent.Win32.FWPM_FILTER0]])
       filter.filterKey = filter_key
       filter.displayData.name = name
       filter.displayData.description = description
@@ -1314,7 +1738,7 @@ local function install_wfp(account_sid_string, filter_keys)
       filter.numFilterConditions = 1
       filter.filterCondition = condition
       filter.action.type = WIN32.WFP.ACTION_BLOCK
-      local id = ffi.new("UINT64[1]")
+      local id = (ffi.new("UINT64[1]") --[[@as Neoagent.FfiArray<integer|ffi.cdata*>]])
       wfp_ok(F.FwpmFilterAdd0(engine[0], filter, nil, id),
         "wfp-filter-add")
     end
@@ -1327,18 +1751,20 @@ local function install_wfp(account_sid_string, filter_keys)
   if not ok then error(err, 0) end
 end
 
+---@param path string
 local function mkdir(path)
   local stat = vim.uv.fs_stat(path)
   if stat and stat.type == "directory" then return end
   local ok, err = vim.fn.mkdir(path, "p")
   if ok == 0 and not vim.uv.fs_stat(path) then
-    failure("state-directory", tonumber(err) or 0)
+    failure("state-directory", (tonumber(err) --[[@as integer?]]) or 0)
   end
 end
 
 -- Setup is the privileged, persistent phase. It creates or refreshes both
 -- accounts, installs the offline account's firewall filters, prepares a shared
 -- temporary directory, and protects the saved state for the invoking user.
+---@param directory string
 local function setup(directory)
   mkdir(directory)
   local owner_sid = current_user_sid_string()
@@ -1362,19 +1788,14 @@ local function setup(directory)
 
   for _, kind in ipairs({ "offline", "online" }) do
     local record = state.accounts[kind]
-    local password
-    if record then
-      password = account_password(record)
-    else
-      password = password_value()
-      record = {
-        name = account_name(kind == "offline"
-          and "neoagent_off_" or "neoagent_on_"),
-      }
-      state.accounts[kind] = record
-    end
-    record.sid = create_or_update_account(record.name, password)
-    record.password = vim.base64.encode(dpapi(password, false))
+    local password = record and account_password(record) or password_value()
+    local name = record and record.name or account_name(kind == "offline"
+      and "neoagent_off_" or "neoagent_on_")
+    state.accounts[kind] = {
+      name = name,
+      sid = create_or_update_account(name, password),
+      password = vim.base64.encode(dpapi(password, false)),
+    }
   end
 
   if state.wfp == nil then
@@ -1392,12 +1813,12 @@ local function setup(directory)
       if type(value) ~= "string" then failure("state-format", 0) end
     end
   end
-  install_wfp(state.accounts.offline.sid, state.wfp.filters)
+  install_wfp(assert(state.accounts.offline).sid, state.wfp.filters)
   local shared = vim.fs.joinpath(directory, "shared-tmp")
   mkdir(shared)
   allow_path(shared, {
-    sid_from_string(state.accounts.offline.sid),
-    sid_from_string(state.accounts.online.sid),
+    sid_from_string(assert(state.accounts.offline).sid),
+    sid_from_string(assert(state.accounts.online).sid),
   }, WIN32.FILE.ALL_ACCESS, true)
   protect_path(directory, owner_sid)
   encode_state(directory, state)
@@ -1416,15 +1837,19 @@ end
 -- Paths are normalized, resolved, and compared case-insensitively before any
 -- access rule is changed. Existing paths must retain the identity selected by
 -- validation.
+---@param directory string
+---@return string
 local function mutex_name(directory)
   return "Local\\NeoagentSandbox-" .. vim.fn.sha256(
     tostring(directory):lower()):sub(1, 32)
 end
 
+---@param directory string
+---@return ffi.cdata*
 local function acquire_mutex(directory)
   local handle = K.CreateMutexW(nil, 0, wide(mutex_name(directory)))
   if invalid_handle(handle) then failure("mutex-create") end
-  local result = tonumber(K.WaitForSingleObject(handle, WIN32.WAIT.INFINITE))
+  local result = (tonumber(K.WaitForSingleObject(handle, WIN32.WAIT.INFINITE)) --[[@as integer]])
   if result ~= WIN32.WAIT.OBJECT_0 and result ~= WIN32.WAIT.ABANDONED then
     close_handle(handle)
     failure("mutex-wait", result)
@@ -1432,6 +1857,7 @@ local function acquire_mutex(directory)
   return handle
 end
 
+---@param handle? ffi.cdata*
 local function release_mutex(handle)
   if not invalid_handle(handle) then
     K.ReleaseMutex(handle)
@@ -1439,19 +1865,30 @@ local function release_mutex(handle)
   end
 end
 
+---@param path string
+---@return string
 local function path_key(path)
   return tostring(path):gsub("/", "\\"):gsub("\\+$", ""):lower()
 end
 
+---@param root string
+---@param path string
+---@return boolean
 local function path_contains(root, path)
   root, path = path_key(root), path_key(path)
   return path == root or path:sub(1, #root + 1) == root .. "\\"
 end
 
+---@param left string
+---@param right string
+---@return boolean
 local function path_overlap(left, right)
   return path_contains(left, right) or path_contains(right, left)
 end
 
+---@param path unknown
+---@param stage? string
+---@return string
 function normalized_profile_path(path, stage)
   if type(path) ~= "string" or path == ""
       or path:find("\0", 1, true) then
@@ -1472,6 +1909,9 @@ function normalized_profile_path(path, stage)
   return normalized
 end
 
+---@param path unknown
+---@param stage? string
+---@return string
 local function canonical_existing(path, stage)
   local normalized = normalized_profile_path(path, stage)
   local resolved = vim.uv.fs_realpath(normalized)
@@ -1483,6 +1923,8 @@ local function canonical_existing(path, stage)
   return resolved
 end
 
+---@param value unknown
+---@return Neoagent.SandboxFilesystemEntry[], table<string, Neoagent.SandboxFilesystemEntry>
 function copy_protected(value)
   if type(value) ~= "table" or not vim.islist(value) then
     failure("profile-protected-create", 0)
@@ -1521,6 +1963,10 @@ function copy_protected(value)
   return result, by_path
 end
 
+---@param value unknown
+---@param stage string
+---@param missing? table<string, Neoagent.SandboxFilesystemEntry>
+---@return string[]
 local function copy_list(value, stage, missing)
   if type(value) ~= "table" or not vim.islist(value) then
     failure(stage, 0)
@@ -1542,6 +1988,9 @@ end
 -- files, target executables, temporary storage, and protected paths form a
 -- coherent policy. The later ACL code can therefore operate on resolved
 -- objects with a bounded, well-typed specification.
+---@param spec unknown
+---@param directory string
+---@return Neoagent.WindowsRuntimeSpec
 local function validate_spec(spec, directory)
   if type(spec) ~= "table" or spec.v ~= RUNTIME.PROTOCOL_VERSION then
     failure("specification-version", 0)
@@ -1678,6 +2127,7 @@ end
 -- Each request receives a random capability SID. ACLs combine that capability
 -- with the selected account SID: the account identifies the runner, while the
 -- capability makes writable grants specific to this request's target token.
+---@return string
 local function capability_sid()
   local components = {}
   local random = vim.uv.random(16)
@@ -1690,6 +2140,8 @@ local function capability_sid()
   return "S-1-5-21-" .. table.concat(components, "-")
 end
 
+---@param values string[]
+---@return string[]
 local function unique_paths(values)
   local result, seen = {}, {}
   for _, value in ipairs(values) do
@@ -1705,30 +2157,35 @@ local function unique_paths(values)
   return result
 end
 
+---@param path string
+---@return Neoagent.WindowsPathIdentity?, integer?
 function path_identity(path)
   local handle = K.CreateFileW(wide(path), 0,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE, WIN32.FILE.SHARE_DELETE),
     nil, WIN32.FILE.OPEN_EXISTING,
     bit.bor(WIN32.FILE.FLAG_BACKUP_SEMANTICS, WIN32.FILE.FLAG_OPEN_REPARSE_POINT), nil)
   if invalid_handle(handle) then return nil, last_error() end
-  local information = ffi.new("BY_HANDLE_FILE_INFORMATION")
+  local information = (ffi.new("BY_HANDLE_FILE_INFORMATION") --[[@as Neoagent.Win32.BY_HANDLE_FILE_INFORMATION]])
   if K.GetFileInformationByHandle(handle, information) == 0 then
     local err = last_error()
     close_handle(handle)
     return nil, err
   end
   close_handle(handle)
-  if bit.band(tonumber(information.dwFileAttributes),
+  if bit.band(information.dwFileAttributes,
       WIN32.FILE.ATTRIBUTE_REPARSE_POINT) ~= 0 then
     return nil, WIN32.ERROR.ACCESS_DENIED
   end
   return {
-    volume = tonumber(information.dwVolumeSerialNumber),
-    high = tonumber(information.nFileIndexHigh),
-    low = tonumber(information.nFileIndexLow),
+    volume = information.dwVolumeSerialNumber,
+    high = information.nFileIndexHigh,
+    low = information.nFileIndexLow,
   }
 end
 
+---@param record Neoagent.WindowsPlaceholder|Neoagent.WindowsPathIdentity
+---@param identity? Neoagent.WindowsPathIdentity
+---@return boolean?
 function same_identity(record, identity)
   return identity
     and type(record.volume) == "number"
@@ -1739,6 +2196,8 @@ function same_identity(record, identity)
     and record.low == identity.low
 end
 
+---@param record Neoagent.WindowsPlaceholder
+---@return string?
 function marker_path(record)
   if type(record.path) ~= "string"
       or type(record.marker) ~= "string"
@@ -1748,6 +2207,7 @@ function marker_path(record)
   return vim.fs.joinpath(record.path, record.marker)
 end
 
+---@param record Neoagent.WindowsPlaceholder
 function write_placeholder_marker(record)
   local path = marker_path(record)
   if not path or type(record.nonce) ~= "string" then
@@ -1768,22 +2228,25 @@ function write_placeholder_marker(record)
   end
 end
 
+---@param path string
+---@return string?
 function read_small_file(path)
   local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_READ,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE, WIN32.FILE.SHARE_DELETE),
     nil, WIN32.FILE.OPEN_EXISTING, WIN32.FILE.ATTRIBUTE_NORMAL, nil)
   if invalid_handle(handle) then return nil end
-  local length = ffi.new("LONGLONG[1]")
+  local length = (ffi.new("LONGLONG[1]") --[[@as Neoagent.FfiArray<integer|ffi.cdata*>]])
   if K.GetFileSizeEx(handle, length) == 0
-      or tonumber(length[0]) > 256 then
+      or (tonumber(length[0]) --[[@as integer]]) > 256 then
     close_handle(handle)
     return nil
   end
-  local data = read_exact(handle, tonumber(length[0]))
+  local data = read_exact(handle, (tonumber(length[0]) --[[@as integer]]))
   close_handle(handle)
   return data
 end
 
+---@param record Neoagent.WindowsPlaceholder
 function cleanup_placeholder(record)
   local path = type(record) == "table" and record.path or nil
   if type(path) ~= "string" then return end
@@ -1802,6 +2265,7 @@ end
 -- is recorded before enforcement, allowing this pass to revoke an interrupted
 -- request on the next launch. File identities and private marker contents prove
 -- that a placeholder still belongs to this runtime before removal.
+---@param state Neoagent.WindowsRuntimeState
 local function recovery_cleanup(state)
   local recovery = state.recovery
   if type(recovery) ~= "table" or type(recovery.paths) ~= "table" then
@@ -1841,6 +2305,9 @@ local function recovery_cleanup(state)
   state.recovery = {}
 end
 
+---@param directory string
+---@param state Neoagent.WindowsRuntimeState
+---@param spec Neoagent.WindowsRuntimeSpec
 function materialize_protected(directory, state, spec)
   local protected = spec.profile.windows.protected_create
   for _, entry in ipairs(protected) do
@@ -1852,7 +2319,7 @@ function materialize_protected(directory, state, spec)
         nonce = nonce,
         marker_ready = false,
       }
-      local placeholders = state.recovery.placeholders
+      local placeholders = assert(state.recovery.placeholders)
       placeholders[#placeholders + 1] = record
       encode_state(directory, state)
       if K.CreateDirectoryW(wide(entry.path), nil) == 0 then
@@ -1886,6 +2353,9 @@ function materialize_protected(directory, state, spec)
   end
 end
 
+---@param paths string[]
+---@param path string
+---@return boolean
 local function covered_by(paths, path)
   for _, root in ipairs(paths) do
     if path_contains(root, path) then return true end
@@ -1897,6 +2367,11 @@ end
 -- let the runner load Neovim and enter required paths; capability grants and
 -- deny entries constrain the restricted target token. All touched paths are
 -- journaled before their ACLs change.
+---@param directory string
+---@param state Neoagent.WindowsRuntimeState
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param account_sid_string string
+---@param capability_sid_string string
 local function apply_runtime_acls(directory, state, spec, account_sid_string,
     capability_sid_string)
   local filesystem = spec.profile.windows
@@ -1976,6 +2451,8 @@ local function apply_runtime_acls(directory, state, spec, account_sid_string,
   K.LocalFree(capability)
 end
 
+---@param directory string
+---@param state Neoagent.WindowsRuntimeState
 local function finish_runtime_acls(directory, state)
   recovery_cleanup(state)
   encode_state(directory, state)
@@ -1987,6 +2464,8 @@ end
 -- the documented Windows backslash-and-quote encoding. cmd.exe command tails
 -- use a temporary batch file because cmd applies its own command-language
 -- parsing after CreateProcess has parsed the executable arguments.
+---@param value string
+---@return string
 local function quote_argument(value)
   if value == "" then return '""' end
   if not value:find('[%s"]') then return value end
@@ -2014,6 +2493,8 @@ local function quote_argument(value)
   return table.concat(result)
 end
 
+---@param argv string[]
+---@return string
 local function command_line(argv)
   local values = {}
   for index, value in ipairs(argv) do
@@ -2022,26 +2503,32 @@ local function command_line(argv)
   return table.concat(values, " ")
 end
 
+---@param argv string[]
+---@return integer?
 local function cmd_command_index(argv)
-  local basename = argv[1]:gsub("/", "\\"):match("([^\\]+)$")
+  local basename = assert(argv[1]):gsub("/", "\\"):match("([^\\]+)$")
   if not basename or basename:lower() ~= "cmd.exe" then return nil end
   for index = 2, #argv do
-    local option = argv[index]:lower()
+    local option = assert(argv[index]):lower()
     if option == "/c" or option == "/k" then
       return index
     end
   end
 end
 
+---@param argv string[]
+---@param command_index? integer
+---@param command_file? string
+---@return string
 local function target_command_line(argv, command_index, command_file)
   if not command_file then return command_line(argv) end
   local values = {}
   -- The batch file supplies the complete command string and owns its quote
   -- parsing. The process prefix carries the remaining cmd options through
   -- /c or /k, and its executable token uses native backslash path syntax.
-  for index = 1, command_index do
-    if index == 1 or argv[index]:lower() ~= "/s" then
-      local value = index == 1 and argv[index]:gsub("/", "\\") or argv[index]
+  for index = 1, assert(command_index) do
+    if index == 1 or assert(argv[index]):lower() ~= "/s" then
+      local value = index == 1 and assert(argv[index]):gsub("/", "\\") or assert(argv[index])
       values[#values + 1] = quote_argument(value)
     end
   end
@@ -2054,32 +2541,37 @@ local function target_command_line(argv, command_index, command_file)
   return table.concat(values, " ")
 end
 
+---@param value string
+---@return Neoagent.FfiArray<integer>
 local function wide_mutable(value)
   local source = wide(value)
-  local length = ffi.sizeof(source) / ffi.sizeof("WCHAR")
-  local result = ffi.new("WCHAR[?]", length)
-  ffi.copy(result, source, ffi.sizeof(source))
+  local length = (sizeof(source) / sizeof("WCHAR")) --[[@as integer]]
+  local result = (ffi.new("WCHAR[?]", length) --[[@as Neoagent.FfiArray<integer>]])
+  ffi.copy(result, source, sizeof(source))
   return result
 end
 
+---@param environment table<string, string>
+---@return Neoagent.FfiArray<integer>
 local function utf16_block(environment)
   local names = vim.tbl_keys(environment)
   table.sort(names, function(left, right)
     local left_key, right_key = left:lower(), right:lower()
     return left_key == right_key and left < right or left_key < right_key
   end)
+  ---@type integer
   local units = #names == 0 and 2 or 1
   local encoded = {}
   for _, name in ipairs(names) do
     local item = wide(name .. "=" .. environment[name])
     encoded[#encoded + 1] = item
-    units = units + ffi.sizeof(item) / ffi.sizeof("WCHAR")
+    units = units + ((sizeof(item) / sizeof("WCHAR")) --[[@as integer]])
   end
-  local block = ffi.new("WCHAR[?]", units)
+  local block = (ffi.new("WCHAR[?]", units) --[[@as Neoagent.FfiArray<integer>]])
   local offset = 0
   for _, item in ipairs(encoded) do
-    local count = ffi.sizeof(item) / ffi.sizeof("WCHAR")
-    ffi.copy(block + offset, item, ffi.sizeof(item))
+    local count = (sizeof(item) / sizeof("WCHAR")) --[[@as integer]]
+    ffi.copy(block + offset, item, sizeof(item))
     offset = offset + count
   end
   block[offset] = 0
@@ -2089,21 +2581,26 @@ end
 -- A kill-on-close job groups a process with all descendants. Closing or
 -- terminating the runner and target jobs therefore provides bounded cleanup
 -- for both process trees.
+---@param stage? string
+---@return ffi.cdata*
 local function create_job(stage)
   local job = K.CreateJobObjectW(nil, nil)
   if invalid_handle(job) then failure(stage or "job-create") end
-  local limits = ffi.new("JOBOBJECT_EXTENDED_LIMIT_INFORMATION")
+  local limits = (ffi.new("JOBOBJECT_EXTENDED_LIMIT_INFORMATION") --[[@as Neoagent.Win32.JOBOBJECT_EXTENDED_LIMIT_INFORMATION]])
   limits.BasicLimitInformation.LimitFlags =
     WIN32.JOB.KILL_ON_CLOSE
   if K.SetInformationJobObject(job,
       WIN32.JOB.EXTENDED_LIMIT_INFORMATION,
-      limits, ffi.sizeof(limits)) == 0 then
+      limits, sizeof(limits)) == 0 then
     close_handle(job)
     failure(stage or "job-configure")
   end
   return job
 end
 
+---@param job ffi.cdata*
+---@param process ffi.cdata*
+---@param stage? string
 local function assign_job(job, process, stage)
   if K.AssignProcessToJobObject(job, process) == 0 then
     failure(stage or "job-assign")
@@ -2113,35 +2610,40 @@ end
 -- Extended startup attributes place the target in its job during creation and
 -- expose exactly the three standard-stream handles. Containment and handle
 -- ownership are established before the first target instruction runs.
+---@param job ffi.cdata*
+---@param stdin_handle ffi.cdata*
+---@param stdout_handle ffi.cdata*
+---@param stderr_handle ffi.cdata*
+---@return Neoagent.WindowsProcessAttributes
 local function target_process_attributes(job, stdin_handle, stdout_handle,
     stderr_handle)
-  local size = ffi.new("SIZE_T[1]")
+  local size = (ffi.new("SIZE_T[1]") --[[@as Neoagent.FfiArray<integer|ffi.cdata*>]])
   K.InitializeProcThreadAttributeList(nil, 2, 0, size)
   if size[0] == 0 then failure("target-attributes-size") end
-  local storage = ffi.new("BYTE[?]", tonumber(size[0]))
+  local storage = (ffi.new("BYTE[?]", (tonumber(size[0]) --[[@as integer]])) --[[@as Neoagent.FfiArray<integer>]])
   local list = ffi.cast("void *", storage)
   if K.InitializeProcThreadAttributeList(list, 2, 0, size) == 0 then
     failure("target-attributes-create")
   end
-  local handles = ffi.new("HANDLE[3]")
+  local handles = (ffi.new("HANDLE[3]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   handles[0] = stdin_handle
   handles[1] = stdout_handle
   handles[2] = stderr_handle
-  local jobs = ffi.new("HANDLE[1]")
+  local jobs = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   jobs[0] = job
   local ok, err = pcall(function()
     -- An explicit handle list gives the child exactly its three standard
     -- handles. Other inheritable runner handles remain outside the sandbox
     -- target and cannot keep its pipe endpoints alive.
     if K.UpdateProcThreadAttribute(list, 0,
-        WIN32.PROCESS.ATTRIBUTE_HANDLE_LIST, handles, ffi.sizeof(handles),
+        WIN32.PROCESS.ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles),
         nil, nil) == 0 then
       failure("target-attributes-handles")
     end
     -- Job membership takes effect as part of process creation, so neither the
     -- target nor an immediate descendant can run before containment applies.
     if K.UpdateProcThreadAttribute(list, 0,
-        WIN32.PROCESS.ATTRIBUTE_JOB_LIST, jobs, ffi.sizeof(jobs),
+        WIN32.PROCESS.ATTRIBUTE_JOB_LIST, jobs, sizeof(jobs),
         nil, nil) == 0 then
       failure("target-attributes-job")
     end
@@ -2162,16 +2664,22 @@ end
 -- selected account, and both endpoints verify the connecting process ID. This
 -- pairs the expected account identity with the exact process launched by the
 -- host.
+---@param account_sid_string string
+---@return Neoagent.Win32.SECURITY_ATTRIBUTES, ffi.cdata*
 local function pipe_security(account_sid_string)
   local descriptor = security_descriptor(
     "D:(A;;GA;;;" .. account_sid_string .. ")")
-  local attributes = ffi.new("SECURITY_ATTRIBUTES")
-  attributes.nLength = ffi.sizeof(attributes)
+  local attributes = (ffi.new("SECURITY_ATTRIBUTES") --[[@as Neoagent.Win32.SECURITY_ATTRIBUTES]])
+  attributes.nLength = sizeof(attributes)
   attributes.lpSecurityDescriptor = descriptor
   attributes.bInheritHandle = 0
   return attributes, descriptor
 end
 
+---@param name string
+---@param access integer
+---@param account_sid_string string
+---@return ffi.cdata*
 local function create_server_pipe(name, access, account_sid_string)
   local attributes, descriptor = pipe_security(account_sid_string)
   local handle = K.CreateNamedPipeW(wide(name), access,
@@ -2182,6 +2690,9 @@ local function create_server_pipe(name, access, account_sid_string)
   return handle
 end
 
+---@param handle ffi.cdata*
+---@param expected_pid integer
+---@param process ffi.cdata*
 local function connect_server_pipe(handle, expected_pid, process)
   local connected = false
   for _ = 1, 1000 do
@@ -2203,19 +2714,23 @@ local function connect_server_pipe(handle, expected_pid, process)
     K.Sleep(10)
   end
   if not connected then failure("pipe-connect-timeout", WIN32.WAIT.TIMEOUT) end
-  local client_pid = ffi.new("ULONG[1]")
+  local client_pid = (ffi.new("ULONG[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.GetNamedPipeClientProcessId(handle, client_pid) == 0 then
     failure("pipe-client-pid")
   end
-  if tonumber(client_pid[0]) ~= tonumber(expected_pid) then
+  if client_pid[0] ~= expected_pid then
     failure("pipe-client-identity", WIN32.ERROR.ACCESS_DENIED)
   end
-  local mode = ffi.new("DWORD[1]", bit.bor(WIN32.PIPE.READMODE_BYTE, WIN32.PIPE.WAIT))
+  local mode = (ffi.new("DWORD[1]", bit.bor(WIN32.PIPE.READMODE_BYTE, WIN32.PIPE.WAIT)) --[[@as Neoagent.FfiArray<integer>]])
   if K.SetNamedPipeHandleState(handle, mode, nil, nil) == 0 then
     failure("pipe-mode")
   end
 end
 
+---@param name string
+---@param access integer
+---@param expected_pid integer
+---@return ffi.cdata*
 local function open_client_pipe(name, access, expected_pid)
   local handle
   for _ = 1, 1000 do
@@ -2229,18 +2744,25 @@ local function open_client_pipe(name, access, expected_pid)
     K.WaitNamedPipeW(wide(name), 10)
   end
   if invalid_handle(handle) then failure("pipe-open-timeout", WIN32.WAIT.TIMEOUT) end
-  local server_pid = ffi.new("ULONG[1]")
+  local server_pid = (ffi.new("ULONG[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.GetNamedPipeServerProcessId(handle, server_pid) == 0 then
     close_handle(handle)
     failure("pipe-server-pid")
   end
-  if tonumber(server_pid[0]) ~= expected_pid then
+  if server_pid[0] ~= expected_pid then
     close_handle(handle)
     failure("pipe-server-identity", WIN32.ERROR.ACCESS_DENIED)
   end
   return handle
 end
 
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param input_pipe string
+---@param output_pipe string
+---@param host_pid integer
+---@param account_sid_string string
+---@param capability_sid_string string
+---@return string[]
 local function runner_argv(spec, input_pipe, output_pipe, host_pid,
     account_sid_string, capability_sid_string)
   local argv = vim.deepcopy(spec.runner.argv)
@@ -2266,6 +2788,11 @@ end
 -- The host logs on the selected account and starts a suspended runner. It
 -- assigns the runner job before resuming the thread, then completes the
 -- identity-checked named-pipe handshake.
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param account Neoagent.WindowsRuntimeAccount
+---@param password string
+---@param capability_sid_string string
+---@return Neoagent.WindowsRunner
 local function spawn_runner(spec, account, password, capability_sid_string)
   local suffix = random_hex(16)
   local input_name = "\\\\.\\pipe\\neoagent-sandbox-" .. suffix .. "-in"
@@ -2278,11 +2805,11 @@ local function spawn_runner(spec, account, password, capability_sid_string)
   -- plus client-PID check retain the protocol boundary.
   local output = create_server_pipe(
     output_name, WIN32.PIPE.ACCESS_DUPLEX, account.sid)
-  local host_pid = tonumber(K.GetCurrentProcessId())
+  local host_pid = (tonumber(K.GetCurrentProcessId()) --[[@as integer]])
   local argv = runner_argv(spec, input_name, output_name, host_pid,
     account.sid, capability_sid_string)
   local command = wide_mutable(command_line(argv))
-  local executable = wide(argv[1])
+  local executable = wide(assert(argv[1]))
   local username = wide(account.name)
   local domain = wide(".")
   local encoded_password = wide(password)
@@ -2290,9 +2817,9 @@ local function spawn_runner(spec, account, password, capability_sid_string)
   -- The requested cwd has an explicit runtime ACL, so the sandbox account can
   -- enter it when CreateProcessWithLogonW starts the runner.
   local cwd = wide(spec.cwd)
-  local startup = ffi.new("STARTUPINFOW")
-  startup.cb = ffi.sizeof(startup)
-  local process = ffi.new("PROCESS_INFORMATION")
+  local startup = (ffi.new("STARTUPINFOW") --[[@as Neoagent.Win32.STARTUPINFOW]])
+  startup.cb = sizeof(startup)
+  local process = (ffi.new("PROCESS_INFORMATION") --[[@as Neoagent.Win32.PROCESS_INFORMATION]])
   local flags = bit.bor(
     WIN32.PROCESS.CREATE_NO_WINDOW, WIN32.PROCESS.CREATE_UNICODE_ENVIRONMENT,
     WIN32.PROCESS.CREATE_SUSPENDED)
@@ -2330,6 +2857,8 @@ local function spawn_runner(spec, account, password, capability_sid_string)
   }
 end
 
+---@param runner? Neoagent.WindowsRunner
+---@param terminate? boolean
 local function close_runner(runner, terminate)
   if not runner then return end
   if terminate and not invalid_handle(runner.job) then
@@ -2347,35 +2876,39 @@ local function close_runner(runner, terminate)
   close_handle(runner.job)
 end
 
+---@param token ffi.cdata*
+---@param sids ffi.cdata*[]
 local function set_default_dacl(token, sids)
-  local entries = ffi.new("EXPLICIT_ACCESS_W[?]", #sids)
+  local entries = (ffi.new("EXPLICIT_ACCESS_W[?]", #sids) --[[@as Neoagent.FfiArray<Neoagent.Win32.EXPLICIT_ACCESS_W>]])
   for index, sid in ipairs(sids) do
     entries[index - 1] = explicit_access(
       sid, WIN32.ACCESS.GENERIC_ALL, WIN32.SECURITY.GRANT_ACCESS, 0)
   end
-  local acl = ffi.new("ACL *[1]")
+  local acl = (ffi.new("ACL *[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local code = A.SetEntriesInAclW(#sids, entries, nil, acl)
   if code ~= WIN32.ERROR.SUCCESS then failure("token-dacl", code) end
-  local value = ffi.new("TOKEN_DEFAULT_DACL")
+  local value = (ffi.new("TOKEN_DEFAULT_DACL") --[[@as Neoagent.Win32.TOKEN_DEFAULT_DACL]])
   value.DefaultDacl = acl[0]
   local ok = A.SetTokenInformation(
-    token, WIN32.TOKEN.DEFAULT_DACL_CLASS, value, ffi.sizeof(value))
+    token, WIN32.TOKEN.DEFAULT_DACL_CLASS, value, sizeof(value))
   K.LocalFree(acl[0])
   if ok == 0 then failure("token-dacl") end
 end
 
+---@param token ffi.cdata*
+---@param name string
 local function enable_privilege(token, name)
-  local luid = ffi.new("LUID")
+  local luid = (ffi.new("LUID") --[[@as Neoagent.Win32.LUID]])
   if A.LookupPrivilegeValueW(nil, wide(name), luid) == 0 then
     failure("token-privilege-lookup")
   end
-  local privileges = ffi.new("TOKEN_PRIVILEGES")
+  local privileges = (ffi.new("TOKEN_PRIVILEGES") --[[@as Neoagent.Win32.TOKEN_PRIVILEGES]])
   privileges.PrivilegeCount = 1
   privileges.Privileges[0].Luid = luid
   privileges.Privileges[0].Attributes = WIN32.SECURITY.PRIVILEGE_ENABLED
   K.SetLastError(WIN32.ERROR.SUCCESS)
   if A.AdjustTokenPrivileges(
-      token, 0, privileges, ffi.sizeof(privileges), nil, nil) == 0 then
+      token, 0, privileges, sizeof(privileges), nil, nil) == 0 then
     failure("token-privilege")
   end
   local err = last_error()
@@ -2389,6 +2922,9 @@ end
 -- its restricting identities. The account, per-request capability, logon SID,
 -- and Everyone SID preserve required runtime access while ACLs constrain file
 -- mutations.
+---@param account_sid_string string
+---@param capability_sid_string string
+---@return ffi.cdata*, string
 local function restricted_token(account_sid_string, capability_sid_string)
   local base = current_token()
   local account = sid_from_string(account_sid_string)
@@ -2401,7 +2937,7 @@ local function restricted_token(account_sid_string, capability_sid_string)
   -- while the capability and account SIDs retain filesystem policy identity.
   -- This is the same token composition used by Codex's elevated Windows
   -- command runner.
-  local restricting = ffi.new("SID_AND_ATTRIBUTES[4]")
+  local restricting = (ffi.new("SID_AND_ATTRIBUTES[4]") --[[@as Neoagent.FfiArray<Neoagent.Win32.SID_AND_ATTRIBUTES>]])
   restricting[0].Sid = capability
   restricting[0].Attributes = 0
   restricting[1].Sid = account
@@ -2410,7 +2946,7 @@ local function restricted_token(account_sid_string, capability_sid_string)
   restricting[2].Attributes = 0
   restricting[3].Sid = everyone
   restricting[3].Attributes = 0
-  local result = ffi.new("HANDLE[1]")
+  local result = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local ok = A.CreateRestrictedToken(base,
     bit.bor(
       WIN32.TOKEN.DISABLE_MAX_PRIVILEGE,
@@ -2442,20 +2978,23 @@ local function restricted_token(account_sid_string, capability_sid_string)
   return result[0], logon_sid_string
 end
 
+---@param handle ffi.cdata*
+---@return string
 local function user_object_name(handle)
-  local needed = ffi.new("DWORD[1]")
+  local needed = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   U.GetUserObjectInformationW(handle, WIN32.DESKTOP.NAME, nil, 0, needed)
-  if needed[0] <= ffi.sizeof("WCHAR") then
+  if needed[0] <= sizeof("WCHAR") then
     failure("window-station-name")
   end
-  local buffer = ffi.new("BYTE[?]", tonumber(needed[0]))
+  local buffer = (ffi.new("BYTE[?]", needed[0]) --[[@as Neoagent.FfiArray<integer>]])
   if U.GetUserObjectInformationW(
       handle, WIN32.DESKTOP.NAME, buffer, needed[0], needed) == 0 then
     failure("window-station-name")
   end
-  return utf8(ffi.cast("WCHAR *", buffer))
+  return assert(utf8((ffi.cast("WCHAR *", buffer) --[[@as Neoagent.FfiArray<integer>]])))
 end
 
+---@param value? Neoagent.WindowsDesktop
 local function close_private_desktop(value)
   if not value then return end
   if not invalid_handle(value.desktop) then U.CloseDesktop(value.desktop) end
@@ -2464,14 +3003,16 @@ end
 -- A private desktop gives GUI-aware libraries a valid windowing namespace
 -- while the process remains headless. Access is limited to the logon identity
 -- and Windows administrative identities.
+---@param logon_sid_string string
+---@return Neoagent.WindowsDesktop
 local function private_desktop(logon_sid_string)
   local station = U.GetProcessWindowStation()
   if invalid_handle(station) then failure("window-station") end
   local station_name = user_object_name(station)
   local descriptor = security_descriptor(string.format(
     "D:P(A;;GA;;;%s)(A;;GA;;;SY)(A;;GA;;;BA)", logon_sid_string))
-  local attributes = ffi.new("SECURITY_ATTRIBUTES")
-  attributes.nLength = ffi.sizeof(attributes)
+  local attributes = (ffi.new("SECURITY_ATTRIBUTES") --[[@as Neoagent.Win32.SECURITY_ATTRIBUTES]])
+  attributes.nLength = sizeof(attributes)
   attributes.lpSecurityDescriptor = descriptor
   attributes.bInheritHandle = 0
   -- Explicit lpDesktop access lets restricted-token console programs,
@@ -2495,11 +3036,15 @@ end
 -- disk file, which gives programs a seekable standard input handle. stdout and
 -- stderr use anonymous pipes that the runner drains while watching the process
 -- and its deadline.
+---@param handle ffi.cdata*
+---@param event Neoagent.SandboxProtocolEvent
 local function send_event(handle, event)
   local ok, err = write_frame(handle, event)
   if not ok then failure("protocol-write", err) end
 end
 
+---@param handle ffi.cdata*
+---@return Neoagent.WindowsOutput
 local function output_sender(handle)
   local sequence = 0
   return function(stream, data)
@@ -2520,14 +3065,17 @@ local function output_sender(handle)
   end
 end
 
+---@return Neoagent.Win32.SECURITY_ATTRIBUTES
 local function inheritable_attributes()
-  local attributes = ffi.new("SECURITY_ATTRIBUTES")
-  attributes.nLength = ffi.sizeof(attributes)
+  local attributes = (ffi.new("SECURITY_ATTRIBUTES") --[[@as Neoagent.Win32.SECURITY_ATTRIBUTES]])
+  attributes.nLength = sizeof(attributes)
   attributes.lpSecurityDescriptor = nil
   attributes.bInheritHandle = 1
   return attributes
 end
 
+---@param handle ffi.cdata*
+---@param enabled boolean
 local function set_inherit(handle, enabled)
   if K.SetHandleInformation(handle, WIN32.HANDLE.INHERIT,
       enabled and WIN32.HANDLE.INHERIT or 0) == 0 then
@@ -2535,9 +3083,10 @@ local function set_inherit(handle, enabled)
   end
 end
 
+---@return ffi.cdata*, ffi.cdata*
 local function create_output_pipe()
-  local read_end = ffi.new("HANDLE[1]")
-  local write_end = ffi.new("HANDLE[1]")
+  local read_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
+  local write_end = (ffi.new("HANDLE[1]") --[[@as Neoagent.FfiArray<ffi.cdata*>]])
   local attributes = inheritable_attributes()
   if K.CreatePipe(read_end, write_end, attributes, 0) == 0 then
     failure("output-pipe")
@@ -2551,6 +3100,10 @@ local function create_output_pipe()
   return read_end[0], write_end[0]
 end
 
+---@param directory string
+---@param argv string[]
+---@param command_index? integer
+---@return string?
 local function command_file(directory, argv, command_index)
   if not command_index or command_index == #argv then return nil end
   local command = {}
@@ -2579,6 +3132,9 @@ local function command_file(directory, argv, command_index)
   return path
 end
 
+---@param directory string
+---@param data string
+---@return ffi.cdata*
 local function stdin_file(directory, data)
   local path = vim.fs.joinpath(
     directory, "neoagent-stdin-" .. random_hex(12) .. ".tmp")
@@ -2601,8 +3157,10 @@ local function stdin_file(directory, data)
   return handle
 end
 
+---@param handle ffi.cdata*
+---@return integer?
 local function pipe_available(handle)
-  local available = ffi.new("DWORD[1]")
+  local available = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.PeekNamedPipe(handle, nil, 0, nil, available, nil) == 0 then
     local err = last_error()
     if err == WIN32.ERROR.BROKEN_PIPE or err == WIN32.ERROR.NO_DATA then
@@ -2610,9 +3168,13 @@ local function pipe_available(handle)
     end
     failure("output-peek", err)
   end
-  return tonumber(available[0])
+  return available[0]
 end
 
+---@param handle ffi.cdata*
+---@param stream 'stdout'|'stderr'
+---@param output Neoagent.WindowsOutput
+---@return boolean
 local function drain_pipe(handle, stream, output)
   local available = pipe_available(handle)
   if available == nil then return false end
@@ -2633,30 +3195,37 @@ end
 -- and cwd, private desktop, standard handles, and target job already attached.
 -- The runner applies the deadline to the whole job, drains both output pipes,
 -- and reports one terminal status after descendants release their writers.
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param stdin string
+---@param output_handle ffi.cdata*
+---@param token ffi.cdata*
+---@param logon_sid_string string
 local function spawn_target(spec, stdin, output_handle, token,
     logon_sid_string)
-  local stdin_handle = stdin_file(spec.temp_root, stdin)
+  local argv = assert(spec.argv)
+  local temp_root = assert(spec.temp_root)
+  local stdin_handle = stdin_file(temp_root, stdin)
   local stdout_read, stdout_write = create_output_pipe()
   local stderr_read, stderr_write = create_output_pipe()
-  local command_index = cmd_command_index(spec.argv)
-  local command_path = command_file(spec.temp_root, spec.argv, command_index)
+  local command_index = cmd_command_index(argv)
+  local command_path = command_file(temp_root, argv, command_index)
   local desktop = private_desktop(logon_sid_string)
   local job = create_job("target-job")
   local attributes = target_process_attributes(
     job, stdin_handle, stdout_write, stderr_write)
-  local startup = ffi.new("STARTUPINFOEXW")
-  startup.StartupInfo.cb = ffi.sizeof(startup)
+  local startup = (ffi.new("STARTUPINFOEXW") --[[@as Neoagent.Win32.STARTUPINFOEXW]])
+  startup.StartupInfo.cb = sizeof(startup)
   startup.StartupInfo.dwFlags = WIN32.PROCESS.STARTF_USESTDHANDLES
   startup.StartupInfo.hStdInput = stdin_handle
   startup.StartupInfo.hStdOutput = stdout_write
   startup.StartupInfo.hStdError = stderr_write
   startup.StartupInfo.lpDesktop = desktop.name
   startup.lpAttributeList = attributes.list
-  local process = ffi.new("PROCESS_INFORMATION")
+  local process = (ffi.new("PROCESS_INFORMATION") --[[@as Neoagent.Win32.PROCESS_INFORMATION]])
   local command_text =
-    target_command_line(spec.argv, command_index, command_path)
+    target_command_line(argv, command_index, command_path)
   local command = wide_mutable(command_text)
-  local executable = wide(spec.argv[1])
+  local executable = wide(assert(argv[1]))
   local cwd = wide(spec.cwd)
   local environment = utf16_block(spec.env)
   -- The account runner and target remain headless. Explicit standard handles
@@ -2688,7 +3257,7 @@ local function spawn_target(spec, stdin, output_handle, token,
   local output = output_sender(output_handle)
   local stdout_open, stderr_open = true, true
   local deadline = spec.timeout_ms
-      and tonumber(K.GetTickCount64()) + spec.timeout_ms or nil
+      and (tonumber(K.GetTickCount64()) --[[@as integer]]) + spec.timeout_ms or nil
   local timed_out = false
   local process_status = K.WaitForSingleObject(process.hProcess, 0)
   while process_status == WIN32.WAIT.TIMEOUT do
@@ -2698,7 +3267,7 @@ local function spawn_target(spec, stdin, output_handle, token,
     if stderr_open then
       stderr_open = drain_pipe(stderr_read, "stderr", output)
     end
-    if deadline and tonumber(K.GetTickCount64()) >= deadline then
+    if deadline and (tonumber(K.GetTickCount64()) --[[@as integer]]) >= deadline then
       process_status = K.WaitForSingleObject(process.hProcess, 0)
       if process_status == WIN32.WAIT.TIMEOUT then
         timed_out = true
@@ -2734,7 +3303,7 @@ local function spawn_target(spec, stdin, output_handle, token,
     K.Sleep(1)
   end
   if stdout_open or stderr_open then failure("output-drain-timeout") end
-  local exit_code = ffi.new("DWORD[1]")
+  local exit_code = (ffi.new("DWORD[1]") --[[@as Neoagent.FfiArray<integer>]])
   if K.GetExitCodeProcess(process.hProcess, exit_code) == 0 then
     failure("target-status")
   end
@@ -2747,7 +3316,7 @@ local function spawn_target(spec, stdin, output_handle, token,
   send_event(output_handle, {
     v = RUNTIME.PROTOCOL_VERSION,
     type = "exit",
-    code = tonumber(exit_code[0]),
+    code = exit_code[0],
     signal = 0,
     timed_out = timed_out,
   })
@@ -2756,6 +3325,10 @@ end
 -- Built-in filesystem operations run inside the runner while impersonating the
 -- same restricted token used for target commands. This keeps their access
 -- checks identical without starting a separate command process.
+---@generic T, U, V
+---@param token ffi.cdata*
+---@param callback fun(): T, U?, V?
+---@return T, U?, V?
 local function with_impersonation(token, callback)
   if A.ImpersonateLoggedOnUser(token) == 0 then
     failure("impersonate")
@@ -2767,12 +3340,16 @@ local function with_impersonation(token, callback)
   return value, extra, detail
 end
 
+---@param path string
+---@return integer?, integer?
 local function file_attributes(path)
-  local value = tonumber(K.GetFileAttributesW(wide(path)))
+  local value = (tonumber(K.GetFileAttributesW(wide(path))) --[[@as integer]])
   if value == WIN32.FILE.INVALID_ATTRIBUTES then return nil, last_error() end
   return value
 end
 
+---@param path string
+---@return string?, integer?
 local function direct_read(path)
   local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_READ,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE, WIN32.FILE.SHARE_DELETE),
@@ -2782,13 +3359,13 @@ local function direct_read(path)
     close_handle(handle)
     return nil, WIN32.ERROR.ACCESS_DENIED
   end
-  local length = ffi.new("LONGLONG[1]")
+  local length = (ffi.new("LONGLONG[1]") --[[@as Neoagent.FfiArray<integer|ffi.cdata*>]])
   if K.GetFileSizeEx(handle, length) == 0 then
     local err = last_error()
     close_handle(handle)
     return nil, err
   end
-  local size = tonumber(length[0])
+  local size = (tonumber(length[0]) --[[@as integer]])
   if size > 64 * 1024 * 1024 then
     close_handle(handle)
     return nil, 223
@@ -2808,6 +3385,8 @@ local function direct_read(path)
   return table.concat(chunks)
 end
 
+---@param data string
+---@return string
 local function content_fingerprint(data)
   local seeds = {
     0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
@@ -2828,6 +3407,10 @@ local function content_fingerprint(data)
   return table.concat(parts)
 end
 
+---@param path string
+---@param data string
+---@param flags? string
+---@return true?, integer?
 local function direct_write(path, data, flags)
   local disposition, append = WIN32.FILE.CREATE_ALWAYS, false
   if flags == "a" then
@@ -2855,6 +3438,11 @@ local function direct_write(path, data, flags)
   return ok, err
 end
 
+---@param path string
+---@param data string
+---@param policy? Neoagent.AtomicPolicy
+---@param suffix? string
+---@return true?, integer?
 local function direct_atomic_replace(path, data, policy, suffix)
   if type(policy) ~= "table" or vim.islist(policy)
       or policy.mode == nil and policy.preserve_mode ~= true
@@ -2910,7 +3498,7 @@ local function direct_atomic_replace(path, data, policy, suffix)
     return nil, WIN32.ERROR.FILE_NOT_FOUND
   end
   local changed = attributes ~= current
-    or attributes ~= nil and not same_identity(target_identity, current_identity)
+    or attributes ~= nil and not same_identity(assert(target_identity), current_identity)
   if changed then
     K.DeleteFileW(wide(temporary))
     return nil, WIN32.ERROR.ACCESS_DENIED
@@ -2942,6 +3530,8 @@ local function direct_atomic_replace(path, data, policy, suffix)
   return true
 end
 
+---@param path string
+---@return boolean?, integer?
 local function direct_mkdirp(path)
   local existing, existing_err = file_attributes(path)
   if existing then
@@ -2981,18 +3571,24 @@ local function direct_mkdirp(path)
   return true
 end
 
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param stdin string
+---@param output_handle ffi.cdata*
+---@param token ffi.cdata*
 local function fs_operation(spec, stdin, output_handle, token)
-  local operation = spec.fs.operation
+  local request = assert(spec.fs)
+  local path = assert(request.path)
+  local operation = request.operation
   local value, err = with_impersonation(token, function()
     if operation == "read" then
-      return direct_read(spec.fs.path)
+      return direct_read(path)
     elseif operation == "write_all" then
-      return direct_write(spec.fs.path, stdin, spec.fs.flags)
+      return direct_write(path, stdin, request.flags)
     elseif operation == "atomic_replace" then
       return direct_atomic_replace(
-        spec.fs.path, stdin, spec.fs.policy, spec.fs.suffix)
+        path, stdin, request.policy, request.suffix)
     else
-      return direct_mkdirp(spec.fs.path)
+      return direct_mkdirp(path)
     end
   end)
   send_event(output_handle, {
@@ -3001,7 +3597,7 @@ local function fs_operation(spec, stdin, output_handle, token)
   })
   local output = output_sender(output_handle)
   if value then
-    if operation == "read" then output("stdout", value) end
+    if operation == "read" then output("stdout", value --[[@as string]]) end
     send_event(output_handle, {
       v = RUNTIME.PROTOCOL_VERSION,
       type = "exit",
@@ -3022,8 +3618,9 @@ end
 -- Probe mode checks observable sandbox behavior. Filesystem checks execute
 -- under the restricted token, and the offline account verifies that WFP rejects
 -- even a loopback connection attempt.
+---@return boolean
 local function network_is_blocked()
-  local data = ffi.new("WSADATA")
+  local data = (ffi.new("WSADATA") --[[@as Neoagent.Win32.WSADATA]])
   local code = W.WSAStartup(0x0202, data)
   if code ~= 0 then failure("winsock-startup", code) end
   local socket = W.socket(WIN32.SOCKET.AF_INET, WIN32.SOCKET.STREAM, WIN32.SOCKET.TCP)
@@ -3032,17 +3629,21 @@ local function network_is_blocked()
     W.WSACleanup()
     failure("winsock-socket", err)
   end
-  local address = ffi.new("SOCKADDR_IN")
+  local address = (ffi.new("SOCKADDR_IN") --[[@as Neoagent.Win32.SOCKADDR_IN]])
   address.sin_family = WIN32.SOCKET.AF_INET
   address.sin_port = W.htons(9)
   address.sin_addr.s_addr = 0x0100007f
-  local connected = W.connect(socket, address, ffi.sizeof(address))
+  local connected = W.connect(socket, address, sizeof(address))
   local err = connected == 0 and 0 or W.WSAGetLastError()
   W.closesocket(socket)
   W.WSACleanup()
   return connected ~= 0 and err == WIN32.ERROR.WSA_ACCESS_DENIED
 end
 
+---@param path string
+---@param access integer
+---@param flags integer
+---@return true?, integer?
 local function open_probe(path, access, flags)
   local handle = K.CreateFileW(wide(path), access,
     bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE, WIN32.FILE.SHARE_DELETE),
@@ -3052,6 +3653,9 @@ local function open_probe(path, access, flags)
   return true
 end
 
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param output_handle ffi.cdata*
+---@param token ffi.cdata*
 local function run_probe(spec, output_handle, token)
   if type(spec.probe) ~= "table"
       or type(spec.probe.write) ~= "string"
@@ -3075,7 +3679,7 @@ local function run_probe(spec, output_handle, token)
     end
     return true
   end)
-  if not ok then failure(stage, code) end
+  if not ok then failure(assert(stage), code) end
   if spec.profile.network == "restricted" and not network_is_blocked() then
     failure("probe-network", 0)
   end
@@ -3096,10 +3700,11 @@ end
 -- The runner verifies its account SID and the named-pipe server PID, receives
 -- the complete request and stdin stream, builds the restricted token, and owns
 -- execution until one terminal event is sent.
+---@param arguments string[]
 local function runner_main(arguments)
   if #arguments ~= 6 then failure("runner-arguments", 0) end
   local input_name, output_name = arguments[2], arguments[3]
-  local host_pid = tonumber(arguments[4])
+  local host_pid = (tonumber(arguments[4]) --[[@as integer?]])
   local account_sid_string, capability_sid_string =
     arguments[5], arguments[6]
   if not host_pid or current_user_sid_string() ~= account_sid_string then
@@ -3154,7 +3759,7 @@ local function runner_main(arguments)
   if not ok then emit_error(output, err) end
   close_handle(token)
   close_handle(output)
-  if not ok then os.exit(125) end
+  if not ok then exit(125) end
 end
 
 -- Host runtime ---------------------------------------------------------------
@@ -3162,8 +3767,11 @@ end
 -- The host bridges Neoagent's stdio protocol to the account runner. Request
 -- data and stdin flow toward the runner; ready, output, and terminal events flow
 -- back unchanged.
+---@param runner Neoagent.WindowsRunner
+---@param spec Neoagent.WindowsRuntimeSpec
+---@param stdin string
 local function send_request(runner, spec, stdin)
-  local ok, err = write_frame(runner.input, {
+  local ok, err = write_frame(assert(runner.input), {
     v = RUNTIME.PROTOCOL_VERSION,
     spec = spec,
   })
@@ -3171,7 +3779,7 @@ local function send_request(runner, spec, stdin)
   local offset = 1
   while offset <= #stdin do
     local chunk = stdin:sub(offset, offset + 65535)
-    ok, err = write_frame(runner.input, {
+    ok, err = write_frame(assert(runner.input), {
       v = RUNTIME.PROTOCOL_VERSION,
       type = "stdin",
       data = chunk,
@@ -3179,7 +3787,7 @@ local function send_request(runner, spec, stdin)
     if not ok then failure("protocol-stdin-write", err) end
     offset = offset + #chunk
   end
-  ok, err = write_frame(runner.input, {
+  ok, err = write_frame(assert(runner.input), {
     v = RUNTIME.PROTOCOL_VERSION,
     type = "stdin-end",
   })
@@ -3188,7 +3796,10 @@ local function send_request(runner, spec, stdin)
   runner.input = nil
 end
 
+---@param runner Neoagent.WindowsRunner
+---@return Neoagent.SandboxTerminalEvent
 local function receive_events(runner)
+  ---@type Neoagent.SandboxTerminalEvent?
   local terminal
   while not terminal do
     local event, err = read_frame(runner.output)
@@ -3200,28 +3811,30 @@ local function receive_events(runner)
     end
     if event.type == "ready" then
       if terminal then failure("protocol-runner-order", 0) end
-      stdout_frame(event)
+      stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
     elseif event.type == "output" then
       if event.stream ~= "stdout" and event.stream ~= "stderr"
           or type(event.seq) ~= "number"
           or type(event.data) ~= "string" then
         failure("protocol-runner-output", 0)
       end
-      stdout_frame(event)
+      stdout_frame(event --[[@as Neoagent.SandboxProtocolEvent]])
     else
-      terminal = event
+      terminal = event --[[@as Neoagent.SandboxTerminalEvent]]
     end
   end
-  return terminal
+  return assert(terminal)
 end
 
 -- The host holds the state mutex for the entire ACL lease. Its protected call
 -- records recovery, applies ACLs, launches the runner, and receives the result.
 -- Cleanup runs after success or failure before the terminal event is emitted.
+---@param directory string
 local function host_main(directory)
   local encoded = vim.uv.os_getenv(
     "NEOAGENT_SANDBOX_SPEC", 1024 * 1024 + 1)
-  vim.uv.os_unsetenv("NEOAGENT_SANDBOX_SPEC")
+  local unsetenv = vim.uv.os_unsetenv --[[@as fun(name: string): boolean?, string?]]
+  unsetenv("NEOAGENT_SANDBOX_SPEC")
   if type(encoded) ~= "string" or #encoded > 1024 * 1024 then
     failure("specification-environment", 0)
   end
@@ -3229,7 +3842,13 @@ local function host_main(directory)
   if not decoded then failure("specification-json", 0) end
   local stdin = read_standard_input()
   local mutex = acquire_mutex(directory)
-  local state, runner, terminal, state_owned
+  ---@type Neoagent.WindowsRuntimeState?
+  local state
+  ---@type Neoagent.WindowsRunner?
+  local runner
+  ---@type Neoagent.SandboxTerminalEvent?
+  local terminal
+  local state_owned
   local ok, err = pcall(function()
     state = decode_state(directory)
     if state.owner_sid ~= current_user_sid_string() then
@@ -3265,21 +3884,22 @@ local function host_main(directory)
   end)
   close_runner(runner, true)
   local cleaned, cleanup_err = pcall(function()
-    if state_owned then finish_runtime_acls(directory, state) end
+    if state_owned then finish_runtime_acls(directory, assert(state)) end
   end)
   release_mutex(mutex)
   if not cleaned then error(cleanup_err, 0) end
   if not ok then error(err, 0) end
-  stdout_frame(terminal)
+  stdout_frame(assert(terminal))
 end
 
+---@return string
 local function default_state_directory()
   local configured = vim.uv.os_getenv("NEOAGENT_WINDOWS_SANDBOX_STATE")
   if type(configured) == "string" and configured ~= "" then
     return vim.fs.normalize(configured)
   end
   return vim.fs.joinpath(
-    vim.fn.stdpath("state"), "neoagent", "windows-sandbox")
+    (vim.fn.stdpath("state") --[[@as string]]), "neoagent", "windows-sandbox")
 end
 
 -- Entrypoint -----------------------------------------------------------------
@@ -3292,14 +3912,14 @@ if arguments[1] == "--" then table.remove(arguments, 1) end
 
 if jit.arch ~= "x64" then
   if arguments[1] == "--runner" then
-    os.exit(125)
+    exit(125)
   end
   emit_error(nil, {
     sandbox_runtime_error = true,
     stage = "architecture",
     errno = 0,
   })
-  os.exit(125)
+  exit(125)
 end
 
 local directory = default_state_directory()
@@ -3318,15 +3938,15 @@ if arguments[1] == "--setup" then
       stage = value.stage,
       errno = value.errno,
     }))
-    os.exit(1)
+    exit(1)
   end
 elseif arguments[1] == "--runner" then
   local ok = pcall(runner_main, arguments)
-  if not ok then os.exit(125) end
+  if not ok then exit(125) end
 else
   local ok, err = pcall(host_main, directory)
   if not ok then
     emit_error(nil, err)
-    os.exit(125)
+    exit(125)
   end
 end
