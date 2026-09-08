@@ -120,7 +120,7 @@ local function temporary_roots(paths, configured)
 end
 
 ---@generic C
----@param ctx Neoagent.ToolContext<C>
+---@param ctx {context?: C}
 ---@param paths? Neoagent.SandboxPaths
 ---@param temporary_root? string
 ---@return Neoagent.SandboxProfile
