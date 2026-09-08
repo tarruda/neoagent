@@ -3,9 +3,23 @@ local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 local util = require("neoagent.util")
 
+---@class Neoagent.ShellOptions
+---@field default_timeout? number|false
+
+---@class Neoagent.ShellSnapshot: Neoagent.TruncationResult
+---@field escapedBytes integer
+
+---@class Neoagent.ShellOutputCapture
+---@field append fun(data: string)
+---@field snapshot fun(options?: Neoagent.TruncationOptions): Neoagent.ShellSnapshot, Neoagent.ShellSnapshot?
+---@field output_path fun(): string?
+---@field spill_error fun(): string?
+
 local DEFAULT_TIMEOUT_SECONDS = 300
 local ESCAPE = "\27"
 
+---@param command string
+---@return string[]
 local function shell_argv(command)
   local argv = vim.fn.split(vim.o.shell)
   vim.list_extend(argv, vim.fn.split(vim.o.shellcmdflag))
@@ -13,6 +27,8 @@ local function shell_argv(command)
   return argv
 end
 
+---@param value string
+---@return string, integer
 local function text_preserving_escape(value)
   local parts = {}
   local escaped = 0
@@ -32,22 +48,40 @@ local function text_preserving_escape(value)
   return table.concat(parts), escaped
 end
 
+---@param text string
+---@param escaped integer
+---@param options? Neoagent.TruncationOptions
+---@return Neoagent.ShellSnapshot
+local function text_snapshot(text, escaped, options)
+  local result = truncate.tail(text, options)
+  ---@cast result Neoagent.ShellSnapshot
+  result.escapedBytes = escaped
+  return result
+end
+
+---@param filesystem Neoagent.ToolFilesystem
+---@return Neoagent.ShellOutputCapture
 local function output_capture(filesystem)
   local tail = ""
   local total_bytes = 0
   local completed_lines = 0
   local has_open_line = false
+  ---@type string?
   local output_path
+  ---@type string?
   local spill_error
 
+  ---@return integer
   local function total_lines()
     return completed_lines + (has_open_line and 1 or 0)
   end
 
+  ---@return boolean
   local function is_truncated()
     return total_bytes > truncate.MAX_BYTES or total_lines() > truncate.MAX_LINES
   end
 
+  ---@param data string
   local function count_lines(data)
     local newlines = 0
     local last_newline
@@ -67,6 +101,7 @@ local function output_capture(filesystem)
     end
   end
 
+  ---@param data string
   local function spill(data)
     local flags = output_path and "a" or "w"
     if not output_path then
@@ -90,6 +125,7 @@ local function output_capture(filesystem)
     if #tail > max_bytes then tail = tail:sub(#tail - max_bytes + 1) end
   end
 
+  ---@param data string
   local function append(data)
     total_bytes = total_bytes + #data
     count_lines(data)
@@ -104,15 +140,16 @@ local function output_capture(filesystem)
     if output_path or spill_error then trim_tail() end
   end
 
+  ---@param options? Neoagent.TruncationOptions
+  ---@return Neoagent.ShellSnapshot, Neoagent.ShellSnapshot?
   local function snapshot(options)
     local text, escaped = util.text_from_bytes(tail)
-    local result = truncate.tail(text, options)
-    result.escapedBytes = escaped
+    local result = text_snapshot(text, escaped, options)
+    ---@type Neoagent.ShellSnapshot?
     local ansi
     if tail:find(ESCAPE, 1, true) then
       local display_text, display_escaped = text_preserving_escape(tail)
-      ansi = truncate.tail(display_text, options)
-      ansi.escapedBytes = display_escaped
+      ansi = text_snapshot(display_text, display_escaped, options)
     end
     if not options then
       result.totalBytes = total_bytes
@@ -134,20 +171,29 @@ local function output_capture(filesystem)
   }
 end
 
+---@param snapshot Neoagent.ShellSnapshot
+---@return string
 local function display(snapshot)
   local text = snapshot.content
   if snapshot.escapedBytes > 0 then text = "[Non-text output escaped]\n" .. text end
   return text
 end
 
+---@param prefix string
+---@param text string
+---@return string
 local function prefixed(prefix, text)
   return prefix .. "\n" .. text
 end
 
+---@param value unknown
+---@return boolean
 local function valid_timeout(value)
   return type(value) == "number" and value > 0 and value < math.huge
 end
 
+---@param options? Neoagent.ShellOptions
+---@return Neoagent.Tool<unknown>
 local function new(options)
   options = options or {}
   assert(type(options) == "table", "shell options must be a table")
@@ -170,6 +216,7 @@ local function new(options)
       required = { "command" },
       additionalProperties = false,
     },
+    ---@async
     execute = function(arguments, ctx)
       local command = common.require_string(arguments, "command")
       local timeout = arguments.timeout
@@ -178,6 +225,7 @@ local function new(options)
       end
       if timeout == nil then timeout = default_timeout end
       local capture = output_capture(common.fs(ctx))
+      ---@type number
       local last_update = 0
       local result = common.process(ctx, shell_argv(command), {
         capture = false,
