@@ -143,9 +143,43 @@ Provider tables recursively override the built-in registry. Assign `false` to
 remove a provider, or set `default_registry = false` to use only configured
 providers. For a source-free provider, a table under `models[id]` adds or
 overrides that model. For a discovery-backed provider, it overrides the ID
-while the current catalog contains it. Put a permanent model and its base
-configuration under `catalog.additions[id]`. `false` under `models[id]`
-removes the ID. A model may set `api` to override its provider's adapter.
+while the current catalog contains it. Add a static entry under
+`catalog.additions[id]` to keep that model selectable independently of
+discovery. This extends the provider's catalog and preserves its discovery
+source. `false` under `models[id]` removes the ID. A model may set `api` to
+override its provider's adapter.
+
+Static additions can supply capabilities for preview or unlisted models from
+your `init.lua`. Set `model_id` to the provider's model ID and supply its known
+limits and thinking levels: >lua
+
+  local model_id = "deepseek-v4-flash"
+  local efforts = require("neoagent.model_efforts")
+
+  require("neoagent").setup({
+    providers = {
+      deepseek = {
+        catalog = {
+          additions = {
+            [model_id] = {
+              input = { "text" },
+              context_window = 1000000,
+              max_output_tokens = 384000,
+              thinking = efforts.thinking_completions({
+                "off", "low", "high", "max",
+              }),
+            },
+          },
+        },
+      },
+    },
+  })
+<
+Additions survive catalog refreshes, including responses that omit the ID.
+Their fields override discovered metadata; `models[id]` takes final precedence.
+For a temporary model, remove its addition from your configuration when it is
+no longer available, then restart Neovim. Additions do not expire automatically.
+
 Built-in adapter names are
 `openai-completions`, `openai-responses`,
 `openai-codex-responses`, and `anthropic-messages`: >lua
