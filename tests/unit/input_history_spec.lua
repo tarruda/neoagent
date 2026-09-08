@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local history_module = require("neoagent.input_history")
 
 describe("neoagent input history", function()

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
 
 describe("neoagent semantic messages", function()

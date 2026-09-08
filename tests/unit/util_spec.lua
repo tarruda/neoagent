@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local util = require("neoagent.util")
 
 describe("neoagent.util", function()

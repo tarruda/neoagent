@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local config = require("neoagent.config")
 local model_api = require("neoagent.models")
 local provider_runtimes = require("neoagent.provider_runtimes")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fake_model = require("tests.helpers.fake_model")
 local view_handles = require("tests.helpers.view_handles")
 

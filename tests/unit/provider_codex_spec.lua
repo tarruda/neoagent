@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local codex = require("neoagent.providers.codex")
 local provider_service = require("neoagent.provider_service")

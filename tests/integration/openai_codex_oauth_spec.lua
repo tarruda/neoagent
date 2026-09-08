@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local codex = require("neoagent.auth.openai_codex")
 local http_replay = require("tests.helpers.http_replay")
 

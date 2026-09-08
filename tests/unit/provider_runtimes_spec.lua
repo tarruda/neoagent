@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local provider_runtimes = require("neoagent.provider_runtimes")
 local provider_service = require("neoagent.provider_service")

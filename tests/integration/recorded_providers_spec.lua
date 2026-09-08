@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local replay = require("neoagent.http_replay")
 local registry = require("neoagent.registry")
 local providers = {

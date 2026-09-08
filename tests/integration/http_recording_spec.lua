@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 local http_replay = require("tests.helpers.http_replay")
 

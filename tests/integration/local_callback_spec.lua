@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 
 local function wait(run)

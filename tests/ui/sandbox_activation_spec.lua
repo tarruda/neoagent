@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local config = require("neoagent.config")
 local Agent = require("neoagent.agent")
 local sandbox_composition = require("neoagent.sandbox.composition")

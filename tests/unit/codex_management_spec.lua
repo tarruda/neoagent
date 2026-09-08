@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local management = require("neoagent.providers.codex_management")
 local fake_transport = require("tests.helpers.fake_transport")

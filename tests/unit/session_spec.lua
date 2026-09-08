@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Session = require("neoagent.session")
 
 describe("neoagent.session", function()

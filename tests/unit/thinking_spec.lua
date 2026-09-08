@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local thinking = require("neoagent.thinking")
 
 describe("neoagent thinking levels", function()

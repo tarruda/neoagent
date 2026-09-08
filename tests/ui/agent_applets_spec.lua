@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local presentation = require("tests.helpers.presentation")

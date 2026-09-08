@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local auth = require("neoagent.providers.llama.auth")
 local fake_transport = require("tests.helpers.fake_transport")
 

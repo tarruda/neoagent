@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local dashboard = require("neoagent.auth.alibaba_dashboard")
 local connections = require("tests.helpers.callback_connections")
 

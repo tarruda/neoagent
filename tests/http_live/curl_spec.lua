@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local curl = require("neoagent.transport.curl")
 local http = require("neoagent.transport.http")
 local function wait(run)

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local auth = require("neoagent.auth")
 local config = require("neoagent.config")
 

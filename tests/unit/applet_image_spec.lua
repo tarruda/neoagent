@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local ImageSystem = require("applet.image")
 local detect = require("applet.image.detect")
 local geometry = require("applet.image.geometry")

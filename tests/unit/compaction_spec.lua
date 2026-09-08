@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local compaction = require("neoagent.compaction")
 local fake_model = require("tests.helpers.fake_model")
 

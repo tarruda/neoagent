@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local ProviderCredentials = require("neoagent.provider_credentials")
 
 describe("neoagent provider credential ownership", function()

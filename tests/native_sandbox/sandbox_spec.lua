@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local composition = require("neoagent.sandbox.composition")

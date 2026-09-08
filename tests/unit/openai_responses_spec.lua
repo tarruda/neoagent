@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fake_transport = require("tests.helpers.fake_transport")
 local responses = require("neoagent.api.openai_responses")
 local util = require("neoagent.util")

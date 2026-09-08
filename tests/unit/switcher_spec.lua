@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local switcher_module = require("neoagent.ui.switcher")
 local util = require("neoagent.util")
 

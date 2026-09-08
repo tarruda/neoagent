@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local replay = require("neoagent.http_replay")
 local http = require("neoagent.transport.http")
 local util = require("neoagent.util")

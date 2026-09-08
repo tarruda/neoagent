@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local rules = require("neoagent.model_rules")
 local efforts = require("neoagent.model_efforts")
 

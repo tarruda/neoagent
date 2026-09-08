@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local lifecycle_module = require("neoagent.agent.session_lifecycle")
 
 describe("neoagent Agent session lifecycle", function()

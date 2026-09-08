@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local Workspace = require("neoagent.workspace")

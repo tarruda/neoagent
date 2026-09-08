@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local http = require("neoagent.transport.http")
 local fake = require("tests.helpers.fake_transport")

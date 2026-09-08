@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local Authentication = require("neoagent.authentication")
 local Presenter = require("neoagent.presenter")

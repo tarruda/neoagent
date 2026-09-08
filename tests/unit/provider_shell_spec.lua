@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local Applet = require("applet")
 local ProviderShell = require("neoagent.provider_shell")

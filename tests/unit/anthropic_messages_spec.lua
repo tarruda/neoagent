@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local anthropic = require("neoagent.api.anthropic_messages")
 local fake_transport = require("tests.helpers.fake_transport")
 local util = require("neoagent.util")

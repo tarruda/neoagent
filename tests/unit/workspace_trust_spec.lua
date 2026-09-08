@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local trust = require("neoagent.workspace_trust")
 
 local function wait(run)

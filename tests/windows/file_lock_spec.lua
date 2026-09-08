@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 

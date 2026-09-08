@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local recovery = require("neoagent.providers.opencode_go.model")
 local fake = require("tests.helpers.fake_model")
 local util = require("neoagent.util")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fake_model = require("tests.helpers.fake_model")
 local switcher_ui = require("tests.helpers.switcher")
 local presentation = require("tests.helpers.presentation")

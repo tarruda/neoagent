@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Presenter = require("neoagent.presenter")
 
 local function host(overrides)

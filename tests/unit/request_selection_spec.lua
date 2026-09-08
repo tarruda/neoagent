@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local ProfileDraft = require("neoagent.profile_draft")
 local RequestSelection = require("neoagent.request_selection")
 local ModelCatalog = require("neoagent.model_catalog")

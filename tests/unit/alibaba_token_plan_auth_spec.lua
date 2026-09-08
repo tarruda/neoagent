@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local dashboard = require("neoagent.auth.alibaba_dashboard")
 local token_plan = require("neoagent.auth.alibaba_token_plan")
 

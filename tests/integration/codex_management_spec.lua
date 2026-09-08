@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local management = require("neoagent.providers.codex_management")
 local http_replay = require("tests.helpers.http_replay")

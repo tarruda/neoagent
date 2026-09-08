@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local curl = require("neoagent.transport.curl")
 local util = require("neoagent.util")
 local bit = require("bit")

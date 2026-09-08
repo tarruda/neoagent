@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local llama = require("neoagent.providers.llama")
 local llama_catalog = require("neoagent.providers.llama.catalog")
 local llama_client = require("neoagent.providers.llama.client")

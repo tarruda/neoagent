@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local auth = require("neoagent.auth")
 local api_key = require("neoagent.auth.api_key")
 local store = require("neoagent.auth.store")

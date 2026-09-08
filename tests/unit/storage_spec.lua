@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Session = require("neoagent.session")
 local storage = require("neoagent.storage")
 local fs = require("neoagent.fs")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local alibaba = require("neoagent.providers.alibaba_token_plan")
 local alibaba_client = require("neoagent.providers.alibaba_token_plan.client")

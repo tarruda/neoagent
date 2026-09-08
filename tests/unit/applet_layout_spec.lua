@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local compiler = require("applet.layout.compile")
 local compile = compiler.compile

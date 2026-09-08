@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local presentation = require("applet.presentation")
 
 local function picker(opts)

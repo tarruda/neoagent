@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local local_callback = require("neoagent.auth.local_callback")
 

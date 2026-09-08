@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 local protocol = require("neoagent.sandbox.protocol")
 

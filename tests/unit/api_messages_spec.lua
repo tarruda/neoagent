@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local messages = require("neoagent.api.messages")
 
 describe("neoagent.api.messages", function()

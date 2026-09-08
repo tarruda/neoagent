@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local effects = require("applet").host_effects
 
 describe("Applet host effects", function()

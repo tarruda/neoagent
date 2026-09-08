@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local markdown = require("neoagent.markdown")
 
 local function groups(result)

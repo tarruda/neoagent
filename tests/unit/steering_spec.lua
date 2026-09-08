@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Steering = require("neoagent.agent.steering")
 
 describe("neoagent Agent steering ownership", function()

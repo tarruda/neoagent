@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local client = require("neoagent.providers.deepseek.client")
 local fake_transport = require("tests.helpers.fake_transport")

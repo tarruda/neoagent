@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local applet_input = require("applet.pane.input")
 local config = require("neoagent.config")

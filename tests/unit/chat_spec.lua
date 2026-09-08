@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local chat = require("neoagent.chat")
 local Session = require("neoagent.session")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local bit = require("bit")
 local file_lock = require("neoagent.file_lock")

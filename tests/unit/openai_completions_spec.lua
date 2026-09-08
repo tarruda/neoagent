@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local openai = require("neoagent.api.openai_completions")
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")

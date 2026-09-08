@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local layout = Applet.layout
 local ui = Applet.Pane.nodes

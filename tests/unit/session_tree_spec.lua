@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local tree = require("neoagent.session_tree")
 
 local function base(entry_type, values)

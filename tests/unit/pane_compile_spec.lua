@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local compile = require("applet.pane.compile").compile
 local layout_changes = require("applet.pane.reconcile").changes

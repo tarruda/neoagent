@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local state_store = require("neoagent.state_store")
 
 describe("neoagent state store", function()

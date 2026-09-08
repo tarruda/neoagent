@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local tool_schema = require("neoagent.api.tool_schema")
 
 describe("neoagent.api.tool_schema", function()

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local config = require("neoagent.config")
 local fs = require("neoagent.fs")
 local model_catalog = require("neoagent.model_catalog")

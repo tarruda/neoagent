@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local anthropic = require("neoagent.api.anthropic_messages")
 local http_replay = require("tests.helpers.http_replay")
 

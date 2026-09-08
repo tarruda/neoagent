@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local huggingface = require("neoagent.providers.llama.huggingface")
 local fake_transport = require("tests.helpers.fake_transport")
 

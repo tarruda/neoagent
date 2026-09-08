@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local agent_instructions = require("neoagent.agent_instructions")
 local fs = require("neoagent.fs")
 local skills = require("neoagent.skills")

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")

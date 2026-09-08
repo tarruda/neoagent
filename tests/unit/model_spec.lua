@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local model_contract = require("neoagent.model")
 
 describe("neoagent runtime Models", function()
