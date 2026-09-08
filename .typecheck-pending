@@ -58,7 +58,6 @@ tests/unit/config_models_spec.lua
 tests/unit/curl_spec.lua
 tests/unit/deepseek_client_spec.lua
 tests/unit/dialog_spec.lua
-tests/unit/fs_spec.lua
 tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua
 tests/unit/http_replay_spec.lua
@@ -96,7 +95,6 @@ tests/unit/provider_runtimes_spec.lua
 tests/unit/provider_service_spec.lua
 tests/unit/provider_shell_spec.lua
 tests/unit/provider_state_spec.lua
-tests/unit/provider_storage_layout_spec.lua
 tests/unit/provider_zai_spec.lua
 tests/unit/request_selection_spec.lua
 tests/unit/sandbox_platform_spec.lua
@@ -115,7 +113,5 @@ tests/unit/ui_renderer_spec.lua
 tests/unit/workspace_settings_spec.lua
 tests/unit/workspace_trust_spec.lua
 tests/unit/zai_client_spec.lua
-tests/windows/file_lock_spec.lua
 tests/windows/process_spec.lua
 tests/windows/sandbox_spec.lua
-tests/windows/storage_spec.lua

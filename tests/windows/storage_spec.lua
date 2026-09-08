@@ -3,6 +3,7 @@ local fs = require("neoagent.fs")
 local storage = require("neoagent.storage")
 
 describe("neoagent Windows Session persistence", function()
+  ---@type string[]
   local paths = {}
 
   after_each(function()
