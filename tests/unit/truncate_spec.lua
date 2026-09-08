@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local truncate = require("neoagent.tools.truncate")
 
 describe("neoagent.tools.truncate", function()

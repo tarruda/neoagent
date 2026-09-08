@@ -193,7 +193,6 @@ tests/unit/switcher_spec.lua
 tests/unit/thinking_spec.lua
 tests/unit/tool_schema_spec.lua
 tests/unit/tools_spec.lua
-tests/unit/truncate_spec.lua
 tests/unit/ui_renderer_spec.lua
 tests/unit/util_spec.lua
 tests/unit/workspace_settings_spec.lua

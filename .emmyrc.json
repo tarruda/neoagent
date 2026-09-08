@@ -14,7 +14,8 @@
   "workspace": {
     "library": [
       ".deps/typecheck/neovim/runtime/lua",
-      ".deps/typecheck/luv/library"
+      ".deps/typecheck/luv/library",
+      ".deps/typecheck/luassert/library"
     ],
     "ignoreGlobs": [
       "**/.git/**",

@@ -145,6 +145,17 @@ def main():
         "https://codeload.github.com/LuaCATS/luv/tar.gz/3615eb12c94a7cfa7184b8488cf908abb5e94c9c",
         "0631e73045be8fa37042df1eef6617d82e1f9786b8bd4191f1ed479fb738458f",
         ("library", "LICENSE"))
+    install_types("luassert",
+        "https://codeload.github.com/LuaCATS/luassert/tar.gz/d3528bb679302cbfdedefabb37064515ab95f7b9",
+        "236ee34400c553924803a0ce155d3b7d6f0fe4e5577f5eb34b91f96e9f42cea5",
+        ("library", "LICENSE"))
+    # Plenary's luassert callable returns value, message, level, and extras.
+    # Keep this on the imported module; production retains Lua's assert.
+    correct_definition(ROOT / ".deps/typecheck/luassert/library/luassert.lua",
+        "---@class luassert:luassert.internal\nlocal luassert = {}\n",
+        "---@class luassert:luassert.internal\n"
+        "---@overload fun<T, M, L, A>(value: T, message?: M, level?: L, ...: A...): std.NotNull<T>, M?, L?, A...\n"
+        "local luassert = {}\n")
     correct_luv_lstat()
     # v0.10.2 forwards clear_env directly to uv.spawn, which accepts a list.
     correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_system.lua",
@@ -153,7 +164,7 @@ def main():
     # Neovim creates vim.NIL with lua_newuserdata (src/nvim/lua/executor.c).
     correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_meta/builtin.lua",
         "---@class vim.NIL\n", "---@class vim.NIL: userdata\n")
-    print(f"EmmyLua {VERSION}, Neovim v0.10.2 and pinned libuv declarations ready.")
+    print(f"EmmyLua {VERSION}, Neovim v0.10.2 and pinned libuv/luassert declarations ready.")
 
 
 if __name__ == "__main__":

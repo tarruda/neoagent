@@ -15,7 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checker", default=str(ROOT / ".deps/emmylua/bin/emmylua_check"))
     args = parser.parse_args()
-    for dependency in ("neovim/runtime/lua/vim/_meta/api.lua", "luv/library/uv.lua"):
+    for dependency in ("neovim/runtime/lua/vim/_meta/api.lua", "luv/library/uv.lua",
+                       "luassert/library/luassert.lua"):
         if not (ROOT / ".deps/typecheck" / dependency).is_file():
             raise SystemExit("Missing type definitions; run make typecheck-deps.")
     try:

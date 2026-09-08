@@ -98,7 +98,7 @@ Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 
 `make typecheck-deps` installs pinned EmmyLua checker/language-server binaries
-and Neovim/libuv definitions in `.deps/`. Run `make typecheck` for static
+and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck` for static
 checking; it needs no network or running Neovim after setup. CI runs the same
 target. `EMMYLUA_CHECK` in `local.mk` can override the checker executable.
 Editors can use `.deps/emmylua/bin/emmylua_ls` with `.emmyrc.json`.
@@ -113,6 +113,11 @@ than spreading `any`, casts, or diagnostic suppressions. Editor diagnostics
 also show pending work; the temporary exclusion list applies only to the gate.
 Redundant-condition diagnostics remain hints because typed entrypoints still
 validate callers at runtime.
+
+Typed tests import their assertions with `local assert = require("luassert")`.
+The test declarations describe Plenary's Busted interface; production keeps
+Lua's standard `assert` contract. Type existing behavioral tests without adding
+tests of annotations or of the third-party checker itself.
 
 `NVIM` defaults to `nvim` and `PLENARY_DIR` to `.deps/plenary.nvim`.
 Copy `local.mk.example` to `local.mk` for machine-specific executable,
