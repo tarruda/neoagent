@@ -48,7 +48,6 @@ tests/unit/provider_shell_spec.lua
 tests/unit/sandbox_platform_spec.lua
 tests/unit/sandbox_spec.lua
 tests/unit/session_lifecycle_spec.lua
-tests/unit/session_spec.lua
 tests/unit/switcher_spec.lua
 tests/unit/tools_spec.lua
 tests/unit/ui_renderer_spec.lua
