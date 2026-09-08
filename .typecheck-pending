@@ -58,7 +58,6 @@ tests/unit/config_models_spec.lua
 tests/unit/curl_spec.lua
 tests/unit/deepseek_client_spec.lua
 tests/unit/dialog_spec.lua
-tests/unit/file_lock_spec.lua
 tests/unit/fs_spec.lua
 tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua

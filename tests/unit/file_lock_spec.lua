@@ -4,13 +4,18 @@ local bit = require("bit")
 local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end, 5))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("neoagent file locks", function()
+  ---@type string[]
   local paths = {}
+  ---@type table<vim.SystemObj, boolean>
   local children = {}
   local posix = require("neoagent.file_lock.posix")
   local original_backend_new = posix.new
@@ -24,6 +29,7 @@ describe("neoagent file locks", function()
     children = {}
   end)
 
+  ---@return string
   local function path()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -31,6 +37,8 @@ describe("neoagent file locks", function()
     return directory .. "/resource.lock"
   end
 
+  ---@param script string
+  ---@return vim.SystemObj
   local function child(script)
     local value = vim.system({
       assert(vim.env.NEOAGENT_NVIM), "--headless", "--noplugin",
@@ -73,13 +81,13 @@ describe("neoagent file locks", function()
         .. "assert(fs.write_all(%q,'acquired','wx',384));"
         .. "assert(lease:release())",
       lock_path, acquired_path))
-    assert.is_false(vim.wait(100, function()
+    assert.is_false((vim.wait(100, function()
       return vim.uv.fs_stat(acquired_path) ~= nil
-    end, 5))
+    end, 5)))
     assert(parent:release())
     local result = process:wait(15000)
     children[process] = nil
-    assert.are.equal(0, result.code, vim.inspect(result))
+    assert.are.equal(0, result.code, (vim.inspect(result)))
     assert.are.equal("acquired", assert(fs.read(acquired_path)))
     assert.is_not_nil(vim.uv.fs_lstat(lock_path))
   end)
@@ -112,9 +120,9 @@ describe("neoagent file locks", function()
           .. "assert(vim.uv.fs_unlink(%q)); return true end))",
         lock_path, active_path, tostring(id), active_path))
     end
-    assert.is_false(vim.wait(100, function()
+    assert.is_false((vim.wait(100, function()
       return vim.uv.fs_stat(active_path) ~= nil
-    end, 5))
+    end, 5)))
     owner:kill(9)
     owner:wait(5000)
     children[owner] = nil
@@ -122,7 +130,7 @@ describe("neoagent file locks", function()
     for _, waiter in ipairs(waiters) do
       local result = waiter:wait(15000)
       children[waiter] = nil
-      assert.are.equal(0, result.code, vim.inspect(result))
+      assert.are.equal(0, result.code, (vim.inspect(result)))
     end
     local current = assert(vim.uv.fs_lstat(lock_path))
     assert.are.equal(held.dev, current.dev)
@@ -136,7 +144,7 @@ describe("neoagent file locks", function()
     assert(vim.uv.fs_symlink(target, lock_path))
     local lease, err = file_lock.new({ path = lock_path }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("target", err.code)
+    assert.are.equal("target", assert(err).code)
     assert(vim.uv.fs_unlink(lock_path))
 
     lease = assert(file_lock.new({ path = lock_path }):acquire())
@@ -145,7 +153,7 @@ describe("neoagent file locks", function()
     local released
     released, err = lease:release()
     assert.is_nil(released)
-    assert.are.equal("ownership", err.code)
+    assert.are.equal("ownership", assert(err).code)
     assert.are.equal("successor", assert(fs.read(lock_path)))
   end)
 
@@ -164,7 +172,7 @@ describe("neoagent file locks", function()
       end)
     end)
     assert.is_false(ok)
-    assert.matches("callback failed", err)
+    assert.matches("callback failed", tostring(err))
     assert(file_lock.new({ path = lock_path, timeout_ms = 50 }):with(
       function() return true end))
   end)
@@ -176,12 +184,13 @@ describe("neoagent file locks", function()
       file_lock.new({ path = lock_path }):acquire_async()
       return { ok = true }
     end, { error_kind = "file_lock" })
-    assert.is_false(vim.wait(50, function() return blocked:is_done() end, 5))
+    assert.is_false((vim.wait(50, function() return blocked:is_done() end, 5)))
     blocked:cancel()
-    assert.are.equal("cancelled", wait(blocked).error.kind)
+    assert.are.equal("cancelled", assert(wait(blocked).error).kind)
 
     local util = require("neoagent.util")
     local schedule = util.schedule
+    ---@type (fun())[]
     local scheduled = {}
     util.schedule = function(callback) scheduled[#scheduled + 1] = callback end
     local acquired
@@ -199,11 +208,26 @@ describe("neoagent file locks", function()
     util.schedule = schedule
     if not checked then error(check_err, 0) end
     for _, callback in ipairs(scheduled) do callback() end
-    assert.are.equal("cancelled", wait(acquired).error.kind)
+    assert.are.equal("cancelled", assert(wait(assert(acquired)).error).kind)
     assert(file_lock.new({ path = lock_path, timeout_ms = 50 }):with(
       function() return true end))
   end)
 
+  ---@class Neoagent.TestLockFailures
+  ---@field acquire_throw? string
+  ---@field busy? boolean
+  ---@field acquire_error? string|Neoagent.LockBackendError
+  ---@field open_error? string|Neoagent.LockBackendError
+  ---@field prepare_error? string|Neoagent.LockBackendError
+  ---@field write_error? string|Neoagent.LockBackendError
+  ---@field verify_initial_error? string|Neoagent.LockBackendError
+  ---@field verify_error? string|Neoagent.LockBackendError
+  ---@field verifies? integer
+  ---@field release_error? string|Neoagent.LockBackendError
+  ---@field close_error? string|Neoagent.LockBackendError
+
+  ---@param config? Neoagent.TestLockFailures
+  ---@return string[]
   local function fake_backend(config)
     config = config or {}
     local calls = {}
@@ -264,7 +288,7 @@ describe("neoagent file locks", function()
       path = lock_path, timeout_ms = 10, poll_ms = 2,
     }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("timeout", err.code)
+    assert.are.equal("timeout", assert(err).code)
     assert.are.equal("close", calls[#calls])
 
     calls = fake_backend({ busy = true })
@@ -276,7 +300,7 @@ describe("neoagent file locks", function()
     end, { error_kind = "file_lock" })
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("timeout", result.error.code)
+    assert.are.equal("timeout", rawget(assert(result.error), "code"))
     assert.are.equal("close", calls[#calls])
   end)
 
@@ -285,10 +309,11 @@ describe("neoagent file locks", function()
     fake_backend({
       verify_error = { code = "ownership", message = "changed" },
     })
+    ---@type Neoagent.FileLockLease?
     local lease = assert(file_lock.new({ path = lock_path }):acquire())
-    local released, err = lease:release()
+    local released, err = assert(lease):release()
     assert.is_nil(released)
-    assert.are.equal("ownership", err.code)
+    assert.are.equal("ownership", assert(err).code)
 
     fake_backend({
       release_error = { code = "release", message = "unlock failed" },
@@ -296,7 +321,7 @@ describe("neoagent file locks", function()
     lease = assert(file_lock.new({ path = lock_path }):acquire())
     released, err = lease:release()
     assert.is_nil(released)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
 
     fake_backend({
       close_error = { code = "release", message = "close failed" },
@@ -304,21 +329,21 @@ describe("neoagent file locks", function()
     lease = assert(file_lock.new({ path = lock_path }):acquire())
     released, err = lease:release()
     assert.is_nil(released)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
 
     fake_backend({
       open_error = { code = "open", message = "open failed" },
     })
     lease, err = file_lock.new({ path = lock_path }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
 
     fake_backend({
       acquire_error = { code = "lock", message = "lock failed" },
     })
     lease, err = file_lock.new({ path = lock_path }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("lock", err.code)
+    assert.are.equal("lock", assert(err).code)
   end)
 
   it("contains backend construction, initialization, and timer failures", function()
@@ -328,7 +353,7 @@ describe("neoagent file locks", function()
     local lease, err = file_lock.new({ path = lock_path }):acquire()
     fs.mkdirp = original_mkdirp
     assert.is_nil(lease)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
 
     for _, case in ipairs({
       { prepare_error = "prepare failed" },
@@ -340,7 +365,7 @@ describe("neoagent file locks", function()
       local calls = fake_backend(case)
       lease, err = file_lock.new({ path = lock_path }):acquire()
       assert.is_nil(lease)
-      assert.are.equal("initialize", err.code)
+      assert.are.equal("initialize", assert(err).code)
       assert.is_true(vim.tbl_contains(calls, "release"))
       assert.is_true(vim.tbl_contains(calls, "close"))
     end
@@ -350,13 +375,13 @@ describe("neoagent file locks", function()
       path = lock_path, timeout_ms = 1, poll_ms = 1,
     }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
     assert.are.equal("close", calls[#calls])
 
     fake_backend({ acquire_throw = "acquire crashed" })
     lease, err = file_lock.new({ path = lock_path }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("acquire", err.code)
+    assert.are.equal("acquire", assert(err).code)
 
     local original_timer = vim.uv.new_timer
     fake_backend({ busy = true })
@@ -367,7 +392,7 @@ describe("neoagent file locks", function()
     vim.uv.new_timer = original_timer
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("acquire", result.error.code)
+    assert.are.equal("acquire", rawget(assert(result.error), "code"))
 
     fake_backend({ acquire_throw = "async acquire crashed" })
     run = async.run(function()
@@ -375,13 +400,13 @@ describe("neoagent file locks", function()
     end, { error_kind = "file_lock" })
     result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("acquire", result.error.code)
+    assert.are.equal("acquire", rawget(assert(result.error), "code"))
 
     posix.new = function() error("backend unavailable") end
     lease, err = file_lock.new({ path = lock_path }):acquire()
     assert.is_nil(lease)
-    assert.are.equal("unavailable", err.code)
-    assert.not_matches("backend unavailable", err.message)
+    assert.are.equal("unavailable", assert(err).code)
+    assert.is_nil((assert(err).message:match("backend unavailable")))
   end)
 
   it("selects platform backends and reports unavailable platforms", function()
@@ -398,28 +423,28 @@ describe("neoagent file locks", function()
       assert.are.equal(selected_backend,
         file_lock.new({ path = path() }).backend)
 
-      jit.os = "Plan9"
+      rawset(jit, "os", "Plan9")
       local lease, err = file_lock.new({ path = path() }):acquire()
       assert.is_nil(lease)
-      assert.are.equal("unavailable", err.code)
-      assert.matches("Plan9", err.message)
+      assert.are.equal("unavailable", assert(err).code)
+      assert.matches("Plan9", assert(err).message)
 
       jit.os = "Linux"
-      _G.require = function(name)
+      rawset(_G, "require", function(name)
         if name == "neoagent.file_lock.posix" then
           error("POSIX backend cannot be loaded")
         end
         return original_require(name)
-      end
+      end)
       lease, err = file_lock.new({ path = path() }):acquire()
       assert.is_nil(lease)
-      assert.are.equal("unavailable", err.code)
-      assert.matches("backend is unavailable", err.message)
+      assert.are.equal("unavailable", assert(err).code)
+      assert.matches("backend is unavailable", assert(err).message)
     end)
     jit.os = original_os
-    _G.require = original_require
+    rawset(_G, "require", original_require)
     package.loaded[windows_name] = original_windows
-    assert.is_true(ok, outcome)
+    assert.is_true(ok, tostring(outcome))
   end)
 
   it("rejects removed and malformed options", function()
@@ -441,6 +466,8 @@ describe("neoagent file locks", function()
       C = {},
     }
     local C = {
+      ---@param _ integer
+      ---@param operation integer
       flock = function(_, operation)
         if operation == 8 and failures.unlock then return -1 end
         if operation ~= 8 and failures.lock then return -1 end
@@ -468,6 +495,8 @@ describe("neoagent file locks", function()
         contents = ""
         return true
       end,
+      ---@param _ integer
+      ---@param value string
       fs_write = function(_, value)
         if failures.write then return nil, "write failed" end
         if failures.short_write then return #value - 1 end
@@ -488,18 +517,26 @@ describe("neoagent file locks", function()
         return true
       end,
     }
-    local backend = posix.new({ ffi = ffi, C = C, uv = uv })
+    local backend = posix.new({
+      ffi = ffi --[[@as ffilib]],
+      C = C,
+      uv = uv --[[@as uv]],
+    })
+    ---@return Neoagent.PosixLockHandle
     local function open()
       failures = {}
       identity = { type = "file", dev = 1, ino = 2, mode = 384 }
-      return assert(backend:open("state.lock", 384))
+      return (assert(backend:open("state.lock", 384)))
     end
+    ---@param method fun(handle: Neoagent.PosixLockHandle): unknown, Neoagent.LockBackendError?
+    ---@param code string
+    ---@param pattern string
     local function rejected(method, code, pattern)
       local handle = open()
       local value, err = method(handle)
       assert.is_nil(value)
-      assert.are.equal(code, err.code)
-      assert.matches(pattern, err.message)
+      assert.are.equal(code, assert(err).code)
+      assert.matches(pattern, assert(err).message)
       failures.close = nil
       assert(handle:close())
     end
@@ -559,8 +596,8 @@ describe("neoagent file locks", function()
     failures.errno = 5
     local acquired, err = handle:try_acquire()
     assert.is_nil(acquired)
-    assert.are.equal("lock", err.code)
-    assert.matches("flock error 5", err.detail)
+    assert.are.equal("lock", assert(err).code)
+    assert.matches("flock error 5", tostring(assert(err).detail))
     assert(handle:close())
 
     failures = {}
@@ -568,18 +605,18 @@ describe("neoagent file locks", function()
     local opened
     opened, err = backend:open("state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("target", err.code)
+    assert.are.equal("target", assert(err).code)
     failures.lstat = { message = "inspection denied", code = "EACCES" }
     opened, err = backend:open("state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
 
     failures = { fstat = true }
     identity = { type = "file", dev = 1, ino = 2, mode = 384 }
     local before = closes
     opened, err = backend:open("state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("ownership", err.code)
+    assert.are.equal("ownership", assert(err).code)
     assert.are.equal(before + 1, closes)
   end)
 
@@ -590,15 +627,20 @@ describe("neoagent file locks", function()
     local failures = {}
     local ffi = {
       cdef = function() end,
+      ---@param name string
       new = function(name)
         calls[#calls + 1] = "new:" .. name
         if name == "unsigned long[1]" then return { [0] = 0 } end
         return { QuadPart = 0 }
       end,
+      ---@param _ string
+      ---@param value integer|{ native: integer }
       cast = function(_, value)
         if failures.cast then error("cast failed") end
         return type(value) == "table" and value.native or value
       end,
+      ---@param buffer { value?: string }
+      ---@param size integer
       string = function(buffer, size)
         return (buffer.value or ""):sub(1, size)
       end,
@@ -607,18 +649,29 @@ describe("neoagent file locks", function()
     local attributes = 128
     local kernel = {
       GetLastError = function() return failures.error or 5 end,
-      CreateFileW = function(path, _, _, _, disposition)
+      ---@param path { path: string }
+      ---@param access integer
+      ---@param share integer
+      ---@param security nil
+      ---@param disposition integer
+      CreateFileW = function(path, access, share, security, disposition)
         calls[#calls + 1] = "open:" .. path.path .. ":" .. disposition
         if failures.open or failures.verify_open and disposition == 3 then
           return failures.cast and -1 or { native = -1 }
         end
         return disposition == 4 and 10 or 11
       end,
-      MultiByteToWideChar = function(_, _, path, size, encoded)
+      ---@param code_page integer
+      ---@param flags integer
+      ---@param path string
+      ---@param size integer
+      ---@param encoded? { path?: string }
+      MultiByteToWideChar = function(code_page, flags, path, size, encoded)
         if failures.encode or failures.encode_second and encoded then return 0 end
         if encoded then encoded.path = path:sub(1, size) end
         return size
       end,
+      ---@param native integer|{ native: integer }
       CloseHandle = function(native)
         calls[#calls + 1] = "close:" .. tostring(native)
         if failures.close or failures.identity_close and native == 11 then
@@ -626,6 +679,8 @@ describe("neoagent file locks", function()
         end
         return 1
       end,
+      ---@param native integer
+      ---@param info Neoagent.Win32LockFileInfo
       GetFileInformationByHandle = function(native, info)
         if failures.information
             or failures.held_information and native == 10
@@ -661,6 +716,10 @@ describe("neoagent file locks", function()
         contents = ""
         return 1
       end,
+      ---@param _ integer
+      ---@param value string
+      ---@param size integer
+      ---@param written table<integer, integer>
       WriteFile = function(_, value, size, written)
         calls[#calls + 1] = "write"
         if failures.write then return 0 end
@@ -668,6 +727,10 @@ describe("neoagent file locks", function()
         written[0] = failures.short_write and size - 1 or size
         return 1
       end,
+      ---@param _ integer
+      ---@param buffer { value?: string }
+      ---@param size integer
+      ---@param read table<integer, integer>
       ReadFile = function(_, buffer, size, read)
         calls[#calls + 1] = "read"
         if failures.read then return 0 end
@@ -682,6 +745,8 @@ describe("neoagent file locks", function()
       end,
     }
     local uv = {
+      ---@param path string
+      ---@param mode integer
       fs_chmod = function(path, mode)
         calls[#calls + 1] = "chmod:" .. path .. ":" .. mode
         if failures.chmod then return nil, "chmod failed" end
@@ -689,12 +754,12 @@ describe("neoagent file locks", function()
       end,
     }
     local backend = windows.new({
-      ffi = ffi,
-      kernel = kernel,
-      uv = uv,
+      ffi = ffi --[[@as ffilib]],
+      kernel = kernel --[[@as Neoagent.Win32LockApi]],
+      uv = uv --[[@as uv]],
     })
     local handle = assert(backend:open("C:\\state.lock", 384))
-    assert.is_true(handle:try_acquire())
+    assert.is_true((handle:try_acquire()))
     assert(handle:prepare(384))
     assert(handle:write_token("token"))
     assert(handle:verify_token("token"))
@@ -709,7 +774,7 @@ describe("neoagent file locks", function()
     identity = 8
     local verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.are.equal("ownership", err.code)
+    assert.are.equal("ownership", assert(err).code)
     assert(handle:close())
 
     identity = 7
@@ -717,44 +782,44 @@ describe("neoagent file locks", function()
     local opened
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
     failures.encode = nil
 
     failures.encode_second = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
     failures.encode_second = nil
 
     failures.open = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
     failures.open = nil
 
     attributes = 1024
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("target", err.code)
+    assert.are.equal("target", assert(err).code)
     attributes = 128
 
     failures.information = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
     failures.information = nil
 
     failures.verify_open = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("ownership", err.code)
+    assert.are.equal("ownership", assert(err).code)
     failures.verify_open = nil
 
     failures.cast = true
     failures.open = true
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
-    assert.are.equal("open", err.code)
+    assert.are.equal("open", assert(err).code)
     failures.open = nil
     failures.cast = nil
 
@@ -762,7 +827,7 @@ describe("neoagent file locks", function()
     failures.held_information = true
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("held file lock", err.message)
+    assert.matches("held file lock", assert(err).message)
     failures.held_information = nil
     assert(handle:close())
 
@@ -770,25 +835,25 @@ describe("neoagent file locks", function()
     failures.held_attributes = 1024
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("not a regular file", err.message)
+    assert.matches("not a regular file", assert(err).message)
     failures.held_attributes = nil
     assert(handle:close())
 
     local reject_encoding = false
     local encoding_backend = windows.new({
-      ffi = ffi,
-      kernel = kernel,
-      uv = uv,
+      ffi = ffi --[[@as ffilib]],
+      kernel = kernel --[[@as Neoagent.Win32LockApi]],
+      uv = uv --[[@as uv]],
       encode_path = function(path)
         if reject_encoding then return nil, "encoding rejected" end
-        return { path = path }
+        return { path = path } --[[@as Neoagent.Win32LockBuffer]]
       end,
     })
     handle = assert(encoding_backend:open("C:\\state.lock", 384))
     reject_encoding = true
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("encode file lock path", err.message)
+    assert.matches("encode file lock path", assert(err).message)
     reject_encoding = false
     assert(handle:close())
 
@@ -797,7 +862,7 @@ describe("neoagent file locks", function()
     failures.error = 2
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("disappeared", err.message)
+    assert.matches("disappeared", assert(err).message)
     failures.verify_open = nil
     failures.error = nil
     assert(handle:close())
@@ -806,7 +871,7 @@ describe("neoagent file locks", function()
     failures.current_information = true
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("path identity", err.message)
+    assert.matches("path identity", assert(err).message)
     failures.current_information = nil
     assert(handle:close())
 
@@ -814,7 +879,7 @@ describe("neoagent file locks", function()
     failures.identity_close = true
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("identity handle", err.message)
+    assert.matches("identity handle", assert(err).message)
     failures.identity_close = nil
     assert(handle:close())
 
@@ -823,19 +888,19 @@ describe("neoagent file locks", function()
     local prepared
     prepared, err = handle:prepare(384)
     assert.is_nil(prepared)
-    assert.are.equal("mode", err.code)
+    assert.are.equal("mode", assert(err).code)
     failures.chmod = nil
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
     failures.lock = true
     failures.error = 33
-    assert.is_false(handle:try_acquire())
+    assert.is_false((handle:try_acquire()))
     failures.error = 5
     local acquired
     acquired, err = handle:try_acquire()
     assert.is_nil(acquired)
-    assert.are.equal("lock", err.code)
+    assert.are.equal("lock", assert(err).code)
     failures.lock = nil
     failures.error = nil
     assert(handle:close())
@@ -848,7 +913,7 @@ describe("neoagent file locks", function()
       local written
       written, err = handle:write_token("token")
       assert.is_nil(written)
-      assert.are.equal("write", err.code)
+      assert.are.equal("write", assert(err).code)
       failures[failure] = nil
       assert(handle:close())
     end
@@ -858,7 +923,7 @@ describe("neoagent file locks", function()
     failures.read = true
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
     failures.read = nil
     assert(handle:close())
 
@@ -867,16 +932,16 @@ describe("neoagent file locks", function()
     contents = "another owner"
     verified, err = handle:verify_token("token")
     assert.is_nil(verified)
-    assert.matches("ownership changed", err.message)
+    assert.matches("ownership changed", assert(err).message)
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
-    assert.is_true(handle:try_acquire())
+    assert.is_true((handle:try_acquire()))
     failures.unlock = true
     local released
     released, err = handle:release()
     assert.is_nil(released)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
     failures.unlock = nil
     assert(handle:release())
     assert(handle:close())
@@ -886,7 +951,7 @@ describe("neoagent file locks", function()
     local closed
     closed, err = handle:close()
     assert.is_nil(closed)
-    assert.are.equal("release", err.code)
+    assert.are.equal("release", assert(err).code)
     failures.close = nil
     assert(handle:close())
   end)
