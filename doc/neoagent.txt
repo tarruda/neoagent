@@ -985,11 +985,17 @@ Models can be constructed without `setup()`: >lua
 Other constructors are `neoagent.api.anthropic_messages`,
 `neoagent.api.openai_responses`, and
 `neoagent.api.openai_codex_responses`. Optional settings include `api_key`,
-`context_window`, `max_output_tokens`, and `request_opts`; `stream()` also
-accepts `system_prompt`, `tools`, and `request_opts`. The Codex constructor adds
+`context_window`, `max_output_tokens`, `timeout_ms`, and `request_opts`;
+`stream()` also accepts `system_prompt`, `tools`, and `request_opts`.
+The Codex constructor adds
 `responses_lite`, `request_max_retries`, and `on_diagnostic`. A constructor also
 accepts the copied `request_context` identity described above, and `stream()`
 may supply additional identity fields using the same option.
+
+`timeout_ms` is a positive integer deadline in milliseconds. A per-stream
+`timeout_ms` overrides the constructor default; `false` disables that default
+for one stream. Configured catalog entries use `request_timeout_ms` to supply
+the constructor default.
 
 A Model has `api`, `provider`, and `id` fields, a `stream` function, and a
 unique `input` list containing `text` and optionally `image`. Optional context,

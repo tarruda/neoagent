@@ -241,6 +241,7 @@ function M.build(self, call_opts)
     url = self._base_url .. "/responses",
     headers = headers,
     body = body,
+    timeout_ms = request_opts.timeout(self._timeout_ms, call_opts.timeout_ms),
   }
   ---@type Neoagent.RequestOptionsInput
   local context = {
