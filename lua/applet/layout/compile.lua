@@ -595,14 +595,12 @@ local function normalize_bindings(value, path, ctx)
   return result
 end
 
----@param ctx Applet.LayoutCompileContext
+---@param keys table<string, string>
 ---@param key string
 ---@param path string
----@param domain 'node_keys'|'pane_keys'|'child_keys'
 ---@return string
-local function register_key(ctx, key, path, domain)
+local function register_key(keys, key, path)
   nonempty(key, path)
-  local keys = ctx[domain]
   applet_expect(not keys[key], path, "duplicates " .. string.format("%q", key), 4)
   keys[key] = path
   return key
@@ -777,7 +775,7 @@ local function allocate(children, total, axis, ctx, path)
   for index, value in ipairs(children) do
     local item_path = path .. ".children." .. index
     fields(value, split_child_fields, item_path)
-    register_key(ctx, value.key, item_path .. ".key", "child_keys")
+    register_key(ctx.child_keys, value.key, item_path .. ".key")
     applet_expect(type(value.child) == "table", item_path .. ".child",
       "must be a layout node", 4)
     local basis = value.basis
@@ -936,8 +934,8 @@ local function project_mount(ctx, node, rect, state, path)
   fields(node, mount_fields, path)
   local pane = node.pane
   applet_expect(Pane.is(pane), path .. ".pane", "must be a Pane instance", 4)
-  local key = register_key(ctx, pane:key(), path .. ".pane", "pane_keys")
-  register_key(ctx, key, path .. ".pane", "node_keys")
+  local key = register_key(ctx.pane_keys, pane:key(), path .. ".pane")
+  register_key(ctx.node_keys, key, path .. ".pane")
   applet_expect(not ctx.mounted_panes[pane], path .. ".pane",
     "is already mounted as " .. tostring(ctx.mounted_panes[pane]), 4)
   ctx.mounted_panes[pane] = key
@@ -1044,7 +1042,7 @@ end
 ---@return Applet.ScopeTopology
 local function project_scope(ctx, node, rect, state, path)
   fields(node, scope_fields, path)
-  local key = register_key(ctx, node.key, path .. ".key", "node_keys")
+  local key = register_key(ctx.node_keys, node.key, path .. ".key")
   local bindings = normalize_bindings(node.bindings, path .. ".bindings", ctx)
   applet_expect(type(node.child) == "table", path .. ".child",
     "must be a layout node", 4)
@@ -1082,7 +1080,7 @@ end
 ---@return Applet.SplitTopology
 local function project_split(ctx, node, rect, state, path)
   fields(node, split_fields, path)
-  local key = register_key(ctx, node.key, path .. ".key", "node_keys")
+  local key = register_key(ctx.node_keys, node.key, path .. ".key")
   applet_expect(node.axis == "vertical" or node.axis == "horizontal",
     path .. ".axis", "must be vertical or horizontal", 4)
   applet_expect(node.revision == nil or type(node.revision) == "string"
@@ -1233,7 +1231,7 @@ end
 ---@return Applet.LayoutLayer
 local function project_layer(ctx, node, index, path)
   fields(node, layer_fields, path)
-  local key = register_key(ctx, node.key, path .. ".key", "node_keys")
+  local key = register_key(ctx.node_keys, node.key, path .. ".key")
   applet_expect(type(node.child) == "table", path .. ".child",
     "must be a layout node", 4)
   local container_key = node.container or "applet"
@@ -1371,8 +1369,7 @@ function M.compile(opts)
   fields(frame, frame_fields, "Applet layout.root")
   applet_expect(frame.type == "frame", "Applet layout.root.type",
     "must be frame", 3)
-  local frame_key = register_key(ctx, frame.key, "Applet layout.root.key",
-    "node_keys")
+  local frame_key = register_key(ctx.node_keys, frame.key, "Applet layout.root.key")
   applet_expect(type(frame.child) == "table", "Applet layout.root.child",
     "must be an Applet layout node", 3)
   local topology = layout_node(ctx, frame.child, bounds, {
