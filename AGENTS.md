@@ -98,19 +98,17 @@ Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 
 `make typecheck-deps` installs pinned EmmyLua checker/language-server binaries
-and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck` for static
-checking; it needs no network or running Neovim after setup. CI runs the same
-target. `EMMYLUA_CHECK` in `local.mk` can override the checker executable.
+and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck`
+for static checking; it needs no network or running Neovim after setup. CI runs
+the same target. `EMMYLUA_CHECK` in `local.mk` can override the checker executable.
 Editors can use `.deps/emmylua/bin/emmylua_ls` with `.emmyrc.json`.
 
-During typing adoption, `.typecheck-pending` lists exact files whose diagnostics
-are not yet enforced. These files still participate in inference. Remove each
-entry as its module is typed; new Lua files are checked by default. The checker
-reports the remaining scope and writes all diagnostics to
+Every repository Lua file is checked, including tests, helpers, platform code,
+and development scripts. New files are checked by default. All configured
+warning/error diagnostics fail the gate; the full report is written to
 `.test-data/typecheck/diagnostics.json`. Keep type contracts at their ownership
 boundary, preserve runtime validation, and fix inaccurate contracts rather
-than spreading `any`, casts, or diagnostic suppressions. Editor diagnostics
-also show pending work; the temporary exclusion list applies only to the gate.
+than spreading `any`, casts, or diagnostic suppressions.
 Redundant-condition diagnostics remain hints because typed entrypoints still
 validate callers at runtime.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run full analysis, enforcing diagnostics outside the temporary adoption list."""
+"""Check every repository Lua file and enforce all configured diagnostics."""
 
 import argparse
 import json
@@ -27,15 +27,6 @@ def main():
     sources = set(subprocess.check_output([
         "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "*.lua"
     ], cwd=ROOT).decode().rstrip("\0").split("\0")) - {""}
-    pending_path = ROOT / ".typecheck-pending"
-    pending = set()
-    if pending_path.exists():
-        for line in pending_path.read_text().splitlines():
-            if line and not line.startswith("#"):
-                if line in pending or line not in sources:
-                    raise SystemExit(f"Duplicate or stale pending file: {line}")
-                pending.add(line)
-
     report = ROOT / ".test-data/typecheck/diagnostics.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     if report.exists():
@@ -50,14 +41,10 @@ def main():
     results = json.loads(report.read_text())
     diagnosed = set()
     failures = 0
-    deferred = 0
     for result in sorted(results, key=lambda item: item["file"]):
         path = Path(result["file"]).resolve().relative_to(ROOT).as_posix()
         diagnosed.add(path)
         for diagnostic in result["diagnostics"]:
-            if path in pending:
-                deferred += 1
-                continue
             failures += 1
             start = diagnostic["range"]["start"]
             print(f"{path}:{start['line'] + 1}:{start['character'] + 1}: "
@@ -68,8 +55,7 @@ def main():
     if process.returncode and not any(item["diagnostics"] for item in results):
         sys.stderr.write(process.stderr)
         raise SystemExit("Checker failed without diagnostics.")
-    print(f"Typing: {len(sources - pending)}/{len(sources)} Lua files enforced; "
-          f"{len(pending)} pending ({deferred} deferred diagnostics); {failures} failures.")
+    print(f"Typing: {len(sources)} Lua files checked; {failures} failures.")
     raise SystemExit(1 if failures else 0)
 
 
