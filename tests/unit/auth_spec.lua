@@ -3,21 +3,34 @@ local async = require("neoagent.async")
 local auth = require("neoagent.auth")
 local store_module = require("neoagent.auth.store")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function memory_store(initial)
-  local values = initial or {}
-  return {
-    read = function(_, id) return vim.deepcopy(values[id]) end,
-    write = function(_, id, value) values[id] = vim.deepcopy(value) return true end,
-    values = values,
-  }
+---@async
+---@param milliseconds integer
+local function delay(milliseconds)
+  async.await(function(done)
+    local timer = vim.defer_fn(function() done.resolve(true) end, milliseconds)
+    return function()
+      if not timer:is_closing() then
+        timer:stop()
+        timer:close()
+      end
+    end
+  end)
 end
 
+local memory_store = require("tests.helpers.auth_manager").store
+
+---@param overrides? Neoagent.AuthMethodInput<Neoagent.OAuthCredential>
+---@return Neoagent.AuthMethod<Neoagent.OAuthCredential>
 local function method(overrides)
+  ---@type Neoagent.AuthMethod<Neoagent.OAuthCredential>
   local value = {
     name = "Test plan",
     login = function(interaction)
@@ -27,7 +40,7 @@ local function method(overrides)
           return interaction.prompt({ type = "text", message = "Code" }, done)
         end)
         return { ok = true, credential = {
-          access = answer, refresh = "refresh", expires = 200, accountId = "account",
+          access = assert(answer), refresh = "refresh", expires = 200, accountId = "account",
         } }
       end)
     end,
@@ -42,7 +55,7 @@ local function method(overrides)
       return { headers = { Authorization = "Bearer " .. credential.access } }
     end,
   }
-  for key, item in pairs(overrides or {}) do value[key] = item end
+  for key, item in pairs(overrides or {}) do rawset(value, key, item) end
   return value
 end
 
@@ -53,24 +66,32 @@ describe("neoagent provider authentication", function()
     local events = {}
     local result = wait(manager:login("plan", {
       prompt = function(_, done) done.resolve("token") end,
-      on_event = function(event) events[#events + 1] = event.message end,
+      on_event = function(event)
+        assert(event.type == "progress")
+        events[#events + 1] = event.message
+      end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "Signing in" }, events)
-    assert.are.equal("token", storage.values.plan.access)
+    assert.are.equal("token", assert(storage.values.plan).access)
 
+    ---@type Neoagent.RequestOverride?
     local seen
-    local model = {
-      api = "fake", provider = "provider", id = "model",
-      input = { "text" }, context_window = 128000,
-    }
+    local model = require("tests.helpers.fake_model").new()
+    model.api, model.provider, model.id = "fake", "provider", "model"
+    model.context_window = 128000
+    ---@param opts Neoagent.StreamOptions
+    ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
     function model:stream(opts)
       return async.run(function(run)
-        seen = opts.request_opts({
+        local decorate = opts.request_opts
+        assert(type(decorate) == "function")
+        seen = decorate({
           request = { url = "http://model", headers = { Existing = "yes" }, body = { base = true } },
+          tools = {}, messages = {}, model = self, request_context = {},
         })
         run:emit({ type = "text_delta", text = "done" })
-        return { ok = true, text = "done" }
+        return require("tests.helpers.fake_model").assistant({ { type = "text", text = "done" } })
       end, { on_event = opts.on_event })
     end
     local streamed = {}
@@ -79,18 +100,21 @@ describe("neoagent provider authentication", function()
     assert.are.same(model.thinking, wrapped.thinking)
     assert.are.same({ "text" }, wrapped.input)
     assert.are.equal(128000, wrapped.context_window)
-    result = wait(wrapped:stream({
+    local model_result = wait(wrapped:stream({
       messages = {},
       request_opts = { body = { caller = true }, headers = { Authorization = "wrong" } },
-      on_event = function(event) streamed[#streamed + 1] = event.text end,
+      on_event = function(event)
+        assert(event.type == "text_delta")
+        streamed[#streamed + 1] = event.text
+      end,
     }))
-    assert.is_true(result.ok)
-    assert.are.equal("done", result.text)
+    assert(model_result.ok)
+    assert.are.equal("done", model_result.text)
     assert(vim.wait(1000, function() return #streamed == 1 end))
     assert.are.same({ "done" }, streamed)
-    assert.are.equal("Bearer token", seen.headers.Authorization)
-    assert.are.equal("yes", seen.headers.Existing)
-    assert.are.same({ base = true, caller = true }, seen.body)
+    assert.are.equal("Bearer token", rawget(assert(assert(seen).headers), "Authorization"))
+    assert.are.equal("yes", rawget(assert(assert(seen).headers), "Existing"))
+    assert.are.same({ base = true, caller = true }, assert(seen).body)
     assert.are.equal("fake", wrapped.api)
   end)
 
@@ -105,21 +129,21 @@ describe("neoagent provider authentication", function()
         done.resolve("  secret-key  ")
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("api_key", result.credential_type)
     assert.are.same({ type = "secret", message = "Enter Example API key:" }, prompt)
     assert.are.same({ type = "api_key", key = "secret-key" }, storage.values.example)
 
-    result = wait(manager:resolve("example"))
-    assert.is_true(result.ok)
-    assert.are.equal("Bearer secret-key", result.request_opts.headers.Authorization)
+    local resolved = wait(manager:resolve("example"))
+    assert(resolved.ok)
+    assert.are.equal("Bearer secret-key", rawget(assert(assert(resolved.request_opts).headers), "Authorization"))
     local listed = assert(manager:list_credentials())
     assert.are.same({ { id = "example", name = "Example API key", type = "api_key" } }, listed)
-    assert.is_nil(listed[1].key)
+    assert.is_nil(rawget(assert(listed[1]), "key"))
 
     assert.is_true(wait(manager:logout("example")).ok)
     assert.is_nil(storage.values.example)
-    assert.is_false(manager:has_credentials("example"))
+    assert.is_false((manager:has_credentials("example")))
   end)
 
   it("propagates credential enumeration failures and sorts public metadata", function()
@@ -133,7 +157,7 @@ describe("neoagent provider authentication", function()
     })
     local listed, err = manager:list_credentials()
     assert.is_nil(listed)
-    assert.are.equal("credential list unavailable", err.message)
+    assert.are.equal("credential list unavailable", assert(err).message)
 
     local listed_store = memory_store()
     listed_store.list = function()
@@ -172,9 +196,9 @@ describe("neoagent provider authentication", function()
         done.resolve("provider-key")
       end,
     }))
-    assert.is_true(result.ok)
-    result = wait(manager:resolve("header"))
-    assert.are.equal("provider-key", result.request_opts.headers["x-api-key"])
+    assert(result.ok)
+    local resolved = wait(manager:resolve("header"))
+    assert.are.equal("provider-key", rawget(assert(assert(resolved.request_opts).headers), "x-api-key"))
   end)
 
   it("resolves distinct protocol scopes from one login method", function()
@@ -199,15 +223,15 @@ describe("neoagent provider authentication", function()
 
     local result = wait(manager:resolve("scoped", { scope = "dashboard" }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("dashboard", seen_scope)
     assert.are.equal("Bearer dashboard-secret",
-      result.request_opts.headers.Authorization)
+      rawget(assert(assert(result.request_opts).headers), "Authorization"))
 
     result = wait(manager:resolve("scoped", { scope = "../dashboard" }))
     assert.is_false(result.ok)
-    assert.are.equal("auth", result.error.kind)
-    assert.matches("scope is invalid", result.error.message)
+    assert.are.equal("auth", assert(result.error).kind)
+    assert.matches("scope is invalid", assert(result.error).message)
   end)
 
   it("rejects malformed API-key methods and credentials without exposing secrets", function()
@@ -218,20 +242,20 @@ describe("neoagent provider authentication", function()
     local manager = auth.new({ methods = { key = selected }, store = storage })
     assert.is_true(wait(manager:resolve("key")).ok)
 
-    storage.values.key.env = { "invalid" }
+    assert(storage.values.key).env = { "invalid" }
     local available, err = manager:has_credentials("key")
     assert.is_nil(available)
-    assert.matches("invalid", err.message)
-    storage.values.key.env = { ACCOUNT_ID = "" }
+    assert.matches("invalid", assert(err).message)
+    assert(storage.values.key).env = { ACCOUNT_ID = "" }
     available, err = manager:has_credentials("key")
     assert.is_nil(available)
-    assert.matches("invalid", err.message)
+    assert.matches("invalid", assert(err).message)
 
     local blank = wait(manager:login("key", {
       prompt = function(_, done) done.resolve("  ") end,
     }))
     assert.is_false(blank.ok)
-    assert.matches("required", blank.error.message)
+    assert.matches("required", assert(blank.error).message)
 
     local constrained = require("neoagent.auth.api_key").new({
       name = "Constrained key",
@@ -247,7 +271,7 @@ describe("neoagent provider authentication", function()
     })
     available, err = manager:has_credentials("constrained")
     assert.is_nil(available)
-    assert.matches("Stored credential is invalid", err.message)
+    assert.matches("Stored credential is invalid", assert(err).message)
     assert.is_true(wait(manager:login("constrained", {
       prompt = function(_, done) done.resolve("accepted") end,
     })).ok)
@@ -263,7 +287,7 @@ describe("neoagent provider authentication", function()
     })
     local invalid = wait(manager:resolve("constrained"))
     assert.is_false(invalid.ok)
-    assert.not_matches("private%-validator", invalid.error.message)
+    assert.is_not_matches("private%-validator", assert(invalid.error).message)
 
     local invalid_result = {
       type = "api_key",
@@ -272,9 +296,9 @@ describe("neoagent provider authentication", function()
       request_opts = function() return {} end,
     }
     manager = auth.new({ methods = { invalid = invalid_result }, store = memory_store() })
-    assert.matches("invalid result", wait(manager:login("invalid", {
+    assert.matches("invalid result", assert(wait(manager:login("invalid", {
       prompt = function() end,
-    })).error.message)
+    })).error).message)
 
     local invalid_options = vim.deepcopy(invalid_result)
     invalid_options.login = selected.login
@@ -283,7 +307,7 @@ describe("neoagent provider authentication", function()
       methods = { invalid = invalid_options },
       store = memory_store({ invalid = { type = "api_key", key = "secret" } }),
     })
-    assert.matches("request_opts", wait(manager:resolve("invalid")).error.message)
+    assert.matches("request_opts", assert(wait(manager:resolve("invalid")).error).message)
 
     local deletion_error = require("neoagent.util").error("auth", "Deletion failed")
     local failing_store = memory_store({ key = { type = "api_key", key = "secret" } })
@@ -291,7 +315,7 @@ describe("neoagent provider authentication", function()
     manager = auth.new({ methods = { key = selected }, store = failing_store })
     local deleted = wait(manager:logout("key"))
     assert.is_false(deleted.ok)
-    assert.are.equal("Deletion failed", deleted.error.message)
+    assert.are.equal("Deletion failed", assert(deleted.error).message)
   end)
 
   it("refreshes expired credentials before deriving request options", function()
@@ -308,17 +332,17 @@ describe("neoagent provider authentication", function()
     end })
     local manager = auth.new({ methods = { plan = selected }, store = storage, now = function() return 10 end })
     local result = wait(manager:resolve("plan"))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(1, refreshes)
-    assert.are.equal("fresh", storage.values.plan.access)
-    assert.are.equal("Bearer fresh", result.request_opts.headers.Authorization)
+    assert.are.equal("fresh", assert(storage.values.plan).access)
+    assert.are.equal("Bearer fresh", rawget(assert(assert(result.request_opts).headers), "Authorization"))
   end)
 
   it("publishes secret-free account identity revisions", function()
     local storage = memory_store()
     local selected = method({
       cache_identity = function(credential)
-        return credential.accountId
+        return tostring(credential.accountId)
       end,
       refresh = function()
         return async.run(function()
@@ -341,14 +365,14 @@ describe("neoagent provider authentication", function()
       revisions[#revisions + 1] = event
     end)
 
-    assert.is_nil(manager:cache_identity("plan"))
+    assert.is_nil((manager:cache_identity("plan")))
     assert.is_true(wait(manager:login("plan", {
       prompt = function(_, done) done.resolve("token") end,
     })).ok)
     local identity = assert(manager:cache_identity("plan"))
     assert.matches("^[0-9a-f]+$", identity)
     assert.are.equal(64, #identity)
-    assert.is_nil(identity:find("account", 1, true))
+    assert.is_nil((identity:find("account", 1, true)))
     assert.are.equal("login", revisions[1].kind)
     assert.are.equal(1, revisions[1].revision)
 
@@ -361,7 +385,7 @@ describe("neoagent provider authentication", function()
     assert.is_true(wait(manager:logout("plan")).ok)
     assert.are.equal("logout", revisions[3].kind)
     assert.are.equal(3, revisions[3].revision)
-    assert.is_nil(manager:cache_identity("plan"))
+    assert.is_nil((manager:cache_identity("plan")))
     assert.is_true(unsubscribe())
     assert.is_false(unsubscribe())
   end)
@@ -389,7 +413,7 @@ describe("neoagent provider authentication", function()
     assert.are.equal(stored, ambient)
     assert.are_not.equal(stored, different)
     assert.are.equal(64, #stored)
-    assert.is_nil(stored:find("secret", 1, true))
+    assert.is_nil((stored:find("secret", 1, true)))
   end)
 
   it("rejects unsafe account cache identities", function()
@@ -409,7 +433,7 @@ describe("neoagent provider authentication", function()
 
     local identity, err = manager:cache_identity("plan")
     assert.is_nil(identity)
-    assert.matches("safe non%-empty text", err.message)
+    assert.matches("safe non%-empty text", assert(err).message)
   end)
 
   it("validates cache identity credentials and exposes revisions", function()
@@ -433,46 +457,47 @@ describe("neoagent provider authentication", function()
     assert.are.equal(0, manager:revision("plan"))
     local identity, err = manager:cache_identity("plan")
     assert.is_nil(identity)
-    assert.matches("cache_identity failed", err.message)
+    assert.matches("cache_identity failed", assert(err).message)
 
     storage.values.plan = { expires = "invalid" }
     identity, err = manager:cache_identity("plan")
     assert.is_nil(identity)
-    assert.matches("Stored credential is invalid", err.message)
+    assert.matches("Stored credential is invalid", assert(err).message)
     identity, err = manager:derive_cache_identity("plan", {})
     assert.is_nil(identity)
-    assert.matches("Credential is invalid", err.message)
+    assert.matches("Credential is invalid", assert(err).message)
     assert.has_error(function() manager:revision("missing") end)
   end)
 
   it("reports missing, malformed, and failed credentials", function()
     local storage = memory_store()
     local manager = auth.new({ methods = { plan = method() }, store = storage })
-    assert.is_false(manager:has_credentials("plan"))
-    assert.are.equal("auth", wait(manager:resolve("missing")).error.kind)
-    assert.are.equal("auth", wait(manager:resolve("plan")).error.kind)
+    assert.is_false((manager:has_credentials("plan")))
+    assert.are.equal("auth", assert(wait(manager:resolve("missing")).error).kind)
+    assert.are.equal("auth", assert(wait(manager:resolve("plan")).error).kind)
 
     storage.values.plan = { expires = "later" }
     local available, credential_err = manager:has_credentials("plan")
     assert.is_nil(available)
-    assert.are.equal("auth", credential_err.kind)
-    assert.matches("invalid", wait(manager:resolve("plan")).error.message)
+    assert.are.equal("auth", assert(credential_err).kind)
+    assert.matches("invalid", assert(wait(manager:resolve("plan")).error).message)
     storage.values.plan = { access = "old", refresh = "r", expires = 0 }
+    local invalid_credential = {}
     local bad = method({ refresh = function()
-      return async.run(function() return { ok = true, credential = {} } end)
+      return async.run(function() return { ok = true, credential = invalid_credential --[[@as Neoagent.OAuthCredential]] } end)
     end })
     manager = auth.new({ methods = { plan = bad }, store = storage })
-    assert.matches("invalid credential", wait(manager:resolve("plan")).error.message)
+    assert.matches("invalid credential", assert(wait(manager:resolve("plan")).error).message)
   end)
 
   it("protects OAuth refresh against missing support and credential races", function()
     local expired = { access = "old", refresh = "refresh", expires = 10 }
     local without_refresh = auth.new({
-      methods = { plan = method({ refresh = false }) },
+      methods = { plan = method({ refresh = false --[[@as fun(credential: Neoagent.OAuthCredential): Neoagent.Run<Neoagent.CredentialResult<Neoagent.OAuthCredential>, nil>]] }) },
       store = memory_store({ plan = expired }),
       now = function() return 10 end,
     })
-    assert.matches("cannot refresh", wait(without_refresh:resolve("plan")).error.message)
+    assert.matches("cannot refresh", assert(wait(without_refresh:resolve("plan")).error).message)
 
     local reads = 0
     local refreshed = { access = "concurrent", refresh = "new", expires = 500 }
@@ -485,8 +510,8 @@ describe("neoagent provider authentication", function()
       methods = { plan = method() }, store = concurrent_store, now = function() return 10 end,
     })
     local result = wait(concurrent:resolve("plan"))
-    assert.is_true(result.ok)
-    assert.are.equal("Bearer concurrent", result.request_opts.headers.Authorization)
+    assert(result.ok)
+    assert.are.equal("Bearer concurrent", rawget(assert(assert(result.request_opts).headers), "Authorization"))
 
     local function modifying_store(current, replacement)
       local store = memory_store({ plan = expired })
@@ -504,7 +529,7 @@ describe("neoagent provider authentication", function()
       now = function() return 10 end,
     })
     assert.matches("changed during refresh",
-      wait(changed_during_refresh:resolve("plan")).error.message)
+      assert(wait(changed_during_refresh:resolve("plan")).error).message)
 
     local invalid_during_refresh = auth.new({
       methods = { plan = method() },
@@ -512,7 +537,7 @@ describe("neoagent provider authentication", function()
       now = function() return 10 end,
     })
     assert.matches("Stored credential is invalid",
-      wait(invalid_during_refresh:resolve("plan")).error.message)
+      assert(wait(invalid_during_refresh:resolve("plan")).error).message)
   end)
 
   it("bounds credential lock contention and reports filesystem errors", function()
@@ -531,7 +556,7 @@ describe("neoagent provider authentication", function()
       return { type = "api_key", key = "unexpected" }
     end))
     assert.is_false(timed_out.ok)
-    assert.matches("Timed out acquiring credential lock", timed_out.error.message)
+    assert.matches("Timed out acquiring credential lock", assert(timed_out.error).message)
     assert(holder:release())
 
     local original_open = vim.uv.fs_open
@@ -544,8 +569,8 @@ describe("neoagent provider authentication", function()
     end))
     vim.uv.fs_open = original_open
     assert.is_false(denied.ok)
-    assert.matches("Failed to acquire credential lock", denied.error.message)
-    assert.matches("EACCES", denied.error.detail)
+    assert.matches("Failed to acquire credential lock", assert(denied.error).message)
+    assert.matches("EACCES", tostring(assert(denied.error).detail))
     vim.fn.delete(directory, "rf")
   end)
 
@@ -556,6 +581,7 @@ describe("neoagent provider authentication", function()
     local fs = require("neoagent.fs")
     local atomic_replace = fs.atomic_replace
     local stages = { "temporary", "write", "mode", "rename" }
+    ---@type {written?: true, err?: Neoagent.Error}[]
     local failures = {}
     local patched, patch_err = pcall(function()
       fs.atomic_replace = function()
@@ -572,11 +598,11 @@ describe("neoagent provider authentication", function()
     fs.atomic_replace = atomic_replace
     assert(patched, patch_err)
 
-    assert.is_nil(failures[1].written)
-    assert.matches("temporary file", failures[1].err.message)
-    assert.matches("write credentials", failures[2].err.message)
-    assert.matches("write credentials", failures[3].err.message)
-    assert.matches("replace credentials", failures[4].err.message)
+    assert.is_nil(assert(failures[1]).written)
+    assert.matches("temporary file", assert(assert(failures[1]).err).message)
+    assert.matches("write credentials", assert(assert(failures[2]).err).message)
+    assert.matches("write credentials", assert(assert(failures[3]).err).message)
+    assert.matches("replace credentials", assert(assert(failures[4]).err).message)
 
     store._file_lock = function()
       return {
@@ -594,8 +620,8 @@ describe("neoagent provider authentication", function()
       type = "api_key", key = "secret",
     })
     assert.is_nil(written)
-    assert.matches("release credential lock", err.message)
-    assert.are.equal("unlock denied", err.detail)
+    assert.matches("release credential lock", assert(err).message)
+    assert.are.equal("unlock denied", assert(err).detail)
     vim.fn.delete(directory, "rf")
   end)
 
@@ -611,21 +637,18 @@ describe("neoagent provider authentication", function()
     local entered = false
     local first = store:modify("count", function(current)
       entered = true
-      async.await(function(done)
-        local timer = vim.defer_fn(function() done.resolve(true) end, 100)
-        return function() pcall(vim.fn.timer_stop, timer) end
-      end)
-      current.value = current.value + 1
+      delay(100)
+      assert(current).value = assert(assert(current).value) + 1
       return current
     end)
     assert(vim.wait(100, function() return entered end, 5))
     local second = store:modify("count", function(current)
-      current.value = current.value + 1
+      assert(current).value = assert(assert(current).value) + 1
       return current
     end)
     assert.is_true(wait(first).ok)
     assert.is_true(wait(second).ok)
-    assert.are.equal(2, store:read("count").value)
+    assert.are.equal(2, assert(store:read("count")).value)
     vim.fn.delete(directory, "rf")
   end)
 
@@ -661,32 +684,29 @@ describe("neoagent provider authentication", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/nested/auth.json"
     local store = store_module.new(path)
-    assert.is_nil(store:read("plan"))
+    assert.is_nil((store:read("plan")))
     assert.is_nil(vim.uv.fs_stat(path))
     assert.is_true(wait(store:delete("missing")).ok)
     assert.is_nil(vim.uv.fs_stat(directory))
     assert(store:write("plan", { access = "secret", refresh = "r", expires = 1 }))
     assert.is_true(wait(store:modify("plan", function() return nil end)).ok)
-    assert.are.equal("secret", store:read("plan").access)
+    assert.are.equal("secret", assert(store:read("plan")).access)
     local bit = require("bit")
-    assert.are.equal(384, bit.band(vim.uv.fs_stat(path).mode, 511))
-    assert.are.equal(448, bit.band(vim.uv.fs_stat(vim.fs.dirname(path)).mode, 511))
+    assert.are.equal(384, bit.band(assert(vim.uv.fs_stat(path)).mode, 511))
+    assert.are.equal(448, bit.band(assert(vim.uv.fs_stat(assert(vim.fs.dirname(path)))).mode, 511))
     assert.is_true(wait(store:modify("stale", function() return { recovered = true } end)).ok)
-    assert.is_true(store:read("stale").recovered)
+    assert.is_true(assert(store:read("stale")).recovered)
 
     local holder = assert(require("neoagent.file_lock").new({
       path = path .. ".lock",
     }):acquire())
     local cancelled = store:modify("cancelled", function() return { written = true } end)
-    vim.wait(20)
+    assert.is_false(cancelled:is_done())
     cancelled:cancel()
-    assert.are.equal("cancelled", wait(cancelled).error.kind)
+    assert.are.equal("cancelled", assert(wait(cancelled).error).kind)
     assert(holder:release())
     local first = store:modify("count", function(current)
-      async.await(function(done)
-        local timer = vim.defer_fn(function() done.resolve(true) end, 20)
-        return function() pcall(vim.fn.timer_stop, timer) end
-      end)
+      delay(20)
       return { value = (current and current.value or 0) + 1 }
     end)
     local second = store:modify("count", function(current)
@@ -694,29 +714,26 @@ describe("neoagent provider authentication", function()
     end)
     assert.is_true(wait(first).ok)
     assert.is_true(wait(second).ok)
-    assert.are.equal(2, store:read("count").value)
+    assert.are.equal(2, assert(store:read("count")).value)
     assert(store:write("remove", { type = "api_key", key = "secret" }))
     local updating = store:modify("remove", function(current)
-      async.await(function(done)
-        local timer = vim.defer_fn(function() done.resolve(true) end, 20)
-        return function() pcall(vim.fn.timer_stop, timer) end
-      end)
-      current.key = "updated"
+      delay(20)
+      assert(current).key = "updated"
       return current
     end)
     local deleting = store:delete("remove")
     assert.is_true(wait(updating).ok)
     assert.is_true(wait(deleting).ok)
-    assert.is_nil(store:read("remove"))
+    assert.is_nil((store:read("remove")))
     local listed = assert(store:list())
     assert.is_true(vim.tbl_contains(vim.tbl_map(function(item) return item.id end, listed), "plan"))
-    assert.is_nil(listed[1].access)
+    assert.is_nil(rawget(assert(listed[1]), "access"))
     assert.is_true(wait(store:delete("plan")).ok)
-    assert.is_nil(store:read("plan"))
+    assert.is_nil((store:read("plan")))
     vim.fn.writefile({ "[]" }, path)
     local value, err = store:read("plan")
     assert.is_nil(value)
-    assert.are.equal("auth", err.kind)
+    assert.are.equal("auth", assert(err).kind)
     vim.fn.delete(directory, "rf")
   end)
 
@@ -736,8 +753,8 @@ describe("neoagent provider authentication", function()
     vim.uv.fs_chmod = chmod
 
     assert.is_nil(ok)
-    assert.matches("credential directory", err.message)
-    assert.matches("chmod denied", err.detail)
+    assert.matches("credential directory", assert(err).message)
+    assert.matches("chmod denied", tostring(assert(err).detail))
     assert.is_nil(vim.uv.fs_stat(path))
     assert.are.same({}, vim.fn.glob(path .. ".*.tmp", false, true))
     assert.is_nil(vim.uv.fs_stat(path .. ".lock"))
