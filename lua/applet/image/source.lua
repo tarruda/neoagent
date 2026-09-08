@@ -37,11 +37,17 @@ local M = {}
 ---@field id string
 ---@field data string
 
+---@class Applet.ImageReadFilesystem
+---@field fs_open fun(path: string, flags: string, mode: integer, done: fun(error?: string, descriptor?: integer)): unknown
+---@field fs_fstat fun(descriptor: integer, done: fun(error?: string, stat?: {size: integer})): unknown
+---@field fs_read fun(descriptor: integer, size: integer, offset: integer, done: fun(error?: string, data?: string)): unknown
+---@field fs_close fun(descriptor: integer, done: fun(error?: string)): unknown
+
 ---@class Applet.ImageLoadOptions
 ---@field max_bytes? integer
 ---@field max_pixels? integer
 ---@field read_file? fun(path: string, maximum: integer): string?, string?
----@field uv? uv
+---@field uv? Applet.ImageReadFilesystem
 
 ---@alias Applet.ImageLoadDone fun(resource?: Applet.ImageResource, error?: string)
 

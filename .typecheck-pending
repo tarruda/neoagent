@@ -14,7 +14,6 @@ tests/ui/provider_shell_toggle_spec.lua
 tests/ui/view_spec.lua
 tests/ui/workspace_trust_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
-tests/unit/applet_image_spec.lua
 tests/unit/authentication_spec.lua
 tests/unit/config_models_spec.lua
 tests/unit/llama_provider_spec.lua

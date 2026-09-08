@@ -1,11 +1,13 @@
 local assert = require("luassert")
-local ImageSystem = require("applet.image")
+local ImageSystem = require("applet").ImageSystem
 local detect = require("applet.image.detect")
 local geometry = require("applet.image.geometry")
 local Kitty = require("applet.image.kitty")
 local source = require("applet.image.source")
 local transport = require("applet.image.transport")
 
+---@param value integer
+---@return string
 local function uint32(value)
   return string.char(
     math.floor(value / 16777216) % 256,
@@ -14,18 +16,27 @@ local function uint32(value)
     value % 256)
 end
 
+---@param width integer
+---@param height integer
+---@param suffix? string
+---@return string
 local function png(width, height, suffix)
   return "\137PNG\r\n\26\n\0\0\0\rIHDR"
     .. uint32(width) .. uint32(height) .. (suffix or "")
 end
 
+---@param pattern string
+---@param callback fun()
 local function fails(pattern, callback)
   local ok, err = pcall(callback)
   assert.is_false(ok)
   assert.matches(pattern, tostring(err))
 end
 
+---@param overrides? Partial<Applet.ImageBackend>
+---@return Applet.ImageBackend
 local function backend(overrides)
+  ---@type Applet.ImageBackend
   local value = {
     name = "test",
     available = true,
@@ -40,12 +51,16 @@ local function backend(overrides)
   return value
 end
 
+---@param value Applet.Kitty
 local function wait_for_kitty(value)
   assert(vim.wait(1000, function()
     return value.output_operation == nil and next(value.pending) == nil
   end))
 end
 
+---@param value Applet.Kitty
+---@param owner Applet.ImageOwner
+---@param placements Applet.ImageRequest[]
 local function replace(value, owner, placements)
   value:replace(owner, placements)
   wait_for_kitty(value)
@@ -114,7 +129,7 @@ describe("Applet images", function()
     assert.is_string(absent_error)
 
     fails("revision", function()
-      source.identity({ kind = "png_bytes", id = "x", data = bytes })
+      source.identity({ kind = "png_bytes", id = "x", data = bytes } --[[@as Applet.ImageSource]])
     end)
     for _, revision in ipairs({ math.huge, -math.huge }) do
       fails("finite", function()
@@ -129,18 +144,18 @@ describe("Applet images", function()
       })
     end)
     fails("id", function()
-      source.identity({ kind = "png_bytes", data = bytes, revision = 1 })
+      source.identity({ kind = "png_bytes", data = bytes, revision = 1 } --[[@as Applet.ImageSource]])
     end)
     fails("data", function()
       source.identity({
         kind = "png_bytes", id = "x", data = false, revision = 1,
-      })
+      } --[[@as Applet.ImageSource]])
     end)
     fails("must be png", function()
-      source.identity({ kind = "jpeg", revision = 1 })
+      source.identity({ kind = "jpeg", revision = 1 } --[[@as Applet.ImageSource]])
     end)
     fails("path", function()
-      source.identity({ kind = "png_file", revision = 1 })
+      source.identity({ kind = "png_file", revision = 1 } --[[@as Applet.ImageSource]])
     end)
     fails("invalid signature", function() source.png_info("bad") end)
     fails("no IHDR", function()
@@ -167,7 +182,7 @@ describe("Applet images", function()
     }, {}, function(value, err) result, failure = value, err end)
     assert.is_function(cancel)
     assert(vim.wait(1000, function() return result or failure end))
-    assert.are.equal(3, result.height)
+    assert.are.equal(3, assert(result).height)
     cancel()
 
     local inline
@@ -183,25 +198,30 @@ describe("Applet images", function()
       function(value) custom = value end)
     assert(vim.wait(1000, function() return custom ~= nil end))
 
+    ---@type string?
     local invalid_error
-    source.load_async({ kind = "png_bytes", id = "missing-revision" }, {},
+    source.load_async({ kind = "png_bytes", id = "missing-revision" } --[[@as Applet.ImageSource]], {},
       function(_, err) invalid_error = err end)
     assert(vim.wait(1000, function() return invalid_error ~= nil end))
-    assert.matches("revision", invalid_error)
+    assert.matches("revision", (assert(invalid_error)))
 
     local called = false
     local cancel_inline = source.load_async({
       kind = "png_bytes", id = "cancel", data = bytes, revision = 1,
     }, {}, function() called = true end)
     cancel_inline()
-    assert.is_false(vim.wait(20, function() return called end))
+    assert.is_false((vim.wait(20, function() return called end)))
     vim.fn.delete(path)
   end)
 
   it("reports asynchronous file boundaries and closes cancelled reads", function()
     local bytes = png(2, 3)
+    ---@param options {open_error?: string, opened?: integer, stat_error?: string, size?: integer, read_error?: string, data?: string, close_error?: string, maximum?: integer}
+    ---@return Applet.ImageResource?, string?
     local function load(options)
+      ---@type Applet.ImageResource?, string?, boolean?
       local resource, failure, completed
+      ---@type Applet.ImageReadFilesystem
       local fake = {
         fs_open = function(_, _, _, done)
           done(options.open_error,
@@ -225,12 +245,12 @@ describe("Applet images", function()
       assert(vim.wait(1000, function() return completed end))
       return resource, failure
     end
-    assert.matches("open", select(2, load({ open_error = "open failed" })))
-    assert.matches("stat failed", select(2, load({ stat_error = "stat failed" })))
-    assert.matches("byte limit", select(2, load({ maximum = 2, size = 3 })))
-    assert.matches("read", select(2, load({ read_error = "read failed" })))
-    assert.matches("close", select(2, load({ close_error = "close failed" })))
-    assert.matches("invalid signature", select(2, load({ data = "bad" })))
+    assert.matches("open", (assert(select(2, load({ open_error = "open failed" })))))
+    assert.matches("stat failed", (assert(select(2, load({ stat_error = "stat failed" })))))
+    assert.matches("byte limit", (assert(select(2, load({ maximum = 2, size = 3 })))))
+    assert.matches("read", (assert(select(2, load({ read_error = "read failed" })))))
+    assert.matches("close", (assert(select(2, load({ close_error = "close failed" })))))
+    assert.matches("invalid signature", (assert(select(2, load({ data = "bad" })))))
 
     local callbacks, closes, published = {}, 0, false
     local cancel = source.load_async({
@@ -255,6 +275,8 @@ describe("Applet images", function()
     }, { uv = {
       fs_open = function(_, _, _, done) callbacks_before.open = done end,
       fs_close = function() before_open_closes = before_open_closes + 1 end,
+      fs_fstat = function() error("cancelled before stat") end,
+      fs_read = function() error("cancelled before read") end,
     } }, function() published = true end)
     cancel_before()
     callbacks_before.open(nil, 10)
@@ -294,10 +316,10 @@ describe("Applet images", function()
     local redraw, ui_send, schedule =
       vim.cmd, vim.api.nvim_ui_send, vim.schedule
     local events, scheduled = {}, {}
-    vim.cmd = function(command)
+    vim.cmd = setmetatable({}, { __call = function(_, command)
       assert.are.equal("redraw", command)
       events[#events + 1] = "redraw"
-    end
+    end })
     vim.api.nvim_ui_send = function() end
     vim.schedule = function(callback) scheduled[#scheduled + 1] = callback end
     local ok, err = pcall(function()
@@ -319,11 +341,14 @@ describe("Applet images", function()
       table.remove(scheduled, 1)()
       assert.are.same({ "redraw" }, events)
 
+      ---@type string?
       local failure
-      vim.cmd = function() error("redraw failed") end
+      vim.cmd = setmetatable({}, {
+        __call = function() error("redraw failed") end,
+      })
       transport.schedule(function(value) failure = value end)
       table.remove(scheduled, 1)()
-      assert.matches("terminal UI flush failed", failure)
+      assert.matches("terminal UI flush failed", (assert(failure)))
     end)
     vim.cmd, vim.api.nvim_ui_send, vim.schedule = redraw, ui_send, schedule
     assert(ok, err)
@@ -342,7 +367,9 @@ describe("Applet images", function()
     vim.api.nvim_get_chan_info = function()
       return { mode = "rpc", stream = "stdio" }
     end
-    vim.cmd = function() events[#events + 1] = "redraw" end
+    vim.cmd = setmetatable({}, {
+      __call = function() events[#events + 1] = "redraw" end,
+    })
     vim.rpcrequest = function(channel, method)
       assert.are.equal(7, channel)
       assert.are.equal("redraw", method)
@@ -359,11 +386,12 @@ describe("Applet images", function()
       table.remove(scheduled, 1)()
       assert.are.same({ "redraw", "barrier", "graphics" }, events)
 
+      ---@type string?
       local failure
       vim.rpcrequest = function() error("channel closed") end
       transport.after_redraw(function(value) failure = value end)
       table.remove(scheduled, 1)()
-      assert.matches("terminal UI synchronization failed", failure)
+      assert.matches("terminal UI synchronization failed", (assert(failure)))
     end)
     vim.cmd, vim.schedule, vim.rpcrequest = redraw, schedule, rpcrequest
     vim.api.nvim_ui_send = ui_send
@@ -398,7 +426,7 @@ describe("Applet images", function()
       C = {},
     }
     fake_ffi.C.open = function() return 9 end
-    fake_ffi.C.close = function() error("descriptor must remain open") end
+    fake_ffi.C.close = function(_) error("descriptor must remain open") end
     fake_ffi.C.fcntl = function(_, command, value)
       if command == 2 then return 0 end
       if command == 3 then return flags end
@@ -436,24 +464,24 @@ describe("Applet images", function()
       fail_blocking, interrupt, attempts = true, false, 0
       local blocked, blocked_error = pcall(direct.write, "blocked")
       assert.is_false(blocked)
-      assert.matches("serialized terminal output is unavailable", blocked_error)
+      assert.matches("serialized terminal output is unavailable", tostring(blocked_error))
       fail_blocking = false
 
       fail_write, attempts = true, 0
       local written, write_error = pcall(direct.write, "broken")
       assert.is_false(written)
-      assert.matches("terminal output write failed", write_error)
+      assert.matches("terminal output write failed", tostring(write_error))
 
       fail_write, fail_restore, attempts = false, true, 0
       local restored, restore_error = pcall(direct.write, "restore")
       assert.is_false(restored)
-      assert.matches("flags could not be restored", restore_error)
+      assert.matches("flags could not be restored", tostring(restore_error))
 
       fail_restore = false
       vim.rpcrequest = function() error("channel closed") end
       local synchronized, synchronize_error = pcall(direct.write, "ordered")
       assert.is_false(synchronized)
-      assert.matches("terminal UI synchronization failed", synchronize_error)
+      assert.matches("terminal UI synchronization failed", tostring(synchronize_error))
     end)
     vim.api.nvim_ui_send = ui_send
     vim.api.nvim_list_uis, vim.api.nvim_get_chan_info =
@@ -487,7 +515,7 @@ describe("Applet images", function()
       local written, write_error = pcall(unavailable.write, "blocked")
       assert.is_false(written)
       assert.matches(
-        "serialized terminal output is unavailable", write_error)
+        "serialized terminal output is unavailable", tostring(write_error))
     end)
     vim.api.nvim_ui_send = ui_send
     vim.api.nvim_list_uis, vim.api.nvim_get_chan_info =
@@ -524,13 +552,14 @@ describe("Applet images", function()
     local ok, err = pcall(function()
       local inherited = require("applet.image.transport")
       assert.is_false(inherited.available())
+      ---@type string?
       local unavailable
       inherited.after_redraw(function(value) unavailable = value end)
       assert(vim.wait(1000, function() return unavailable ~= nil end))
-      assert.matches("serialized terminal output is unavailable", unavailable)
+      assert.matches("serialized terminal output is unavailable", (assert(unavailable)))
       local written, write_error = pcall(inherited.write, "blocked")
       assert.is_false(written)
-      assert.matches("serialized terminal output is unavailable", write_error)
+      assert.matches("serialized terminal output is unavailable", tostring(write_error))
 
       local fired = false
       local cancel = inherited.after_redraw(function() fired = true end)
@@ -579,6 +608,7 @@ describe("Applet images", function()
     fails("write failed", function()
       transport.write("two", nil, {
         write = function() return false, "write failed" end,
+        flush = function() error("failed writes must not flush") end,
       })
     end)
     fails("flush failed", function()
@@ -636,13 +666,13 @@ describe("Applet images", function()
       width = 8, height = 8, fit = "contain",
       resource = { width = 16, height = 4 },
     }, 1, 1)
-    assert.are.equal(2, contained.rows)
-    assert.are.equal(4, contained.screen_row)
+    assert.are.equal(2, assert(contained).rows)
+    assert.are.equal(4, assert(contained).screen_row)
     local portrait = geometry.calculate({
       width = 8, height = 4, fit = "contain",
       resource = { width = 2, height = 8 },
     }, 1, 1)
-    assert.are.equal(1, portrait.columns)
+    assert.are.equal(1, assert(portrait).columns)
     local viewport = geometry.calculate({
       width = 12, height = 6, fit = "fill",
       resource = { width = 120, height = 60 },
@@ -688,7 +718,7 @@ describe("Applet images", function()
       executable = function() return 1 end,
       system = function() return "all\n", 0 end,
     })
-    assert.matches("passes terminal graphics", enabled[1].message)
+    assert.matches("passes terminal graphics", assert(enabled[1]).message)
   end)
 
   it("replaces persistent Kitty placements and reuses visible uploads", function()
@@ -715,7 +745,7 @@ describe("Applet images", function()
     assert.matches(
       "\27%[4;7H\27_GC=1,a=p,c=10,h=6,i=8,p=12,q=2,r=3,w=20,x=0,y=2;",
       writes[1])
-    assert.are.equal("preview", kitty.owners[owner].placements[1].key)
+    assert.are.equal("preview", assert(kitty.owners[owner].placements[1]).key)
 
     replace(kitty, owner, { {
       key = "preview", resource = resource,
@@ -792,10 +822,10 @@ describe("Applet images", function()
       data = string.rep("x", 4000), width = 4, height = 4,
     }
     local transcript, details = {}, {}
-    kitty:replace(transcript, { {
+    kitty:replace(transcript, { { key = "preview",
       resource = first, width = 4, height = 2, fit = "fill",
     } })
-    kitty:replace(details, { {
+    kitty:replace(details, { { key = "preview",
       resource = first, width = 8, height = 4, fit = "fill",
     } })
     wait_for_kitty(kitty)
@@ -807,15 +837,15 @@ describe("Applet images", function()
     local second = {
       data = png(4, 4, "second"), width = 4, height = 4,
     }
-    replace(kitty, transcript, { {
+    replace(kitty, transcript, { { key = "preview",
       resource = second, width = 4, height = 2, fit = "fill",
     } })
     local upload = assert(writes[2]:find("a=t", 1, true))
-    local placement = assert(writes[2]:find("a=p", upload + 1, true))
-    local deletion = assert(writes[2]:find("a=d", placement + 1, true))
+    local placement = assert(writes[2]:find("a=p", assert(upload) + 1, true))
+    local deletion = assert(writes[2]:find("a=d", assert(placement) + 1, true))
     assert.is_true(upload < placement and placement < deletion)
     assert.are.equal(second,
-      kitty.owners[transcript].placements[1].record.resource)
+      assert(kitty.owners[transcript].placements[1]).record.resource)
 
     kitty:release(first)
     assert.is_truthy(kitty.resources[first])
@@ -826,7 +856,9 @@ describe("Applet images", function()
   end)
 
   it("coalesces queued placements and orders redraws by screen position", function()
-    local writes, scheduled = {}, nil
+    local writes = {}
+    ---@type Applet.OutputCallback?
+    local scheduled
     local kitty = Kitty.new({
       available = true,
       first_content_id = 90,
@@ -840,23 +872,23 @@ describe("Applet images", function()
     local discarded = { data = "old", width = 1, height = 1 }
     local resource = { data = "new", width = 4, height = 2 }
     local owner = {}
-    kitty:replace(owner, { {
+    kitty:replace(owner, { { key = "preview",
       resource = discarded, width = 1, height = 1,
     } })
     kitty:replace(owner, {
-      { resource = resource, width = 4, height = 2,
+      { key = "preview", resource = resource, width = 4, height = 2,
         fit = "fill", screen_row = 5, screen_col = 9 },
-      { resource = resource, width = 4, height = 2,
+      { key = "preview", resource = resource, width = 4, height = 2,
         fit = "fill", screen_row = 3, screen_col = 12 },
-      { resource = resource, width = 4, height = 2,
+      { key = "preview", resource = resource, width = 4, height = 2,
         fit = "fill", screen_row = 3, screen_col = 4 },
     })
-    scheduled()
+    assert(scheduled)()
     assert.are.equal(1, #writes)
     assert.is_nil(writes[1]:match(vim.pesc(transport.base64("old"))))
     assert.is_false(kitty:redraw({}))
     assert.is_true(kitty:redraw(owner))
-    scheduled()
+    assert(scheduled)()
     local left = assert(writes[2]:find("\27[3;4H", 1, true))
     local right = assert(writes[2]:find("\27[3;12H", 1, true))
     local bottom = assert(writes[2]:find("\27[5;9H", 1, true))
@@ -865,7 +897,9 @@ describe("Applet images", function()
   end)
 
   it("orders queued owner redraws and content deletion deterministically", function()
-    local writes, scheduled = {}, nil
+    local writes = {}
+    ---@type Applet.OutputCallback?
+    local scheduled
     local kitty = Kitty.new({
       available = true,
       first_content_id = 200,
@@ -879,24 +913,24 @@ describe("Applet images", function()
     local first_owner, second_owner = {}, {}
     local first = { data = "first", width = 2, height = 1 }
     local second = { data = "second", width = 2, height = 1 }
-    kitty:replace(first_owner, { {
+    kitty:replace(first_owner, { { key = "preview",
       resource = first, width = 2, height = 1, fit = "fill",
       screen_row = 2, screen_col = 1,
     } })
-    kitty:replace(second_owner, { {
+    kitty:replace(second_owner, { { key = "preview",
       resource = second, width = 2, height = 1, fit = "fill",
       screen_row = 6, screen_col = 1,
     } })
-    scheduled()
+    assert(scheduled)()
     assert.is_true(kitty:redraw(first_owner))
     assert.is_true(kitty:redraw(second_owner))
-    scheduled()
+    assert(scheduled)()
     local first_redraw = assert(writes[2]:find("\27[2;1H", 1, true))
     local second_redraw = assert(writes[2]:find("\27[6;1H", 1, true))
     assert.is_true(first_redraw < second_redraw)
     assert.is_true(kitty:clear(first_owner))
     assert.is_true(kitty:clear(second_owner))
-    scheduled()
+    assert(scheduled)()
     local first_delete = assert(writes[3]:find("a=d,d=I,i=200", 1, true))
     local second_delete = assert(writes[3]:find("a=d,d=I,i=201", 1, true))
     assert.is_true(first_delete < second_delete)
@@ -911,25 +945,25 @@ describe("Applet images", function()
       write = function() return false end,
     })
     kitty:set_error_handler(function(err) errors[#errors + 1] = err end)
-    replace(kitty, {}, { {
+    replace(kitty, {}, { { key = "preview",
       resource = { data = "png", width = 1, height = 1 },
       width = 1, height = 1,
     } })
     assert.is_false(kitty.available)
     assert.are.equal(1, #errors)
     assert.matches("write failed", errors[1])
-    assert.is_nil(next(kitty.owners))
+    assert.is_nil((next(kitty.owners)))
     kitty:destroy()
 
     local thrown = Kitty.new({
       available = true,
       write = function() error("terminal write threw") end,
     })
-    replace(thrown, {}, { {
+    replace(thrown, {}, { { key = "preview",
       resource = { data = "png", width = 1, height = 1 },
       width = 1, height = 1,
     } })
-    assert.matches("terminal write threw", thrown.last_error)
+    assert.matches("terminal write threw", (assert(thrown.last_error)))
     thrown:destroy()
 
     local queued = Kitty.new({
@@ -939,11 +973,11 @@ describe("Applet images", function()
         callback("terminal output queue failed")
       end,
     })
-    queued:replace({}, { {
+    queued:replace({}, { { key = "preview",
       resource = { data = "png", width = 1, height = 1 },
       width = 1, height = 1,
     } })
-    assert.matches("queue failed", queued.last_error)
+    assert.matches("queue failed", (assert(queued.last_error)))
     queued:destroy()
 
     local scheduling = Kitty.new({
@@ -951,11 +985,11 @@ describe("Applet images", function()
       write = function() end,
       schedule_output = function() error("schedule failed") end,
     })
-    scheduling:replace({}, { {
+    scheduling:replace({}, { { key = "preview",
       resource = { data = "png", width = 1, height = 1 },
       width = 1, height = 1,
     } })
-    assert.matches("schedule failed", scheduling.last_error)
+    assert.matches("schedule failed", (assert(scheduling.last_error)))
     scheduling:destroy()
   end)
 
@@ -975,8 +1009,8 @@ describe("Applet images", function()
     fails("cell_width", function() Kitty.new({ cell_width = 0 }) end)
     fails("cell_height", function() Kitty.new({ cell_height = 0 }) end)
     fails("image bytes", function()
-      Kitty.new({ available = true, write = function() end }):replace({}, { {
-        resource = {}, width = 1, height = 1,
+      Kitty.new({ available = true, write = function() end }):replace({}, { { key = "preview",
+        resource = { data = false --[[@as string]] }, width = 1, height = 1,
       } })
     end)
     local fallback = Kitty.new({
@@ -986,7 +1020,7 @@ describe("Applet images", function()
     })
     assert.are.same({ width = 1, height = 2 }, fallback:cell_dimensions())
     assert.is_false(fallback:clear({}))
-    fallback:release({})
+    fallback:release({ data = "" })
     fallback:destroy()
   end)
 
@@ -999,7 +1033,9 @@ describe("Applet images", function()
   end)
 
   it("owns referenced resources and replaces prepared animation revisions", function()
-    local replacements, releases, handler, destroyed = {}, {}, nil, false
+    local replacements, releases, destroyed = {}, {}, false
+    ---@type (fun(err: string))?
+    local handler
     local selected = backend({
       replace = function(_, owner, placements)
         replacements[#replacements + 1] = {
@@ -1065,22 +1101,23 @@ describe("Applet images", function()
     assert.are.same({ first_id, second_id }, releases)
     assert.are.equal(0, system:_stats().prepared_resources)
     unsubscribe()
-    handler("terminal closed")
+    assert(handler)("terminal closed")
     assert.are.equal("unavailable", system.status)
-    assert.matches("terminal closed", system.last_backend_error)
+    assert.matches("terminal closed", (assert(system.last_backend_error)))
     assert.is_true(destroyed)
     system:destroy()
     assert.is_true(destroyed)
-    handler("late")
+    assert(handler)("late")
   end)
 
   it("rejects presentation state after synchronous backend failure", function()
+    ---@type (fun(err: string))?
     local handler
     local destroyed = 0
     local selected = backend({
       set_error_handler = function(_, callback) handler = callback end,
       replace = function()
-        handler("synchronous replace failure")
+        assert(handler)("synchronous replace failure")
       end,
       destroy = function() destroyed = destroyed + 1 end,
     })
@@ -1142,7 +1179,7 @@ describe("Applet images", function()
         system:set_references(owner, {})
       end
       assert.are.equal("unavailable", system.status)
-      assert.matches(method .. " exploded", system.last_backend_error)
+      assert.matches(method .. " exploded", (assert(system.last_backend_error)))
       assert.are.equal(1, destroyed)
       assert.are.equal(0, system:_stats().prepared_resources)
       assert.are.equal(0, system:_stats().active_presentations)
@@ -1161,7 +1198,7 @@ describe("Applet images", function()
       destroy = function() destroyed = destroyed + 1 end,
     }) })
     assert.are.equal("unavailable", system.status)
-    assert.matches("handler setup exploded", system.last_backend_error)
+    assert.matches("handler setup exploded", (assert(system.last_backend_error)))
     assert.are.equal(1, destroyed)
   end)
 
@@ -1219,7 +1256,9 @@ describe("Applet images", function()
   end)
 
   it("cancels pending preparations when availability ends", function()
-    local cancellations, handler = 0, nil
+    local cancellations = 0
+    ---@type (fun(err: string))?
+    local handler
     local function pending_system()
       return ImageSystem._new({
         _backend = backend({
@@ -1239,7 +1278,7 @@ describe("Applet images", function()
     failed:set_references(owner, { [id] = true })
     failed:request(value)
     assert.are.equal(1, failed:_stats().pending_preparations)
-    handler("terminal disconnected")
+    assert(handler)("terminal disconnected")
     assert.are.equal(1, cancellations)
     assert.are.equal(0, failed:_stats().pending_preparations)
     assert.are.equal("unavailable", failed:snapshot().status)
@@ -1260,6 +1299,8 @@ describe("Applet images", function()
       kind = "png_bytes", id = "invalid", data = png(2, 2), revision = 1,
     }
     local identity = source.identity(value)
+    ---@param loader fun(value: Applet.ImageSource, opts: Applet.ImageLoadOptions, done: Applet.ImageLoadDone): Applet.CancelOutput?
+    ---@return string
     local function failure(loader)
       local system = ImageSystem._new({
         _backend = backend(), _load_source = loader,
@@ -1271,10 +1312,10 @@ describe("Applet images", function()
       end))
       local _, err = system:request(value)
       system:destroy()
-      return err
+      return (assert(err))
     end
     assert.matches("invalid resource", failure(function(_, _, done)
-      done("not a resource")
+      done("not a resource" --[[@as Applet.ImageResource]])
     end))
     assert.matches("invalid resource", failure(function(_, _, done)
       done({ id = identity, data = value.data,
@@ -1284,7 +1325,7 @@ describe("Applet images", function()
       error("loader threw")
     end))
     assert.matches("cancellation function", failure(function()
-      return false
+      return false --[[@as Applet.CancelOutput]]
     end))
 
     for _, field in ipairs({
@@ -1296,10 +1337,10 @@ describe("Applet images", function()
       fails("image backend", function() ImageSystem._new({ _backend = selected }) end)
     end
     fails("set_error_handler", function()
-      ImageSystem._new({ _backend = backend({ set_error_handler = true }) })
+      ImageSystem._new({ _backend = backend({ set_error_handler = true --[[@as fun(self: Applet.ImageBackend, callback: fun(err: string))]] }) })
     end)
     fails("load_source", function()
-      ImageSystem._new({ _backend = backend(), _load_source = true })
+      ImageSystem._new({ _backend = backend(), _load_source = true --[[@as fun(source: Applet.ImageSource, limits: Applet.ImageLoadOptions, done: Applet.ImageLoadDone): Applet.CancelOutput?]] })
     end)
     fails("max_source_bytes", function()
       ImageSystem._new({ _backend = backend(), max_source_bytes = 0 })
@@ -1333,28 +1374,28 @@ describe("Applet images", function()
     assert(vim.wait(1000, function()
       return system:snapshot().resources[identity] ~= nil
     end))
-    fails("presentation must", function() system:present(owner, false) end)
+    fails("presentation must", function() system:present(owner, false --[[@as Applet.ImagePresentation]]) end)
     fails("slots must", function()
-      system:present(owner, { slots = false, placements = {} })
+      system:present(owner, { slots = false --[[@as table<string, string>]], placements = {} })
     end)
     fails("placements must", function()
-      system:present(owner, { slots = {}, placements = false })
+      system:present(owner, { slots = {}, placements = false --[[@as Applet.ImageSlotPlacement[] ]] })
     end)
     fails("source identities", function()
-      system:present(owner, { slots = { [1] = identity } })
+      system:present(owner, { slots = { [1] = identity } --[[@as table<string, string>]] })
     end)
     fails("unknown resource", function()
       system:present(owner, { slots = { image = "missing" } })
     end)
     fails("string key", function()
       system:present(owner, {
-        slots = { image = identity }, placements = { {} },
+        slots = { image = identity }, placements = { { width = 1, height = 1, key = false --[[@as string]] } },
       })
     end)
     fails("reference a slot", function()
       system:present(owner, {
         slots = { image = identity },
-        placements = { { key = "other" } },
+        placements = { { key = "other", width = 1, height = 1 } },
       })
     end)
     assert.is_false(system:present(owner, { slots = {}, placements = {} }))
