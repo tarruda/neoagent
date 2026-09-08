@@ -47,7 +47,6 @@ tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
 tests/unit/profile_sessions_spec.lua
 tests/unit/provider_catalog_sources_spec.lua
-tests/unit/provider_runtimes_spec.lua
 tests/unit/provider_service_spec.lua
 tests/unit/provider_shell_spec.lua
 tests/unit/provider_state_spec.lua

@@ -4,6 +4,9 @@ local provider_runtimes = require("neoagent.provider_runtimes")
 local provider_service = require("neoagent.provider_service")
 
 describe("neoagent provider runtime composition", function()
+  ---@param id string
+  ---@param constructor? fun(id: string, config: Neoagent.ProviderCompositionConfig, resources: Neoagent.ProviderCompositionResources): Neoagent.ProviderService
+  ---@return Neoagent.ProviderDefinition
   local function provider(id, constructor)
     return {
       api = "fake",
@@ -16,7 +19,9 @@ describe("neoagent provider runtime composition", function()
   end
 
   it("constructs one catalog and service per provider", function()
+    ---@type Neoagent.ProviderCompositionConfig?
     local projection
+    ---@type Neoagent.ProviderCompositionResources?
     local resources
     local configured = { providers = {
       managed = provider("managed", function(id, seen, supplied)
@@ -40,21 +45,21 @@ describe("neoagent provider runtime composition", function()
       startup = false,
     }))
     assert.are.equal("model",
-      runtimes.managed.catalog:snapshot().models.model.id)
-    assert.are.equal("model", runtimes.plain.catalog:snapshot().models.model.id)
-    assert.are.equal("plain", runtimes.plain.service.id)
-    assert.are.equal("fake", projection.api)
-    assert.are.same({ region = "local" }, projection.service_opts)
-    assert.are.same({ dashboard = "dashboard" }, projection.auth_scopes)
-    assert.is_nil(projection.api_key)
-    assert.is_nil(projection.request_opts)
-    assert.are.equal(runtimes.managed.catalog, resources.catalog)
-    assert.are.equal("secret", resources.ambient_api_key())
+      assert(runtimes.managed).catalog:snapshot().models.model.id)
+    assert.are.equal("model", assert(runtimes.plain).catalog:snapshot().models.model.id)
+    assert.are.equal("plain", assert(runtimes.plain).service.id)
+    assert.are.equal("fake", assert(projection).api)
+    assert.are.same({ region = "local" }, assert(projection).service_opts)
+    assert.are.same({ dashboard = "dashboard" }, assert(projection).auth_scopes)
+    assert.is_nil(rawget(assert(projection), "api_key"))
+    assert.is_nil(rawget(assert(projection), "request_opts"))
+    assert.are.equal(assert(runtimes.managed).catalog, assert(resources).catalog)
+    assert.are.equal("secret", assert(assert(resources).ambient_api_key)())
     provider_runtimes.destroy(runtimes)
   end)
 
   it("shares explicit catalog additions with the owning Provider Service", function()
-    local definition = require("neoagent.registry").defaults()["llama.cpp"]
+    local definition = assert(require("neoagent.registry").defaults()["llama.cpp"])
     definition.catalog.additions = {
       qwen = {
         hf_repo = "owner/repo",
@@ -66,27 +71,31 @@ describe("neoagent provider runtime composition", function()
       ["llama.cpp"] = definition,
     } }, { startup = false }))
 
-    local runtime = runtimes["llama.cpp"]
+    local runtime = assert(runtimes["llama.cpp"])
     assert.are.equal(65536,
       runtime.catalog:snapshot().models.qwen.context_window)
-    assert.are.same({ "qwen" }, runtime.service.operations.download.complete())
+    assert.are.same({ "qwen" }, assert(assert(runtime.service.operations.download).complete)("", ""))
     provider_runtimes.destroy(runtimes)
   end)
 
   it("attributes model and shared provider HTTP transports", function()
     local catalog_context
     local service_context
+    ---@param context? Neoagent.RequestIdentity
+    ---@return Neoagent.ByteBackend
     local function contextual(context)
-      local value = { context = vim.deepcopy(context or {}) }
+      local value = require("tests.helpers.fake_transport").new()
+      local identity = vim.deepcopy(context or {})
+      rawset(value, "context", identity)
       value.with_context = function(extra)
         return contextual(vim.tbl_extend(
-          "force", vim.deepcopy(value.context), vim.deepcopy(extra)))
+          "force", vim.deepcopy(identity), vim.deepcopy(extra or {})))
       end
       return value
     end
     local configured = { providers = {
       managed = provider("managed", function(id, _, resources)
-        service_context = resources.transport.context
+        service_context = rawget(assert(resources.transport), "context")
         return {
           id = id,
           name = "Managed",
@@ -99,7 +108,7 @@ describe("neoagent provider runtime composition", function()
       source_id = "managed-models",
       source_revision = 1,
       discover = function(resources)
-        catalog_context = resources.transport.context
+        catalog_context = rawget(assert(resources.transport), "context")
         return async.run(function()
           return { ok = true, models = { { id = "model" } } }
         end)
@@ -112,13 +121,13 @@ describe("neoagent provider runtime composition", function()
 
     assert.are.same({
       provider = "managed", origin = "model",
-    }, runtimes.managed.transport.context)
+    }, rawget(assert(assert(runtimes.managed).transport), "context"))
     assert.are.same({
       provider = "managed", origin = "provider-shell",
     }, service_context)
-    local refresh = runtimes.managed.catalog:refresh()
+    local refresh = assert(runtimes.managed).catalog:refresh()
     assert(vim.wait(1000, function() return refresh:is_done() end))
-    assert.is_true(refresh:result().ok)
+    assert.is_true(assert(refresh:result()).ok)
     assert.are.same({
       provider = "managed", origin = "catalog",
     }, catalog_context)
@@ -157,7 +166,7 @@ describe("neoagent provider runtime composition", function()
       for _, id in ipairs({
         "openai", "anthropic", "deepseek", "zai", "zai-coding-plan",
       }) do
-        local persistence = runtimes[id].catalog:snapshot().persistence
+        local persistence = assert(runtimes[id]).catalog:snapshot().persistence
         assert.is_true(persistence.configured, id)
         assert.is_true(persistence.enabled, id)
         assert.is_nil(persistence.error, id)
@@ -172,6 +181,7 @@ describe("neoagent provider runtime composition", function()
   it("scopes llama.cpp caches to stored server identity", function()
     local config = require("neoagent.config")
     local configured = config.setup({})
+    ---@type Neoagent.ApiKeyCredential?
     local credential = {
       type = "api_key",
       key = "anonymous",
@@ -182,7 +192,7 @@ describe("neoagent provider runtime composition", function()
     }
     local credential_store = {
       read = function(_, id)
-        return id == "llama" and vim.deepcopy(credential) or nil
+        return id == "llama" and require("neoagent.util").copy(credential) or nil
       end,
       write = function() return true end,
     }
@@ -190,7 +200,7 @@ describe("neoagent provider runtime composition", function()
       methods = configured.auth.methods,
       store = credential_store,
     })
-    local provider = configured.providers["llama.cpp"]
+    local provider = assert(configured.providers["llama.cpp"])
     local ProviderCredentials = require("neoagent.provider_credentials")
     local credentials = ProviderCredentials.new({
       provider_id = "llama.cpp",
@@ -204,7 +214,7 @@ describe("neoagent provider runtime composition", function()
       definition = provider.catalog,
       credentials = credentials,
     }))
-    credential.env.LLAMA_BASE_URL = "http://second.example.test"
+    assert(assert(credential).env).LLAMA_BASE_URL = "http://second.example.test"
     local second = assert(require("neoagent.model_catalog").source_fingerprint({
       provider_id = "llama.cpp",
       provider = provider,
@@ -243,7 +253,7 @@ describe("neoagent provider runtime composition", function()
       startup = false,
     })
     assert.is_nil(runtimes)
-    assert.matches("constructor failed", err.detail)
+    assert.matches("constructor failed", tostring(assert(err).detail))
     assert.are.equal(1, destroyed)
   end)
 
@@ -264,7 +274,7 @@ describe("neoagent provider runtime composition", function()
       startup = false,
     })
     assert.is_nil(runtimes)
-    assert.matches("id", err.message)
+    assert.matches("id", assert(err).message)
     assert.are.equal(1, destroyed)
 
     configured.providers.wrong.service = function()
@@ -278,7 +288,7 @@ describe("neoagent provider runtime composition", function()
     end
     runtimes, err = provider_runtimes.compose(configured, { startup = false })
     assert.is_nil(runtimes)
-    assert.matches("unsupported Provider Service field", err.message)
+    assert.matches("unsupported Provider Service field", assert(err).message)
   end)
 
   it("owns idempotent runtime destruction", function()
@@ -312,7 +322,7 @@ describe("neoagent provider runtime composition", function()
       },
     }
 
-    assert.is_true(provider_runtimes.destroy(runtimes))
+    assert.is_true(provider_runtimes.destroy(runtimes --[[@as Neoagent.ProviderRuntimes]]))
     assert.are.equal(1, destroyed)
   end)
 
@@ -343,12 +353,12 @@ describe("neoagent provider runtime composition", function()
     local runtimes = assert(provider_runtimes.compose(configured, {
       startup = false,
     }))
-    assert.are.equal(runtimes.first.auth_services.shared,
-      runtimes.second.auth_services.shared)
-    assert.are.equal(2, #runtimes.first.auth_services.shared)
+    assert.are.equal(assert(runtimes.first).auth_services.shared,
+      assert(runtimes.second).auth_services.shared)
+    assert.are.equal(2, #assert(runtimes.first).auth_services.shared)
 
     local lease = assert(provider_service.acquire_use(
-      runtimes.second.service))
+      assert(runtimes.second).service))
     assert.is_true(provider_runtimes.destroy(runtimes))
     assert.are.equal(1, destroyed)
     assert.is_true(lease:release())
@@ -389,13 +399,13 @@ describe("neoagent provider runtime composition", function()
     local runtimes = assert(provider_runtimes.compose(configured, {
       startup = false,
     }))
-    local refresh = runtimes.managed.catalog:refresh()
+    local refresh = assert(runtimes.managed).catalog:refresh()
     assert(vim.wait(1000, function() return started end, 5))
 
     assert.is_true(provider_runtimes.destroy(runtimes))
     assert(vim.wait(1000, function()
       return refresh:is_done() and cancelled and destroyed == 1
     end, 5))
-    assert.are.equal("cancelled", refresh:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(refresh:result()).error).kind)
   end)
 end)
