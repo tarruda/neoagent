@@ -4,9 +4,12 @@ local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("neoagent.api.openai_completions", function()
@@ -18,6 +21,7 @@ describe("neoagent.api.openai_completions", function()
         "data: [DONE]\n\n",
       },
     } })
+    ---@type Neoagent.ModelEvent[]
     local events = {}
     local model = openai.new({ provider = "local", model = "test", base_url = "http://localhost/v1", transport = fake })
     local result = wait(model:stream({
@@ -25,17 +29,17 @@ describe("neoagent.api.openai_completions", function()
       tools = { { name = "echo", description = "Echo", input_schema = {} } },
       on_event = function(event) events[#events + 1] = event end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Hi", result.text)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.equal("echo", result.message.content[3].name)
-    assert.are.same({ text = "ok" }, result.message.content[3].arguments)
-    assert.are.equal(5, result.message.usage.totalTokens)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.equal("echo", assert(assert(result.message).content[3]).name)
+    assert.are.same({ text = "ok" }, assert(assert(result.message).content[3]).arguments)
+    assert.are.equal(5, assert(assert(result.message).usage).totalTokens)
     assert.are.equal(5, #events)
-    assert.are.equal(1, fake.requests[1].body:find('{"messages":', 1, true))
-    assert.is_truthy(fake.requests[1].body:find(
+    assert.are.equal(1, assert(assert(fake.requests[1]).body):find('{"messages":', 1, true))
+    assert.is_truthy((assert(assert(fake.requests[1]).body):find(
       '"function":{"description":"Echo","name":"echo","parameters":{}}', 1, true
-    ))
+    )))
   end)
 
   it("tolerates null tool_calls, function, and usage detail fields in deltas", function()
@@ -53,12 +57,12 @@ describe("neoagent.api.openai_completions", function()
       messages = { { role = "user", content = "Hello" } },
       tools = { { name = "echo", description = "Echo", input_schema = {} } },
     }))
-    assert.is_true(result.ok)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.equal("c1", result.message.content[1].id)
-    assert.are.equal("echo", result.message.content[1].name)
-    assert.are.same({ text = "ok" }, result.message.content[1].arguments)
-    assert.are.same({ input = 2, output = 0 }, { input = result.message.usage.input, output = result.message.usage.output })
+    assert(result.ok)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.equal("c1", assert(assert(result.message).content[1]).id)
+    assert.are.equal("echo", assert(assert(result.message).content[1]).name)
+    assert.are.same({ text = "ok" }, assert(assert(result.message).content[1]).arguments)
+    assert.are.same({ input = 2, output = 0 }, { input = assert(assert(result.message).usage).input, output = assert(assert(result.message).usage).output })
   end)
 
   it("normalizes optional usage counts and preserves provider fallbacks", function()
@@ -166,13 +170,13 @@ describe("neoagent.api.openai_completions", function()
         tools = { { name = "echo", description = "Echo", input_schema = {} } },
       }))
       assert.is_true(result.ok, case.name)
-      assert.are.equal("toolUse", result.message.stopReason)
+      assert.are.equal("toolUse", assert(result.message).stopReason)
       assert.are.same(case.expected, {
-        input = result.message.usage.input,
-        output = result.message.usage.output,
-        cacheRead = result.message.usage.cacheRead,
-        cacheWrite = result.message.usage.cacheWrite,
-        totalTokens = result.message.usage.totalTokens,
+        input = assert(assert(result.message).usage).input,
+        output = assert(assert(result.message).usage).output,
+        cacheRead = assert(assert(result.message).usage).cacheRead,
+        cacheWrite = assert(assert(result.message).usage).cacheWrite,
+        totalTokens = assert(assert(result.message).usage).totalTokens,
       })
     end
   end)
@@ -274,7 +278,7 @@ describe("neoagent.api.openai_completions", function()
         end
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_true(#observed > 0)
     assert.are.equal(10,
       observed[#observed].generation_tokens_per_second)
@@ -288,7 +292,8 @@ describe("neoagent.api.openai_completions", function()
     })
     local request = model:_request({ messages = {} })
 
-    assert.is_true(request.body.stream_options.include_usage)
+    local body = assert(request.body)
+    assert.is_true(body.stream_options.include_usage)
   end)
 
   it("applies request timeouts from construction and stream options", function()
@@ -307,17 +312,17 @@ describe("neoagent.api.openai_completions", function()
       messages = {},
       timeout_ms = 45000,
     }))
-    assert.is_true(result.ok)
-    assert.are.equal(45000, fake.requests[1].timeout_ms)
+    assert(result.ok)
+    assert.are.equal(45000, assert(fake.requests[1]).timeout_ms)
 
     result = wait(model:stream({ messages = {} }))
-    assert.is_true(result.ok)
-    assert.are.equal(30000, fake.requests[2].timeout_ms)
+    assert(result.ok)
+    assert.are.equal(30000, assert(fake.requests[2]).timeout_ms)
 
     fake.responses = { { chunks = { "data: [DONE]\n\n" } } }
     result = wait(model:stream({ messages = {}, timeout_ms = false }))
-    assert.is_true(result.ok)
-    assert.is_false(fake.requests[3].timeout_ms)
+    assert(result.ok)
+    assert.is_false(assert(fake.requests[3]).timeout_ms)
 
     local plain = openai.new({
       provider = "local",
@@ -354,19 +359,19 @@ describe("neoagent.api.openai_completions", function()
     local result = wait(model:stream({
       messages = {},
       request_opts = function(ctx)
-        assert.are.equal(true, ctx.request.body.nested.provider)
+        assert.are.equal(true, assert(ctx.request.body).nested.provider)
         return {
           headers = { ["x-test"] = "call" },
           body = { nested = { call = true }, temperature = 0 },
         }
       end,
     }))
-    assert.is_true(result.ok)
-    local request = fake.requests[1]
+    assert(result.ok)
+    local request = assert(fake.requests[1])
     assert.are.equal("http://localhost/v1/chat/completions", request.url)
-    assert.are.equal("call", request.headers["X-Test"])
-    assert.are.equal("Bearer secret", request.headers.Authorization)
-    local body = vim.json.decode(request.body)
+    assert.are.equal("call", rawget(assert(request.headers), "X-Test"))
+    assert.are.equal("Bearer secret", rawget(assert(request.headers), "Authorization"))
+    local body = vim.json.decode((assert(request.body)))
     assert.are.same({ provider = true, call = true }, body.nested)
     assert.are.equal(0, body.temperature)
     assert.are.same({ provider = true }, provider_opts.body.nested)
@@ -392,7 +397,7 @@ describe("neoagent.api.openai_completions", function()
     identity.session_id = "later-session"
 
     assert.is_true(wait(model:stream({ messages = {} })).ok)
-    assert.are.equal("session-4", fake.requests[1].headers["x-conversation"])
+    assert.are.equal("session-4", rawget(assert(assert(fake.requests[1]).headers), "x-conversation"))
 
     local rejected, err = pcall(openai.new, {
       provider = "local",
@@ -401,7 +406,7 @@ describe("neoagent.api.openai_completions", function()
       request_context = { "session-4" },
     })
     assert.is_false(rejected)
-    assert.are.equal("request_context must be an object", err.message)
+    assert.are.equal("request_context must be an object", rawget(err, "message"))
   end)
 
   it("encodes multimodal history, tools, and dynamic model options", function()
@@ -438,19 +443,20 @@ describe("neoagent.api.openai_completions", function()
     })
 
     assert.are.equal(1, key_calls)
-    assert.are.equal("Bearer dynamic", request.headers.Authorization)
+    assert.are.equal("Bearer dynamic", rawget(assert(request.headers), "Authorization"))
     assert.are.equal("http://override/v1/chat/completions", request.url)
-    assert.are.equal(256, request.body.max_completion_tokens)
-    assert.are.equal(0, request.body.temperature)
-    assert.are.equal("Be precise", request.body.messages[1].content)
-    assert.are.equal("data:image/png;base64,AAAA", request.body.messages[2].content[2].image_url.url)
-    assert.are.equal("checking", request.body.messages[3].content)
+    local body = assert(request.body)
+    assert.are.equal(256, body.max_completion_tokens)
+    assert.are.equal(0, body.temperature)
+    assert.are.equal("Be precise", body.messages[1].content)
+    assert.are.equal("data:image/png;base64,AAAA", assert(assert(assert(body.messages[2].content)[2]).image_url).url)
+    assert.are.equal("checking", body.messages[3].content)
     assert.are.equal([[{"alpha":{"first":1,"second":2},"path":"x.lua","zeta":true}]],
-      request.body.messages[3].tool_calls[1]["function"].arguments)
-    assert.are.equal("(see attached image)", request.body.messages[4].content)
-    assert.are.equal("(no tool output)", request.body.messages[5].content)
-    assert.are.equal("data:image/jpeg;base64,BBBB", request.body.messages[6].content[2].image_url.url)
-    assert.are.equal("inspect", request.body.tools[1]["function"].name)
+      assert(assert(assert(body.messages[3].tool_calls)[1])["function"]).arguments)
+    assert.are.equal("(see attached image)", body.messages[4].content)
+    assert.are.equal("(no tool output)", body.messages[5].content)
+    assert.are.equal("data:image/jpeg;base64,BBBB", assert(assert(assert(body.messages[6].content)[2]).image_url).url)
+    assert.are.equal("inspect", assert(body.tools[1]["function"]).name)
   end)
 
   it("converts tool images into a following user message", function()
@@ -462,9 +468,9 @@ describe("neoagent.api.openai_completions", function()
         { type = "image", mimeType = "image/png", data = "AAAA" },
       },
     } })
-    assert.are.equal("tool", converted[1].role)
-    assert.are.equal("user", converted[2].role)
-    assert.are.equal("data:image/png;base64,AAAA", converted[2].content[2].image_url.url)
+    assert.are.equal("tool", assert(converted[1]).role)
+    assert.are.equal("user", assert(converted[2]).role)
+    assert.are.equal("data:image/png;base64,AAAA", assert(assert(converted[2]).content[2].image_url).url)
   end)
 
   it("keeps parallel tool results contiguous before converted images", function()
@@ -485,12 +491,12 @@ describe("neoagent.api.openai_completions", function()
 
     assert.are.same({ "assistant", "tool", "tool", "user", "user" },
       vim.tbl_map(function(message) return message.role end, converted))
-    assert.are.equal("c1", converted[2].tool_call_id)
-    assert.are.equal("c2", converted[3].tool_call_id)
+    assert.are.equal("c1", assert(converted[2]).tool_call_id)
+    assert.are.equal("c2", assert(converted[3]).tool_call_id)
     assert.are.equal("data:image/png;base64,AAAA",
-      converted[4].content[2].image_url.url)
+      assert(assert(converted[4]).content[2].image_url).url)
     assert.are.equal("data:image/png;base64,BBBB",
-      converted[5].content[2].image_url.url)
+      assert(assert(converted[5]).content[2].image_url).url)
   end)
 
   it("flushes tool-result images before the following conversation turn", function()
@@ -504,8 +510,8 @@ describe("neoagent.api.openai_completions", function()
     assert.are.same({ "tool", "user", "user" },
       vim.tbl_map(function(message) return message.role end, converted))
     assert.are.equal("data:image/png;base64,AAAA",
-      converted[2].content[2].image_url.url)
-    assert.are.equal("continue", converted[3].content)
+      assert(assert(converted[2]).content[2].image_url).url)
+    assert.are.equal("continue", assert(converted[3]).content)
   end)
 
   it("normalizes malformed tool arguments for recovery by the Agent Loop", function()
@@ -514,10 +520,10 @@ describe("neoagent.api.openai_completions", function()
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_true(result.ok)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.same({}, result.message.content[1].arguments)
-    assert.are.equal("Tool arguments are not valid JSON", result.message.content[1].argumentsError)
+    assert(result.ok)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.same({}, assert(assert(result.message).content[1]).arguments)
+    assert.are.equal("Tool arguments are not valid JSON", assert(assert(result.message).content[1]).argumentsError)
   end)
 
   it("returns malformed tool arguments to the model as a tool error", function()
@@ -552,12 +558,12 @@ describe("neoagent.api.openai_completions", function()
       } },
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_false(executed)
     assert.are.equal("recovered", result.text)
-    assert.is_true(result.new_messages[2].isError)
-    assert.matches("valid JSON", result.new_messages[2].content[1].text)
-    local retry = vim.json.decode(fake.requests[2].body)
+    assert.is_true(assert(result.new_messages[2]).isError)
+    assert.matches("valid JSON", assert(assert(assert(result.new_messages[2]).content[1]).text))
+    local retry = vim.json.decode((assert(assert(fake.requests[2]).body)))
     assert.are.equal("{}", retry.messages[2].tool_calls[1]["function"].arguments)
     assert.matches("valid JSON", retry.messages[3].content)
   end)
@@ -568,9 +574,9 @@ describe("neoagent.api.openai_completions", function()
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_true(result.ok)
-    assert.are.same({}, result.message.content[1].arguments)
-    assert.are.equal("Tool arguments are not a JSON object", result.message.content[1].argumentsError)
+    assert(result.ok)
+    assert.are.same({}, assert(assert(result.message).content[1]).arguments)
+    assert.are.equal("Tool arguments are not a JSON object", assert(assert(result.message).content[1]).argumentsError)
   end)
 
   it("rejects unsupported request option fields", function()
@@ -583,8 +589,8 @@ describe("neoagent.api.openai_completions", function()
     })
     local result = wait(model:stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("model", result.error.kind)
-    assert.matches("Unsupported", result.error.message)
+    assert.are.equal("model", assert(result.error).kind)
+    assert.matches("Unsupported", assert(result.error).message)
   end)
 
   it("rejects invalid request overrides and unsupported history", function()
@@ -598,11 +604,12 @@ describe("neoagent.api.openai_completions", function()
     for _, case in ipairs(cases) do
       local fake = fake_transport.new()
       local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
+      ---@type table<string, unknown>
       local opts = case.opts
-      opts.messages = opts.messages or {}
-      local result = wait(model:stream(opts))
+      rawset(opts, "messages", rawget(opts, "messages") or {})
+      local result = wait(model:stream(opts --[[@as Neoagent.StreamOptions]]))
       assert.is_false(result.ok)
-      assert.matches(case.message, result.error.message)
+      assert.matches(case.message, assert(result.error).message)
       assert.are.equal(0, #fake.requests)
     end
   end)
@@ -619,8 +626,8 @@ describe("neoagent.api.openai_completions", function()
       local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
       local result = wait(model:stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal(case.kind, result.error.kind)
-      assert.matches(case.message, result.error.message)
+      assert.are.equal(case.kind, assert(result.error).kind)
+      assert.matches(case.message, assert(result.error).message)
     end
 
     local oversized = fake_transport.new({ { chunks = {
@@ -632,8 +639,8 @@ describe("neoagent.api.openai_completions", function()
     })
     local oversized_result = wait(oversized_model:stream({ messages = {} }))
     assert.is_false(oversized_result.ok)
-    assert.are.equal("protocol", oversized_result.error.kind)
-    assert.matches("SSE pending buffer exceeded", oversized_result.error.message)
+    assert.are.equal("protocol", assert(oversized_result.error).kind)
+    assert.matches("SSE pending buffer exceeded", assert(oversized_result.error).message)
 
     local missing_delta = fake_transport.new({ { chunks = {
       'data: {"choices":[{"delta":"invalid","finish_reason":"stop"}]}\n\n',
@@ -643,7 +650,7 @@ describe("neoagent.api.openai_completions", function()
       transport = missing_delta,
     })
     local missing_delta_result = wait(missing_delta_model:stream({ messages = {} }))
-    assert.is_true(missing_delta_result.ok)
+    assert(missing_delta_result.ok)
     assert.are.same({}, missing_delta_result.message.content)
 
     local fake = fake_transport.new({ { chunks = {
@@ -651,8 +658,8 @@ describe("neoagent.api.openai_completions", function()
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_true(result.ok)
-    assert.are.equal("length", result.message.stopReason)
+    assert(result.ok)
+    assert.are.equal("length", assert(result.message).stopReason)
 
     local thrown_transport = {
       request = function()
@@ -667,7 +674,7 @@ describe("neoagent.api.openai_completions", function()
     })
     local thrown = wait(thrown_model:stream({ messages = {} }))
     assert.is_false(thrown.ok)
-    assert.matches("transport exploded", thrown.error.message)
+    assert.matches("transport exploded", assert(thrown.error).message)
   end)
 
   it("requires streamed tool calls to have ids and names", function()
@@ -681,8 +688,8 @@ describe("neoagent.api.openai_completions", function()
       local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
       local result = wait(model:stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal("protocol", result.error.kind)
-      assert.matches(case.message, result.error.message)
+      assert.are.equal("protocol", assert(result.error).kind)
+      assert.matches(case.message, assert(result.error).message)
     end
   end)
 
@@ -692,14 +699,13 @@ describe("neoagent.api.openai_completions", function()
     } } })
     local model = openai.new({ provider = "p", model = "m", base_url = "http://x", transport = fake })
     local result = wait(model:stream({ messages = {}, request_opts = { headers = {}, body = {} } }))
-    assert.is_true(result.ok)
+    assert(result.ok)
   end)
 
   it("contains unsupported history and retains partial thinking failures", function()
-    local encoded, encode_err = pcall(openai._encode_messages, { {
-      role = "system",
-      content = "unexpected",
-    } })
+    local invalid_history = { { role = "system", content = "unexpected" } }
+    local encoded, encode_err = pcall(openai._encode_messages,
+      invalid_history --[[@as Neoagent.Message[] ]])
     assert.is_false(encoded)
     assert.matches("Unsupported message role",
       require("neoagent.util").normalize_error(encode_err).message)
@@ -714,8 +720,8 @@ describe("neoagent.api.openai_completions", function()
     })
     local result = wait(model:stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("partial", result.message.content[1].thinking)
-    assert.are.equal("error", result.message.stopReason)
+    assert.are.equal("partial", assert(assert(result.message).content[1]).thinking)
+    assert.are.equal("error", assert(result.message).stopReason)
   end)
 
   it("suppresses unchanged cumulative token samples", function()
@@ -738,7 +744,7 @@ describe("neoagent.api.openai_completions", function()
         end
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(1, #observed)
     assert.are.equal(1, observed[1].generation_tokens_per_second)
   end)
@@ -761,7 +767,7 @@ describe("neoagent.api.openai_completions", function()
       local result = wait(model:stream({ messages = {} }))
       vim.json.decode = original_decode
       assert.is_false(result.ok)
-      assert.matches("valid UTF%-8", result.error.message)
+      assert.matches("valid UTF%-8", assert(result.error).message)
     end
   end)
 
@@ -785,7 +791,7 @@ describe("neoagent.api.openai_completions", function()
     local result = wait(model:stream({ messages = {} }))
     semantic.normalize = normalize
     assert.is_false(result.ok)
-    assert.matches("Invalid assistant message", result.error.message)
-    assert.matches("semantic rejection", result.error.detail)
+    assert.matches("Invalid assistant message", assert(result.error).message)
+    assert.matches("semantic rejection", tostring(assert(result.error).detail))
   end)
 end)

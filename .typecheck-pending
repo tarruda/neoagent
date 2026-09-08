@@ -44,9 +44,6 @@ tests/unit/http_replay_spec.lua
 tests/unit/llama_provider_spec.lua
 tests/unit/model_catalog_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
-tests/unit/openai_codex_responses_spec.lua
-tests/unit/openai_completions_spec.lua
-tests/unit/openai_responses_spec.lua
 tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
 tests/unit/profile_sessions_spec.lua

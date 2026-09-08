@@ -2,13 +2,18 @@ local assert = require("luassert")
 local codex = require("neoagent.api.openai_codex_responses")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@param value Neoagent.JsonObject
+---@return string
 local function event(value)
   return "data: " .. vim.json.encode(value) .. "\n\n"
 end
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("neoagent.api.openai_codex_responses", function()
@@ -32,14 +37,15 @@ describe("neoagent.api.openai_codex_responses", function()
     })
     assert.are.equal("openai-codex-responses", model.api)
     assert.are.equal("https://chatgpt.com/backend-api/codex/responses", request.url)
-    assert.are.equal("Be precise.", request.body.instructions)
-    assert.are.equal("user", request.body.input[1].role)
-    assert.are.same({ verbosity = "medium" }, request.body.text)
-    assert.are.equal("auto", request.body.tool_choice)
-    assert.is_true(request.body.parallel_tool_calls)
-    assert.are.equal(vim.NIL, request.body.tools[1].strict)
-    assert.are.equal("{}", vim.json.encode(request.body.tools[1].parameters.properties))
-    assert.are.same({ "reasoning.encrypted_content" }, request.body.include)
+    local body = assert(request.body)
+    assert.are.equal("Be precise.", body.instructions)
+    assert.are.equal("user", body.input[1].role)
+    assert.are.same({ verbosity = "medium" }, body.text)
+    assert.are.equal("auto", body.tool_choice)
+    assert.is_true(body.parallel_tool_calls)
+    assert.are.equal(vim.NIL, body.tools[1].strict)
+    assert.are.equal("{}", vim.json.encode(assert(body.tools[1].parameters).properties))
+    assert.are.same({ "reasoning.encrypted_content" }, body.include)
 
     assert.are.equal("https://example.test/codex/responses", codex.new({
       provider = "p", model = "m", base_url = "https://example.test/codex/responses",
@@ -66,18 +72,19 @@ describe("neoagent.api.openai_codex_responses", function()
       } },
     })
 
-    assert.are.equal("true", request.headers["x-openai-internal-codex-responses-lite"])
-    assert.is_nil(request.body.instructions)
-    assert.is_nil(request.body.tools)
-    assert.is_false(request.body.parallel_tool_calls)
-    assert.are.equal("additional_tools", request.body.input[1].type)
-    assert.are.equal("developer", request.body.input[1].role)
-    assert.are.equal("read", request.body.input[1].tools[1].name)
-    assert.are.equal("message", request.body.input[2].type)
-    assert.are.equal("developer", request.body.input[2].role)
-    assert.are.equal("Use Codex channels.", request.body.input[2].content[1].text)
-    assert.are.equal("user", request.body.input[3].role)
-    assert.are.same({ effort = "high", context = "all_turns" }, request.body.reasoning)
+    assert.are.equal("true", rawget(assert(request.headers), "x-openai-internal-codex-responses-lite"))
+    local body = assert(request.body)
+    assert.is_nil(body.instructions)
+    assert.is_nil(body.tools)
+    assert.is_false(body.parallel_tool_calls)
+    assert.are.equal("additional_tools", body.input[1].type)
+    assert.are.equal("developer", body.input[1].role)
+    assert.are.equal("read", assert(assert(body.input[1].tools)[1]).name)
+    assert.are.equal("message", body.input[2].type)
+    assert.are.equal("developer", body.input[2].role)
+    assert.are.equal("Use Codex channels.", assert(assert(body.input[2].content)[1]).text)
+    assert.are.equal("user", body.input[3].role)
+    assert.are.same({ effort = "high", context = "all_turns" }, body.reasoning)
 
     local layered = codex.new({
       provider = "openai-codex",
@@ -89,7 +96,7 @@ describe("neoagent.api.openai_codex_responses", function()
       tools = {},
       request_opts = { body = { reasoning = { effort = "medium" } } },
     })
-    assert.are.same({ effort = "medium", context = "all_turns" }, layered.body.reasoning)
+    assert.are.same({ effort = "medium", context = "all_turns" }, assert(layered.body).reasoning)
   end)
 
   it("accepts the Codex response.done terminal event", function()
@@ -116,29 +123,30 @@ describe("neoagent.api.openai_codex_responses", function()
         ["X-Codex-Sonic-Limit-Name"] = "Sonic",
       },
     } })
+    ---@type Neoagent.ModelEvent[]
     local emitted = {}
     local result = wait(codex.new({
       provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
       transport = transport,
     }):stream({ messages = {}, on_event = function(value) emitted[#emitted + 1] = value end }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("done", result.text)
     assert.are.equal("openai-codex-responses", result.message.api)
     local status = emitted[#emitted]
     assert.are.equal("provider_status", status.type)
     assert.are.equal("5h 87.5% left · weekly 60% left", status.text)
-    assert.are.equal("codex", status.details.limits[1].id)
+    assert.are.equal("codex", assert(status.details).limits[1].id)
     assert.are.equal(12.5,
-      status.details.limits[1].primary.used_percent)
+      assert(assert(status.details).limits[1].primary).used_percent)
     assert.are.equal(1787870220,
-      status.details.limits[1].secondary.resets_at)
+      assert(assert(status.details).limits[1].secondary).resets_at)
     assert.are.same({
       has_credits = true, unlimited = false, balance = "12.50",
-    }, status.details.credits)
-    assert.are.equal("codex-sonic", status.details.limits[2].id)
-    assert.are.equal("Sonic", status.details.limits[2].name)
+    }, assert(status.details).credits)
+    assert.are.equal("codex-sonic", assert(status.details).limits[2].id)
+    assert.are.equal("Sonic", assert(status.details).limits[2].name)
     assert.are.equal(43200,
-      status.details.limits[2].primary.window_minutes)
+      assert(assert(status.details).limits[2].primary).window_minutes)
   end)
 
   it("orders additional quota headers and rejects unsafe metadata", function()
@@ -163,6 +171,7 @@ describe("neoagent.api.openai_codex_responses", function()
         ["X-Codex-Credits-Unlimited"] = "true",
       },
     } })
+    ---@type Neoagent.ModelEvent[]
     local emitted = {}
     local result = wait(codex.new({
       provider = "openai-codex",
@@ -174,13 +183,15 @@ describe("neoagent.api.openai_codex_responses", function()
       on_event = function(value) emitted[#emitted + 1] = value end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     local status = emitted[#emitted]
     assert.are.equal("5h 70% left", status.text)
+    local limits = assert(status.details).limits
+    assert(type(limits) == "table")
     assert.are.same({ "codex", "alpha", "beta" },
-      vim.tbl_map(function(limit) return limit.id end, status.details.limits))
-    assert.is_nil(status.details.limits[2].name)
-    assert.is_nil(status.details.credits)
+      vim.tbl_map(function(limit) return limit.id end, limits))
+    assert.is_nil(assert(status.details).limits[2].name)
+    assert.is_nil(assert(status.details).credits)
   end)
 
   it("normalizes malformed Codex tool arguments for Agent Loop recovery", function()
@@ -198,11 +209,11 @@ describe("neoagent.api.openai_codex_responses", function()
       }) } } }),
     }):stream({ messages = {} }))
 
-    assert.is_true(result.ok)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.same({}, result.message.content[1].arguments)
+    assert(result.ok)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.same({}, assert(assert(result.message).content[1]).arguments)
     assert.are.equal("Tool arguments are not valid JSON",
-      result.message.content[1].argumentsError)
+      assert(assert(result.message).content[1]).argumentsError)
   end)
 
   it("extracts nested Codex errors and reports safe diagnostics", function()
@@ -220,9 +231,9 @@ describe("neoagent.api.openai_codex_responses", function()
     }):stream({ messages = {} }))
 
     assert.is_false(result.ok)
-    assert.are.equal("specific provider failure", result.error.message)
-    assert.are.equal("invalid_request", result.error.code)
-    assert.is_false(result.error.retryable)
+    assert.are.equal("specific provider failure", assert(result.error).message)
+    assert.are.equal("invalid_request", rawget(assert(result.error), "code"))
+    assert.is_false(rawget(assert(result.error), "retryable"))
     assert.are.equal(1, #diagnostics)
     assert.are.equal("request_failed", diagnostics[1].type)
     assert.are.equal("invalid_request", diagnostics[1].code)
@@ -268,7 +279,7 @@ describe("neoagent.api.openai_codex_responses", function()
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("recovered", result.text)
     assert.are.equal(2, #transport.requests)
     assert.are.same({ 200 }, delays)
@@ -306,7 +317,7 @@ describe("neoagent.api.openai_codex_responses", function()
       request_max_retries = 1,
     }):stream({ messages = {} }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("recovered", result.text)
     assert.are.equal(2, #transport.requests)
   end)
@@ -372,7 +383,7 @@ describe("neoagent.api.openai_codex_responses", function()
     local result = wait(run)
 
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.are.equal(1, #transport.requests)
     assert.is_true(statuses[1].reconnecting)
     assert.is_false(statuses[#statuses].reconnecting)
@@ -398,8 +409,8 @@ describe("neoagent.api.openai_codex_responses", function()
       }):stream({ messages = {} }))
 
       assert.is_false(result.ok)
-      assert.is_true(result.error.retryable)
-      assert.are.equal(case.delay, result.error.retry_after_ms)
+      assert.is_true(rawget(assert(result.error), "retryable"))
+      assert.are.equal(case.delay, rawget(assert(result.error), "retry_after_ms"))
     end
   end)
 
@@ -423,11 +434,11 @@ describe("neoagent.api.openai_codex_responses", function()
     }):stream({ messages = {} }))
 
     assert.is_false(result.ok)
-    assert.are.equal("upstream disconnected", result.error.message)
-    assert.are.equal("upstream_error", result.error.code)
-    assert.is_true(result.error.retryable)
-    assert.are.equal(5, result.error.stream_max_retries)
-    assert.are.equal("working", result.message.content[1].thinking)
+    assert.are.equal("upstream disconnected", assert(result.error).message)
+    assert.are.equal("upstream_error", rawget(assert(result.error), "code"))
+    assert.is_true(rawget(assert(result.error), "retryable"))
+    assert.are.equal(5, rawget(assert(result.error), "stream_max_retries"))
+    assert.are.equal("working", assert(assert(result.message).content[1]).thinking)
   end)
 
   it("omits disabled rate-limit windows from provider status", function()
@@ -446,16 +457,17 @@ describe("neoagent.api.openai_codex_responses", function()
         ["X-Codex-Secondary-Window-Minutes"] = "0",
       },
     } })
+    ---@type Neoagent.ModelEvent[]
     local emitted = {}
     local result = wait(codex.new({
       provider = "openai-codex", model = "gpt-test", base_url = "https://example.test/codex",
       transport = transport,
     }):stream({ messages = {}, on_event = function(value) emitted[#emitted + 1] = value end }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("provider_status", emitted[#emitted].type)
     assert.are.equal("weekly 79% left", emitted[#emitted].text)
     assert.are.equal(0.79,
-      emitted[#emitted].details.limits[1].primary.remaining)
+      assert(assert(emitted[#emitted].details).limits[1].primary).remaining)
   end)
 
   it("reports a secondary quota when the primary window is absent", function()
@@ -464,8 +476,8 @@ describe("neoagent.api.openai_codex_responses", function()
       ["X-Codex-Secondary-Window-Minutes"] = "10080",
     })
     assert.are.equal("weekly 75% left", text)
-    assert.is_nil(details.limits[1].primary)
-    assert.are.equal(0.75, details.limits[1].secondary.remaining)
+    assert.is_nil(assert(assert(details).limits[1]).primary)
+    assert.are.equal(0.75, assert(assert(assert(details).limits[1]).secondary).remaining)
   end)
 
   it("derives provider status from rate-limit error headers", function()
@@ -482,8 +494,8 @@ describe("neoagent.api.openai_codex_responses", function()
       transport = transport,
     }):stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("weekly 0% left", result.error.provider_status)
+    assert.are.equal("weekly 0% left", rawget(assert(result.error), "provider_status"))
     assert.are.equal(0,
-      result.error.provider_status_details.limits[1].primary.remaining)
+      rawget(assert(result.error), "provider_status_details").limits[1].primary.remaining)
   end)
 end)
