@@ -3,17 +3,30 @@ local core_agent_loop = require("neoagent.agent_loop")
 local fake_model = require("tests.helpers.fake_model")
 local util = require("neoagent.util")
 
-local agent_loop = setmetatable({
-  run = function(opts)
-    local call = vim.tbl_extend("force", {}, opts)
-    call.commit_message = call.commit_message or function() return true end
-    return core_agent_loop.run(call)
-  end,
-}, { __index = core_agent_loop })
+---@class Neoagent.TestAgentLoopOptions: Neoagent.AgentLoopOptions<unknown>
+---@field commit_message? Neoagent.MessageCommit
 
+local agent_loop = { prepare = core_agent_loop.prepare }
+---@param opts Neoagent.TestAgentLoopOptions
+---@return Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+function agent_loop.run(opts)
+  local call = vim.tbl_extend("force", {}, opts)
+  call.commit_message = call.commit_message or function() return true end
+  return core_agent_loop.run(call --[[@as Neoagent.AgentLoopOptions<unknown>]])
+end
+
+---@param run Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>
+---@return Neoagent.AgentLoopResult
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
+end
+
+---@param result Neoagent.AgentLoopResult
+---@param index integer
+---@return Neoagent.Message
+local function result_message(result, index)
+  return (assert(assert(result.new_messages)[index]))
 end
 
 describe("neoagent.agent_loop", function()
@@ -22,7 +35,8 @@ describe("neoagent.agent_loop", function()
       result = fake_model.assistant({ { type = "text", text = "unused" } }),
     } })
     assert.has_error(function()
-      core_agent_loop.run({ model = model, messages = {} })
+      local invalid = { model = model, messages = {} }
+      core_agent_loop.run(invalid --[[@as Neoagent.AgentLoopOptions<unknown>]])
     end, "commit_message must be a function")
   end)
 
@@ -35,7 +49,7 @@ describe("neoagent.agent_loop", function()
       input_schema = { type = "object", properties = {
         text = { type = "string" },
       } },
-      execute = function() end,
+      execute = function() error("unexpected tool execution") end,
     }
     local prepared = agent_loop.prepare({
       model = fake_model.new({}),
@@ -49,10 +63,10 @@ describe("neoagent.agent_loop", function()
     tool.input_schema.properties.text.type = "number"
     options.nested.value = false
 
-    assert.are.equal("hello", prepared.messages[1].content)
+    assert.are.equal("hello", assert(prepared.messages[1]).content)
     assert.are.equal("string",
-      prepared.tool_schemas[1].input_schema.properties.text.type)
-    assert.is_true(prepared.model_options.nested.value)
+      assert(assert(prepared.tool_schemas[1]).input_schema.properties).text.type)
+    assert.is_true(rawget(rawget(prepared.model_options, "nested"), "value"))
     assert.are.equal(prepared.tools[1], prepared.tool_lookup.echo)
   end)
 
@@ -60,7 +74,7 @@ describe("neoagent.agent_loop", function()
     local messages = { { role = "user", content = "hello", timestamp = 1 } }
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hi" } }) } })
     local result = wait(agent_loop.run({ model = model, messages = messages }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.are.equal("hi", result.text)
     assert.are.equal(1, #messages)
     assert.are.equal(1, #result.new_messages)
@@ -69,24 +83,27 @@ describe("neoagent.agent_loop", function()
   it("commits owned copies to an ordinary in-memory message owner", function()
     local source = fake_model.assistant({ { type = "text", text = "answer" } })
     local model = fake_model.new({ { result = source } })
+    ---@type Neoagent.Message[]
     local owner = {}
     local result = wait(core_agent_loop.run({
       model = model,
       messages = {},
       commit_message = function(message)
         owner[#owner + 1] = message
-        message.content[1].text = "owner mutation"
+        assert(message.content[1]).text = "owner mutation"
         return true
       end,
     }))
 
-    assert.is_true(result.ok)
-    assert.are.equal("owner mutation", owner[1].content[1].text)
-    assert.are.equal("answer", result.message.content[1].text)
-    assert.are.equal("answer", source.message.content[1].text)
+    assert(result.ok == true)
+    assert.are.equal("owner mutation", assert(assert(owner[1]).content[1]).text)
+    assert.are.equal("answer", assert(assert(result.message).content[1]).text)
+    assert.are.equal("answer", assert(source.message.content[1]).text)
   end)
 
   it("contains thrown commits and malformed committed observations", function()
+    ---@param commit_message Neoagent.MessageCommit
+    ---@return Neoagent.AgentLoopResult
     local function run(commit_message)
       return wait(core_agent_loop.run({
         model = fake_model.new({ {
@@ -99,8 +116,8 @@ describe("neoagent.agent_loop", function()
 
     local result = run(function() error("commit crashed") end)
     assert.is_false(result.ok)
-    assert.matches("commit crashed", result.error.message)
-    assert.are.equal("answer", result.message.content[1].text)
+    assert.matches("commit crashed", assert(result.error).message)
+    assert.are.equal("answer", assert(assert(result.message).content[1]).text)
     assert.are.same({}, result.new_messages)
 
     for _, observation in ipairs({
@@ -109,19 +126,19 @@ describe("neoagent.agent_loop", function()
       { role = "assistant", content = { { type = "text", text = "answer" } },
         _neoagent_entry_id = "bad\nentry" },
     }) do
-      result = run(function() return true, nil, observation end)
+      result = run(function() return true, nil, observation --[[@as Neoagent.ObservedMessage]] end)
       assert.is_false(result.ok)
-      assert.matches("commit_message observation", result.error.message)
+      assert.matches("commit_message observation", assert(result.error).message)
       assert.are.equal(1, #result.new_messages)
       assert.is_nil(result.message)
     end
 
     result = run(function(message)
-      message._neoagent_entry_id = "bad\nentry"
+      rawset(message, "_neoagent_entry_id", "bad\nentry")
       return true, nil, message
     end)
     assert.is_false(result.ok)
-    assert.matches("entry id is invalid", result.error.message)
+    assert.matches("entry id is invalid", assert(result.error).message)
     assert.are.equal(1, #result.new_messages)
   end)
 
@@ -142,21 +159,21 @@ describe("neoagent.agent_loop", function()
       },
       tools = { {
         name = "echo", description = "Echo", input_schema = {},
-        execute = function() executed = true end,
+        execute = function() executed = true; return { content = {} } end,
       } },
     }))
     assert.is_false(result.ok)
-    assert.are.equal("model", result.error.kind)
-    assert.matches("duplicate conversation toolCall", result.error.message)
+    assert.are.equal("model", assert(result.error).kind)
+    assert.matches("duplicate conversation toolCall", assert(result.error).message)
     assert.is_false(executed)
 
     model = fake_model.new({ {
       result = { ok = true,
-        message = { role = "user", content = "invalid" } },
+        message = { role = "user", content = "invalid" } --[[@as Neoagent.AssistantMessage]] },
     } })
     result = wait(agent_loop.run({ model = model, messages = {} }))
     assert.is_false(result.ok)
-    assert.matches("assistant message is required", result.error.message)
+    assert.matches("assistant message is required", assert(result.error).message)
 
     model = fake_model.new({ {
       result = fake_model.assistant({ {
@@ -166,7 +183,7 @@ describe("neoagent.agent_loop", function()
     result = wait(agent_loop.run({ model = model, messages = {} }))
     assert.is_false(result.ok)
     assert.matches("declared tool use without supplying a tool call",
-      result.error.message)
+      assert(result.error).message)
   end)
 
   it("executes requested tools sequentially and emits ordered messages", function()
@@ -189,15 +206,15 @@ describe("neoagent.agent_loop", function()
         execute = function(arguments, ctx)
           executions[#executions + 1] = arguments.text
           ctx.on_update({ content = { { type = "text", text = "working" } } })
-          return { content = { { type = "text", text = arguments.text } } }
+          return { content = { { type = "text", text = assert(arguments.text) --[[@as string]] } } }
         end,
       } },
       on_event = function(event) events[#events + 1] = event.type end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.are.same({ "one", "two" }, executions)
     assert.are.equal(4, #result.new_messages)
-    assert.are.equal(3, #model.requests[2].messages)
+    assert.are.equal(3, #assert(model.requests[2]).messages)
     assert(vim.wait(1000, function() return #events == 10 end))
     assert.are.same({
       "message_end",
@@ -218,12 +235,12 @@ describe("neoagent.agent_loop", function()
       messages = {},
       tools = { {
         name = "effect", description = "effect", input_schema = {},
-        execute = function() executed = true end,
+        execute = function() executed = true; return { content = {} } end,
       } },
       commit_message = function() return nil, storage_error end,
     }))
     assert.is_false(result.ok)
-    assert.are.equal("journal failed", result.error.message)
+    assert.are.equal("journal failed", assert(result.error).message)
     assert.is_false(executed)
     assert.are.equal(1, #model.requests)
 
@@ -254,7 +271,7 @@ describe("neoagent.agent_loop", function()
     assert.is_false(result.ok)
     assert.is_true(executed)
     assert.are.equal(1, #result.new_messages)
-    assert.are.equal("toolResult", result.message.role)
+    assert.are.equal("toolResult", assert(result.message).role)
     assert.are.equal(1, #model.requests)
 
     commits = 0
@@ -282,7 +299,7 @@ describe("neoagent.agent_loop", function()
     }))
     assert.is_false(result.ok)
     assert.is_false(acknowledgement)
-    assert.are.equal("user", result.message.role)
+    assert.are.equal("user", assert(result.message).role)
     assert.are.equal(1, #model.requests)
   end)
 
@@ -308,18 +325,18 @@ describe("neoagent.agent_loop", function()
       commit_message = function(message)
         next_id = next_id + 1
         order[#order + 1] = "commit:" .. message.role
-        local observed = vim.deepcopy(message)
+        local observed = vim.deepcopy(message) --[[@as Neoagent.ObservedMessage]]
         observed._neoagent_entry_id = "entry-" .. next_id
         return true, nil, observed
       end,
       on_event = function(event)
         if event.type == "tool_end" or event.type == "message_end" then
           order[#order + 1] = event.type .. ":"
-            .. event.message._neoagent_entry_id
+            .. assert(event.message)._neoagent_entry_id
         end
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert(vim.wait(1000, function() return #order == 8 end))
     assert.are.same({
       "commit:assistant", "execute", "commit:toolResult",
@@ -338,7 +355,7 @@ describe("neoagent.agent_loop", function()
       messages = {},
       tools = { {
         name = "effect", description = "Effect", input_schema = {},
-        execute = function() executed = true end,
+        execute = function() executed = true; return { content = {} } end,
       } },
       commit_message = function()
         commits = commits + 1
@@ -351,7 +368,7 @@ describe("neoagent.agent_loop", function()
     })
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.are.equal(1, commits)
     assert.are.equal(0, observations)
     assert.is_false(executed)
@@ -377,10 +394,10 @@ describe("neoagent.agent_loop", function()
         return messages
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.are.same({ "assistant", "user", "assistant" },
-      vim.tbl_map(function(message) return message.role end, result.new_messages))
-    assert.are.equal("change direction", model.requests[2].messages[3].content)
+      vim.tbl_map(function(message) return message.role end, (assert(result.new_messages))))
+    assert.are.equal("change direction", assert(assert(model.requests[2]).messages[3]).content)
   end)
 
   it("acknowledges steering immediately after its durable commit", function()
@@ -407,13 +424,13 @@ describe("neoagent.agent_loop", function()
       end,
       commit_message = function(message)
         commits = commits + 1
-        local observed = vim.deepcopy(message)
+        local observed = vim.deepcopy(message) --[[@as Neoagent.ObservedMessage]]
         observed._neoagent_entry_id = "entry-" .. commits
         return true, nil, observed
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.are.same({
       committed = true,
       observed = "entry-2",
@@ -426,6 +443,7 @@ describe("neoagent.agent_loop", function()
       { result = fake_model.assistant({ { type = "text", text = "first" } }) },
       { result = fake_model.assistant({ { type = "text", text = "unused" } }) },
     })
+    ---@type Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>?
     local run
     local acknowledged
     local offered = false
@@ -442,14 +460,14 @@ describe("neoagent.agent_loop", function()
         end
       end,
       commit_message = function(message)
-        if message.role == "user" then run:cancel() end
+        if message.role == "user" then assert(run):cancel() end
         return true
       end,
     })
     local result = wait(run)
 
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.is_true(acknowledged)
     assert.are.equal(1, #model.requests)
   end)
@@ -462,9 +480,9 @@ describe("neoagent.agent_loop", function()
       { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
     })
     local result = wait(agent_loop.run({ model = model, messages = {} }))
-    assert.is_true(result.ok)
-    assert.is_true(result.new_messages[2].isError)
-    assert.matches("Unknown tool", result.new_messages[2].content[1].text)
+    assert(result.ok == true)
+    assert.is_true(result_message(result, 2).isError)
+    assert.matches("Unknown tool", util.text_content(result_message(result, 2).content))
   end)
 
   it("turns invalid UTF-8 tool text into an error before the next model turn", function()
@@ -491,13 +509,13 @@ describe("neoagent.agent_loop", function()
       } },
     }))
 
-    assert.is_true(result.ok)
-    assert.is_true(result.new_messages[2].isError)
-    assert.matches("valid UTF%-8", result.new_messages[2].content[1].text)
-    assert.is_true(result.new_messages[3].isError)
-    assert.matches("must be a string", result.new_messages[3].content[1].text)
-    assert.is_true(require("neoagent.util").is_valid_utf8(
-      model.requests[2].messages[2].content[1].text))
+    assert(result.ok == true)
+    assert.is_true(result_message(result, 2).isError)
+    assert.matches("valid UTF%-8", util.text_content(result_message(result, 2).content))
+    assert.is_true(result_message(result, 3).isError)
+    assert.matches("must be a string", util.text_content(result_message(result, 3).content))
+    assert.is_true(util.is_valid_utf8(util.text_content(
+      assert(assert(model.requests[2]).messages[2]).content)))
     assert.are.equal("recovered", result.text)
   end)
 
@@ -526,12 +544,12 @@ describe("neoagent.agent_loop", function()
       } },
     }))
 
-    assert.is_true(result.ok)
-    assert.are.equal("empty object", result.new_messages[2].content[1].text)
-    assert.is_true(result.new_messages[3].isError)
-    assert.are.equal("safe message", result.new_messages[3].content[1].text)
+    assert(result.ok == true)
+    assert.are.equal("empty object", util.text_content(result_message(result, 2).content))
+    assert.is_true(result_message(result, 3).isError)
+    assert.are.equal("safe message", util.text_content(result_message(result, 3).content))
     assert.are.same({ detail = "bad\\xFFdetail" },
-      result.new_messages[3].details)
+      result_message(result, 3).details)
   end)
 
   it("contains steering acknowledgement failures after durable commit", function()
@@ -551,7 +569,7 @@ describe("neoagent.agent_loop", function()
     }))
 
     assert.is_false(result.ok)
-    assert.matches("acknowledgement failed", result.error.message)
+    assert.matches("acknowledgement failed", assert(result.error).message)
     assert.are.equal(1, #result.new_messages)
   end)
 
@@ -574,8 +592,8 @@ describe("neoagent.agent_loop", function()
     }))
 
     assert.is_false(result.ok)
-    assert.matches("partial commit failed", result.error.message)
-    assert.are.equal("partial", result.message.content[1].text)
+    assert.matches("partial commit failed", assert(result.error).message)
+    assert.are.equal("partial", assert(assert(result.message).content[1]).text)
   end)
 
   it("sanitizes executor failures before persisting an error result", function()
@@ -600,10 +618,10 @@ describe("neoagent.agent_loop", function()
       } },
     }))
 
-    assert.is_true(result.ok)
-    assert.is_true(result.new_messages[2].isError)
-    assert.matches("bad\\xFFmessage", result.new_messages[2].content[1].text)
-    assert.is_nil(result.new_messages[2].details)
+    assert(result.ok == true)
+    assert.is_true(result_message(result, 2).isError)
+    assert.matches("bad\\xFFmessage", util.text_content(result_message(result, 2).content))
+    assert.is_nil(result_message(result, 2).details)
     assert.are.equal("recovered", result.text)
   end)
 
@@ -617,7 +635,10 @@ describe("neoagent.agent_loop", function()
       { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
     })
     local events = {}
+    ---@type Neoagent.ImageBlock?
     local final_image
+    ---@param fields table<string, unknown>
+    ---@return table<string, unknown>
     local function image(fields)
       return vim.tbl_extend("force", {
         type = "image",
@@ -665,10 +686,10 @@ describe("neoagent.agent_loop", function()
             image({ id = "preview", revision = "frame-1",
               mimeType = "IMAGE/PNG" }),
           } })
-          final_image = image({
-            data = "aW1tdXRhYmxlLWltYWdl",
+          final_image = {
+            type = "image", data = "aW1tdXRhYmxlLWltYWdl",
             mimeType = "IMAGE/PNG",
-          })
+          }
           return { content = { final_image } }
         end,
       }, {
@@ -693,16 +714,16 @@ describe("neoagent.agent_loop", function()
       on_event = function(event) events[#events + 1] = event end,
     }))
 
-    assert.is_true(result.ok)
-    assert.is_false(result.new_messages[2].isError)
+    assert(result.ok == true)
+    assert.is_false(result_message(result, 2).isError)
     assert.are.same({
       type = "image", data = "aW1tdXRhYmxlLWltYWdl", mimeType = "image/png",
-    }, result.new_messages[2].content[1])
-    assert.are.equal("IMAGE/PNG", final_image.mimeType)
-    assert.is_true(result.new_messages[3].isError)
-    assert.matches("finite", result.new_messages[3].content[1].text)
-    assert.is_true(result.new_messages[4].isError)
-    assert.matches("mimeType", result.new_messages[4].content[1].text)
+    }, result_message(result, 2).content[1])
+    assert.are.equal("IMAGE/PNG", assert(final_image).mimeType)
+    assert.is_true(result_message(result, 3).isError)
+    assert.matches("finite", util.text_content(result_message(result, 3).content))
+    assert.is_true(result_message(result, 4).isError)
+    assert.matches("mimeType", util.text_content(result_message(result, 4).content))
     assert(vim.wait(1000, function()
       local count = 0
       for _, event in ipairs(events) do
@@ -710,13 +731,14 @@ describe("neoagent.agent_loop", function()
       end
       return count == 1
     end))
+    ---@type Neoagent.InputBlock?
     local update
     for _, event in ipairs(events) do
       if event.type == "tool_update" then update = event.result.content[1] end
     end
-    assert.are.equal("preview", update.id)
-    assert.are.equal("frame-1", update.revision)
-    assert.are.equal("image/png", update.mimeType)
+    assert.are.equal("preview", assert(update).id)
+    assert.are.equal("frame-1", assert(update).revision)
+    assert.are.equal("image/png", assert(update).mimeType)
   end)
 
   it("forwards model events and preserves partial failed responses", function()
@@ -732,13 +754,14 @@ describe("neoagent.agent_loop", function()
       on_event = function(event) events[#events + 1] = event end,
     }))
     assert.is_false(result.ok)
-    assert.are.equal("disconnected", result.error.message)
-    assert.are.equal("partial", result.new_messages[1].content[1].text)
+    assert.are.equal("disconnected", assert(result.error).message)
+    assert.are.equal("partial", util.text_content(result_message(result, 1).content))
     assert(vim.wait(1000, function() return #events == 2 end))
     assert.are.same({ "text_delta", "message_end" }, { events[1].type, events[2].type })
   end)
 
   it("turns invalid calls and executor failures into rich tool results", function()
+    ---@type (fun(update: Neoagent.ToolResult))?
     local late_update
     local model = fake_model.new({
       { result = fake_model.assistant({
@@ -776,16 +799,16 @@ describe("neoagent.agent_loop", function()
       },
       on_event = function(event) events[#events + 1] = event end,
     }))
-    assert.is_true(result.ok)
-    for index = 2, 5 do assert.is_true(result.new_messages[index].isError) end
-    assert.matches("JSON object", result.new_messages[2].content[1].text)
-    assert.matches("result with content", result.new_messages[3].content[1].text)
-    assert.matches("unsupported content", result.new_messages[4].content[1].text)
-    assert.matches("executor exploded", result.new_messages[5].content[1].text)
-    assert.are.same({ diff = "+changed" }, result.new_messages[6].details)
-    assert.are.same({ output = 3 }, result.new_messages[6].usage)
+    assert(result.ok == true)
+    for index = 2, 5 do assert.is_true(result_message(result, index).isError) end
+    assert.matches("JSON object", util.text_content(result_message(result, 2).content))
+    assert.matches("result with content", util.text_content(result_message(result, 3).content))
+    assert.matches("unsupported content", util.text_content(result_message(result, 4).content))
+    assert.matches("executor exploded", util.text_content(result_message(result, 5).content))
+    assert.are.same({ diff = "+changed" }, result_message(result, 6).details)
+    assert.are.same({ output = 3 }, result_message(result, 6).usage)
     local count = #events
-    late_update({ content = { { type = "text", text = "too late" } } })
+    assert(late_update)({ content = { { type = "text", text = "too late" } } })
     vim.wait(20)
     assert.are.equal(count, #events)
   end)
@@ -809,15 +832,15 @@ describe("neoagent.agent_loop", function()
         name = "edit",
         description = "Edit",
         input_schema = { type = "object" },
-        execute = function() executed = true end,
+        execute = function() executed = true; return { content = {} } end,
       } },
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.is_false(executed)
-    assert.is_true(result.new_messages[2].isError)
+    assert.is_true(result_message(result, 2).isError)
     assert.are.equal("Tool arguments are not valid JSON",
-      result.new_messages[2].content[1].text)
+      util.text_content(result_message(result, 2).content))
     assert.are.equal("recovered", result.text)
   end)
 
@@ -850,14 +873,14 @@ describe("neoagent.agent_loop", function()
       tools = { tool },
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.is_false(executed)
-    assert.is_true(result.new_messages[2].isError)
+    assert.is_true(result_message(result, 2).isError)
     assert.are.equal(table.concat({
       "Tool call arguments do not match the declared schema:",
       "- plan[2].status is required",
       "- plan[3].status is required",
-    }, "\n"), result.new_messages[2].content[1].text)
+    }, "\n"), util.text_content(result_message(result, 2).content))
     assert.are.equal("recovered", result.text)
   end)
 
@@ -874,12 +897,12 @@ describe("neoagent.agent_loop", function()
       messages = {},
       tools = { { name = "echo", description = "", input_schema = {}, execute = function() error("unused") end } },
       execute_tool = function(tool, arguments, ctx)
-        called = tool.name == "echo" and arguments.value and ctx.model == model
+        called = tool.name == "echo" and arguments.value == true and ctx.model == model
           and ctx.call.id == "c1" and ctx.call.name == "echo"
         return { content = { { type = "text", text = "approved" } } }
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.is_true(called)
   end)
 
@@ -894,6 +917,7 @@ describe("neoagent.agent_loop", function()
       model = model,
       messages = {},
       tools = { { name = "echo", description = "", input_schema = {}, execute = function() error("unused") end } },
+      ---@async
       execute_tool = function()
         return require("neoagent.async").await(function(done)
           vim.schedule(function()
@@ -902,8 +926,8 @@ describe("neoagent.agent_loop", function()
         end)
       end,
     }))
-    assert.is_true(result.ok)
-    assert.are.equal("approved asynchronously", result.new_messages[2].content[1].text)
+    assert(result.ok == true)
+    assert.are.equal("approved asynchronously", util.text_content(result_message(result, 2).content))
   end)
 
   it("propagates cancellation from an active tool without another model turn", function()
@@ -921,6 +945,7 @@ describe("neoagent.agent_loop", function()
         name = "wait",
         description = "",
         input_schema = { type = "object" },
+        ---@async
         execute = function()
           return require("neoagent.async").await(function()
             return function() cleaned = true end
@@ -930,8 +955,8 @@ describe("neoagent.agent_loop", function()
     })
     vim.defer_fn(function() run:cancel() end, 10)
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.is_true(cleaned)
     assert.are.equal(1, #model.requests)
   end)
@@ -945,6 +970,7 @@ describe("neoagent.agent_loop", function()
         arguments = {},
       } }, "toolUse") },
     })
+    ---@type (fun(update: Neoagent.ToolResult))?, boolean
     local late_update, cleaned = nil, false
     local revisions, completions = {}, 0
     local run = agent_loop.run({
@@ -954,6 +980,7 @@ describe("neoagent.agent_loop", function()
         name = "animate",
         description = "animate",
         input_schema = { type = "object" },
+        ---@async
         execute = function(_, ctx)
           late_update = ctx.on_update
           ctx.on_update({ content = { {
@@ -970,7 +997,7 @@ describe("neoagent.agent_loop", function()
       } },
       on_event = function(event)
         if event.type == "tool_update" then
-          revisions[#revisions + 1] = event.result.content[1].revision
+          revisions[#revisions + 1] = assert(assert(event.result).content[1]).revision
         end
       end,
       on_done = function() completions = completions + 1 end,
@@ -980,7 +1007,7 @@ describe("neoagent.agent_loop", function()
     end))
     run:cancel()
     assert(vim.wait(1000, function() return run:is_done() end))
-    late_update({ content = { {
+    assert(late_update)({ content = { {
       type = "image",
       mimeType = "image/png",
       data = "ZnJhbWUtdHdv",
@@ -992,7 +1019,7 @@ describe("neoagent.agent_loop", function()
     assert.are.same({ 1 }, revisions)
     assert.are.equal(1, completions)
     assert.is_true(cleaned)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
   end)
 
   it("propagates cancellation raised by an executor decorator", function()
@@ -1015,12 +1042,13 @@ describe("neoagent.agent_loop", function()
       end,
     })
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.are.equal(1, #model.requests)
   end)
 
   it("continues tool calls until the model stops", function()
+    ---@type Neoagent.TestModelResponse[]
     local responses = {}
     for round = 1, 13 do
       responses[#responses + 1] = { result = fake_model.assistant({
@@ -1043,7 +1071,7 @@ describe("neoagent.agent_loop", function()
         end,
       } },
     }))
-    assert.is_true(result.ok)
+    assert(result.ok == true)
     assert.are.equal("done", result.text)
     assert.are.equal(13, executions)
     assert.are.equal(14, #model.requests)
