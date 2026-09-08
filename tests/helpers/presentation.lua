@@ -2,6 +2,8 @@ local M = {}
 
 ---@param window Neoagent.AgentApplet|Neoagent.NeoagentApplet|Neoagent.ProviderShell
 ---@return Neoagent.View|Neoagent.ProviderShellView, Neoagent.PublicPresentation, Applet.Pane
+---@overload fun(window: Neoagent.AgentApplet|Neoagent.NeoagentApplet): Neoagent.View, Neoagent.PublicPresentation, Applet.Pane
+---@overload fun(window: Neoagent.ProviderShell): Neoagent.ProviderShellView, Neoagent.PublicPresentation, Applet.Pane
 function M.active(window)
   assert(vim.wait(1000, function()
     local view = window:view()

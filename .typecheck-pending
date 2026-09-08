@@ -7,7 +7,6 @@ tests/ui/dialog_spec.lua
 tests/ui/instances_spec.lua
 tests/ui/mappings_spec.lua
 tests/ui/pane_spec.lua
-tests/ui/presenter_spec.lua
 tests/ui/provider_shell_spec.lua
 tests/ui/view_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
