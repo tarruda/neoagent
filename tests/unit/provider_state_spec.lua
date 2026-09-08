@@ -48,18 +48,18 @@ describe("neoagent provider state", function()
   it("normalizes declarative dashboard blocks into bounded copies", function()
     local value = valid()
     local normalized, err = provider_state.normalize(value)
-    assert(normalized, err and err.message)
+    assert(normalized, err and assert(err).message)
     assert.are.same(value.blocks, normalized.blocks)
     assert.are.same(value.operation, normalized.operation)
     value.blocks[2].label = "changed"
-    assert.are.equal("Endpoint", normalized.blocks[2].label)
+    assert.are.equal("Endpoint", rawget(assert(normalized.blocks[2]), "label"))
   end)
 
   it("accepts minimal snapshots and false", function()
-    local normalized = provider_state.normalize({})
+    local normalized = assert(provider_state.normalize({}))
     assert.are.same({}, normalized.blocks)
     assert.is_nil(normalized.operation)
-    assert.is_false(provider_state.normalize(false))
+    assert.is_false((provider_state.normalize(false)))
   end)
 
   it("rejects pre-Service dashboard snapshot fields", function()
@@ -71,25 +71,25 @@ describe("neoagent provider state", function()
     }) do
       local normalized, err = provider_state.normalize(value)
       assert.is_nil(normalized)
-      assert.are.equal("provider", err.kind)
-      assert.matches("unsupported provider state field", err.message)
+      assert.are.equal("provider", assert(err).kind)
+      assert.matches("unsupported provider state field", assert(err).message)
     end
   end)
 
   it("rejects malformed snapshots and block types", function()
     local normalized, err = provider_state.normalize(nil)
     assert.is_nil(normalized)
-    assert.are.equal("provider", err.kind)
+    assert.are.equal("provider", assert(err).kind)
     for _, value in ipairs({ true, 1, "state" }) do
       normalized, err = provider_state.normalize(value)
       assert.is_nil(normalized)
-      assert.are.equal("provider", err.kind)
+      assert.are.equal("provider", assert(err).kind)
     end
     normalized, err = provider_state.normalize({
       blocks = { { type = "gauge", label = "Mystery" } },
     })
     assert.is_nil(normalized)
-    assert.matches("unknown provider block type", err.message)
+    assert.matches("unknown provider block type", assert(err).message)
 
   end)
 
@@ -98,7 +98,7 @@ describe("neoagent provider state", function()
       blocks = { { "status", "Ready" } },
     })
     assert.is_nil(normalized)
-    assert.matches("provider block must be an object", err.message)
+    assert.matches("provider block must be an object", assert(err).message)
 
     normalized, err = provider_state.normalize({
       blocks = { {
@@ -108,63 +108,63 @@ describe("neoagent provider state", function()
       } },
     })
     assert.is_nil(normalized)
-    assert.matches("provider list items must be a list", err.message)
+    assert.matches("provider list items must be a list", assert(err).message)
   end)
 
   it("rejects control characters and invalid levels", function()
     local value = valid()
     value.blocks[5].items[1].label = "slot\nforged"
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[1].level = "debug"
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[2].level = "debug"
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
-    value.blocks[6].entries[1].timestamp = math.huge
-    assert.is_nil(provider_state.normalize(value))
+    rawset(value.blocks[6].entries[1], "timestamp", math.huge)
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[1].text = ""
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[1].text = string.char(0xff)
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
   end)
 
   it("bounds strings, ratios, and collections", function()
     local value = valid()
     value.blocks[1].text = string.rep("a", 513)
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[3].value = 1.5
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     value.blocks[4].remaining = -0.1
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
-    value.blocks[4].resets_at = math.huge
-    assert.is_nil(provider_state.normalize(value))
+    rawset(value.blocks[4], "resets_at", math.huge)
+    assert.is_nil((provider_state.normalize(value)))
 
-    value = { blocks = {} }
+    local oversized = { blocks = {} }
     for _ = 1, 65 do
-      value.blocks[#value.blocks + 1] = { type = "status", text = "ok" }
+      oversized.blocks[#oversized.blocks + 1] = { type = "status", text = "ok" }
     end
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(oversized)))
 
     value = valid()
     for _ = 2, 101 do
       value.blocks[5].items[#value.blocks[5].items + 1] = { label = "worker" }
     end
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
 
     value = valid()
     for _ = 2, 51 do
@@ -172,29 +172,30 @@ describe("neoagent provider state", function()
         level = "info", message = "event",
       }
     end
-    assert.is_nil(provider_state.normalize(value))
+    assert.is_nil((provider_state.normalize(value)))
   end)
 
   it("publishes validated snapshots through a reusable push channel", function()
     local dashboard = provider_state.new({
       blocks = { { type = "status", text = "Connecting", level = "muted" } },
     })
+    ---@type Neoagent.ProviderState[]
     local published = {}
     local unsubscribe = dashboard:subscribe(function(snapshot)
       published[#published + 1] = snapshot
     end)
     local pushed, err = dashboard:push(valid())
-    assert(pushed, err and err.message)
-    assert.are.equal("Router online", dashboard:state().blocks[1].text)
-    assert.are.equal("Router online", published[1].blocks[1].text)
-    published[1].blocks[1].text = "changed"
-    assert.are.equal("Router online", dashboard:state().blocks[1].text)
+    assert(pushed, err and assert(err).message)
+    assert.are.equal("Router online", rawget(assert(dashboard:state().blocks[1]), "text"))
+    assert.are.equal("Router online", rawget(assert(assert(published[1]).blocks[1]), "text"))
+    rawset(assert(assert(published[1]).blocks[1]), "text", "changed")
+    assert.are.equal("Router online", rawget(assert(dashboard:state().blocks[1]), "text"))
 
     local rejected = dashboard:push({
       blocks = { { type = "progress", label = "Bad", value = -1 } },
     })
     assert.is_nil(rejected)
-    assert.are.equal("Router online", dashboard:state().blocks[1].text)
+    assert.are.equal("Router online", rawget(assert(dashboard:state().blocks[1]), "text"))
 
     unsubscribe()
     assert(dashboard:push({ blocks = {} }))
@@ -205,20 +206,21 @@ describe("neoagent provider state", function()
 
   it("isolates failing push subscribers", function()
     local notifications = {}
-    local dashboard = provider_state.new({}, {
+    local dashboard = provider_state.new({ blocks = {} }, {
       report = function(message) notifications[#notifications + 1] = message end,
     })
     dashboard:subscribe(function() error("listener boom") end)
     assert(dashboard:push({ blocks = { { type = "status", text = "Ready" } } }))
     assert.are.equal(1, #notifications)
-    assert.matches("listener boom", notifications[1])
+    assert.matches("listener boom", tostring(assert(notifications[1])))
   end)
 
   it("accepts pushes from provider-owned timers", function()
-    local dashboard = provider_state.new({})
+    local dashboard = provider_state.new({ blocks = {} })
+    ---@type Neoagent.ProviderState?
     local published
     dashboard:subscribe(function(snapshot) published = snapshot end)
-    local timer = vim.uv.new_timer()
+    local timer = assert(vim.uv.new_timer())
     timer:start(1, 0, function()
       timer:stop()
       timer:close()
@@ -229,7 +231,7 @@ describe("neoagent provider state", function()
       })
     end)
     assert(vim.wait(1000, function() return published ~= nil end))
-    assert.are.equal(0.75, published.blocks[1].value)
+    assert.are.equal(0.75, rawget(assert(assert(published).blocks[1]), "value"))
   end)
 
   it("normalizes progress operations independently", function()
@@ -239,14 +241,14 @@ describe("neoagent provider state", function()
       state = "running",
       message = "Working",
     })
-    assert(normalized, err and err.message)
+    assert(normalized, err and assert(err).message)
     assert.is_nil(normalized.ratio)
     assert.is_nil(normalized.detail)
-    assert.is_nil(provider_state.normalize_operation({ label = "missing" }))
-    assert.is_nil(provider_state.normalize_operation({
+    assert.is_nil((provider_state.normalize_operation({ label = "missing" })))
+    assert.is_nil((provider_state.normalize_operation({
       id = "download",
       label = "Download model",
       state = "paused",
-    }))
+    })))
   end)
 end)
