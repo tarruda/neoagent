@@ -33,6 +33,23 @@ local M = {}
 
 ---@alias Neoagent.CallbackPending<T> Neoagent.CallbackCompleted<T>|Neoagent.AsyncFailure
 
+---@alias Neoagent.CallbackHandle<H> {
+---  is_closing: (fun(self: H): boolean),
+---  close: (fun(self: H)),
+---}
+
+---@alias Neoagent.CallbackConnection<H> {
+---  is_closing: (fun(self: H): boolean),
+---  close: (fun(self: H)),
+---  bind: (fun(self: H, host: string, port: integer): 0|true|nil, string?),
+---  getsockname: (fun(self: H): {port: integer}?, string?),
+---  listen: (fun(self: H, backlog: integer, accept: fun(err?: string)): 0|true|nil, string?),
+---  accept: (fun(self: H, client: H): 0|true|nil, string?),
+---  read_start: (fun(self: H, read: fun(err?: string, chunk?: string))),
+---  read_stop: (fun(self: H)),
+---  write: (fun(self: H, data: string, done: fun(err?: string))),
+---}
+
 local reasons = {
   [200] = "OK",
   [204] = "No Content",
@@ -42,7 +59,8 @@ local reasons = {
   [500] = "Internal Server Error",
 }
 
----@param handle? uv.uv_handle_t
+---@generic H: Neoagent.CallbackHandle<H>
+---@param handle? H
 local function close_handle(handle)
   if handle and not handle:is_closing() then handle:close() end
 end
@@ -140,9 +158,9 @@ local function parsed_request(buffer, maximum)
   }
 end
 
----@generic T
+---@generic T, C: Neoagent.CallbackConnection<C>
 ---@param opts Neoagent.CallbackOptions<T>
----@param new_connection fun(): uv.uv_tcp_t
+---@param new_connection fun(): C
 ---@return Neoagent.CallbackListener<T>?, string?
 function M._listen(opts, new_connection)
   opts = opts or {}
@@ -169,7 +187,7 @@ function M._listen(opts, new_connection)
   local address, address_err = listener:getsockname()
   if not address then close_handle(listener) return nil, address_err end
 
-  ---@type table<uv.uv_tcp_t, true>
+  ---@type table<C, true>
   local clients = {}
   ---@type Neoagent.CallbackPending<T>?
   local pending
