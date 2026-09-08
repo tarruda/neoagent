@@ -2,48 +2,6 @@ local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
----@class Neoagent.RecordedBody
----@field body? Neoagent.JsonValue
----@field body_encoding? string
----@field body_format? string
----@field redacted? boolean
-
----@class Neoagent.RecordedRequest: Neoagent.RecordedBody
----@field method string
----@field url string
----@field headers? table<string, string>
-
----@class Neoagent.RecordedExchange
----@field type 'exchange'
----@field schema string
----@field version integer
----@field request Neoagent.RecordedRequest
----@field context? Neoagent.JsonValue
----@field at_us? integer
-
----@class Neoagent.RecordedChunk
----@field type 'response_chunk'
----@field at_us integer
----@field index integer
----@field bytes integer
-
----@class Neoagent.RecordedResponseBody: Neoagent.RecordedBody
----@field type 'response_body'
----@field at_us integer
----@field bytes integer
-
----@class Neoagent.RecordedResponse: Neoagent.HttpMetadata
----@field type 'response'
----@field at_us integer
-
----@class Neoagent.RecordedCompletion
----@field type 'complete'
----@field at_us integer
----@field ok boolean
----@field error? Neoagent.HttpError
-
----@alias Neoagent.RecordedEvent Neoagent.RecordedExchange|Neoagent.RecordedChunk|Neoagent.RecordedResponseBody|Neoagent.RecordedResponse|Neoagent.RecordedCompletion
-
 ---@class Neoagent.ReplayChunk
 ---@field bytes integer
 ---@field at_us integer
@@ -437,7 +395,7 @@ function M.new(opts)
       end
       local error_info = exchange.terminal.error
       if error_info and error_info.kind == "transport" and error_info.exit_code ~= 22 then
-        local err = util.copy(error_info)
+        local err = util.copy(error_info) --[[@as Neoagent.RecordedError & {response: Neoagent.HttpMetadata}]]
         err.response = util.copy(exchange.response)
         return { ok = false, error = err }
       end

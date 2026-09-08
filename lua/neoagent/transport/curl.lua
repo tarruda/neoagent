@@ -33,14 +33,13 @@ local M = {}
 ---@alias Neoagent.ByteFetchResult Neoagent.ByteFetchSuccess|Neoagent.AsyncFailure
 ---@alias Neoagent.ByteStreamResult Neoagent.ByteStreamSuccess|Neoagent.AsyncFailure
 
----@class Neoagent.ByteFetchOptions
+---@class Neoagent.ByteCall<R>
 ---@field request Neoagent.HttpRequest
----@field on_done? fun(result: Neoagent.ByteFetchResult)
+---@field on_chunk? fun(chunk: string) Streaming requests only.
+---@field on_done? fun(result: R)
 
----@class Neoagent.ByteStreamOptions
----@field request Neoagent.HttpRequest
----@field on_chunk? fun(chunk: string)
----@field on_done? fun(result: Neoagent.ByteStreamResult)
+---@alias Neoagent.ByteFetchOptions Neoagent.ByteCall<Neoagent.ByteFetchResult>
+---@alias Neoagent.ByteStreamOptions Neoagent.ByteCall<Neoagent.ByteStreamResult>
 
 ---@class Neoagent.ByteBackend
 ---@field fetch? fun(opts: Neoagent.ByteFetchOptions): Neoagent.Run<Neoagent.ByteFetchResult, nil>
