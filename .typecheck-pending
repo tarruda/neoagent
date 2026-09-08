@@ -7,7 +7,6 @@ lua/applet/layout.lua
 lua/applet/layout/compile.lua
 lua/applet/pane.lua
 lua/applet/pane/compile.lua
-lua/applet/pane/input.lua
 lua/applet/pane/reconcile.lua
 lua/applet/presentation.lua
 lua/neoagent/agent.lua
