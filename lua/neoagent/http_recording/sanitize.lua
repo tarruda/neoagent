@@ -732,7 +732,6 @@ end
 ---@field sensitive_response_body boolean
 ---@field context table<string, string>
 ---@field workspace? string
----@field request Neoagent.RecordedRequest
 local Sanitizer = {}
 Sanitizer.__index = Sanitizer
 
@@ -741,6 +740,7 @@ Sanitizer.__index = Sanitizer
 ---@param workspace? string
 ---@param format 'json'|'yaml'
 ---@return Neoagent.RecordingSanitizer
+---@return Neoagent.RecordedRequest
 function M.new(request, context, workspace, format)
   local secrets = {}
   local authentication = context.origin == "authentication"
@@ -781,20 +781,19 @@ function M.new(request, context, workspace, format)
     sensitive_response_body = credential_response_body,
     context = sanitize_context(context, secrets),
     workspace = workspace and select(1, redact_text(workspace, secrets)) or nil,
-    request = {
-      method = select(1, redact_text(
-        tostring(request.method or "POST"), secrets)),
-      url = sanitized_url,
-      headers = sanitized_headers,
-      body = persisted_request_body,
-      body_encoding = body_encoding,
-      body_format = request_is_json and "json" or nil,
-      body_bytes = request_body.absent and 0 or #assert(request_body.body),
-      redacted = body_redacted or nil,
-      timeout_ms = request.timeout_ms,
-      max_response_bytes = request.max_response_bytes,
-    },
-  }, Sanitizer)
+  }, Sanitizer), {
+    method = select(1, redact_text(
+      tostring(request.method or "POST"), secrets)),
+    url = sanitized_url,
+    headers = sanitized_headers,
+    body = persisted_request_body,
+    body_encoding = body_encoding,
+    body_format = request_is_json and "json" or nil,
+    body_bytes = request_body.absent and 0 or #assert(request_body.body),
+    redacted = body_redacted or nil,
+    timeout_ms = request.timeout_ms,
+    max_response_bytes = request.max_response_bytes,
+  }
 end
 
 ---@class Neoagent.SanitizedRecordingResponse

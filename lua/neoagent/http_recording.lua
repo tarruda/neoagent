@@ -295,7 +295,8 @@ function Recorder:_start(operation, request, supplied_context)
       "recording context workspace must be a non-empty string")
     workspace = fs.canonical(context.workspace)
   end
-  local sanitizer = sanitization.new(request, context, workspace, self._format)
+  local sanitizer, recorded_request = sanitization.new(
+    request, context, workspace, self._format)
   global_sequence = global_sequence + 1
   local sequence = global_sequence
   local now = math.floor(self._now())
@@ -367,7 +368,7 @@ function Recorder:_start(operation, request, supplied_context)
     workspace = sanitizer.workspace
       and { root = sanitizer.workspace } or nil,
     context = selected_context,
-    request = sanitizer.request,
+    request = recorded_request,
   }
   local encoded_ok, encoded = pcall(util.json_encode, first)
   if not encoded_ok then

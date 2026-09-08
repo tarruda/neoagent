@@ -159,6 +159,53 @@ describe("neoagent HTTP recording", function()
     assert.are.equal(0, #files(directory, ".body"))
   end)
 
+  it("releases the decoded YAML request after recording the streaming header", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "yaml" }, directory = directory,
+    }))
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ByteStreamResult>?
+    local pending
+    ---@type Neoagent.ByteBackend
+    local backend = {
+      request = function()
+        return async.run(function()
+          return async.await(function(done) pending = done end)
+        end)
+      end,
+    }
+    local recorded = recording:transport(backend, {
+      provider = "example", origin = "model",
+    })
+    local entry = '{"role":"user","content":[{"type":"text","text":"synthetic entry"}]}'
+    local count = 10000
+    local body = '{"messages":[' .. string.rep(entry .. ",", count - 1) .. entry .. "]}"
+    collectgarbage("collect")
+    local baseline = collectgarbage("count")
+    local run = assert(recorded.request)({ request = {
+      url = "https://example.test/chat/completions",
+      headers = { ["content-type"] = "application/json" },
+      body = body,
+    } })
+    collectgarbage("collect")
+    local retained_kb = collectgarbage("count") - baseline
+    local ok, err = xpcall(function()
+      assert.is_false(run:is_done())
+      local header = records(assert(files(directory, ".partial.ndjson")[1]))[1]
+      assert.are.same(vim.json.decode(body), assert(assert(header).request).body)
+    end, debug.traceback)
+    assert(pending).resolve({ ok = true, response = { status = 200, headers = {} } })
+    local completed = wait(run)
+    recording:destroy()
+
+    assert(ok, err)
+    assert.is_true(completed.ok)
+    assert.is_true(retained_kb < 1024,
+      "recording retained " .. retained_kb .. " KiB of request data during streaming")
+    assert.are.equal(1, #files(directory, ".yaml"))
+  end)
+
   it("preserves large binary responses through streaming YAML conversion", function()
     local directory = tempdir()
     directories[#directories + 1] = directory
@@ -207,7 +254,7 @@ describe("neoagent HTTP recording", function()
   end)
 
   for _, failure in ipairs({ "create", "open", "append", "read", "changed",
-    "serialize", "serialize-tail", "encode", "close", "remove" }) do
+    "serialize", "serialize-tail", "encode", "close", "close-throw", "remove" }) do
     it("preserves provider results and prior recordings after spool " .. failure .. " failure", function()
       local directory = tempdir()
       directories[#directories + 1] = directory
@@ -227,6 +274,8 @@ describe("neoagent HTTP recording", function()
       local original_unlink, original_encode = vim.uv.fs_unlink, util.json_encode
       ---@type Neoagent.RegularFile?
       local held
+      local close_attempts = 0
+      local close_held = function() end
       local ok, err = xpcall(function()
         fs.atomic_replace = function(path, ...)
           if failure == "create" and path:sub(-5) == ".body" then
@@ -241,17 +290,23 @@ describe("neoagent HTTP recording", function()
           local file, open_err = original_open(path, ...)
           if file and path:sub(-5) == ".body" then
             held = file
+            local close = file.close
+            close_held = function() assert(close(assert(file))) end
             if failure == "append" then
               file.append = function() return nil, "spool append failed" end
             elseif failure == "read" then
               file.read_chunks = function() return nil, "spool read failed" end
             elseif failure == "changed" then
               file.verify_path = function() return nil, "spool path changed" end
-            elseif failure == "close" then
-              local close = file.close
+            elseif failure == "close" or failure == "close-throw" then
               function file:close()
-                assert(close(assert(file)))
-                return nil, "spool close failed"
+                close_attempts = close_attempts + 1
+                if close_attempts == 1 then
+                  assert.is_table((file:stat()))
+                  if failure == "close-throw" then error("spool close failed") end
+                  return nil, "spool close failed"
+                end
+                return close(file)
               end
             end
           elseif file and path:sub(-15) == ".partial.ndjson"
@@ -291,10 +346,14 @@ describe("neoagent HTTP recording", function()
         assert.are.equal(1, #files(directory, ".jsonl"))
         assert.is_true(#reports > 0)
         if held then assert.is_nil((held:stat())) end
+        if failure == "close" or failure == "close-throw" then
+          assert.are.equal(2, close_attempts)
+        end
       end, debug.traceback)
       fs.atomic_replace, fs.open_regular = original_replace, original_open
       vim.uv.fs_unlink, util.json_encode = original_unlink, original_encode
       recording:destroy()
+      close_held()
       assert(ok, err)
     end)
   end

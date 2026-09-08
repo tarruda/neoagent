@@ -80,10 +80,10 @@ function Body:close(remove)
   self.chunks = {}
   local file = self.file
   if not file then return true end
-  self.file = nil
   local verified, verify_err = file:verify_path()
   local closed, close_err = file:close()
   if not closed then return nil, close_err end
+  self.file = nil
   if not verified then return nil, verify_err end
   if remove then
     local removed, remove_err = vim.uv.fs_unlink(self.path)
