@@ -1,8 +1,6 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-lua/neoagent/applet.lua
 lua/neoagent/health.lua
 lua/neoagent/init.lua
-lua/neoagent/ui/switcher.lua
 plugin/neoagent.lua
 scripts/applet-image-harness.lua
 scripts/benchmark-applet-containers.lua

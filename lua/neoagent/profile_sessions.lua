@@ -22,7 +22,7 @@ local M = {}
 ---@field enabled true
 ---@field directory string
 
----@alias Neoagent.Persistence Neoagent.DisabledPersistence|Neoagent.EnabledPersistence
+---@alias Neoagent.Persistence Neoagent.DisabledPersistence|Neoagent.EnabledPersistence|{enabled: boolean, directory: string}
 
 ---@class Neoagent.ProfileSessionOptions
 ---@field profile_id string
