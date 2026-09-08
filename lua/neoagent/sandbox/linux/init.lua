@@ -1,9 +1,6 @@
 local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
 
----@class Neoagent.LinuxSandboxServices: Neoagent.SandboxServices
----@field fs Neoagent.SandboxFilesystemService
-
 ---@class Neoagent.LinuxSandboxRoot
 ---@field path string
 ---@field stat uv.fs_stat.result
@@ -376,7 +373,7 @@ local function protected_create_paths(profile)
 end
 
 ---@param request Neoagent.LinuxSandboxRequest
----@param services Neoagent.LinuxSandboxServices
+---@param services Neoagent.SandboxExecutionServices<string|string[]>
 ---@param mode Neoagent.LinuxSandboxMode
 ---@return Neoagent.ProcessResult
 local function process_request(request, services, mode)
@@ -385,7 +382,7 @@ local function process_request(request, services, mode)
     error(util.error("sandbox_unavailable",
       "Linux sandbox runtime was not found"), 0)
   end
-  local root, root_err = temporary_root(services.fs, request.profile)
+  local root, root_err = temporary_root((assert(services.fs)), request.profile)
   if not root then
     error(util.error("sandbox_unavailable",
       "Could not create Linux sandbox root", root_err), 0)
@@ -498,14 +495,14 @@ local function process_request(request, services, mode)
 end
 
 ---@param request Neoagent.SandboxProcessRequest
----@param services Neoagent.LinuxSandboxServices
+---@param services Neoagent.SandboxExecutionServices<string|string[]>
 ---@return Neoagent.ProcessResult
 function M.exec(request, services)
   return process_request(request, services, "exec")
 end
 
 ---@param request Neoagent.SandboxFilesystemRequest
----@param services Neoagent.LinuxSandboxServices
+---@param services Neoagent.SandboxExecutionServices<string|string[]>
 ---@return string|true|nil, string?
 function M.fs(request, services)
   local value = process_request({

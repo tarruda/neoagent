@@ -49,8 +49,27 @@ local util = require("neoagent.util")
 ---@class Neoagent.SandboxFilesystemRequest: Neoagent.SandboxFilesystemOperation
 ---@field profile Neoagent.SandboxProfile
 
+---@class Neoagent.SandboxPlatform<C = unknown>
+---@field name string
+---@field paths? Neoagent.SandboxPaths
+---@field check fun(services?: Neoagent.SandboxCheckServices<string>): Neoagent.SandboxStatus
+---@field exec fun(request: Neoagent.SandboxProcessRequest, services: Neoagent.SandboxExecutionServices): Neoagent.ProcessResult
+---@field fs fun(request: Neoagent.SandboxFilesystemRequest, services: Neoagent.SandboxExecutionServices): string|true|nil, string?
+---@field compile? fun(profile: Neoagent.SandboxProfile, ctx: C, services: Neoagent.SandboxExecutionServices): Neoagent.SandboxProfile
+---@field temporary_root? fun(services: Neoagent.SandboxExecutionServices): string
+
+---@class Neoagent.SandboxExecutionServices<N = string>: Neoagent.SandboxServices<N>
+---@field fs Neoagent.SandboxFilesystemService
+
+---@class Neoagent.SandboxPlatforms<C = unknown>
+---@field linux? Neoagent.SandboxPlatform<C>
+---@field macos? Neoagent.SandboxPlatform<C>
+---@field windows? Neoagent.SandboxPlatform<C>
+
 local M = {}
 
+---@param os string
+---@return Neoagent.SandboxStatus
 local function unsupported(os)
   return {
     ok = false,
@@ -60,6 +79,10 @@ local function unsupported(os)
   }
 end
 
+---@generic C
+---@param os? string
+---@param modules? Neoagent.SandboxPlatforms<C>
+---@return Neoagent.SandboxPlatform<C>?, Neoagent.SandboxStatus?
 function M.select(os, modules)
   os = os or jit.os
   modules = modules or {}
@@ -73,6 +96,8 @@ function M.select(os, modules)
   return nil, unsupported(os)
 end
 
+---@param status? Neoagent.SandboxStatus
+---@return Neoagent.Error
 function M.status_error(status)
   status = status or unsupported(jit.os)
   local message = status.message or "sandbox requirements are unavailable"
