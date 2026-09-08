@@ -1,13 +1,20 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local http = require("neoagent.providers.http")
 local util = require("neoagent.util")
 
+---@param run Neoagent.Run<Neoagent.ProviderHttpResult, nil>
+---@return Neoagent.ProviderHttpResult
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+-- Include malformed responses to exercise validation at the HTTP boundary.
+---@param response unknown
+---@return Neoagent.ByteBackend
 local function transport(response)
+  ---@cast response Neoagent.ByteFetchResult
   return {
     fetch = function()
       return async.run(function() return response end)
@@ -25,8 +32,9 @@ describe("provider management HTTP", function()
     })
     local result = wait(failure:get("/value", "value"))
     assert.is_false(result.ok)
-    assert.are.equal("transport", result.error.kind)
-    assert.matches("connection failed", result.error.message)
+    local failure_error = assert(result.error)
+    assert.are.equal("transport", failure_error.kind)
+    assert.matches("connection failed", failure_error.message)
 
     local missing_status = http.new({
       name = "Test", base_url = "https://example.test",
@@ -34,7 +42,8 @@ describe("provider management HTTP", function()
     })
     result = wait(missing_status:get("/value", "value"))
     assert.is_false(result.ok)
-    assert.matches("no HTTP status", result.error.message)
+    local missing_status_error = assert(result.error)
+    assert.matches("no HTTP status", missing_status_error.message)
 
     local nontext = http.new({
       name = "Test", base_url = "https://example.test",
@@ -42,7 +51,8 @@ describe("provider management HTTP", function()
     })
     result = wait(nontext:get("/value", "value"))
     assert.is_false(result.ok)
-    assert.matches("body must be text", result.error.message)
+    local nontext_error = assert(result.error)
+    assert.matches("body must be text", nontext_error.message)
   end)
 
   it("bounds decoded response bodies before parsing them", function()
@@ -55,6 +65,7 @@ describe("provider management HTTP", function()
     })
     local result = wait(value:get("/value", "value"))
     assert.is_false(result.ok)
-    assert.matches("exceeds 1024 bytes", result.error.message)
+    local size_error = assert(result.error)
+    assert.matches("exceeds 1024 bytes", size_error.message)
   end)
 end)
