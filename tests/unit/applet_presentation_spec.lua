@@ -1,6 +1,8 @@
 local assert = require("luassert")
 local presentation = require("applet.presentation")
 
+---@param opts? {items?: Applet.PresentationItem[], on_results?: (fun(snapshot: Applet.PickerResults))}
+---@return Applet.Presentation
 local function picker(opts)
   opts = opts or {}
   return presentation.new({
@@ -20,7 +22,8 @@ local function picker(opts)
 end
 
 describe("Applet dynamic presentations", function()
-  local values
+  ---@type Applet.Presentation[]
+  local values = {}
 
   after_each(function()
     for _, value in ipairs(values or {}) do value:destroy() end
@@ -28,6 +31,7 @@ describe("Applet dynamic presentations", function()
   end)
 
   it("replaces picker items while preserving valid selection identity", function()
+    ---@type Applet.PickerResults[]
     local snapshots = {}
     local value = picker({
       on_results = function(snapshot) snapshots[#snapshots + 1] = snapshot end,
@@ -68,22 +72,22 @@ describe("Applet dynamic presentations", function()
 
     assert.has_error(function() input:set_items({}) end,
       "presentation items: require a selection presentation")
-    assert.has_error(function() value:set_items(false) end,
-      "presentation items: must be a list")
-    assert.has_error(function() value:set_items({ named = true }) end,
-      "presentation items: must be a list")
-    assert.has_error(function() value:set_items({ false }) end,
-      "presentation item 1: must be a table")
-    assert.has_error(function() value:set_items({ { label = "Missing" } }) end,
-      "presentation item 1: requires an id")
-    assert.has_error(function() value:set_items({ { id = "missing" } }) end,
-      "presentation item 1: requires a label")
-    assert.has_error(function()
-      value:set_items({ { id = "detail", label = "Detail", detail = true } })
-    end, "presentation item 1.detail: must be a string")
-    assert.has_error(function()
-      value:set_items({ { id = "disabled", label = "Disabled", disabled = 1 } })
-    end, "presentation item 1.disabled: must be a boolean")
+    local invalid = {
+      { value = false, message = "presentation items: must be a list" },
+      { value = { named = true }, message = "presentation items: must be a list" },
+      { value = { false }, message = "presentation item 1: must be a table" },
+      { value = { { label = "Missing" } }, message = "presentation item 1: requires an id" },
+      { value = { { id = "missing" } }, message = "presentation item 1: requires a label" },
+      { value = { { id = "detail", label = "Detail", detail = true } },
+        message = "presentation item 1.detail: must be a string" },
+      { value = { { id = "disabled", label = "Disabled", disabled = 1 } },
+        message = "presentation item 1.disabled: must be a boolean" },
+    }
+    for _, case in ipairs(invalid) do
+      assert.has_error(function()
+        value:set_items(case.value --[[@as Applet.PresentationItem[] ]])
+      end, case.message)
+    end
     assert.has_error(function()
       value:set_items({
         { id = "same", label = "First" },
