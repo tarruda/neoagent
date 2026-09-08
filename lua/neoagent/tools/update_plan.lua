@@ -1,6 +1,20 @@
 local tool_schema = require("neoagent.api.tool_schema")
 local util = require("neoagent.util")
 
+---@class Neoagent.PlanStep
+---@field step string
+---@field status "pending"|"in_progress"|"completed"
+
+---@class Neoagent.Plan
+---@field explanation? string
+---@field plan Neoagent.PlanStep[]
+
+---@class Neoagent.ToolPlanPresentation
+---@field kind "plan"
+---@field explanation? string
+---@field plan? Neoagent.PlanStep[]
+
+---@type Neoagent.ToolSchema
 local input_schema = {
   type = "object",
   properties = {
@@ -30,26 +44,39 @@ local input_schema = {
   additionalProperties = false,
 }
 
+---@param arguments unknown
+---@return Neoagent.Plan
 local function validate(arguments)
   local valid, message = tool_schema.validate(input_schema, arguments)
   if not valid then error(message, 0) end
+  ---@cast arguments Neoagent.Plan
+  return arguments
 end
 
+---@param arguments unknown
+---@return Neoagent.Plan?
 local function accepted(arguments)
-  local ok = pcall(validate, arguments)
-  return ok and util.copy(arguments) or nil
+  local ok, value = pcall(validate, arguments)
+  return ok and util.copy(value) or nil
 end
 
+---@param ctx unknown
+---@return unknown
 local function session_id(ctx)
-  local context = type(ctx) == "table" and (ctx.context or ctx) or nil
-  return context and context.session_id or nil
+  local context = type(ctx) == "table" and (rawget(ctx, "context") or ctx) or nil
+  return type(context) == "table" and rawget(context, "session_id") or nil
 end
 
+---@param messages? Neoagent.Message[]
+---@return Neoagent.Plan?
 local function latest(messages)
+  ---@type table<string, Neoagent.JsonObject>
   local calls = {}
+  ---@type Neoagent.Plan?
   local current
   for _, message in ipairs(messages or {}) do
     if message.role == "assistant" then
+      ---@cast message Neoagent.AssistantMessage
       for _, block in ipairs(message.content or {}) do
         if block.type == "toolCall" and block.name == "update_plan"
             and type(block.id) == "string" then
@@ -58,8 +85,9 @@ local function latest(messages)
       end
     elseif message.role == "toolResult" and message.toolName == "update_plan"
         and message.isError ~= true then
+      ---@cast message Neoagent.ToolResultMessage
       local details = type(message.details) == "table"
-          and message.details.plan ~= nil and message.details or nil
+          and rawget(message.details, "plan") ~= nil and message.details or nil
       local value = accepted(calls[message.toolCallId] or details)
       if value then current = value end
     end
@@ -67,6 +95,8 @@ local function latest(messages)
   return current
 end
 
+---@param opts? Neoagent.ToolPresentationOptions
+---@return Neoagent.ToolPlanPresentation?
 local function presentation(opts)
   if type(opts) ~= "table" then return nil end
   if opts.state == "pending" or opts.state == "running" then
@@ -75,7 +105,7 @@ local function presentation(opts)
   if opts.state ~= "success" then return nil end
   local result = opts.result
   local details = result and type(result.details) == "table"
-      and result.details.plan ~= nil and result.details or nil
+      and rawget(result.details, "plan") ~= nil and result.details or nil
   local arguments = accepted(details or opts.arguments)
   if not arguments then return nil end
 
@@ -87,7 +117,9 @@ local function presentation(opts)
   }
 end
 
+---@return Neoagent.Tool<unknown>
 local function new()
+  ---@type table<unknown, Neoagent.Plan>
   local states = setmetatable({}, { __mode = "k" })
   return {
     name = "update_plan",
