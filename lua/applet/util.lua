@@ -17,6 +17,16 @@ function M.copy(value)
   return result
 end
 
+---@generic T
+---@param value T
+---@return T
+function M.copy_value(value)
+  if type(value) ~= "table" then return value end
+  local original = value
+  ---@cast original table
+  return M.copy(original) --[[@as T]]
+end
+
 -- This assertion name is recognized by the checker through runtime.special.
 ---@param condition unknown
 ---@param path string

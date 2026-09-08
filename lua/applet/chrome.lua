@@ -38,17 +38,7 @@ local M = {}
 ---@field restore fun()
 
 
----@generic T
----@param value T
----@return T
-local function copy_value(value)
-  if type(value) ~= "table" then return value end
-  local original = value
-  ---@cast original table
-  local result = util.copy(original)
-  ---@cast result T
-  return result
-end
+local copy_value = util.copy_value
 
 ---@param window? integer
 ---@return TypeGuard<integer>

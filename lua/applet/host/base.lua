@@ -172,15 +172,7 @@ local float_config_fields = {
   "zindex", "border", "focusable", "hide",
 }
 
----@generic T
----@param value T
----@return T
-local function copy_value(value)
-  if type(value) ~= "table" then return value end
-  local original = value
-  ---@cast original table
-  return util.copy(original) --[[@as T]]
-end
+local copy_value = util.copy_value
 
 ---@generic K: string|number
 ---@param value? table<K, unknown>
