@@ -4,10 +4,16 @@ local fake_model = require("tests.helpers.fake_model")
 local view_handles = require("tests.helpers.view_handles")
 
 describe("neoagent direct Agent Applets", function()
-  local neoagent
+  local neoagent = require("neoagent")
+  ---@type Neoagent.Agent[]
   local agents
+  ---@type Neoagent.NeoagentApplet[]
   local applets
+  ---@type string[]
   local paths
+
+  ---@type (fun())[]
+  local cleanups = {}
 
   before_each(function()
     package.loaded["neoagent"] = nil
@@ -19,9 +25,15 @@ describe("neoagent direct Agent Applets", function()
     for _, applet in ipairs(applets) do applet:destroy() end
     for _, agent in ipairs(agents) do agent:destroy() end
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
+    for _, cleanup in ipairs(cleanups) do cleanup() end
+    cleanups = {}
   end)
 
+  ---@param name string
+  ---@param model Neoagent.Model
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
   local function options(name, model, extra)
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
     local result = {
       name = name,
       workspace_trust = false,
@@ -45,25 +57,37 @@ describe("neoagent direct Agent Applets", function()
     return result
   end
 
+  ---@param name string
+  ---@param model Neoagent.Model
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
+  ---@param runtime Neoagent.AgentRuntimeOptions?
   local function make(name, model, extra, runtime)
     local agent = neoagent.new(options(name, model, extra), runtime)
     agents[#agents + 1] = agent
     return agent
   end
 
+  ---@param values Neoagent.Agent[]
+  ---@param opts Partial<Neoagent.AppletFromAgentsOptions>?
   local function window(values, opts)
-    opts = opts or {}
-    opts.agents = values
-    local applet = neoagent._new_applet(opts)
+    ---@type Neoagent.AppletFromAgentsOptions
+    local supplied = { agents = values }
+    for key, value in pairs(opts or {}) do supplied[key] = value end
+    local applet = neoagent._new_applet(supplied)
     applets[#applets + 1] = applet
     return applet
   end
 
+  ---@param keys Neoagent.UIMapping
   local function feed(keys)
+    keys = type(keys) == "table" and keys[1] or keys
+    assert(type(keys) == "string")
     vim.api.nvim_feedkeys(
       vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
   end
 
+  ---@param view Neoagent.View
+  ---@param value string
   local function submit(view, value)
     view:set_input(value)
     view:focus_input()
@@ -71,9 +95,10 @@ describe("neoagent direct Agent Applets", function()
     feed(type(mapping) == "table" and mapping[1] or mapping)
   end
 
+  ---@param view Neoagent.View
   local function transcript(view)
     return table.concat(vim.api.nvim_buf_get_lines(
-      view_handles.buffer(view, "transcript"), 0, -1, false), "\n")
+      (assert(view_handles.buffer(view, "transcript"))), 0, -1, false), "\n")
   end
 
   it("uses opaque identity and one retained Applet per Agent", function()
@@ -88,16 +113,16 @@ describe("neoagent direct Agent Applets", function()
     assert(owner:open())
 
     local first_applet = first:applet()
-    local first_view = owner:view()
-    first_view:set_input("first draft")
+    local first_view = assert(owner:view())
+    assert(first_view):set_input("first draft")
     assert.are.equal(second, owner:select(second:id()))
-    local second_view = owner:view()
+    local second_view = assert(owner:view())
     assert.are_not.equal(first_view, second_view)
-    assert.is_false(first_applet:is_open())
-    assert.is_true(second:applet():is_open())
-    assert.are.equal("", second_view:get_input())
+    assert.is_false(assert(first_applet):is_open())
+    assert.is_true(assert(second:applet()):is_open())
+    assert.are.equal("", assert(second_view):get_input())
 
-    second_view:set_input("second draft")
+    assert(second_view):set_input("second draft")
     assert.are.equal(first, owner:select(first:id()))
     assert.are.equal(first_view, owner:view())
     assert.are.equal("first draft", owner:get_input())
@@ -112,23 +137,36 @@ describe("neoagent direct Agent Applets", function()
     })
     local owner = window({ first, broken })
     assert(owner:open())
-    local first_view = owner:view()
-    first_view:set_input("retained")
+    local first_view = assert(owner:view())
+    assert(first_view):set_input("retained")
 
     local selected, err = owner:select(broken)
 
     assert.is_nil(selected)
-    assert.are.equal("model", err.kind)
+    assert.are.equal("model", assert(err).kind)
     assert.are.equal(first, owner:active_agent())
-    assert.is_true(first:applet():is_open())
-    assert.is_false(broken:applet():is_open())
+    assert.is_true(assert(first:applet()):is_open())
+    assert.is_false(assert(broken:applet()):is_open())
     assert.are.equal(first_view, owner:view())
-    assert.are.equal("retained", first_view:get_input())
+    assert.are.equal("retained", assert(first_view):get_input())
   end)
 
   it("drives an injected View through the Agent Applet", function()
+    ---@type Neoagent.TestInstanceView?
     local created
+    ---@param opts Neoagent.ViewOptions
+    ---@return Neoagent.View
     local function view_factory(opts)
+      ---@class Neoagent.TestInstanceView
+      ---@field input string
+      ---@field messages Neoagent.TranscriptMessage[]
+      ---@field message_updates integer
+      ---@field context Neoagent.AgentContext
+      ---@field events Neoagent.AgentEvent[]
+      ---@field opened boolean
+      ---@field destroyed? boolean
+      ---@field on_submit? fun(text: string): unknown
+      ---@field result? Neoagent.AgentCompletion
       local view = {
         input = "",
         messages = {},
@@ -143,17 +181,22 @@ describe("neoagent direct Agent Applets", function()
       function view:is_open() return self.opened end
       function view:destroy() self:close() self.destroyed = true end
       function view:get_input() return self.input end
+      ---@param value string
       function view:set_input(value) self.input = value return value end
+      ---@param value Neoagent.TranscriptMessage[]
       function view:set_messages(value)
         self.messages = value
         self.message_updates = self.message_updates + 1
       end
+      ---@param value Neoagent.AgentContext
       function view:set_context(value) self.context = value end
+      ---@param value Neoagent.AgentEvent
       function view:apply(value) self.events[#self.events + 1] = value end
+      ---@param value Neoagent.AgentCompletion
       function view:finish(value) self.result = value end
       function view:focus_input() return self.opened end
       created = view
-      return view
+      return view --[[@as Neoagent.View]]
     end
     local model = fake_model.new({ {
       events = { { type = "text_delta", text = "custom" } },
@@ -167,26 +210,30 @@ describe("neoagent direct Agent Applets", function()
     local renderer, renderer_err = owner:set_renderer(
       require("neoagent.ui.renderers").pi)
     assert.is_nil(renderer)
-    assert.matches("does not support Renderers", renderer_err.message)
+    assert.matches("does not support Renderers", assert(renderer_err).message)
 
-    local run = assert(created.on_submit("question"))
-    assert(vim.wait(1000, function() return run:is_done() and created.result end))
-    assert.are.equal("question", created.messages[1].content)
-    assert.are.equal("text_delta", created.events[1].type)
-    assert.is_true(created.result.ok)
+    local projected = assert(created)
+    local run = assert(assert(projected.on_submit)("question")) --[[@as Neoagent.AgentRun]]
+    assert(vim.wait(1000, function() return run:is_done() and projected.result end))
+    assert.are.equal("question", assert(projected.messages[1]).content)
+    assert.are.equal("text_delta", assert(projected.events[1]).type)
+    assert.is_true(assert(projected.result).ok)
 
-    local message_updates = created.message_updates
-    local event_updates = #created.events
+    local message_updates = projected.message_updates
+    local event_updates = #projected.events
     owner:close()
     assert(owner:open())
-    assert.are.equal(message_updates, created.message_updates)
-    assert.are.equal(event_updates, #created.events)
+    assert.are.equal(message_updates, projected.message_updates)
+    assert.are.equal(event_updates, #projected.events)
   end)
 
   it("keeps background streaming bound to its own retained View", function()
+    ---@type table<string, Neoagent.AwaitCallbacks<string>>
     local pending = {}
+    ---@param name string
     local function delayed(name)
-      local model = { api = "fake", provider = "fake", id = name }
+      local model = fake_model.new({})
+      model.id = name
       function model:stream(opts)
         return async.run(function(run)
           run:emit({ type = "text_delta", text = name .. " partial" })
@@ -207,12 +254,12 @@ describe("neoagent direct Agent Applets", function()
     local second = make("second", delayed("second"))
     local owner = window({ first, second })
     assert(owner:open())
-    local first_view = owner:view()
+    local first_view = assert(owner:view())
     submit(first_view, "for first")
     assert(vim.wait(1000, function() return pending.first ~= nil end))
 
     assert.are.equal(second, owner:select(second))
-    local second_view = owner:view()
+    local second_view = assert(owner:view())
     submit(second_view, "for second")
     assert(vim.wait(1000, function() return pending.second ~= nil end))
     assert.is_true(first:is_running())
@@ -220,7 +267,7 @@ describe("neoagent direct Agent Applets", function()
 
     pending.first.resolve("first reply")
     assert(vim.wait(1000, function() return not first:is_running() end))
-    assert.is_nil(transcript(second_view):find("first reply", 1, true))
+    assert.is_nil((transcript(second_view):find("first reply", 1, true)))
     assert.are.equal(first, owner:select(first))
     assert(vim.wait(1000, function()
       return transcript(first_view):find("first reply", 1, true) ~= nil
@@ -228,33 +275,39 @@ describe("neoagent direct Agent Applets", function()
 
     pending.second.resolve("second reply")
     assert(vim.wait(1000, function() return not second:is_running() end))
-    assert.are.equal("for first", first:get_session():messages()[1].content)
-    assert.are.equal("for second", second:get_session():messages()[1].content)
+    assert.are.equal("for first", assert(first:get_session():messages()[1]).content)
+    assert.are.equal("for second", assert(second:get_session():messages()[1]).content)
   end)
 
   it("keeps one explicit Provider Shell open across Agent selection", function()
-    local shell = { opened = false }
-    function shell:open() self.opened = true return true end
-    function shell:close() self.opened = false return true end
-    function shell:is_open() return self.opened end
-    function shell:toggle()
-      if self.opened then self:close() return false end
-      return self:open()
+    local config = require("neoagent.config").resolve({
+      default_registry = false,
+      providers = { fake = { api = "openai-completions",
+        base_url = "https://provider.test/v1", models = { test = {} } } },
+    })
+    local runtimes = assert(require("neoagent.provider_runtimes").compose(
+      config, { startup = false }))
+    local shell = require("neoagent.provider_shell").new({
+      config = config, runtimes = runtimes,
+      auth = require("tests.helpers.auth_manager").new(),
+    })
+    cleanups[#cleanups + 1] = function()
+      shell:destroy()
+      require("neoagent.provider_runtimes").destroy(runtimes)
     end
-    function shell:is_active() return false end
     local first = make("first", fake_model.new({}))
     local second = make("second", fake_model.new({}))
     local owner = window({ first, second }, { provider_shell = shell })
     assert(owner:open())
     assert(owner:set_provider_shell(true))
-    local first_view = owner:view()
+    local first_view = assert(owner:view())
     assert.is_true(owner:provider_shell_open())
 
     assert.are.equal(second, owner:select(second))
-    local second_view = owner:view()
+    local second_view = assert(owner:view())
     assert.are_not.equal(first_view, second_view)
     assert.is_true(owner:provider_shell_open())
-    assert.is_false(first:applet():is_open())
+    assert.is_false(assert(first:applet()):is_open())
 
     assert.are.equal(first, owner:select(first))
     assert.are.equal(first_view, owner:view())
@@ -262,14 +315,24 @@ describe("neoagent direct Agent Applets", function()
   end)
 
   it("does not infer a Provider Shell from an Agent's model services", function()
+    ---@type Neoagent.ProviderService
     local service = {
       id = "fake",
       name = "Fake",
       operations = {},
       state = function() return false end,
     }
+    local runtimes = assert(require("neoagent.provider_runtimes").compose({
+      providers = { fake = {
+        api = "fake", models = { first = {} }, catalog = {},
+        service = function() return service end,
+      } },
+    }, { startup = false }))
     local first = make("first", fake_model.new({}), nil, {
-      providers = { fake = service },
+      runtimes = runtimes,
+      destroy_runtimes = function()
+        require("neoagent.provider_runtimes").destroy(runtimes)
+      end,
     })
     local second = make("second", fake_model.new({}))
     local owner = window({ first, second })
@@ -277,7 +340,7 @@ describe("neoagent direct Agent Applets", function()
 
     local opened, err = owner:set_provider_shell(true)
     assert.is_nil(opened)
-    assert.matches("no Provider Shell", err.message)
+    assert.matches("no Provider Shell", assert(err).message)
     assert.is_false(owner:provider_shell_open())
   end)
 
@@ -288,21 +351,21 @@ describe("neoagent direct Agent Applets", function()
       result = fake_model.assistant({ {
         type = "text", text = table.concat(lines, "\n"),
       } }),
-    } }), { ui = { position = "center", card_max_lines = 100 } })
+    } }), { ui = { position = "center" } })
     local second = make("second", fake_model.new({}))
     local owner = window({ first, second })
     assert(owner:open())
-    local first_view = owner:view()
+    local first_view = assert(owner:view())
     submit(first_view, "fill transcript")
     assert(vim.wait(1000, function()
       return not first:is_running()
-        and vim.api.nvim_buf_line_count(view_handles.buffer(first_view, "transcript")) >= 30
+        and vim.api.nvim_buf_line_count((assert(view_handles.buffer(first_view, "transcript")))) >= 30
     end))
-    vim.api.nvim_win_call(view_handles.window(first_view, "transcript"), function()
+    vim.api.nvim_win_call((assert(view_handles.window(first_view, "transcript"))), function()
       vim.fn.winrestview({ lnum = 24, col = 0, topline = 18, leftcol = 0 })
     end)
     local before = vim.api.nvim_win_call(
-      view_handles.window(first_view, "transcript"), function() return vim.fn.winsaveview() end)
+      (assert(view_handles.window(first_view, "transcript"))), function() return vim.fn.winsaveview() end)
     local dialog = first:dialogs():show({
       placement = "float",
       title = "First Agent decision",
@@ -315,30 +378,30 @@ describe("neoagent direct Agent Applets", function()
     assert(vim.wait(1000, function()
       return first:dialogs():snapshot().active ~= nil
     end))
-    assert(vim.wait(1000, function() return first_view.dialog ~= nil end))
+    assert(vim.wait(1000, function() return assert(first_view).dialog ~= nil end))
     assert(vim.wait(1000, function()
       return view_handles.window(first_view, "dialog")
-        and vim.api.nvim_win_is_valid(view_handles.window(first_view, "dialog"))
+        and vim.api.nvim_win_is_valid((assert(view_handles.window(first_view, "dialog"))))
     end))
 
     assert.are.equal(second, owner:select(second))
-    local second_view = owner:view()
+    local second_view = assert(owner:view())
     assert.are_not.equal(first_view, second_view)
-    assert.is_nil(second_view.dialog)
+    assert.is_nil(assert(second_view).dialog)
     assert.are.equal(view_handles.window(second_view, "input"), vim.api.nvim_get_current_win())
 
     assert.are.equal(first, owner:select(first))
     assert(vim.wait(1000, function()
       return view_handles.window(first_view, "dialog")
-        and vim.api.nvim_win_is_valid(view_handles.window(first_view, "dialog"))
+        and vim.api.nvim_win_is_valid((assert(view_handles.window(first_view, "dialog"))))
         and vim.api.nvim_get_current_win() == view_handles.window(first_view, "dialog")
     end))
     local after = vim.api.nvim_win_call(
-      view_handles.window(first_view, "transcript"), function() return vim.fn.winsaveview() end)
+      (assert(view_handles.window(first_view, "transcript"))), function() return vim.fn.winsaveview() end)
     assert.are.equal(before.lnum, after.lnum)
     assert.are.equal(before.topline, after.topline)
     local request = first:dialogs():snapshot().active
-    assert(first:dialogs():choose(request.id, "continue"))
+    assert(first:dialogs():choose(assert(request).id, "continue"))
     assert(vim.wait(1000, function() return dialog:is_done() end))
   end)
 
@@ -354,14 +417,14 @@ describe("neoagent direct Agent Applets", function()
     } }), extra)
     local owner = window({ first, second })
     assert(owner:open())
-    local first_view = owner:view()
+    local first_view = assert(owner:view())
     submit(first_view, "first question")
     assert(vim.wait(1000, function()
       return first:get_session() and not first:is_running()
     end))
 
     assert.are.equal(second, owner:select(second))
-    local second_view = owner:view()
+    local second_view = assert(owner:view())
     assert.are.same({ "first question" }, owner:input_history())
     submit(second_view, "second question")
     assert(vim.wait(1000, function()
@@ -369,8 +432,8 @@ describe("neoagent direct Agent Applets", function()
     end))
     assert.are.same({ "second question", "first question" },
       owner:input_history())
-    assert.are.equal("", first_view:get_input())
-    assert.are.equal("", second_view:get_input())
+    assert.are.equal("", assert(first_view):get_input())
+    assert.are.equal("", assert(second_view):get_input())
 
     assert.are.equal(first, owner:select(first))
     assert.are.same({ "second question", "first question" },
@@ -406,7 +469,12 @@ describe("neoagent direct Agent Applets", function()
     assert.are.equal(second, neoagent._set_default(first))
     applets[#applets + 1] = neoagent.applet()
     assert.are.equal(first, neoagent.default())
-    assert.has_error(function() neoagent._set_default({}) end)
-    assert.has_error(function() neoagent._set_default_applet({}) end)
+    local invalid = {}
+    assert.has_error(function()
+      neoagent._set_default(invalid --[[@as Neoagent.Agent]])
+    end)
+    assert.has_error(function()
+      neoagent._set_default_applet(invalid --[[@as Neoagent.NeoagentApplet]])
+    end)
   end)
 end)
