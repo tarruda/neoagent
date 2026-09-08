@@ -43,12 +43,10 @@ tests/unit/http_recording_spec.lua
 tests/unit/http_replay_spec.lua
 tests/unit/llama_provider_spec.lua
 tests/unit/model_catalog_spec.lua
-tests/unit/model_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
 tests/unit/openai_codex_responses_spec.lua
 tests/unit/openai_completions_spec.lua
 tests/unit/openai_responses_spec.lua
-tests/unit/opencode_go_model_spec.lua
 tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
 tests/unit/profile_sessions_spec.lua
@@ -62,7 +60,6 @@ tests/unit/provider_state_spec.lua
 tests/unit/request_selection_spec.lua
 tests/unit/sandbox_platform_spec.lua
 tests/unit/sandbox_spec.lua
-tests/unit/semantic_message_spec.lua
 tests/unit/session_lifecycle_spec.lua
 tests/unit/session_spec.lua
 tests/unit/session_tree_spec.lua

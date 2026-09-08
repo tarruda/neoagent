@@ -2,6 +2,8 @@ local assert = require("luassert")
 local model_contract = require("neoagent.model")
 
 describe("neoagent runtime Models", function()
+  ---@param overrides? table<string, unknown>
+  ---@return table<string, unknown>
   local function model(overrides)
     return vim.tbl_extend("force", {
       api = "fake",
@@ -19,9 +21,9 @@ describe("neoagent runtime Models", function()
     local source = model()
     local capabilities = assert(model_contract.capabilities(source))
     capabilities.input[1] = "image"
-    capabilities.thinking.high.body.effort = "changed"
-    assert.are.same({ "text" }, source.input)
-    assert.are.equal("high", source.thinking.high.body.effort)
+    assert(assert(assert(capabilities.thinking).high).body).effort = "changed"
+    assert.are.same({ "text" }, rawget(source, "input"))
+    assert.are.equal("high", rawget(source, "thinking").high.body.effort)
 
     local validated = assert(model_contract.validate(source))
     assert.are.equal(source, validated)
@@ -46,19 +48,19 @@ describe("neoagent runtime Models", function()
     }) do
       local value, err = model_contract.validate(invalid)
       assert.is_nil(value)
-      assert.are.equal("model", err.kind)
+      assert.are.equal("model", assert(err).kind)
     end
     local ok, err = pcall(model_contract.assert, {}, "broken factory")
     assert.is_false(ok)
-    assert.matches("broken factory must return a complete Model", err)
+    assert.matches("broken factory must return a complete Model", tostring(err))
   end)
 
   it("removes configured thinking tombstones from runtime values", function()
     local value = assert(model_contract.validate(model({
       thinking = { low = false, high = {} },
     })))
-    assert.is_nil(value.thinking.low)
-    assert.are.same({}, value.thinking.high)
+    assert.is_nil(assert(value.thinking).low)
+    assert.are.same({}, assert(value.thinking).high)
   end)
 
   it("preserves a completed child's message when its parent cancels before awaiting", function()
@@ -70,11 +72,11 @@ describe("neoagent runtime Models", function()
       return model_contract.await_result(child)
     end)
     assert(vim.wait(1000, function() return run:is_done() end))
-    local result = run:result()
+    local result = assert(run:result())
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
-    assert.are.equal("aborted", result.message.stopReason)
-    assert.are.equal("completed output", result.message.content[1].text)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal("aborted", assert(result.message).stopReason)
+    assert.are.equal("completed output", assert(assert(result.message).content[1]).text)
     assert.are.equal("stop", original.message.stopReason)
   end)
 end)
