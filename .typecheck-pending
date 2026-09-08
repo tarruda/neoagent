@@ -14,7 +14,6 @@ lua/neoagent/sandbox/enforce.lua
 lua/neoagent/sandbox/escalation.lua
 lua/neoagent/sandbox/init.lua
 lua/neoagent/sandbox/platform.lua
-lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/ui.lua
 lua/neoagent/ui/applet_view.lua
 lua/neoagent/ui/panes/details.lua

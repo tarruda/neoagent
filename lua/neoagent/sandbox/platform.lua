@@ -27,10 +27,13 @@ local util = require("neoagent.util")
 ---@class Neoagent.SandboxServices<N = string|string[]>: Neoagent.SandboxCheckServices<N>
 ---@field process fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
 
----@class Neoagent.SandboxProcessRequest: Neoagent.ProcessOptions
----@field argv string[]
+---@class Neoagent.SandboxRequest: Neoagent.ProcessOptions
+---@field argv? string[]
 ---@field profile Neoagent.SandboxProfile
 ---@field env? table<string, string>
+
+---@class Neoagent.SandboxProcessRequest: Neoagent.SandboxRequest
+---@field argv string[]
 
 ---@class Neoagent.SandboxFilesystemOperation
 ---@field operation 'read'|'write_all'|'mkdirp'|'atomic_replace'
