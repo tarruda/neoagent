@@ -6,8 +6,19 @@ local util = require("neoagent.util")
 
 ---@alias Neoagent.TranscriptMessage Neoagent.ObservedMessage|Neoagent.TranscriptCompactionMessage
 
+---@class Neoagent.SessionLifecycleState
+---@field session Neoagent.Session
+---@field activity? Neoagent.AgentActivity
+---@field live_usage? Neoagent.LiveContextUsage
+---@field provider_status? string
+---@field inference_stats? {prompt_tokens_per_second?: number, generation_tokens_per_second?: number}
+---@field pending_events Neoagent.AgentEvent[]
+---@field last_result? Neoagent.AgentCompletion
+---@field steering Neoagent.Steering
+---@field session_selection_pending? boolean
+
 ---@class Neoagent.SessionLifecycleOptions
----@field state Neoagent.AgentState
+---@field state Neoagent.SessionLifecycleState
 ---@field workspace string
 ---@field restore_selection? boolean
 ---@field request_selection Neoagent.RequestSelection
