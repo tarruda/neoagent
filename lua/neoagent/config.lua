@@ -115,7 +115,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field name? string
 ---@field default_registry boolean
 ---@field shell_timeout number|false
----@field sandbox {enabled: boolean, profile?: Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>}
+---@field sandbox Neoagent.SandboxSettings<C>
 ---@field workspace_trust {path: string}|false
 ---@field default_thinking_level Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection
@@ -134,12 +134,15 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
 ---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
 ---@field _tools_supplied boolean
+---@field _sandbox_status? Neoagent.SandboxActivation
+---@field _sandbox_warning? string
+---@field _sandbox_system_prompt? string
 
 ---@class Neoagent.ConfigInput<C = unknown>
 ---@field name? string
 ---@field default_registry? boolean
 ---@field shell_timeout? number|false
----@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>}
+---@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSetting<Neoagent.ToolContext<C>>}
 ---@field workspace_trust? {path?: string}|false
 ---@field default_thinking_level? Neoagent.ThinkingLevel
 ---@field default_model? Neoagent.ModelSelection

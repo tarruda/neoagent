@@ -29,6 +29,12 @@ local M = {}
 
 ---@alias Neoagent.SandboxProfileSource<C> Neoagent.SandboxProfile|(fun(ctx: C): Neoagent.SandboxProfile)
 
+---@class Neoagent.SandboxProfileOverrides
+---@field id? string
+---@field filesystem? {default?: 'read', entries?: Neoagent.SandboxFilesystemEntry[]}
+---@field network? Neoagent.SandboxNetwork
+---@field environment? {clear?: boolean, inherit?: string[], set?: table<string, string>}
+
 ---@class Neoagent.SandboxProfileInput
 ---@field id? unknown
 ---@field filesystem? unknown

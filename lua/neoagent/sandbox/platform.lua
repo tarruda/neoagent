@@ -4,14 +4,18 @@ local util = require("neoagent.util")
 ---@field [string] boolean|string|number
 ---@field procfs? 'fresh'|'host'
 
----@class Neoagent.SandboxStatus
----@field ok boolean
----@field platform string
+---@class Neoagent.SandboxAvailability
+---@field ok? boolean
+---@field platform? string
 ---@field stage? string
 ---@field message? string
 ---@field degraded? boolean
 ---@field degraded_reason? string
 ---@field capabilities? Neoagent.SandboxCapabilities
+
+---@class Neoagent.SandboxStatus: Neoagent.SandboxAvailability
+---@field ok boolean
+---@field platform string
 
 ---@class Neoagent.SandboxFilesystemService: Neoagent.ToolFilesystem
 ---@field create_temp_directory fun(prefix?: string, directory?: string): string?, string?
