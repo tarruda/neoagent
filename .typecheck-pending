@@ -11,7 +11,6 @@ lua/applet/pane/compile.lua
 lua/applet/pane/input.lua
 lua/applet/pane/reconcile.lua
 lua/applet/presentation.lua
-lua/applet/presenter.lua
 lua/neoagent/agent.lua
 lua/neoagent/agent/run_lifecycle.lua
 lua/neoagent/agent/session_lifecycle.lua
