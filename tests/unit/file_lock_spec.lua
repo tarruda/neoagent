@@ -587,6 +587,7 @@ describe("neoagent file locks", function()
     local windows = require("neoagent.file_lock.windows")
     local calls = {}
     local contents = "legacy"
+    local failures = {}
     local ffi = {
       cdef = function() end,
       new = function(name)
@@ -596,21 +597,20 @@ describe("neoagent file locks", function()
       end,
       cast = function(_, value)
         if failures.cast then error("cast failed") end
-        return value
+        return type(value) == "table" and value.native or value
       end,
       string = function(buffer, size)
         return (buffer.value or ""):sub(1, size)
       end,
     }
     local identity = 7
-    local failures = {}
     local attributes = 128
     local kernel = {
       GetLastError = function() return failures.error or 5 end,
       CreateFileW = function(path, _, _, _, disposition)
         calls[#calls + 1] = "open:" .. path.path .. ":" .. disposition
         if failures.open or failures.verify_open and disposition == 3 then
-          return -1
+          return failures.cast and -1 or { native = -1 }
         end
         return disposition == 4 and 10 or 11
       end,
@@ -620,7 +620,7 @@ describe("neoagent file locks", function()
         return size
       end,
       CloseHandle = function(native)
-        calls[#calls + 1] = "close:" .. native
+        calls[#calls + 1] = "close:" .. tostring(native)
         if failures.close or failures.identity_close and native == 11 then
           return 0
         end
