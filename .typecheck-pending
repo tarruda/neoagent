@@ -25,7 +25,6 @@ tests/ui/view_spec.lua
 tests/ui/workspace_trust_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
 tests/unit/agent_loop_spec.lua
-tests/unit/anthropic_messages_spec.lua
 tests/unit/applet_consumer_boundary_spec.lua
 tests/unit/applet_image_spec.lua
 tests/unit/applet_layout_spec.lua
