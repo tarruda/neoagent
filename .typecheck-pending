@@ -10,7 +10,6 @@ lua/neoagent/profiles.lua
 lua/neoagent/provider_shell.lua
 lua/neoagent/ui.lua
 lua/neoagent/ui/applet_view.lua
-lua/neoagent/ui/panes/provider.lua
 lua/neoagent/ui/panes/transcript.lua
 lua/neoagent/ui/provider_shell.lua
 lua/neoagent/ui/switcher.lua
