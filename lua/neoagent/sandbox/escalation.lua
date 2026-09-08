@@ -3,19 +3,58 @@ local summaries = require("neoagent.sandbox.approval_summary")
 local util = require("neoagent.util")
 
 local M = {}
+---@alias Neoagent.SandboxShellKind 'posix'|'cmd'|'powershell'
+
+---@class Neoagent.SandboxPrefixRule
+---@field kind Neoagent.SandboxShellKind
+---@field shell string
+---@field tokens string[]
+
+---@class Neoagent.SandboxPrefixCandidate: Neoagent.SandboxPrefixRule
+---@field command string
+
+---@class Neoagent.SandboxEscalationRequest
+---@field justification string
+
+---@class Neoagent.SandboxDecisionMetadata
+---@field presenter_unavailable? boolean
+---@field input? string
+
+---@class Neoagent.SandboxEscalationOptions<C>
+---@field fs? Neoagent.ToolFilesystem
+---@field process? fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field shell? string|(fun(): string)
+---@field summarize? fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
+
+---@class Neoagent.SandboxEscalation<C>
+---@field _fs Neoagent.ToolFilesystem
+---@field _process fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+---@field _shell fun(): string
+---@field _summarize fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): string
+---@field _rules Neoagent.SandboxPrefixRule[]
+---@field _default_session table
+---@field _session_key? unknown
 local Escalation = {}
 Escalation.__index = Escalation
 
+---@param value unknown
+---@return TypeGuard<Neoagent.JsonObject>
 local function is_object(value)
   return type(value) == "table" and (next(value) == nil or not util.is_list(value))
 end
 
+---@generic T: table
+---@param ctx T
+---@return T
 local function copy_context(ctx)
   local copied = {}
   for key, value in pairs(ctx or {}) do copied[key] = value end
-  return copied
+  return copied --[[@as T]]
 end
 
+---@param value unknown
+---@param limit integer
+---@return string
 local function bounded(value, limit)
   value = tostring(value or "")
   value = value:gsub("[%z\1-\31\127]", function(character)
@@ -25,12 +64,16 @@ local function bounded(value, limit)
   return value
 end
 
+---@param ctx Neoagent.SandboxApprovalContext
+---@return string?
 local function workspace_cwd(ctx)
   local context = ctx and ctx.context
   local workspace = context and context.workspace or context
   return type(workspace) == "table" and workspace.cwd or nil
 end
 
+---@param shell unknown
+---@return Neoagent.SandboxShellKind?
 local function shell_kind(shell)
   if type(shell) ~= "string" then return end
   local name = shell:gsub("\\", "/"):match("([^/]+)$")
@@ -46,14 +89,21 @@ local function shell_kind(shell)
   end
 end
 
+---@param shell string
+---@return string
 local function shell_key(shell)
   return shell:gsub("\\", "/"):lower()
 end
 
+---@param buffer string[]
+---@param character string
 local function append(buffer, character)
   buffer[#buffer + 1] = character
 end
 
+---@param command string
+---@param partial? boolean
+---@return string[]?, string?
 local function parse_posix(command, partial)
   local tokens, buffer = {}, {}
   local quote, started, index = nil, false, 1
@@ -120,6 +170,9 @@ local function parse_posix(command, partial)
   return tokens
 end
 
+---@param command string
+---@param partial? boolean
+---@return string[]?, string?
 local function parse_cmd(command, partial)
   local tokens, buffer = {}, {}
   local quoted, started = false, false
@@ -158,6 +211,9 @@ local function parse_cmd(command, partial)
   return tokens
 end
 
+---@param command string
+---@param partial? boolean
+---@return string[]?, string?
 local function parse_powershell(command, partial)
   local tokens, buffer = {}, {}
   local quote, started, index = nil, false, 1
@@ -206,6 +262,10 @@ local function parse_powershell(command, partial)
   return tokens
 end
 
+---@param command unknown
+---@param kind Neoagent.SandboxShellKind
+---@param partial? boolean
+---@return string[]?, string?
 local function parse_command(command, kind, partial)
   if type(command) ~= "string" then return nil, "command must be a string" end
   if #command > 16384 then return nil, "command is too long" end
@@ -226,6 +286,9 @@ local function parse_command(command, kind, partial)
   return nil, "the configured shell is not supported"
 end
 
+---@param tokens string[]
+---@param prefix string[]
+---@return boolean
 local function starts_with(tokens, prefix)
   if #prefix > #tokens then return false end
   for index, token in ipairs(prefix) do
@@ -234,6 +297,7 @@ local function starts_with(tokens, prefix)
   return true
 end
 
+---@return table<string, Neoagent.JsonObject>
 local function escalation_properties()
   return {
     require_escalation = {
@@ -248,6 +312,8 @@ local function escalation_properties()
   }
 end
 
+---@param tool Neoagent.Tool<C>
+---@return Neoagent.Tool<C>
 function Escalation:_transform(tool)
   assert(type(tool) == "table", "tool must be a table")
   assert(type(tool.name) == "string" and tool.name ~= "",
@@ -290,6 +356,8 @@ function Escalation:_transform(tool)
   return copied
 end
 
+---@param tools Neoagent.Tool<C>[]
+---@return Neoagent.Tool<C>[]
 function Escalation:tools(tools)
   assert(type(tools) == "table" and util.is_list(tools),
     "sandbox tools must be a list")
@@ -298,6 +366,9 @@ function Escalation:tools(tools)
   return copied
 end
 
+---@param tool Neoagent.Tool<C>
+---@param arguments unknown
+---@return Neoagent.JsonObject?, string?, Neoagent.SandboxEscalationRequest?
 function Escalation:_extract(tool, arguments)
   if not is_object(arguments) then
     return nil, "tool arguments must be an object"
@@ -324,12 +395,16 @@ function Escalation:_extract(tool, arguments)
   return copied, nil, { justification = justification }
 end
 
+---@return string?, Neoagent.SandboxShellKind?
 function Escalation:_configured_shell()
   local ok, value = pcall(self._shell)
   if not ok or type(value) ~= "string" then return end
   return value, shell_kind(value)
 end
 
+---@param tool Neoagent.Tool<C>
+---@param arguments Neoagent.JsonObject
+---@return Neoagent.SandboxPrefixCandidate?
 function Escalation:_candidate(tool, arguments)
   if tool.name ~= "shell" or type(arguments.command) ~= "string" then return end
   local shell, kind = self:_configured_shell()
@@ -339,11 +414,16 @@ function Escalation:_candidate(tool, arguments)
   return {
     command = arguments.command,
     kind = kind,
-    shell = shell_key(shell),
+    shell = shell_key((assert(shell))),
     tokens = tokens,
   }
 end
 
+---@param tool Neoagent.Tool<C>
+---@param arguments Neoagent.JsonObject
+---@param escalation Neoagent.SandboxEscalationRequest
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.DialogRequest, Neoagent.SandboxPrefixCandidate?
 function Escalation:_request(tool, arguments, escalation, ctx)
   local agent = ctx and ctx.context and ctx.context.agent or "Neoagent"
   local summary
@@ -358,7 +438,7 @@ function Escalation:_request(tool, arguments, escalation, ctx)
     "",
     "Tool: " .. bounded(tool.name, 128),
   }
-  local cwd = workspace_cwd(ctx)
+  local cwd = workspace_cwd(ctx --[[@as Neoagent.SandboxApprovalContext]])
   if cwd then
     body[#body + 1] = "Working directory: " .. bounded(cwd, 2000)
   end
@@ -391,41 +471,51 @@ function Escalation:_request(tool, arguments, escalation, ctx)
   }, candidate
 end
 
+---@param value unknown
+---@param actions Neoagent.DialogAction[]
+---@return string?, Neoagent.Error?, Neoagent.SandboxDecisionMetadata?
+---@async
 local function await_decision(value, actions)
   local metadata = {}
   if type(value) == "table" and type(value.await) == "function" then
-    if value:is_done() then
-      value = value:result()
+    local run = value --[[@as Neoagent.DialogRun]]
+    if run:is_done() then
+      value = run:result()
     elseif require("neoagent.async").current() then
-      value = value:await()
+      value = run:await()
     else
-      value:cancel()
+      run:cancel()
       return nil, util.error("sandbox_approval",
         "Approval requires a running neoagent.async coroutine")
     end
   end
   if type(value) == "table" and value.ok ~= nil then
-    if not value.ok then
-      metadata.presenter_unavailable = value.presenter_unavailable == true
-      return nil, value.error
+    local response = value --[[@as Neoagent.DialogResult]]
+    if not response.ok then
+      metadata.presenter_unavailable = response.presenter_unavailable == true
+      return nil, response.error
         or util.error("sandbox_approval", "Dialog failed"), metadata
     end
-    metadata.input = value.input
-    value = value.action
+    metadata.input = response.input
+    value = response.action
   end
   if value == true then value = "approve" end
   if value == false then value = "deny" end
   local allowed = {}
   for _, action in ipairs(actions or {}) do allowed[action.id] = true end
-  if not allowed[value] then
+  if type(value) ~= "string" or not allowed[value] then
     return nil, util.error("sandbox_approval",
       "Dialog returned an invalid action"), metadata
   end
   return value, nil, metadata
 end
 
+---@param request Neoagent.DialogRequest
+---@param ctx Neoagent.ToolContext<C>
+---@return string?, Neoagent.Error?, Neoagent.SandboxDecisionMetadata?
+---@async
 function Escalation:_decision(request, ctx)
-  local dialogs = ctx and ctx.dialog
+  local dialogs = ctx and (ctx --[[@as Neoagent.DialogToolContext<C>]]).dialog
   if type(dialogs) ~= "table"
       or type(dialogs.show) ~= "function"
       or type(dialogs.choose_pending) ~= "function" then
@@ -439,6 +529,9 @@ function Escalation:_decision(request, ctx)
   return await_decision(value, request.actions)
 end
 
+---@param value string
+---@param reason? string
+---@return Neoagent.DialogRequest
 function Escalation:_prefix_dialog(value, reason)
   local body = "Edit the command prefix to remember for this session."
   if reason then
@@ -461,6 +554,9 @@ function Escalation:_prefix_dialog(value, reason)
   }
 end
 
+---@param value unknown
+---@param candidate Neoagent.SandboxPrefixCandidate
+---@return Neoagent.SandboxPrefixRule?, string?
 function Escalation:_validate_prefix(value, candidate)
   local tokens, parse_err = parse_command(value, candidate.kind)
   if not tokens then return nil, parse_err end
@@ -474,8 +570,13 @@ function Escalation:_validate_prefix(value, candidate)
   }
 end
 
+---@param candidate Neoagent.SandboxPrefixCandidate
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.SandboxPrefixRule|false|nil, Neoagent.Error?, Neoagent.SandboxDecisionMetadata?
+---@async
 function Escalation:_choose_prefix(candidate, ctx)
-  local value, reason = candidate.command
+  local value = candidate.command
+  local reason
   for _ = 1, 16 do
     local decision, decision_err, metadata =
       self:_decision(self:_prefix_dialog(value, reason), ctx)
@@ -484,16 +585,17 @@ function Escalation:_choose_prefix(candidate, ctx)
       return nil, decision_err, metadata
     end
     if decision == "cancel_prefix" then return false end
-    value = metadata.input
-    local rule, validation_err = self:_validate_prefix(value, candidate)
+    local input = metadata and metadata.input
+    local rule, validation_err = self:_validate_prefix(input, candidate)
     if rule then return rule end
     reason = validation_err
-    if type(value) ~= "string" then value = candidate.command end
+    value = type(input) == "string" and input or candidate.command
   end
   return nil, util.error("sandbox_approval",
     "Too many invalid command prefixes")
 end
 
+---@param ctx Neoagent.ToolContext<C>
 function Escalation:_sync_session(ctx)
   local context = ctx and ctx.context
   local key = type(context) == "table" and context.session_id
@@ -505,6 +607,7 @@ function Escalation:_sync_session(ctx)
   end
 end
 
+---@param rule Neoagent.SandboxPrefixRule
 function Escalation:_remember(rule)
   local retained = {}
   for _, existing in ipairs(self._rules) do
@@ -517,6 +620,9 @@ function Escalation:_remember(rule)
   self._rules = retained
 end
 
+---@param tool Neoagent.Tool<C>
+---@param arguments Neoagent.JsonObject
+---@return boolean
 function Escalation:_matches(tool, arguments)
   if tool.name ~= "shell" or type(arguments.command) ~= "string" then
     return false
@@ -525,15 +631,17 @@ function Escalation:_matches(tool, arguments)
   if not kind then return false end
   local tokens = parse_command(arguments.command, kind)
   if not tokens then return false end
-  local key = shell_key(shell)
+  local key = shell_key((assert(shell)))
   for _, rule in ipairs(self._rules) do
     if rule.shell == key and starts_with(tokens, rule.tokens) then return true end
   end
   return false
 end
 
+---@param ctx Neoagent.ToolContext<C>
+---@return Neoagent.ToolContext<C>, fun()
 function Escalation:_elevated_context(ctx)
-  local elevated = copy_context(ctx)
+  local elevated = copy_context(ctx) --[[@as Neoagent.ToolContext<C> & Neoagent.ToolCapabilities]]
   local active = true
   local function require_active()
     if not active then
@@ -541,30 +649,39 @@ function Escalation:_elevated_context(ctx)
         "Elevated capability has expired"), 0)
     end
   end
-  local filesystem = {}
-  for _, name in ipairs({
-    "create_temp", "read", "mkdirp", "write_all", "atomic_replace",
-  }) do
-    local method = name
-    filesystem[method] = function(...)
+  ---@generic F: function
+  ---@param operation F
+  ---@return F
+  local function expiring(operation)
+    return function(...)
       require_active()
-      return self._fs[method](...)
-    end
+      return operation(...)
+    end --[[@as F]]
   end
-  elevated.fs = filesystem
-  elevated.process = function(...)
-    require_active()
-    return self._process(...)
-  end
+  elevated.fs = {
+    create_temp = expiring(self._fs.create_temp),
+    read = expiring(self._fs.read),
+    mkdirp = expiring(self._fs.mkdirp),
+    write_all = expiring(self._fs.write_all),
+    atomic_replace = expiring(self._fs.atomic_replace),
+  }
+  elevated.process = expiring(self._process)
   return elevated, function() active = false end
 end
 
+---@param executors {restricted: Neoagent.ToolExecutor<C>, elevated: Neoagent.ToolExecutor<C>}
+---@return Neoagent.ToolExecutor<C>
 function Escalation:wrap(executors)
   assert(type(executors) == "table"
     and type(executors.restricted) == "function"
     and type(executors.elevated) == "function",
     "sandbox escalation requires restricted and elevated executors")
-  return function(tool, arguments, ctx)
+  ---@async
+  ---@param tool Neoagent.Tool<C>
+  ---@param arguments Neoagent.JsonObject
+  ---@param ctx Neoagent.ToolContext<C>
+  ---@return Neoagent.ToolResult
+  local function execute(tool, arguments, ctx)
     local stripped, strip_err, escalation = self:_extract(tool, arguments)
     if not stripped then
       return result.sandbox("Malformed sandbox options: " .. strip_err, {
@@ -591,7 +708,7 @@ function Escalation:wrap(executors)
         end
         local rule
         rule, approval_err, decision_metadata =
-          self:_choose_prefix(candidate, ctx)
+          self:_choose_prefix((assert(candidate)), ctx)
         if rule then
           self:_remember(rule)
           decision = "approve"
@@ -618,15 +735,16 @@ function Escalation:wrap(executors)
         approval_unavailable = true,
       })
     elseif decision == "deny_all" then
+      local dialogs = (ctx --[[@as Neoagent.DialogToolContext<C>]]).dialog
       local called, selected, select_err = pcall(
-        ctx.dialog.choose_pending, ctx.dialog,
+        dialogs.choose_pending, dialogs,
         "deny", "denied together with another sandbox request")
       if not called then
         select_err = util.normalize_error(selected, "sandbox_approval")
         selected = nil
       end
       if not selected then
-        return result.sandbox(select_err.message
+        return result.sandbox(assert(select_err).message
           .. "\nUnrestricted execution did not occur.", {
           approval_unavailable = true,
         })
@@ -641,15 +759,16 @@ function Escalation:wrap(executors)
       })
     end
     local elevated, revoke = self:_elevated_context(ctx)
-    local executed = { pcall(executors.elevated,
-      tool, stripped, elevated) }
+    local ok, value = pcall(executors.elevated, tool, stripped, elevated)
     revoke()
-    local ok = table.remove(executed, 1)
-    if not ok then error(executed[1], 0) end
-    return unpack(executed)
+    if not ok then error(value, 0) end
+    return value
   end
+  return execute
 end
 
+---@param next_execute_tool Neoagent.ToolExecutor<C>
+---@return Neoagent.ToolExecutor<C>
 function Escalation:bypass(next_execute_tool)
   assert(type(next_execute_tool) == "function",
     "sandbox bypass executor must be a function")
@@ -664,6 +783,9 @@ function Escalation:bypass(next_execute_tool)
   end
 end
 
+---@generic C
+---@param opts? Neoagent.SandboxEscalationOptions<C>
+---@return Neoagent.SandboxEscalation<C>
 function M.new(opts)
   opts = opts or {}
   assert(type(opts) == "table", "sandbox escalation options must be a table")
