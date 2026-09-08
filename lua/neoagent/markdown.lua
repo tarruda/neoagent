@@ -423,7 +423,7 @@ local function render_line(line, opts, previous)
   end
 
   if hashes then
-    local value = parse_inline(heading:gsub("%s+#+%s*$", ""))
+    local value = parse_inline((heading:gsub("%s+#+%s*$", "")))
     local prefix = #hashes >= 3 and hashes .. " " or ""
     local spans = shift_spans(value.spans, #prefix,
       "NeoagentMarkdownHeading")

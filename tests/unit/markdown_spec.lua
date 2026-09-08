@@ -8,6 +8,18 @@ local function groups(result)
 end
 
 describe("neoagent markdown", function()
+  it("renders underscore emphasis at the beginning of headings", function()
+    local result = markdown.render("# _first_\n## _second_ ##\n### _third_", { width = 80 })
+    assert.are.same({ "first", "second", "### third" }, result.lines)
+    local emphasis = {}
+    for _, span in ipairs(result.highlights) do
+      if span.group == "NeoagentMarkdownItalic" then
+        emphasis[#emphasis + 1] = { span.row, span.col, span.end_col }
+      end
+    end
+    assert.are.same({ { 0, 0, 5 }, { 1, 0, 6 }, { 2, 4, 9 } }, emphasis)
+  end)
+
   it("renders common block and inline Markdown", function()
     local result = markdown.render(table.concat({
       "# Heading",
