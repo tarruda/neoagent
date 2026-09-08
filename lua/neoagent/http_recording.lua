@@ -115,6 +115,7 @@ local M = {}
 ---@field _hrtime fun(): number
 ---@field _yq Neoagent.RecordingYq
 ---@field _exchanges table<Neoagent.RecordingExchange, boolean>
+---@field _pending_closes table<Neoagent.RegularFile, boolean>
 ---@field _pending_conversions integer
 ---@field _destroyed boolean
 local Recorder = {}
@@ -250,12 +251,39 @@ function Recorder:_append(exchange, event)
   return self:_write(exchange, encoded .. "\n")
 end
 
+---@param file Neoagent.RegularFile
+---@return boolean, string?
+function Recorder:_close_file(file)
+  local called, closed, err = pcall(file.close, file)
+  if called and closed then
+    self._pending_closes[file] = nil
+    return true
+  end
+  self._pending_closes[file] = true
+  return false, called and err or util.safe_message(closed)
+end
+
+---@param body Neoagent.RecordingBody
+---@param remove boolean
+---@return boolean, string?
+function Recorder:_close_body(body, remove)
+  local file = body.file
+  local called, closed, err = pcall(body.close, body, remove)
+  if file then self._pending_closes[file] = body.file and true or nil end
+  if not called then return false, util.safe_message(closed) end
+  return closed == true, err
+end
+
+function Recorder:_retry_closes()
+  for file in pairs(self._pending_closes) do self:_close_file(file) end
+end
+
 ---@param exchange Neoagent.RecordingExchange
 function Recorder:_abandon(exchange)
   exchange.failed = true
   exchange.finished = true
-  pcall(exchange.body.close, exchange.body, false)
-  if not exchange.closed then pcall(exchange.file.close, exchange.file) end
+  self:_close_body(exchange.body, false)
+  if not exchange.closed then self:_close_file(exchange.file) end
   exchange.closed = true
   self._exchanges[exchange] = nil
 end
@@ -288,6 +316,7 @@ end
 ---@return Neoagent.RecordingExchange?
 function Recorder:_start(operation, request, supplied_context)
   if self._destroyed then return nil end
+  self:_retry_closes()
   local context = merge_context(self._context, supplied_context)
   local workspace
   if context.workspace ~= nil then
@@ -453,7 +482,7 @@ function Recorder:_conversion_done(exchange, output)
   if output then
     local written, write_err
     if output.file then
-      local closed, close_err = output:close(false)
+      local closed, close_err = self:_close_body(output, false)
       if closed then
         written, write_err = vim.uv.fs_rename(output.path, exchange.final_path)
       else
@@ -530,7 +559,7 @@ function Recorder:_publish(exchange)
     settled = true
     local completed = pcall(self._conversion_done, self, exchange,
       success and output or nil)
-    pcall(output.close, output, false)
+    self:_close_body(output, false)
     self._pending_conversions = math.max(0, self._pending_conversions - 1)
     if not completed then report(self, "failed to publish converted recording " .. exchange.id) end
   end
@@ -606,7 +635,7 @@ function Recorder:_complete(exchange, result, operation)
     })
   end
   if not appended then return end
-  local body_closed = exchange.body:close(true)
+  local body_closed = self:_close_body(exchange.body, true)
   if not body_closed then
     self:_abandon(exchange)
     report(self, "failed to close response body for exchange " .. exchange.id)
@@ -627,7 +656,7 @@ function Recorder:_complete(exchange, result, operation)
   }
   if not self:_append(exchange, completion) then return end
   local verified = exchange.file:verify_path()
-  local closed, close_err = exchange.file:close()
+  local closed, close_err = self:_close_file(exchange.file)
   exchange.closed = true
   self._exchanges[exchange] = nil
   if exchange.failed or not verified or not closed then
@@ -647,6 +676,7 @@ function Recorder:_finish(exchange, result, operation)
     if exchange then self:_abandon(exchange) end
     report(self, "failed to finish an exchange")
   end
+  self:_retry_closes()
 end
 
 ---@generic T: table
@@ -736,7 +766,10 @@ end
 
 ---@return boolean
 function Recorder:destroy()
-  if self._destroyed then return false end
+  if self._destroyed then
+    self:_retry_closes()
+    return false
+  end
   self._destroyed = true
   local active = {}
   for exchange in pairs(self._exchanges) do active[#active + 1] = exchange end
@@ -749,6 +782,7 @@ function Recorder:destroy()
   if self._pending_conversions > 0 then
     vim.wait(5000, function() return self._pending_conversions == 0 end, 10)
   end
+  self:_retry_closes()
   return true
 end
 
@@ -791,6 +825,7 @@ function M.new(opts)
     _hrtime = opts.hrtime or vim.uv.hrtime,
     _yq = yq,
     _exchanges = {},
+    _pending_closes = {},
     _pending_conversions = 0,
     _destroyed = false,
   }, Recorder)

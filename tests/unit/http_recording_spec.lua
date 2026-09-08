@@ -358,6 +358,132 @@ describe("neoagent HTTP recording", function()
     end)
   end
 
+  for _, case in ipairs({
+    { resource = "response", retry = "completion" },
+    { resource = "response", retry = "completion", throws = true },
+    { resource = "response", retry = "next request" },
+    { resource = "response", retry = "destroy" },
+    { resource = "response", retry = "second destroy" },
+    { resource = "staging", retry = "completion" },
+    { resource = "staging", retry = "destroy", throws = true },
+    { resource = "staging", retry = "completion", finalization = true },
+    { resource = "converted", retry = "destroy" },
+  }) do
+    it("retains failed " .. case.resource .. " cleanup until " .. case.retry
+        .. (case.throws and " after a thrown close" or "")
+        .. (case.finalization and " after finalization" or ""), function()
+      local directory = tempdir()
+      directories[#directories + 1] = directory
+      local reports = {}
+      local recording = assert(require("neoagent.http_recording").new({
+        config = { enabled = true,
+          format = case.resource == "converted" and "yaml" or "json" },
+        directory = directory,
+        report = function(message) reports[#reports + 1] = message end,
+        yq = {
+          available = function() return true end,
+          convert = function(_, write, done)
+            done(write(string.rep("converted output\n", 100000)))
+          end,
+        },
+      }))
+      local identity = { provider = "example" }
+      local previous = recording:transport(transport({ "previous" }), identity)
+      assert.is_true(wait(assert(previous.request)({ request = {
+        url = "https://example.test/previous",
+      } })).ok)
+      local extension = case.resource == "converted" and ".yaml" or ".jsonl"
+      local previous_path = assert(files(directory, extension)[1])
+      local previous_bytes = assert(fs.read(previous_path))
+      local original_open = fs.open_regular
+      ---@type Neoagent.RegularFile?
+      local held
+      local close_held = function() end
+      local close_attempts = 0
+      local recovered = false
+      local ok, err = xpcall(function()
+        fs.open_regular = function(path, ...)
+          local file, open_err = original_open(path, ...)
+          local suffix = case.resource == "response" and ".ndjson.body"
+            or case.resource == "converted" and ".yaml.body" or ".partial.ndjson"
+          if file and not held and path:sub(-#suffix) == suffix then
+            held = file
+            local close = file.close
+            close_held = function() assert(close(assert(file))) end
+            if not case.finalization then
+              file.append = function() return nil, "synthetic write failure" end
+            end
+            function file:close()
+              close_attempts = close_attempts + 1
+              if not recovered then
+                if case.retry == "completion" then recovered = true end
+                if case.throws then error("synthetic close failure") end
+                return nil, "synthetic close failure"
+              end
+              return close(file)
+            end
+          end
+          return file, open_err
+        end
+        local payload = string.rep("response payload ", 100000)
+        local received = 0
+        local completed = 0
+        local captured = recording:transport(transport({ payload }), identity)
+        local run = assert(captured.request)({
+          request = { url = "https://example.test/failed" },
+          on_chunk = function(chunk) received = received + #chunk end,
+          on_done = function() completed = completed + 1 end,
+        })
+        assert.is_true(wait(run).ok)
+        assert.are.equal(#payload, received)
+        assert.are.equal(1, completed)
+        assert.is_true(#reports > 0)
+        assert.are.equal(previous_bytes, assert(fs.read(previous_path)))
+        assert.are.equal(1, #files(directory, extension))
+        local file = assert(held)
+        if case.retry ~= "completion" then
+          assert.is_table((file:stat()))
+          local attempts = close_attempts
+          assert.is_true(attempts > 0 and attempts < 10)
+          if case.retry == "second destroy" then
+            assert.is_true(recording:destroy())
+            assert.is_table((file:stat()))
+            assert.is_true(close_attempts > attempts)
+          end
+          recovered = true
+          if case.retry == "next request" then
+            ---@type Neoagent.ByteBackend
+            local next_backend = {
+              request = function()
+                assert.is_nil((file:stat()))
+                return async.run(function()
+                  return { ok = true, response = { status = 200, headers = {} } }
+                end)
+              end,
+            }
+            local next_recorded = recording:transport(next_backend, identity)
+            assert.is_true(wait(assert(next_recorded.request)({ request = {
+              url = "https://example.test/next",
+            } })).ok)
+          else
+            assert.are.equal(case.retry ~= "second destroy", recording:destroy())
+          end
+        end
+        assert.is_nil((file:stat()))
+        assert.is_true(close_attempts >= 2)
+        local attempts = close_attempts
+        recording:destroy()
+        assert.are.equal(attempts, close_attempts)
+        assert.are.equal(1, completed)
+      end, debug.traceback)
+      fs.open_regular = original_open
+      recovered = true
+      recording:destroy()
+      close_held()
+      assert(ok, err)
+    end)
+  end
+
   it("validates an explicit, disabled-by-default recording configuration", function()
     local defaults = config.resolve({ default_registry = false })
     assert.is_false(defaults.recording.enabled)
