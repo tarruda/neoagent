@@ -26,7 +26,14 @@ local M = {}
 ---@field width? integer
 ---@field height? integer
 
----@class Applet.ImageResource: Applet.PngInfo, Applet.ImageContent
+---@class Applet.ImageMetadata
+---@field id string
+---@field width integer
+---@field height integer
+
+---@class Applet.ImageResource: Applet.ImageMetadata, Applet.PngInfo, Applet.ImageContent
+---@field width integer
+---@field height integer
 ---@field id string
 ---@field data string
 

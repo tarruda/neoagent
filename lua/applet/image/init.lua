@@ -48,14 +48,17 @@ local util = require("applet.util")
 ---@field placements Applet.ImageRequest[]
 ---@field signature Applet.ImagePresentation
 
----@class Applet.ImageMetadata
----@field id string
----@field width integer
----@field height integer
-
 ---@alias Applet.ImageStatus "available"|"unavailable"
 
----@class Applet.ImageSnapshot
+---@class Applet.ImageState
+---@field status Applet.ImageStatus
+---@field generation integer
+---@field cell_width? number
+---@field cell_height? number
+---@field resources table<string, Applet.ImageMetadata>
+---@field presented? table<string, string>
+
+---@class Applet.ImageSnapshot: Applet.ImageState
 ---@field backend string
 ---@field status Applet.ImageStatus
 ---@field generation integer

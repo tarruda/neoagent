@@ -28,6 +28,7 @@ local util = require("applet.util")
 
 ---@class Applet.HostRecord: Applet.BufferRecord, Applet.FocusRecord, Applet.ChromeRecord
 ---@field key string
+---@field edit_revision? string|number
 ---@field descriptor Applet.MountDescriptor
 ---@field adopted_window_options? Applet.Options
 ---@field chrome? Applet.WindowChrome
@@ -45,11 +46,11 @@ local util = require("applet.util")
 ---@field chrome boolean
 ---@field view boolean
 
----@class Applet.HostInteraction: Applet.InputInteraction<Applet.Pane>
+---@class Applet.HostInteraction: Applet.PaneInteraction<Applet.Pane>
 ---@field revision integer
 ---@field scopes Applet.LayoutScope[]
 
----@class Applet.HostSurface: Applet.InputSurface<Applet.Pane>
+---@class Applet.HostSurface: Applet.PaneSurface<Applet.Pane>
 ---@field interaction Applet.HostInteraction
 ---@field owns_buffer boolean
 ---@field domain Applet.InteractionDomain

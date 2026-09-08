@@ -58,18 +58,18 @@ local Mode = require("applet.mode")
 ---@field dispatch fun(event: Applet.ActionEvent<P>): unknown
 ---@field pass? fun(event: Applet.ActionEvent<P>): unknown
 
----@class Applet.InputSurface<P>
+---@class Applet.InputSurface<P, I = Applet.InputInteraction<P>>
 ---@field buffer integer
 ---@field window? fun(): integer?
----@field interaction? Applet.InputInteraction<P>
+---@field interaction? I
 
 ---@class Applet.SavedMapping: table<string, unknown>
 ---@field desc? string
 
----@class Applet.InputPane<P>
+---@class Applet.InputPane<P, L = Applet.InputLayout, U = Applet.InputSurface<P>>
 ---@field id integer
----@field layout? Applet.InputLayout
----@field surface? Applet.InputSurface<P>
+---@field layout? L
+---@field surface? U
 ---@field handlers table<string, fun(event: Applet.ActionEvent<P>): unknown>
 ---@field committed_generation integer
 ---@field mapping_description? string

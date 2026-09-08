@@ -88,7 +88,7 @@ local canvas = require("applet.pane.canvas")
 ---@class Applet.CompiledChrome: Applet.ChromeValue
 ---@field options Applet.Options
 
----@class Applet.PaneLayout: Applet.Fragment
+---@class Applet.PaneLayout: Applet.Fragment, Applet.InputLayout
 ---@field regions Applet.CompiledRegion[]
 ---@field binding_pairs Applet.MappingPair[]
 ---@field region_document? {shape: Applet.DocumentShape, changed_first?: integer}
@@ -103,15 +103,7 @@ local canvas = require("applet.pane.canvas")
 ---@field image_cell_width number
 ---@field image_cell_height number
 
----@class Applet.PaneCompileImages
----@field status Applet.ImageStatus
----@field generation integer
----@field cell_width? number
----@field cell_height? number
----@field resources table<string, Applet.ImageMetadata>
----@field presented? table<string, string>
-
----@class Applet.ResolvedCompileImages: Applet.PaneCompileImages
+---@class Applet.ResolvedCompileImages: Applet.ImageState
 ---@field cell_width number
 ---@field cell_height number
 ---@field presented table<string, string>
@@ -186,8 +178,8 @@ local canvas = require("applet.pane.canvas")
 ---@field height? integer
 ---@field extent? Applet.PaneExtent
 ---@field tree Applet.Tree|Applet.Node
----@field theme? Applet.Theme
----@field images? Applet.PaneCompileImages
+---@field theme? Applet.CompileTheme
+---@field images? Applet.ImageState
 ---@field retain_scene? boolean
 ---@field stats? Applet.PaneCompileStats
 ---@field cache? Applet.PaneCompileCache
@@ -196,7 +188,7 @@ local canvas = require("applet.pane.canvas")
 ---@class Applet.PaneReuseOptions
 ---@field tree Applet.Tree|Applet.Node
 ---@field previous Applet.PaneLayout
----@field theme? Applet.Theme
+---@field theme? Applet.CompileTheme
 
 ---@class Applet.PaneProjectOptions
 ---@field layout Applet.PaneLayout
@@ -206,7 +198,7 @@ local canvas = require("applet.pane.canvas")
 ---@field width integer
 ---@field height? integer
 ---@field extent Applet.PaneExtent
----@field theme Applet.Theme
+---@field theme Applet.CompileTheme
 ---@field images Applet.ResolvedCompileImages
 ---@field image_keys table<string, boolean>
 ---@field layer_cache? table<string, Applet.LayerCacheEntry>
@@ -623,7 +615,7 @@ local function validate_action(action, path)
 end
 
 ---@param run Applet.TextRun
----@param theme Applet.Theme
+---@param theme Applet.CompileTheme
 ---@param path string
 ---@return string?
 local function resolve_group(run, theme, path)
@@ -640,7 +632,7 @@ local function resolve_group(run, theme, path)
 end
 
 ---@param run Applet.TextRun
----@param theme Applet.Theme
+---@param theme Applet.CompileTheme
 ---@param path string
 ---@return Applet.TokenGroup[]
 local function resolve_run_groups(run, theme, path)
@@ -2491,7 +2483,7 @@ compile_node = function(node, ctx, path)
 end
 
 ---@param chrome? Applet.ChromeOptions
----@param theme Applet.Theme
+---@param theme Applet.CompileTheme
 ---@return Applet.CompiledChrome
 local function compile_chrome(chrome, theme)
   chrome = chrome or {}

@@ -226,10 +226,11 @@ function M.update(provider, surface, retained)
   end
 end
 
----@param current Applet.Scene
+---@generic S: Applet.Scene
+---@param current S
 ---@param key string
 ---@param position Applet.ScenePosition
----@return Applet.Scene
+---@return S
 function M.reposition(current, key, position)
   applet_expect(type(current) == "table" and current.retained == true,
     "scene", "must be retained placement state", 3)
@@ -269,7 +270,7 @@ function M.reposition(current, key, position)
   if position.zindex ~= nil then layer.zindex = position.zindex end
   result.layers[index] = layer
   result.revision = (current.revision or 0) + 1
-  return result
+  return result --[[@as S]]
 end
 
 ---@param provider? Applet.SceneProvider

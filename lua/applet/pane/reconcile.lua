@@ -143,7 +143,7 @@ local util = require("applet.util")
 ---@field image_owner? Applet.ImageOwner
 
 ---@class Applet.ImageRedrawOptions: Applet.ReconcileRefreshOptions
----@field callback fun()
+---@field callback fun(): boolean?
 ---@field image_namespace integer
 
 ---@class Applet.ScreenRectangle

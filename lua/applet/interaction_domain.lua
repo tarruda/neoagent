@@ -284,8 +284,9 @@ function Domain:destroy()
 end
 
 ---@class Applet.DomainModule
+---@field new fun(opts?: Applet.DomainOptions): Applet.InteractionDomain
 local module = { new = Domain.new }
 
 return setmetatable(module, {
   __call = function(_, opts) return Domain.new(opts) end,
-})
+}) --[[@as Applet.DomainModule]]

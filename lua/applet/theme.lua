@@ -40,7 +40,11 @@ local ansi_palette = {
 local Palette = {}
 Palette.__index = Palette
 
----@class Applet.Theme
+---@class Applet.CompileTheme
+---@field generation integer
+---@field group fun(self: Applet.CompileTheme, style: string): string
+
+---@class Applet.Theme: Applet.CompileTheme
 ---@field name string
 ---@field resource_prefix string
 ---@field groups table<string, string>
