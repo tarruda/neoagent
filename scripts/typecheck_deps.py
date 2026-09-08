@@ -156,6 +156,15 @@ def main():
         "---@class luassert:luassert.internal\n"
         "---@overload fun<T, M, L, A>(value: T, message?: M, level?: L, ...: A...): std.NotNull<T>, M?, L?, A...\n"
         "local luassert = {}\n")
+    # Plenary's unary assertions accept an optional failure message.
+    # Their aliases share these declarations (is_true, is_nil, and so on).
+    for assertion in ("True", "False", "Boolean", "Number", "String", "Table",
+                      "Nil", "Userdata", "Function", "Thread", "truthy", "falsy"):
+        original = f"function internal.{assertion}(value) end"
+        corrected = ("---@param message? string\n"
+                     f"function internal.{assertion}(value, message) end")
+        correct_definition(ROOT / ".deps/typecheck/luassert/library/luassert.lua",
+                           original, corrected)
     correct_luv_lstat()
     # v0.10.2 forwards clear_env directly to uv.spawn, which accepts a list.
     correct_definition(ROOT / ".deps/typecheck/neovim/runtime/lua/vim/_system.lua",
