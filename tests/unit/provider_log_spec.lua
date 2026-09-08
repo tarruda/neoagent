@@ -2,9 +2,10 @@ local assert = require("luassert")
 local fs = require("neoagent.fs")
 local provider_log = require("neoagent.provider_log")
 
-local bit = bit or bit32
+local bit = require("bit")
 
 describe("neoagent provider diagnostics", function()
+  ---@type string[]
   local paths = {}
   local notify = vim.notify
 
@@ -49,6 +50,7 @@ describe("neoagent provider diagnostics", function()
     local path = vim.fn.tempname()
     paths[#paths + 1] = path
     assert(fs.write_all(path, "file", "w"))
+    ---@type string[]
     local messages = {}
     local log = provider_log.callback(path .. "/codex.log", {
       report = function(message) messages[#messages + 1] = message end,
@@ -57,7 +59,7 @@ describe("neoagent provider diagnostics", function()
     log({ type = "request_failed" })
     log({ type = "request_failed" })
     assert(vim.wait(1000, function() return #messages == 1 end))
-    assert.matches("diagnostic log failed", messages[1])
+    assert.matches("diagnostic log failed", (assert(messages[1])))
   end)
 
   it("reports diagnostic lock failures", function()
@@ -66,14 +68,17 @@ describe("neoagent provider diagnostics", function()
     assert(fs.mkdirp(directory))
     local path = directory .. "/codex.log"
     local original_open = vim.uv.fs_open
-    vim.uv.fs_open = function(candidate, ...)
+    ---@param candidate string
+    ---@param flags uv.fs_open.flags
+    ---@param mode integer
+    vim.uv.fs_open = function(candidate, flags, mode)
       if candidate == path .. ".lock" then return nil, "EACCES: denied" end
-      return original_open(candidate, ...)
+      return original_open(candidate, flags, mode)
     end
     local ok, err = provider_log.append(path, { type = "request_failed" })
     vim.uv.fs_open = original_open
     assert.is_nil(ok)
-    assert.matches("EACCES", err)
+    assert.matches("EACCES", (assert(err)))
   end)
 
   it("rotates a full diagnostic log before appending", function()

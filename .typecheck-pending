@@ -61,7 +61,6 @@ tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua
 tests/unit/http_replay_spec.lua
 tests/unit/http_spec.lua
-tests/unit/huggingface_spec.lua
 tests/unit/llama_auth_spec.lua
 tests/unit/llama_client_spec.lua
 tests/unit/llama_provider_spec.lua
@@ -85,7 +84,6 @@ tests/unit/provider_catalog_sources_spec.lua
 tests/unit/provider_codex_spec.lua
 tests/unit/provider_credentials_spec.lua
 tests/unit/provider_deepseek_spec.lua
-tests/unit/provider_log_spec.lua
 tests/unit/provider_models_spec.lua
 tests/unit/provider_openai_spec.lua
 tests/unit/provider_opencode_go_spec.lua
@@ -103,7 +101,6 @@ tests/unit/session_spec.lua
 tests/unit/session_tree_spec.lua
 tests/unit/steering_spec.lua
 tests/unit/switcher_spec.lua
-tests/unit/tool_schema_spec.lua
 tests/unit/tools_spec.lua
 tests/unit/ui_renderer_spec.lua
 tests/unit/workspace_settings_spec.lua

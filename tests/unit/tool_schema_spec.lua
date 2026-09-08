@@ -14,7 +14,7 @@ describe("neoagent.api.tool_schema", function()
       additionalProperties = false,
     }
     local normalized = assert(tool_schema.validate_definition(source))
-    normalized.properties.path.type = "number"
+    assert(assert(normalized.properties).path).type = "number"
     assert.are.equal("string", source.properties.path.type)
 
     for _, invalid in ipairs({
@@ -42,7 +42,7 @@ describe("neoagent.api.tool_schema", function()
       if invalid.mutate then invalid.mutate(invalid.value) end
       local value, err = tool_schema.validate_definition(invalid.value)
       assert.is_nil(value)
-      assert.matches(invalid.pattern, err)
+      assert.matches(invalid.pattern, (assert(err)))
     end
   end)
 
@@ -129,12 +129,13 @@ describe("neoagent.api.tool_schema", function()
       minItems = 2,
     }, {})
     assert.is_false(valid)
-    assert.matches("arguments must contain at least 2 items", message)
+    assert.matches("arguments must contain at least 2 items", (assert(message)))
 
     valid, message = tool_schema.validate({ enum = { true } }, false)
     assert.is_false(valid)
-    assert.matches("arguments must be one of true", message)
+    assert.matches("arguments must be one of true", (assert(message)))
 
+    ---@type string[]
     local required = {}
     for index = 1, 21 do required[index] = "field_" .. index end
     valid, message = tool_schema.validate({
@@ -142,26 +143,26 @@ describe("neoagent.api.tool_schema", function()
       required = required,
     }, vim.empty_dict())
     assert.is_false(valid)
-    assert.matches("field_20 is required", message)
-    assert.is_nil(message:find("field_21 is required", 1, true))
-    assert.matches("Further schema mismatches were omitted", message)
+    assert.matches("field_20 is required", (assert(message)))
+    assert.is_nil((assert(message):find("field_21 is required", 1, true)))
+    assert.matches("Further schema mismatches were omitted", (assert(message)))
 
     valid, message = tool_schema.validate({ type = "number" }, math.huge)
     assert.is_false(valid)
-    assert.matches("must be a number", message)
+    assert.matches("must be a number", (assert(message)))
 
     valid, message = tool_schema.validate({
       type = "object",
       properties = { nested = { type = "object" } },
     }, vim.json.decode([[{"nested":[]}]]))
     assert.is_false(valid)
-    assert.matches("nested must be a JSON object", message)
+    assert.matches("nested must be a JSON object", (assert(message)))
 
     valid, message = tool_schema.validate({
       type = "object",
       properties = { nested = { type = "array" } },
     }, vim.json.decode([[{"nested":{}}]]))
     assert.is_false(valid)
-    assert.matches("nested must be an array", message)
+    assert.matches("nested must be an array", (assert(message)))
   end)
 end)
