@@ -1,9 +1,9 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
 local config = require("neoagent.config")
 local Applet = require("applet")
 local view_handles = require("tests.helpers.view_handles")
 
+---@return Neoagent.DialogRequest
 local function transcript_dialog()
   return {
     placement = "transcript",
@@ -26,6 +26,7 @@ local function transcript_dialog()
   }
 end
 
+---@return Neoagent.DialogRequest
 local function floating_dialog()
   return {
     placement = "float",
@@ -43,6 +44,7 @@ local function floating_dialog()
   }
 end
 
+---@return Neoagent.DialogRequest
 local function floating_confirm_dialog()
   return {
     placement = "float",
@@ -55,30 +57,41 @@ local function floating_confirm_dialog()
   }
 end
 
+---@param value Neoagent.DialogRequest
+---@param id string
+---@param queued integer?
+---@return Neoagent.ActiveDialogSnapshot
 local function snapshot(value, id, queued)
-  value = vim.deepcopy(value)
-  value.id = id
-  return { active = value, queue_count = queued or 0 }
+  local dialog = vim.deepcopy(value) --[[@as Neoagent.Dialog]]
+  dialog.id = id
+  return { active = dialog, queue_count = queued or 0 }
 end
 
+---@param buffer integer
 local function buffer_text(buffer)
   return table.concat(
     vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
 end
 
+---@param keys string
 local function feed(keys)
   vim.api.nvim_feedkeys(
     vim.api.nvim_replace_termcodes(keys, true, false, true),
     "x", false)
 end
 
+---@param buffer integer
+---@param mode string
+---@param lhs string
 local function has_mapping(buffer, mode, lhs)
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buffer, mode)) do
+    ---@cast mapping {lhs: string}
     if mapping.lhs == lhs then return true end
   end
   return false
 end
 
+---@param window integer
 local function footer(window)
   local value = vim.api.nvim_win_get_config(window).footer or ""
   if type(value) == "string" then return value end
@@ -87,8 +100,10 @@ local function footer(window)
   end, value))
 end
 
+---@param pane Applet.Pane
+---@param key string
 local function target_is_highlighted(pane, key)
-  local target = assert(pane.layout.targets[key])
+  local target = assert(assert(pane.layout).targets[key])
   local rectangle = assert(target.rectangles[1])
   local buffer = assert(pane:native().buffer)
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
@@ -102,6 +117,7 @@ local function target_is_highlighted(pane, key)
 end
 
 describe("neoagent generic dialog UI", function()
+  ---@type Neoagent.View[], Neoagent.NeoagentApplet[], Neoagent.Agent[], Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>[]
   local views, windows, agents, runs = {}, {}, {}, {}
 
   before_each(function()
@@ -132,7 +148,7 @@ describe("neoagent generic dialog UI", function()
       end,
     })
     views[#views + 1] = view
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     view:set_input("half-typed prompt")
     assert.are.equal(view_handles.window(view, "input"), vim.api.nvim_get_current_win())
 
@@ -178,23 +194,23 @@ describe("neoagent generic dialog UI", function()
       end,
     })
     views[#views + 1] = view
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     view:set_dialog(snapshot(transcript_dialog(), "native"))
 
     local pane = assert(view:pane("transcript"))
     local first = "dialog:native:widget:actions:item:run"
-    local target = assert(pane.layout.targets[first])
+    local target = assert(assert(pane.layout).targets[first])
     local rectangle = assert(target.rectangles[1])
     local window = view_handles.window(view, "transcript")
     local line = vim.api.nvim_buf_get_lines(
-      view_handles.buffer(view, "transcript"), rectangle.row,
+      (assert(view_handles.buffer(view, "transcript"))), rectangle.row,
       rectangle.row + 1, false)[1]
-    vim.api.nvim_win_set_cursor(window, { rectangle.row + 1, #line - 1 })
+    vim.api.nvim_win_set_cursor((assert(window)), { rectangle.row + 1, #line - 1 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
       buffer = view_handles.buffer(view, "transcript"),
     })
     assert.are.equal(first, assert(pane:focused_target()).key)
-    vim.api.nvim_win_set_cursor(window, { rectangle.row + 1, 0 })
+    vim.api.nvim_win_set_cursor((assert(window)), { rectangle.row + 1, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
       buffer = view_handles.buffer(view, "transcript"),
     })
@@ -211,14 +227,14 @@ describe("neoagent generic dialog UI", function()
     view = require("neoagent.ui").new({
       config = config.resolve({ ui = { position = "center" } }).ui,
       on_dialog_action = function(id, action)
-        return dialogs:choose(id, action)
+        return (dialogs:choose(id, action))
       end,
       on_dialog_dismiss = function(id)
-        return dialogs:cancel(id)
+        return (dialogs:cancel(id))
       end,
     })
     views[#views + 1] = view
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     local detach = dialogs:subscribe(function(snapshot)
       view:set_dialog(snapshot.active and snapshot or nil)
     end)
@@ -236,28 +252,32 @@ describe("neoagent generic dialog UI", function()
       end,
     })
     local cwd = assert(vim.uv.cwd())
-    local run = async.run(function()
-      return execute(shell, {
-        command = "touch ~/random && ls -la ~/random",
-        options = {
-          require_escalation = true,
-          escalation_justification = table.concat({
-            "User requested testing the escalation path for creating a file",
-            "in the home directory, which is read-only inside the sandbox.",
-          }, " "),
+    local fake_model = require("tests.helpers.fake_model")
+    local model = fake_model.new({
+      { result = fake_model.assistant({ {
+        type = "toolCall", id = "escalate", name = "shell",
+        arguments = {
+          command = "touch ~/random && ls -la ~/random",
+          options = {
+            require_escalation = true,
+            escalation_justification = table.concat({
+              "User requested testing the escalation path for creating a file",
+              "in the home directory, which is read-only inside the sandbox.",
+            }, " "),
+          },
         },
-      }, {
-        dialog = dialogs,
-        context = {
-          agent = "Neo",
-          session_id = {},
-          workspace = require("neoagent.workspace").new({
-            root = cwd,
-            cwd = cwd,
-          }),
-        },
-      })
-    end)
+      } }, "toolUse") },
+      { result = fake_model.assistant({ { type = "text", text = "done" } }) },
+    })
+    local run = require("neoagent.agent_loop").run({
+      model = model, messages = {}, tools = { shell },
+      execute_tool = require("neoagent.dialog").wrap(dialogs, execute),
+      commit_message = function() return true end,
+      context = {
+        agent = "Neo", session_id = {},
+        workspace = require("neoagent.workspace").new({ root = cwd, cwd = cwd }),
+      },
+    })
     runs[#runs + 1] = run
     assert(vim.wait(1000, function()
       return dialogs:snapshot().active ~= nil
@@ -273,16 +293,20 @@ describe("neoagent generic dialog UI", function()
       expected = deny,
       focused = pane:focused_target(),
       cursor = vim.api.nvim_win_get_cursor(
-        view_handles.window(view, "transcript")),
+        (assert(view_handles.window(view, "transcript")))),
     }))
     assert.are.equal("NeoagentCardFocus",
-      pane.layout.targets[deny].focus_style)
+      assert(pane.layout).targets[deny].focus_style)
     assert.is_true(target_is_highlighted(pane, deny))
 
     feed("<CR>")
     assert(vim.wait(1000, function() return run:is_done() end, 5))
     assert.is_false(elevated)
-    assert.is_true(run:result().details.sandbox.denied_by_user)
+    local result = assert(run:result())
+    assert(result.ok)
+    local denied = assert(result.new_messages[2])
+    assert(denied.role == "toolResult")
+    assert.is_true(assert(assert(denied.details).sandbox).denied_by_user)
     detach()
   end)
 
@@ -292,7 +316,7 @@ describe("neoagent generic dialog UI", function()
       on_dialog_action = function() end,
     })
     views[#views + 1] = view
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     view:set_dialog(snapshot(transcript_dialog(), "normal"))
     assert.are.equal(view_handles.window(view, "transcript"), vim.api.nvim_get_current_win())
     vim.api.nvim_feedkeys("i", "x", false)
@@ -311,11 +335,11 @@ describe("neoagent generic dialog UI", function()
     view:set_messages({ { role = "assistant", content = {
       { type = "text", text = table.concat(history, "\n") },
     } } })
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     local transcript_window = view_handles.window(view, "transcript")
     view:focus_transcript()
-    vim.api.nvim_win_set_cursor(transcript_window, { 1, 0 })
-    vim.api.nvim_win_call(transcript_window, function() vim.cmd("normal! zt") end)
+    vim.api.nvim_win_set_cursor((assert(transcript_window)), { 1, 0 })
+    vim.api.nvim_win_call((assert(transcript_window)), function() vim.cmd("normal! zt") end)
     view:set_input("retained draft")
     view:focus_input()
 
@@ -336,7 +360,7 @@ describe("neoagent generic dialog UI", function()
 
     local rows = {}
     for _, action in ipairs(request.actions) do
-      local target = assert(pane.layout.targets[
+      local target = assert(assert(pane.layout).targets[
         "dialog:sandbox:widget:actions:item:" .. action.id])
       local rectangle = assert(target.rectangles[1])
       rows[#rows + 1] = {
@@ -347,7 +371,7 @@ describe("neoagent generic dialog UI", function()
     assert.is_true(rows[1].first < rows[2].first)
     assert.is_true(rows[2].first < rows[3].first)
     local visible = vim.api.nvim_win_call(
-      transcript_window, function()
+      (assert(transcript_window)), function()
         return {
           vim.fn.line("w0"),
           vim.fn.line("w$"),
@@ -374,7 +398,7 @@ describe("neoagent generic dialog UI", function()
       end,
     })
     views[#views + 1] = view
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     view:set_input("retained draft")
     view:set_dialog(snapshot(transcript_dialog(), "first"))
 
@@ -390,7 +414,7 @@ describe("neoagent generic dialog UI", function()
     assert.is_true(pane_input.dispatch(transcript, "n", "J"))
     assert.are.equal("dialog:first:widget:actions:item:edit",
       assert(transcript:focused_target()).key)
-    vim.api.nvim_win_call(view_handles.window(view, "transcript"),
+    vim.api.nvim_win_call((assert(view_handles.window(view, "transcript"))),
       function() vim.cmd("normal! j") end)
     assert.are.equal("dialog:first:widget:actions:item:cancel",
       assert(transcript:focused_target()).key)
@@ -423,7 +447,7 @@ describe("neoagent generic dialog UI", function()
       role = "user",
       content = "Existing transcript",
     } })
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     view:set_context({ steering = { "first queued message" } })
     local value = snapshot(transcript_dialog(), "first", 1)
     view:set_dialog(value)
@@ -432,7 +456,7 @@ describe("neoagent generic dialog UI", function()
     assert.are.equal("nofile", vim.bo[buffer].buftype)
     assert.is_false(vim.bo[buffer].modifiable)
     assert.are.equal(buffer,
-      vim.api.nvim_win_get_buf(view_handles.window(view, "transcript")))
+      vim.api.nvim_win_get_buf((assert(view_handles.window(view, "transcript")))))
     assert.are.equal(view_handles.window(view, "transcript"),
       vim.api.nvim_get_current_win())
     local text = buffer_text(buffer)
@@ -451,7 +475,7 @@ describe("neoagent generic dialog UI", function()
     }) do
       assert.is_not_nil(text:find(expected, 1, true), expected)
     end
-    assert.matches("Waiting for response", footer(view_handles.window(view, "transcript")))
+    assert.matches("Waiting for response", footer((assert(view_handles.window(view, "transcript")))))
     assert.is_nil(view.spinner_timer)
     local function status_text()
       local parts = {}
@@ -477,9 +501,9 @@ describe("neoagent generic dialog UI", function()
     view:close()
     assert.is_true(vim.api.nvim_buf_is_valid(buffer))
     assert.is_table(view.dialog)
-    assert.is_true(view:open())
+    assert.is_true((view:open()))
     assert.is_true(vim.api.nvim_buf_is_valid(
-      view_handles.buffer(view, "transcript")))
+      (assert(view_handles.buffer(view, "transcript")))))
     assert.are.equal(buffer, view_handles.buffer(view, "transcript"))
     view:set_dialog(nil)
     assert.is_nil(view:pane("dialog"))
@@ -488,6 +512,7 @@ describe("neoagent generic dialog UI", function()
 
   it("applies the active Renderer theme to shared dialog components", function()
     local responses = {}
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "dialog-test",
       theme = Applet.Theme.new({ groups = {
@@ -523,7 +548,7 @@ describe("neoagent generic dialog UI", function()
 
     view:set_dialog(snapshot(transcript_dialog(), "transcript"))
     assert.matches("Run this operation",
-      buffer_text(view_handles.buffer(view, "transcript")))
+      buffer_text((assert(view_handles.buffer(view, "transcript")))))
     feed("y")
     assert.are.same({ "transcript", "run" }, responses[1])
 
@@ -537,7 +562,7 @@ describe("neoagent generic dialog UI", function()
     assert.matches("Approve operation", title)
     assert.are.equal("DialogTestTitle",
       vim.api.nvim_win_get_config(window).title[1][2])
-    assert.matches("Allow this operation", buffer_text(view_handles.buffer(view, "dialog")))
+    assert.matches("Allow this operation", buffer_text((assert(view_handles.buffer(view, "dialog")))))
     local replacement = vim.tbl_extend("force", renderer, {
       name = "replacement-dialog-test",
       theme = Applet.Theme.new({ groups = {
@@ -561,7 +586,7 @@ describe("neoagent generic dialog UI", function()
       vim.api.nvim_win_get_config(window).title[1][2])
     assert.are.equal(window, vim.api.nvim_get_current_win())
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
-    assert.is_true(has_mapping(view_handles.buffer(view, "dialog"), "n", "n"))
+    assert.is_true(has_mapping((assert(view_handles.buffer(view, "dialog"))), "n", "n"))
     feed("n")
     assert.are.same({ "float", "deny" }, responses[2])
   end)
@@ -648,14 +673,14 @@ describe("neoagent generic dialog UI", function()
       agents = { first, second }
       local window = require("neoagent.applet")._from_agents({
         agents = agents,
-        config = config.resolve({}).ui,
+        ui = config.resolve({}).ui,
       })
       windows[#windows + 1] = window
       assert(window:open())
       local dialogs = first:dialogs()
 
       local one = dialogs:show(transcript_dialog())
-      local one_id = dialogs:snapshot().active.id
+      local one_id = assert(dialogs:snapshot().active).id
       local two = dialogs:show(transcript_dialog())
       assert(vim.wait(1000, function()
         local view = window:view()
@@ -666,32 +691,32 @@ describe("neoagent generic dialog UI", function()
       feed("y")
       assert(vim.wait(1000, function()
         local view = window:view()
-        return one:is_done() and view.dialog
+        return one:is_done() and view and view.dialog
           and view.dialog.active.id ~= one_id
       end, 5))
-      assert.are.equal("run", one:result().action)
+      assert.are.equal("run", assert(one:result()).action)
       feed("n")
       assert(vim.wait(1000, function() return two:is_done() end, 5))
-      assert.are.equal("cancel", two:result().action)
-      assert.is_nil(window:view().dialog)
+      assert.are.equal("cancel", assert(two:result()).action)
+      assert.is_nil(assert(window:view()).dialog)
 
       local dismissed = dialogs:show(floating_dialog())
       assert(vim.wait(1000, function()
         return view_handles.window(window:view(), "dialog") ~= nil
       end, 5))
-      vim.api.nvim_win_close(view_handles.window(window:view(), "dialog"), true)
+      vim.api.nvim_win_close((assert(view_handles.window(window:view(), "dialog"))), true)
       assert(vim.wait(1000, function() return dismissed:is_done() end, 5))
-      assert.is_false(dismissed:result().ok)
+      assert.is_false(assert(dismissed:result()).ok)
       assert.are.equal("dialog dismissed by user",
-        dismissed:result().error.message)
+        assert(assert(dismissed:result()).error).message)
 
       local pending = dialogs:show(transcript_dialog())
       window:destroy()
       assert.is_false(pending:is_done())
       first:destroy()
       assert(vim.wait(1000, function() return pending:is_done() end, 5))
-      assert.is_false(pending:result().ok)
-      assert.is_true(pending:result().presenter_unavailable)
+      assert.is_false(assert(pending:result()).ok)
+      assert.is_true(assert(pending:result()).presenter_unavailable)
     end)
 
   it("keeps each dialog source with its owning Agent Applet",
@@ -721,7 +746,7 @@ describe("neoagent generic dialog UI", function()
       agents = { first, second }
       local window = require("neoagent.applet")._from_agents({
         agents = agents,
-        config = config.resolve({}).ui,
+        ui = config.resolve({}).ui,
       })
       windows[#windows + 1] = window
       assert(window:open())
@@ -729,19 +754,19 @@ describe("neoagent generic dialog UI", function()
 
       local request = transcript_dialog()
       local pending = dialogs:show(request)
-      local id = dialogs:snapshot().active.id
+      local id = assert(dialogs:snapshot().active).id
       assert(vim.wait(1000, function()
         local view = window:view()
         return view and view.dialog and view.dialog.active.id == id
       end, 5))
 
-      local first_view = window:view()
+      local first_view = assert(window:view())
       assert(window:select(second))
       local second_view = window:view()
       assert.are_not.equal(first_view, second_view)
-      assert.is_nil(second_view.dialog)
+      assert.is_nil(assert(second_view).dialog)
       assert.is_nil(view_handles.buffer(second_view, "dialog"))
-      assert.are.equal(id, dialogs:snapshot().active.id)
+      assert.are.equal(id, assert(dialogs:snapshot().active).id)
 
       assert(window:select(first))
       assert(vim.wait(1000, function()
@@ -750,10 +775,10 @@ describe("neoagent generic dialog UI", function()
       assert.are.equal(view_handles.window(first_view, "transcript"),
         vim.api.nvim_get_current_win())
       assert.are.equal("dialog:" .. id .. ":widget:actions:item:run",
-        assert(first_view:pane("transcript"):focused_target()).key)
+        assert(assert(assert(first_view):pane("transcript")):focused_target()).key)
       feed("y")
       assert(vim.wait(1000, function() return pending:is_done() end, 5))
-      assert.are.equal("run", pending:result().action)
+      assert.are.equal("run", assert(pending:result()).action)
     end)
 
   it("fails a dialog when a custom View cannot present it", function()
@@ -792,8 +817,8 @@ describe("neoagent generic dialog UI", function()
     }
     local window = require("neoagent.applet")._from_agents({
       agents = agents,
-      config = config.resolve({}).ui,
-      _view = function() return view end,
+      ui = config.resolve({}).ui,
+      _view = function() return view --[[@as Neoagent.View]] end,
     })
     windows[#windows + 1] = window
     assert(window:open())
@@ -801,7 +826,7 @@ describe("neoagent generic dialog UI", function()
     local pending = dialogs:show(transcript_dialog())
     assert(vim.wait(1000, function() return pending:is_done() end, 5))
     assert.are.equal(1, set_dialog_calls)
-    assert.is_false(pending:result().ok)
-    assert.is_true(pending:result().presenter_unavailable)
+    assert.is_false(assert(pending:result()).ok)
+    assert.is_true(assert(pending:result()).presenter_unavailable)
   end)
 end)
