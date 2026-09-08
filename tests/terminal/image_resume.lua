@@ -10,12 +10,16 @@ local source_path = assert(vim.env.NEOAGENT_IMAGE_RESUME_SOURCE)
 local persistence = assert(vim.env.NEOAGENT_IMAGE_RESUME_PERSISTENCE)
 local workspace = assert(vim.env.NEOAGENT_IMAGE_RESUME_WORKSPACE)
 
+---@param path string
+---@param value unknown
 local function publish(path, value)
   local temporary = path .. ".tmp"
   assert(vim.fn.writefile({ vim.json.encode(value) }, temporary) == 0)
   assert(vim.uv.fs_rename(temporary, path))
 end
 
+---@param path string
+---@return string
 local function read_file(path)
   local descriptor = assert(vim.uv.fs_open(path, "r", 0))
   local stat = assert(vim.uv.fs_fstat(descriptor))
@@ -24,6 +28,9 @@ local function read_file(path)
   return data
 end
 
+---@param content Neoagent.AssistantBlock[]
+---@param stop_reason? string
+---@return Neoagent.AssistantMessage
 local function assistant(content, stop_reason)
   return {
     role = "assistant",
@@ -141,16 +148,18 @@ assert(session:append(assistant({
   },
 })))
 
+---@type Neoagent.Model
 local model = {
   api = "fake-api",
   provider = "fake",
   id = "test",
   input = { "text", "image" },
+  stream = function()
+    error("the image resume harness must not make model requests", 0)
+  end,
 }
-function model:stream()
-  error("the image resume harness must not make model requests", 0)
-end
 
+---@type string[]
 local errors = {}
 local neoagent = require("neoagent")
 local applet = neoagent.setup({
@@ -184,11 +193,14 @@ assert(applet:is_open())
 local view = assert(applet:view())
 local pane = assert(view.transcript.pane)
 local images = assert(view.image_system)
-local backend = assert(images.backend)
+local backend = images.backend --[[@as Applet.Kitty]]
 local navigated = false
+---@type number?
 local action_started
+---@type number?
 local stable_since
 local finishing = false
+---@type number
 local last_state = 0
 
 local function current_placements()
@@ -203,6 +215,7 @@ local function current_placements()
   return result
 end
 
+---@param phase string
 local function snapshot(phase)
   local native = pane:native()
   local window = native and native.window
@@ -215,7 +228,7 @@ local function snapshot(phase)
   local position
   if window and image then
     local line = vim.api.nvim_buf_get_lines(
-      native.buffer, image.row, image.row + 1, false)[1] or ""
+      assert(assert(native).buffer), image.row, image.row + 1, false)[1] or ""
     position = vim.fn.screenpos(window, image.row + 1,
       require("applet.util").byte_col(line, image.col) + 1)
   end
@@ -253,7 +266,7 @@ local function current_phase()
   return "draft"
 end
 
-local timer = vim.uv.new_timer()
+local timer = assert(vim.uv.new_timer())
 local started = vim.uv.hrtime()
 timer:start(5, 5, vim.schedule_wrap(function()
   if finishing then return end
@@ -264,7 +277,7 @@ timer:start(5, 5, vim.schedule_wrap(function()
       view = current_view
       pane = assert(view.transcript.pane)
       images = assert(view.image_system)
-      backend = assert(images.backend)
+      backend = images.backend --[[@as Applet.Kitty]]
     end
     local state = snapshot(current_phase())
     local now = vim.uv.hrtime()
@@ -320,7 +333,7 @@ timer:start(5, 5, vim.schedule_wrap(function()
     pcall(publish, done_path, { phase = "error", error = err })
     timer:stop()
     timer:close()
-    vim.api.nvim_err_writeln(err)
+    vim.api.nvim_err_writeln(tostring(err))
     vim.schedule(function() vim.cmd("cquit 1") end)
   end
 end))
