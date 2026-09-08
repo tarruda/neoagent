@@ -2,13 +2,18 @@ local assert = require("luassert")
 local codex = require("neoagent.auth.openai_codex")
 local http_replay = require("tests.helpers.http_replay")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("OpenAI Codex OAuth HTTP integration", function()
+  ---@type Neoagent.TestHttpReplay[]
   local scenarios = {}
+  ---@type Neoagent.TestCallbackNetwork & {restore: fun()}
   local network
   before_each(function() network = require("tests.helpers.callback_connections").install() end)
 
@@ -23,7 +28,10 @@ describe("OpenAI Codex OAuth HTTP integration", function()
       { path = "tests/recordings/openai/codex_oauth-01.yaml", body_subset = true, headers_subset = true },
     })
     scenarios[#scenarios + 1] = scenario
-    local callback, challenge
+    ---@type string?
+    local callback
+    ---@type string?
+    local challenge
     local method = codex.new({ auth_base_url = scenario.url, http = scenario })
     local run = method.login({
       prompt = function(prompt, done)
@@ -32,26 +40,26 @@ describe("OpenAI Codex OAuth HTTP integration", function()
       end,
       notify = function(event)
         assert.are.equal("auth_url", event.type)
-        challenge = event.url:match("[?&]code_challenge=([^&]+)")
-        assert.matches("code_challenge_method=S256", event.url)
-        local state = event.url:match("[?&]state=([^&]+)")
+        challenge = assert(event.url):match("[?&]code_challenge=([^&]+)")
+        assert.matches("code_challenge_method=S256", (assert(event.url)))
+        local state = assert(event.url):match("[?&]state=([^&]+)")
         for _, target in ipairs({
           "/wrong", "/auth/callback?code=wrong&state=wrong",
-          "/auth/callback?state=" .. state,
-          "/auth/callback?code=integration-code&state=" .. state,
+          "/auth/callback?state=" .. assert(state),
+          "/auth/callback?code=integration-code&state=" .. assert(state),
         }) do
           callback = network.request(1455, "GET " .. target .. " HTTP/1.1\r\nHost: localhost\r\n\r\n")
         end
       end,
     })
     local result = wait(run)
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("integration-account", result.credential.accountId)
-    assert.matches("200 OK", callback)
+    assert.matches("200 OK", (assert(callback)))
     assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
-    assert.are.equal(scenario.url .. "/oauth/token", scenario.requests[1].url)
-    local verifier = assert(scenario.requests[1].body:match("code_verifier=([^&]+)"))
-    local hash = vim.fn.sha256(vim.uri_decode(verifier)):gsub("..", function(hex) return string.char(tonumber(hex, 16)) end)
+    assert.are.equal(scenario.url .. "/oauth/token", assert(scenario.requests[1]).url)
+    local verifier = assert(assert(assert(scenario.requests[1]).body):match("code_verifier=([^&]+)"))
+    local hash = vim.fn.sha256(vim.uri_decode(verifier)):gsub("..", function(hex) return string.char((assert(tonumber(hex, 16)))) end)
     assert.are.equal(challenge, (vim.base64.encode(hash):gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")))
   end)
 
@@ -61,17 +69,18 @@ describe("OpenAI Codex OAuth HTTP integration", function()
     })
     scenarios[#scenarios + 1] = scenario
     require("neoagent.auth.local_callback").listen = function() return nil, "address in use" end
+    ---@type string?
     local state
     local result = wait(codex.new({ auth_base_url = scenario.url, http = scenario }).login({
-      notify = function(event) state = assert(event.url:match("[?&]state=([^&]+)")) end,
+      notify = function(event) state = assert(assert(event.url):match("[?&]state=([^&]+)")) end,
       prompt = function(prompt, done)
         if prompt.type == "select" then done.resolve("browser") else
           assert.are.equal("manual_code", prompt.type)
-          done.resolve("http://localhost:1455/auth/callback?code=integration-code&state=" .. state)
+          done.resolve("http://localhost:1455/auth/callback?code=integration-code&state=" .. assert(state))
         end
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("integration-account", result.credential.accountId)
   end)
 
@@ -100,6 +109,7 @@ describe("OpenAI Codex OAuth HTTP integration", function()
       transport = scenario,
       base_url = scenario.url .. "/backend-api",
     })
+    ---@type string?
     local provider_status
     local result = wait(manager:wrap(model, "codex"):stream({
       system_prompt = "Be useful.",
@@ -108,11 +118,11 @@ describe("OpenAI Codex OAuth HTTP integration", function()
         if event.type == "provider_status" then provider_status = event.text end
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Codex works", result.text)
     assert.are.equal("5h 75% left · weekly 50% left", provider_status)
     assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
-    assert.are.equal(scenario.url .. "/backend-api/codex/responses", scenario.requests[1].url)
+    assert.are.equal(scenario.url .. "/backend-api/codex/responses", assert(scenario.requests[1]).url)
   end)
 
   it("reports connection failures from authentication requests", function()
@@ -124,7 +134,7 @@ describe("OpenAI Codex OAuth HTTP integration", function()
       request = { url = replay.url .. "/oauth/token" },
     }))
     assert.is_false(result.ok)
-    assert.are.equal("transport", result.error.kind)
+    assert.are.equal("transport", assert(result.error).kind)
     replay.assert_consumed()
     replay.close()
   end)

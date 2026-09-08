@@ -1,11 +1,8 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 tests/integration/http_recording_spec.lua
 tests/integration/llama_http_spec.lua
-tests/integration/openai_codex_oauth_spec.lua
 tests/integration/openai_http_spec.lua
 tests/integration/opencode_go_recovery_spec.lua
-tests/integration/provider_surfaces_spec.lua
-tests/integration/recorded_providers_spec.lua
 tests/native_sandbox/sandbox_spec.lua
 tests/terminal/image_harness.lua
 tests/terminal/image_resume.lua
