@@ -3,8 +3,28 @@ local profile_module = require("neoagent.sandbox.profile")
 local path_module = require("neoagent.sandbox.path")
 local util = require("neoagent.util")
 
+---@class Neoagent.SandboxExecOptions<C>: Neoagent.ProcessOptions, Neoagent.SandboxCheckServices<string>
+---@field env? table<string, string>
+---@field profile Neoagent.SandboxProfileSource<C?>
+---@field ctx? C
+---@field os? string
+---@field platforms? Neoagent.SandboxPlatforms<C?>
+---@field paths? Neoagent.SandboxPaths
+---@field process? fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult
+
+---@class Neoagent.SandboxInfo: Neoagent.SandboxAvailability
+---@field enabled? boolean
+---@field active? boolean
+
+---@class Neoagent.SandboxInfoConfig
+---@field sandbox? {enabled?: boolean}
+---@field _sandbox_status? Neoagent.SandboxInfo
+
 local M = {}
 
+---@generic C
+---@param opts Neoagent.SandboxExecOptions<C>
+---@return Neoagent.SandboxExecutionServices
 local function services(opts)
   return {
     fs = opts.fs or require("neoagent.fs"),
@@ -17,6 +37,10 @@ local function services(opts)
   }
 end
 
+---@generic C
+---@param argv string[]
+---@param opts Neoagent.SandboxExecOptions<C>
+---@return Neoagent.ProcessResult
 function M.sandbox_exec(argv, opts)
   opts = opts or {}
   assert(type(argv) == "table" and util.is_list(argv) and #argv > 0,
@@ -43,22 +67,29 @@ function M.sandbox_exec(argv, opts)
   if type(selected.compile) == "function" then
     profile = selected.compile(profile, opts.ctx, active_services)
   end
-  local request = util.copy(opts)
+  local request = util.copy(opts) --[[@as Neoagent.SandboxProcessRequest]]
   request.profile = profile
   request.argv = vim.list_slice(argv)
   return selected.exec(request, active_services)
 end
 
+---@generic C
+---@param opts Neoagent.SandboxEnforcementOptions<C>
+---@return Neoagent.SandboxEnforcement<C>
 function M.new(opts)
   return require("neoagent.sandbox.enforce").new(opts)
 end
 
+---@param agent unknown
+---@return Neoagent.SandboxInfo
 function M.info(agent)
   local configured = agent
   if type(agent) == "table" and type(agent.config) == "function" then
-    configured = agent:config()
+    local source = agent --[[@as {config: fun(self: table): Neoagent.SandboxInfoConfig}]]
+    configured = source:config()
   end
   configured = type(configured) == "table" and configured or {}
+  ---@cast configured Neoagent.SandboxInfoConfig
   local enabled = configured.sandbox
     and configured.sandbox.enabled == true or false
   local recorded = util.copy(configured._sandbox_status or {})
@@ -67,6 +98,8 @@ function M.info(agent)
   return recorded
 end
 
+---@param status? Neoagent.SandboxInfo
+---@return string
 function M.format_info(status)
   status = status or {}
   local lines = {
