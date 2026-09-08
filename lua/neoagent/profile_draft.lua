@@ -9,12 +9,12 @@ local M = {}
 ---@field profile Neoagent.Profile
 ---@field workspace string
 ---@field applet Neoagent.AgentApplet
----@field options? Neoagent.ConfigInput
+---@field options? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 ---@field auth? Neoagent.AuthManager
 ---@field runtimes? Neoagent.ProviderRuntimes
 
 ---@class Neoagent.ProfileDraftSnapshot
----@field options Neoagent.ConfigInput
+---@field options Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 ---@field initial_selection? Neoagent.InitialSelection
 
 ---@class Neoagent.ProfileDraft
@@ -22,7 +22,7 @@ local M = {}
 ---@field profile Neoagent.Profile
 ---@field workspace string
 ---@field applet Neoagent.AgentApplet
----@field options_value Neoagent.ConfigInput
+---@field options_value Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 ---@field selection Neoagent.RequestSelection
 ---@field state_value Neoagent.ProfileDraftState
 local ProfileDraft = {}
@@ -85,7 +85,7 @@ function ProfileDraft:is_retained()
   return self.state_value == "draft" or self.state_value == "provisional"
 end
 
----@return Neoagent.ConfigInput
+---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 function ProfileDraft:options()
   local options = util.copy(self.options_value)
   local selected = self.selection:model_selection()
@@ -111,8 +111,8 @@ function ProfileDraft:model_selection()
   return self.selection:model_selection()
 end
 
----@param patch Neoagent.ConfigInput
----@return Neoagent.ConfigInput?, Neoagent.Error?
+---@param patch Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
+---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?, Neoagent.Error?
 function ProfileDraft:update(patch)
   assert(type(patch) == "table" and not util.is_list(patch),
     "Profile draft options must be an object")
@@ -132,7 +132,7 @@ function ProfileDraft:update(patch)
       patch.default_thinking_level)
     if not level then return nil, err end
   end
-  self.options_value = selected_options --[[@as Neoagent.ConfigInput]]
+  self.options_value = selected_options --[[@as Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>]]
   return self:options()
 end
 

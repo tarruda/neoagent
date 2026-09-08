@@ -15,7 +15,7 @@ local path_module = require("neoagent.sandbox.path")
 ---@field tools Neoagent.Tool<C>[]
 ---@field execute_tool? Neoagent.ToolExecutor<C>
 
----@class Neoagent.SandboxComposition<C>: Neoagent.SandboxToolset<C>
+---@class Neoagent.SandboxComposition<C>: Neoagent.AgentToolset<C>
 ---@field execute_tool Neoagent.ToolExecutor<C>
 ---@field system_prompt? string
 

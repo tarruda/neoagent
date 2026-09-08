@@ -7,20 +7,60 @@ local workspace_preferences = require("neoagent.workspace_preferences")
 ---@class Neoagent.Profile
 ---@field id string
 ---@field label string
----@field config Neoagent.Config
+---@field config Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@field create_applet fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet, Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
+---@field create_agent fun(context: Neoagent.ProfileAgentContext): Neoagent.Agent, Neoagent.ProfileAgentResources?
+
+---@class Neoagent.ProfileAppletContext
+---@field profile Neoagent.Profile
+---@field label string
+---@field workspace string
+---@field ui? Neoagent.UIConfigInput
+
+---@class Neoagent.ProfileAgentContext
+---@field id string
+---@field label string
+---@field profile Neoagent.Profile
+---@field applet Neoagent.AgentApplet
+---@field session Neoagent.Session
+---@field workspace string
+---@field restore_session_selection? boolean
+---@field commit_workspace_preference? boolean
+---@field options? Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
+---@field initial_selection? Neoagent.InitialSelection
+---@field resources? Neoagent.ProfileResources
+
+---@class Neoagent.ProfileAgentResources
+---@field sandbox? {runtime: Neoagent.SandboxRuntime<Neoagent.AgentToolEnvironment>, status: Neoagent.SandboxActivation, trust?: Neoagent.WorkspaceTrust}
+
+---@class Neoagent.ProfileRuntimeOptions
+---@field transport? Neoagent.ByteBackend
+---@field store? Neoagent.CatalogStorage
+---@field startup? boolean
+---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
+---@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field provider_view? fun(options: Neoagent.ProviderShellViewOptions): Neoagent.ProviderShellView
+---@field provider_host? Applet.HostSource<Neoagent.ProviderShellViewState>
+
+
 
 local M = {}
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@return Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
 local function configured_toolset(configured)
   return {
     tools = configured._tools_supplied and util.copy(configured.tools)
       or require("neoagent.tools").coding({
         shell_timeout = configured.shell_timeout,
-      }),
+      }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]],
     execute_tool = configured.execute_tool,
   }
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param toolset Neoagent.SandboxToolset<Neoagent.AgentToolEnvironment>
+---@return boolean
 local function trust_protected(configured, toolset)
   return #toolset.tools > 0
     or configured.agent_instructions ~= false
@@ -29,12 +69,15 @@ local function trust_protected(configured, toolset)
       and #configured.skills.project_dirs > 0
 end
 
+---@return Neoagent.StateStore
 local function catalog_store()
   return require("neoagent.state_store").new({
     directory = vim.fn.stdpath("state") .. "/neoagent/provider/state",
   })
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@return Neoagent.WorkspacePreferenceDefaults
 local function preference_defaults(configured)
   return {
     default_model = configured.default_model,
@@ -43,6 +86,11 @@ local function preference_defaults(configured)
   }
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param profile_id string
+---@param presenter Neoagent.Presenter
+---@param workspace string
+---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 local function draft_options(configured, profile_id, presenter, workspace)
   local persistence = configured.persistence
   if not persistence.enabled or not persistence.workspace_settings then
@@ -55,6 +103,7 @@ local function draft_options(configured, profile_id, presenter, workspace)
   local settings, err = store:load()
   local path = store:metadata().settings_path
   if not settings then
+    assert(err)
     presenter:notify({
       message = "neoagent: " .. err.message
         .. (err.detail and ": " .. err.detail or "")
@@ -85,6 +134,12 @@ local function draft_options(configured, profile_id, presenter, workspace)
   return options
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param profile_id string
+---@param profile_label string
+---@param auth Neoagent.AuthManager
+---@param runtimes Neoagent.ProviderRuntimes
+---@return fun(context: Neoagent.ProfileAppletContext): Neoagent.AgentApplet, Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 local function applet_factory(
     configured, profile_id, profile_label, auth, runtimes)
   return function(context)
@@ -118,7 +173,7 @@ local function applet_factory(
       end
       local value = AgentApplet.new({
         config = util.deep_merge(
-          util.deep_merge(configured.ui, draft.ui or {}), context.ui or {}),
+          util.deep_merge(configured.ui, draft.ui or {}), context.ui or {}) --[[@as Neoagent.UIConfig]],
         persistence = configured.persistence,
         context = {
           model = model_label,
@@ -141,11 +196,14 @@ local function applet_factory(
   end
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param context Neoagent.ProfileAgentContext
+---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
 local function agent_options(configured, context)
   local selected = util.copy(configured)
   for key, value in pairs(context.options or {}) do
     if key == "ui" or key == "sandbox" then
-      selected[key] = util.deep_merge(selected[key], value)
+      selected[key] = util.deep_merge(selected[key], value) --[[@as Neoagent.SandboxSettings<Neoagent.AgentToolEnvironment>|Neoagent.UIConfig]]
     else
       selected[key] = util.copy(value)
     end
@@ -153,6 +211,11 @@ local function agent_options(configured, context)
   return selected
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param auth Neoagent.AuthManager
+---@param runtimes Neoagent.ProviderRuntimes
+---@param runtime Neoagent.ProfileRuntimeOptions
+---@return Neoagent.Profile
 local function make_chat(configured, auth, runtimes, runtime)
   local chat = util.copy(configured)
   chat.name = "Chat"
@@ -190,6 +253,11 @@ local function make_chat(configured, auth, runtimes, runtime)
   }
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param auth Neoagent.AuthManager
+---@param runtimes Neoagent.ProviderRuntimes
+---@param runtime Neoagent.ProfileRuntimeOptions
+---@return Neoagent.Profile
 local function make_neo(configured, auth, runtimes, runtime)
   local neo = util.copy(configured)
   neo.name = neo.name or "Neo"
@@ -277,6 +345,9 @@ local function make_neo(configured, auth, runtimes, runtime)
   }
 end
 
+---@param configured Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param runtime Neoagent.ProfileRuntimeOptions?
+---@return Neoagent.Profile[], string, Neoagent.ProfileResources
 function M.bundled(configured, runtime)
   assert(type(configured) == "table",
     "Profile configuration is required")
@@ -284,8 +355,13 @@ function M.bundled(configured, runtime)
   assert(type(runtime) == "table"
       and (next(runtime) == nil or not util.is_list(runtime)),
     "Profile runtime must be an object")
+  ---@type [string, integer?][]
   local pending_reports = {}
+  ---@type (fun(message: string, level?: integer): unknown)?
   local report_target
+  ---@param message string
+  ---@param level integer?
+  ---@return unknown
   local function provider_report(message, level)
     if report_target then return report_target(message, level) end
     if #pending_reports < 64 then
@@ -305,7 +381,7 @@ function M.bundled(configured, runtime)
     transport = recorder:transport(
       transport or require("neoagent.transport.curl"))
   end
-  local auth = require("neoagent.auth").configured(configured, {
+  local auth = require("neoagent.auth").configured({ auth = configured.auth }, {
     transport = transport,
   })
   local runtimes, err = provider_runtimes.compose(configured, {
@@ -338,6 +414,12 @@ function M.bundled(configured, runtime)
     report_target(entry[1], entry[2])
   end
   pending_reports = {}
+  ---@class Neoagent.ProfileResources
+  ---@field auth Neoagent.AuthManager
+  ---@field runtimes Neoagent.ProviderRuntimes
+  ---@field provider_shell Neoagent.ProviderShell
+  ---@field recorder? Neoagent.Recorder
+  ---@field destroyed boolean
   local resources = {
     auth = auth,
     runtimes = runtimes,

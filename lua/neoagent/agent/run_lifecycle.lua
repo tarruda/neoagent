@@ -25,9 +25,7 @@ local util = require("neoagent.util")
 ---@field agent? string
 ---@field session_id table
 
----@class Neoagent.AgentToolset
----@field tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
----@field execute_tool? Neoagent.ToolExecutor<Neoagent.AgentToolEnvironment>
+---@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>: Neoagent.SandboxToolset<C>
 ---@field system_prompt? string
 
 ---@class Neoagent.AgentInteractionOptions: Neoagent.ChatOptions<Neoagent.AgentToolEnvironment>
