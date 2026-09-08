@@ -57,7 +57,6 @@ tests/unit/provider_runtimes_spec.lua
 tests/unit/provider_service_spec.lua
 tests/unit/provider_shell_spec.lua
 tests/unit/provider_state_spec.lua
-tests/unit/request_selection_spec.lua
 tests/unit/sandbox_platform_spec.lua
 tests/unit/sandbox_spec.lua
 tests/unit/session_lifecycle_spec.lua
