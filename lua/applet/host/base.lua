@@ -29,6 +29,15 @@ local util = require("applet.util")
 ---@class Applet.HostRecord: Applet.BufferRecord, Applet.FocusRecord, Applet.ChromeRecord
 ---@field key string
 ---@field edit_revision? string|number
+---@field applet? Applet.Applet
+---@field buffer_token? string
+---@field mount_token? string
+---@field declared? boolean
+---@field view_policy_revision? integer
+---@field measurement_generation? integer
+---@field measurement_updates? integer
+---@field requested_window_descriptor? {options: Applet.Options, host_options: {floating: Applet.Options, tab: Applet.Options}}
+---@field adopted_buffer_options? Applet.Options
 ---@field descriptor Applet.MountDescriptor
 ---@field adopted_window_options? Applet.Options
 ---@field chrome? Applet.WindowChrome
@@ -36,7 +45,7 @@ local util = require("applet.util")
 ---@field surface? Applet.HostSurface
 ---@field detach_reason? string
 ---@field active? boolean
----@field suppressed? boolean
+---@field suppressed? string
 ---@field requested_float_config? vim.api.keyset.win_config
 ---@field adopted_float_config? vim.api.keyset.win_config
 
@@ -77,6 +86,18 @@ local util = require("applet.util")
 ---@field pane_visible fun(self: Applet.HostDriver, record: Applet.HostRecord): boolean
 ---@field owns_window fun(self: Applet.HostDriver, window: integer?, record?: Applet.HostRecord): boolean
 ---@field foreign_windows? fun(self: Applet.HostDriver): integer
+---@field begin? fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>): boolean
+---@field publish fun(self: Applet.HostDriver, frame: Applet.CompiledLayout?, records: table<string, Applet.HostRecord>): boolean
+---@field rollback? fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>): boolean
+---@field reconcile fun(self: Applet.HostDriver, previous: Applet.CompiledLayout?, frame: Applet.CompiledLayout, records: table<string, Applet.HostRecord>): boolean
+---@field adopt_detach? fun(self: Applet.HostDriver, frame: Applet.CompiledLayout?, records: table<string, Applet.HostRecord>)
+---@field focus fun(self: Applet.HostDriver, record?: Applet.HostRecord): boolean
+---@field detach fun(self: Applet.HostDriver, record: Applet.HostRecord)
+---@field release fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>)
+---@field destroy fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>)
+
+---@class Applet.HostDriverModule
+---@field new fun(applet: Applet.Applet, origin?: Applet.NativeOrigin): Applet.HostDriver
 
 ---@class Applet.NativeOrigin
 ---@field window integer
@@ -108,8 +129,8 @@ local util = require("applet.util")
 
 ---@class Applet.NativeObservation
 ---@field event string
----@field buffer integer
----@field match string
+---@field buffer? integer
+---@field match? string
 ---@field window? integer
 ---@field tab? integer
 
@@ -126,7 +147,18 @@ local util = require("applet.util")
 
 ---@alias Applet.NativeWinLayout ['leaf', integer]|Applet.NativeLayoutBranch
 
----@class Applet.PaneSnapshot
+---@class Applet.PaneObservation
+---@field mounted? boolean
+---@field visible? boolean
+---@field buffer? {ownership: 'owned'|'none', loaded: boolean, displayed: boolean}
+---@field buffer_options? Applet.Options
+---@field window_options? Applet.Options
+---@field detach_reason? string
+---@field geometry? Applet.Rectangle
+---@field view? Applet.WindowView
+---@field mode? Applet.Mode
+
+---@class Applet.PaneSnapshot: Applet.PaneObservation
 ---@field mounted boolean
 ---@field visible boolean
 ---@field buffer {ownership: 'owned'|'none', loaded: boolean, displayed: boolean}
@@ -137,10 +169,15 @@ local util = require("applet.util")
 ---@field view? Applet.WindowView
 ---@field mode? Applet.Mode
 
+---@class Applet.HostState
+---@field kind? 'floating'|'tab'
+---@field open boolean
+---@field visible boolean
+
 ---@class Applet.HostSnapshot
 ---@field revision integer
 ---@field request_generation integer
----@field host {kind: 'floating'|'tab', open: boolean, visible: boolean}
+---@field host Applet.HostState
 ---@field layout Applet.ObservedLayout
 ---@field panes table<string, Applet.PaneSnapshot>
 ---@field focused_pane? string

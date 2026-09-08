@@ -27,7 +27,7 @@ local applet_expect = util.expect
 
 ---@class Applet.LayoutEnvironmentOptions
 ---@field host Applet.HostInput
----@field editor? Applet.LayoutRectangleInput
+---@field editor? Applet.LayoutRectangleInput|Applet.Rectangle
 ---@field container? Applet.ContainerGeometry
 
 ---@class Applet.LayoutEnvironment
@@ -39,7 +39,7 @@ local applet_expect = util.expect
 ---@field tree Applet.LayoutTree
 ---@field measurements? table<string, Applet.LayoutMeasurement>
 ---@field overrides? table<string, Applet.SplitOverride>
----@field handlers? table<string, function>
+---@field handlers? table<string, function|true>
 ---@field has_action? fun(action: string): boolean
 
 ---@class Applet.LayoutBinding: Applet.Binding
@@ -168,7 +168,7 @@ local applet_expect = util.expect
 ---@field container Applet.Rectangle
 ---@field measurements table<string, Applet.LayoutMeasurement>
 ---@field overrides table<string, Applet.SplitOverride>
----@field handlers table<string, function>
+---@field handlers table<string, function|true>
 ---@field has_action? fun(action: string): boolean
 ---@field active table<table, boolean>
 ---@field node_keys table<string, string>

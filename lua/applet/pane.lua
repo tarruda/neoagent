@@ -667,7 +667,7 @@ function Pane:geometry()
   local descriptor = assert(owner.records[self._key]).descriptor
   local projection = descriptor.projection
   return {
-    host = owner:host().kind,
+    host = assert(owner.driver).kind,
     row = descriptor.outer.row,
     col = descriptor.outer.col,
     content_width = descriptor.content.width,
