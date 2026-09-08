@@ -34,6 +34,10 @@ local util = require("applet.util")
 ---@field chrome_kind? 'floating'|'split'
 ---@field surface? Applet.HostSurface
 ---@field detach_reason? string
+---@field active? boolean
+---@field suppressed? boolean
+---@field requested_float_config? vim.api.keyset.win_config
+---@field adopted_float_config? vim.api.keyset.win_config
 
 ---@class Applet.PaneCommit
 ---@field generation integer
@@ -54,6 +58,14 @@ local util = require("applet.util")
 ---@field visible fun(): boolean
 ---@field on_commit fun(info: Applet.PaneCommit)
 ---@field chrome Applet.WindowChrome
+
+---@class Applet.HostWindowState
+---@field record Applet.HostRecord
+---@field window integer
+---@field config vim.api.keyset.win_config
+
+---@class Applet.HostTransaction<W>
+---@field windows table<string, W>
 
 ---@class Applet.HostDriver
 ---@field kind 'floating'|'tab'

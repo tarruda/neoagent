@@ -1,6 +1,5 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 lua/applet/applet.lua
-lua/applet/host/float.lua
 lua/applet/host/tab.lua
 lua/applet/pane.lua
 lua/applet/pane/compile.lua
