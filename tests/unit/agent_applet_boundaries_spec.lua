@@ -434,7 +434,9 @@ describe("Agent Applet boundaries", function()
       dialogs = owned_agent:dialogs(),
     })
     assert.are.equal(owned_agent, value:bind(owned_agent))
-    assert.are.equal(owned_agent, value:unbind(owned_agent))
+    local detached, detach_err = value:unbind(owned_agent)
+    assert.are.equal(owned_agent, detached)
+    assert.is_nil(detach_err)
 
     value:destroy()
 

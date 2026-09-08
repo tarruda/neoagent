@@ -1048,7 +1048,8 @@ function AgentApplet:unbind(agent)
     self:_notify(util.normalize_error(detach_err, "agent").message,
       vim.log.levels.ERROR)
   end
-  return agent, detached and nil or util.normalize_error(detach_err, "agent")
+  if not detached then return agent, util.normalize_error(detach_err, "agent") end
+  return agent
 end
 
 function AgentApplet:agent() return self:_agent_or_nil() end
