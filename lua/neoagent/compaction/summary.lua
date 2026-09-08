@@ -15,7 +15,7 @@ local M = {}
 ---@field ok true
 ---@field summary string
 ---@field first_kept_entry_id string
----@field tokens_before number
+---@field tokens_before integer
 ---@field usage? Neoagent.Usage
 
 ---@alias Neoagent.CompactionResult Neoagent.CompactionSuccess|Neoagent.AsyncFailure

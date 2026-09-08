@@ -29,7 +29,7 @@ local M = {}
 ---@field messages Neoagent.Message[]
 ---@field turn_prefix Neoagent.Message[]
 ---@field split_turn boolean
----@field tokens_before number
+---@field tokens_before integer
 ---@field previous_summary? string
 ---@field settings Neoagent.CompactionSettings
 
@@ -276,7 +276,7 @@ function M.prepare(path_entries, settings)
     messages = messages,
     turn_prefix = turn_prefix,
     split_turn = cut.split_turn,
-    tokens_before = M.estimate_context(context).tokens,
+    tokens_before = math.ceil(M.estimate_context(context).tokens),
     previous_summary = previous_summary,
     settings = util.copy(settings),
   }

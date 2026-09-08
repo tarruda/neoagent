@@ -321,6 +321,33 @@ describe("neoagent.compaction", function()
     assert.matches(previous, session:context_messages()[1].content[1].text, 1, true)
   end)
 
+  it("persists compaction estimates from fractional provider usage", function()
+    for _, usage in ipairs({
+      { totalTokens = 42.5 },
+      { input = 40.25, output = 2.25 },
+    }) do
+      local session = assert(require("neoagent.session").new())
+      assert(session:append({ role = "user", content = "Earlier request" }))
+      assert(session:append({ role = "assistant", content = {}, usage = usage }))
+      assert(session:append({ role = "user", content = "next" }))
+      local preparation = assert(compaction.prepare((assert(session:path())),
+        compaction.settings({ keep_recent_tokens = 1 })))
+      local model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "Earlier work" } }),
+      } })
+      local run = compaction.run({ preparation = preparation, model = model })
+      assert(vim.wait(1000, function() return run:is_done() end))
+      local result = assert(run:result())
+      assert(result.ok)
+      local persisted, err = session:append_compaction({
+        summary = result.summary, firstKeptEntryId = result.first_kept_entry_id,
+        tokensBefore = result.tokens_before,
+      })
+      assert(persisted, vim.inspect(err))
+      assert.are.equal(44, result.tokens_before)
+    end
+  end)
+
   it("combines history and turn-prefix summaries", function()
     local history = fake_model.assistant({ { type = "text", text = "history" } })
     history.message.usage.cacheWrite = 2
