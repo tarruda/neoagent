@@ -254,6 +254,30 @@ describe("neoagent native Renderer protocol", function()
     end
   end)
 
+  it("renders tool failures with non-object or incompatible optional metadata", function()
+    for _, selected in ipairs({ renderers.pi, renderers.codex }) do
+      for _, name in ipairs({ "shell", "read_file", "edit_file" }) do
+        for _, details in ipairs({ true, 42, vim.NIL,
+          { patch = true, ansi = 42, truncation = true },
+        }) do
+          local block = {
+            key = "metadata", kind = "tool", state = "error",
+            call = { name = name, arguments = { path = "sample.lua", command = "sample" } },
+            message = { toolName = name, isError = true, details = details,
+              content = { { type = "text", text = "tool failed safely" } } },
+          }
+          local transcript, err = protocol.render_block(selected, block, { width = 60 })
+          assert(transcript, err and err.message)
+          assert.matches("tool failed safely", table.concat(layout(transcript, selected.theme).lines, "\n"))
+          local node, detail_err = protocol.render_details(selected, block, { width = 60 })
+          assert(node, detail_err and detail_err.message)
+          assert.matches("tool failed safely", table.concat(layout(node, selected.theme).lines, "\n"))
+          assert.are.same(details, block.message.details)
+        end
+      end
+    end
+  end)
+
   it("renders tool output containing tabs as a live transcript card", function()
     local output = rendered(renderers.codex, {
       key = "tabular-tool",

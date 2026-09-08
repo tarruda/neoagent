@@ -819,6 +819,14 @@ local function source_output(result, path, line_count)
   return result
 end
 
+---@param result? Neoagent.ToolResult|Neoagent.ToolResultMessage
+---@param key string
+---@return Neoagent.JsonValue?
+local function result_detail(result, key)
+  if not result or type(result.details) ~= "table" then return nil end
+  return rawget(result.details, key)
+end
+
 local function tool_output(self, block, args, surface)
   local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
   local message = block.message
@@ -839,8 +847,8 @@ local function tool_output(self, block, args, surface)
     if self.policy.write_source_syntax then source_output(result, path) end
     return result
   elseif name == "edit" or name == "edit_file" then
-    local patch = message and message.details and message.details.patch
-    if patch and patch ~= "" then
+    local patch = result_detail(message, "patch")
+    if type(patch) == "string" and patch ~= "" then
       return output_lines(self, patch, maximum, false, "diff")
     end
     if message and message.isError then
@@ -856,15 +864,14 @@ local function tool_output(self, block, args, surface)
     end
     local result = output_lines(self, value, maximum, false, group)
     local path = args.path or args.file_path
-    local truncation = message and message.details
-      and message.details.truncation
+    local truncation = result_detail(message, "truncation")
     local source_lines = type(truncation) == "table"
       and truncation.outputLines or nil
     if syntax then source_output(result, path, source_lines) end
     return result
   elseif name == "shell" then
     local active = message or update
-    local ansi = active and active.details and active.details.ansi
+    local ansi = result_detail(active, "ansi")
     return output_lines(self, value, maximum, true,
       self.policy.plain_output_group(message and message.isError), ansi)
   elseif name == "grep" or name == "find" then
@@ -1048,7 +1055,7 @@ local function command_output_content(self, block, surface)
   local active = block.message or block.update
   if not active then return rendered() end
   local value = content_text(active.content)
-  local ansi = active.details and active.details.ansi
+  local ansi = result_detail(active, "ansi")
   local content = output_lines(self, value, nil, false,
     self.policy.plain_output_group(active.isError), ansi)
   if surface == "details" then return content end
