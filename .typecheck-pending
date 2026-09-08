@@ -41,7 +41,6 @@ tests/unit/dialog_spec.lua
 tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua
 tests/unit/http_replay_spec.lua
-tests/unit/llama_client_spec.lua
 tests/unit/llama_provider_spec.lua
 tests/unit/model_catalog_spec.lua
 tests/unit/model_spec.lua

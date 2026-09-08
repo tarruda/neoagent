@@ -4,9 +4,12 @@ local client = require("neoagent.providers.llama.client")
 local fake_transport = require("tests.helpers.fake_transport")
 
 describe("neoagent llama.cpp client", function()
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>
+  ---@return Neoagent.RunResult<T>
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
+    return (assert(run:result()))
   end
 
   it("rejects an unauthorized event subscription without delivering a model event", function()
@@ -16,8 +19,8 @@ describe("neoagent llama.cpp client", function()
     local value = client.new({ server_url = "http://localhost:8080", transport = transport })
     local result = wait(value:watch(function() error("unauthorized event delivered") end))
     assert.is_false(result.ok)
-    assert.are.equal("provider", result.error.kind)
-    assert.are.equal("API key required", result.error.message)
+    assert.are.equal("provider", assert(result.error).kind)
+    assert.are.equal("API key required", assert(result.error).message)
   end)
 
   it("normalizes server URLs and formats bytes", function()
@@ -39,8 +42,8 @@ describe("neoagent llama.cpp client", function()
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local result = wait(value:list({ reload = true }))
-    assert.are.equal("qwen3", result.value[1].id)
-    assert.matches("/models%?reload=1", transport.fetch_requests[1].url)
+    assert.are.equal("qwen3", assert(assert(result.value)[1]).id)
+    assert.matches("/models%?reload=1", assert(transport.fetch_requests[1]).url)
   end)
 
   it("reports invalid catalogs and router-mode failures", function()
@@ -51,7 +54,7 @@ describe("neoagent llama.cpp client", function()
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local result = wait(value:list())
     assert.is_false(result.ok)
-    assert.matches("router mode", result.error.message)
+    assert.matches("router mode", assert(result.error).message)
   end)
 
   it("reports HTTP errors with provider payload messages", function()
@@ -64,16 +67,16 @@ describe("neoagent llama.cpp client", function()
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local first = wait(value:list())
     assert.is_false(first.ok)
-    assert.matches("usage limit", first.error.message)
-    assert.are.equal(429, first.error.status)
+    assert.matches("usage limit", assert(first.error).message)
+    assert.are.equal(429, rawget(assert(first.error), "status"))
     local second = wait(value:list())
     assert.is_false(second.ok)
-    assert.matches("HTTP 500", second.error.message)
-    assert.are.equal(500, second.error.status)
+    assert.matches("HTTP 500", assert(second.error).message)
+    assert.are.equal(500, rawget(assert(second.error), "status"))
     local third = wait(value:list())
     assert.is_false(third.ok)
-    assert.matches("HTTP 403", third.error.message)
-    assert.are.equal(403, third.error.status)
+    assert.matches("HTTP 403", assert(third.error).message)
+    assert.are.equal(403, rawget(assert(third.error), "status"))
   end)
 
   it("rejects catalogs without a data list", function()
@@ -82,7 +85,7 @@ describe("neoagent llama.cpp client", function()
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local result = wait(value:list())
     assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
+    assert.matches("invalid model catalog", assert(result.error).message)
   end)
 
   it("posts load, unload, and download commands", function()
@@ -96,10 +99,10 @@ describe("neoagent llama.cpp client", function()
     wait(value:load("qwen3"))
     wait(value:unload("qwen3"))
     wait(value:download("owner/repo:Q4_K_M"))
-    assert.are.equal("POST", transport.fetch_requests[1].method)
-    assert.are.equal("POST", transport.fetch_requests[2].method)
-    assert.are.equal("POST", transport.fetch_requests[3].method)
-    assert.matches("qwen3", transport.fetch_requests[1].body)
+    assert.are.equal("POST", assert(transport.fetch_requests[1]).method)
+    assert.are.equal("POST", assert(transport.fetch_requests[2]).method)
+    assert.are.equal("POST", assert(transport.fetch_requests[3]).method)
+    assert.matches("qwen3", assert(assert(transport.fetch_requests[1]).body))
   end)
 
   it("unloads and waits until the model disappears", function()
@@ -122,9 +125,9 @@ describe("neoagent llama.cpp client", function()
       transport.fetch_requests[#transport.fetch_requests + 1] = opts.request
       return async.run(function()
         if opts.request.url:match("/models/unload$") then
-          return { ok = true, status = 200, body = "{}" }
+          return { ok = true, status = 200, headers = {}, body = "{}" }
         end
-        return { ok = true, status = 200, body = loaded }
+        return { ok = true, status = 200, headers = {}, body = loaded }
       end)
     end
     local value = client.new({
@@ -135,7 +138,7 @@ describe("neoagent llama.cpp client", function()
     })
     local result = wait(value:unload_and_wait("qwen3"))
     assert.is_false(result.ok)
-    assert.matches("Timed out waiting to unload qwen3", result.error.message)
+    assert.matches("Timed out waiting to unload qwen3", assert(result.error).message)
 
     local existing = vim.json.encode({ data = {} })
     transport = fake_transport.new()
@@ -143,9 +146,9 @@ describe("neoagent llama.cpp client", function()
       transport.fetch_requests[#transport.fetch_requests + 1] = opts.request
       return async.run(function()
         if opts.request.method == "POST" then
-          return { ok = true, status = 200, body = "{}" }
+          return { ok = true, status = 200, headers = {}, body = "{}" }
         end
-        return { ok = true, status = 200, body = existing }
+        return { ok = true, status = 200, headers = {}, body = existing }
       end)
     end
     value = client.new({
@@ -154,9 +157,9 @@ describe("neoagent llama.cpp client", function()
       wait_timeout_ms = 20,
       poll_interval_ms = 1,
     })
-    result = wait(value:download_and_wait("owner/repo", function() end))
-    assert.is_false(result.ok)
-    assert.matches("Timed out waiting to download owner/repo", result.error.message)
+    local download = wait(value:download_and_wait("owner/repo", function() end))
+    assert.is_false(download.ok)
+    assert.matches("Timed out waiting to download owner/repo", assert(download.error).message)
   end)
 
   it("parses model-status SSE progress", function()
@@ -172,10 +175,11 @@ describe("neoagent llama.cpp client", function()
         },
       },
     }
+    ---@type Neoagent.LlamaModelEvent[]
     local events = {}
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     wait(value:watch(function(event) events[#events + 1] = event end))
-    assert.are.equal("model_status", events[1].event)
+    assert.are.equal("model_status", assert(events[1]).event)
   end)
 
   it("loads and waits using SSE progress and failure branches", function()
@@ -197,14 +201,15 @@ describe("neoagent llama.cpp client", function()
       { body = vim.json.encode({ data = { { id = "qwen3", status = { value = "loaded" } } } }) },
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
+    ---@type Neoagent.LlamaProgress[]
     local progress = {}
     local result = wait(value:load_and_wait("qwen3", function(update)
       progress[#progress + 1] = update
     end))
-    assert.are.equal("loaded", result.value.status.value)
+    assert.are.equal("loaded", assert(result.value).status.value)
     assert.is_true(#progress >= 2)
-    assert.are.equal("Model loaded", progress[#progress].message)
-    assert.are.equal(1, progress[#progress].ratio)
+    assert.are.equal("Model loaded", assert(progress[#progress]).message)
+    assert.are.equal(1, assert(progress[#progress]).ratio)
 
     transport = fake_transport.new()
     transport.fetches = {
@@ -214,7 +219,7 @@ describe("neoagent llama.cpp client", function()
     value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     result = wait(value:load_and_wait("qwen3", function() end))
     assert.is_false(result.ok)
-    assert.matches("code 7", result.error.message)
+    assert.matches("code 7", assert(result.error).message)
 
     transport = fake_transport.new()
     transport.fetches = {
@@ -230,7 +235,7 @@ describe("neoagent llama.cpp client", function()
     })
     result = wait(value:load_and_wait("qwen3", function() end))
     assert.is_false(result.ok)
-    assert.matches("Model failed to load", result.error.message)
+    assert.matches("Model failed to load", assert(result.error).message)
   end)
 
   it("loads and waits through SSE loaded and error events", function()
@@ -252,7 +257,7 @@ describe("neoagent llama.cpp client", function()
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local result = wait(value:load_and_wait("qwen3", function() end))
-    assert.are.equal("loaded", result.value.status.value)
+    assert.are.equal("loaded", assert(result.value).status.value)
 
     transport = fake_transport.new()
     transport.responses = {
@@ -273,7 +278,7 @@ describe("neoagent llama.cpp client", function()
     value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     result = wait(value:load_and_wait("qwen3", function() end))
     assert.is_false(result.ok)
-    assert.matches("code 13", result.error.message)
+    assert.matches("code 13", assert(result.error).message)
   end)
 
   it("cancels load polling while it sleeps", function()
@@ -283,11 +288,12 @@ describe("neoagent llama.cpp client", function()
       { body = vim.json.encode({ data = { { id = "qwen3", status = { value = "loading" } } } }) },
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
+    ---@type Neoagent.Run<Neoagent.LlamaLoadSuccess|Neoagent.LlamaListSuccess|Neoagent.AsyncFailure, nil>
     local run = value:load_and_wait("qwen3", function() end)
-    vim.wait(50)
+    assert(vim.wait(1000, function() return #transport.fetch_requests >= 2 end))
     run:cancel()
     assert(vim.wait(3000, function() return run:is_done() end))
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert(vim.wait(1000, function()
       for _, request in ipairs(transport.fetch_requests) do
         if request.url:match("/models/unload$") then return true end
@@ -296,22 +302,34 @@ describe("neoagent llama.cpp client", function()
     end))
   end)
 
-  local function pending_request_transport(fulfill)
+  ---@class Neoagent.TestPendingLlamaRequests
+  ---@field requests integer
+  ---@field cancelled integer
+  ---@field cancel_unloads? integer
+  ---@field done? Neoagent.AwaitCallbacks<unknown>
+
+  ---@return Neoagent.ByteBackend, Neoagent.TestPendingLlamaRequests
+  local function pending_request_transport()
+    ---@type Neoagent.TestPendingLlamaRequests
     local pending = { requests = 0, cancelled = 0 }
+    ---@type Neoagent.ByteBackend
     local transport = {
       fetch = function(opts)
         return async.run(function()
-          if fulfill.fetch then fulfill.fetch(opts.request, pending) end
-          return { ok = true, status = 200, body = "{}" }
+          return { ok = true, status = 200, headers = {}, body = "{}" }
         end)
       end,
       request = function(opts)
         pending.requests = pending.requests + 1
-        return async.run(function(run)
+        return async.run(
+        ---@param run Neoagent.Run<Neoagent.ByteStreamResult, nil>
+        ---@return Neoagent.ByteStreamResult
+        function(run)
           async.await(function(done)
             pending.done = done
             return function() pending.cancelled = pending.cancelled + 1 end
           end)
+          return { ok = true, response = { status = 200, headers = {} } }
         end)
       end,
     }
@@ -320,28 +338,31 @@ describe("neoagent llama.cpp client", function()
 
   it("cancels the SSE watcher when load and download commands fail", function()
     local transport, pending = pending_request_transport()
+    ---@type Neoagent.TestByteResponse[]
     local fetches = {
       { status = 400, body = vim.json.encode({ error = { message = "already running" } }) },
     }
     transport.fetch = function(opts)
+      ---@type Neoagent.TestByteResponse
       local response = table.remove(fetches, 1) or { body = "{}" }
       return async.run(function()
-        return { ok = true, status = response.status or 200, body = response.body }
+        return { ok = true, status = response.status or 200, headers = {}, body = assert(response.body) }
       end)
     end
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local load = wait(value:load_and_wait("qwen3", function() end))
     assert.is_false(load.ok)
-    assert.matches("already running", load.error.message)
+    assert.matches("already running", assert(load.error).message)
     assert.are.equal(1, pending.requests)
     assert(vim.wait(1000, function() return pending.cancelled == 1 end))
 
-    transport = pending_request_transport()
+    transport, pending = pending_request_transport()
     transport.fetch = function()
       return async.run(function()
         return {
           ok = true,
           status = 400,
+          headers = {},
           body = vim.json.encode({ error = { message = "already exists" } }),
         }
       end)
@@ -349,12 +370,13 @@ describe("neoagent llama.cpp client", function()
     value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local download = wait(value:download_and_wait("owner/repo", function() end))
     assert.is_false(download.ok)
-    assert.matches("already exists", download.error.message)
+    assert.matches("already exists", assert(download.error).message)
     assert(vim.wait(1000, function() return pending.cancelled == 1 end))
   end)
 
   it("cancels the SSE watcher when load and download runs are cancelled", function()
     local transport, pending = pending_request_transport()
+    ---@type Neoagent.TestByteResponse[]
     local fetches = {
       { body = "{}" },
       { body = vim.json.encode({ data = { { id = "qwen3", status = { value = "loading" } } } }) },
@@ -363,17 +385,19 @@ describe("neoagent llama.cpp client", function()
       if opts.request.url:match("/models/unload$") then
         pending.cancel_unloads = (pending.cancel_unloads or 0) + 1
       end
+      ---@type Neoagent.TestByteResponse
       local response = table.remove(fetches, 1) or { body = "{}" }
       return async.run(function()
-        return { ok = true, status = response.status or 200, body = response.body }
+        return { ok = true, status = response.status or 200, headers = {}, body = assert(response.body) }
       end)
     end
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
+    ---@type Neoagent.Run<Neoagent.LlamaLoadSuccess|Neoagent.LlamaListSuccess|Neoagent.AsyncFailure, nil>
     local run = value:load_and_wait("qwen3", function() end)
-    vim.wait(50)
+    assert(vim.wait(1000, function() return #fetches == 0 end))
     run:cancel()
     assert(vim.wait(3000, function() return run:is_done() end))
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert(vim.wait(1000, function() return pending.cancelled == 1 end))
     assert(vim.wait(1000, function() return pending.cancel_unloads == 1 end))
 
@@ -387,17 +411,18 @@ describe("neoagent llama.cpp client", function()
       if opts.request.url:match("/models/unload$") then
         pending.cancel_unloads = (pending.cancel_unloads or 0) + 1
       end
+      ---@type Neoagent.TestByteResponse
       local response = table.remove(fetches, 1) or { body = "{}" }
       return async.run(function()
-        return { ok = true, status = response.status or 200, body = response.body }
+        return { ok = true, status = response.status or 200, headers = {}, body = assert(response.body) }
       end)
     end
     value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     run = value:download_and_wait("owner/repo", function() end)
-    vim.wait(50)
+    assert(vim.wait(1000, function() return #fetches == 0 end))
     run:cancel()
     assert(vim.wait(3000, function() return run:is_done() end))
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert(vim.wait(1000, function() return pending.cancelled == 1 end))
     assert(vim.wait(1000, function() return pending.cancel_unloads == 1 end))
   end)
@@ -430,15 +455,16 @@ describe("neoagent llama.cpp client", function()
       { body = vim.json.encode({ data = { { id = "owner/repo:Q4_K_M", status = { value = "loaded" } } } }) },
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
+    ---@type Neoagent.LlamaProgress[]
     local progress = {}
     local result = wait(value:download_and_wait("owner/repo:Q4_K_M", function(update)
       progress[#progress + 1] = update
     end))
-    assert(result.ok, vim.inspect(result.error))
+    assert(result.ok, (vim.inspect(result)))
     assert.are.equal(1, #result.value)
     assert.is_true(#progress >= 2)
-    assert.are.equal("Download complete", progress[#progress].message)
-    assert.are.equal(1, progress[#progress].ratio)
+    assert.are.equal("Download complete", assert(progress[#progress]).message)
+    assert.are.equal(1, assert(progress[#progress]).ratio)
 
     transport = fake_transport.new()
     transport.responses = {
@@ -460,7 +486,7 @@ describe("neoagent llama.cpp client", function()
     value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     result = wait(value:download_and_wait("owner/repo:Q4_K_M", function() end))
     assert.is_false(result.ok)
-    assert.matches("download failed", result.error.message)
+    assert.matches("download failed", assert(result.error).message)
   end)
 
   it("keeps waiting for a pre-existing model download until its status changes", function()
@@ -476,8 +502,8 @@ describe("neoagent llama.cpp client", function()
     }
     local value = client.new({ server_url = "http://127.0.0.1:8080", transport = transport })
     local result = wait(value:download_and_wait("owner/repo", function() end))
-    assert(result.ok, vim.inspect(result.error))
-    assert.are.equal("loaded", result.value[1].status.value)
+    assert(result.ok, (vim.inspect(result)))
+    assert.are.equal("loaded", assert(assert(result.value)[1]).status.value)
     assert.are.equal(6, #transport.fetch_requests)
   end)
 end)
