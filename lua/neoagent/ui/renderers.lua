@@ -4,13 +4,29 @@ local render = require("neoagent.ui.render")
 local tree = require("neoagent.ui.tree")
 local tool_presentation = require("neoagent.ui.tool_presentation")
 
+---@class Neoagent.RenderImage: Neoagent.ImageBlock
+---@field media_type? string
+---@field mime_type? string
+
+---@class Neoagent.RenderedImages
+---@field signature string
+---@field nodes Applet.Node[]
+
+---@class Neoagent.RenderContinuation
+---@field markdown table<string, Neoagent.MarkdownDocument>
+---@field images? Neoagent.RenderedImages
+---@field tree? Neoagent.RetainedMarkdown
+
 local M = {}
 local DETAILS_REGION_TARGET_ROWS = 64
 
+---@param kind string
+---@return boolean
 local function prose(kind)
   return kind == "assistant" or kind == "thinking"
 end
 
+---@type Neoagent.RenderPolicy
 local pi = {
   name = "pi",
   user_background = function() return "NeoagentUserBackground" end,
@@ -33,6 +49,7 @@ local pi = {
   separator = function() end,
 }
 
+---@type Neoagent.RenderPolicy
 local codex = {
   name = "codex",
   user_background = function() return "NeoagentCodexUserBackground" end,
@@ -71,12 +88,20 @@ local codex = {
   end,
 }
 
+---@param policy Neoagent.RenderPolicy
+---@param theme Applet.Theme
+---@param env Neoagent.RenderOptions
+---@param continuation? Neoagent.RenderContinuation
+---@param block Neoagent.RenderBlock
+---@return Neoagent.RenderContext, Neoagent.RenderContinuation
 local function context(policy, theme, env, continuation, block)
   local spinner = env.spinner or "⠋"
   local previous = type(continuation) == "table"
     and type(continuation.markdown) == "table"
     and continuation.markdown or {}
+  ---@type table<string, Neoagent.MarkdownDocument>
   local documents = {}
+  ---@type Neoagent.RenderContext
   local value = {
     policy = policy,
     theme = theme,
@@ -87,7 +112,7 @@ local function context(policy, theme, env, continuation, block)
     resolve_tool = function() return env.tool end,
     spinner_frames = { spinner },
     spinner_frame = 1,
-    _content_width = function() return env.width end,
+    _content_width = function() return env.width or 80 end,
     render_markdown = function(_, key, source, opts)
       local document = previous[key] or markdown.new()
       document:update(source, opts, block.text_epoch)
@@ -98,6 +123,8 @@ local function context(policy, theme, env, continuation, block)
   return value, { markdown = documents }
 end
 
+---@param block Neoagent.RenderImage
+---@return string?
 local function decoded_data(block)
   if type(block.data) ~= "string" then return nil end
   local data = block.data
@@ -109,6 +136,8 @@ local function decoded_data(block)
   return data
 end
 
+---@param block Neoagent.RenderImage
+---@return string?
 local function png_data(block)
   local mime = block.mimeType or block.media_type or block.mime_type
   if mime ~= nil and mime ~= "image/png" then return nil end
@@ -116,12 +145,18 @@ local function png_data(block)
   if data and data:sub(1, 8) == "\137PNG\r\n\26\n" then return data end
 end
 
+---@param bytes integer
+---@return string
 local function byte_size(bytes)
   if bytes < 1024 then return tostring(bytes) .. " B" end
   if bytes < 1024 * 1024 then return string.format("%.1f KiB", bytes / 1024) end
   return string.format("%.1f MiB", bytes / 1024 / 1024)
 end
 
+---@param block Neoagent.RenderImage
+---@param mime string
+---@param data? string
+---@return string
 local function image_tag(block, mime, data)
   local format = tostring(mime):match("^image/(.+)$") or tostring(mime)
   local parts = { "Image", format:upper() }
@@ -134,11 +169,16 @@ local function image_tag(block, mime, data)
   return table.concat(parts, " · ")
 end
 
+---@param value unknown
+---@return string
 local function identity_component(value)
   value = tostring(value)
   return tostring(#value) .. ":" .. value
 end
 
+---@param value Neoagent.RenderImage
+---@param index integer
+---@return string
 local function image_slot(value, index)
   if type(value.id) == "string" and value.id ~= "" then
     return identity_component("id") .. identity_component(value.id)
@@ -146,12 +186,19 @@ local function image_slot(value, index)
   return identity_component("index") .. identity_component(index)
 end
 
+---@param block Neoagent.RenderBlock
+---@return string|Neoagent.Block[]|nil
 local function image_content(block)
   if type(block.message) == "table" then return block.message.content end
   if type(block.update) == "table" then return block.update.content end
   return block.content
 end
 
+---@param block Neoagent.RenderBlock
+---@param key string
+---@param native? boolean
+---@param env Neoagent.RenderOptions
+---@return string?
 local function image_render_signature(block, key, native, env)
   if block.revision == nil then return nil end
   local details = env.image_mode == "details"
@@ -166,7 +213,14 @@ local function image_render_signature(block, key, native, env)
   })
 end
 
+---@param block Neoagent.RenderBlock
+---@param key string
+---@param native? boolean
+---@param env? Neoagent.RenderOptions
+---@param continuation? Neoagent.RenderContinuation
+---@return Applet.Node[], Neoagent.RenderedImages?
 local function image_nodes(block, key, native, env, continuation)
+  ---@type Applet.Node[]
   local result = {}
   env = env or {}
   local signature = image_render_signature(block, key, native, env)
@@ -180,6 +234,7 @@ local function image_nodes(block, key, native, env, continuation)
   end
   for index, value in ipairs(content) do
     if type(value) == "table" and value.type == "image" then
+      ---@cast value Neoagent.RenderImage
       local slot = image_slot(value, index)
       local image_key = key .. ":image:" .. slot
       local data = png_data(value)
@@ -188,6 +243,7 @@ local function image_nodes(block, key, native, env, continuation)
       local alt = image_tag(value, mime, data)
       if data and native ~= false then
         local details = env.image_mode == "details"
+        ---@type Applet.Node
         local image = ui.image({
           key = image_key,
           source = {
@@ -233,8 +289,11 @@ local function image_nodes(block, key, native, env, continuation)
   return result, signature and { signature = signature, nodes = result } or nil
 end
 
+---@param policy Neoagent.RenderPolicy
+---@return Neoagent.Renderer<Neoagent.RenderContinuation>
 local function new(policy)
   local theme = tree.theme(render.highlight_definitions)
+  ---@type Neoagent.Renderer<Neoagent.RenderContinuation>
   local value = {
     name = policy.name,
     theme = theme,
@@ -289,6 +348,7 @@ local function new(policy)
       next_continuation.images = image_continuation
       local node
       if content.markdown_document then
+        ---@cast content Neoagent.MarkdownView
         node, next_continuation.tree = tree.retained_markdown(
           details_key, content, {
             wrap = "native",
@@ -297,6 +357,7 @@ local function new(policy)
             attachments = images,
           }, continuation and continuation.tree)
       else
+        ---@cast content Neoagent.RenderContent
         if background then
           content.line_groups = content.line_groups or {}
           for row = 0, #content.lines - 1 do
@@ -318,12 +379,16 @@ end
 M.pi = new(pi)
 M.codex = new(codex)
 
+---@type table<string, Neoagent.Renderer<Neoagent.RenderContinuation>>
 local values = { pi = M.pi, codex = M.codex }
 
+---@param name string
+---@return Neoagent.Renderer<Neoagent.RenderContinuation>?
 function M.get(name)
   return values[name]
 end
 
+---@return string[]
 function M.names()
   return { "pi", "codex" }
 end
