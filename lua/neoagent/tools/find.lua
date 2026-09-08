@@ -2,6 +2,7 @@ local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 
+---@return Neoagent.Tool<unknown>
 local function new()
   return {
     name = "find",
@@ -16,6 +17,7 @@ local function new()
       required = { "pattern" },
       additionalProperties = false,
     },
+    ---@async
     execute = function(arguments, ctx)
       local pattern = common.require_string(arguments, "pattern", true)
       local workspace = common.workspace(ctx)

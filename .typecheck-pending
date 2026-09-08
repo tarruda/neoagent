@@ -38,13 +38,10 @@ lua/neoagent/sandbox/platform.lua
 lua/neoagent/sandbox/windows/init.lua
 lua/neoagent/tools/edit_file.lua
 lua/neoagent/tools/edit_presentation.lua
-lua/neoagent/tools/find.lua
-lua/neoagent/tools/grep.lua
 lua/neoagent/tools/init.lua
 lua/neoagent/tools/read_file.lua
 lua/neoagent/tools/shell.lua
 lua/neoagent/tools/update_plan.lua
-lua/neoagent/tools/write_file.lua
 lua/neoagent/ui.lua
 lua/neoagent/ui/applet_view.lua
 lua/neoagent/ui/panes/details.lua
