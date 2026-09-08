@@ -248,7 +248,7 @@ end
 
 ---@param opts Neoagent.LlamaServiceConfig
 ---@param resources Neoagent.LlamaServiceResources
----@return Neoagent.ProviderService
+---@return Neoagent.LlamaService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
@@ -551,6 +551,7 @@ function M.new(opts, resources)
     return result.value
   end
 
+  ---@return Neoagent.ProviderState
   function service:state()
     return dashboard:state()
   end
