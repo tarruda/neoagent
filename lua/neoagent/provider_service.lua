@@ -360,7 +360,7 @@ function M.busy(service)
 end
 
 ---@param service Neoagent.ProviderService
----@param operation Neoagent.ProviderOperation|Neoagent.ProviderOperationInfo
+---@param operation {mutating?: boolean}
 ---@return boolean
 function M.operation_enabled(service, operation)
   service = M.assert(service)

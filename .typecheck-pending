@@ -3,7 +3,6 @@ lua/neoagent/applet.lua
 lua/neoagent/health.lua
 lua/neoagent/init.lua
 lua/neoagent/profiles.lua
-lua/neoagent/provider_shell.lua
 lua/neoagent/ui/switcher.lua
 plugin/neoagent.lua
 scripts/applet-image-harness.lua

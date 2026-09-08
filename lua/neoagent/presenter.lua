@@ -104,7 +104,7 @@ local M = {}
 ---@field notify fun(message: string, level?: integer): unknown
 ---@field open_uri fun(uri: string): unknown
 
----@class Neoagent.Presenter
+---@class Neoagent.Presenter: Neoagent.AuthenticationPresenter
 ---@field host Neoagent.PresenterHost
 ---@field state Neoagent.PresentationState
 ---@field attachment? Neoagent.PresenterAttachment
