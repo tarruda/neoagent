@@ -1,9 +1,18 @@
 local async = require("neoagent.async")
 local util = require("neoagent.util")
 
+---@class Neoagent.TestModelResponse
+---@field events? Neoagent.ModelEvent[]
+---@field result Neoagent.ModelResult
+
 local M = {}
 
+---@param responses? Neoagent.TestModelResponse[]
+---@return Neoagent.TestModel
 function M.new(responses)
+  ---@class Neoagent.TestModel: Neoagent.Model
+  ---@field requests Neoagent.StreamOptions[]
+  ---@field responses Neoagent.TestModelResponse[]
   local model = {
     api = "fake",
     provider = "fake",
@@ -12,6 +21,8 @@ function M.new(responses)
     requests = {},
     responses = responses or {},
   }
+  ---@param opts Neoagent.StreamOptions
+  ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function model:stream(opts)
     self.requests[#self.requests + 1] = util.copy(opts)
     local response = table.remove(self.responses, 1)
@@ -26,7 +37,11 @@ function M.new(responses)
   return model
 end
 
+---@param content Neoagent.AssistantBlock[]
+---@param stop_reason? string
+---@return Neoagent.ModelSuccess
 function M.assistant(content, stop_reason)
+  ---@type Neoagent.AssistantMessage
   local message = {
     role = "assistant",
     content = content,
