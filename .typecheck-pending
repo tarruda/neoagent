@@ -41,7 +41,6 @@ lua/neoagent/ui/panes/providers.lua
 lua/neoagent/ui/panes/transcript.lua
 lua/neoagent/ui/presentation_surface.lua
 lua/neoagent/ui/provider_shell.lua
-lua/neoagent/ui/render.lua
 lua/neoagent/ui/renderers.lua
 lua/neoagent/ui/switcher.lua
 plugin/neoagent.lua
