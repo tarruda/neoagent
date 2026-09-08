@@ -1,20 +1,29 @@
 local assert = require("luassert")
 local curl = require("neoagent.transport.curl")
 local http = require("neoagent.transport.http")
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(2000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("real curl HTTP backend", function()
-  local server, original, paths, processes
+  ---@type { url: string, close: fun() }
+  local server
+  local original = vim.system
+  ---@type string[]
+  local paths = {}
+  ---@type vim.SystemObj[]
+  local processes = {}
   before_each(function()
     server = require("tests.helpers.http_live").start()
     original, paths, processes = vim.system, {}, {}
     vim.system = function(command, opts, done)
       if command[1] == "curl" then
         for index, arg in ipairs(command) do
-          if arg == "--dump-header" then paths[#paths + 1] = command[index + 1] end
+          if arg == "--dump-header" then paths[#paths + 1] = assert(command[index + 1]) end
         end
       end
       local process = original(command, opts, done)
@@ -31,7 +40,7 @@ describe("real curl HTTP backend", function()
 
   it("parses final headers and status without consuming a body status suffix", function()
     local result = wait(curl.fetch({ request = { url = server.url .. "/headers", method = "GET" } }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(200, result.status)
     assert.are.equal("first\n200", result.body)
     assert.are.equal("final", result.headers["x-request-id"])
@@ -44,18 +53,19 @@ describe("real curl HTTP backend", function()
       request = { url = server.url .. "/error", method = "GET" },
       on_event = function() error("HTTP error delivered as an SSE event") end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(429, result.status)
-    assert.are.equal("limited", result.body.error.message)
+    assert.are.equal("limited", assert(assert(result.body).error).message)
     assert.are.equal("final", result.headers["x-request-id"])
-    result = wait(curl.request({ request = { url = server.url .. "/disconnect", method = "GET" } }))
-    assert.is_false(result.ok)
-    assert.are.equal("transport", result.error.kind)
-    assert.is_number(result.error.exit_code)
-    assert.is_string(result.error.stderr)
+    local disconnected = wait(curl.request({ request = { url = server.url .. "/disconnect", method = "GET" } }))
+    assert.is_false(disconnected.ok)
+    assert.are.equal("transport", assert(disconnected.error).kind)
+    assert.is_number(rawget(assert(disconnected.error), "exit_code"))
+    assert.is_string(rawget(assert(disconnected.error), "stderr"))
   end)
 
   it("delivers SSE before EOF and cancels the process and temporary files", function()
+    ---@type Neoagent.JsonValue[]
     local received = {}
     local run = http.new().stream({
       request = { url = server.url .. "/stream", method = "GET" },
@@ -64,9 +74,9 @@ describe("real curl HTTP backend", function()
     assert(vim.wait(1000, function() return #received == 1 end))
     assert.is_false(run:is_done())
     run:cancel()
-    assert.are.equal("cancelled", wait(run).error.kind)
+    assert.are.equal("cancelled", assert(wait(run).error).kind)
     assert.are.same({ { value = 1 } }, received)
-    assert(vim.wait(1000, function() return vim.uv.fs_stat(paths[1]) == nil end))
+    assert(vim.wait(1000, function() return vim.uv.fs_stat((assert(paths[1]))) == nil end))
   end)
 
   it("bounds a fetched body while the process is running", function()
@@ -74,6 +84,6 @@ describe("real curl HTTP backend", function()
       url = server.url .. "/large", method = "GET", max_response_bytes = 64,
     } }))
     assert.is_false(result.ok)
-    assert.matches("exceeds 64 bytes", result.error.message)
+    assert.matches("exceeds 64 bytes", assert(result.error).message)
   end)
 end)

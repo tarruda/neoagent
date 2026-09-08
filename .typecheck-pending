@@ -1,10 +1,7 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-tests/http_live/callback_spec.lua
-tests/http_live/curl_spec.lua
 tests/integration/alibaba_token_plan_auth_spec.lua
 tests/integration/http_recording_spec.lua
 tests/integration/llama_http_spec.lua
-tests/integration/local_callback_spec.lua
 tests/integration/openai_codex_oauth_spec.lua
 tests/integration/openai_http_spec.lua
 tests/integration/opencode_go_recovery_spec.lua
@@ -57,7 +54,6 @@ tests/unit/dialog_spec.lua
 tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua
 tests/unit/http_replay_spec.lua
-tests/unit/http_spec.lua
 tests/unit/llama_auth_spec.lua
 tests/unit/llama_client_spec.lua
 tests/unit/llama_provider_spec.lua

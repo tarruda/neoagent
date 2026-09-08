@@ -1,14 +1,19 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(5000, function() return run:is_done() end, 5))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("local browser authentication callback", function()
+  ---@type Neoagent.TestCallbackNetwork
   local network
-  local servers
+  ---@type Neoagent.CallbackListener<unknown>[]
+  local servers = {}
 
   before_each(function()
     servers = {}
@@ -20,6 +25,9 @@ describe("local browser authentication callback", function()
     network.close()
   end)
 
+  ---@generic T
+  ---@param opts Neoagent.CallbackOptions<T>
+  ---@return Neoagent.CallbackListener<T>
   local function listen(opts)
     local server, err = network.listen(opts)
     assert(server, err)
@@ -57,11 +65,11 @@ describe("local browser authentication callback", function()
     }, "\n"))
 
     assert.matches("^HTTP/1%.1 200 OK\r\n", response)
-    assert.is_truthy(response:find(
-      "x-Alpha: first\r\nX-Zeta: last", 1, true))
-    assert.is_nil(response:find("Unsafe", 1, true))
-    assert.is_truthy(response:find(
-      "Content-Type: text/plain; charset=utf-8", 1, true))
+    assert.is_truthy((response:find(
+      "x-Alpha: first\r\nX-Zeta: last", 1, true)))
+    assert.is_nil((response:find("Unsafe", 1, true)))
+    assert.is_truthy((response:find(
+      "Content-Type: text/plain; charset=utf-8", 1, true)))
     assert.are.equal("accepted", wait(async.run(function()
       return server.wait()
     end)))
@@ -73,7 +81,7 @@ describe("local browser authentication callback", function()
       max_request_bytes = 1024,
       handler = function(received)
         if received.target == "/error" then error("handler exploded") end
-        if received.target == "/invalid" then return false end
+        if received.target == "/invalid" then return false --[[@as Neoagent.CallbackResponse<unknown>]] end
         return { status = 204 }
       end,
     })
@@ -92,13 +100,13 @@ describe("local browser authentication callback", function()
       "POST / HTTP/1.1", "Content-Length: 2048", "", "",
     }, "\r\n"))
     assert.matches("^HTTP/1%.1 413 Payload Too Large", large)
-    assert.is_truthy(large:find("request too large", 1, true))
+    assert.is_truthy((large:find("request too large", 1, true)))
 
     for _, target in ipairs({ "/error", "/invalid" }) do
       local response = network.request(server.port,
         "GET " .. target .. " HTTP/1.1\r\nHost: localhost\r\n\r\n")
       assert.matches("^HTTP/1%.1 500 Internal Server Error", response)
-      assert.is_truthy(response:find("callback failed", 1, true))
+      assert.is_truthy((response:find("callback failed", 1, true)))
     end
   end)
 
@@ -108,13 +116,14 @@ describe("local browser authentication callback", function()
       calls = calls + 1
       return { status = 200, done = true, value = "accepted" }
     end })
-    local listener = network.listeners[server.port]
+    local listener = assert(network.listeners[server.port])
+    ---@type Neoagent.TestCallbackPeer
     local peer = { response = "" }
     listener.pending = peer
-    listener.on_accept()
-    peer.handle.read(nil, "GET / HTTP/1.1\r\nHost:")
-    peer.handle.read("connection reset")
-    assert.is_true(peer.handle:is_closing())
+    assert(listener.on_accept)()
+    assert(assert(peer.handle).read)(nil, "GET / HTTP/1.1\r\nHost:")
+    assert(assert(peer.handle).read)("connection reset")
+    assert.is_true(assert(peer.handle):is_closing())
     assert.are.equal(0, calls)
     assert.are.equal("", peer.response)
     local run = async.run(function() return server.wait() end)
@@ -130,7 +139,7 @@ describe("local browser authentication callback", function()
       handler = function() return { status = 204 } end,
     })
     local elapsed = false
-    local marker = vim.uv.new_timer()
+    local marker = assert(vim.uv.new_timer())
     marker:start(20, 0, function()
       elapsed = true
       marker:stop()
@@ -143,8 +152,8 @@ describe("local browser authentication callback", function()
       return server.wait()
     end, { error_kind = "auth" }))
     assert.is_false(result.ok)
-    assert.are.equal("auth", result.error.kind)
-    assert.matches("timed out", result.error.message)
+    assert.are.equal("auth", assert(result.error).kind)
+    assert.matches("timed out", assert(result.error).message)
 
     local observed = listen({
       timeout_ms = 5,
@@ -154,6 +163,6 @@ describe("local browser authentication callback", function()
       return observed.wait()
     end, { error_kind = "auth" }))
     assert.is_false(result.ok)
-    assert.matches("timed out", result.error.message)
+    assert.matches("timed out", assert(result.error).message)
   end)
 end)
