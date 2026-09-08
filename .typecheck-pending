@@ -10,7 +10,6 @@ tests/integration/local_callback_spec.lua
 tests/integration/openai_codex_oauth_spec.lua
 tests/integration/openai_http_spec.lua
 tests/integration/opencode_go_recovery_spec.lua
-tests/integration/provider_management_spec.lua
 tests/integration/provider_surfaces_spec.lua
 tests/integration/recorded_providers_spec.lua
 tests/native_sandbox/sandbox_spec.lua
@@ -82,7 +81,6 @@ tests/unit/process_spec.lua
 tests/unit/profile_sessions_spec.lua
 tests/unit/provider_alibaba_spec.lua
 tests/unit/provider_anthropic_spec.lua
-tests/unit/provider_auth_spec.lua
 tests/unit/provider_catalog_sources_spec.lua
 tests/unit/provider_codex_spec.lua
 tests/unit/provider_credentials_spec.lua
