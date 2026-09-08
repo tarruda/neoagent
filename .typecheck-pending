@@ -4,4 +4,3 @@ tests/ui/view_spec.lua
 tests/unit/provider_shell_spec.lua
 tests/unit/sandbox_platform_spec.lua
 tests/unit/sandbox_spec.lua
-tests/windows/sandbox_spec.lua
