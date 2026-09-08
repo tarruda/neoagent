@@ -57,6 +57,4 @@ tests/unit/steering_spec.lua
 tests/unit/switcher_spec.lua
 tests/unit/tools_spec.lua
 tests/unit/ui_renderer_spec.lua
-tests/unit/workspace_settings_spec.lua
-tests/unit/workspace_trust_spec.lua
 tests/windows/sandbox_spec.lua
