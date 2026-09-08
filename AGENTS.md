@@ -143,6 +143,12 @@ platform isolation. Neither is part of `make test`.
 Windows CI also runs portable core and API unit specs alongside its native
 platform suite.
 
+`make benchmark-applet` checks container update budgets.
+`make benchmark-transcript` measures streaming updates with a long response and
+400 prior messages, checking latency, retained memory, and native mutations.
+Run benchmarks separately from other suites for useful timings. Linux stable
+CI runs both targets.
+
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.
 An explicit request to improve coverage authorizes coverage runs.
