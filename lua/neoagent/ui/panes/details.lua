@@ -4,16 +4,67 @@ local util = require("neoagent.util")
 
 local ui = Applet.Pane.nodes
 
+---@class Neoagent.DetailsPaneState
+---@field block Neoagent.RenderBlock
+---@field raw boolean
+---@field renderer Neoagent.Renderer<unknown>
+---@field config Neoagent.UIConfigInput
+---@field spinner string
+---@field title string
+---@field tool? Neoagent.RenderTool
+---@field following boolean
+
+---@class Neoagent.DetailsPaneCallbacks
+---@field close? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.DetailsPaneState>>): unknown
+---@field previous? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.DetailsPaneState>>): unknown
+---@field next? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.DetailsPaneState>>): unknown
+---@field center? fun(event: Applet.ActionEvent<Applet.Pane<Neoagent.DetailsPaneState>>): unknown
+---@field changed? fun(): unknown
+
+---@class Neoagent.DetailsPaneOptions
+---@field key? string
+---@field config? Neoagent.UIConfigInput
+---@field callbacks? Neoagent.DetailsPaneCallbacks
+---@field renderer Neoagent.Renderer<unknown>
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
+---@field image_system? Applet.ImageSystem
+---@field on_error? fun(error: Applet.PaneError)
+
+---@class Neoagent.DetailsRenderCache
+---@field key? string
+---@field renderer Neoagent.Renderer<unknown>
+---@field continuation? unknown
+
+---@class Neoagent.DetailsPane
+---@field config Neoagent.UIConfigInput
+---@field callbacks Neoagent.DetailsPaneCallbacks
+---@field renderer Neoagent.Renderer<unknown>
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
+---@field block? Neoagent.RenderBlock
+---@field tool? Neoagent.RenderTool
+---@field raw boolean
+---@field spinner string
+---@field title string
+---@field render_cache? Neoagent.DetailsRenderCache
+---@field following boolean
+---@field follow_timer? uv.uv_timer_t
+---@field destroyed boolean
+---@field pane Applet.Pane<Neoagent.DetailsPaneState>
+---@field unsubscribe_images? fun()
 local Details = {}
 Details.__index = Details
 
 local FOLLOW_INTERVAL_MS = 150
 
+---@param block Neoagent.RenderBlock?
+---@return boolean
 local function prose(block)
   return type(block) == "table"
     and (block.kind == "assistant" or block.kind == "thinking")
 end
 
+---@param block Neoagent.RenderBlock?
+---@return string?
 local function tool_name(block)
   if type(block) ~= "table" or block.kind ~= "tool" then return nil end
   if block.name ~= nil then return block.name end
@@ -23,15 +74,24 @@ local function tool_name(block)
   if type(block.message) == "table" then return block.message.toolName end
 end
 
+---@param block Neoagent.RenderBlock?
+---@return boolean
 local function follow_available(block)
-  return prose(block) and block.text_epoch ~= nil
+  return block ~= nil and prose(block) and block.text_epoch ~= nil
 end
 
+---@param value Neoagent.UIMapping?
+---@return string|false|nil
 local function first(value)
   if type(value) == "table" then return value[1] end
   return value
 end
 
+---@param result Applet.Binding[]
+---@param mode string
+---@param lhs string|false|nil
+---@param action string
+---@param desc string
 local function add_binding(result, mode, lhs, action, desc)
   if type(lhs) ~= "string" or lhs == "" then return end
   result[#result + 1] = {
@@ -42,6 +102,7 @@ local function add_binding(result, mode, lhs, action, desc)
   }
 end
 
+---@param component Neoagent.DetailsPane
 local function stop_follow_timer(component)
   local timer = component.follow_timer
   component.follow_timer = nil
@@ -51,6 +112,8 @@ local function stop_follow_timer(component)
   end
 end
 
+---@param component Neoagent.DetailsPane
+---@param enabled boolean
 local function set_following(component, enabled)
   stop_follow_timer(component)
   component.following = enabled == true and follow_available(component.block)
@@ -68,6 +131,11 @@ local function set_following(component, enabled)
   end))
 end
 
+---@param state Neoagent.DetailsPaneState
+---@param raw_available boolean
+---@param can_follow boolean
+---@param mappings table<string, Neoagent.UIMapping>
+---@return string
 local function border_title(state, raw_available, can_follow, mappings)
   local parts = { state.title or "Card details" }
   local raw = raw_available and first(mappings.card_raw) or nil
@@ -83,6 +151,8 @@ local function border_title(state, raw_available, can_follow, mappings)
   return " " .. table.concat(parts, " · ") .. " "
 end
 
+---@param state Neoagent.DetailsPaneState
+---@return Applet.TextNode
 local function raw_node(state)
   return ui.text({
     key = "details:raw",
@@ -91,6 +161,10 @@ local function raw_node(state)
   })
 end
 
+---@param component Neoagent.DetailsPane
+---@param state Neoagent.DetailsPaneState
+---@param env Applet.PaneRenderEnvironment
+---@return Applet.Tree
 local function render(component, state, env)
   local block = state.block or { kind = "notice", text = "" }
   local child
@@ -98,12 +172,13 @@ local function render(component, state, env)
     child = raw_node(state)
   else
     local cache = component.render_cache
-    local previous = cache and cache.key == block.key
-      and cache.renderer == state.renderer and cache.continuation or nil
+    local previous
+    if cache and cache.renderer == state.renderer and cache.key == block.key then
+      previous = cache.continuation
+    end
     local node, continuation = protocol.render_details(state.renderer, block, {
       width = env.width,
       spinner = state.spinner,
-      details_key = state.details_key,
       wrap_cards = state.config.wrap_cards == true,
       tool = state.tool,
     }, previous)
@@ -124,6 +199,7 @@ local function render(component, state, env)
     end
   end
   local mappings = state.config.mappings or {}
+  ---@type Applet.Binding[]
   local bindings = {}
   local raw_available = prose(block)
   local wraps = raw_available or tool_name(block) == "shell"
@@ -169,6 +245,8 @@ local function render(component, state, env)
   }
 end
 
+---@param opts Neoagent.DetailsPaneOptions
+---@return Neoagent.DetailsPane
 function Details.new(opts)
   opts = opts or {}
   opts.config = opts.config or {}
@@ -223,6 +301,8 @@ function Details.new(opts)
   return self
 end
 
+---@param block Neoagent.RenderBlock?
+---@param raw boolean?
 function Details:set(block, raw)
   local previous_key = self.block and self.block.key
   self.block = block and util.copy(block) or nil
@@ -261,6 +341,7 @@ function Details:_publish()
   })
 end
 
+---@return string
 function Details:text()
   return self.pane:text()
 end

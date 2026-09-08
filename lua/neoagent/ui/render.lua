@@ -41,7 +41,7 @@ local util = require("neoagent.util")
 ---@field policy Neoagent.RenderPolicy
 ---@field theme Applet.Theme
 ---@field config { mappings?: {card_details?: string|string[]|false}, wrap_cards?: boolean }
----@field resolve_tool fun(name?: string): Neoagent.Tool<unknown>?
+---@field resolve_tool fun(name?: string): Neoagent.RenderTool?
 ---@field spinner_frames string[]
 ---@field spinner_frame integer
 ---@field _content_width fun(self: Neoagent.RenderContext): integer

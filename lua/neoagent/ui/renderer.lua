@@ -21,6 +21,10 @@ local util = require("neoagent.util")
 ---@field image_scope? string
 ---@field text_epoch? unknown
 
+---@class Neoagent.RenderTool
+---@field name string
+---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
+
 ---@class Neoagent.RenderOptions
 ---@field previous? Neoagent.RenderBlock
 ---@field following? Neoagent.RenderBlock
@@ -29,7 +33,7 @@ local util = require("neoagent.util")
 ---@field spinner? string
 ---@field details_key? string
 ---@field wrap_cards? boolean
----@field tool? Neoagent.Tool<unknown>
+---@field tool? Neoagent.RenderTool
 ---@field key? string
 ---@field show_images? boolean
 ---@field image_mode? 'details'
@@ -104,7 +108,8 @@ end
 ---@param env? Neoagent.RenderOptions
 ---@param optional boolean
 ---@param continuation? C
----@return Applet.Node?, C|Neoagent.Error|nil
+---@return_overload Applet.Node, C?
+---@return_overload nil, Neoagent.Error?
 local function invoke(renderer, method, block, env, optional, continuation)
   local copied = M.copy_block(block)
   local options = util.copy(env or {})
@@ -131,7 +136,8 @@ end
 ---@param block Neoagent.RenderBlock
 ---@param env? Neoagent.RenderOptions
 ---@param continuation? C
----@return Applet.Node?, C|Neoagent.Error|nil
+---@return_overload Applet.Node, C?
+---@return_overload nil, Neoagent.Error?
 function M.render_block(renderer, block, env, continuation)
   return invoke(renderer, "render_block", block, env, false, continuation)
 end
@@ -141,7 +147,8 @@ end
 ---@param block Neoagent.RenderBlock
 ---@param env? Neoagent.RenderOptions
 ---@param continuation? C
----@return Applet.Node?, C|Neoagent.Error|nil
+---@return_overload Applet.Node, C?
+---@return_overload nil, Neoagent.Error?
 function M.render_details(renderer, block, env, continuation)
   return invoke(renderer, "render_details", block, env, true, continuation)
 end

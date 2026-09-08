@@ -16,7 +16,7 @@ local M = {}
 ---@class Neoagent.ToolPresentationOptions
 ---@field arguments Neoagent.JsonObject
 ---@field result? Neoagent.ToolResult|Neoagent.ToolResultMessage
----@field state string
+---@field state? string
 
 ---@alias Neoagent.ToolExecutor<C> fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 
