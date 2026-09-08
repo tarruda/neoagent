@@ -38,7 +38,7 @@ local M = {}
 ---@field message string
 ---@field level? integer
 
----@class Neoagent.NormalizedSelectItem: Applet.SelectItem
+---@class Neoagent.NormalizedSelectItem: Applet.PresentationItem
 ---@field value? unknown
 
 ---@class Neoagent.NormalizedSelect: Applet.SelectRequest
