@@ -1,19 +1,127 @@
 local text = require("applet").Pane.text
 
 local M = {}
+---@class Neoagent.MarkdownSpan
+---@field col integer
+---@field end_col integer
+---@field group string
+
+---@class Neoagent.MarkdownParts
+---@field parts string[]
+---@field spans Neoagent.MarkdownSpan[]
+---@field length integer
+
+---@class Neoagent.MarkdownInline
+---@field text string
+---@field spans Neoagent.MarkdownSpan[]
+---@field unstable_source? integer
+---@field unstable_output? integer
+
+---@class Neoagent.MarkdownInlineState: Neoagent.MarkdownInline
+---@field source string
+
+---@class Neoagent.MarkdownRow
+---@field text string
+---@field spans Neoagent.MarkdownSpan[]
+
+---@class Neoagent.MarkdownOptions
+---@field width? integer
+---@field preserve_markers? boolean
+
+---@class Neoagent.MarkdownSettings: Neoagent.MarkdownOptions
+---@field width integer
+---@field preserve_markers boolean
+
+---@class Neoagent.MarkdownBlockRange
+---@field source_first integer
+---@field source_last integer
+---@field output_first integer
+---@field output_last integer
+
+---@alias Neoagent.MarkdownSyntax 'plain'|'heading'|'quote'|'list'|'rule'|'blank'
+
+---@class Neoagent.MarkdownLine: Neoagent.MarkdownBlockRange
+---@field kind 'line'
+---@field syntax Neoagent.MarkdownSyntax
+---@field inline? Neoagent.MarkdownInlineState
+---@field depends_on_next boolean
+
+---@class Neoagent.MarkdownTable: Neoagent.MarkdownBlockRange
+---@field kind 'table'
+---@field depends_on_next true
+
+---@class Neoagent.MarkdownFence: Neoagent.MarkdownBlockRange
+---@field kind 'fence'
+---@field marker string
+---@field language string
+---@field tail_source integer
+---@field tail_output_first integer
+---@field open boolean
+
+---@alias Neoagent.MarkdownBlock Neoagent.MarkdownLine|Neoagent.MarkdownTable|Neoagent.MarkdownFence
+---@alias Neoagent.MarkdownSemanticKind 'paragraph'|'heading'|'quote'|'list'|'thematic_break'|'blank'|'table'|'fence'
+
+---@class Neoagent.MarkdownSemanticBlock
+---@field kind Neoagent.MarkdownSemanticKind
+---@field first integer
+---@field last integer
+---@field splittable boolean
+
+---@class Neoagent.MarkdownHighlight: Neoagent.MarkdownSpan
+---@field row integer
+
+---@class Neoagent.MarkdownContent
+---@field lines string[]
+---@field highlights Neoagent.MarkdownHighlight[]
+---@field markdown_blocks Neoagent.MarkdownSemanticBlock[]
+
+---@class Neoagent.MarkdownRegion
+---@field first integer
+---@field last integer
+---@field start_block integer
+---@field revision integer
+---@field rows Neoagent.MarkdownRow[]
+
+---@class Neoagent.MarkdownRegionCache
+---@field regions Neoagent.MarkdownRegion[]
+---@field dirty_first? integer
+
+---@class Neoagent.MarkdownDocument
+---@field raw string
+---@field source_lines string[]
+---@field options Neoagent.MarkdownSettings
+---@field blocks Neoagent.MarkdownBlock[]
+---@field rows Neoagent.MarkdownRow[]
+---@field nonblank boolean
+---@field words integer
+---@field region_caches table<integer, Neoagent.MarkdownRegionCache>
+---@field next_region_revision integer
+---@field append_epoch? unknown
 local Document = {}
 Document.__index = Document
 
+---@param value string
+---@return integer
 local function width(value) return text.width(value) end
 
+---@param value string
+---@return string
 local function trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+---@param value string
+---@param needle string
+---@param from? integer
+---@return integer?, integer?
 local function find_plain(value, needle, from)
   return value:find(needle, from, true)
 end
 
+---@param target Neoagent.MarkdownParts
+---@param value string
+---@param spans? Neoagent.MarkdownSpan[]
+---@return integer
 local function append(target, value, spans)
   local offset = target.length
   target.parts[#target.parts + 1] = value
@@ -28,9 +136,14 @@ local function append(target, value, spans)
   return offset
 end
 
+---@param value string
+---@param previous_char? string
+---@return Neoagent.MarkdownInline
 local function parse_inline(value, previous_char)
+  ---@type Neoagent.MarkdownParts
   local result = { parts = {}, spans = {}, length = 0 }
   local plain = {}
+  ---@type integer?, integer?
   local unstable_source, unstable_output
 
   local function flush()
@@ -39,6 +152,7 @@ local function parse_inline(value, previous_char)
     plain = {}
   end
 
+  ---@param index integer
   local function depend(index)
     if unstable_source then return end
     flush()
@@ -46,6 +160,8 @@ local function parse_inline(value, previous_char)
     unstable_output = result.length
   end
 
+  ---@param inner string
+  ---@param group string
   local function styled(inner, group)
     flush()
     local rendered = parse_inline(inner)
@@ -186,12 +302,13 @@ local function parse_inline(value, previous_char)
     end
   end
   flush()
-  result.text = table.concat(result.parts)
-  result.unstable_source = unstable_source
-  result.unstable_output = unstable_output
-  return result
+  return { text = table.concat(result.parts), spans = result.spans,
+    unstable_source = unstable_source, unstable_output = unstable_output }
 end
 
+---@param spans? Neoagent.MarkdownSpan[]
+---@param finish integer
+---@return Neoagent.MarkdownSpan[]
 local function copy_prefix_spans(spans, finish)
   local result = {}
   for _, span in ipairs(spans or {}) do
@@ -200,6 +317,9 @@ local function copy_prefix_spans(spans, finish)
   return result
 end
 
+---@param previous? Neoagent.MarkdownInlineState
+---@param value string
+---@return Neoagent.MarkdownInlineState
 local function update_inline(previous, value)
   local source_first, output_first = 1, 0
   local prefix, spans = "", {}
@@ -223,6 +343,7 @@ local function update_inline(previous, value)
       group = span.group,
     }
   end
+  ---@type integer?, integer?
   local unstable_source, unstable_output
   if rendered.unstable_source then
     unstable_source = source_first - 1 + rendered.unstable_source
@@ -239,6 +360,8 @@ local function update_inline(previous, value)
   }
 end
 
+---@param line string
+---@return string[]
 local function cells(line)
   line = trim(line)
   if line:sub(1, 1) == "|" then line = line:sub(2) end
@@ -250,6 +373,8 @@ local function cells(line)
   return result
 end
 
+---@param line string
+---@return boolean
 local function table_separator(line)
   local parsed = cells(line)
   if #parsed == 0 then return false end
@@ -259,10 +384,17 @@ local function table_separator(line)
   return true
 end
 
+---@param value string
+---@param target integer
+---@return string
 local function pad(value, target)
   return value .. string.rep(" ", math.max(0, target - width(value)))
 end
 
+---@param spans Neoagent.MarkdownSpan[]
+---@param offset integer
+---@param group? string
+---@return Neoagent.MarkdownSpan[]
 local function shift_spans(spans, offset, group)
   local result = {}
   for _, span in ipairs(spans) do
@@ -282,6 +414,9 @@ local function shift_spans(spans, offset, group)
   return result
 end
 
+---@param value string
+---@param spans? Neoagent.MarkdownSpan[]
+---@return Neoagent.MarkdownRow
 local function row(value, spans)
   local kept = {}
   for _, span in ipairs(spans or {}) do
@@ -290,17 +425,24 @@ local function row(value, spans)
   return { text = value, spans = kept }
 end
 
+---@param source string[]
+---@param first integer
+---@param available integer
+---@return Neoagent.MarkdownRow[]?, integer
 local function render_table(source, first, available)
-  local values = { cells(source[first]) }
+  local values = { cells(assert(source[first])) }
   local index = first + 2
-  while index <= #source and source[index]:find("|", 1, true)
+  while index <= #source and assert(source[index]):find("|", 1, true)
       and source[index] ~= "" do
-    values[#values + 1] = cells(source[index])
+    values[#values + 1] = cells(assert(source[index]))
     index = index + 1
   end
   local last = index - 1
-  local columns = #values[1]
-  local rendered, widths = {}, {}
+  local columns = #assert(values[1])
+  ---@type Neoagent.MarkdownInline[][]
+  local rendered = {}
+  ---@type integer[]
+  local widths = {}
   for row_index, cells_value in ipairs(values) do
     rendered[row_index] = {}
     for column = 1, columns do
@@ -314,6 +456,9 @@ local function render_table(source, first, available)
   if total > available then return nil, first end
 
   local result = {}
+  ---@param left string
+  ---@param middle string
+  ---@param right string
   local function border(left, middle, right)
     local parts = {}
     for _, value in ipairs(widths) do
@@ -332,7 +477,7 @@ local function render_table(source, first, available)
     local prefix = "│ "
     local line = { parts = { prefix }, spans = {}, length = #prefix }
     for column, value in ipairs(cells_value) do
-      local start = append(line, pad(value.text, widths[column]), value.spans)
+      local start = append(line, pad(value.text, assert(widths[column])), value.spans)
       if row_index == 1 then
         line.spans[#line.spans + 1] = {
           col = start,
@@ -362,26 +507,37 @@ local function render_table(source, first, available)
   return result, last
 end
 
+---@param line string
+---@return_overload string, string
+---@return_overload nil, nil
 local function fence(line)
   local ticks, language = line:match("^%s*(`+)%s*([^`]*)$")
-  if ticks and #ticks >= 3 then return ticks, trim(language) end
+  if ticks and #ticks >= 3 then return ticks, trim(assert(language)) end
   local tildes
   tildes, language = line:match("^%s*(~+)%s*([^~]*)$")
-  if tildes and #tildes >= 3 then return tildes, trim(language) end
+  if tildes and #tildes >= 3 then return tildes, trim(assert(language)) end
 end
 
+---@param line string
+---@param marker string
+---@return boolean?
 local function closing_fence(line, marker)
   local candidate = line:match("^%s*([`~]+)%s*$")
   return candidate and candidate:sub(1, 1) == marker:sub(1, 1)
     and #candidate >= #marker
 end
 
+---@param line string
+---@param marker string
+---@return boolean?
 local function partial_fence(line, marker)
   local candidate = line:match("^%s*([`~]+)%s*$")
   return candidate and candidate:sub(1, 1) == marker:sub(1, 1)
     and #candidate < #marker
 end
 
+---@param value string
+---@return Neoagent.MarkdownRow
 local function code_row(value)
   value = "  " .. value
   return row(value, { {
@@ -391,6 +547,8 @@ local function code_row(value)
   } })
 end
 
+---@param value string
+---@return Neoagent.MarkdownRow
 local function code_border(value)
   return row(value, { {
     col = 0,
@@ -399,6 +557,8 @@ local function code_border(value)
   } })
 end
 
+---@param value? Neoagent.MarkdownOptions
+---@return Neoagent.MarkdownSettings
 local function options(value)
   value = value or {}
   return {
@@ -407,11 +567,18 @@ local function options(value)
   }
 end
 
+---@param left? Neoagent.MarkdownSettings
+---@param right? Neoagent.MarkdownSettings
+---@return boolean?
 local function same_options(left, right)
   return left and right and left.width == right.width
     and left.preserve_markers == right.preserve_markers
 end
 
+---@param line string
+---@param opts Neoagent.MarkdownSettings
+---@param previous? Neoagent.MarkdownBlock
+---@return Neoagent.MarkdownRow, Neoagent.MarkdownSyntax, Neoagent.MarkdownInlineState?
 local function render_line(line, opts, previous)
   local hashes, heading = line:match("^%s*(#+)%s+(.+)$")
   if hashes and #hashes > 6 then hashes = nil end
@@ -423,7 +590,7 @@ local function render_line(line, opts, previous)
   end
 
   if hashes then
-    local value = parse_inline((heading:gsub("%s+#+%s*$", "")))
+    local value = parse_inline((assert(heading):gsub("%s+#+%s*$", "")))
     local prefix = #hashes >= 3 and hashes .. " " or ""
     local spans = shift_spans(value.spans, #prefix,
       "NeoagentMarkdownHeading")
@@ -464,11 +631,13 @@ local function render_line(line, opts, previous)
   elseif bullet or ordered then
     local marker = ordered
     if bullet then marker = opts.preserve_markers and bullet or "-" end
+    item = assert(item)
     local task, rest = item:match("^%[([ xX])%]%s*(.*)$")
     if task then
-      item = "[" .. (task:lower() == "x" and "x" or " ") .. "] " .. rest
+      item = "[" .. (task:lower() == "x" and "x" or " ") .. "] " .. assert(rest)
     end
-    local prefix = indent .. marker .. " "
+    indent = assert(indent)
+    local prefix = indent .. assert(marker) .. " "
     local value = parse_inline(item)
     local spans = shift_spans(value.spans, #prefix)
     spans[#spans + 1] = {
@@ -494,17 +663,26 @@ local function render_line(line, opts, previous)
   return row(value.text, value.spans), "plain", value
 end
 
+---@param target Neoagent.MarkdownRow[]
+---@param values Neoagent.MarkdownRow[]
 local function append_rows(target, values)
   for _, value in ipairs(values) do target[#target + 1] = value end
 end
 
+---@type fun(source: string[], first: integer, opts: Neoagent.MarkdownSettings, blocks: Neoagent.MarkdownBlock[], rows: Neoagent.MarkdownRow[], previous?: Neoagent.MarkdownBlock)
 local parse_blocks
 
+---@param source string[]
+---@param first integer
+---@param marker string
+---@param language string
+---@param rows Neoagent.MarkdownRow[]
+---@return Neoagent.MarkdownFence, integer
 local function render_fence(source, first, marker, language, rows)
   local output_first = #rows + 1
   rows[#rows + 1] = code_border("```" .. language)
   local close = first + 1
-  while close <= #source and not closing_fence(source[close], marker) do
+  while close <= #source and not closing_fence(assert(source[close]), marker) do
     close = close + 1
   end
   local open = close > #source
@@ -512,16 +690,16 @@ local function render_fence(source, first, marker, language, rows)
   local tail_source = open and math.max(first + 1, #source) or close
   local last_code = open and #source or close - 1
   if open and last_code >= first + 1
-      and partial_fence(source[last_code], marker) then
+      and partial_fence(assert(source[last_code]), marker) then
     last_code = last_code - 1
   end
 
   for source_row = first + 1, math.min(last_code, tail_source - 1) do
-    rows[#rows + 1] = code_row(source[source_row])
+    rows[#rows + 1] = code_row(assert(source[source_row]))
   end
   local tail_output_first = #rows + 1
   for source_row = math.max(first + 1, tail_source), last_code do
-    rows[#rows + 1] = code_row(source[source_row])
+    rows[#rows + 1] = code_row(assert(source[source_row]))
   end
   rows[#rows + 1] = code_border("```")
   return {
@@ -541,7 +719,7 @@ end
 parse_blocks = function(source, first, opts, blocks, rows, previous)
   local index = first
   while index <= #source do
-    local line = source[index]
+    local line = assert(source[index])
     local marker, language = fence(line)
     if marker then
       local block, next_index = render_fence(
@@ -549,7 +727,7 @@ parse_blocks = function(source, first, opts, blocks, rows, previous)
       blocks[#blocks + 1] = block
       index = next_index
     elseif index < #source and line:find("|", 1, true)
-        and table_separator(source[index + 1]) then
+        and table_separator(assert(source[index + 1])) then
       local output_first = #rows + 1
       local rendered, last = render_table(source, index, opts.width)
       if rendered then
@@ -598,24 +776,33 @@ parse_blocks = function(source, first, opts, blocks, rows, previous)
   end
 end
 
+---@param lines string[]
+---@param value string
 local function split_append(lines, value)
   local parts = vim.split(value, "\n", { plain = true })
   lines[#lines] = lines[#lines] .. parts[1]
   for index = 2, #parts do lines[#lines + 1] = parts[index] end
 end
 
+---@generic T
+---@param values T[]
+---@param last integer
 local function truncate(values, last)
   for index = #values, last + 1, -1 do values[index] = nil end
 end
 
+---@param document Neoagent.MarkdownDocument
+---@param block_index integer
+---@return integer
 local function extend_fence(document, block_index)
-  local previous = document.blocks[block_index]
+  local previous = assert(document.blocks[block_index])
+  ---@cast previous Neoagent.MarkdownFence
   local blocks, rows = document.blocks, document.rows
   truncate(blocks, block_index - 1)
   truncate(rows, previous.tail_output_first - 1)
   local source, marker = document.source_lines, previous.marker
   local close = previous.tail_source
-  while close <= #source and not closing_fence(source[close], marker) do
+  while close <= #source and not closing_fence(assert(source[close]), marker) do
     close = close + 1
   end
   local open = close > #source
@@ -624,15 +811,15 @@ local function extend_fence(document, block_index)
     or close
   local last_code = open and #source or close - 1
   if open and last_code >= previous.source_first + 1
-      and partial_fence(source[last_code], marker) then
+      and partial_fence(assert(source[last_code]), marker) then
     last_code = last_code - 1
   end
   for source_row = previous.tail_source, math.min(last_code, tail_source - 1) do
-    rows[#rows + 1] = code_row(source[source_row])
+    rows[#rows + 1] = code_row(assert(source[source_row]))
   end
   local tail_output_first = #rows + 1
   for source_row = math.max(previous.tail_source, tail_source), last_code do
-    rows[#rows + 1] = code_row(source[source_row])
+    rows[#rows + 1] = code_row(assert(source[source_row]))
   end
   rows[#rows + 1] = code_border("```")
   blocks[#blocks + 1] = {
@@ -653,6 +840,7 @@ local function extend_fence(document, block_index)
   return previous.tail_output_first
 end
 
+---@type table<Neoagent.MarkdownSyntax, Neoagent.MarkdownSemanticKind>
 local semantic_kinds = {
   plain = "paragraph",
   heading = "heading",
@@ -669,15 +857,28 @@ local mergeable_blocks = {
   quote = true,
 }
 
+---@param block Neoagent.MarkdownBlock
+---@return boolean
 local function block_splittable(block)
   if block.kind == "fence" then return true end
   if block.kind ~= "line" then return false end
+  ---@cast block Neoagent.MarkdownLine
   return mergeable_blocks[semantic_kinds[block.syntax]] == true
 end
 
+---@param block Neoagent.MarkdownBlock
+---@return Neoagent.MarkdownSemanticBlock
 local function semantic_block(block)
-  local kind = block.kind == "line" and semantic_kinds[block.syntax]
-    or block.kind
+  ---@type Neoagent.MarkdownSemanticKind
+  local kind
+  if block.kind == "line" then
+    ---@cast block Neoagent.MarkdownLine
+    kind = semantic_kinds[block.syntax]
+  elseif block.kind == "fence" then
+    kind = "fence"
+  else
+    kind = "table"
+  end
   return {
     kind = kind,
     first = block.output_first - 1,
@@ -686,13 +887,17 @@ local function semantic_block(block)
   }
 end
 
+---@param blocks Neoagent.MarkdownBlock[]
+---@param first? integer
+---@param last? integer
+---@return Neoagent.MarkdownSemanticBlock[]
 local function semantic_blocks(blocks, first, last)
   local result = {}
-  first, last = first or 1, last or math.huge
+  first = first or 1
   for _, source in ipairs(blocks) do
     local block = semantic_block(source)
     local block_first = math.max(first - 1, block.first)
-    local block_last = math.min(last, block.last)
+    local block_last = last and math.min(last, block.last) or block.last
     if block_last > block_first then
       block.first = block_first - (first - 1)
       block.last = block_last - (first - 1)
@@ -709,12 +914,17 @@ local function semantic_blocks(blocks, first, last)
   return result
 end
 
+---@param rows Neoagent.MarkdownRow[]
+---@param blocks Neoagent.MarkdownBlock[]
+---@param first? integer
+---@param last? integer
+---@return Neoagent.MarkdownContent
 local function content_slice(rows, blocks, first, last)
   local lines, highlights = {}, {}
   first = math.max(1, first or 1)
   last = math.min(#rows, last or #rows)
   for source_index = first, last do
-    local value = rows[source_index]
+    local value = assert(rows[source_index])
     local target_index = source_index - first + 1
     lines[target_index] = value.text
     for _, span in ipairs(value.spans) do
@@ -733,16 +943,23 @@ local function content_slice(rows, blocks, first, last)
   }
 end
 
+---@param value? string
+---@return integer
 local function count_words(value)
   return select(2, (value or ""):gsub("%S+", ""))
 end
 
+---@param rows Neoagent.MarkdownRow[]
+---@param first integer
+---@param last integer
+---@return Neoagent.MarkdownRow[]
 local function region_rows(rows, first, last)
   local result = {}
   for index = first, last do result[#result + 1] = rows[index] end
   return result
 end
 
+---@return Neoagent.MarkdownDocument
 function Document.new()
   return setmetatable({
     raw = "",
@@ -757,6 +974,11 @@ function Document.new()
   }, Document)
 end
 
+---@param raw string
+---@param source string[]
+---@param opts Neoagent.MarkdownSettings
+---@param append_epoch? unknown
+---@return Neoagent.MarkdownDocument
 function Document:_rebuild(raw, source, opts, append_epoch)
   self.raw, self.append_epoch = raw, append_epoch
   self.source_lines, self.options = source, opts
@@ -770,6 +992,10 @@ function Document:_rebuild(raw, source, opts, append_epoch)
   return self
 end
 
+---@param value? string
+---@param raw_opts? Neoagent.MarkdownOptions
+---@param append_epoch? unknown
+---@return Neoagent.MarkdownDocument
 function Document:update(value, raw_opts, append_epoch)
   value = value or ""
   local opts = options(raw_opts)
@@ -806,21 +1032,22 @@ function Document:update(value, raw_opts, append_epoch)
 
   self.nonblank = true
   local last_index = #self.blocks
-  local last = self.blocks[last_index]
+  local last = assert(self.blocks[last_index])
   local opener_stable = last.kind == "fence"
     and last.source_last > last.source_first
+  ---@type integer
   local changed_output
   if opener_stable then
     changed_output = extend_fence(self, last_index)
   else
     local start_index = last_index
-    if last.kind == "line" and last_index > 1
-        and self.blocks[last_index - 1].depends_on_next
-        and self.blocks[last_index - 1].source_last + 1
-          == last.source_first then
+    local previous = self.blocks[last_index - 1]
+    if last.kind == "line" and previous
+        and previous.depends_on_next
+        and previous.source_last + 1 == last.source_first then
       start_index = last_index - 1
     end
-    local changed = self.blocks[start_index]
+    local changed = assert(self.blocks[start_index])
     local blocks, rows = self.blocks, self.rows
     truncate(blocks, start_index - 1)
     truncate(rows, changed.output_first - 1)
@@ -835,20 +1062,27 @@ function Document:update(value, raw_opts, append_epoch)
   return self
 end
 
+---@return Neoagent.MarkdownContent
 function Document:snapshot()
   return content_slice(self.rows, self.blocks)
 end
 
+---@param first? integer
+---@param last? integer
+---@return Neoagent.MarkdownContent
 function Document:slice(first, last)
   return content_slice(self.rows, self.blocks, first, last)
 end
 
+---@return integer
 function Document:finish()
   local finish = #self.rows
-  while finish > 0 and self.rows[finish].text == "" do finish = finish - 1 end
+  while finish > 0 and assert(self.rows[finish]).text == "" do finish = finish - 1 end
   return finish
 end
 
+---@param maximum integer
+---@return Neoagent.MarkdownContent, integer
 function Document:tail(maximum)
   assert(type(maximum) == "number" and maximum >= 1
     and maximum % 1 == 0, "maximum must be a positive integer")
@@ -857,10 +1091,13 @@ function Document:tail(maximum)
   return self:slice(first, finish), first - 1
 end
 
+---@return integer
 function Document:word_count()
   return self.words
 end
 
+---@param target integer
+---@return Neoagent.MarkdownRegion[]
 function Document:regions(target)
   assert(type(target) == "number" and target >= 1 and target % 1 == 0,
     "target must be a positive integer")
@@ -883,12 +1120,16 @@ function Document:regions(target)
       end
     end
     invalid = invalid or #regions
-    local region = regions[invalid]
+    local region = assert(regions[invalid])
     start_row, start_block = region.first, region.start_block
     truncate(regions, invalid - 1)
   end
 
+  ---@type integer?, integer?, integer?
   local pending_first, pending_last, pending_block
+  ---@param first integer
+  ---@param last integer
+  ---@param block_index integer
   local function emit(first, last, block_index)
     if last < first then return end
     self.next_region_revision = self.next_region_revision + 1
@@ -902,7 +1143,7 @@ function Document:regions(target)
   end
   local function emit_pending()
     if pending_first then
-      emit(pending_first, pending_last, pending_block)
+      emit(pending_first, assert(pending_last), assert(pending_block))
     end
     pending_first, pending_last, pending_block = nil, nil, nil
   end
@@ -927,7 +1168,7 @@ function Document:regions(target)
         emit_pending()
         emit(first, last, block_index)
       else
-        if pending_first and pending_last - pending_first + 1 + size > target then
+        if pending_first and assert(pending_last) - pending_first + 1 + size > target then
           emit_pending()
         end
         pending_first = pending_first or first
@@ -944,10 +1185,14 @@ function Document:regions(target)
   return regions
 end
 
+---@return Neoagent.MarkdownDocument
 function M.new()
   return Document.new()
 end
 
+---@param value? string
+---@param opts? Neoagent.MarkdownOptions
+---@return Neoagent.MarkdownContent
 function M.render(value, opts)
   return Document.new():update(value, opts):snapshot()
 end

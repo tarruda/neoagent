@@ -20,7 +20,6 @@ lua/neoagent/config.lua
 lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
 lua/neoagent/init.lua
-lua/neoagent/markdown.lua
 lua/neoagent/profile_draft.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_shell.lua
@@ -133,7 +132,6 @@ tests/unit/input_history_spec.lua
 tests/unit/llama_auth_spec.lua
 tests/unit/llama_client_spec.lua
 tests/unit/llama_provider_spec.lua
-tests/unit/markdown_spec.lua
 tests/unit/model_catalog_spec.lua
 tests/unit/model_rules_spec.lua
 tests/unit/model_spec.lua
