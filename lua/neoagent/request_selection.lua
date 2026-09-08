@@ -13,7 +13,7 @@ local M = {}
 ---@class Neoagent.CurrentSelection: Neoagent.SelectionState
 ---@field thinking_level? Neoagent.ThinkingLevel
 
----@class Neoagent.SelectionSnapshot
+---@class Neoagent.SelectionSnapshot: Neoagent.RequestStateInput
 ---@field model? Neoagent.ModelSelection
 ---@field thinking_level? Neoagent.ThinkingLevel|vim.NIL
 

@@ -1,6 +1,5 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 lua/neoagent/agent.lua
-lua/neoagent/agent/run_lifecycle.lua
 lua/neoagent/agent_applet.lua
 lua/neoagent/applet.lua
 lua/neoagent/health.lua

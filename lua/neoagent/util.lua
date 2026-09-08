@@ -10,6 +10,7 @@ local M = {}
 ---@class Neoagent.Error
 ---@field kind string
 ---@field message string
+---@field detail? unknown
 ---@field [string] unknown Additional error metadata is untrusted until validated.
 
 ---@class Neoagent.SafeMessageOptions

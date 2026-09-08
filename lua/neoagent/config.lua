@@ -45,7 +45,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field max_retries? integer
 ---@field base_delay_ms? integer
 
----@class Neoagent.CompactionConfig
+---@class Neoagent.CompactionConfig: Neoagent.CompactionOptions
 ---@field auto boolean
 ---@field reserve_tokens integer
 ---@field keep_recent_tokens integer

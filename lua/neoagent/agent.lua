@@ -8,6 +8,14 @@
 ---@field last_result? Neoagent.AgentCompletion
 ---@field steering Neoagent.Steering
 ---@field session_selection_pending? boolean
+---@field request_selection Neoagent.RequestSelection
+---@field next_submission_id integer
+---@field run_id integer
+---@field destroyed boolean
+---@field destroy_runtimes? fun()
+---@field workspace? Neoagent.Workspace
+---@field session_id string
+---@field toolset Neoagent.AgentToolset
 
 ---@class Neoagent.ActivityOutcome
 ---@field ok boolean
@@ -40,7 +48,7 @@
 ---@field reason string
 ---@field result Neoagent.CompactionResult
 
----@alias Neoagent.AgentEvent Neoagent.AgentLoopEvent|Neoagent.CompactionStartEvent|Neoagent.CompactionEndEvent
+---@alias Neoagent.AgentEvent Neoagent.AgentLoopEvent|Neoagent.CompactionEvent|Neoagent.CompactionStartEvent|Neoagent.CompactionEndEvent
 
 local config = require("neoagent.config")
 local agent_loop = require("neoagent.agent_loop")
