@@ -5,7 +5,6 @@ lua/neoagent/agent/session_lifecycle.lua
 lua/neoagent/agent_applet.lua
 lua/neoagent/applet.lua
 lua/neoagent/authentication.lua
-lua/neoagent/config.lua
 lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
 lua/neoagent/init.lua

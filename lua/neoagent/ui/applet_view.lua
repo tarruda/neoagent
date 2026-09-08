@@ -10,6 +10,11 @@ local util = require("neoagent.util")
 
 local layout = Applet.layout
 
+---@class Neoagent.ViewOptions
+---@field config Neoagent.UIConfig
+---@field renderer? Neoagent.Renderer<unknown>
+
+---@class Neoagent.View
 local View = {}
 View.__index = View
 

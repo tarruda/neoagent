@@ -6,6 +6,158 @@ local agent_loop = require("neoagent.agent_loop")
 local model_config = require("neoagent.model_config")
 local provider_auth = require("neoagent.provider_auth")
 
+---@class Neoagent.ConfiguredPromptContext: Neoagent.SystemPromptContext
+---@field session Neoagent.Session
+---@field workspace Neoagent.Workspace
+---@field prompt string
+
+---@alias Neoagent.UIMapping string|string[]|false
+
+---@class Neoagent.PersistenceConfig
+---@field enabled boolean
+---@field workspace_settings boolean
+---@field directory string
+
+---@class Neoagent.PersistenceConfigInput
+---@field enabled? boolean
+---@field workspace_settings? boolean
+---@field directory? string
+
+---@class Neoagent.RecordingConfig
+---@field enabled boolean
+---@field format 'auto'|'yaml'|'json'
+---@field retention 'rolling'|'all'
+---@field directory string
+
+---@class Neoagent.RecordingConfigInput
+---@field enabled? boolean
+---@field format? 'auto'|'yaml'|'json'
+---@field retention? 'rolling'|'all'
+---@field directory? string
+
+---@class Neoagent.RetryConfig
+---@field enabled boolean
+---@field max_retries integer
+---@field base_delay_ms integer
+
+---@class Neoagent.RetryConfigInput
+---@field enabled? boolean
+---@field max_retries? integer
+---@field base_delay_ms? integer
+
+---@class Neoagent.CompactionConfig
+---@field auto boolean
+---@field reserve_tokens integer
+---@field keep_recent_tokens integer
+
+---@class Neoagent.CompactionConfigInput
+---@field auto? boolean
+---@field reserve_tokens? integer
+---@field keep_recent_tokens? integer
+
+---@class Neoagent.ProviderShellUIConfig
+---@field position 'left'|'right'|'top'|'bottom'|'center'
+---@field width? number
+---@field height? number
+
+---@class Neoagent.ProviderShellUIConfigInput
+---@field position? 'left'|'right'|'top'|'bottom'|'center'
+---@field width? number
+---@field height? number
+
+---@class Neoagent.UIImageConfig
+---@field backend 'kitty'
+---@field display 'always'|'expanded'
+
+---@class Neoagent.UIImageConfigInput
+---@field backend? 'kitty'
+---@field display? 'always'|'expanded'
+
+---@class Neoagent.UIConfig
+---@field style 'codex'|'pi'
+---@field renderer? Neoagent.Renderer<unknown>
+---@field position Neoagent.UiPosition
+---@field width? number
+---@field height? number
+---@field margin integer
+---@field input_height integer
+---@field scroll_on_submit boolean
+---@field scroll_on_transcript_leave boolean
+---@field scroll_on_reopen boolean
+---@field wrap_cards boolean
+---@field show_thinking boolean
+---@field images Neoagent.UIImageConfig|false
+---@field provider_shell Neoagent.ProviderShellUIConfig
+---@field completion boolean
+---@field border Applet.WindowBorder
+---@field mappings table<string, Neoagent.UIMapping>
+
+---@class Neoagent.UIConfigInput
+---@field style? 'codex'|'pi'
+---@field renderer? Neoagent.Renderer<unknown>
+---@field position? Neoagent.UiPosition
+---@field width? number
+---@field height? number
+---@field margin? integer
+---@field input_height? integer
+---@field scroll_on_submit? boolean
+---@field scroll_on_transcript_leave? boolean
+---@field scroll_on_reopen? boolean
+---@field wrap_cards? boolean
+---@field show_thinking? boolean
+---@field images? Neoagent.UIImageConfigInput|false
+---@field provider_shell? Neoagent.ProviderShellUIConfigInput
+---@field completion? boolean
+---@field border? Applet.WindowBorder
+---@field mappings? table<string, Neoagent.UIMapping>
+
+---@class Neoagent.Config<C = unknown>: Neoagent.ModelResolutionConfig, Neoagent.ProviderRuntimeConfig
+---@field name? string
+---@field default_registry boolean
+---@field shell_timeout number|false
+---@field sandbox {enabled: boolean, profile?: Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>}
+---@field workspace_trust {path: string}|false
+---@field default_thinking_level Neoagent.ThinkingLevel
+---@field default_model? Neoagent.ModelSelection
+---@field providers table<string, Neoagent.ProviderDefinition>
+---@field auth Neoagent.AuthConfig
+---@field _apis table<string, Neoagent.ApiFactory>
+---@field persistence Neoagent.PersistenceConfig
+---@field recording Neoagent.RecordingConfig
+---@field agent_instructions {global_files: string[], project_filenames: string[]}|false
+---@field skills {global_dirs: string[], project_dirs: string[]}|false
+---@field retry Neoagent.RetryConfig
+---@field compaction Neoagent.CompactionConfig|false
+---@field ui Neoagent.UIConfig
+---@field tools? Neoagent.Tool<C>[]
+---@field execute_tool? Neoagent.ToolExecutor<C>
+---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
+---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
+---@field _tools_supplied boolean
+
+---@class Neoagent.ConfigInput<C = unknown>
+---@field name? string
+---@field default_registry? boolean
+---@field shell_timeout? number|false
+---@field sandbox? {enabled?: boolean, profile?: Neoagent.SandboxProfileSource<Neoagent.ToolContext<C>>}
+---@field workspace_trust? {path?: string}|false
+---@field default_thinking_level? Neoagent.ThinkingLevel
+---@field default_model? Neoagent.ModelSelection
+---@field providers? table<string, Neoagent.ProviderOptions|false>
+---@field auth? {path?: string, methods?: table<string, Neoagent.AuthMethodInput<Neoagent.Credential>>}
+---@field _apis? table<string, Neoagent.ApiFactory>
+---@field persistence? Neoagent.PersistenceConfigInput
+---@field recording? Neoagent.RecordingConfigInput
+---@field agent_instructions? {global_files?: string[], project_filenames?: string[]}|false
+---@field skills? {global_dirs?: string[], project_dirs?: string[]}|false
+---@field retry? Neoagent.RetryConfigInput
+---@field compaction? Neoagent.CompactionConfigInput|false
+---@field ui? Neoagent.UIConfigInput
+---@field tools? Neoagent.Tool<C>[]
+---@field execute_tool? Neoagent.ToolExecutor<C>
+---@field system_prompt? string|fun(context: Neoagent.ConfiguredPromptContext): string
+---@field _view? fun(opts: Neoagent.ViewOptions): Neoagent.View
+
 local M = {}
 
 local renderer_styles = { codex = true, pi = true }
@@ -158,6 +310,7 @@ local input_fields = {
   _view = true,
 }
 
+---@type Neoagent.Config?
 local current
 local built_in_apis = {
   ["openai-completions"] = true,
@@ -193,6 +346,8 @@ local catalog_fields = {
   transform_model = true,
 }
 
+---@param provider Neoagent.ProviderDefinition
+---@return table<string, Neoagent.ModelConfigInput|false>[]
 local function model_configuration_maps(provider)
   return {
     provider.models or {},
@@ -200,6 +355,9 @@ local function model_configuration_maps(provider)
   }
 end
 
+---@param provider Neoagent.ProviderDefinition
+---@param name string
+---@return boolean
 local function provider_uses_api(provider, name)
   if provider.api == name then return true end
   for _, models in ipairs(model_configuration_maps(provider)) do
@@ -210,6 +368,8 @@ local function provider_uses_api(provider, name)
   return false
 end
 
+---@param value? number
+---@param name string
 local function validate_dimension(value, name)
   if value == nil then return end
   if type(value) ~= "number" or value <= 0 or (value > 1 and value % 1 ~= 0) then
@@ -217,6 +377,8 @@ local function validate_dimension(value, name)
   end
 end
 
+---@generic C
+---@param opts Neoagent.Config<C>
 local function validate(opts)
   assert(opts.name == nil or (type(opts.name) == "string" and opts.name ~= ""),
     "name must be a non-empty string")
@@ -492,6 +654,8 @@ local function validate(opts)
   assert(type(opts.recording.directory) == "string"
       and opts.recording.directory ~= "",
     "recording.directory is required")
+  ---@param value string[]
+  ---@param name string
   local function string_list(value, name)
     assert(util.is_list(value), name .. " must be a list")
     for _, item in ipairs(value) do
@@ -573,6 +737,9 @@ local function validate(opts)
   end
 end
 
+---@generic C
+---@param opts? Neoagent.ConfigInput<C>
+---@return Neoagent.Config<C>
 function M.resolve(opts)
   opts = opts or {}
   assert(type(opts) == "table"
@@ -582,26 +749,32 @@ function M.resolve(opts)
     assert(input_fields[key], "unsupported setting: " .. tostring(key))
   end
   local configured = util.deep_merge(defaults, opts)
-  configured.providers = require("neoagent.registry").compose(opts.providers or {}, configured.default_registry)
+  ---@cast configured Neoagent.Config<C>
+  configured.providers = require("neoagent.registry").compose(
+    opts.providers or {}, configured.default_registry) --[[@as table<string, Neoagent.ProviderDefinition>]]
   configured._tools_supplied = opts.tools ~= nil
   validate(configured)
   return util.copy(configured)
 end
 
+---@param opts? Neoagent.ConfigInput
+---@return Neoagent.Config
 function M.setup(opts)
   current = M.resolve(opts)
   return util.copy(current)
 end
 
+---@return Neoagent.Config
 function M.get()
   if not current then M.setup({}) end
-  return util.copy(current)
+  return util.copy((assert(current)))
 end
 
 function M._reset()
   current = nil
 end
 
+---@param value Neoagent.Config
 function M._set(value)
   validate(value)
   current = util.copy(value)

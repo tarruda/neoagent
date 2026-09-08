@@ -62,7 +62,22 @@ local M = {}
 
 ---@alias Neoagent.CredentialResult<C> Neoagent.CredentialSuccess<C>|Neoagent.AsyncFailure
 
+---@class Neoagent.AuthMethodInput<C>
+---@field login_with_ambient? boolean
+---@field login_label? string
+---@field logout_label? string
+---@field type? "api_key"|"oauth"
+---@field name? string
+---@field login? fun(interaction: Neoagent.LoginInteraction): Neoagent.Run<Neoagent.CredentialResult<C>, nil>
+---@field request_opts? fun(credential: C, scope?: string): Neoagent.RequestOverride
+---@field refresh? fun(credential: C): Neoagent.Run<Neoagent.CredentialResult<C>, nil>
+---@field cache_identity? fun(credential: C): string?
+---@field public_metadata? fun(credential: C): table<string, string>?
+---@field validate_credential? fun(credential: C): boolean
+---@field _with_transport? fun(transport: Neoagent.ByteBackend): Neoagent.AuthMethod<C>
+
 ---@class Neoagent.AuthMethod<C>
+---@field login_with_ambient? boolean
 ---@field login_label? string
 ---@field logout_label? string
 ---@field type? "api_key"|"oauth"
