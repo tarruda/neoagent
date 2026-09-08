@@ -73,7 +73,6 @@ tests/unit/opencode_go_client_spec.lua
 tests/unit/opencode_go_model_spec.lua
 tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
-tests/unit/process_spec.lua
 tests/unit/profile_sessions_spec.lua
 tests/unit/provider_catalog_sources_spec.lua
 tests/unit/provider_credentials_spec.lua
