@@ -1,24 +1,16 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
 local client = require("neoagent.providers.anthropic.client")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function auth(headers)
-  return function()
-    return async.run(function()
-      return {
-        ok = true,
-        configured = headers ~= nil,
-        request_opts = headers and { headers = headers } or nil,
-      }
-    end)
-  end
-end
+local auth = require("tests.helpers.api_key_auth")
 
 describe("Anthropic management client", function()
   it("loads the paginated-capacity model catalog", function()
@@ -71,7 +63,7 @@ describe("Anthropic management client", function()
       resolve_auth = auth({ ["x-api-key"] = "api-key" }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       {
         id = "claude-opus-5",
@@ -85,14 +77,14 @@ describe("Anthropic management client", function()
       { id = "claude-sonnet-5", thinking_type = false },
     }, result.models)
     assert.are.equal("https://example.test/v1/models?limit=1000",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal(
       "https://example.test/v1/models?limit=1000&after_id=claude-opus-5",
-      transport.fetch_requests[2].url)
+      assert(transport.fetch_requests[2]).url)
     assert.are.equal("2023-06-01",
-      transport.fetch_requests[1].headers["anthropic-version"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "anthropic-version"))
     assert.are.equal("2023-06-01",
-      transport.fetch_requests[2].headers["anthropic-version"])
+      rawget(assert(assert(transport.fetch_requests[2]).headers), "anthropic-version"))
   end)
 
   it("rejects repeated cursors and duplicate models across pages", function()
@@ -126,11 +118,11 @@ describe("Anthropic management client", function()
 
     local result = wait(value:models(request))
     assert.is_false(result.ok)
-    assert.matches("incomplete model catalog", result.error.message)
+    assert.matches("incomplete model catalog", assert(result.error).message)
 
     result = wait(value:models(request))
     assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
+    assert.matches("invalid model catalog", assert(result.error).message)
   end)
 
   it("rejects malformed capability metadata and bounded pagination", function()
@@ -158,7 +150,7 @@ describe("Anthropic management client", function()
     for _ = 1, 3 do
       local result = wait(value:models(request))
       assert.is_false(result.ok)
-      assert.matches("invalid model catalog", result.error.message)
+      assert.matches("invalid model catalog", assert(result.error).message)
     end
 
     transport = fake_transport.new()
@@ -176,7 +168,7 @@ describe("Anthropic management client", function()
     })
     local result = wait(value:models(request))
     assert.is_false(result.ok)
-    assert.matches("incomplete model catalog", result.error.message)
+    assert.matches("incomplete model catalog", assert(result.error).message)
     assert.are.equal(32, #transport.fetch_requests)
   end)
 
@@ -215,7 +207,7 @@ describe("Anthropic management client", function()
       resolve_auth = auth({ ["x-api-key"] = "admin-key" }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       uncached_input_tokens = 100,
       cache_read_input_tokens = 200,
@@ -224,10 +216,10 @@ describe("Anthropic management client", function()
     }, result.usage)
     assert.are.same({ { currency = "USD", value = 2 } }, result.costs)
     assert.matches("/organizations/usage_report/messages%?",
-      transport.fetch_requests[1].url)
-    assert.matches("bucket_width=1d", transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
+    assert.matches("bucket_width=1d", assert(transport.fetch_requests[1]).url)
     assert.matches("/organizations/cost_report%?",
-      transport.fetch_requests[2].url)
+      assert(transport.fetch_requests[2]).url)
   end)
 
   it("rejects incomplete reports, invalid catalogs, and missing keys safely", function()
@@ -243,21 +235,21 @@ describe("Anthropic management client", function()
     })
     local result = wait(value:organization({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("incomplete usage", result.error.message)
-    assert.is_nil(vim.inspect(result.error):find("api-secret", 1, true))
+    assert.matches("incomplete usage", assert(result.error).message)
+    assert.is_nil((vim.inspect(result.error):find("api-secret", 1, true)))
 
-    result = wait(value:models({ resolve_auth = auth(nil) }))
-    assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
+    local models = wait(value:models({ resolve_auth = auth(nil) }))
+    assert.is_false(models.ok)
+    assert.matches("invalid model catalog", assert(models.error).message)
 
     value = client.new({
       base_url = "https://example.test/v1",
       transport = fake_transport.new(),
       ambient_api_key = function() return nil end,
     })
-    result = wait(value:models({ resolve_auth = auth(nil) }))
-    assert.is_false(result.ok)
-    assert.matches("ANTHROPIC_API_KEY", result.error.message)
+    local missing_key = wait(value:models({ resolve_auth = auth(nil) }))
+    assert.is_false(missing_key.ok)
+    assert.matches("ANTHROPIC_API_KEY", assert(missing_key.error).message)
   end)
 
   it("rejects malformed report pages, buckets, entries, and costs", function()
@@ -298,16 +290,16 @@ describe("Anthropic management client", function()
 
     local result = wait(value:models(request))
     assert.is_false(result.ok)
-    assert.matches("incomplete model catalog", result.error.message)
+    assert.matches("incomplete model catalog", assert(result.error).message)
     for _ = 1, 3 do
-      result = wait(value:organization(request))
+      local result = wait(value:organization(request))
       assert.is_false(result.ok)
-      assert.matches("invalid usage data", result.error.message)
+      assert.matches("invalid usage data", assert(result.error).message)
     end
     for _ = 1, 2 do
-      result = wait(value:organization(request))
+      local result = wait(value:organization(request))
       assert.is_false(result.ok)
-      assert.matches("invalid cost data", result.error.message)
+      assert.matches("invalid cost data", assert(result.error).message)
     end
   end)
 
@@ -327,11 +319,11 @@ describe("Anthropic management client", function()
     })
     local result = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("requires a valid API key", result.error.message)
+    assert.matches("requires a valid API key", assert(result.error).message)
     result = wait(value:models({ resolve_auth = auth(nil) }))
     vim.env.ANTHROPIC_API_KEY = previous
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("environment-key",
-      transport.fetch_requests[2].headers["x-api-key"])
+      rawget(assert(assert(transport.fetch_requests[2]).headers), "x-api-key"))
   end)
 end)

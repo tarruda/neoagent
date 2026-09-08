@@ -32,7 +32,6 @@ tests/ui/view_spec.lua
 tests/ui/workspace_trust_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
 tests/unit/agent_loop_spec.lua
-tests/unit/anthropic_client_spec.lua
 tests/unit/anthropic_messages_spec.lua
 tests/unit/applet_consumer_boundary_spec.lua
 tests/unit/applet_image_spec.lua
@@ -42,11 +41,9 @@ tests/unit/applet_presenter_spec.lua
 tests/unit/auth_spec.lua
 tests/unit/authentication_spec.lua
 tests/unit/chat_spec.lua
-tests/unit/codex_management_spec.lua
 tests/unit/compaction_spec.lua
 tests/unit/config_models_spec.lua
 tests/unit/curl_spec.lua
-tests/unit/deepseek_client_spec.lua
 tests/unit/dialog_spec.lua
 tests/unit/health_spec.lua
 tests/unit/http_recording_spec.lua
@@ -56,11 +53,9 @@ tests/unit/llama_provider_spec.lua
 tests/unit/model_catalog_spec.lua
 tests/unit/model_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
-tests/unit/openai_client_spec.lua
 tests/unit/openai_codex_responses_spec.lua
 tests/unit/openai_completions_spec.lua
 tests/unit/openai_responses_spec.lua
-tests/unit/opencode_go_client_spec.lua
 tests/unit/opencode_go_model_spec.lua
 tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
@@ -85,5 +80,4 @@ tests/unit/tools_spec.lua
 tests/unit/ui_renderer_spec.lua
 tests/unit/workspace_settings_spec.lua
 tests/unit/workspace_trust_spec.lua
-tests/unit/zai_client_spec.lua
 tests/windows/sandbox_spec.lua

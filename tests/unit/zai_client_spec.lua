@@ -1,24 +1,16 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
 local fake_transport = require("tests.helpers.fake_transport")
 local client = require("neoagent.providers.zai.client")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function auth(headers)
-  return function()
-    return async.run(function()
-      return {
-        ok = true,
-        configured = headers ~= nil,
-        request_opts = headers and { headers = headers } or nil,
-      }
-    end)
-  end
-end
+local auth = require("tests.helpers.api_key_auth")
 
 describe("Z.AI client", function()
   it("loads the account model catalog with Bearer auth", function()
@@ -39,13 +31,13 @@ describe("Z.AI client", function()
       ["X-Trace"] = "safe",
     }) }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "glm-5.3", "glm-5.3-flash" }, result.models)
     assert.are.equal("https://example.test/api/paas/v4/models",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("Bearer api-key",
-      transport.fetch_requests[1].headers.Authorization)
-    assert.are.equal("safe", transport.fetch_requests[1].headers["X-Trace"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
+    assert.are.equal("safe", rawget(assert(assert(transport.fetch_requests[1]).headers), "X-Trace"))
   end)
 
   it("bounds and validates model catalogs", function()
@@ -68,8 +60,8 @@ describe("Z.AI client", function()
     for _ = 1, 3 do
       local result = wait(value:models({ resolve_auth = auth(nil) }))
       assert.is_false(result.ok)
-      assert.matches("invalid model catalog", result.error.message)
-      assert.is_nil(vim.inspect(result.error):find("api-secret", 1, true))
+      assert.matches("invalid model catalog", assert(result.error).message)
+      assert.is_nil((vim.inspect(result.error):find("api-secret", 1, true)))
     end
   end)
 
@@ -94,7 +86,7 @@ describe("Z.AI client", function()
       }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       total = 88.5,
       available = 77.25,
@@ -102,10 +94,10 @@ describe("Z.AI client", function()
     }, result.balance)
     assert.are.equal(
       "https://example.test/api/paas/v4/balance",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("Bearer api-key",
-      transport.fetch_requests[1].headers.Authorization)
-    assert.are.equal("safe", transport.fetch_requests[1].headers["X-Trace"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
+    assert.are.equal("safe", rawget(assert(assert(transport.fetch_requests[1]).headers), "X-Trace"))
   end)
 
   it("bounds balance fields and rejects malformed balance data", function()
@@ -130,7 +122,7 @@ describe("Z.AI client", function()
     local context = { resolve_auth = auth({ Authorization = "api-key" }) }
 
     local result = wait(value:balance(context))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       total = 12.5, available = 12.5, currency = "CNY",
     }, result.balance)
@@ -140,7 +132,7 @@ describe("Z.AI client", function()
     }) do
       result = wait(value:balance(context))
       assert.is_false(result.ok)
-      assert.matches(message, result.error.message)
+      assert.matches(message, assert(result.error).message)
     end
   end)
 
@@ -177,7 +169,7 @@ describe("Z.AI client", function()
       }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Pro", result.quota.plan)
     assert.are.same({
       {
@@ -195,12 +187,12 @@ describe("Z.AI client", function()
     }, result.quota.limits)
     assert.are.equal(
       "https://example.test/api/monitor/usage/quota/limit",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("api-key",
-      transport.fetch_requests[1].headers.Authorization)
-    assert.are.equal("safe", transport.fetch_requests[1].headers["X-Trace"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
+    assert.are.equal("safe", rawget(assert(assert(transport.fetch_requests[1]).headers), "X-Trace"))
     assert.are.equal("en-US,en",
-      transport.fetch_requests[1].headers["Accept-Language"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Accept-Language"))
   end)
 
   it("loads current credit-based plan windows", function()
@@ -231,7 +223,7 @@ describe("Z.AI client", function()
       ["x-api-key"] = "api-key",
     }) }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("max", result.quota.plan)
     assert.are.same({
       {
@@ -276,7 +268,7 @@ describe("Z.AI client", function()
       ["x-api-key"] = "api-key",
     }) }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       {
         type = "TOKENS_LIMIT", remaining = 0.8,
@@ -310,12 +302,12 @@ describe("Z.AI client", function()
     })
     local malformed = wait(value:quota({ resolve_auth = auth(nil) }))
     assert.is_false(malformed.ok)
-    assert.matches("invalid quota data", malformed.error.message)
-    assert.is_nil(vim.inspect(malformed.error):find("api-secret", 1, true))
+    assert.matches("invalid quota data", assert(malformed.error).message)
+    assert.is_nil((vim.inspect(malformed.error):find("api-secret", 1, true)))
 
     local forbidden = wait(value:quota({ resolve_auth = auth(nil) }))
     assert.is_false(forbidden.ok)
-    assert.are.equal(403, forbidden.error.status)
+    assert.are.equal(403, rawget(assert(forbidden.error), "status"))
     assert.is_nil(vim.inspect(forbidden.error):find(
       "private account response", 1, true))
 
@@ -326,11 +318,12 @@ describe("Z.AI client", function()
     })
     local missing = wait(value:quota({ resolve_auth = auth(nil) }))
     assert.is_false(missing.ok)
-    assert.matches("ZAI_API_KEY", missing.error.message)
+    assert.matches("ZAI_API_KEY", assert(missing.error).message)
   end)
 
   it("validates client construction", function()
-    assert.has_error(function() client.new({}) end)
+    local missing_options = {}
+    assert.has_error(function() client.new(missing_options --[[@as Neoagent.ZaiClientOptions]]) end)
     assert.has_error(function()
       client.new({ management_url = "x", timeout_ms = 0 })
     end)
@@ -362,29 +355,29 @@ describe("Z.AI client", function()
       ["x-api-key"] = "api-key",
     }) }))
     assert.is_false(result.ok)
-    assert.matches("invalid quota data", result.error.message)
+    assert.matches("invalid quota data", assert(result.error).message)
     assert.are.equal("api-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
 
     result = wait(value:quota({ resolve_auth = auth({
       Authorization = "Bearer api-key",
     }) }))
     assert.is_false(result.ok)
-    assert.matches("invalid quota data", result.error.message)
+    assert.matches("invalid quota data", assert(result.error).message)
 
     for _ = 1, 3 do
       result = wait(value:quota({ resolve_auth = auth({
         Authorization = "Bearer api-key",
       }) }))
       assert.is_false(result.ok)
-      assert.matches("invalid quota data", result.error.message)
+      assert.matches("invalid quota data", assert(result.error).message)
     end
 
     result = wait(value:quota({ resolve_auth = auth({
       ["X-Trace"] = "trace-only",
     }) }))
     assert.is_false(result.ok)
-    assert.matches("returned no API key header", result.error.message)
+    assert.matches("returned no API key header", assert(result.error).message)
   end)
 
   it("reports authentication and rate-limit failures and reads ZAI_API_KEY", function()
@@ -404,14 +397,14 @@ describe("Z.AI client", function()
     })
     local result = wait(value:quota({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("requires a valid API key", result.error.message)
+    assert.matches("requires a valid API key", assert(result.error).message)
     result = wait(value:quota({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("rate limited", result.error.message)
+    assert.matches("rate limited", assert(result.error).message)
     result = wait(value:quota({ resolve_auth = auth(nil) }))
     vim.env.ZAI_API_KEY = previous
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("environment-key",
-      transport.fetch_requests[3].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[3]).headers), "Authorization"))
   end)
 end)

@@ -1,24 +1,16 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
 local client = require("neoagent.providers.openai.client")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function auth(headers)
-  return function()
-    return async.run(function()
-      return {
-        ok = true,
-        configured = headers ~= nil,
-        request_opts = headers and { headers = headers } or nil,
-      }
-    end)
-  end
-end
+local auth = require("tests.helpers.api_key_auth")
 
 describe("OpenAI management client", function()
   it("loads the accessible model catalog with the inference key", function()
@@ -38,12 +30,12 @@ describe("OpenAI management client", function()
       resolve_auth = auth({ Authorization = "Bearer inference-key" }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "gpt-5.4", "text-embedding-4" }, result.models)
     assert.are.equal("https://example.test/v1/models",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("Bearer inference-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
   end)
 
   it("aggregates 30-day organization completion usage and costs", function()
@@ -86,7 +78,7 @@ describe("OpenAI management client", function()
       resolve_auth = auth({ Authorization = "Bearer admin-key" }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       requests = 12,
       input_tokens = 3000,
@@ -96,12 +88,12 @@ describe("OpenAI management client", function()
     assert.are.same({ { currency = "usd", value = 2 } }, result.costs)
     assert.are.equal(now - 30 * 86400, result.start_time)
     assert.are.equal(now, result.end_time)
-    assert.matches("/organization/usage/completions%?", transport.fetch_requests[1].url)
-    assert.matches("bucket_width=1d", transport.fetch_requests[1].url)
-    assert.matches("limit=31", transport.fetch_requests[1].url)
-    assert.matches("/organization/costs%?", transport.fetch_requests[2].url)
+    assert.matches("/organization/usage/completions%?", assert(transport.fetch_requests[1]).url)
+    assert.matches("bucket_width=1d", assert(transport.fetch_requests[1]).url)
+    assert.matches("limit=31", assert(transport.fetch_requests[1]).url)
+    assert.matches("/organization/costs%?", assert(transport.fetch_requests[2]).url)
     for _, request in ipairs(transport.fetch_requests) do
-      assert.are.equal("Bearer admin-key", request.headers.Authorization)
+      assert.are.equal("Bearer admin-key", rawget(assert(request.headers), "Authorization"))
     end
   end)
 
@@ -119,8 +111,8 @@ describe("OpenAI management client", function()
     })
     local result = wait(value:organization({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("incomplete usage", result.error.message)
-    assert.is_nil(vim.inspect(result.error):find("api-secret", 1, true))
+    assert.matches("incomplete usage", assert(result.error).message)
+    assert.is_nil((vim.inspect(result.error):find("api-secret", 1, true)))
 
     value = client.new({
       base_url = "https://example.test/v1",
@@ -129,7 +121,7 @@ describe("OpenAI management client", function()
     })
     result = wait(value:organization({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("OPENAI_API_KEY", result.error.message)
+    assert.matches("OPENAI_API_KEY", assert(result.error).message)
   end)
 
   it("redacts HTTP responses and validates schemas and options", function()
@@ -145,14 +137,15 @@ describe("OpenAI management client", function()
     })
     local forbidden = wait(value:organization({ resolve_auth = auth(nil) }))
     assert.is_false(forbidden.ok)
-    assert.are.equal(403, forbidden.error.status)
-    assert.is_nil(vim.inspect(forbidden.error):find("private billing response", 1, true))
+    assert.are.equal(403, rawget(assert(forbidden.error), "status"))
+    assert.is_nil((vim.inspect(forbidden.error):find("private billing response", 1, true)))
 
     local invalid = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(invalid.ok)
-    assert.matches("invalid model catalog", invalid.error.message)
+    assert.matches("invalid model catalog", assert(invalid.error).message)
 
-    assert.has_error(function() client.new({}) end)
+    local missing_options = {}
+    assert.has_error(function() client.new(missing_options --[[@as Neoagent.OpenAIClientOptions]]) end)
     assert.has_error(function()
       client.new({ base_url = "x", max_response_bytes = 10 })
     end)
@@ -191,20 +184,20 @@ describe("OpenAI management client", function()
       resolve_auth = auth({ Authorization = "Bearer key" }),
     }))
     assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
+    assert.matches("invalid model catalog", assert(result.error).message)
     for _ = 1, 3 do
-      result = wait(value:organization({
+      local result = wait(value:organization({
         resolve_auth = auth({ Authorization = "Bearer key" }),
       }))
       assert.is_false(result.ok)
-      assert.matches("invalid usage data", result.error.message)
+      assert.matches("invalid usage data", assert(result.error).message)
     end
     for _ = 1, 2 do
-      result = wait(value:organization({
+      local result = wait(value:organization({
         resolve_auth = auth({ Authorization = "Bearer key" }),
       }))
       assert.is_false(result.ok)
-      assert.matches("invalid cost data", result.error.message)
+      assert.matches("invalid cost data", assert(result.error).message)
     end
   end)
 
@@ -222,11 +215,11 @@ describe("OpenAI management client", function()
     })
     local result = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("requires a valid API key", result.error.message)
+    assert.matches("requires a valid API key", assert(result.error).message)
     result = wait(value:models({ resolve_auth = auth(nil) }))
     vim.env.OPENAI_API_KEY = previous
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Bearer environment-key",
-      transport.fetch_requests[2].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[2]).headers), "Authorization"))
   end)
 end)

@@ -1,24 +1,16 @@
 local assert = require("luassert")
-local async = require("neoagent.async")
 local client = require("neoagent.providers.deepseek.client")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function auth(headers)
-  return function()
-    return async.run(function()
-      return {
-        ok = true,
-        configured = headers ~= nil,
-        request_opts = headers and { headers = headers } or nil,
-      }
-    end)
-  end
-end
+local auth = require("tests.helpers.api_key_auth")
 
 describe("DeepSeek management client", function()
   it("loads the authenticated model catalog", function()
@@ -38,12 +30,12 @@ describe("DeepSeek management client", function()
     local result = wait(value:models({
       resolve_auth = auth({ Authorization = "Bearer stored-key" }),
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "deepseek-v4-flash", "deepseek-v4-pro" }, result.models)
     assert.are.equal("https://example.test/models",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("Bearer stored-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
   end)
 
   it("loads every currency in the account balance", function()
@@ -69,7 +61,7 @@ describe("DeepSeek management client", function()
       resolve_auth = auth({ ["x-api-key"] = "stored-key" }),
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_true(result.balance.is_available)
     assert.are.same({
       {
@@ -82,9 +74,9 @@ describe("DeepSeek management client", function()
       },
     }, result.balance.currencies)
     assert.are.equal("https://example.test/user/balance",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("stored-key",
-      transport.fetch_requests[1].headers["x-api-key"])
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "x-api-key"))
   end)
 
   it("uses an ambient key and keeps response bodies and keys out of errors", function()
@@ -103,23 +95,23 @@ describe("DeepSeek management client", function()
 
     local unauthorized = wait(value:balance({ resolve_auth = auth(nil) }))
     assert.is_false(unauthorized.ok)
-    assert.are.equal(401, unauthorized.error.status)
-    assert.is_nil(vim.inspect(unauthorized.error):find("private response", 1, true))
-    assert.is_nil(vim.inspect(unauthorized.error):find("ambient-secret", 1, true))
+    assert.are.equal(401, rawget(assert(unauthorized.error), "status"))
+    assert.is_nil((vim.inspect(unauthorized.error):find("private response", 1, true)))
+    assert.is_nil((vim.inspect(unauthorized.error):find("ambient-secret", 1, true)))
     assert.are.equal("Bearer ambient-secret",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
 
     local malformed = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(malformed.ok)
-    assert.matches("invalid JSON", malformed.error.message)
+    assert.matches("invalid JSON", assert(malformed.error).message)
 
     local invalid_balance = wait(value:balance({ resolve_auth = auth(nil) }))
     assert.is_false(invalid_balance.ok)
-    assert.matches("invalid balance", invalid_balance.error.message)
+    assert.matches("invalid balance", assert(invalid_balance.error).message)
 
     local invalid_models = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(invalid_models.ok)
-    assert.matches("invalid model catalog", invalid_models.error.message)
+    assert.matches("invalid model catalog", assert(invalid_models.error).message)
   end)
 
   it("requires credentials and validates options", function()
@@ -130,9 +122,10 @@ describe("DeepSeek management client", function()
     })
     local result = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("Connect DeepSeek", result.error.message)
+    assert.matches("Connect DeepSeek", assert(result.error).message)
 
-    assert.has_error(function() client.new({}) end)
+    local missing_options = {}
+    assert.has_error(function() client.new(missing_options --[[@as Neoagent.DeepSeekClientOptions]]) end)
     assert.has_error(function()
       client.new({ base_url = "x", max_response_bytes = 1 })
     end)
@@ -163,10 +156,10 @@ describe("DeepSeek management client", function()
     })
     local result = wait(value:models({ resolve_auth = auth(nil) }))
     assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
-    result = wait(value:balance({ resolve_auth = auth(nil) }))
-    assert.is_false(result.ok)
-    assert.matches("invalid balance", result.error.message)
+    assert.matches("invalid model catalog", assert(result.error).message)
+    local balance = wait(value:balance({ resolve_auth = auth(nil) }))
+    assert.is_false(balance.ok)
+    assert.matches("invalid balance", assert(balance.error).message)
 
     local previous = vim.env.DEEPSEEK_API_KEY
     vim.env.DEEPSEEK_API_KEY = "environment-key"
@@ -176,8 +169,8 @@ describe("DeepSeek management client", function()
     })
     result = wait(value:models({ resolve_auth = auth(nil) }))
     vim.env.DEEPSEEK_API_KEY = previous
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Bearer environment-key",
-      transport.fetch_requests[3].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[3]).headers), "Authorization"))
   end)
 end)
