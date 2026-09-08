@@ -839,6 +839,14 @@ describe("neoagent sandbox composition", function()
         },
       })
       assert.is_true(status.active)
+      local agent = require("neoagent.agent").new({
+        name = "Sandbox status", default_registry = false, tools = {},
+        sandbox = { enabled = true },
+      })
+      local agent_status = sandbox.info(agent)
+      agent:destroy()
+      assert.is_true(agent_status.enabled)
+      assert.is_nil(agent_status.active)
       local rendered = sandbox.format_info(status)
       assert.matches("isolation: degraded", rendered)
       assert.matches("reason: inherited host procfs is active",

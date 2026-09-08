@@ -313,6 +313,17 @@ describe("Applet ownership boundaries", function()
     assert.are.equal("", vim.api.nvim_win_get_config(
       (assert(assert(value:pane("movable")):native().window))).relative)
 
+    local stable_window = assert(assert(value:pane("stable")):native().window)
+    local original_width = vim.api.nvim_win_get_width(stable_window)
+    vim.api.nvim_win_set_width(stable_window, original_width - 3)
+    local resized_width = vim.api.nvim_win_get_width(stable_window)
+    assert.is_true(resized_width < original_width)
+    value:invalidate({ host = true })
+    succeeds(value:flush())
+    value:update(frame(main_with_movable(), { focus = "movable" }))
+    succeeds(value:flush())
+    assert.are.equal(resized_width, vim.api.nvim_win_get_width(stable_window))
+
     value:update(frame(pane("stable", stable), {
       focus = "movable",
       layers = {

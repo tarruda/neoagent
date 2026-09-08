@@ -2216,6 +2216,20 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal(root, assert(called).request.cwd)
     assert.are.equal(fs, assert(called).services.fs)
     assert.is_true(assert(assert(called).services.capabilities).process)
+
+    local source_profile = profile(root)
+    fake.compile = function(selected, ctx, services)
+      assert.are.same({ workspace = root }, ctx)
+      assert.is_true(assert(services.capabilities).process)
+      selected.id = "compiled-profile"
+      return selected
+    end
+    require("neoagent.sandbox").sandbox_exec({ "echo" }, {
+      os = "Linux", platforms = { linux = fake },
+      profile = source_profile, ctx = { workspace = root },
+    })
+    assert.are.equal("compiled-profile", assert(called).request.profile.id)
+    assert.are.equal("platform-test", source_profile.id)
     assert.is_table(require("neoagent.sandbox").new({
       platform = {
         name = "test",

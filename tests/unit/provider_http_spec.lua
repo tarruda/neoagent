@@ -55,6 +55,20 @@ describe("provider management HTTP", function()
     assert.matches("body must be text", nontext_error.message)
   end)
 
+  it("rejects scalar JSON without exposing the response body", function()
+    for _, body in ipairs({ "null", "true", "42", '"private response"' }) do
+      local value = http.new({
+        name = "Test", base_url = "https://example.test",
+        transport = transport({ ok = true, status = 200, body = body }),
+      })
+      local result = wait(value:get("/value", "value"))
+      assert.is_false(result.ok)
+      assert.are.equal("provider", assert(result.error).kind)
+      assert.matches("invalid JSON", assert(result.error).message)
+      assert.is_nil((vim.inspect(result.error):find("private response", 1, true)))
+    end
+  end)
+
   it("bounds decoded response bodies before parsing them", function()
     local value = http.new({
       name = "Test", base_url = "https://example.test",

@@ -201,6 +201,20 @@ describe("OpenCode Go management client", function()
     assert.is_nil(client.iso_timestamp("2026-02-31T12:00:00Z"))
   end)
 
+  it("rejects scalar catalog JSON without exposing the response body", function()
+    for _, body in ipairs({ "null", "false", "42", '"private catalog"' }) do
+      local transport = fake_transport.new()
+      transport.fetches = { { status = 200, body = body } }
+      local result = wait(client.new({
+        base_url = "https://example.test/v1", transport = transport,
+      }):models())
+      assert.is_false(result.ok)
+      assert.are.equal("provider", assert(result.error).kind)
+      assert.matches("invalid JSON", assert(result.error).message)
+      assert.is_nil((vim.inspect(result.error):find("private catalog", 1, true)))
+    end
+  end)
+
   it("normalizes ambient key lookup failures", function()
     local value = client.new({
       base_url = "https://example.test/v1",

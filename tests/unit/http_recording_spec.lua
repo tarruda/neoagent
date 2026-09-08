@@ -1239,6 +1239,8 @@ else:
   end)
 
   for _, failure in ipairs({
+    { name = "exchange startup", start = true,
+      diagnostic = "failed to start an exchange", partial = 0 },
     { name = "header encoding", encode = "exchange",
       diagnostic = "failed to encode a recording header", partial = 0 },
     { name = "event encoding", encode = "response_chunk",
@@ -1274,7 +1276,11 @@ else:
         local original_encode = util.json_encode
         local original_replace = fs.atomic_replace
         local original_open = fs.open_regular
+        local original_start = recording._start
         local called, err = xpcall(function()
+          if failure.start then
+            recording._start = function() error("injected exchange startup failure") end
+          end
           util.json_encode = function(value)
             if failure.encode and value.type == failure.encode then
               error("injected encoding failure")
@@ -1311,6 +1317,7 @@ else:
         util.json_encode = original_encode
         fs.atomic_replace = original_replace
         fs.open_regular = original_open
+        recording._start = original_start
         if not called then
           recording:destroy()
           error(err, 0)

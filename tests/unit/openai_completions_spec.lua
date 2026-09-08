@@ -13,6 +13,20 @@ local function wait(run)
 end
 
 describe("neoagent.api.openai_completions", function()
+  it("reports provider errors that omit a message", function()
+    local transport = fake_transport.new({ { chunks = {
+      'data: {"error":{}}\n\n',
+    } } })
+    local model = openai.new({
+      provider = "test", model = "test", base_url = "https://example.test/v1",
+      transport = transport,
+    })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("model", assert(result.error).kind)
+    assert.are.equal("Provider returned an error", assert(result.error).message)
+  end)
+
   it("streams normalized text, thinking, usage, and tools", function()
     local fake = fake_transport.new({ {
       chunks = {

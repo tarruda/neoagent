@@ -189,6 +189,14 @@ describe("bundled model catalog sources", function()
     assert.is_false(disconnected_result.ok)
     assert.are.equal("auth", assert(disconnected_result.error).kind)
     assert.are.equal(0, #disconnected_transport.fetch_requests)
+
+    disconnected.resolve_api_key = function() error("key lookup unavailable") end
+    local failed = wait(require("neoagent.providers.opencode_go")
+      .discover_models(disconnected))
+    assert.is_false(failed.ok)
+    assert.are.equal("auth", assert(failed.error).kind)
+    assert.are.equal("Failed to resolve OPENCODE_API_KEY", assert(failed.error).message)
+    assert.are.equal(0, #disconnected_transport.fetch_requests)
   end)
 
   it("discovers both Z.AI account catalogs", function()
