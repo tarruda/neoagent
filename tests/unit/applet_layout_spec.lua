@@ -5,6 +5,8 @@ local compile = compiler.compile
 local host = require("applet.host")
 local ui = Applet.layout
 
+---@param pattern string
+---@param callback fun()
 local function error_matches(pattern, callback)
   local ok, err = pcall(callback)
   assert.is_false(ok)
@@ -12,6 +14,9 @@ local function error_matches(pattern, callback)
 end
 
 local sequence = 0
+---@param key string
+---@param mode? "managed"|"editable"
+---@return Applet.Pane
 local function pane_value(key, mode)
   sequence = sequence + 1
   return Applet.Pane.new({
@@ -20,6 +25,18 @@ local function pane_value(key, mode)
   })
 end
 
+---@class Applet.TestMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field required? boolean
+---@field filetype? string
+---@field border? Applet.WindowBorder
+---@field mode? "normal"|"insert"|"preserve"
+---@field bindings? Applet.Binding[]
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.TestMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -33,6 +50,10 @@ local function pane(key, value, opts)
   })
 end
 
+---@param transcript Applet.LayoutNode
+---@param input Applet.LayoutNode
+---@param layers? Applet.LayoutLayerNode[]
+---@return Applet.LayoutTree
 local function tree(transcript, input, layers)
   return {
     root = ui.frame({
@@ -57,6 +78,7 @@ local function tree(transcript, input, layers)
 end
 
 describe("Applet layout compilation", function()
+  ---@type Applet.Pane[]
   local panes = {}
 
   after_each(function()
@@ -64,6 +86,9 @@ describe("Applet layout compilation", function()
     panes = {}
   end)
 
+  ---@param key string
+  ---@param mode? "managed"|"editable"
+  ---@return Applet.Pane
   local function new_pane(key, mode)
     local value = pane_value(key, mode)
     panes[#panes + 1] = value
@@ -71,6 +96,7 @@ describe("Applet layout compilation", function()
   end
 
   it("constructs validated immutable Host descriptors", function()
+    ---@type Applet.FloatingHostOptions
     local floating_options = { side = "left", width = 0.5, margin = 2 }
     local floating = host.floating(floating_options)
     floating_options.side = "right"
@@ -94,15 +120,16 @@ describe("Applet layout compilation", function()
       host.floating({ width = 2.5 })
     end)
     error_matches("before, after", function()
-      host.tab({ position = "middle" })
+      host.tab({ position = "middle" } --[[@as Applet.TabHostOptions]])
     end)
     error_matches("floating or tab", function()
-      host.validate({ kind = "external" })
+      host.validate({ kind = "external" } --[[@as Applet.HostInput]])
     end)
   end)
 
   it("resolves every floating side and container fallback without handles", function()
     local editor = { row = 2, col = 3, width = 100, height = 40 }
+    ---@type table<Applet.HostSide, {row: integer, col: integer}>
     local expected = {
       left = { row = 3, col = 4 },
       right = { row = 3, col = 72 },
@@ -123,6 +150,7 @@ describe("Applet layout compilation", function()
       assert.is_true(environment.capabilities.overlays)
     end
 
+    ---@type Applet.LayoutContainer
     local container = {
       available = true, row = 5, col = 10, width = 50, height = 20,
     }
@@ -173,8 +201,8 @@ describe("Applet layout compilation", function()
     })
     local tab = compile({ tree = value, host = host.tab(), editor = editor })
 
-    assert.are.equal("split", floating.topology.type)
-    assert.are.equal("split", tab.topology.type)
+    assert(floating.topology.type == "split")
+    assert(tab.topology.type == "split")
     assert.are.equal("vertical", floating.topology.axis)
     assert.are.same({ "transcript", "input" }, floating.pane_order)
     assert.are.same({ "transcript", "input" }, tab.pane_order)
@@ -184,8 +212,10 @@ describe("Applet layout compilation", function()
     assert.are.equal(40, tab.bounds.height)
     assert.are.equal("floating", floating.panes.transcript.projection.kind)
     assert.are.equal("split", tab.panes.transcript.projection.kind)
-    assert.are.equal(5, floating.topology.children[2].size)
-    assert.are.equal(3, tab.topology.children[2].size)
+    local floating_children = assert(floating.topology.children)
+    local tab_children = assert(tab.topology.children)
+    assert.are.equal(5, assert(floating_children[2]).size)
+    assert.are.equal(3, assert(tab_children[2]).size)
     assert.are.equal(3, floating.panes.input.content.height)
     assert.are.equal(3, tab.panes.input.content.height)
     assert.are.equal("insert", tab.panes.input.focus.mode)
@@ -248,8 +278,10 @@ describe("Applet layout compilation", function()
         }),
       },
     })
-    assert.are.equal(4, compiled.topology.children[1].max)
-    assert.is_nil(compiled.topology.children[2].max)
+    assert(compiled.topology.type == "split")
+    local children = assert(compiled.topology.children)
+    assert.are.equal(4, assert(children[1]).max)
+    assert.is_nil(assert(children[2]).max)
     assert.are.same({ 4, 6 }, compiled.splits.main.sizes)
   end)
 
@@ -321,7 +353,7 @@ describe("Applet layout compilation", function()
           child = pane("dialog", dialog, { mode = "insert" }),
         }),
       })
-    value.focus.intent = { key = "dialog", revision = "open-dialog" }
+    assert(value.focus).intent = { key = "dialog", revision = "open-dialog" }
     local frame = compile({
       tree = value,
       host = host.tab(),
@@ -332,8 +364,8 @@ describe("Applet layout compilation", function()
       },
     })
     assert.are.equal(2, #frame.layers)
-    assert.are.equal(7, frame.layers[1].rect.height)
-    assert.are.equal(5, frame.layers[2].rect.height)
+    assert.are.equal(7, assert(frame.layers[1]).rect.height)
+    assert.are.equal(5, assert(frame.layers[2]).rect.height)
     assert.are.equal("floating", frame.panes.details.projection.kind)
     assert.are.equal("floating", frame.panes.dialog.projection.kind)
     assert.are.same({ "dialog" }, frame.modal_boundary)
@@ -380,9 +412,9 @@ describe("Applet layout compilation", function()
         second = { screen_width = 26, screen_lines = 5 },
       },
     })
-    assert.are.equal(44, frame.layers[1].rect.width)
-    assert.are.equal(5, frame.layers[1].rect.height)
-    assert.are.same({ "first", "second" }, frame.layers[1].panes)
+    assert.are.equal(44, assert(frame.layers[1]).rect.width)
+    assert.are.equal(5, assert(frame.layers[1]).rect.height)
+    assert.are.same({ "first", "second" }, assert(frame.layers[1]).panes)
   end)
 
   it("sums vertical split measurements for content-sized Layers", function()
@@ -415,12 +447,13 @@ describe("Applet layout compilation", function()
         results = { screen_lines = 4 },
       },
     })
-    assert.are.equal(5, frame.layers[1].rect.height)
+    assert.are.equal(5, assert(frame.layers[1]).rect.height)
     assert.are.same({ 1, 4 }, frame.splits["picker-split"].sizes)
   end)
 
   it("anchors Layers in every direction and orders equal z-index declarations", function()
     local main = new_pane("main")
+    ---@type Applet.LayerAnchor[]
     local names = {
       "top_left", "top", "top_right", "left", "center", "right",
       "bottom_left", "bottom", "bottom_right",
@@ -457,12 +490,12 @@ describe("Applet layout compilation", function()
     })
     for index, anchor in ipairs(names) do
       local layer = frame.layers[index]
-      assert.are.equal(anchor .. "-layer", layer.key)
+      assert.are.equal(anchor .. "-layer", assert(layer).key)
       assert.are.same({
         row = expected[anchor][1], col = expected[anchor][2],
         width = 10, height = 4,
-      }, layer.rect)
-      assert.are.equal(70, layer.zindex)
+      }, assert(layer).rect)
+      assert.are.equal(70, assert(layer).zindex)
     end
   end)
 
@@ -493,8 +526,8 @@ describe("Applet layout compilation", function()
         chrome = { top = 1, right = 0, bottom = 1, left = 0 },
       } },
     })
-    assert.are.equal(9, frame.layers[1].rect.width)
-    assert.are.equal(71, frame.layers[1].rect.col)
+    assert.are.equal(9, assert(frame.layers[1]).rect.width)
+    assert.are.equal(71, assert(frame.layers[1]).rect.col)
     assert.are.same({ top = 1, right = 0, bottom = 1, left = 0 },
       frame.panes.measured.chrome)
   end)
@@ -528,10 +561,11 @@ describe("Applet layout compilation", function()
       handlers = { ["custom.nested"] = true, ["custom.pane"] = true },
     })
     local scopes = frame.panes.transcript.scopes
-    assert.are.equal("root", scopes[1].kind)
-    assert.are.equal("nested", scopes[2].key)
-    assert.are.equal("pane", scopes[3].kind)
-    assert.are.equal("custom.pane", scopes[3].bindings[1].action.action)
+    local pane_scope = assert(scopes[3])
+    assert.are.equal("root", assert(scopes[1]).kind)
+    assert.are.equal("nested", assert(scopes[2]).key)
+    assert.are.equal("pane", pane_scope.kind)
+    assert.are.equal("custom.pane", assert(pane_scope.bindings[1]).action.action)
   end)
 
   it("rejects malformed, cyclic, conflicting, and impossible Trees", function()
@@ -551,7 +585,8 @@ describe("Applet layout compilation", function()
         editor = { width = 40, height = 10 },
       })
     end)
-    local cyclic = ui.scope({ key = "cycle", bindings = {} })
+    local cyclic_options = { key = "cycle", bindings = {} }
+    local cyclic = ui.scope(cyclic_options --[[@as Applet.LayoutScopeOptions]])
     cyclic.child = cyclic
     error_matches("cycle", function()
       compile({
@@ -574,7 +609,7 @@ describe("Applet layout compilation", function()
       compile({
         tree = { root = ui.frame({
           key = "frame",
-          child = { type = "unknown", key = "unknown" },
+          child = { type = "unknown", key = "unknown" } --[[@as Applet.LayoutNode]],
         }) },
         host = host.tab(), editor = { width = 40, height = 10 },
       })
@@ -588,7 +623,7 @@ describe("Applet layout compilation", function()
             ui.layer({
               key = "invalid-content-layer",
               height = { content = true },
-              child = { type = "unknown", key = "unknown-content" },
+              child = { type = "unknown", key = "unknown-content" } --[[@as Applet.LayoutNode]],
             }),
           },
         }) },
@@ -622,7 +657,7 @@ describe("Applet layout compilation", function()
             children = {
               [1] = { key = "one", child = pane("one", first) },
               [3] = { key = "two", child = pane("two", second) },
-            },
+            } --[[@as Applet.LayoutSplitChild[] ]],
           }),
         }) },
         host = host.tab(), editor = { width = 40, height = 10 },
@@ -664,8 +699,8 @@ describe("Applet layout compilation", function()
           child = pane("modal", modal),
         }),
       })
-      value.focus.initial = "one"
-      value.focus.intent = { key = "one" }
+      assert(value.focus).initial = "one"
+      assert(value.focus).intent = { key = "one" }
       compile({
         tree = value,
         host = host.tab(), editor = { width = 40, height = 10 },
