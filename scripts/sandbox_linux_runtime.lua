@@ -168,10 +168,86 @@ int execve(const char *, char *const [], char *const []);
 void _exit(int);
 ]])
 
+-- Native allocations retain their C identity; the fields below mirror cdef.
+---@class Neoagent.LinuxPollFd: ffi.cdata*
+---@field fd integer
+---@field events integer
+---@field revents integer
+
+---@class Neoagent.LinuxMountAttr: ffi.cdata*
+---@field attr_set integer
+---@field attr_clr integer
+
+---@class Neoagent.LinuxIovec: ffi.cdata*
+---@field iov_base ffi.cdata*
+---@field iov_len integer
+
+---@class Neoagent.LinuxCmsg: ffi.cdata*
+---@field cmsg_len integer
+---@field cmsg_level integer
+---@field cmsg_type integer
+
+---@class Neoagent.LinuxMessage: ffi.cdata*
+---@field msg_iov Neoagent.FfiArray<Neoagent.LinuxIovec>
+---@field msg_iovlen integer
+---@field msg_control ffi.cdata*
+---@field msg_controllen integer
+
+---@class Neoagent.LinuxCapabilityHeader: ffi.cdata*
+---@field version integer
+---@field pid integer
+
+---@class Neoagent.LinuxFilter: ffi.cdata*
+---@field code integer
+---@field jt integer
+---@field jf integer
+---@field k integer
+
+---@class Neoagent.LinuxFilterProgram: ffi.cdata*
+---@field len integer
+---@field filter Neoagent.FfiArray<Neoagent.LinuxFilter>
+
+---@class Neoagent.LinuxSeccompData: ffi.cdata*
+---@field nr integer
+---@field args Neoagent.FfiArray<ffi.cdata*>
+
+---@class Neoagent.LinuxNotification: ffi.cdata*
+---@field id ffi.cdata*
+---@field pid integer
+---@field data Neoagent.LinuxSeccompData
+
+---@class Neoagent.LinuxResponse: ffi.cdata*
+---@field id ffi.cdata*
+---@field val integer
+---@field error integer
+
+---@class Neoagent.LinuxAddFd: ffi.cdata*
+---@field id ffi.cdata*
+---@field flags integer
+---@field srcfd integer
+---@field newfd_flags integer
+
+---@class Neoagent.LinuxOpenHow: ffi.cdata*
+---@field flags ffi.cdata*
+
+---@class Neoagent.LinuxCapturedPath
+---@field base integer
+---@field path string
+---@field restriction? Neoagent.SandboxAccess
+
+---@class Neoagent.LinuxPathOperation
+---@field kind 'mkdir'|'mknod'|'symlink'|'link'|'rename'|'unlink'
+---@field first_dir? integer
+---@field first_path integer
+---@field second_dir? integer
+---@field second_path? integer
+---@field mode? integer
+---@field device? integer
+---@field source? integer
+---@field flags? integer
+
 local C = ffi.C
-local function finish(code)
-  C._exit(code)
-end
+local finish = C._exit --[[@as fun(code: integer): never]]
 
 local E = {
   EPERM = 1,
@@ -202,6 +278,8 @@ local O = {
   CLOEXEC = 524288,
   TMPFILE = 0x410000,
 }
+---@param data string
+---@return string
 local function content_fingerprint(data)
   local seeds = {
     0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
@@ -285,6 +363,42 @@ local SC_OPEN_MAX = 4
 -- System-call numbers are part of the CPU architecture ABI. Named entries keep
 -- the policy below readable while the x64 and arm64 tables supply the numbers
 -- understood by each kernel.
+---@class Neoagent.LinuxRuntimeAbi
+---@field audit_arch integer
+---@field pivot_root integer
+---@field mount_setattr integer
+---@field close_range integer
+---@field clone integer
+---@field clone3 integer
+---@field open? integer
+---@field rename? integer
+---@field mkdir? integer
+---@field rmdir? integer
+---@field creat? integer
+---@field link? integer
+---@field unlink? integer
+---@field symlink? integer
+---@field mknod? integer
+---@field openat integer
+---@field mkdirat integer
+---@field mknodat integer
+---@field unlinkat integer
+---@field renameat integer
+---@field linkat integer
+---@field symlinkat integer
+---@field renameat2 integer
+---@field seccomp integer
+---@field pidfd_open integer
+---@field pidfd_getfd integer
+---@field openat2 integer
+---@field socket integer
+---@field socketpair integer
+---@field bind integer
+---@field x32? boolean
+---@field network_deny integer[]
+---@field deny integer[]
+
+---@type table<string, Neoagent.LinuxRuntimeAbi>
 local abi_by_arch = {
   x64 = {
     audit_arch = 0xC000003E,
@@ -367,6 +481,9 @@ local abi = abi_by_arch[jit.arch]
 -- Every stdout message is a four-byte big-endian length followed by a
 -- MessagePack map. Child setup errors travel over private control pipes first,
 -- so the relay can turn them into the same public error event.
+---@param fd integer
+---@param data string
+---@return true?
 local function write_all(fd, data)
   local offset = 0
   while offset < #data do
@@ -374,12 +491,13 @@ local function write_all(fd, data)
     if count < 0 then
       if ffi.errno() ~= E.EINTR then return nil end
     else
-      offset = offset + tonumber(count)
+      offset = offset + (tonumber(count) --[[@as integer]])
     end
   end
   return true
 end
 
+---@param value Neoagent.SandboxProtocolEvent
 local function frame(value)
   local payload = vim.mpack.encode(value)
   local length = #payload
@@ -391,16 +509,25 @@ local function frame(value)
   write_all(1, header .. payload)
 end
 
+---@param stage string
+---@param errno? integer
+---@return never
 local function terminal_error(stage, errno)
   frame({ v = 1, type = "error", stage = stage, errno = errno or ffi.errno() })
-  finish(125)
+  return finish(125)
 end
 
+---@param fd integer
+---@param stage string
+---@param errno? integer
+---@return never
 local function child_error(fd, stage, errno)
   write_all(fd, string.format("error %s %d\n", stage, errno or ffi.errno()))
-  finish(125)
+  return finish(125)
 end
 
+---@param preserve integer
+---@param error_fd integer
 local function close_descriptors(preserve, error_fd)
   local first, first_errno = 0, 0
   if preserve > 3 then
@@ -420,7 +547,7 @@ local function close_descriptors(preserve, error_fd)
     child_error(error_fd, "close-range",
       first ~= 0 and first_errno or last_errno)
   end
-  local maximum = tonumber(C.sysconf(SC_OPEN_MAX))
+  local maximum = (tonumber(C.sysconf(SC_OPEN_MAX)) --[[@as integer]])
   if not maximum or maximum < 0 then
     child_error(error_fd, "open-max")
   end
@@ -429,16 +556,20 @@ local function close_descriptors(preserve, error_fd)
   end
 end
 
+---@return integer?
 local function threads()
   local file = io.open("/proc/self/status", "r")
   if not file then return nil end
   for line in file:lines() do
+    ---@cast line string
     local count = line:match("^Threads:%s*(%d+)")
-    if count then file:close() return tonumber(count) end
+    if count then file:close() return (tonumber(count) --[[@as integer]]) end
   end
   file:close()
 end
 
+---@param timeout_ms integer
+---@return boolean, integer?
 local function wait_for_single_thread(timeout_ms)
   local deadline = vim.uv.hrtime() + timeout_ms * 1000000
   local count = threads()
@@ -468,7 +599,7 @@ local function bootstrap_single_thread()
 
   -- Retain the launched process lifetime and status while the single-threaded
   -- child writes the sandbox protocol directly to the inherited descriptors.
-  local status = ffi.new("int[1]")
+  local status = ffi.new("int[1]") --[[@as Neoagent.FfiArray<integer>]]
   while C.waitpid(child, status, 0) < 0 do
     if ffi.errno() ~= E.EINTR then
       terminal_error("thread-bootstrap-wait")
@@ -476,7 +607,7 @@ local function bootstrap_single_thread()
   end
   -- waitpid stores a terminating signal in the low seven bits and a normal
   -- exit code in bits 8-15.
-  local raw = tonumber(status[0])
+  local raw = status[0]
   local signal = bit.band(raw, 0x7f)
   if signal ~= 0 then finish(128 + signal) end
   finish(bit.band(bit.rshift(raw, 8), 0xff))
@@ -486,7 +617,8 @@ end
 -- arguments, or the environment. The specification variable is cleared early
 -- so the target command cannot inherit the sandbox control document.
 local encoded = vim.uv.os_getenv("NEOAGENT_SANDBOX_SPEC", 512 * 1024 + 1)
-vim.uv.os_unsetenv("NEOAGENT_SANDBOX_SPEC")
+local unsetenv = vim.uv.os_unsetenv --[[@as fun(name: string): boolean?, string?]]
+unsetenv("NEOAGENT_SANDBOX_SPEC")
 if not abi then terminal_error("architecture", 0) end
 if type(encoded) ~= "string" then terminal_error("specification-environment", 0) end
 if #encoded > 512 * 1024 then terminal_error("specification-size", 0) end
@@ -514,8 +646,9 @@ if type(spec.cwd) ~= "string" or spec.cwd:sub(1, 1) ~= "/"
     or spec.cwd:find("\0", 1, true) then
   terminal_error("specification-cwd", 0)
 end
+---@type string[]
 local command = {}
-for index = 1, #arg do command[index] = arg[index] end
+for index = 1, #arg do command[index] = assert(arg[index]) end
 if command[1] == "--" then table.remove(command, 1) end
 if spec.mode == "exec" and #command == 0
     or spec.mode ~= "exec" and #command ~= 0 then
@@ -558,6 +691,8 @@ for _, entry in ipairs(spec.protected_create) do
     terminal_error("specification-protected-create", 0)
   end
 end
+---@cast spec Neoagent.LinuxSandboxSpec
+
 -- Transient startup helpers may quiesce naturally. A persistent helper uses
 -- the supervised fork boundary while namespace setup stays single-threaded.
 local single_threaded, thread_count = wait_for_single_thread(250)
@@ -596,6 +731,9 @@ end
 local signal_fd = C.signalfd(-1, blocked_signals, O.CLOEXEC)
 if signal_fd < 0 then terminal_error("signal-fd") end
 
+---@param path string
+---@param data string
+---@return true?
 local function cwrite(path, data)
   local fd = C.open(path, bit.bor(O.WRONLY, O.CLOEXEC))
   if fd < 0 then return nil end
@@ -611,7 +749,7 @@ end
 -- user's permissions on the host. Mount, IPC, hostname, and optional network
 -- namespaces isolate the corresponding kernel resources. The PID namespace
 -- takes effect for the children created later.
-local host_uid, host_gid = tonumber(C.getuid()), tonumber(C.getgid())
+local host_uid, host_gid = (tonumber(C.getuid()) --[[@as integer]]), (tonumber(C.getgid()) --[[@as integer]])
 local flags = bit.bor(CLONE.NEWUSER, CLONE.NEWNS,
   CLONE.NEWIPC, CLONE.NEWUTS)
 if spec.profile.network == "restricted" then flags = bit.bor(flags, CLONE.NEWNET) end
@@ -635,11 +773,16 @@ if C.mount(nil, "/", nil, bit.bor(MS.REC, MS.PRIVATE), nil) ~= 0 then
 end
 C.sethostname("neoagent", 8)
 
+---@param path string
+---@param mode? integer
+---@return true?
 local function mkdir(path, mode)
   if C.mkdir(path, mode or 493) == 0 or ffi.errno() == E.EEXIST then return true end
   return nil
 end
 
+---@param path string
+---@return true?
 local function create_file(path)
   local fd = C.open(path, bit.bor(O.WRONLY, O.CREAT, O.CLOEXEC),
     ffi.cast("unsigned int", 384))
@@ -648,12 +791,18 @@ local function create_file(path)
   return true
 end
 
+---@param left? uv.fs_stat.result
+---@param right? uv.fs_stat.result
+---@return boolean?
 local function same_inode(left, right)
   return left and right and left.dev == right.dev and left.ino == right.ino
 end
 
+---@param path string
+---@param enabled boolean
+---@return true?
 local function readonly(path, enabled)
-  local attr = ffi.new("struct mount_attr")
+  local attr = ffi.new("struct mount_attr") --[[@as Neoagent.LinuxMountAttr]]
   attr.attr_set = bit.bor(MOUNT_ATTR_NOSUID, MOUNT_ATTR_NODEV)
   if enabled then
     attr.attr_set = bit.bor(attr.attr_set, MOUNT_ATTR_RDONLY)
@@ -678,11 +827,12 @@ local function readonly(path, enabled)
   if not file then return nil end
   local mounts = {}
   for line in file:lines() do
+    ---@cast line string
     local mountpoint, options =
       line:match("^%d+ %d+ %S+ %S+ (%S+) (%S+)")
     if mountpoint then
       mountpoint = mountpoint:gsub("\\(%d%d%d)", function(value)
-        return string.char(tonumber(value, 8))
+        return string.char((tonumber(value, 8) --[[@as integer]]))
       end)
       if mountpoint == path
           or mountpoint:sub(1, #path + 1) == path .. "/" then
@@ -753,6 +903,8 @@ if not readonly(newroot, true) then terminal_error("readonly-root") end
 local blocked_file = root .. "/blocked"
 if not create_file(blocked_file) then terminal_error("blocked-file") end
 
+---@param path string
+---@return string
 local function target(path)
   return path == "/" and newroot or newroot .. path
 end
@@ -802,6 +954,9 @@ for name, destination in pairs({
   end
 end
 
+---@param path string
+---@param stat? uv.fs_stat.result
+---@return true?
 local function ensure_target(path, stat)
   local destination = target(path)
   if vim.uv.fs_stat(destination) then return true end
@@ -819,6 +974,9 @@ local function ensure_target(path, stat)
   return true
 end
 
+---@param root string
+---@param path string
+---@return boolean
 local function contains(root, path)
   return root == "/" or path == root
     or path:sub(1, #root + 1) == root .. "/"
@@ -916,49 +1074,57 @@ end
 C.close(oldroot)
 if C.chdir("/") ~= 0 then terminal_error("root-chdir") end
 
+---@return integer, integer
 local function pipe()
-  local value = ffi.new("int[2]")
+  local value = ffi.new("int[2]") --[[@as Neoagent.FfiArray<integer>]]
   if C.pipe2(value, PIPE_CLOEXEC) ~= 0 then terminal_error("pipe") end
-  return tonumber(value[0]), tonumber(value[1])
+  return value[0], value[1]
 end
 
+---@return integer, integer
 local function socket_pair()
-  local value = ffi.new("int[2]")
+  local value = ffi.new("int[2]") --[[@as Neoagent.FfiArray<integer>]]
   if C.socketpair(1, bit.bor(2, O.CLOEXEC), 0, value) ~= 0 then
     terminal_error("socketpair")
   end
-  return tonumber(value[0]), tonumber(value[1])
+  return value[0], value[1]
 end
 
+---@param socket integer
+---@param fd integer
+---@return boolean
 local function send_fd(socket, fd)
   local byte = ffi.new("char[1]", 1)
-  local iov = ffi.new("struct iovec[1]")
+  local iov = ffi.new("struct iovec[1]") --[[@as Neoagent.FfiArray<Neoagent.LinuxIovec>]]
   iov[0].iov_base, iov[0].iov_len = byte, 1
   local control = ffi.new("unsigned char[24]")
-  local header = ffi.cast("struct cmsghdr *", control)
+  local header = ffi.cast("struct cmsghdr *", control) --[[@as Neoagent.LinuxCmsg]]
   header.cmsg_len, header.cmsg_level, header.cmsg_type = 20, 1, 1
-  ffi.cast("int *", control + 16)[0] = fd
-  local message = ffi.new("struct msghdr")
+  (ffi.cast("int *", control + 16) --[[@as Neoagent.FfiArray<integer>]])[0] = fd
+  local message = ffi.new("struct msghdr") --[[@as Neoagent.LinuxMessage]]
   message.msg_iov, message.msg_iovlen = iov, 1
   message.msg_control, message.msg_controllen = control, 24
   return C.sendmsg(socket, message, 0) == 1
 end
 
+---@param socket integer
+---@return integer?
 local function receive_fd(socket)
   local byte = ffi.new("char[1]")
-  local iov = ffi.new("struct iovec[1]")
+  local iov = ffi.new("struct iovec[1]") --[[@as Neoagent.FfiArray<Neoagent.LinuxIovec>]]
   iov[0].iov_base, iov[0].iov_len = byte, 1
   local control = ffi.new("unsigned char[24]")
-  local message = ffi.new("struct msghdr")
+  local message = ffi.new("struct msghdr") --[[@as Neoagent.LinuxMessage]]
   message.msg_iov, message.msg_iovlen = iov, 1
   message.msg_control, message.msg_controllen = control, 24
   if C.recvmsg(socket, message, 0) ~= 1 then return nil end
-  local header = ffi.cast("struct cmsghdr *", control)
+  local header = ffi.cast("struct cmsghdr *", control) --[[@as Neoagent.LinuxCmsg]]
   if header.cmsg_len ~= 20 or header.cmsg_level ~= 1
       or header.cmsg_type ~= 1 then
     return nil
   end
-  return tonumber(ffi.cast("int *", control + 16)[0])
+  local descriptor = ffi.cast("int *", control + 16) --[[@as Neoagent.FfiArray<integer>]]
+  return descriptor[0]
 end
 
 -- Process plumbing -----------------------------------------------------------
@@ -984,6 +1150,7 @@ local listener_parent, listener_child = socket_pair()
 -- rejects dangerous kernel operations and network calls for restricted
 -- profiles. Filesystem calls that need path-aware policy are sent to namespace
 -- init through seccomp user notifications.
+---@param error_fd integer
 local function drop_capabilities(error_fd)
   for capability = 0, 63 do
     if C.prctl(PR_CAPBSET_DROP, capability, 0, 0, 0) ~= 0
@@ -994,7 +1161,7 @@ local function drop_capabilities(error_fd)
   if C.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) ~= 0 then
     child_error(error_fd, "cap-ambient")
   end
-  local header = ffi.new("struct __user_cap_header_struct")
+  local header = ffi.new("struct __user_cap_header_struct") --[[@as Neoagent.LinuxCapabilityHeader]]
   local capabilities = ffi.new("struct __user_cap_data_struct[2]")
   header.version = 0x20080522
   header.pid = 0
@@ -1003,13 +1170,20 @@ local function drop_capabilities(error_fd)
   end
 end
 
+---@param error_fd integer
+---@param notify boolean
+---@return integer?
 local function install_seccomp(error_fd, notify)
   if C.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) ~= 0 then
     child_error(error_fd, "no-new-privs")
   end
 
-  local filter = ffi.new("struct sock_filter[?]", 256)
+  local filter = ffi.new("struct sock_filter[?]", 256) --[[@as Neoagent.FfiArray<Neoagent.LinuxFilter>]]
   local length = 0
+  ---@param code integer
+  ---@param k integer
+  ---@param jt? integer
+  ---@param jf? integer
   local function ins(code, k, jt, jf)
     filter[length].code = code
     filter[length].jt = jt or 0
@@ -1087,7 +1261,7 @@ local function install_seccomp(error_fd, notify)
     end
   end
   ins(RET, SECCOMP_RET_ALLOW)
-  local program = ffi.new("struct sock_fprog")
+  local program = ffi.new("struct sock_fprog") --[[@as Neoagent.LinuxFilterProgram]]
   program.len = length
   program.filter = filter
   local pointer = ffi.cast("unsigned long",
@@ -1098,7 +1272,7 @@ local function install_seccomp(error_fd, notify)
       ffi.cast("unsigned int", SECCOMP_FILTER_FLAG_NEW_LISTENER),
       ffi.cast("void *", program))
     if listener < 0 then child_error(error_fd, "seccomp-listener") end
-    return tonumber(listener)
+    return (tonumber(listener) --[[@as integer]])
   end
   if C.prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, pointer, 0, 0) ~= 0 then
     child_error(error_fd, "seccomp")
@@ -1109,11 +1283,15 @@ end
 -- arguments are pointers in the target's address space, so the supervisor
 -- copies bounded strings with process_vm_readv and interprets relative paths
 -- through the target's /proc/<pid>/cwd or /proc/<pid>/fd entries.
+---@param pid integer
+---@param address ffi.cdata*
+---@param size integer
+---@return string?
 local function remote_data(pid, address, size)
   if size < 0 or size > 65536 then return nil end
   local buffer = ffi.new("unsigned char[?]", math.max(size, 1))
-  local local_iov = ffi.new("struct iovec[1]")
-  local remote_iov = ffi.new("struct iovec[1]")
+  local local_iov = ffi.new("struct iovec[1]") --[[@as Neoagent.FfiArray<Neoagent.LinuxIovec>]]
+  local remote_iov = ffi.new("struct iovec[1]") --[[@as Neoagent.FfiArray<Neoagent.LinuxIovec>]]
   local_iov[0].iov_base = buffer
   local_iov[0].iov_len = size
   remote_iov[0].iov_base = ffi.cast(
@@ -1122,9 +1300,12 @@ local function remote_data(pid, address, size)
   local count = C.process_vm_readv(
     pid, local_iov, 1, remote_iov, 1, 0)
   if count < 0 then return nil end
-  return ffi.string(buffer, tonumber(count))
+  return ffi.string(buffer, (tonumber(count) --[[@as integer]]))
 end
 
+---@param pid integer
+---@param address ffi.cdata*
+---@return string?, integer?
 local function remote_string(pid, address)
   local value = remote_data(pid, address, 4096)
   if not value then return nil, E.EFAULT end
@@ -1133,27 +1314,38 @@ local function remote_string(pid, address)
   return value:sub(1, ending - 1)
 end
 
+---@param notification Neoagent.LinuxNotification
+---@param index integer
+---@return integer
 local function int_argument(notification, index)
-  return tonumber(ffi.cast("int", notification.data.args[index]))
+  return (tonumber(ffi.cast("int", notification.data.args[index])) --[[@as integer]])
 end
 
+---@param notification Neoagent.LinuxNotification
+---@param index integer
+---@return integer
 local function number_argument(notification, index)
-  return tonumber(notification.data.args[index])
+  return (tonumber(notification.data.args[index]) --[[@as integer]])
 end
 
+---@type table<integer, integer>
 local reference_cache = {}
+---@type string?
 local namespace_id
 
+---@param path string
+---@return integer[]?
 local function namespace_ids(path)
   local file = io.open(path .. "/status", "r")
   if not file then return nil end
   for line in file:lines() do
+    ---@cast line string
     local encoded_ids = line:match("^NSpid:%s*(.*)")
     if encoded_ids then
       file:close()
       local ids = {}
       for value in encoded_ids:gmatch("%d+") do
-        ids[#ids + 1] = tonumber(value)
+        ids[#ids + 1] = (tonumber(value) --[[@as integer]])
       end
       return ids
     end
@@ -1161,21 +1353,28 @@ local function namespace_ids(path)
   file:close()
 end
 
+---@param path string
+---@return string?, string?, string?
 local function process_namespace(path)
   return vim.uv.fs_readlink(path .. "/ns/pid")
 end
 
+---@param path string
+---@param pid integer
+---@return boolean?
 local function matching_namespace(path, pid)
   local ids = namespace_ids(path)
   return ids and ids[#ids] == pid
     and process_namespace(path) == namespace_id
 end
 
+---@param pid integer
+---@return integer?
 local function reference_pid(pid)
   if spec.procfs == "fresh" then return pid end
   if not namespace_id then
     local ids = namespace_ids("/proc/self")
-    if not ids or #ids < 2 or ids[#ids] ~= tonumber(C.getpid()) then
+    if not ids or #ids < 2 or ids[#ids] ~= (tonumber(C.getpid()) --[[@as integer]]) then
       return nil
     end
     namespace_id = process_namespace("/proc/self")
@@ -1196,7 +1395,7 @@ local function reference_pid(pid)
     if kind == "directory" and name:match("^%d+$") then
       local path = "/proc/" .. name
       if matching_namespace(path, pid) then
-        reference_cache[pid] = tonumber(name)
+        reference_cache[pid] = (tonumber(name) --[[@as integer]])
         return reference_cache[pid]
       elseif process_namespace(path) == namespace_id then
         related[#related + 1] = name
@@ -1212,7 +1411,7 @@ local function reference_pid(pid)
         if kind == "directory"
             and matching_namespace(
               "/proc/" .. leader .. "/task/" .. name, pid) then
-          reference_cache[pid] = tonumber(name)
+          reference_cache[pid] = (tonumber(name) --[[@as integer]])
           return reference_cache[pid]
         end
       end
@@ -1220,6 +1419,9 @@ local function reference_pid(pid)
   end
 end
 
+---@param pid integer
+---@param dirfd integer
+---@return string?
 local function process_path(pid, dirfd)
   local reference = reference_pid(pid)
   if not reference then return nil end
@@ -1229,6 +1431,10 @@ local function process_path(pid, dirfd)
   return "/proc/" .. tostring(reference) .. "/fd/" .. tostring(dirfd)
 end
 
+---@param pid integer
+---@param dirfd integer
+---@param path string
+---@return integer?, string?, integer?
 local function captured_base(pid, dirfd, path)
   local reference
   local relative = path
@@ -1241,12 +1447,16 @@ local function captured_base(pid, dirfd, path)
   else
     reference = process_path(pid, dirfd)
   end
-  if not reference then return nil, E.EACCES end
+  if not reference then return nil, nil, E.EACCES end
   local fd = C.open(reference, bit.bor(O.PATH, O.CLOEXEC))
-  if fd < 0 then return nil, ffi.errno() end
-  return tonumber(fd), relative
+  if fd < 0 then return nil, nil, ffi.errno() end
+  return (tonumber(fd) --[[@as integer]]), relative
 end
 
+---@param pid integer
+---@param dirfd integer
+---@param path string
+---@return string?
 local function base_path(pid, dirfd, path)
   if path:sub(1, 1) == "/" then return path end
   local reference = process_path(pid, dirfd)
@@ -1255,6 +1465,9 @@ local function base_path(pid, dirfd, path)
   return base .. "/" .. path
 end
 
+---@param path? string
+---@param depth? integer
+---@return string?
 local function resolved_destination(path, depth)
   if not path or depth and depth > 40 then return nil end
   depth = (depth or 0) + 1
@@ -1285,6 +1498,8 @@ local function resolved_destination(path, depth)
   return vim.fs.normalize(resolved)
 end
 
+---@param path string
+---@return Neoagent.SandboxAccess?
 local function restriction_for(path)
   local selected
   local specificity = -1
@@ -1297,6 +1512,10 @@ local function restriction_for(path)
   return selected
 end
 
+---@param pid integer
+---@param dirfd integer
+---@param path string
+---@return Neoagent.SandboxAccess?, integer?
 local function path_restriction(pid, dirfd, path)
   local candidate = base_path(pid, dirfd, path)
   if not candidate then return nil, E.EACCES end
@@ -1308,8 +1527,13 @@ local function path_restriction(pid, dirfd, path)
   return restriction_for(resolved), nil
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@param value? integer
+---@param failure? integer
+---@return true?
 local function send_response(listener, notification, value, failure)
-  local response = ffi.new("struct seccomp_notif_resp")
+  local response = ffi.new("struct seccomp_notif_resp") --[[@as Neoagent.LinuxResponse]]
   response.id = notification.id
   response.val = value or 0
   response.error = failure and -failure or 0
@@ -1320,23 +1544,37 @@ local function send_response(listener, notification, value, failure)
   return true
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@return boolean
 local function notification_valid(listener, notification)
   local id = ffi.new("unsigned long long[1]", notification.id)
   return C.ioctl(listener, SECCOMP_IOCTL_NOTIF_ID_VALID, id) == 0
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@param value integer
+---@param failure? integer
+---@return true?
 local function send_result(listener, notification, value, failure)
   if value < 0 then
     return send_response(listener, notification, 0, failure or E.EIO)
   end
-  return send_response(listener, notification, tonumber(value), nil)
+  return send_response(listener, notification, (tonumber(value) --[[@as integer]]), nil)
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@param fd integer
+---@param flags integer
+---@param failure? integer
+---@return true?
 local function add_open_fd(listener, notification, fd, flags, failure)
   if fd < 0 then
     return send_response(listener, notification, 0, failure or E.EIO)
   end
-  local request = ffi.new("struct seccomp_notif_addfd")
+  local request = ffi.new("struct seccomp_notif_addfd") --[[@as Neoagent.LinuxAddFd]]
   request.id = notification.id
   request.flags = SECCOMP_ADDFD_FLAG_SEND
   request.srcfd = fd
@@ -1350,6 +1588,8 @@ local function add_open_fd(listener, notification, fd, flags, failure)
   return true
 end
 
+---@param flags integer
+---@return boolean
 local function open_is_mutating(flags)
   return bit.band(flags,
     bit.bor(O.WRONLY, 2, O.CREAT, O.TRUNC, O.APPEND, O.TMPFILE)) ~= 0
@@ -1358,9 +1598,17 @@ end
 -- For an allowed open, namespace init performs the operation against a captured
 -- directory descriptor and installs the resulting descriptor into the target.
 -- This keeps the path check and open tied to the same filesystem location.
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@param dirfd integer
+---@param path_index integer
+---@param flags integer
+---@param mode integer
+---@param how_data? {buffer: ffi.cdata*, size: integer}
+---@return true?
 local function open_notification(listener, notification, dirfd, path_index,
     flags, mode, how_data)
-  local pid = tonumber(notification.pid)
+  local pid = notification.pid
   local path, path_err = remote_string(
     pid, notification.data.args[path_index])
   if not path then
@@ -1374,9 +1622,9 @@ local function open_notification(listener, notification, dirfd, path_index,
       or restriction == "read" and open_is_mutating(flags) then
     return send_response(listener, notification, 0, E.EPERM)
   end
-  local base, relative_or_err = captured_base(pid, dirfd, path)
+  local base, relative, base_err = captured_base(pid, dirfd, path)
   if not base then
-    return send_response(listener, notification, 0, relative_or_err)
+    return send_response(listener, notification, 0, base_err)
   end
   if not notification_valid(listener, notification) then
     C.close(base)
@@ -1386,19 +1634,24 @@ local function open_notification(listener, notification, dirfd, path_index,
   if how_data then
     fd = C.syscall(abi.openat2,
       ffi.cast("int", base),
-      ffi.cast("const char *", relative_or_err),
+      ffi.cast("const char *", relative),
       ffi.cast("void *", how_data.buffer),
       ffi.cast("size_t", how_data.size))
   else
-    fd = C.openat(base, relative_or_err, flags,
+    fd = C.openat(base, relative, flags,
       ffi.cast("unsigned int", mode))
   end
   local open_err = ffi.errno()
   C.close(base)
   return add_open_fd(
-    listener, notification, tonumber(fd), flags, open_err)
+    listener, notification, (tonumber(fd) --[[@as integer]]), flags, open_err)
 end
 
+---@param pid integer
+---@param notification Neoagent.LinuxNotification
+---@param dir_index? integer
+---@param path_index integer
+---@return Neoagent.LinuxCapturedPath?, integer?
 local function captured_path(pid, notification, dir_index, path_index)
   local path, path_err = remote_string(
     pid, notification.data.args[path_index])
@@ -1407,23 +1660,29 @@ local function captured_path(pid, notification, dir_index, path_index)
     or AT_FDCWD
   local restriction, resolve_err = path_restriction(pid, dirfd, path)
   if resolve_err then return nil, resolve_err end
-  local base, relative_or_err = captured_base(pid, dirfd, path)
-  if not base then return nil, relative_or_err end
+  local base, relative, base_err = captured_base(pid, dirfd, path)
+  if not base then return nil, base_err end
+  assert(relative)
   return {
     base = base,
-    path = relative_or_err,
+    path = relative,
     restriction = restriction,
   }
 end
 
+---@param ... Neoagent.LinuxCapturedPath?
 local function close_paths(...)
   for _, value in ipairs({ ... }) do
     if value and value.base then C.close(value.base) end
   end
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@param operation Neoagent.LinuxPathOperation
+---@return true?
 local function mutating_path(listener, notification, operation)
-  local pid = tonumber(notification.pid)
+  local pid = notification.pid
   local first, first_err = captured_path(pid, notification,
     operation.first_dir, operation.first_path)
   if not first then
@@ -1449,11 +1708,11 @@ local function mutating_path(listener, notification, operation)
   local result
   if operation.kind == "mkdir" then
     result = C.mkdirat(first.base, first.path,
-      number_argument(notification, operation.mode))
+      number_argument(notification, assert(operation.mode)))
   elseif operation.kind == "mknod" then
     result = C.mknodat(first.base, first.path,
-      number_argument(notification, operation.mode),
-      number_argument(notification, operation.device))
+      number_argument(notification, assert(operation.mode)),
+      number_argument(notification, assert(operation.device)))
   elseif operation.kind == "symlink" then
     local source, source_err = remote_string(
       pid, notification.data.args[operation.source])
@@ -1463,9 +1722,11 @@ local function mutating_path(listener, notification, operation)
     end
     result = C.symlinkat(source, first.base, first.path)
   elseif operation.kind == "link" then
+    assert(second)
     result = C.linkat(first.base, first.path, second.base, second.path,
       operation.flags and number_argument(notification, operation.flags) or 0)
   elseif operation.kind == "rename" then
+    assert(second)
     if operation.flags then
       result = C.renameat2(first.base, first.path, second.base, second.path,
         number_argument(notification, operation.flags))
@@ -1481,8 +1742,11 @@ local function mutating_path(listener, notification, operation)
     listener, notification, result, operation_err)
 end
 
+---@param listener integer
+---@param notification Neoagent.LinuxNotification
+---@return true?
 local function bind_notification(listener, notification)
-  local pid = tonumber(notification.pid)
+  local pid = notification.pid
   local length = number_argument(notification, 2)
   if length < 2 or length > 4096 then
     return send_response(listener, notification, 0, E.EFAULT)
@@ -1562,14 +1826,16 @@ local function bind_notification(listener, notification)
   return send_result(listener, notification, result, bind_err)
 end
 
+---@param listener integer
+---@return true?
 local function handle_notification(listener)
-  local notification = ffi.new("struct seccomp_notif")
+  local notification = ffi.new("struct seccomp_notif") --[[@as Neoagent.LinuxNotification]]
   if C.ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, notification) ~= 0 then
     local failure = ffi.errno()
     if failure == E.EINTR or failure == E.EAGAIN then return true end
     return nil
   end
-  local nr = tonumber(notification.data.nr)
+  local nr = notification.data.nr
   if nr == abi.open then
     return open_notification(listener, notification, AT_FDCWD, 0,
       number_argument(notification, 1), number_argument(notification, 2))
@@ -1586,14 +1852,14 @@ local function handle_notification(listener)
       return send_response(listener, notification, 0, E.EFAULT)
     end
     local data = remote_data(
-      tonumber(notification.pid), notification.data.args[2], size)
+      notification.pid, notification.data.args[2], size)
     if not data or #data ~= size then
       return send_response(listener, notification, 0, E.EFAULT)
     end
     local buffer = ffi.new("unsigned char[?]", size)
     ffi.copy(buffer, data, size)
-    local flags = tonumber(ffi.cast(
-      "struct open_how *", buffer).flags)
+    local how = ffi.cast("struct open_how *", buffer) --[[@as Neoagent.LinuxOpenHow]]
+    local flags = tonumber(how.flags) --[[@as integer]]
     return open_notification(listener, notification,
       int_argument(notification, 0), 1, flags, 0,
       { buffer = buffer, size = size })
@@ -1760,6 +2026,7 @@ if init == 0 then
     elseif spec.mode == "fs" then
       C.close(confirm_w)
       local request = spec.fs or {}
+      ---@cast request Neoagent.SandboxFilesystemOperation & {path: string}
       if request.operation == "read" then
         local fd = C.open(request.path,
           bit.bor(O.RDONLY, O.CLOEXEC, O.NONBLOCK))
@@ -1829,6 +2096,8 @@ if init == 0 then
           write_all(2, "invalid atomic replacement request\n")
           finish(64)
         end
+        ---@param value? uv.fs_stat.result
+        ---@return Neoagent.FileObservation
         local function observe(value)
           return {
             exists = value ~= nil,
@@ -1839,6 +2108,9 @@ if init == 0 then
                 and bit.band(value.mode, 511) or nil,
           }
         end
+        ---@param left Neoagent.FileObservation
+        ---@param right Neoagent.FileObservation
+        ---@return boolean
         local function same_target(left, right)
           return left.exists == right.exists and left.type == right.type
             and left.device == right.device and left.inode == right.inode
@@ -1980,7 +2252,7 @@ if init == 0 then
       finish(64)
     end
 
-    local argv = ffi.new("char *[?]", #command + 1)
+    local argv = ffi.new("char *[?]", #command + 1) --[[@as Neoagent.FfiArray<ffi.cdata*>]]
     local argv_storage = {}
     for index, value in ipairs(command) do
       local storage = ffi.new("char[?]", #value + 1)
@@ -1991,7 +2263,7 @@ if init == 0 then
     local names = {}
     for name in pairs(spec.env or {}) do names[#names + 1] = name end
     table.sort(names)
-    local envp = ffi.new("char *[?]", #names + 1)
+    local envp = ffi.new("char *[?]", #names + 1) --[[@as Neoagent.FfiArray<ffi.cdata*>]]
     local env_storage = {}
     for index, name in ipairs(names) do
       local value = name .. "=" .. tostring(spec.env[name])
@@ -2025,8 +2297,8 @@ if init == 0 then
   -- Namespace init alternates between target status, forwarded signals, and
   -- seccomp requests. When the target exits it terminates and reaps remaining
   -- descendants before reporting a single final status to the relay.
-  local target_status = ffi.new("int[1]")
-  local command_poll = ffi.new("struct pollfd[2]")
+  local target_status = ffi.new("int[1]") --[[@as Neoagent.FfiArray<integer>]]
+  local command_poll = ffi.new("struct pollfd[2]") --[[@as Neoagent.FfiArray<Neoagent.LinuxPollFd>]]
   local command_buffer = ffi.new("char[256]")
   command_poll[0].fd = command_r
   command_poll[0].events = bit.bor(POLLIN, POLLHUP)
@@ -2043,7 +2315,7 @@ if init == 0 then
       local count = C.read(command_r, command_buffer, 255)
       if count > 0 then
         for value in ffi.string(command_buffer, count):gmatch("%d+") do
-          C.kill(-target_pid, tonumber(value))
+          C.kill(-target_pid, (tonumber(value) --[[@as integer]]))
         end
       end
     end
@@ -2058,9 +2330,9 @@ if init == 0 then
   if listener >= 0 then C.close(listener) end
   C.kill(-target_pid, SIG.TERM)
   C.kill(-1, SIG.KILL)
-  local ignored = ffi.new("int[1]")
+  local ignored = ffi.new("int[1]") --[[@as Neoagent.FfiArray<integer>]]
   while C.waitpid(-1, ignored, 0) >= 0 or ffi.errno() == E.EINTR do end
-  local raw = tonumber(target_status[0])
+  local raw = target_status[0]
   local signal = bit.band(raw, 0x7f)
   local code = signal == 0 and bit.band(bit.rshift(raw, 8), 0xff)
     or 128 + signal
@@ -2088,7 +2360,7 @@ if control_count <= 0 then terminal_error("namespace-init", 0) end
 local control = ffi.string(small, control_count)
 if not control:match("^ready") then
   local stage, errno = control:match("^error ([^ ]+) (%d+)")
-  terminal_error(stage or "namespace-init", tonumber(errno) or 0)
+  terminal_error(stage or "namespace-init", (tonumber(errno) --[[@as integer?]]) or 0)
 end
 C.close(control_r)
 local confirm_count
@@ -2098,19 +2370,21 @@ until confirm_count >= 0 or ffi.errno() ~= E.EINTR
 if confirm_count > 0 then
   local confirmation = ffi.string(small, confirm_count)
   local stage, errno = confirmation:match("^error ([^ ]+) (%d+)")
-  terminal_error(stage or "target-setup", tonumber(errno) or 0)
+  terminal_error(stage or "target-setup", (tonumber(errno) --[[@as integer?]]) or 0)
 end
 C.close(confirm_r)
 frame({ v = 1, type = "ready" })
 
-local descriptors = ffi.new("struct pollfd[4]")
+local descriptors = ffi.new("struct pollfd[4]") --[[@as Neoagent.FfiArray<Neoagent.LinuxPollFd>]]
 descriptors[0].fd, descriptors[0].events = stdout_r, bit.bor(POLLIN, POLLHUP)
 descriptors[1].fd, descriptors[1].events = stderr_r, bit.bor(POLLIN, POLLHUP)
 descriptors[2].fd, descriptors[2].events =
   signal_fd, bit.bor(POLLIN, POLLHUP)
 descriptors[3].fd, descriptors[3].events =
   status_r, bit.bor(POLLIN, POLLHUP)
-local open_streams, sequence, target_result = 2, 0, nil
+local open_streams, sequence = 2, 0
+---@type string?
+local target_result
 local buffer = ffi.new("char[65536]")
 while open_streams > 0 or not target_result do
   local polled = C.poll(descriptors, 4, -1)
@@ -2140,7 +2414,8 @@ while open_streams > 0 or not target_result do
   if bit.band(descriptors[2].revents, POLLIN) ~= 0 then
     local count = C.read(signal_fd, buffer, 128)
     if count >= 4 then
-      local signal = tonumber(ffi.cast("unsigned int *", buffer)[0])
+      local info = ffi.cast("unsigned int *", buffer) --[[@as Neoagent.FfiArray<integer>]]
+      local signal = info[0]
       write_all(command_w, tostring(signal) .. "\n")
     elseif count < 0 and ffi.errno() ~= E.EINTR then
       terminal_error("read-signal")
@@ -2163,11 +2438,15 @@ end
 C.close(command_w)
 C.close(signal_fd)
 
-local init_status = ffi.new("int[1]")
+local init_status = ffi.new("int[1]") --[[@as Neoagent.FfiArray<integer>]]
 while C.waitpid(init, init_status, 0) < 0 do
   if ffi.errno() ~= E.EINTR then terminal_error("wait-init") end
 end
-local code, signal = target_result:match("^(%d+) (%d+)")
+local code, signal = assert(target_result):match("^(%d+) (%d+)")
 if not code then terminal_error("target-status", 0) end
-frame({ v = 1, type = "exit", code = tonumber(code), signal = tonumber(signal) })
+frame({
+  v = 1, type = "exit",
+  code = tonumber(code) --[[@as integer]],
+  signal = tonumber(signal) --[[@as integer]],
+})
 finish(0)
