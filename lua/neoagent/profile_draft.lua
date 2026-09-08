@@ -2,9 +2,34 @@ local RequestSelection = require("neoagent.request_selection")
 local util = require("neoagent.util")
 
 local M = {}
+---@alias Neoagent.ProfileDraftState 'draft'|'provisional'|'bound'|'destroyed'
+
+---@class Neoagent.ProfileDraftOptions
+---@field key string
+---@field profile Neoagent.Profile
+---@field workspace string
+---@field applet Neoagent.AgentApplet
+---@field options? Neoagent.ConfigInput
+---@field auth? Neoagent.AuthManager
+---@field runtimes? Neoagent.ProviderRuntimes
+
+---@class Neoagent.ProfileDraftSnapshot
+---@field options Neoagent.ConfigInput
+---@field initial_selection? Neoagent.InitialSelection
+
+---@class Neoagent.ProfileDraft
+---@field key string
+---@field profile Neoagent.Profile
+---@field workspace string
+---@field applet Neoagent.AgentApplet
+---@field options_value Neoagent.ConfigInput
+---@field selection Neoagent.RequestSelection
+---@field state_value Neoagent.ProfileDraftState
 local ProfileDraft = {}
 ProfileDraft.__index = ProfileDraft
 
+---@param opts Neoagent.ProfileDraftOptions
+---@return Neoagent.ProfileDraft
 function ProfileDraft.new(opts)
   assert(type(opts) == "table", "ProfileDraft options are required")
   assert(type(opts.key) == "string" and opts.key ~= "",
@@ -47,16 +72,20 @@ function ProfileDraft.new(opts)
   return self
 end
 
+---@return Neoagent.ProfileDraftState
 function ProfileDraft:state() return self.state_value end
 
+---@return boolean
 function ProfileDraft:is_active()
   return self.state_value == "draft"
 end
 
+---@return boolean
 function ProfileDraft:is_retained()
   return self.state_value == "draft" or self.state_value == "provisional"
 end
 
+---@return Neoagent.ConfigInput
 function ProfileDraft:options()
   local options = util.copy(self.options_value)
   local selected = self.selection:model_selection()
@@ -66,18 +95,24 @@ function ProfileDraft:options()
   return options
 end
 
+---@return Neoagent.ProfileDraftSnapshot
 function ProfileDraft:snapshot()
   local selected = self.selection:snapshot()
   return {
     options = util.copy(self.options_value),
-    initial_selection = selected.model and selected or nil,
+    initial_selection = selected.model and {
+      model = selected.model, thinking_level = selected.thinking_level,
+    } or nil,
   }
 end
 
+---@return Neoagent.ModelSelection?
 function ProfileDraft:model_selection()
   return self.selection:model_selection()
 end
 
+---@param patch Neoagent.ConfigInput
+---@return Neoagent.ConfigInput?, Neoagent.Error?
 function ProfileDraft:update(patch)
   assert(type(patch) == "table" and not util.is_list(patch),
     "Profile draft options must be an object")
@@ -97,10 +132,13 @@ function ProfileDraft:update(patch)
       patch.default_thinking_level)
     if not level then return nil, err end
   end
-  self.options_value = selected_options
+  self.options_value = selected_options --[[@as Neoagent.ConfigInput]]
   return self:options()
 end
 
+---@param provider string
+---@param model string
+---@return Neoagent.ModelSelection?, Neoagent.Error?
 function ProfileDraft:set_model(provider, model)
   assert(self:is_active(), "ProfileDraft is not active")
   local resolved, err = self.selection:select(provider, model)
@@ -108,15 +146,19 @@ function ProfileDraft:set_model(provider, model)
   return self.selection:model_selection()
 end
 
+---@return Neoagent.ThinkingLevel
 function ProfileDraft:thinking_level()
   return self.selection:thinking_level()
     or self.profile.config.default_thinking_level
 end
 
+---@return Neoagent.ThinkingLevel[]?, Neoagent.Error?
 function ProfileDraft:thinking_levels()
   return self.selection:levels()
 end
 
+---@param level Neoagent.ThinkingLevel
+---@return Neoagent.ThinkingLevel?, Neoagent.Error?
 function ProfileDraft:set_thinking_level(level)
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:set_thinking_level(level)
@@ -124,6 +166,7 @@ function ProfileDraft:set_thinking_level(level)
   return selected
 end
 
+---@return Neoagent.ThinkingLevel?, Neoagent.Error?
 function ProfileDraft:cycle_thinking_level()
   assert(self:is_active(), "ProfileDraft is not active")
   local selected, err = self.selection:cycle_thinking_level()
@@ -131,12 +174,14 @@ function ProfileDraft:cycle_thinking_level()
   return selected
 end
 
+---@return Neoagent.ProfileDraft
 function ProfileDraft:stage()
   assert(self.state_value == "draft", "ProfileDraft is not active")
   self.state_value = "provisional"
   return self
 end
 
+---@return Neoagent.ProfileDraft
 function ProfileDraft:restore()
   assert(self.state_value == "provisional",
     "ProfileDraft is not provisional")
@@ -144,6 +189,7 @@ function ProfileDraft:restore()
   return self
 end
 
+---@return Neoagent.ProfileDraft
 function ProfileDraft:bind()
   assert(self.state_value == "draft"
       or self.state_value == "provisional",

@@ -5,6 +5,7 @@ local renderers = require("neoagent.ui.renderers")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.AgentApplet
 local AgentApplet = {}
 AgentApplet.__index = AgentApplet
 

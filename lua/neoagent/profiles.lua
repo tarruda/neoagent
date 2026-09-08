@@ -4,6 +4,11 @@ local provider_runtimes = require("neoagent.provider_runtimes")
 local util = require("neoagent.util")
 local workspace_preferences = require("neoagent.workspace_preferences")
 
+---@class Neoagent.Profile
+---@field id string
+---@field label string
+---@field config Neoagent.Config
+
 local M = {}
 
 local function configured_toolset(configured)

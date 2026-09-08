@@ -10,6 +10,9 @@ local M = {}
 ---@field model Neoagent.ModelSelection
 ---@field thinking_level? Neoagent.ThinkingLevel
 
+---@class Neoagent.CurrentSelection: Neoagent.SelectionState
+---@field thinking_level? Neoagent.ThinkingLevel
+
 ---@class Neoagent.SelectionSnapshot
 ---@field model? Neoagent.ModelSelection
 ---@field thinking_level? Neoagent.ThinkingLevel|vim.NIL
@@ -274,7 +277,7 @@ function RequestSelection:cycle_thinking_level()
   return self:set_thinking_level(level)
 end
 
----@overload fun(self: Neoagent.RequestSelection, opts?: {persisted?: false}): Neoagent.SelectionState
+---@overload fun(self: Neoagent.RequestSelection, opts?: {persisted?: false}): Neoagent.CurrentSelection
 ---@param opts? {persisted?: boolean}
 ---@return Neoagent.SelectionSnapshot
 function RequestSelection:snapshot(opts)

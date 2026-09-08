@@ -7,7 +7,6 @@ lua/neoagent/applet.lua
 lua/neoagent/health.lua
 lua/neoagent/http_recording.lua
 lua/neoagent/init.lua
-lua/neoagent/profile_draft.lua
 lua/neoagent/profiles.lua
 lua/neoagent/provider_shell.lua
 lua/neoagent/sandbox/composition.lua
