@@ -4,35 +4,36 @@ local fake_transport = require("tests.helpers.fake_transport")
 local provider_service = require("neoagent.provider_service")
 local zai = require("neoagent.providers.zai")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function block(snapshot, kind, label)
-  for _, candidate in ipairs(snapshot.blocks or {}) do
-    if candidate.type == kind
-        and (label == nil or candidate.label == label
-          or candidate.title == label) then
-      return candidate
-    end
-  end
-end
+local block = require("tests.helpers.provider_state").block
 
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 local function resolve_auth()
   return async.run(function()
     return {
       ok = true,
       configured = true,
+      method = "test",
+      credential_type = "api_key",
       request_opts = { headers = { Authorization = "Bearer api-key" } },
     }
   end)
 end
 
+---@param service Neoagent.ProviderService
+---@param id string
+---@return Neoagent.ProviderOperationRun
 local function operation(service, id)
-  return provider_service.run(service, id, {
+  return (assert(provider_service.run(service, id, {
     resolve_auth = resolve_auth,
-  })
+  })))
 end
 
 describe("Z.AI provider services", function()
@@ -53,24 +54,25 @@ describe("Z.AI provider services", function()
     assert.are.equal("Z.AI API", service.name)
     assert.are.same({ "refresh" }, vim.tbl_keys(service.operations))
     local snapshot = service:state()
+    assert(snapshot)
     assert.is_nil(block(snapshot, "status"))
     assert.are.equal("https://api.example.test/api/paas/v4",
-      block(snapshot, "field", "Endpoint").value)
+      assert(block(snapshot, "field", "Endpoint")).value)
     assert.is_nil(block(snapshot, "field", "Models"))
     assert.is_nil(block(snapshot, "field", "Selected model"))
 
     assert.is_true(wait(operation(service, "refresh")).ok)
-    snapshot = service:state()
+    snapshot = assert(service:state())
     assert.is_nil(block(snapshot, "status"))
     assert.are.equal("$72.50",
-      block(snapshot, "field", "Available balance").value)
+      assert(block(snapshot, "field", "Available balance")).value)
     assert.are.equal("$100.00",
-      block(snapshot, "field", "Total balance").value)
+      assert(block(snapshot, "field", "Total balance")).value)
     assert.are.equal(
       "https://api.example.test/api/paas/v4/balance",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.equal("Bearer api-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
   end)
 
   it("warns nonfatally when the general API balance is unavailable", function()
@@ -84,8 +86,8 @@ describe("Z.AI provider services", function()
     local result = wait(operation(service, "refresh"))
     assert.is_true(result.ok)
     local status = block(service:state(), "status")
-    assert.are.equal("warn", status.level)
-    assert.matches("balance reporting is unavailable", status.text)
+    assert.are.equal("warn", assert(status).level)
+    assert.matches("balance reporting is unavailable", assert(status).text)
     assert.is_nil(vim.inspect(service:state()):find(
       "private response", 1, true))
   end)
@@ -107,18 +109,19 @@ describe("Z.AI provider services", function()
 
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
-    assert.matches("balance is exhausted", block(snapshot, "status").text)
+    assert(snapshot)
+    assert.matches("balance is exhausted", assert(block(snapshot, "status")).text)
     assert.are.equal("CNY 0.00",
-      block(snapshot, "field", "Available balance").value)
+      assert(block(snapshot, "field", "Available balance")).value)
 
     local failed = wait(operation(service, "refresh"))
     assert.is_false(failed.ok)
-    assert.are.equal(429, failed.error.status)
-    snapshot = service:state()
-    assert.matches("Balance refresh failed", block(snapshot, "status").text)
+    assert.are.equal(429, rawget(assert(failed.error), "status"))
+    snapshot = assert(service:state())
+    assert.matches("Balance refresh failed", assert(block(snapshot, "status")).text)
     assert.are.equal("CNY 0.00",
-      block(snapshot, "field", "Available balance").value)
-    assert.is_nil(vim.inspect(snapshot):find("private response", 1, true))
+      assert(block(snapshot, "field", "Available balance")).value)
+    assert.is_nil((vim.inspect(snapshot):find("private response", 1, true)))
   end)
 
   it("loads plan quotas through refresh", function()
@@ -147,18 +150,19 @@ describe("Z.AI provider services", function()
     assert.is_nil(block(initial, "field", "Selected model"))
     assert.is_nil(block(initial, "field", "Models"))
     local updates = 0
-    local unsubscribe = service:subscribe(function() updates = updates + 1 end)
+    local unsubscribe = assert(service.subscribe)(service, function() updates = updates + 1 end)
     assert.is_true(wait(operation(service, "refresh")).ok)
     assert.are.equal(1, updates)
     unsubscribe()
     local snapshot = service:state()
-    assert.are.equal("Max", block(snapshot, "field", "Plan").value)
+    assert(snapshot)
+    assert.are.equal("Max", assert(block(snapshot, "field", "Plan")).value)
     local tokens = block(snapshot, "limit", "5-hour token limit")
-    assert.are.equal(0.75, tokens.remaining)
-    assert.are.equal(1787270400, tokens.resets_at)
+    assert.are.equal(0.75, assert(tokens).remaining)
+    assert.are.equal(1787270400, assert(tokens).resets_at)
     local tools = block(snapshot, "limit", "Monthly MCP limit")
-    assert.are.equal(0.5, tools.remaining)
-    assert.are.equal("5 of 10 uses consumed", tools.detail)
+    assert.are.equal(0.5, assert(tools).remaining)
+    assert.are.equal("5 of 10 uses consumed", assert(tools).detail)
   end)
 
   it("renders current plan credit windows", function()
@@ -188,13 +192,14 @@ describe("Z.AI provider services", function()
 
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
-    assert.are.equal("max", block(snapshot, "field", "Plan").value)
+    assert(snapshot)
+    assert.are.equal("max", assert(block(snapshot, "field", "Plan")).value)
     local session = block(snapshot, "limit", "5-hour credit limit")
-    assert.are.equal(0.75, session.remaining)
-    assert.are.equal("7,000 of 28,000 credits consumed", session.detail)
+    assert.are.equal(0.75, assert(session).remaining)
+    assert.are.equal("7,000 of 28,000 credits consumed", assert(session).detail)
     local weekly = block(snapshot, "limit", "Weekly credit limit")
-    assert.are.equal(0.9, weekly.remaining)
-    assert.are.equal(1787875200, weekly.resets_at)
+    assert.are.equal(0.9, assert(weekly).remaining)
+    assert.are.equal(1787875200, assert(weekly).resets_at)
   end)
 
   it("warns nonfatally when the configured key cannot query quotas", function()
@@ -212,8 +217,8 @@ describe("Z.AI provider services", function()
     local result = wait(operation(service, "refresh"))
     assert.is_true(result.ok)
     local status = block(service:state(), "status")
-    assert.are.equal("warn", status.level)
-    assert.matches("quota reporting is unavailable", status.text)
+    assert.are.equal("warn", assert(status).level)
+    assert.matches("quota reporting is unavailable", assert(status).text)
     assert.is_nil(vim.inspect(service:state()):find("private response", 1, true))
   end)
 
@@ -247,17 +252,18 @@ describe("Z.AI provider services", function()
     })
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal("error",
-      block(snapshot, "limit", "5-hour token limit").level)
+      assert(block(snapshot, "limit", "5-hour token limit")).level)
     assert.are.equal("warn",
-      block(snapshot, "limit", "Monthly MCP limit").level)
+      assert(block(snapshot, "limit", "Monthly MCP limit")).level)
 
     local result = wait(operation(service, "refresh"))
     assert.is_false(result.ok)
     assert.are.equal(429, result.error.status)
-    assert.matches("Quota refresh failed", block(service:state(), "status").text)
+    assert.matches("Quota refresh failed", assert(block(service:state(), "status")).text)
     assert.are.equal("https://manage.example.test/api/monitor/usage/quota/limit",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.is_nil(vim.inspect(service:state()):find("private response", 1, true))
   end)
 end)

@@ -4,26 +4,24 @@ local fake_transport = require("tests.helpers.fake_transport")
 local openai = require("neoagent.providers.openai")
 local provider_service = require("neoagent.provider_service")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function block(snapshot, block_type, label)
-  for _, candidate in ipairs(snapshot.blocks or {}) do
-    if candidate.type == block_type
-        and (label == nil or candidate.label == label
-          or candidate.title == label) then
-      return candidate
-    end
-  end
-end
+local block = require("tests.helpers.provider_state").block
 
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 local function resolve_auth()
   return async.run(function()
     return {
       ok = true,
       configured = true,
+      method = "test",
+      credential_type = "api_key",
       request_opts = { headers = {
         Authorization = "Bearer inference-key",
       } },
@@ -31,10 +29,12 @@ local function resolve_auth()
   end)
 end
 
+---@param service Neoagent.ProviderService
+---@return Neoagent.ProviderOperationRun
 local function operation(service)
-  return provider_service.run(service, "refresh", {
+  return (assert(provider_service.run(service, "refresh", {
     resolve_auth = resolve_auth,
-  })
+  })))
 end
 
 describe("OpenAI API provider service", function()
@@ -69,12 +69,13 @@ describe("OpenAI API provider service", function()
     assert.are.equal("OpenAI API", service.name)
     assert.are.same({ "refresh" }, vim.tbl_keys(service.operations))
     local updates = 0
-    local unsubscribe = service:subscribe(function() updates = updates + 1 end)
+    local unsubscribe = assert(service.subscribe)(service, function() updates = updates + 1 end)
     assert.is_true(wait(operation(service)).ok)
     assert.are.equal(1, updates)
     unsubscribe()
 
     local snapshot = service:state()
+    assert(snapshot)
     local costs = {}
     for _, item in ipairs(snapshot.blocks) do
       if item.type == "field" and item.label == "30-day cost" then
@@ -87,11 +88,11 @@ describe("OpenAI API provider service", function()
       { label = "Input tokens", detail = "1,000" },
       { label = "Cached input", detail = "250" },
       { label = "Output tokens", detail = "500" },
-    }, block(snapshot, "list", "30-day completion usage").items)
+    }, assert(block(snapshot, "list", "30-day completion usage")).items)
     assert.are.equal("Bearer inference-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
     assert.are.equal("Bearer inference-key",
-      transport.fetch_requests[2].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[2]).headers), "Authorization"))
   end)
 
   it("warns when the API key lacks report permission", function()
@@ -104,7 +105,7 @@ describe("OpenAI API provider service", function()
     local result = wait(operation(service))
     assert.is_true(result.ok)
     assert.matches("organization reporting is unavailable",
-      block(service:state(), "status").text)
+      assert(block(service:state(), "status")).text)
   end)
 
   it("fails refreshes for reporting errors unrelated to permission", function()
@@ -118,8 +119,9 @@ describe("OpenAI API provider service", function()
     assert.is_false(result.ok)
     assert.are.equal(429, result.error.status)
     local snapshot = service:state()
-    assert.matches("Organization refresh failed", block(snapshot, "status").text)
-    assert.is_nil(vim.inspect(snapshot):find("private response", 1, true))
+    assert(snapshot)
+    assert.matches("Organization refresh failed", assert(block(snapshot, "status")).text)
+    assert.is_nil((vim.inspect(snapshot):find("private response", 1, true)))
   end)
 
   it("uses OPENAI_API_KEY and validates service options", function()
@@ -150,6 +152,6 @@ describe("OpenAI API provider service", function()
     vim.env.OPENAI_API_KEY = previous
     assert.is_true(result.ok)
     assert.are.equal("Bearer environment-key",
-      transport.fetch_requests[1].headers.Authorization)
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
   end)
 end)

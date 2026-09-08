@@ -4,26 +4,24 @@ local deepseek = require("neoagent.providers.deepseek")
 local fake_transport = require("tests.helpers.fake_transport")
 local provider_service = require("neoagent.provider_service")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function block(snapshot, block_type, label)
-  for _, candidate in ipairs(snapshot.blocks or {}) do
-    if candidate.type == block_type
-        and (label == nil or candidate.label == label
-          or candidate.title == label) then
-      return candidate
-    end
-  end
-end
+local block = require("tests.helpers.provider_state").block
 
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 local function resolve_auth()
   return async.run(function()
     return {
       ok = true,
       configured = true,
+      method = "test",
+      credential_type = "api_key",
       request_opts = { headers = {
         Authorization = "Bearer stored-key",
       } },
@@ -31,10 +29,13 @@ local function resolve_auth()
   end)
 end
 
+---@param service Neoagent.ProviderService
+---@param id string
+---@return Neoagent.ProviderOperationRun
 local function operation(service, id)
-  return provider_service.run(service, id, {
+  return (assert(provider_service.run(service, id, {
     resolve_auth = resolve_auth,
-  })
+  })))
 end
 
 describe("DeepSeek provider service", function()
@@ -59,19 +60,20 @@ describe("DeepSeek provider service", function()
     assert.are.same({ "refresh" }, operation_ids)
     assert.is_nil(block(service:state(), "field", "Selected model"))
     local updates = 0
-    local unsubscribe = service:subscribe(function() updates = updates + 1 end)
+    local unsubscribe = assert(service.subscribe)(service, function() updates = updates + 1 end)
 
     local result = wait(operation(service, "refresh"))
     assert.is_true(result.ok)
     assert.are.equal(1, updates)
     unsubscribe()
     local snapshot = service:state()
+    assert(snapshot)
     assert.is_nil(block(snapshot, "field", "Account"))
     assert.are.same({
       { label = "Total", detail = "$12.34" },
       { label = "Topped up", detail = "$10.00" },
       { label = "Granted", detail = "$2.34" },
-    }, block(snapshot, "list", "USD balance").items)
+    }, assert(block(snapshot, "list", "USD balance")).items)
     assert.is_nil(block(snapshot, "field", "Selected model"))
   end)
 
@@ -99,23 +101,24 @@ describe("DeepSeek provider service", function()
       { label = "Total", detail = "$1.28" },
       { label = "Topped up", detail = "$1.28" },
       { label = "Granted", detail = "$0.00" },
-    }, block(service:state(), "list", "USD balance").items)
+    }, assert(block(service:state(), "list", "USD balance")).items)
     local failed = wait(operation(service, "refresh"))
     assert.is_false(failed.ok)
     local snapshot = service:state()
-    assert.matches("Balance refresh failed", block(snapshot, "status").text)
+    assert(snapshot)
+    assert.matches("Balance refresh failed", assert(block(snapshot, "status")).text)
     assert.is_nil(block(snapshot, "field", "Account"))
     assert.are.equal("$1.28",
-      block(snapshot, "list", "USD balance").items[1].detail)
-    assert.is_nil(vim.inspect(snapshot):find("private response", 1, true))
+      assert(assert(block(snapshot, "list", "USD balance")).items[1]).detail)
+    assert.is_nil((vim.inspect(snapshot):find("private response", 1, true)))
 
     local recovered = wait(operation(service, "refresh"))
     assert.is_true(recovered.ok)
-    snapshot = service:state()
+    snapshot = assert(service:state())
     assert.is_nil(block(snapshot, "status"))
     assert.are.equal("$2.00",
-      block(snapshot, "list", "USD balance").items[1].detail)
-    service:destroy()
+      assert(assert(block(snapshot, "list", "USD balance")).items[1]).detail)
+    assert(service.destroy)(service)
     assert.are.same({}, service:state().blocks)
   end)
 
@@ -138,10 +141,11 @@ describe("DeepSeek provider service", function()
     local result = wait(operation(service, "refresh"))
     assert.is_true(result.ok)
     local snapshot = service:state()
-    assert.are.equal("warn", block(snapshot, "status").level)
+    assert(snapshot)
+    assert.are.equal("warn", assert(block(snapshot, "status")).level)
     assert.matches("balance reporting is unavailable",
-      block(snapshot, "status").text)
-    assert.is_nil(vim.inspect(snapshot):find("private response", 1, true))
+      assert(block(snapshot, "status")).text)
+    assert.is_nil((vim.inspect(snapshot):find("private response", 1, true)))
   end)
 
 end)
