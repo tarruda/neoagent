@@ -769,9 +769,17 @@ Failed finalization preserves the previous recording and the partial file.
   `yaml`   Require compatible `yq` v4 and publish `.yaml`.
   `json`   Publish `.jsonl` without a `yq` dependency.
 
-YAML recordings represent JSON bodies as native values; machine replay requires
-`yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies use
-base64 with an encoding marker.
+YAML recordings represent buffered JSON bodies as native values; machine replay
+requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
+and response bodies larger than 1 MiB use base64 with an encoding marker,
+preserving their exact bytes and chunk boundaries.
+
+Response buffering is limited to 1 MiB per exchange. Larger ordinary responses
+use private `.body` spool files, removed after successful serialization.
+YAML conversion also streams its output. Sensitive authentication responses
+are never spooled; exceeding the buffering limit stops that recording without
+changing the provider's result. Failed finalization can leave private spool
+files beside the partial recording for recovery.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive

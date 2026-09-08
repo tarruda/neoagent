@@ -52,6 +52,7 @@ Architecture is the canonical ownership reference. Changes must preserve:
 - HTTP recording as an observer: mask protocol credentials, preserve model
   and ordinary provider bodies, and mask response bodies only when
   Authentication explicitly classifies them as sensitive.
+  Bound response buffering and never spool classified sensitive bodies.
 
 ## Repository and documentation
 

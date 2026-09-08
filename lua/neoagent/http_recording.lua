@@ -1,5 +1,6 @@
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
+local body_capture = require("neoagent.http_recording.body")
 local util = require("neoagent.util")
 
 ---@class Neoagent.RecordedBody
@@ -73,7 +74,7 @@ local M = {}
 
 ---@class Neoagent.RecordingYq
 ---@field available fun(): boolean?
----@field convert fun(path: string, done: fun(output?: string, err?: unknown)): unknown
+---@field convert fun(path: string, write: (fun(chunk: string): boolean), done: fun(ok: boolean)): unknown
 
 ---@class Neoagent.RecorderOptions
 ---@field config? Neoagent.RecordingConfigInput
@@ -125,7 +126,7 @@ local M = {}
 ---@field final_path string
 ---@field file Neoagent.RegularFile
 ---@field offset integer
----@field chunks string[]
+---@field body Neoagent.RecordingBody
 ---@field secrets Neoagent.RecordingSecrets
 ---@field authentication boolean
 ---@field identity Neoagent.RecordingSecrets
@@ -917,17 +918,25 @@ local function default_yq()
         and mike_farah
         and major ~= nil
     end,
-    convert = function(path, done)
-      return vim.system({ "yq", "-p=json", "-o=yaml", "-P", ".", path }, {
+    convert = function(path, write, done)
+      local failed = false
+      ---@type vim.SystemObj?
+      local process
+      process = vim.system({ "yq", "-p=json", "-o=yaml", "-P", ".", path }, {
         text = false,
-      }, function(result)
-        if result.code == 0 and type(result.stdout) == "string" then
-          done(result.stdout, nil)
-        else
-          done(nil, "yq conversion failed with status "
-            .. tostring(result and result.code or "unknown"))
-        end
+        timeout = 10000,
+        stderr = false,
+        stdout = function(err, data)
+          if failed then return end
+          if err or data and not write(data) then
+            failed = true
+            if process then pcall(process.kill, process, 15) end
+          end
+        end,
+      }, function(completed)
+        done(not failed and completed.code == 0)
       end)
+      return process
     end,
   }
 end
@@ -958,14 +967,31 @@ function Recorder:_append(exchange, event)
   if exchange.failed or exchange.closed then return false end
   local ok, encoded = pcall(util.json_encode, event)
   if not ok then
-    exchange.failed = true
+    self:_abandon(exchange)
     report(self, "failed to encode exchange " .. exchange.id)
     return false
   end
-  local data = encoded .. "\n"
+  return self:_write(exchange, encoded .. "\n")
+end
+
+---@param exchange Neoagent.RecordingExchange
+function Recorder:_abandon(exchange)
+  exchange.failed = true
+  exchange.finished = true
+  pcall(exchange.body.close, exchange.body, false)
+  if not exchange.closed then pcall(exchange.file.close, exchange.file) end
+  exchange.closed = true
+  self._exchanges[exchange] = nil
+end
+
+---@param exchange Neoagent.RecordingExchange
+---@param data string
+---@return boolean
+function Recorder:_write(exchange, data)
+  if exchange.failed or exchange.closed then return false end
   local written, err = exchange.file:append(data, exchange.offset)
   if not written then
-    exchange.failed = true
+    self:_abandon(exchange)
     report(self, "failed to append exchange " .. exchange.id .. ": "
       .. tostring(err))
     return false
@@ -1135,7 +1161,7 @@ function Recorder:_start(operation, request, supplied_context)
     final_path = final_path,
     file = file,
     offset = #encoded + 1,
-    chunks = {},
+    body = body_capture.new(stage_path .. ".body", credential_response_body),
     secrets = secrets,
     authentication = authentication,
     identity = identity,
@@ -1154,22 +1180,57 @@ end
 function Recorder:_chunk(exchange, data, at_us)
   if not exchange or exchange.finished then return end
   local chunk = type(data) == "string" and data or tostring(data or "")
+  local captured = pcall(exchange.body.append, exchange.body, chunk)
+  if not captured then
+    self:_abandon(exchange)
+    report(self, "failed to capture response body for exchange " .. exchange.id)
+    return
+  end
   local event = {
     type = "response_chunk",
-    index = #exchange.chunks + 1,
+    index = exchange.body.count,
     at_us = at_us or self:_at(exchange),
     bytes = #chunk,
   }
-  exchange.chunks[#exchange.chunks + 1] = chunk
   self:_append(exchange, event)
 end
 
 ---@param exchange Neoagent.RecordingExchange
----@param output string?
+---@param at_us integer
+---@return boolean
+function Recorder:_append_spooled_body(exchange, at_us)
+  local header = util.json_encode({
+    type = "response_body", at_us = at_us,
+    bytes = exchange.body.bytes, body_encoding = "base64",
+  })
+  if not self:_write(exchange, header:sub(1, -2) .. ',"body":"') then return false end
+  local written = exchange.body:write_base64(function(data)
+    return self:_write(exchange, data)
+  end)
+  if not written then
+    self:_abandon(exchange)
+    report(self, "failed to serialize response body for exchange " .. exchange.id)
+    return false
+  end
+  return self:_write(exchange, '"}\n')
+end
+
+---@param exchange Neoagent.RecordingExchange
+---@param output Neoagent.RecordingBody?
 function Recorder:_conversion_done(exchange, output)
   if output then
-    local written, write_err = fs.atomic_replace(
-      exchange.final_path, output, { mode = FILE_MODE })
+    local written, write_err
+    if output.file then
+      local closed, close_err = output:close(false)
+      if closed then
+        written, write_err = vim.uv.fs_rename(output.path, exchange.final_path)
+      else
+        write_err = close_err
+      end
+    else
+      written, write_err = fs.atomic_replace(
+        exchange.final_path, assert(output:text()), { mode = FILE_MODE })
+    end
     if written then
       pcall(vim.uv.fs_unlink, exchange.stage_path)
       self:_published(exchange)
@@ -1180,7 +1241,6 @@ function Recorder:_conversion_done(exchange, output)
   else
     report(self, "failed to convert recording " .. exchange.id)
   end
-  self._pending_conversions = math.max(0, self._pending_conversions - 1)
 end
 
 ---@param exchange Neoagent.RecordingExchange
@@ -1231,14 +1291,27 @@ function Recorder:_publish(exchange)
   end
   self._pending_conversions = self._pending_conversions + 1
   local settled = false
-  ---@param output? string
-  local function done(output)
+  local output = body_capture.new(exchange.stage_path .. ".yaml.body", false)
+  ---@param success boolean
+  local function done(success)
     if settled then return end
     settled = true
-    self:_conversion_done(exchange, output)
+    local completed = pcall(self._conversion_done, self, exchange,
+      success and output or nil)
+    pcall(output.close, output, false)
+    self._pending_conversions = math.max(0, self._pending_conversions - 1)
+    if not completed then report(self, "failed to publish converted recording " .. exchange.id) end
   end
-  local ok = pcall(self._yq.convert, exchange.stage_path, done)
-  if not ok then done(nil) end
+  ---@param chunk string
+  ---@return boolean
+  local function write(chunk)
+    if settled then return false end
+    local written = pcall(output.append, output, chunk)
+    if not written then done(false) end
+    return written
+  end
+  local ok = pcall(self._yq.convert, exchange.stage_path, write, done)
+  if not ok then done(false) end
 end
 
 ---@param result unknown
@@ -1270,21 +1343,21 @@ end
 ---@param exchange Neoagent.RecordingExchange?
 ---@param result unknown
 ---@param operation Neoagent.RecordingOperation
-function Recorder:_finish(exchange, result, operation)
+function Recorder:_complete(exchange, result, operation)
   if not exchange or exchange.finished then return end
   local settled_at = self:_at(exchange)
   local response = response_from(result, operation) or {}
   if operation == "fetch" and type(response.body) == "string" then
     self:_chunk(exchange, response.body, settled_at)
-  elseif operation == "request" and #exchange.chunks == 0 then
+  elseif operation == "request" and exchange.body.count == 0 then
     local body = type(response.body) == "string" and response.body
       or type(response.stdout) == "string" and response.stdout or nil
     if body then self:_chunk(exchange, body, settled_at) end
   end
+  if exchange.finished then return end
   exchange.finished = true
-  local raw = {}
-  for _, chunk in ipairs(exchange.chunks) do raw[#raw + 1] = chunk end
-  local raw_body = table.concat(raw)
+  local spooled = exchange.body.file ~= nil
+  local raw_body = exchange.body:text() or ""
   local successful = type(result) == "table" and result.ok == true
   ---@type Neoagent.HttpError?
   local normalized
@@ -1333,21 +1406,33 @@ function Recorder:_finish(exchange, result, operation)
   if self._format == "yaml" and response_is_json then
     persisted_response_body = decoded_response
   end
-  self:_append(exchange, {
-    type = "response_body",
-    at_us = settled_at,
-    body = persisted_response_body,
-    body_encoding = body_encoding,
-    body_format = response_is_json and "json" or nil,
-    bytes = #raw_body,
-    redacted = redacted or nil,
-  })
-  self:_append(exchange, {
+  local appended
+  if spooled then
+    appended = self:_append_spooled_body(exchange, settled_at)
+  else
+    appended = self:_append(exchange, {
+      type = "response_body",
+      at_us = settled_at,
+      body = persisted_response_body,
+      body_encoding = body_encoding,
+      body_format = response_is_json and "json" or nil,
+      bytes = exchange.body.bytes,
+      redacted = redacted or nil,
+    })
+  end
+  if not appended then return end
+  local body_closed = exchange.body:close(true)
+  if not body_closed then
+    self:_abandon(exchange)
+    report(self, "failed to close response body for exchange " .. exchange.id)
+    return
+  end
+  if not self:_append(exchange, {
     type = "response",
     at_us = settled_at,
     status = response.status,
     headers = response_headers,
-  })
+  }) then return end
   ---@type Neoagent.RecordedCompletion
   local completion = {
     type = "complete",
@@ -1383,7 +1468,7 @@ function Recorder:_finish(exchange, result, operation)
       end
     end
   end
-  self:_append(exchange, completion)
+  if not self:_append(exchange, completion) then return end
   local verified = exchange.file:verify_path()
   local closed, close_err = exchange.file:close()
   exchange.closed = true
@@ -1394,6 +1479,17 @@ function Recorder:_finish(exchange, result, operation)
     return
   end
   self:_publish(exchange)
+end
+
+---@param exchange Neoagent.RecordingExchange?
+---@param result unknown
+---@param operation Neoagent.RecordingOperation
+function Recorder:_finish(exchange, result, operation)
+  local completed = pcall(self._complete, self, exchange, result, operation)
+  if not completed then
+    if exchange then self:_abandon(exchange) end
+    report(self, "failed to finish an exchange")
+  end
 end
 
 ---@generic T: table

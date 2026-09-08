@@ -205,6 +205,12 @@ separate retention scopes.
 Publication precedes pruning. A failed finalization preserves the previous
 completed recording and current staging evidence.
 
+The recorder owns bounded response buffers and private spool files through
+finalization. Ordinary bodies and converted output can spill to disk and are
+serialized incrementally. Authentication-classified sensitive bodies remain
+in memory until masking; exceeding the buffer limit fails only the recording.
+Observer failure releases its handles without stopping the underlying request.
+
 Sanitization masks protocol credentials and Authentication-classified
 sensitive response bodies. Model and ordinary provider bodies retain their
 content. Recordings use private storage; failures emit content-free

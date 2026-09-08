@@ -104,6 +104,201 @@ describe("neoagent HTTP recording", function()
     directories = {}
   end)
 
+  it("bounds memory while recording a long-lived provider stream", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" }, directory = directory,
+    }))
+    ---@type fun()?
+    local produce
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ByteStreamResult>?
+    local pending
+    local bytes = 0
+    local received = 0
+    ---@type Neoagent.ByteBackend
+    local backend = {
+      request = function(opts)
+        return async.run(function()
+          return async.await(function(done)
+            pending = done
+            produce = function()
+              for index = 1, 128 do
+                local chunk = ": heartbeat " .. index .. " " .. string.rep("x", 64 * 1024) .. "\n\n"
+                bytes = bytes + #chunk
+                assert(opts.on_chunk)(chunk)
+              end
+            end
+          end)
+        end)
+      end,
+    }
+    local recorded = recording:transport(backend, { provider = "llama.cpp", origin = "provider-shell" })
+    local run = assert(recorded.request)({
+      request = { url = "https://example.test/models/sse", method = "GET" },
+      on_chunk = function(chunk) received = received + #chunk end,
+    })
+    collectgarbage("collect")
+    local baseline = collectgarbage("count")
+    assert(produce)()
+    collectgarbage("collect")
+    local retained_kb = collectgarbage("count") - baseline
+    assert(pending).resolve({ ok = true, response = { status = 200, headers = {} } })
+    local completed = wait(run)
+    recording:destroy()
+
+    assert.is_true(completed.ok)
+    assert.are.equal(bytes, received)
+    assert.is_true(retained_kb < 4 * 1024,
+      "recording retained " .. retained_kb .. " KiB for an open stream")
+    local captured = require("neoagent.http_replay").read(assert(files(directory, ".jsonl")[1]))
+    assert.are.equal(128, #captured.chunks)
+    for index, chunk in ipairs(captured.chunks) do
+      assert.are.equal(": heartbeat " .. index .. " " .. string.rep("x", 64 * 1024) .. "\n\n", chunk.data)
+    end
+    assert.are.equal(0, #files(directory, ".body"))
+  end)
+
+  it("preserves large binary responses through streaming YAML conversion", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "yaml" }, directory = directory,
+    }))
+    local body = string.rep("large response ", 100000) .. "\0\255"
+    local captured = recording:transport(transport({ body }), { provider = "example" })
+    assert.is_true(wait(assert(captured.request)({ request = {
+      url = "https://example.test/large",
+    } })).ok)
+    recording:destroy()
+    local path = assert(files(directory, ".yaml")[1])
+    local replay = require("neoagent.http_replay").read(path)
+    assert.are.equal(body, assert(replay.chunks[1]).data)
+    assert.are.equal(384, require("bit").band(assert(vim.uv.fs_stat(path)).mode, 511))
+    assert.are.equal(0, #files(directory, ".body"))
+    assert.are.equal(0, #files(directory, ".partial.ndjson"))
+  end)
+
+  it("never spools oversized sensitive responses or changes their provider result", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local reports = {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" }, directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local sensitive = "synthetic-sensitive-response" .. string.rep("x", 1024 * 1024)
+    local captured = recording:transport(transport({ sensitive }), {
+      provider = "example", credential_response_body = true,
+    })
+    local result = wait(assert(captured.fetch)({ request = {
+      url = "https://example.test/token",
+    } }))
+    recording:destroy()
+    assert(result.ok)
+    assert.are.equal(sensitive, result.body)
+    assert.are.equal(0, #files(directory, ".body"))
+    assert.are.equal(0, #files(directory, ".jsonl"))
+    assert.are.equal(1, #files(directory, ".partial.ndjson"))
+    assert.is_nil((assert(fs.read(assert(files(directory, ".partial.ndjson")[1])))
+      :find("synthetic-sensitive-response", 1, true)))
+    assert.matches("failed to capture response body", table.concat(reports, "\n"))
+    assert.is_nil((table.concat(reports):find("synthetic-sensitive-response", 1, true)))
+  end)
+
+  for _, failure in ipairs({ "create", "open", "append", "read", "changed",
+    "serialize", "serialize-tail", "encode", "close", "remove" }) do
+    it("preserves provider results and prior recordings after spool " .. failure .. " failure", function()
+      local directory = tempdir()
+      directories[#directories + 1] = directory
+      local reports = {}
+      local recording = assert(require("neoagent.http_recording").new({
+        config = { enabled = true, format = "json" }, directory = directory,
+        report = function(message) reports[#reports + 1] = message end,
+      }))
+      local identity = { provider = "example" }
+      local previous = recording:transport(transport({ "previous" }), identity)
+      assert.is_true(wait(assert(previous.request)({ request = {
+        url = "https://example.test/previous",
+      } })).ok)
+      local previous_path = assert(files(directory, ".jsonl")[1])
+      local previous_bytes = assert(fs.read(previous_path))
+      local original_replace, original_open = fs.atomic_replace, fs.open_regular
+      local original_unlink, original_encode = vim.uv.fs_unlink, util.json_encode
+      ---@type Neoagent.RegularFile?
+      local held
+      local ok, err = xpcall(function()
+        fs.atomic_replace = function(path, ...)
+          if failure == "create" and path:sub(-5) == ".body" then
+            return nil, "spool write failed"
+          end
+          return original_replace(path, ...)
+        end
+        fs.open_regular = function(path, ...)
+          if failure == "open" and path:sub(-5) == ".body" then
+            return nil, "spool open failed"
+          end
+          local file, open_err = original_open(path, ...)
+          if file and path:sub(-5) == ".body" then
+            held = file
+            if failure == "append" then
+              file.append = function() return nil, "spool append failed" end
+            elseif failure == "read" then
+              file.read_chunks = function() return nil, "spool read failed" end
+            elseif failure == "changed" then
+              file.verify_path = function() return nil, "spool path changed" end
+            elseif failure == "close" then
+              local close = file.close
+              function file:close()
+                assert(close(assert(file)))
+                return nil, "spool close failed"
+              end
+            end
+          elseif file and path:sub(-15) == ".partial.ndjson"
+              and (failure == "serialize" or failure == "serialize-tail") then
+            local append = file.append
+            function file:append(data, offset)
+              if failure == "serialize" and #data > 65536
+                  or failure == "serialize-tail" and #data == 4 then
+                return nil, "body serialization failed"
+              end
+              return append(assert(file), data, offset)
+            end
+          end
+          return file, open_err
+        end
+        vim.uv.fs_unlink = function(path)
+          if failure == "remove" and path:sub(-5) == ".body" then
+            return nil, "spool removal failed"
+          end
+          return original_unlink(path)
+        end
+        util.json_encode = function(value)
+          if failure == "encode" and value.type == "response_body" then
+            error("body envelope encoding failed")
+          end
+          return original_encode(value)
+        end
+        local body = string.rep("spool payload ", 100000)
+        local received = 0
+        local captured = recording:transport(transport({ body }), identity)
+        assert.is_true(wait(assert(captured.request)({
+          request = { url = "https://example.test/failed" },
+          on_chunk = function(chunk) received = received + #chunk end,
+        })).ok)
+        assert.are.equal(#body, received)
+        assert.are.equal(previous_bytes, assert(fs.read(previous_path)))
+        assert.are.equal(1, #files(directory, ".jsonl"))
+        assert.is_true(#reports > 0)
+        if held then assert.is_nil((held:stat())) end
+      end, debug.traceback)
+      fs.atomic_replace, fs.open_regular = original_replace, original_open
+      vim.uv.fs_unlink, util.json_encode = original_unlink, original_encode
+      recording:destroy()
+      assert(ok, err)
+    end)
+  end
+
   it("validates an explicit, disabled-by-default recording configuration", function()
     local defaults = config.resolve({ default_registry = false })
     assert.is_false(defaults.recording.enabled)
@@ -547,12 +742,13 @@ else:
       now = function() return 1788363492417 end,
       yq = {
         available = function() return true end,
-        convert = function(path, done)
+        convert = function(path, write, done)
           converted[#converted + 1] = {
             path = path,
             content = assert(fs.read(path)),
           }
-          done("schema: neoagent-http-recording\n", nil)
+          assert(write("schema: neoagent-http-recording\n"))
+          done(true)
         end,
       },
     }))
@@ -617,8 +813,11 @@ else:
       directory = directory,
       yq = {
         available = function() return true end,
-        convert = function(path, done)
-          conversions[#conversions + 1] = { path = path, done = done }
+        convert = function(path, write, done)
+          conversions[#conversions + 1] = { path = path, done = function(output)
+            assert(write(output))
+            done(true)
+          end }
         end,
       },
     }))
@@ -667,7 +866,12 @@ else:
       directory = directory,
       yq = {
         available = function() return true end,
-        convert = function(_, done) finish_conversion = done end,
+        convert = function(_, write, done)
+          finish_conversion = function(output)
+            assert(write(assert(output)))
+            done(true)
+          end
+        end,
       },
     }))
     local http = recording:transport(transport({ "response" }), {
@@ -1265,7 +1469,10 @@ else:
           report = function(message) reports[#reports + 1] = message end,
           yq = {
             available = function() return true end,
-            convert = function(_, done) done("recorded: true\n") end,
+            convert = function(_, write, done)
+              assert(write("recorded: true\n"))
+              done(true)
+            end,
           },
         }))
         local response = { ok = true, status = 200, body = "provider body",
@@ -1456,8 +1663,8 @@ else:
       report = function(message) reports[#reports + 1] = message end,
       yq = {
         available = function() return true end,
-        convert = function(_, done)
-          done(nil, "conversion failed with leaked-content")
+        convert = function()
+          error("conversion failed with leaked-content")
         end,
       },
     }))
