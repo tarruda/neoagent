@@ -45,7 +45,6 @@ lua/neoagent/ui/render.lua
 lua/neoagent/ui/renderer.lua
 lua/neoagent/ui/renderers.lua
 lua/neoagent/ui/switcher.lua
-lua/neoagent/ui/tool_presentation.lua
 lua/neoagent/ui/tree.lua
 plugin/neoagent.lua
 scripts/applet-image-harness.lua

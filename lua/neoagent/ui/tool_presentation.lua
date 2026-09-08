@@ -1,6 +1,31 @@
 local Applet = require("applet")
 local util = require("neoagent.util")
 
+---@class Neoagent.ToolStyledText
+---@field text string
+---@field style? string|string[]
+---@field group? string
+
+---@class Neoagent.ToolViewPresentation
+---@field default? boolean
+---@field status? boolean
+---@field title? true|Neoagent.ToolStyledText[]
+---@field command? string
+---@field lines? Neoagent.ToolStyledText[][]
+---@field animated? boolean
+
+---@class Neoagent.ToolViewOptions
+---@field state? string
+---@field presentation_surface? 'transcript'|'details'
+---@field width? integer
+---@field spinner? string
+
+---@class Neoagent.ToolTextPresentation
+---@field kind 'text'
+---@field title? string
+---@field lines? string[]
+---@field include_output? boolean
+
 local M = {}
 local display = Applet.Pane.text
 local EDIT_PREVIEW_LINES = 10
@@ -10,10 +35,15 @@ local compact_activities = {
   search = true,
 }
 
+---@param state? string
+---@return boolean
 local function active(state)
   return state ~= "success" and state ~= "error"
 end
 
+---@param text? string
+---@param available integer
+---@return string[]
 local function compact_words(text, available)
   local result = {}
   available = math.max(1, available)
@@ -33,6 +63,9 @@ local function compact_words(text, available)
   return result
 end
 
+---@param text? string
+---@param width integer
+---@return string[]
 local function compact_characters(text, width)
   text = (text or ""):gsub("\t", "    ")
   if text == "" then return { "" } end
@@ -51,6 +84,9 @@ local function compact_characters(text, width)
   return result
 end
 
+---@param value Neoagent.ToolActivityPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
 local function activity(value, opts)
   if type(value.operation) ~= "string"
       or type(value.ongoing) ~= "string" or type(value.complete) ~= "string"
@@ -60,6 +96,7 @@ local function activity(value, opts)
   end
   local verb = active(opts.state) and value.ongoing or value.complete
   local details = opts.presentation_surface == "details"
+  ---@type Neoagent.ToolViewPresentation
   local result = {
     default = not compact_activities[value.operation] or details,
     status = true,
@@ -70,20 +107,28 @@ local function activity(value, opts)
   }
   if value.command then
     result.default = nil
-    result.title = { result.title[1] }
+    result.title = { { text = verb, style = "bold" } }
     result.command = value.command
   end
   return result
 end
 
+---@param value Neoagent.ToolPlanPresentation
+---@param opts Neoagent.ToolViewOptions
+---@param codex boolean
+---@return Neoagent.ToolStyledText[]?
 local function plan_body(value, opts, codex)
   if not util.is_list(value.plan) then return nil end
   if value.explanation ~= nil and type(value.explanation) ~= "string" then
     return nil
   end
+  ---@type Neoagent.ToolStyledText[]
   local body = {}
   local body_width = opts.presentation_surface == "transcript"
       and math.max(1, (opts.width or 80) - (codex and 4 or 2)) or nil
+  ---@param text? string
+  ---@param width? integer
+  ---@return string[]
   local function lines(text, width)
     if width then return compact_words(text, width) end
     return display.lines(text or "")
@@ -95,13 +140,14 @@ local function plan_body(value, opts, codex)
       body[#body + 1] = { text = line, style = { "muted", "italic" } }
     end
   end
-  if #value.plan == 0 then
+  local steps = assert(value.plan)
+  if #steps == 0 then
     body[#body + 1] = {
       text = "(no steps provided)",
       style = { "muted", "italic" },
     }
   else
-    for _, item in ipairs(value.plan) do
+    for _, item in ipairs(steps) do
       if type(item) ~= "table" or type(item.step) ~= "string"
           or item.status ~= "pending" and item.status ~= "in_progress"
             and item.status ~= "completed" then
@@ -127,6 +173,10 @@ local function plan_body(value, opts, codex)
   return body
 end
 
+---@param value Neoagent.ToolPlanPresentation
+---@param opts Neoagent.ToolViewOptions
+---@param codex boolean
+---@return Neoagent.ToolViewPresentation?
 local function plan(value, opts, codex)
   if value.plan == nil and active(opts.state) then
     if not codex then return nil end
@@ -140,6 +190,7 @@ local function plan(value, opts, codex)
   end
   local body = plan_body(value, opts, codex)
   if not body then return nil end
+  ---@type Neoagent.ToolStyledText[][]
   local lines = {}
   if codex then
     for index, item in ipairs(body) do
@@ -159,6 +210,8 @@ local function plan(value, opts, codex)
   }
 end
 
+---@param rows Neoagent.EditPatchRow[]
+---@return integer, integer
 local function row_counts(rows)
   local added, removed = 0, 0
   for _, row in ipairs(rows) do
@@ -168,6 +221,10 @@ local function row_counts(rows)
   return added, removed
 end
 
+---@param path string
+---@param added integer
+---@param removed integer
+---@return Neoagent.ToolStyledText[]
 local function edit_summary(path, added, removed)
   return {
     { text = "Edited", style = "bold" },
@@ -179,8 +236,15 @@ local function edit_summary(path, added, removed)
   }
 end
 
+---@param rows Neoagent.EditPatchRow[]
+---@param width? integer
+---@param maximum_lines? integer
+---@return_overload Neoagent.ToolStyledText[][], integer
+---@return_overload nil, nil
 local function edit_rows(rows, width, maximum_lines)
-  local result, omitted, maximum = {}, 0, 1
+  ---@type Neoagent.ToolStyledText[][]
+  local result = {}
+  local omitted, maximum = 0, 1
   for _, row in ipairs(rows) do
     if type(row.number) == "number" then
       maximum = math.max(maximum, row.number)
@@ -215,6 +279,7 @@ local function edit_rows(rows, width, maximum_lines)
         if maximum_lines and #result >= maximum_lines then
           omitted = omitted + 1
         else
+          ---@type Neoagent.ToolStyledText[]
           local line = {}
           if index == 1 then
             line[#line + 1] = { text = "   " }
@@ -238,6 +303,9 @@ local function edit_rows(rows, width, maximum_lines)
   return result, omitted
 end
 
+---@param value Neoagent.ToolEditPresentation
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
 local function edit(value, opts)
   if type(value.path) ~= "string" or not util.is_list(value.rows) then return nil end
   local compact = opts.presentation_surface == "transcript"
@@ -260,6 +328,8 @@ local function edit(value, opts)
   }
 end
 
+---@param value Neoagent.ToolTextPresentation
+---@return Neoagent.ToolViewPresentation?
 local function text(value)
   if value.title ~= nil and type(value.title) ~= "string"
       or value.lines ~= nil and not util.is_list(value.lines)
@@ -284,23 +354,37 @@ local function text(value)
   }
 end
 
+---@param value unknown
+---@param opts Neoagent.ToolViewOptions
+---@param codex boolean
+---@return Neoagent.ToolViewPresentation?
 local function present(value, opts, codex)
   if type(value) ~= "table" or type(value.kind) ~= "string" then return nil end
   if value.kind == "activity" then
+    ---@cast value Neoagent.ToolActivityPresentation
     return codex and activity(value, opts) or nil
   elseif value.kind == "plan" then
+    ---@cast value Neoagent.ToolPlanPresentation
     return plan(value, opts, codex)
   elseif value.kind == "edit" then
+    ---@cast value Neoagent.ToolEditPresentation
     return codex and edit(value, opts) or nil
   elseif value.kind == "text" then
+    ---@cast value Neoagent.ToolTextPresentation
     return text(value)
   end
 end
 
+---@param value unknown
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
 function M.pi(value, opts)
   return present(value, opts, false)
 end
 
+---@param value unknown
+---@param opts Neoagent.ToolViewOptions
+---@return Neoagent.ToolViewPresentation?
 function M.codex(value, opts)
   return present(value, opts, true)
 end
