@@ -676,7 +676,8 @@ function M.new(opts)
     local last = path[#path]
     if last and last.type == "message" and last.message.role == "assistant"
         and last.message.stopReason == "error" then
-      local parent = last.parentId == vim.NIL and nil or last.parentId
+      local parent = last.parentId
+      if parent == vim.NIL then parent = nil end
       local moved, move_err = state.session:move_to(parent)
       if not moved then return nil, move_err end
       if not state.destroyed then

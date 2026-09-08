@@ -1615,6 +1615,33 @@ describe("neoagent default agent", function()
     assert.is_false(snapshot().context.provider_status)
   end)
 
+  it("retries a failed response at the root of a Session", function()
+    local failed = fake_model.assistant({ { type = "thinking", thinking = "partial" } }, "error")
+    failed.ok = false
+    failed.error = {
+      kind = "model", message = "upstream disconnected",
+      retryable = true, retry_after_ms = 1,
+    }
+    local model = fake_model.new({
+      { result = fake_model.assistant({ { type = "text", text = "recovered" } }) },
+    })
+    local agent = setup_model(model, {
+      _interaction = function(options)
+        assert(options.session:append(failed.message))
+        return completed_run(options, failed)
+      end,
+    })
+    local run = assert(agent:send("continue"))
+    assert(vim.wait(1000, function() return run:is_done() and not agent:is_running() end))
+    assert.is_true(run:result().ok, vim.inspect(run:result()))
+    assert.are.equal(1, #model.requests)
+    assert.are.same({}, model.requests[1].messages)
+    local session = neoagent.get_session()
+    assert.are.equal("recovered", session:messages()[1].content[1].text)
+    assert.are.equal(1, #session:messages())
+    assert.are.equal("error", session:entries()[1].message.stopReason)
+  end)
+
   it("cleans up when retry replay cannot reset the failed branch", function()
     local failed = fake_model.assistant({ {
       type = "thinking", thinking = "partial retry",
