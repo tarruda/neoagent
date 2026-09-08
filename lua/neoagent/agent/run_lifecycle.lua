@@ -1,3 +1,14 @@
+---@class Neoagent.AgentActivity
+---@field id integer
+---@field kind string
+---@field phase string
+---@field accepted boolean
+---@field finalized boolean
+---@field provider_lease? fun(): boolean?, Neoagent.Error?
+---@field run? Neoagent.Run<Neoagent.AgentLoopResult, nil>
+---@field steering_claim? Neoagent.SteeringClaim
+---@field submission_id? integer
+
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")

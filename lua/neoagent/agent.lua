@@ -1,3 +1,14 @@
+---@class Neoagent.AgentState
+---@field session Neoagent.Session
+---@field activity? Neoagent.AgentActivity
+---@field live_usage? Neoagent.LiveContextUsage
+---@field provider_status? string
+---@field inference_stats? {prompt_tokens_per_second?: number, generation_tokens_per_second?: number}
+---@field pending_events Neoagent.AgentEvent[]
+---@field last_result? Neoagent.AgentCompletion
+---@field steering Neoagent.Steering
+---@field session_selection_pending? boolean
+
 ---@class Neoagent.ActivityOutcome
 ---@field ok boolean
 ---@field error? Neoagent.Error

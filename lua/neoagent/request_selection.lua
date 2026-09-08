@@ -166,7 +166,7 @@ end
 
 ---@param selected Neoagent.ModelSelection
 ---@param model Neoagent.Model
----@param preferred? Neoagent.ThinkingLevel
+---@param preferred? string
 ---@return Neoagent.Model
 function RequestSelection:bind(selected, model, preferred)
   assert(valid_model(selected),
@@ -202,7 +202,7 @@ function RequestSelection:stage(selected, preferred)
 end
 
 ---@param selected? Neoagent.ModelSelection
----@param preferred? Neoagent.ThinkingLevel
+---@param preferred? string
 ---@return Neoagent.Model?, Neoagent.Error?
 ---@return_overload Neoagent.Model
 ---@return_overload nil, Neoagent.Error
@@ -229,7 +229,7 @@ end
 
 ---@param provider string
 ---@param model string
----@param preferred? Neoagent.ThinkingLevel
+---@param preferred? string
 ---@return Neoagent.Model?, Neoagent.Error?
 function RequestSelection:select(provider, model, preferred)
   assert(type(provider) == "string" and provider ~= "",

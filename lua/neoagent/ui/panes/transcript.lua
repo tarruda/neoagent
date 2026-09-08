@@ -11,11 +11,6 @@ local widgets = Applet.Pane.widgets
 ---@field revision integer
 ---@field id? string
 
----@class Neoagent.TranscriptCompactionMessage: Neoagent.CompactionSummary
----@field _neoagent_entry_id? string
-
----@alias Neoagent.TranscriptMessage Neoagent.ObservedMessage|Neoagent.TranscriptCompactionMessage
-
 ---@class Neoagent.ActiveDialogSnapshot: Neoagent.DialogSnapshot
 ---@field active Neoagent.Dialog
 
