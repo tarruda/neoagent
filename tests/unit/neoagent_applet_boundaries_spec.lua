@@ -450,6 +450,10 @@ describe("Neoagent Applet boundaries", function()
     assert.is_string(view.callbacks.on_cycle_thinking())
     assert.is_true(view.callbacks.on_select_model())
     local request = assert(draft:presenter():snapshot().active)
+    local notification
+    view.notify = function(_, message, level)
+      notification = { message = message, level = level }
+    end
     local retained = assert(owner.drafts_by_applet[draft])
     retained.set_model = function()
       return nil, util.error("model", "draft selection failed")
@@ -458,6 +462,10 @@ describe("Neoagent Applet boundaries", function()
     assert(vim.wait(1000, function()
       return draft:presenter():snapshot().active == nil
     end, 5))
+    assert(vim.wait(1000, function() return notification ~= nil end, 5),
+      "draft model selection failure was not reported")
+    assert.matches("draft selection failed", notification.message)
+    assert.are.equal(vim.log.levels.ERROR, notification.level)
     assert.is_true(owner:select_model())
     request = assert(draft:presenter():snapshot().active)
     assert(draft:presenter():cancel(request.id, "test complete"))

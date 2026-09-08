@@ -1135,7 +1135,8 @@ function NeoagentApplet:_select_unbound_model(profile, applet)
       local provider, model = result.value:match("^([^/]+)/(.+)$")
       if not provider then return end
       local draft = self.drafts_by_applet[applet]
-      local selected, selection_err = draft and draft:set_model(provider, model)
+      if not draft then return end
+      local selected, selection_err = draft:set_model(provider, model)
       if selected then
         applet:set_draft_context({
           model = provider .. "/" .. model,
