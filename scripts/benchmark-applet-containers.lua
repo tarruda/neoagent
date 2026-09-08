@@ -127,6 +127,7 @@ local function measure(callback)
   local started = vim.uv.hrtime()
   for frame = 1, iterations do callback(frame) end
   local elapsed = vim.uv.hrtime() - started
+  collectgarbage("collect")
   local retained_kb = collectgarbage("count") - before_kb
   return {
     total_ms = elapsed / 1e6,
@@ -265,6 +266,8 @@ local result = {
   profile = profile,
 }
 
+vim.api.nvim_out_write("APPLET_CONTAINER_BENCHMARK "
+  .. vim.json.encode(result) .. "\n")
 if vim.env.APPLET_BENCH_ENFORCE == "1" then
   for operation, limits in pairs(budgets) do
     local measured = assert(result[operation], "missing benchmark " .. operation)
@@ -275,5 +278,3 @@ if vim.env.APPLET_BENCH_ENFORCE == "1" then
     end
   end
 end
-vim.api.nvim_out_write("APPLET_CONTAINER_BENCHMARK "
-  .. vim.json.encode(result) .. "\n")
