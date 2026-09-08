@@ -1,19 +1,53 @@
 local base = require("applet.host.base")
 local util = require("applet.util")
 
+---@class Applet.TabSplitChild: Applet.SplitTopologyChild
+---@field child Applet.TabTopology
+
+---@class Applet.TabSplitTopology: Applet.SplitTopology
+---@field children Applet.TabSplitChild[]
+
+---@alias Applet.TabTopology Applet.PaneTopology|Applet.TabSplitTopology
+
+---@class Applet.TabWindowState: Applet.HostWindowState
+---@field width integer
+---@field height integer
+
+---@class Applet.TabShadow
+---@field old_tab? integer
+---@field old_windows table<string, integer>
+---@field old_structure? string
+---@field previous_tab integer
+---@field was_visible boolean
+
+---@class Applet.TabDriver: Applet.HostDriver
+---@field kind 'tab'
+---@field origin? Applet.NativeOrigin
+---@field published boolean
+---@field released boolean
+---@field structure? string
+---@field transaction? Applet.HostTransaction<Applet.TabWindowState>
+---@field staging? boolean
+---@field pending_shadow? Applet.TabShadow
 local Driver = {}
 Driver.__index = Driver
 
+---@param topology Applet.TabTopology
+---@return string?
 local function first_pane(topology)
   if topology.type == "pane" then return topology.key end
+  ---@cast topology Applet.TabSplitTopology
   for _, child in ipairs(topology.children or {}) do
     local key = first_pane(child.child)
     if key then return key end
   end
 end
 
+---@param topology Applet.TabTopology
+---@return string
 local function structure(topology)
   if topology.type == "pane" then return "pane:" .. topology.key end
+  ---@cast topology Applet.TabSplitTopology
   local result = { "split:", topology.key, ":", topology.axis }
   for _, child in ipairs(topology.children or {}) do
     result[#result + 1] = ":" .. child.key .. "[" .. structure(child.child) .. "]"
@@ -21,32 +55,43 @@ local function structure(topology)
   return table.concat(result)
 end
 
+---@param topology Applet.LayoutTopology
+---@param records table<string, Applet.HostRecord>
+---@return Applet.TabTopology?
 local function projected_topology(topology, records)
   if topology.type == "pane" then
     local record = records[topology.key]
     if not record or record.suppressed
         or record.descriptor.projection.kind ~= "split" then return nil end
-    return topology
+    return topology --[[@as Applet.PaneTopology]]
   end
-  if topology.type == "scope" then return projected_topology(topology.child, records) end
+  if topology.type == "scope" then
+    ---@cast topology Applet.ScopeTopology
+    return projected_topology(topology.child, records)
+  end
+  ---@cast topology Applet.SplitTopology
+  ---@type Applet.TabSplitChild[]
   local children = {}
   for _, child in ipairs(topology.children or {}) do
     local projected = projected_topology(child.child, records)
     if projected then
       local copy = util.copy(child)
       copy.child = projected
-      children[#children + 1] = copy
+      children[#children + 1] = copy --[[@as Applet.TabSplitChild]]
     end
   end
   if #children == 0 then return nil end
-  if #children == 1 then return children[1].child end
+  if #children == 1 then return assert(children[1]).child end
   local result = util.copy(topology)
   result.children = children
-  return result
+  return result --[[@as Applet.TabSplitTopology]]
 end
 
+---@param record Applet.HostRecord
+---@return vim.api.keyset.win_config
 local function layer_config(record)
-  local requested = record.descriptor.projection.config
+  local projection = record.descriptor.projection --[[@as Applet.FloatingProjection]]
+  local requested = projection.config
   if not util.equal(record.requested_float_config, requested) then
     record.requested_float_config = util.copy(requested)
     record.adopted_float_config = nil
@@ -54,7 +99,11 @@ local function layer_config(record)
   return util.copy(record.adopted_float_config or requested)
 end
 
+---@param applet Applet.Applet
+---@param origin? Applet.NativeOrigin
+---@return Applet.TabDriver
 function Driver.new(applet, origin)
+  ---@type Applet.TabDriver
   local self = setmetatable({
     kind = "tab",
     applet = applet,
@@ -67,8 +116,11 @@ function Driver.new(applet, origin)
   return self
 end
 
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:begin(records)
   assert(not self.transaction, "tab Host transaction is already active")
+  ---@type table<string, Applet.TabWindowState>
   local windows = {}
   for key, record in pairs(records) do
     if self:owns_window(record.window, record)
@@ -87,27 +139,35 @@ function Driver:begin(records)
   return true
 end
 
+---@return boolean
 function Driver:is_open()
-  return not self.released and base.valid_tab(self.tab)
+  return not self.released and base.valid_tab(self.tab) == true
 end
 
+---@return boolean
 function Driver:is_visible()
   return self.published and self:is_open()
     and vim.api.nvim_get_current_tabpage() == self.tab
 end
 
+---@param record Applet.HostRecord
+---@return boolean
 function Driver:pane_visible(record)
   if not self:is_visible() or not base.valid_window(record.window) then return false end
   local config = vim.api.nvim_win_get_config(record.window)
   return not config.hide and vim.api.nvim_win_get_buf(record.window) == record.buffer
 end
 
+---@param window? integer
+---@param record? Applet.HostRecord
+---@return boolean
 function Driver:owns_window(window, record)
   return base.valid_window(window) and base.valid_tab(self.tab)
     and vim.api.nvim_win_get_tabpage(window) == self.tab
     and self.applet._windows[window] == (record and record.key)
 end
 
+---@return integer
 function Driver:foreign_windows()
   if not base.valid_tab(self.tab) then return 0 end
   local count = 0
@@ -117,17 +177,22 @@ function Driver:foreign_windows()
   return count
 end
 
+---@param record Applet.HostRecord
+---@param window integer
 function Driver:_mark(record, window)
   record.window = window
   self.applet._windows[window] = record.key
 end
 
+---@param record Applet.HostRecord
 function Driver:_forget(record)
   local window = record.window
   record.window = nil
   if window then self.applet._windows[window] = nil end
 end
 
+---@param frame Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
 function Driver:_create_tab(frame, records)
   local origin_tab = vim.api.nvim_get_current_tabpage()
   local origin_number = vim.api.nvim_tabpage_get_number(origin_tab)
@@ -166,32 +231,39 @@ function Driver:_create_tab(frame, records)
     self.applet.counters.topology_rebuilds + 1
 end
 
+---@param topology Applet.TabTopology
+---@param target integer
+---@param records table<string, Applet.HostRecord>
+---@return integer
 function Driver:_build_topology(topology, target, records)
   if topology.type == "pane" then
     local record = assert(records[topology.key])
-    vim.api.nvim_win_set_buf(target, record.buffer)
+    vim.api.nvim_win_set_buf(target, (assert(record.buffer)))
     self:_mark(record, target)
     return target
   end
+  ---@cast topology Applet.TabSplitTopology
   local windows = { target }
   local split = topology.axis == "vertical" and "below" or "right"
   for index = 2, #topology.children do
-    local key = assert(first_pane(topology.children[index].child))
+    local key = assert(first_pane(assert(topology.children[index]).child))
     local record = assert(records[key])
-    windows[index] = vim.api.nvim_open_win(record.buffer, false, {
+    windows[index] = vim.api.nvim_open_win(assert(record.buffer), false, {
       split = split,
       win = windows[index - 1],
     })
     self.applet.counters.window_opens = self.applet.counters.window_opens + 1
   end
   for index, child in ipairs(topology.children) do
-    self:_build_topology(child.child, windows[index], records)
+    self:_build_topology(child.child, assert(windows[index]), records)
   end
-  return windows[1]
+  return (assert(windows[1]))
 end
 
+---@param topology Applet.TabTopology
 function Driver:_apply_sizes(topology)
   if topology.type == "pane" then return end
+  ---@cast topology Applet.TabSplitTopology
   for _, child in ipairs(topology.children) do
     local key = first_pane(child.child)
     local record = self.applet.records[key]
@@ -208,6 +280,8 @@ function Driver:_apply_sizes(topology)
   end
 end
 
+---@param frame Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
 function Driver:_open_layers(frame, records)
   for _, key in ipairs(frame.pane_order) do
     local record = records[key]
@@ -215,13 +289,16 @@ function Driver:_open_layers(frame, records)
         and not record.suppressed then
       local config = layer_config(record)
       if not self.published or self.staging then config.hide = true end
-      local window = vim.api.nvim_open_win(record.buffer, false, config)
+      local window = vim.api.nvim_open_win(assert(record.buffer), false, config)
       self:_mark(record, window)
       self.applet.counters.window_opens = self.applet.counters.window_opens + 1
     end
   end
 end
 
+---@param _? Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:publish(_, records)
   assert(self:is_open(), "tab Host is closed")
   local was_published = self.published
@@ -278,6 +355,7 @@ function Driver:publish(_, records)
   return true
 end
 
+---@param record Applet.HostRecord
 function Driver:_close_window(record)
   local window = record.window
   self:_forget(record)
@@ -287,6 +365,8 @@ function Driver:_close_window(record)
   end
 end
 
+---@param records table<string, Applet.HostRecord>
+---@param floats_only? boolean
 function Driver:_close_owned_windows(records, floats_only)
   for _, record in pairs(records) do
     if record.window and (not floats_only
@@ -296,6 +376,8 @@ function Driver:_close_owned_windows(records, floats_only)
   end
 end
 
+---@param frame Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
 function Driver:_rebuild(frame, records)
   assert(not self.pending_shadow, "tab Host already has a staged topology")
   if self:foreign_windows() > 0 then
@@ -336,7 +418,7 @@ function Driver:_rebuild(frame, records)
     end
     self.tab = old_tab
     for key, window in pairs(old_windows) do
-      records[key].window = window
+      assert(records[key]).window = window
       if base.valid_window(window) then self.applet._windows[window] = key end
     end
     if base.valid_tab(previous_tab) then
@@ -360,6 +442,8 @@ function Driver:_rebuild(frame, records)
     self.applet.counters.topology_rebuilds + 1
 end
 
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:rollback(records)
   local shadow = self.pending_shadow
   if shadow then
@@ -419,6 +503,10 @@ function Driver:rollback(records)
   return true
 end
 
+---@param previous? Applet.CompiledLayout
+---@param frame Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:reconcile(previous, frame, records)
   local topology = assert(projected_topology(frame.topology, records),
     "tab Host requires one mounted main Pane")
@@ -468,7 +556,7 @@ function Driver:reconcile(previous, frame, records)
         if not base.valid_window(record.window) then
           local config = layer_config(record)
           if self.staging then config.hide = true end
-          local window = vim.api.nvim_open_win(record.buffer, false, config)
+          local window = vim.api.nvim_open_win(assert(record.buffer), false, config)
           self:_mark(record, window)
         else
           local config = layer_config(record)
@@ -484,7 +572,7 @@ function Driver:reconcile(previous, frame, records)
     local sizing_changed = not previous
     if previous then
       for _, split_key in ipairs(frame.split_order) do
-        local before, after = previous.splits[split_key], frame.splits[split_key]
+        local before, after = previous.splits[split_key], assert(frame.splits[split_key])
         if not before or before.signature ~= after.signature then sizing_changed = true break end
       end
     end
@@ -493,11 +581,15 @@ function Driver:reconcile(previous, frame, records)
   return true
 end
 
+---@param frame? Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
 function Driver:adopt_detach(frame, records)
   local topology = frame and projected_topology(frame.topology, records)
   self.structure = topology and structure(topology) or nil
 end
 
+---@param record? Applet.HostRecord
+---@return boolean
 function Driver:focus(record)
   assert(self:is_open() and record and base.valid_window(record.window),
     "tab Host focus requires an open mounted Pane")
@@ -507,10 +599,12 @@ function Driver:focus(record)
   return base.focus_mode(record)
 end
 
+---@param record Applet.HostRecord
 function Driver:detach(record)
   self:_close_window(record)
 end
 
+---@param records table<string, Applet.HostRecord>
 function Driver:release(records)
   if self.released then return end
   if self.pending_shadow or self.transaction then self:rollback(records) end
@@ -543,6 +637,7 @@ function Driver:release(records)
   self.tab = nil
 end
 
+---@param records table<string, Applet.HostRecord>
 function Driver:destroy(records)
   self:release(records)
 end
