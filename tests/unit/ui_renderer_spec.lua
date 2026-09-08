@@ -278,6 +278,28 @@ describe("neoagent native Renderer protocol", function()
     end
   end)
 
+  it("keeps malformed write arguments renderable and displays the write failure", function()
+    for _, selected in ipairs({ renderers.pi, renderers.codex }) do
+      for _, content in ipairs({ 42, false, vim.NIL, { "unexpected" }, "valid source" }) do
+        local block = {
+          key = "invalid-write", kind = "tool", state = "pending",
+          call = { name = "write_file", arguments = { path = "sample.lua", content = content } },
+        }
+        local pending, pending_err = protocol.render_block(selected, block, { width = 60 })
+        assert(pending, pending_err and pending_err.message)
+        assert.matches("sample.lua", table.concat(layout(pending, selected.theme).lines, "\n"))
+        block.state = "error"
+        block.message = { toolName = "write_file", isError = true,
+          content = { { type = "text", text = "write failed safely" } } }
+        for _, method in ipairs({ "render_block", "render_details" }) do
+          local node, err = protocol[method](selected, block, { width = 60 })
+          assert(node, err and err.message)
+          assert.matches("write failed safely", table.concat(layout(node, selected.theme).lines, "\n"))
+        end
+      end
+    end
+  end)
+
   it("renders tool output containing tabs as a live transcript card", function()
     local output = rendered(renderers.codex, {
       key = "tabular-tool",

@@ -838,6 +838,10 @@ local function tool_output(self, block, args, surface)
   end
 
   if name == "write" or name == "write_file" then
+    if message and message.isError then
+      return output_lines(self, value, maximum, false, "NeoagentError")
+    end
+    if type(args.content) ~= "string" then return rendered() end
     if surface == "transcript" and self.policy.write_preview_lines then
       maximum = self.policy.write_preview_lines
     end
