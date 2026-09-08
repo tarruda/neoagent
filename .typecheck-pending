@@ -46,7 +46,6 @@ tests/unit/neoagent_applet_boundaries_spec.lua
 tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
 tests/unit/profile_sessions_spec.lua
-tests/unit/provider_catalog_sources_spec.lua
 tests/unit/provider_shell_spec.lua
 tests/unit/sandbox_platform_spec.lua
 tests/unit/sandbox_spec.lua
