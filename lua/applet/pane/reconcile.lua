@@ -2,8 +2,174 @@ local source = require("applet.pane.source")
 local scene = require("applet.pane.scene")
 local util = require("applet.util")
 
+---@class Applet.ReconcileSurface: Applet.SceneSurface
+---@field chrome? Applet.WindowChrome
+---@field window_options? Applet.Options
+---@field visible? fun(): boolean
+
+---@class Applet.LayoutChanges
+---@field any boolean
+---@field content boolean
+---@field decorations boolean
+---@field interaction boolean
+---@field images boolean
+---@field regions boolean
+---@field sources boolean
+---@field virtuals boolean
+---@field scene boolean
+---@field chrome boolean
+---@field view boolean
+
+---@class Applet.ReconcileCounters
+---@field line_splices integer
+---@field full_rebuilds integer
+---@field extmark_writes integer
+---@field image_presentation_changes integer
+
+---@class Applet.SavedRegionPosition
+---@field key string
+---@field row integer
+---@field index integer
+
+---@class Applet.SavedTargetPosition
+---@field key string
+---@field rectangle integer
+---@field row integer
+---@field col integer
+
+---@class Applet.PaneViewCapture
+---@field cursor [integer, integer]
+---@field view vim.fn.winsaveview.ret
+---@field at_end boolean
+---@field current boolean
+---@field mode string
+
+---@class Applet.SavedPaneView: Applet.PaneViewCapture
+---@field follow boolean
+---@field target? Applet.SavedTargetPosition
+---@field region? Applet.SavedRegionPosition
+---@field top_region? Applet.SavedRegionPosition
+---@field cursor_mark integer
+---@field top_mark integer
+
+---@class Applet.ContinuationContext
+---@field showbreak string
+---@field breakindent boolean
+---@field linebreak boolean
+---@field breakat string
+---@field width integer
+
+---@class Applet.NativeChromeRestore
+---@field adapter? nil
+---@field window integer
+---@field options table<string, Applet.WrittenOption>
+---@field floating? boolean
+---@field title? unknown
+---@field title_pos? string
+---@field footer? unknown
+---@field footer_pos? string
+---@field written_title? unknown
+---@field written_title_pos? string
+---@field written_footer? unknown
+---@field written_footer_pos? string
+
+---@class Applet.AdapterChromeRestore
+---@field adapter Applet.WindowChrome
+---@field window? nil
+
+---@alias Applet.ChromeRestore Applet.NativeChromeRestore|Applet.AdapterChromeRestore
+
+---@class Applet.ImageRedrawProvider
+---@field surface? Applet.ReconcileSurface
+---@field callback? fun()
+---@field ranges Applet.CellInterval[]
+---@field redrawn? boolean
+---@field scheduled? boolean
+
+---@alias Applet.ContentUpdate 'rebuild'|'regions'|'unchanged'|'island'|'scene'
+
+---@class Applet.ReconcileState
+---@field layout? Applet.PaneLayout
+---@field unknown? boolean
+---@field decoration_marks? table<string, integer[]>
+---@field region_marks? table<string, {first: integer, last: integer, id: integer}>
+---@field continuation_context? Applet.ContinuationContext
+---@field chrome? Applet.ChromeRestore
+---@field scene_provider? Applet.SceneProvider
+---@field runtime_scene? Applet.CompiledScene
+---@field scene_size? string
+---@field content_result? Applet.ContentUpdate
+---@field image_redraw_provider? Applet.ImageRedrawProvider
+
+---@class Applet.ReconcileOptions
+---@field surface Applet.ReconcileSurface
+---@field state? Applet.ReconcileState
+---@field namespace integer
+---@field virtual_namespace integer
+---@field region_namespace integer
+---@field cursor_namespace integer
+---@field scene_namespace? integer
+---@field image_namespace? integer
+---@field mask_namespace? integer
+---@field image_system? Applet.ImageSystem
+---@field image_owner? Applet.ImageOwner
+
+---@class Applet.ReconcileApplyOptions: Applet.ReconcileOptions
+---@field layout Applet.PaneLayout
+---@field changes? Applet.LayoutChanges
+---@field buffer_mode 'managed'|'editable'
+---@field window_changed? boolean
+---@field force_images? boolean
+
+---@class Applet.ReconcileRetainOptions
+---@field surface Applet.ReconcileSurface
+---@field state Applet.ReconcileState
+---@field layout Applet.PaneLayout
+---@field changes? Applet.LayoutChanges
+---@field scene? Applet.CompiledScene
+---@field namespace? integer
+---@field scene_namespace? integer
+---@field window_changed? boolean
+
+---@class Applet.ReconcileRefreshOptions
+---@field surface Applet.ReconcileSurface
+---@field state Applet.ReconcileState
+
+---@class Applet.RefreshVirtualsOptions: Applet.ReconcileRefreshOptions
+---@field virtual_namespace integer
+
+---@class Applet.RefreshImagesOptions: Applet.ReconcileRefreshOptions
+---@field image_system? Applet.ImageSystem
+---@field image_owner? Applet.ImageOwner
+
+---@class Applet.ImageRedrawOptions: Applet.ReconcileRefreshOptions
+---@field callback fun()
+---@field image_namespace integer
+
+---@class Applet.ScreenRectangle
+---@field left integer
+---@field top integer
+---@field width integer
+---@field height integer
+
+---@class Applet.ImageScreenRectangle: Applet.ScreenRectangle
+---@field first_col integer
+---@field first_row integer
+
+---@class Applet.ImageFragment
+---@field screen_row integer
+---@field screen_col integer
+---@field viewport Applet.Rectangle
+
+---@class Applet.ImagePaintPlan: Applet.ImagePresentation
+---@field slots table<string, string>
+---@field placements Applet.ImageSlotPlacement[]
+
 local M = {}
 
+---@param left Applet.CompiledRegion[]
+---@param right Applet.CompiledRegion[]
+---@return boolean
 local function same_region_geometry(left, right)
   if rawequal(left, right) then return true end
   if #left ~= #right then return false end
@@ -17,6 +183,9 @@ local function same_region_geometry(left, right)
   return true
 end
 
+---@param previous Applet.PaneLayout
+---@param layout Applet.PaneLayout
+---@return Applet.LayoutChanges?
 local function retained_document_changes(previous, layout)
   local document = layout.region_document
   local prior = previous.region_document
@@ -85,6 +254,9 @@ local function retained_document_changes(previous, layout)
   return changed
 end
 
+---@param previous? Applet.PaneLayout
+---@param layout Applet.PaneLayout
+---@return Applet.LayoutChanges
 function M.changes(previous, layout)
   if not previous then
     return {
@@ -127,6 +299,8 @@ function M.changes(previous, layout)
   return changed
 end
 
+---@param surface Applet.ReconcileSurface
+---@return integer?
 local function valid_window(surface)
   local window = surface.window and surface.window()
   if window and vim.api.nvim_win_is_valid(window)
@@ -135,12 +309,15 @@ local function valid_window(surface)
   end
 end
 
+---@param layout? Applet.PaneLayout
+---@param row integer
+---@return Applet.SavedRegionPosition?
 local function region_at(layout, row)
   local regions = layout and layout.regions or {}
   local first, last = 1, #regions
   while first <= last do
     local index = math.floor((first + last) / 2)
-    local region = regions[index]
+    local region = assert(regions[index])
     if row < region.first then
       last = index - 1
     elseif row >= region.last then
@@ -151,7 +328,12 @@ local function region_at(layout, row)
   end
 end
 
+---@param layout? Applet.PaneLayout
+---@param row integer
+---@param col integer
+---@return Applet.SavedTargetPosition?
 local function target_at(layout, row, col)
+  if not layout then return nil end
   local region = layout and layout.region_document and region_at(layout, row)
   local selected = region and layout.regions[region.index]
   local order = selected and (selected.hit_order or selected.target_order)
@@ -172,36 +354,48 @@ local function target_at(layout, row, col)
   end
 end
 
+---@param surface Applet.ReconcileSurface
+---@param layout Applet.PaneLayout
+---@param previous? Applet.PaneLayout
+---@param namespace integer
+---@return Applet.SavedPaneView?
 local function save_view(surface, layout, previous, namespace)
   local window = valid_window(surface)
   if not window then return nil end
-  local result
-  vim.api.nvim_win_call(window, function()
-    result = {
-      cursor = vim.api.nvim_win_get_cursor(0),
+  local captured = vim.api.nvim_win_call(window, function()
+    local cursor = vim.api.nvim_win_get_cursor(0) --[[@as [integer, integer] ]]
+    return {
+      cursor = cursor,
       view = vim.fn.winsaveview(),
-      at_end = vim.api.nvim_win_get_cursor(0)[1]
-        >= vim.api.nvim_buf_line_count(surface.buffer),
+      at_end = cursor[1] >= vim.api.nvim_buf_line_count(surface.buffer),
       current = vim.api.nvim_get_current_win() == window,
       mode = vim.api.nvim_get_mode().mode,
     }
-  end)
-  result.follow = layout.view.scroll == "follow_end" and result.at_end
-  local row, col = result.cursor[1] - 1, result.cursor[2]
+  end) --[[@as Applet.PaneViewCapture]]
+  local row, col = captured.cursor[1] - 1, captured.cursor[2]
   local line = vim.api.nvim_buf_get_lines(surface.buffer, row, row + 1, false)[1] or ""
-  result.target = target_at(previous, row,
-    util.display_width(line:sub(1, col)))
-  result.region = region_at(previous, row)
-  result.top_region = region_at(previous,
-    math.max(0, result.view.topline - 1))
-  result.cursor_mark = vim.api.nvim_buf_set_extmark(
-    surface.buffer, namespace, row, col, { right_gravity = false })
-  result.top_mark = vim.api.nvim_buf_set_extmark(
-    surface.buffer, namespace, math.max(0, result.view.topline - 1), 0,
-    { right_gravity = false })
-  return result
+  return {
+    cursor = captured.cursor,
+    view = captured.view,
+    at_end = captured.at_end,
+    current = captured.current,
+    mode = captured.mode,
+    follow = layout.view.scroll == "follow_end" and captured.at_end,
+    target = target_at(previous, row, util.display_width(line:sub(1, col))),
+    region = region_at(previous, row),
+    top_region = region_at(previous, math.max(0, captured.view.topline - 1)),
+    cursor_mark = vim.api.nvim_buf_set_extmark(
+      surface.buffer, namespace, row, col, { right_gravity = false }),
+    top_mark = vim.api.nvim_buf_set_extmark(
+      surface.buffer, namespace, math.max(0, captured.view.topline - 1), 0,
+      { right_gravity = false }),
+  }
 end
 
+---@param surface Applet.ReconcileSurface
+---@param saved? Applet.SavedPaneView
+---@param layout Applet.PaneLayout
+---@param namespace integer
 local function restore_view(surface, saved, layout, namespace)
   local window = valid_window(surface)
   if not window or not saved then return end
@@ -260,14 +454,24 @@ local function restore_view(surface, saved, layout, namespace)
   pcall(vim.api.nvim_buf_del_extmark, surface.buffer, namespace, saved.top_mark)
 end
 
+---@param old? Applet.PaneLayout
+---@param new Applet.PaneLayout
+---@return boolean
 local function same_region_order(old, new)
   if not old or #old.regions ~= #new.regions then return false end
   for index, region in ipairs(new.regions) do
-    if old.regions[index].key ~= region.key then return false end
+    if assert(old.regions[index]).key ~= region.key then return false end
   end
   return true
 end
 
+---@param old {lines: string[]}
+---@param new {lines: string[]}
+---@param old_first integer
+---@param old_last integer
+---@param new_first integer
+---@param new_last integer
+---@return integer, integer
 local function common_lines(old, new, old_first, old_last, new_first, new_last)
   local prefix = 0
   while old_first + prefix < old_last and new_first + prefix < new_last
@@ -285,6 +489,15 @@ local function common_lines(old, new, old_first, old_last, new_first, new_last)
   return prefix, suffix
 end
 
+---@param buffer integer
+---@param old Applet.PaneLayout
+---@param new Applet.PaneLayout
+---@param old_first integer
+---@param old_last integer
+---@param new_first integer
+---@param new_last integer
+---@param changes Applet.ReconcileCounters
+---@return boolean
 local function splice_changed_lines(
     buffer, old, new, old_first, old_last, new_first, new_last, changes)
   local prefix, suffix = common_lines(
@@ -302,6 +515,11 @@ local function splice_changed_lines(
   return true
 end
 
+---@param buffer integer
+---@param old? Applet.PaneLayout
+---@param new Applet.PaneLayout
+---@param changes Applet.ReconcileCounters
+---@return Applet.ContentUpdate
 local function replace_content(buffer, old, new, changes)
   if not old then
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, new.lines)
@@ -315,7 +533,7 @@ local function replace_content(buffer, old, new, changes)
     and #old.regions == #new.regions
   if retained_order then
     for index = changed_first, #new.regions do
-      if old.regions[index].key ~= new.regions[index].key then
+      if assert(old.regions[index]).key ~= assert(new.regions[index]).key then
         retained_order = false
         break
       end
@@ -324,9 +542,9 @@ local function replace_content(buffer, old, new, changes)
   if retained_order or same_region_order(old, new) then
     local changed = false
     for index = #new.regions, changed_first or 1, -1 do
-      local previous, current = old.regions[index], new.regions[index]
-      local old_first = index == 1 and 0 or old.regions[index - 1].last
-      local new_first = index == 1 and 0 or new.regions[index - 1].last
+      local previous, current = assert(old.regions[index]), assert(new.regions[index])
+      local old_first = index == 1 and 0 or assert(old.regions[index - 1]).last
+      local new_first = index == 1 and 0 or assert(new.regions[index - 1]).last
       changed = splice_changed_lines(buffer, old, new,
         old_first, previous.last, new_first, current.last, changes)
         or changed
@@ -335,33 +553,39 @@ local function replace_content(buffer, old, new, changes)
   end
   local prefix = 0
   while prefix < #old.regions and prefix < #new.regions
-      and old.regions[prefix + 1].key == new.regions[prefix + 1].key
-      and util.equal(old.regions[prefix + 1].lines,
-        new.regions[prefix + 1].lines) do
+      and assert(old.regions[prefix + 1]).key == assert(new.regions[prefix + 1]).key
+      and util.equal(assert(old.regions[prefix + 1]).lines,
+        assert(new.regions[prefix + 1]).lines) do
     prefix = prefix + 1
   end
   local suffix = 0
   while suffix < #old.regions - prefix and suffix < #new.regions - prefix
-      and old.regions[#old.regions - suffix].key == new.regions[#new.regions - suffix].key
-      and util.equal(old.regions[#old.regions - suffix].lines,
-        new.regions[#new.regions - suffix].lines) do
+      and assert(old.regions[#old.regions - suffix]).key == assert(new.regions[#new.regions - suffix]).key
+      and util.equal(assert(old.regions[#old.regions - suffix]).lines,
+        assert(new.regions[#new.regions - suffix]).lines) do
     suffix = suffix + 1
   end
-  local old_first = prefix == 0 and 0 or old.regions[prefix].last
-  local new_first = prefix == 0 and 0 or new.regions[prefix].last
-  local old_last = suffix == 0 and #old.lines or old.regions[#old.regions - suffix + 1].first
-  local new_last = suffix == 0 and #new.lines or new.regions[#new.regions - suffix + 1].first
+  local old_first = prefix == 0 and 0 or assert(old.regions[prefix]).last
+  local new_first = prefix == 0 and 0 or assert(new.regions[prefix]).last
+  local old_last = suffix == 0 and #old.lines or assert(old.regions[#old.regions - suffix + 1]).first
+  local new_last = suffix == 0 and #new.lines or assert(new.regions[#new.regions - suffix + 1]).first
   splice_changed_lines(buffer, old, new,
     old_first, old_last, new_first, new_last, changes)
   return "island"
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param marks? integer[]
 local function delete_marks(buffer, namespace, marks)
   for _, id in ipairs(marks or {}) do
     pcall(vim.api.nvim_buf_del_extmark, buffer, namespace, id)
   end
 end
 
+---@param surface Applet.ReconcileSurface
+---@param layout Applet.PaneLayout
+---@return Applet.ContinuationContext?
 local function continuation_context(surface, layout)
   local window = valid_window(surface)
   if not window then return nil end
@@ -369,6 +593,8 @@ local function continuation_context(surface, layout)
   for name, value in pairs(surface.window_options or {}) do
     desired[name] = value
   end
+  ---@param name string
+  ---@return Applet.OptionValue?
   local function option(name)
     if desired[name] ~= nil then return desired[name] end
     local ok, value = pcall(vim.api.nvim_get_option_value,
@@ -381,7 +607,7 @@ local function continuation_context(surface, layout)
     return nil
   end
   return {
-    showbreak = showbreak,
+    showbreak = showbreak --[[@as string]],
     breakindent = option("breakindent") == true,
     linebreak = option("linebreak") == true,
     breakat = vim.o.breakat,
@@ -389,6 +615,10 @@ local function continuation_context(surface, layout)
   }
 end
 
+---@param context? Applet.ContinuationContext
+---@param region Applet.CompiledRegion
+---@param decoration Applet.CompiledDecoration
+---@return string?
 local function continuation_prefix(context, region, decoration)
   if not context or not decoration.continuation then return nil end
   local line = region.lines[decoration.row + 1] or ""
@@ -401,6 +631,10 @@ local function continuation_prefix(context, region, decoration)
   return string.rep(" ", indent) .. context.showbreak
 end
 
+---@param context? Applet.ContinuationContext
+---@param line string
+---@param fallback integer
+---@return integer
 local function continuation_col(context, line, fallback)
   if not context then return fallback end
   if not context.linebreak then return util.byte_col(line, context.width) end
@@ -421,8 +655,15 @@ local function continuation_col(context, line, fallback)
   return result
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param region Applet.CompiledRegion
+---@param decoration Applet.CompiledDecoration
+---@param context? Applet.ContinuationContext
+---@return integer
 local function write_decoration(
     buffer, namespace, region, decoration, context)
+  ---@type vim.api.keyset.set_extmark
   local options = { priority = decoration.priority or 100 }
   if decoration.whole_line then
     options.line_hl_group = decoration.group
@@ -448,6 +689,11 @@ local function write_decoration(
     region.first + decoration.row, col, options)
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param region Applet.CompiledRegion
+---@param context? Applet.ContinuationContext
+---@return integer[]
 local function write_decorations(buffer, namespace, region, context)
   local records = {}
   for _, decoration in ipairs(region.decorations) do
@@ -457,6 +703,8 @@ local function write_decorations(buffer, namespace, region, context)
   return records
 end
 
+---@param decoration Applet.CompiledDecoration
+---@return string
 local function decoration_signature(decoration)
   return table.concat({
     tostring(decoration.col),
@@ -468,6 +716,12 @@ local function decoration_signature(decoration)
   }, "\0")
 end
 
+---@param decoration Applet.CompiledDecoration
+---@param previous Applet.CompiledRegion
+---@param current Applet.CompiledRegion
+---@param prefix integer
+---@param suffix integer
+---@return integer?
 local function stable_decoration_row(decoration, previous, current, prefix, suffix)
   if decoration.row < prefix then return decoration.row end
   if suffix > 0 and decoration.row >= #previous.lines - suffix then
@@ -475,6 +729,14 @@ local function stable_decoration_row(decoration, previous, current, prefix, suff
   end
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param records? integer[]
+---@param previous Applet.CompiledRegion
+---@param current Applet.CompiledRegion
+---@param retain boolean
+---@param context? Applet.ContinuationContext
+---@return integer[], integer
 local function reconcile_decorations(
     buffer, namespace, records, previous, current, retain, context)
   if not retain or type(records) ~= "table"
@@ -520,6 +782,14 @@ local function reconcile_decorations(
   return result, writes
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param state Applet.ReconcileState
+---@param previous? Applet.PaneLayout
+---@param layout Applet.PaneLayout
+---@param context? Applet.ContinuationContext
+---@param first? integer
+---@return integer
 local function sync_decorations(
     buffer, namespace, state, previous, layout, context, first)
   state.decoration_marks = state.decoration_marks or {}
@@ -529,7 +799,7 @@ local function sync_decorations(
   local old = {}
   local previous_regions = previous and previous.regions or {}
   for index = first or 1, #previous_regions do
-    local region = previous_regions[index]
+    local region = assert(previous_regions[index])
     old[region.key] = region
   end
   local active, writes = {}, 0
@@ -537,7 +807,7 @@ local function sync_decorations(
   if retain then
     if first and #previous_regions == #layout.regions then
       for index = first, #layout.regions do
-        if previous_regions[index].key ~= layout.regions[index].key then
+        if assert(previous_regions[index]).key ~= layout.regions[index].key then
           retain = false
           break
         end
@@ -575,6 +845,10 @@ local function sync_decorations(
   return writes
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param layout Applet.PaneLayout
+---@return integer
 local function apply_virtuals(buffer, namespace, layout)
   vim.api.nvim_buf_clear_namespace(buffer, namespace, 0, -1)
   local writes, line_count = 0, vim.api.nvim_buf_line_count(buffer)
@@ -593,12 +867,18 @@ local function apply_virtuals(buffer, namespace, layout)
   return writes
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param state Applet.ReconcileState
+---@param layout Applet.PaneLayout
+---@param first? integer
+---@return integer
 local function sync_region_marks(buffer, namespace, state, layout, first)
   state.region_marks = state.region_marks or {}
   local active, count = {}, 0
   local previous = state.layout and state.layout.regions or {}
   local old = {}
-  for index = first or 1, #previous do old[previous[index].key] = true end
+  for index = first or 1, #previous do old[assert(previous[index]).key] = true end
   for index = first or 1, #layout.regions do
     local region = layout.regions[index]
     active[region.key] = true
@@ -610,6 +890,7 @@ local function sync_region_marks(buffer, namespace, state, layout, first)
       if not mark or position[1] ~= region.first or current_last ~= region.last then
         if mark then pcall(vim.api.nvim_buf_del_extmark, buffer, namespace, mark.id) end
         local row = math.min(region.first, vim.api.nvim_buf_line_count(buffer) - 1)
+        ---@type vim.api.keyset.set_extmark
         local options = { right_gravity = true }
         if region.last > region.first then
           options.end_row = math.min(region.last, vim.api.nvim_buf_line_count(buffer))
@@ -638,6 +919,7 @@ local function sync_region_marks(buffer, namespace, state, layout, first)
   return count
 end
 
+---@param state Applet.ReconcileState
 local function restore_chrome(state)
   local chrome = state.chrome
   if not chrome then return end
@@ -676,6 +958,9 @@ local function restore_chrome(state)
   state.chrome = nil
 end
 
+---@param surface Applet.ReconcileSurface
+---@param layout Applet.PaneLayout
+---@param state Applet.ReconcileState
 local function apply_chrome(surface, layout, state)
   if surface.chrome then
     if state.chrome and state.chrome.adapter ~= surface.chrome then
@@ -690,7 +975,8 @@ local function apply_chrome(surface, layout, state)
   if state.chrome and state.chrome.window ~= window then restore_chrome(state) end
   if not state.chrome then
     local config = vim.api.nvim_win_get_config(window)
-    state.chrome = {
+    ---@type Applet.NativeChromeRestore
+    local native_chrome = {
       window = window,
       options = {},
       floating = config.relative and config.relative ~= "",
@@ -699,8 +985,9 @@ local function apply_chrome(surface, layout, state)
       footer = config.footer,
       footer_pos = config.footer_pos,
     }
+    state.chrome = native_chrome
   end
-  local chrome = state.chrome
+  local chrome = state.chrome --[[@as Applet.NativeChromeRestore]]
   local desired = util.copy(layout.chrome.options)
   for option, value in pairs(surface.window_options or {}) do desired[option] = value end
   for option, state in pairs(util.copy(chrome.options)) do
@@ -720,8 +1007,7 @@ local function apply_chrome(surface, layout, state)
     end
     pcall(vim.api.nvim_set_option_value, option, value, { win = window })
     if chrome.options[option] then
-      chrome.options[option].written = type(value) == "table"
-          and util.copy(value) or value
+      chrome.options[option].written = util.copy_value(value)
     end
   end
   if chrome.floating then
@@ -731,22 +1017,24 @@ local function apply_chrome(surface, layout, state)
     config.footer = layout.chrome.footer or chrome.footer or ""
     config.footer_pos = layout.chrome.footer_pos or chrome.footer_pos
     pcall(vim.api.nvim_win_set_config, window, config)
-    chrome.written_title = type(config.title) == "table"
-        and util.copy(config.title) or config.title
+    chrome.written_title = util.copy_value(config.title)
     chrome.written_title_pos = config.title_pos
-    chrome.written_footer = type(config.footer) == "table"
-        and util.copy(config.footer) or config.footer
+    chrome.written_footer = util.copy_value(config.footer)
     chrome.written_footer_pos = config.footer_pos
   end
 end
 
+---@param state Applet.ReconcileState
+---@param namespace integer
+---@return Applet.ImageRedrawProvider
 local function image_redraw_provider(state, namespace)
   if state.image_redraw_provider then return state.image_redraw_provider end
+  ---@type Applet.ImageRedrawProvider
   local provider = { ranges = {} }
   vim.api.nvim_set_decoration_provider(namespace, {
     on_win = function(_, window, buffer)
       local target = provider.surface and valid_window(provider.surface)
-      return target == window and provider.surface.buffer == buffer
+      return target == window and assert(provider.surface).buffer == buffer
         and provider.callback ~= nil and #provider.ranges > 0
     end,
     on_line = function(_, _, buffer, row)
@@ -775,6 +1063,9 @@ local function image_redraw_provider(state, namespace)
   return provider
 end
 
+---@param state Applet.ReconcileState
+---@param layout Applet.PaneLayout
+---@param visible? table<string, boolean>
 local function update_image_redraw_ranges(state, layout, visible)
   local provider = state.image_redraw_provider
   if not provider then return end
@@ -808,6 +1099,9 @@ local function update_image_redraw_ranges(state, layout, visible)
   provider.ranges = merged
 end
 
+---@param rectangle Applet.ScreenRectangle
+---@param boundary Applet.ScreenRectangle
+---@return Applet.ScreenRectangle?
 local function intersect_rectangle(rectangle, boundary)
   local left = math.max(rectangle.left, boundary.left)
   local top = math.max(rectangle.top, boundary.top)
@@ -824,6 +1118,8 @@ local function intersect_rectangle(rectangle, boundary)
   }
 end
 
+---@param values integer[]
+---@return integer[]
 local function unique_sorted(values)
   table.sort(values)
   local result = {}
@@ -833,6 +1129,9 @@ local function unique_sorted(values)
   return result
 end
 
+---@param rectangle Applet.ScreenRectangle
+---@param occluders Applet.ScreenRectangle[]
+---@return Applet.ScreenRectangle[]
 local function visible_rectangles(rectangle, occluders)
   local clipped = {}
   local boundaries = {
@@ -853,7 +1152,7 @@ local function visible_rectangles(rectangle, occluders)
   local result, active = {}, {}
   local rectangle_right = rectangle.left + rectangle.width
   for index = 1, #boundaries - 1 do
-    local top, bottom = boundaries[index], boundaries[index + 1]
+    local top, bottom = assert(boundaries[index]), assert(boundaries[index + 1])
     local covered = {}
     for _, occluder in ipairs(clipped) do
       if occluder.top < bottom
@@ -907,6 +1206,9 @@ local function visible_rectangles(rectangle, occluders)
   return result
 end
 
+---@param border? Applet.WindowBorder
+---@param indexes integer[]
+---@return integer
 local function border_cell(border, indexes)
   if type(border) ~= "table" then return 0 end
   for _, index in ipairs(indexes) do
@@ -919,6 +1221,9 @@ local function border_cell(border, indexes)
   return 0
 end
 
+---@param window integer
+---@param config vim.api.keyset.win_config
+---@return Applet.ScreenRectangle
 local function floating_rectangle(window, config)
   local position = vim.fn.win_screenpos(window)
   return {
@@ -933,6 +1238,8 @@ local function floating_rectangle(window, config)
   }
 end
 
+---@param image Applet.CompiledImage
+---@return Applet.Rectangle[]
 local function image_cells(image)
   return image.visible or { {
     row = 0,
@@ -942,6 +1249,13 @@ local function image_cells(image)
   } }
 end
 
+---@param window integer
+---@param buffer integer
+---@param image Applet.CompiledImage
+---@param rectangle Applet.Rectangle
+---@param view vim.fn.winsaveview.ret
+---@param text_width integer
+---@return Applet.ImageScreenRectangle?
 local function screen_image_rectangle(
     window, buffer, image, rectangle, view, text_width)
   local document_col = image.col + rectangle.col
@@ -951,7 +1265,9 @@ local function screen_image_rectangle(
   if first_col >= last_col then return nil end
 
   local document_row = image.row + rectangle.row
+  ---@type integer?, integer?, integer?, integer?
   local first_row, last_row, visible_top, visible_left
+  ---@type integer?
   local previous_screen_row
   for row = document_row, document_row + rectangle.height - 1 do
     if row >= 0 and row < vim.api.nvim_buf_line_count(buffer) then
@@ -963,7 +1279,7 @@ local function screen_image_rectangle(
         if first_row == nil then
           first_row = row
           visible_top, visible_left = position.row, position.col
-        elseif position.row ~= previous_screen_row + 1
+        elseif position.row ~= assert(previous_screen_row) + 1
             or position.col ~= visible_left then
           return nil
         end
@@ -978,13 +1294,18 @@ local function screen_image_rectangle(
   return {
     first_col = first_col,
     first_row = first_row,
-    left = visible_left,
-    top = visible_top,
+    left = assert(visible_left),
+    top = assert(visible_top),
     width = last_col - first_col,
-    height = last_row - first_row,
+    height = assert(last_row) - first_row,
   }
 end
 
+---@param window integer
+---@param buffer integer
+---@param image Applet.CompiledImage
+---@param view vim.fn.winsaveview.ret
+---@return Applet.ImageFragment[]
 local function image_fragments(window, buffer, image, view)
   local info = vim.fn.getwininfo(window)[1] or {}
   local text_width = math.max(1,
@@ -1032,6 +1353,7 @@ local function image_fragments(window, buffer, image, view)
     }) or nil
     for _, rectangle in ipairs(
         bounded and visible_rectangles(bounded, occluders) or {}) do
+      assert(screen)
       local viewport = {
         row = screen.first_row - image.row
           + rectangle.top - screen.top,
@@ -1056,10 +1378,16 @@ local function image_fragments(window, buffer, image, view)
   return fragments
 end
 
+---@param surface Applet.ReconcileSurface
+---@param layout Applet.PaneLayout
+---@param window integer
+---@param view vim.fn.winsaveview.ret
+---@return Applet.ImagePaintPlan, table<string, boolean>
 local function image_plan(surface, layout, window, view)
   local keys = {}
   for key in pairs(layout.images) do keys[#keys + 1] = key end
   table.sort(keys)
+  ---@type Applet.ImagePaintPlan
   local result = { slots = {}, placements = {} }
   local visible = {}
   for _, key in ipairs(keys) do
@@ -1086,7 +1414,10 @@ local function image_plan(surface, layout, window, view)
   return result, visible
 end
 
+---@param layout Applet.PaneLayout
+---@return Applet.ImagePaintPlan
 local function hidden_image_plan(layout)
+  ---@type Applet.ImagePaintPlan
   local result = { slots = {}, placements = {} }
   for key, image in pairs(layout.images) do
     result.slots[key] = image.source_identity
@@ -1094,6 +1425,13 @@ local function hidden_image_plan(layout)
   return result
 end
 
+---@param surface Applet.ReconcileSurface
+---@param layout Applet.PaneLayout
+---@param state Applet.ReconcileState
+---@param image_system Applet.ImageSystem
+---@param image_owner Applet.ImageOwner
+---@param force? boolean
+---@return integer, Applet.PaneLayout
 local function paint_images(
     surface, layout, state, image_system, image_owner, force)
   local plan, visible = hidden_image_plan(layout), {}
@@ -1119,21 +1457,28 @@ local function paint_images(
   return changed and 1 or 0, layout
 end
 
+---@param state Applet.ReconcileState
 local function clear_scene_provider(state)
   if state.scene_provider then scene.clear(state.scene_provider) end
   state.scene_provider = nil
   state.scene_size = nil
 end
 
+---@param buffer integer
+---@param surface Applet.ReconcileSurface
+---@param state Applet.ReconcileState
+---@param compiled_scene Applet.CompiledScene
+---@param namespace integer
+---@param changes Applet.ReconcileCounters
 local function apply_scene_content(
-    buffer, surface, state, layout, namespace, changes)
-  local size = layout.scene.width .. ":" .. layout.scene.height
+    buffer, surface, state, compiled_scene, namespace, changes)
+  local size = compiled_scene.width .. ":" .. compiled_scene.height
   if not state.scene_provider then
     state.scene_provider = scene.attach(namespace)
   end
   if state.unknown or state.scene_size ~= size then
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false,
-      scene.lines(layout.scene))
+      scene.lines(compiled_scene))
     changes.line_splices = changes.line_splices + 1
     changes.full_rebuilds = changes.full_rebuilds + 1
     state.scene_size = size
@@ -1141,13 +1486,19 @@ local function apply_scene_content(
   else
     state.content_result = "unchanged"
   end
-  scene.update(state.scene_provider, surface, layout.scene)
-  state.runtime_scene = layout.scene
+  scene.update(state.scene_provider, surface, compiled_scene)
+  state.runtime_scene = compiled_scene
 end
 
+---@param layout Applet.PaneLayout
+---@param differences Applet.LayoutChanges
+---@param changed_first? integer
+---@return boolean
 local function source_detection_content_changed(
     layout, differences, changed_first)
   if not differences.content then return false end
+  ---@param range Applet.CompiledSource
+  ---@return boolean
   local function uses_content(range)
     local language = type(range.language) == "string"
       and range.language:match("^[%w_.-]+$") or nil
@@ -1167,6 +1518,8 @@ local function source_detection_content_changed(
   return false
 end
 
+---@param opts Applet.ReconcileApplyOptions
+---@return Applet.ReconcileState, Applet.ReconcileCounters, Applet.PaneLayout
 function M.apply(opts)
   local surface, layout = assert(opts.surface), assert(opts.layout)
   local buffer, namespace = surface.buffer, assert(opts.namespace)
@@ -1178,6 +1531,7 @@ function M.apply(opts)
   local changed_first = document and document.changed_first or nil
   local unknown = state.unknown == true
   local saved = save_view(surface, layout, previous, opts.cursor_namespace)
+  ---@type Applet.ReconcileCounters
   local changes = {
     line_splices = 0,
     full_rebuilds = 0,
@@ -1200,7 +1554,7 @@ function M.apply(opts)
       vim.bo[buffer].readonly = false
       vim.bo[buffer].modifiable = true
       if layout.scene then
-        apply_scene_content(buffer, surface, state, layout,
+        apply_scene_content(buffer, surface, state, layout.scene,
           assert(opts.scene_namespace), changes)
       elseif state.unknown or not previous or differences.content then
         clear_scene_provider(state)
@@ -1268,6 +1622,8 @@ function M.apply(opts)
   return state, changes, layout
 end
 
+---@param opts Applet.ReconcileOptions
+---@return Applet.ReconcileState
 function M.clear(opts)
   local surface, state = opts.surface, opts.state or {}
   clear_scene_provider(state)
@@ -1278,7 +1634,7 @@ function M.clear(opts)
     state.image_redraw_provider.callback = nil
     state.image_redraw_provider.surface = nil
     state.image_redraw_provider.ranges = {}
-    vim.api.nvim_set_decoration_provider(opts.image_namespace, {})
+    vim.api.nvim_set_decoration_provider(assert(opts.image_namespace), {})
     state.image_redraw_provider = nil
   end
   restore_chrome(state)
@@ -1300,6 +1656,8 @@ function M.clear(opts)
   return state
 end
 
+---@param opts Applet.ReconcileRetainOptions
+---@return Applet.ReconcileState
 function M.retain(opts)
   local surface, layout = assert(opts.surface), assert(opts.layout)
   local state = assert(opts.state)
@@ -1331,11 +1689,14 @@ function M.retain(opts)
   return state
 end
 
+---@param opts Applet.ReconcileRefreshOptions
 function M.refresh_chrome(opts)
   if not opts.state.layout then return end
   apply_chrome(opts.surface, opts.state.layout, opts.state)
 end
 
+---@param opts Applet.RefreshVirtualsOptions
+---@return integer
 function M.refresh_virtuals(opts)
   if not opts.state.layout or not vim.api.nvim_buf_is_loaded(opts.surface.buffer) then
     return 0
@@ -1344,6 +1705,8 @@ function M.refresh_virtuals(opts)
     opts.surface.buffer, opts.virtual_namespace, opts.state.layout)
 end
 
+---@param opts Applet.RefreshImagesOptions
+---@return integer, Applet.PaneLayout?
 function M.refresh_images(opts)
   if not opts.image_system or not opts.state.layout then return 0 end
   local changes, layout = paint_images(
@@ -1353,6 +1716,7 @@ function M.refresh_images(opts)
   return changes, opts.state.layout
 end
 
+---@param opts Applet.ImageRedrawOptions
 function M.set_image_redraw_handler(opts)
   assert(type(opts.callback) == "function",
     "image redraw callback must be a function")
