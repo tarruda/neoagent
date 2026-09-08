@@ -6,8 +6,12 @@ local provider_service = require("neoagent.provider_service")
 local util = require("neoagent.util")
 
 describe("neoagent Provider Shell", function()
+  ---@type Neoagent.ProviderShell[]
   local shells
-  local original_ui_select
+  local original_ui_select = vim.ui.select
+  local owned_presenters = {}
+  local owned_views = {}
+  local owned_catalogs = {}
 
   before_each(function()
     shells = {}
@@ -17,33 +21,47 @@ describe("neoagent Provider Shell", function()
   after_each(function()
     for _, shell in ipairs(shells) do shell:destroy() end
     vim.ui.select = original_ui_select
+    for _, value in ipairs(owned_presenters) do value:destroy() end
+    for _, value in ipairs(owned_views) do value:destroy() end
+    for _, value in ipairs(owned_catalogs) do value:destroy() end
+    owned_presenters, owned_views, owned_catalogs = {}, {}, {}
   end)
 
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>
+  ---@return T
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end, 5))
-    return run:result()
+    return (assert(run:result()))
   end
 
   local function presenter()
-    local value = {
-      notifications = {},
-      requests = {},
-      uris = {},
-      confirm_value = true,
-    }
+    ---@class Neoagent.TestShellPresenter: Neoagent.Presenter
+    ---@field notifications Neoagent.NotificationRequest[]
+    ---@field requests {kind: string, request: Neoagent.SelectRequest|Neoagent.InputRequest|Neoagent.ConfirmRequest|Neoagent.NoticeRequest}[]
+    ---@field uris string[]
+    ---@field confirm_value boolean
+    ---@field confirm_error? Neoagent.Error
+    local value = require("neoagent.presenter").new()
+    value.notifications, value.requests, value.uris = {}, {}, {}
+    value.confirm_value = true
+    owned_presenters[#owned_presenters + 1] = value
+    ---@param result unknown
+    ---@return Neoagent.PresentationRun
     local function resolved(result)
       return async.run(function() return { ok = true, value = result } end)
     end
     function value:select(request)
       self.requests[#self.requests + 1] = { kind = "select", request = request }
       local item = request.items[1]
-      return resolved(type(item) == "table" and item.id or item)
+      return resolved(type(item) == "table" and item.id or item), function() return true end
     end
     function value:input(request)
       self.requests[#self.requests + 1] = { kind = "input", request = request }
       return resolved(request.default or "")
     end
     function value:confirm(request)
+      request = request or {}
       self.requests[#self.requests + 1] = { kind = "confirm", request = request }
       if self.confirm_error then
         return async.run(function() error(self.confirm_error, 0) end)
@@ -55,6 +73,7 @@ describe("neoagent Provider Shell", function()
       return resolved(true)
     end
     function value:notify(request)
+      if type(request) == "string" then request = { message = request } end
       self.notifications[#self.notifications + 1] = util.copy(request)
       return true
     end
@@ -65,10 +84,14 @@ describe("neoagent Provider Shell", function()
     return value
   end
 
+  ---@param initial? table<string, "api_key"|"oauth"|"invalid">
   local function authentication(initial)
     local credentials = util.copy(initial or {})
-    local value = { credentials = credentials }
-    function value:has_credentials(id)
+    ---@class Neoagent.TestShellAuth: Neoagent.AuthManager
+    ---@field credentials table<string, "api_key"|"oauth"|"invalid">
+    local value = require("tests.helpers.auth_manager").new()
+    value.credentials = credentials
+    value.has_credentials = function(self, id)
       return self.credentials[id] ~= nil
     end
     function value:list_credentials()
@@ -83,44 +106,51 @@ describe("neoagent Provider Shell", function()
       table.sort(result, function(left, right) return left.id < right.id end)
       return result
     end
-    function value:login(id, opts)
+    value.login = function(self, id, opts)
       return async.run(function()
         self.credentials[id] = "api_key"
-        return { ok = true, method = id }
-      end, { on_done = opts.on_done, error_kind = "auth" })
+        return { ok = true, method = id, revision = 1 }
+      end, { on_done = opts and opts.on_done, error_kind = "auth" })
     end
-    function value:logout(id, opts)
+    value.logout = function(self, id, opts)
       return async.run(function()
         self.credentials[id] = nil
-        return { ok = true, method = id }
-      end, { on_done = opts.on_done, error_kind = "auth" })
+        return { ok = true, method = id, revision = 1 }
+      end, { on_done = opts and opts.on_done, error_kind = "auth" })
     end
     function value:resolve(id)
       return async.run(function()
-        return {
-          ok = true,
-          method = id,
-          configured = self.credentials[id] ~= nil,
-        }
+        if self.credentials[id] then
+          return { ok = true, method = id, configured = true,
+            credential_type = "api_key", request_opts = {} }
+        end
+        return { ok = true, method = id, configured = false }
       end, { error_kind = "auth" })
     end
     return value
   end
 
   local function view()
-    local value = {
-      opened = false,
-      snapshots = {},
-      notifications = {},
-      uris = {},
-    }
+    ---@class Neoagent.TestShellView: Neoagent.ProviderShellView
+    ---@field opened boolean
+    ---@field origin? integer
+    ---@field snapshot? Neoagent.ProviderPanelSnapshot
+    ---@field snapshots Neoagent.ProviderPanelSnapshot[]
+    ---@field entries Neoagent.ProviderListEntry[]
+    ---@field notifications [string, integer?][]
+    ---@field uris string[]
+    local value = require("neoagent.ui.provider_shell").new({ config = { style = "pi" } })
+    value.opened, value.snapshots, value.notifications, value.uris, value.entries = false, {}, {}, {}, {}
+    owned_views[#owned_views + 1] = value
+    rawset(value, "set_presentation", false)
+    local destroy = value.destroy
     function value:set(snapshot, providers)
       self.snapshot = util.copy(snapshot)
-      self.providers = util.copy(providers)
+      self.entries = util.copy(providers)
       self.snapshots[#self.snapshots + 1] = self.snapshot
       return true
     end
-    function value:open(origin)
+    value.open = function(self, origin)
       self.origin = origin
       self.opened = true
       return true
@@ -133,19 +163,24 @@ describe("neoagent Provider Shell", function()
     function value:is_open() return self.opened end
     function value:notify(message, level)
       self.notifications[#self.notifications + 1] = { message, level }
-      return true
     end
     function value:open_uri(uri)
       self.uris[#self.uris + 1] = uri
-      return true
+      local process = {}
+      ---@cast process vim.SystemObj
+      return process
     end
     function value:destroy()
-      self.destroyed = true
+      destroy(self)
       self.opened = false
     end
     return value
   end
 
+  ---@param label string
+  ---@param run? fun(ctx: Neoagent.ProviderOperationContext): Neoagent.ProviderOperationRun
+  ---@param mutating? boolean
+  ---@return Neoagent.ProviderOperation
   local function operation(label, run, mutating)
     return {
       label = label,
@@ -156,12 +191,17 @@ describe("neoagent Provider Shell", function()
     }
   end
 
+  ---@param id string
+  ---@param name string
+  ---@param operations? table<string, Neoagent.ProviderOperation>
+  ---@param state? fun(): Neoagent.ProviderState|false
+  ---@return Neoagent.ProviderService
   local function service(id, name, operations, state)
     return {
       id = id,
       name = name,
       state = state or function()
-        return { blocks = { { type = "status", text = "Ready" } } }
+        return { blocks = { { type = "status", level = "info", text = "Ready" } } }
       end,
       operations = operations or {
         inspect = operation("Inspect"),
@@ -169,17 +209,35 @@ describe("neoagent Provider Shell", function()
     }
   end
 
+  ---@param models? table<string, Neoagent.ModelConfigInput|false>
+  ---@param overrides? Partial<Neoagent.CatalogSnapshot>
   local function catalog(models, overrides)
+    ---@class Neoagent.TestShellCatalog: Neoagent.ModelCatalog
+    ---@field refreshes integer
+    local value = require("neoagent.model_catalog").new({ provider_id = "test", models = models })
+    value.refreshes = 0
+    owned_catalogs[#owned_catalogs + 1] = value
+    ---@type table<fun(snapshot: Neoagent.CatalogSnapshot), true>
     local listeners = {}
-    local snapshot = util.deep_merge({
+    ---@type Neoagent.CatalogSnapshot
+    local snapshot = {
       revision = 0,
-      models = util.copy(models or {}),
+      persistence = { configured = false, enabled = false },
+      models = value:snapshot().models,
       validated_at = 1,
       stale = false,
       source = "packaged",
       refresh = { state = "idle" },
-    }, overrides or {})
-    local value = { refreshes = 0 }
+    }
+    if overrides then
+      if overrides.revision ~= nil then snapshot.revision = overrides.revision end
+      if overrides.models then snapshot.models = util.copy(overrides.models) end
+      if overrides.validated_at then snapshot.validated_at = overrides.validated_at end
+      if overrides.source then snapshot.source = overrides.source end
+      if overrides.stale ~= nil then snapshot.stale = overrides.stale end
+      if overrides.refresh then snapshot.refresh = util.copy(overrides.refresh) end
+      if overrides.persistence then snapshot.persistence = util.copy(overrides.persistence) end
+    end
     function value:snapshot() return util.copy(snapshot) end
     function value:subscribe(callback)
       listeners[callback] = true
@@ -189,22 +247,26 @@ describe("neoagent Provider Shell", function()
         return true
       end
     end
-    function value:refresh(opts)
+    value.refresh = function(self, opts)
       assert.are.same({ force = true }, opts)
       self.refreshes = self.refreshes + 1
-      snapshot.revision = snapshot.revision + 1
+      snapshot.revision = assert(snapshot.revision) + 1
       snapshot.source = "source"
       snapshot.stale = false
       snapshot.refresh = { state = "idle" }
       for callback in pairs(listeners) do callback(self:snapshot()) end
       return async.run(function()
-        return { ok = true, snapshot = self:snapshot() }
+        return { ok = true, changed = true, snapshot = self:snapshot() }
       end)
     end
     return value
   end
 
-  local function runtime(selected, definition)
+  ---@param selected Neoagent.ProviderService
+  ---@param definition? Neoagent.ProviderOptions
+  ---@param selected_catalog? Neoagent.ModelCatalog
+  ---@return Neoagent.ProviderRuntime
+  local function runtime(selected, definition, selected_catalog)
     definition = util.copy(definition or {
       api = "fake",
       catalog = {},
@@ -214,14 +276,27 @@ describe("neoagent Provider Shell", function()
     definition.models = definition.models or {}
     return {
       id = selected.id,
-      definition = definition,
-      catalog = catalog(definition.models),
+      definition = definition --[[@as Neoagent.ProviderDefinition]],
+      credentials = require("neoagent.provider_credentials").new({ provider_id = selected.id, provider = definition }),
+      auth_services = {},
+      catalog = selected_catalog or catalog(definition.models),
       service = selected,
     }
   end
 
+  ---@param providers table<string, Neoagent.ProviderOptions>
+  ---@param default_provider? string
+  ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
   local function config(providers, default_provider)
-    return {
+    providers = util.copy(providers)
+    for _, definition in pairs(providers) do
+      if definition.catalog and definition.catalog.discover then
+        definition.catalog.source_id = definition.catalog.source_id or "test"
+        definition.catalog.source_revision = definition.catalog.source_revision or 1
+      end
+    end
+    return require("neoagent.config").resolve({
+      default_registry = false, persistence = { enabled = false },
       default_model = default_provider and {
         provider = default_provider,
         model = "model",
@@ -230,36 +305,73 @@ describe("neoagent Provider Shell", function()
       auth = {
         path = "/tmp/neoagent-provider-shell-credentials.json",
         methods = {
-          key = { name = "API key", type = "api_key" },
+          key = require("neoagent.auth.api_key").new({ name = "API key" }),
+          ["beta-key"] = require("neoagent.auth.api_key").new({ name = "Beta key" }),
+          dashboard = require("neoagent.auth.api_key").new({ name = "Dashboard authorization" }),
         },
       },
-      ui = { renderer = {} },
-    }
+      ui = { style = "pi" },
+    })
   end
 
+  ---@class Neoagent.TestShellRuntime
+  ---@field id string
+  ---@field definition Neoagent.ProviderOptions
+  ---@field catalog Neoagent.ModelCatalog
+  ---@field service Neoagent.ProviderService
+
+  ---@class Neoagent.TestShellOptions: Neoagent.ProviderShellOptions
+  ---@field runtimes table<string, Neoagent.TestShellRuntime|Neoagent.ProviderService>
+
+  ---@param opts Neoagent.TestShellOptions
   local function shell(opts)
-    local selected = {}
-    for key, value in pairs(opts) do selected[key] = value end
+    opts.auth.methods = opts.config.auth.methods
+    ---@type Neoagent.ProviderShellOptions
+    local selected = { config = opts.config, auth = opts.auth, presenter = opts.presenter, view = opts.view, host = opts.host, host_effects = opts.host_effects, runtimes = {} }
     selected.runtimes = {}
     for id, value in pairs(opts.runtimes or {}) do
-      selected.runtimes[id] = value.service and value
-        or runtime(value, opts.config.providers[id])
+      if rawget(value, "service") then
+        ---@cast value Neoagent.TestShellRuntime
+        selected.runtimes[id] = runtime(value.service, value.definition, value.catalog)
+      else
+        selected.runtimes[id] = runtime(value --[[@as Neoagent.ProviderService]], opts.config.providers[id])
+      end
+    end
+    for id, value in pairs(selected.runtimes) do
+      local definition = opts.config.providers[id]
+      value.credentials = require("neoagent.provider_credentials").new({
+        provider_id = id, provider = definition, authentication = opts.auth,
+        method = opts.config.auth.methods[definition.auth],
+      })
     end
     local value = ProviderShell.new(selected)
     shells[#shells + 1] = value
     return value
   end
 
+  ---@param operations Neoagent.ProviderShellOperation[]
   local function ids(operations)
     return vim.tbl_map(function(item) return item.id end, operations)
   end
 
+  ---@param operations Neoagent.ProviderShellOperation[]
   local function labels(operations)
     return vim.tbl_map(function(item) return item.label end, operations)
   end
 
+  ---@generic T
+  ---@param values T[]
+  ---@param predicate fun(value: T): boolean
+  local function any(values, predicate)
+    for _, value in ipairs(values) do if predicate(value) then return true end end
+    return false
+  end
+
+  ---@param surface Neoagent.TestShellView
+  ---@param id string
+  ---@return Neoagent.ProviderListEntry
   local function provider(surface, id)
-    for _, entry in ipairs(surface.providers or {}) do
+    for _, entry in ipairs(surface.entries or {}) do
       if entry.id == id then return entry end
     end
     error("provider is missing from the shell surface: " .. id)
@@ -281,15 +393,15 @@ describe("neoagent Provider Shell", function()
       view = function() return surface end,
     })
 
-    assert.are.equal("beta", value:info().id)
+    assert.are.equal("beta", assert(value:info()).id)
     assert.are.same({ "alpha", "beta" },
       vim.tbl_map(function(item) return item.id end, value:providers()))
     assert(value:open(17))
     assert.are.equal(17, surface.origin)
     assert.is_true(value:is_open())
     assert.are.equal("alpha", value:select("alpha"))
-    assert.are.equal("alpha", value:info().id)
-    assert.is_false(value:toggle())
+    assert.are.equal("alpha", assert(value:info()).id)
+    assert.is_false((value:toggle()))
     assert.is_false(value:is_open())
     assert(value:toggle())
   end)
@@ -333,11 +445,11 @@ describe("neoagent Provider Shell", function()
 
     assert(value:open())
     assert.is_true(value:is_active())
-    assert.is_true(surface.providers[1].enabled)
-    assert.is_true(surface.providers[2].enabled)
+    assert.is_true(assert(surface.entries[1]).enabled)
+    assert.is_true(assert(surface.entries[2]).enabled)
     assert.are.equal("alpha", value:cycle(-1))
     assert(vim.wait(1000, function()
-      return value:info().id == "alpha" and not value:is_active()
+      return assert(value:info()).id == "alpha" and not value:is_active()
     end, 5))
     assert.is_true(refresh_cancelled)
 
@@ -346,10 +458,11 @@ describe("neoagent Provider Shell", function()
     assert.is_true(value:cancel())
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
     local mutation = assert(value:run("mutate"))
+    assert(type(mutation) == "table")
     local selected, err = value:select("alpha")
     assert.is_nil(selected)
-    assert.matches("active provider action", err.message)
-    assert.are.equal("beta", value:info().id)
+    assert.matches("active provider action", assert(err).message)
+    assert.are.equal("beta", assert(value:info()).id)
     assert(value:cancel())
     assert.is_false(wait(mutation).ok)
     assert.is_true(mutation_cancelled)
@@ -374,9 +487,7 @@ describe("neoagent Provider Shell", function()
       alpha = { api = "fake", models = {} },
       beta = { api = "fake", models = {}, auth = "beta-key" },
     }, "alpha")
-    configured.auth.methods["beta-key"] = {
-      name = "Beta key", type = "api_key",
-    }
+    configured.auth.methods["beta-key"] = require("neoagent.auth.api_key").new({ name = "Beta key" })
     local auth = authentication()
     local value = shell({
       config = configured,
@@ -388,9 +499,9 @@ describe("neoagent Provider Shell", function()
 
     assert(value:open())
     assert.is_true(value:is_active())
-    assert.is_true(value:login("beta"))
+    assert.is_true((value:login("beta")))
     assert(vim.wait(1000, function()
-      return value:info().id == "beta"
+      return assert(value:info()).id == "beta"
         and auth.credentials["beta-key"] == "api_key"
         and not value:is_active()
     end, 5))
@@ -398,9 +509,9 @@ describe("neoagent Provider Shell", function()
 
     assert.are.equal("alpha", value:select("alpha"))
     assert.is_true(value:is_active())
-    assert.is_true(value:logout("beta"))
+    assert.is_true((value:logout("beta")))
     assert(vim.wait(1000, function()
-      return value:info().id == "beta"
+      return assert(value:info()).id == "beta"
         and auth.credentials["beta-key"] == nil
         and not value:is_active()
     end, 5))
@@ -414,7 +525,7 @@ describe("neoagent Provider Shell", function()
       config = config({
         fake = {
           api = "fake",
-          catalog = { discover = function() end },
+          catalog = { discover = function() error("unexpected catalog discovery") end },
           models = {},
           auth = "key",
         },
@@ -428,15 +539,15 @@ describe("neoagent Provider Shell", function()
       connected = false,
       error = false,
     }, provider(surface, "fake").authentication)
-    assert.are.same({ "Log in" }, labels(value:info().operations))
+    assert.are.same({ "Log in" }, labels(assert(value:info()).operations))
     assert.are.same({}, value:operations())
-    assert.are.equal("Logged out", value:info().state.blocks[1].value)
+    assert.are.equal("Logged out", assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
     local blocked, blocked_err = value:run("inspect")
     assert.is_nil(blocked)
-    assert.matches("Log in", blocked_err.message)
+    assert.matches("Log in", assert(blocked_err).message)
     local logout, logout_err = value:logout()
     assert.is_nil(logout)
-    assert.matches("unavailable", logout_err.message)
+    assert.matches("unavailable", assert(logout_err).message)
 
     assert.is_true(wait(assert(value:login())).ok)
     assert.are.same({
@@ -445,22 +556,22 @@ describe("neoagent Provider Shell", function()
       error = false,
     }, provider(surface, "fake").authentication)
     assert.are.same({ "Refresh model catalog", "Inspect", "Log out" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.are.same({ "neoagent.catalog.refresh", "inspect" },
       ids(value:operations()))
-    assert.are.equal("API key", value:info().state.blocks[1].value)
+    assert.are.equal("API key", assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
     local duplicate, duplicate_err = value:login()
     assert.is_nil(duplicate)
-    assert.matches("unavailable", duplicate_err.message)
+    assert.matches("unavailable", assert(duplicate_err).message)
 
     assert.is_true(wait(assert(value:logout())).ok)
-    assert.are.same({ "Log in" }, labels(value:info().operations))
+    assert.are.same({ "Log in" }, labels(assert(value:info()).operations))
     assert.is_false(value:cancel_login())
   end)
 
   it("presents login choices in the open provider menu", function()
     local auth = authentication()
-    function auth:login(id, opts)
+    auth.login = function(self, id, opts)
       return async.run(function()
         self.login_choice = async.await(function(done)
           return opts.prompt({
@@ -472,15 +583,15 @@ describe("neoagent Provider Shell", function()
             },
           }, done)
         end)
-        return { ok = true, method = id }
-      end, { on_done = opts.on_done, error_kind = "auth" })
+        return { ok = true, method = id, revision = 1 }
+      end, { on_done = opts and opts.on_done, error_kind = "auth" })
     end
     local fallback_select = false
     vim.ui.select = function()
       fallback_select = true
     end
     local surface = view()
-    function surface:set_presentation(snapshot)
+    surface.set_presentation = function(self, snapshot)
       self.presentation = util.copy(snapshot)
       return true
     end
@@ -495,6 +606,7 @@ describe("neoagent Provider Shell", function()
     assert(value:open())
 
     local login = assert(value:login())
+    assert(type(login) == "table")
     local info = value:info()
 
     assert.is_false(fallback_select)
@@ -502,17 +614,17 @@ describe("neoagent Provider Shell", function()
       "Browser login (default)",
       "Device code login (headless)",
       "Cancel login",
-    }, labels(info.operations))
+    }, labels(assert(info).operations))
     assert.are.equal("Select OpenAI Codex login method:",
-      info.operation_prompt)
-    assert(value:run(info.operations[1].id))
+      assert(info).operation_prompt)
+    assert(value:run(assert(assert(info).operations[1]).id))
     assert.is_true(wait(login).ok)
     assert.are.equal("browser", auth.login_choice)
   end)
 
   it("keeps owned authentication feedback in the provider shell", function()
     local surface = view()
-    function surface:set_presentation(snapshot)
+    surface.set_presentation = function(self, snapshot)
       self.presentation = util.copy(snapshot)
       return true
     end
@@ -529,13 +641,13 @@ describe("neoagent Provider Shell", function()
     assert.is_true(wait(assert(value:login())).ok)
     assert(vim.wait(1000, function()
       return #surface.notifications > 0
-        or vim.iter(value:info().state.blocks):any(function(block)
+        or any(assert(assert(assert(value:info()).state).blocks), function(block)
           return block.type == "status"
             and block.text:find("logged in with API key", 1, true) ~= nil
         end)
     end, 5))
     assert.are.same({}, surface.notifications)
-    assert(vim.iter(value:info().state.blocks):any(function(block)
+    assert(any(assert(assert(assert(value:info()).state).blocks), function(block)
       return block.type == "status"
         and block.text:find("logged in with API key", 1, true) ~= nil
     end))
@@ -543,7 +655,7 @@ describe("neoagent Provider Shell", function()
 
   it("projects authentication failures as disconnected errors", function()
     local auth = authentication()
-    function auth:has_credentials()
+    auth.has_credentials = function(self)
       return nil, util.error("auth", "credential store failed")
     end
     local surface = view()
@@ -562,8 +674,8 @@ describe("neoagent Provider Shell", function()
       error = true,
     }, provider(surface, "fake").authentication)
     assert.are.equal("credential store failed",
-      value:info().state.blocks[1].value)
-    assert.are.same({ "Log in" }, labels(value:info().operations))
+      assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
+    assert.are.same({ "Log in" }, labels(assert(value:info()).operations))
   end)
 
   it("projects usable optional, configured, and environment credentials", function()
@@ -572,21 +684,21 @@ describe("neoagent Provider Shell", function()
       config = config({
         configured = {
           api = "fake",
-          catalog = { discover = function() end },
+          catalog = { discover = function() error("unexpected catalog discovery") end },
           models = {},
           auth = "key",
           api_key = "literal",
         },
         environment = {
           api = "fake",
-          catalog = { discover = function() end },
+          catalog = { discover = function() error("unexpected catalog discovery") end },
           models = {},
           auth = "key",
           api_key = function() return "ambient" end,
         },
         optional = {
           api = "fake",
-          catalog = { discover = function() end },
+          catalog = { discover = function() error("unexpected catalog discovery") end },
           models = {},
           auth = "key",
           auth_optional = true,
@@ -616,23 +728,23 @@ describe("neoagent Provider Shell", function()
       error = false,
     }, provider(surface, "optional").authentication)
     assert.are.same({ "Log in", "Refresh model catalog", "Inspect" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.are.same({ "neoagent.catalog.refresh", "inspect" },
       ids(value:operations()))
-    assert.are.equal("Optional", value:info().state.blocks[1].value)
+    assert.are.equal("Optional", assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
     assert.are.equal("environment", value:select("environment"))
     assert.are.same({ "neoagent.catalog.refresh", "inspect" },
-      ids(value:info().operations))
+      ids(assert(value:info()).operations))
     assert.are.equal("Environment credential",
-      value:info().state.blocks[1].value)
+      assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
     local logout, err = value:logout()
     assert.is_nil(logout)
-    assert.matches("unavailable", err.message)
+    assert.matches("unavailable", assert(err).message)
     assert.are.equal("configured", value:select("configured"))
     assert.are.same({ "Refresh model catalog", "Inspect" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.are.equal("Configured credential",
-      value:info().state.blocks[1].value)
+      assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
   end)
 
   it("allows a login method to augment an ambient credential", function()
@@ -652,10 +764,10 @@ describe("neoagent Provider Shell", function()
     })
 
     assert.are.same({ "Log in", "Inspect" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.is_true(wait(assert(value:login())).ok)
     assert.are.same({ "Inspect", "Log out" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
   end)
 
   it("keeps primary and scoped authentication actions independent", function()
@@ -667,12 +779,10 @@ describe("neoagent Provider Shell", function()
     } }, "fake")
     configured.auth.methods.key.login_label = "Login"
     configured.auth.methods.key.logout_label = "Logout"
-    configured.auth.methods.dashboard = {
-      name = "Dashboard authorization",
-      type = "api_key",
-      login_label = "Login to dashboard (optional to see quotas)",
-      logout_label = "Logout from dashboard",
-    }
+    configured.auth.methods.dashboard = require("neoagent.auth.api_key").new({ name = "Dashboard authorization" })
+    configured.auth.methods.dashboard.login_label = "Login to dashboard (optional to see quotas)"
+    configured.auth.methods.dashboard.logout_label = "Logout from dashboard"
+
     local auth = authentication()
     local value = shell({
       config = configured,
@@ -686,22 +796,22 @@ describe("neoagent Provider Shell", function()
       "Login",
       "Login to dashboard (optional to see quotas)",
     },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.is_true(wait(assert(value:run(
       "neoagent.auth.login:dashboard"))).ok)
     assert.is_nil(auth.credentials.key)
     assert.are.equal("api_key", auth.credentials.dashboard)
     assert.are.same({ "Login", "Logout from dashboard" },
-      labels(value:info().operations))
-    assert.are.equal("Logged out", value:info().state.blocks[1].value)
+      labels(assert(value:info()).operations))
+    assert.are.equal("Logged out", assert(assert(assert(assert(value:info()).state).blocks)[1]).value)
     assert.are.equal("Dashboard authorization",
-      value:info().state.blocks[2].label)
-    assert.are.equal("Logged in", value:info().state.blocks[2].value)
+      assert(assert(assert(assert(value:info()).state).blocks)[2]).label)
+    assert.are.equal("Logged in", assert(assert(assert(assert(value:info()).state).blocks)[2]).value)
 
     assert.is_true(wait(assert(value:login())).ok)
     assert.are.equal("api_key", auth.credentials.key)
     assert.are.same({ "Inspect", "Logout", "Logout from dashboard" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
 
     assert.is_true(wait(assert(value:run(
       "neoagent.auth.logout:dashboard"))).ok)
@@ -711,7 +821,7 @@ describe("neoagent Provider Shell", function()
       "Login to dashboard (optional to see quotas)",
       "Inspect",
       "Logout",
-    }, labels(value:info().operations))
+    }, labels(assert(value:info()).operations))
   end)
 
   it("gates Provider Service operations by their authentication scope", function()
@@ -741,12 +851,10 @@ describe("neoagent Provider Shell", function()
       auth = "key",
       auth_scopes = { dashboard = "dashboard" },
     } }, "fake")
-    configured.auth.methods.dashboard = {
-      name = "Dashboard authorization",
-      type = "api_key",
-      login_label = "Log in to dashboard",
-      logout_label = "Log out from dashboard",
-    }
+    configured.auth.methods.dashboard = require("neoagent.auth.api_key").new({ name = "Dashboard authorization" })
+    configured.auth.methods.dashboard.login_label = "Log in to dashboard"
+    configured.auth.methods.dashboard.logout_label = "Log out from dashboard"
+
     local value = shell({
       config = configured,
       auth = authentication({ dashboard = "api_key" }),
@@ -756,16 +864,16 @@ describe("neoagent Provider Shell", function()
     })
 
     assert.are.same({ "Log in", "Show quotas", "Log out from dashboard" },
-      labels(value:info().operations))
+      labels(assert(value:info()).operations))
     assert.are.same({ "quotas" }, ids(value:operations()))
     assert.is_true(wait(assert(value:run("quotas"))).ok)
     assert.are.equal("dashboard", resolved_method)
     local unavailable, err = value:run("inspect")
     assert.is_nil(unavailable)
-    assert.matches("Log in", err.message)
+    assert.matches("Log in", assert(err).message)
     unavailable, err = value:run("hidden")
     assert.is_nil(unavailable)
-    assert.matches("scope is unavailable", err.message)
+    assert.matches("scope is unavailable", assert(err).message)
   end)
 
   it("confirms logout before removing stored credentials", function()
@@ -786,19 +894,19 @@ describe("neoagent Provider Shell", function()
 
     local rejected = wait(assert(value:logout()))
     assert.is_false(rejected.ok)
-    assert.are.equal("cancelled", rejected.error.kind)
+    assert.are.equal("cancelled", assert(rejected.error).kind)
     assert.are.equal("api_key", auth.credentials.key)
     assert.are.same({
       prompt = "Log out of API key?",
       accept_label = "Log out",
       reject_label = "Cancel",
-    }, presented.requests[1].request)
+    }, assert(presented.requests[1]).request)
 
     presented.confirm_error = util.error(
       "presentation", "confirmation unavailable")
     local unavailable = wait(assert(value:logout()))
     assert.is_false(unavailable.ok)
-    assert.matches("confirmation unavailable", unavailable.error.message)
+    assert.matches("confirmation unavailable", assert(unavailable.error).message)
     assert.are.equal("api_key", auth.credentials.key)
 
     presented.confirm_error = nil
@@ -809,7 +917,7 @@ describe("neoagent Provider Shell", function()
     end
     unavailable = wait(assert(value:logout()))
     assert.is_false(unavailable.ok)
-    assert.matches("logout unavailable", unavailable.error.message)
+    assert.matches("logout unavailable", assert(unavailable.error).message)
     assert.are.equal("api_key", auth.credentials.key)
 
     value.authentication.logout = logout
@@ -834,7 +942,7 @@ describe("neoagent Provider Shell", function()
         id = "fake",
         definition = {
           api = "fake",
-          catalog = { discover = function() end },
+          catalog = { discover = function() error("unexpected catalog discovery") end },
           models = {},
         },
         catalog = selected_catalog,
@@ -844,18 +952,18 @@ describe("neoagent Provider Shell", function()
       view = function() return view() end,
     })
     local info = value:info()
-    assert.are.equal("2 available", info.state.blocks[2].value)
-    assert.are.equal("cache · stale", info.state.blocks[3].value)
-    assert.are.equal("error", info.state.blocks[3].level)
-    assert.are.equal("catalog offline", info.state.blocks[4].text)
+    assert.are.equal("2 available", assert(assert(assert(assert(info).state).blocks)[2]).value)
+    assert.are.equal("cache · stale", assert(assert(assert(assert(info).state).blocks)[3]).value)
+    assert.are.equal("error", assert(assert(assert(assert(info).state).blocks)[3]).level)
+    assert.are.equal("catalog offline", assert(assert(assert(assert(info).state).blocks)[4]).text)
 
     assert.is_true(wait(assert(value:run(
       "neoagent.catalog.refresh"))).ok)
     assert.are.equal(1, selected_catalog.refreshes)
     info = value:info()
-    assert.are.equal("source · fresh", info.state.blocks[3].value)
-    assert.are.equal("success", info.state.blocks[3].level)
-    assert.are.equal("succeeded", info.state.operation.state)
+    assert.are.equal("source · fresh", assert(assert(assert(assert(info).state).blocks)[3]).value)
+    assert.are.equal("success", assert(assert(assert(assert(info).state).blocks)[3]).level)
+    assert.are.equal("succeeded", assert(assert(assert(info).state).operation).state)
   end)
 
   it("omits catalog refresh for static catalogs", function()
@@ -871,10 +979,10 @@ describe("neoagent Provider Shell", function()
       view = function() return view() end,
     })
 
-    assert.are.same({ "Inspect" }, labels(value:info().operations))
+    assert.are.same({ "Inspect" }, labels(assert(value:info()).operations))
     local run, err = value:run("neoagent.catalog.refresh")
     assert.is_nil(run)
-    assert.matches("Unknown provider operation", err.message)
+    assert.matches("Unknown provider operation", assert(err).message)
   end)
 
   it("reports disabled persistence for a usable catalog", function()
@@ -899,9 +1007,9 @@ describe("neoagent Provider Shell", function()
       view = function() return view() end,
     })
 
-    local blocks = value:info().state.blocks
-    assert.are.equal("warn", blocks[#blocks].level)
-    assert.matches("identity unavailable", blocks[#blocks].text)
+    local blocks = assert(assert(value:info()).state).blocks
+    assert.are.equal("warn", assert(assert(blocks)[#blocks]).level)
+    assert.matches("identity unavailable", (assert(assert(assert(blocks)[#blocks]).text)))
   end)
 
   it("shares model leases with shell operations and handles synchronous runs", function()
@@ -926,13 +1034,14 @@ describe("neoagent Provider Shell", function()
     })
 
     local active = assert(value:run("mutate"))
+    assert(type(active) == "table")
     assert.is_true(value:is_active())
     local acquired, acquire_err = provider_service.acquire(managed)
     assert.is_nil(acquired)
-    assert.matches("mutating provider operation", acquire_err.message)
+    assert.matches("mutating provider operation", assert(acquire_err).message)
     assert.is_true(value:cancel())
-    assert.is_false(wait(active).ok)
-    assert.are.equal("cancelled", value:info().state.operation.state)
+    assert.is_false(wait(assert(active)).ok)
+    assert.are.equal("cancelled", assert(assert(assert(value:info()).state).operation).state)
 
     local release = assert(provider_service.acquire(managed))
     local available = {}
@@ -943,8 +1052,9 @@ describe("neoagent Provider Shell", function()
     assert.is_false(available.mutate)
     local blocked, blocked_err = value:run("mutate")
     assert.is_nil(blocked)
-    assert.matches("active provider use", blocked_err.message)
+    assert.matches("active provider use", assert(blocked_err).message)
     local inspect = assert(value:run("inspect"))
+    assert(type(inspect) == "table")
     assert.is_true(wait(inspect).ok)
     assert.is_false(value:is_active())
     release()
@@ -987,9 +1097,9 @@ describe("neoagent Provider Shell", function()
 
     local run, err = value:login()
     assert.is_nil(run)
-    assert.matches("active provider use", err.message)
+    assert.matches("active provider use", assert(err).message)
     assert.is_nil(auth.credentials.key)
-    assert.is_false(value:info().operations[1].enabled)
+    assert.is_false(assert(assert(value:info()).operations[1]).enabled)
     local alpha_use = assert(provider_service.acquire_use(alpha))
     assert.is_true(alpha_use:release())
 
@@ -998,7 +1108,7 @@ describe("neoagent Provider Shell", function()
     local second_use = assert(provider_service.acquire_use(beta))
     run, err = value:logout()
     assert.is_nil(run)
-    assert.matches("active provider use", err.message)
+    assert.matches("active provider use", assert(err).message)
     assert.are.equal("api_key", auth.credentials.key)
     assert.is_true(second_use:release())
     assert.is_true(wait(assert(value:logout())).ok)
@@ -1009,7 +1119,7 @@ describe("neoagent Provider Shell", function()
     local managed = service("fake", "Fake")
     local selected_catalog = catalog()
     local refresh = selected_catalog.refresh
-    function selected_catalog:refresh(opts)
+    selected_catalog.refresh = function(self, opts)
       local lease, err = provider_service.acquire_use(managed)
       assert(lease, err and err.message)
       assert.is_true(lease:release())
@@ -1042,13 +1152,13 @@ describe("neoagent Provider Shell", function()
     assert.is_true(wait(assert(value:logout())).ok)
     assert.are.equal(1, selected_catalog.refreshes)
     assert.are.equal("environment",
-      provider(value.view_value, "fake").authentication.source)
+      assert(provider(value.view_value, "fake").authentication).source)
   end)
 
   it("cancels logout through the Shell action owner", function()
     local auth = authentication({ key = "api_key" })
     local started, cancelled = false, false
-    function auth:logout(_, opts)
+    auth.logout = function(self, _, opts)
       started = true
       return async.run(function()
         return async.await(function(done)
@@ -1057,7 +1167,7 @@ describe("neoagent Provider Shell", function()
             done.reject(async.cancelled_error)
           end
         end)
-      end, { on_done = opts.on_done, error_kind = "auth" })
+      end, { on_done = opts and opts.on_done, error_kind = "auth" })
     end
     local managed = service("fake", "Fake")
     local value = shell({
@@ -1078,6 +1188,7 @@ describe("neoagent Provider Shell", function()
     })
 
     local run = assert(value:logout())
+    assert(type(run) == "table")
     assert.is_true(value:is_active())
     assert(vim.wait(1000, function() return started end, 5))
     assert.is_true(value:cancel())
@@ -1108,16 +1219,18 @@ describe("neoagent Provider Shell", function()
 
     auth.login = function() error("login construction failed") end
     local thrown = assert(value:login())
+    assert(type(thrown) == "table")
     assert.is_false(wait(thrown).ok)
-    assert.matches("login construction failed", thrown:result().error.message)
+    assert.matches("login construction failed", assert(assert(thrown:result()).error).message)
     assert.is_false(value:is_active())
     local use = assert(provider_service.acquire_use(managed))
     assert.is_true(use:release())
 
     auth.login = function() return {} end
     local malformed = assert(value:login())
+    assert(type(malformed) == "table")
     assert.is_false(wait(malformed).ok)
-    assert.matches("must return a Run", malformed:result().error.message)
+    assert.matches("must return a Run", assert(assert(malformed:result()).error).message)
     assert.is_false(value:is_active())
     use = assert(provider_service.acquire_use(managed))
     assert.is_true(use:release())
@@ -1154,6 +1267,8 @@ describe("neoagent Provider Shell", function()
       runtimes = { fake = managed },
       presenter = presenter(),
       host_effects = {
+        on_exit = Applet.host_effects.on_exit,
+        refresh_file = Applet.host_effects.refresh_file,
         open_document = function(document)
           opened = util.copy(document)
           return true
@@ -1163,7 +1278,7 @@ describe("neoagent Provider Shell", function()
     })
 
     assert.is_true(wait(assert(value:run("report"))).ok)
-    assert.are.equal("succeeded", value:info().state.operation.state)
+    assert.are.equal("succeeded", assert(assert(assert(value:info()).state).operation).state)
     assert.are.same({
       name = "usage.md",
       filetype = "markdown",
@@ -1216,12 +1331,12 @@ describe("neoagent Provider Shell", function()
     assert.are.same({ "alpha", "coding", "", true }, answers)
     assert.are.same({ "select", "input", "input", "confirm" },
       vim.tbl_map(function(entry) return entry.kind end, presented.requests))
-    assert.are.equal("Choose workspace", presented.requests[1].request.prompt)
-    assert.are.equal("Name preset", presented.requests[2].request.prompt)
-    assert.are.equal("API key", presented.requests[3].request.prompt)
-    assert.is_true(presented.requests[3].request.secret)
-    assert.are.equal("Apply preset?", presented.requests[4].request.prompt)
-    assert.matches("Preset ready", presented.notifications[1].message)
+    assert.are.equal("Choose workspace", assert(presented.requests[1]).request.prompt)
+    assert.are.equal("Name preset", assert(presented.requests[2]).request.prompt)
+    assert.are.equal("API key", assert(presented.requests[3]).request.prompt)
+    assert.is_true(assert(presented.requests[3]).request.secret)
+    assert.are.equal("Apply preset?", assert(presented.requests[4]).request.prompt)
+    assert.matches("Preset ready", assert(presented.notifications[1]).message)
     assert.are.equal(presented, value:presenter())
   end)
 
@@ -1231,7 +1346,9 @@ describe("neoagent Provider Shell", function()
       invalid = operation("Invalid selection", function(ctx)
         return async.run(function()
           async.await(function(done)
-            return ctx.interact.select({}, done)
+            local malformed = {}
+        ---@cast malformed Neoagent.SelectRequest
+        return ctx.interact.select(malformed, done)
           end)
           return { ok = true }
         end)
@@ -1256,7 +1373,7 @@ describe("neoagent Provider Shell", function()
     local invalid = wait(assert(value:run("invalid")))
 
     assert.is_false(invalid.ok)
-    assert.matches("Select requires items", invalid.error.message)
+    assert.matches("Select requires items", assert(invalid.error).message)
 
     presented.select = function()
       return async.run(function()
@@ -1266,11 +1383,12 @@ describe("neoagent Provider Shell", function()
     local rejected = wait(assert(value:run("rejected")))
 
     assert.is_false(rejected.ok)
-    assert.matches("selection closed", rejected.error.message)
+    assert.matches("selection closed", assert(rejected.error).message)
   end)
 
   it("runs each service refresh operation whenever its shell is focused", function()
     local calls = { alpha = 0, beta = 0 }
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
     local inspect_done
     local services = {}
     for _, id in ipairs({ "alpha", "beta" }) do
@@ -1305,10 +1423,11 @@ describe("neoagent Provider Shell", function()
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
 
     local inspect = assert(value:run("inspect"))
+    assert(type(inspect) == "table")
     assert(vim.wait(1000, function() return inspect_done ~= nil end, 5))
     assert(value:open())
     assert.are.equal(1, calls.alpha)
-    inspect_done.resolve({ ok = true })
+    assert(inspect_done).resolve({ ok = true })
     assert(vim.wait(1000, function()
       return inspect:is_done() and calls.alpha == 2 and not value:is_active()
     end, 5))
@@ -1325,6 +1444,7 @@ describe("neoagent Provider Shell", function()
   end)
 
   it("bounds completion, subscriptions, failures, and active actions", function()
+    ---@type fun()?
     local provider_callback
     local cancelled = false
     local managed = service("fake", "Fake", {
@@ -1334,7 +1454,9 @@ describe("neoagent Provider Shell", function()
         complete = function(lead, args)
           assert.are.equal("a", lead)
           assert.are.equal("context", args)
-          return { "azure", "alpha", "beta", "", "bad\nvalue", 42 }
+          local malformed = { "azure", "alpha", "beta", "", "bad\nvalue", 42 }
+          ---@cast malformed string[]
+          return malformed
         end,
         run = function()
           return async.run(function() return { ok = true } end)
@@ -1378,6 +1500,8 @@ describe("neoagent Provider Shell", function()
       runtimes = { fake = managed },
       presenter = presented,
       host_effects = {
+        on_exit = Applet.host_effects.on_exit,
+        refresh_file = Applet.host_effects.refresh_file,
         open_document = function()
           return nil, util.error("ui", "document failed")
         end,
@@ -1386,9 +1510,9 @@ describe("neoagent Provider Shell", function()
     })
 
     assert.are.equal("Provider state is unavailable",
-      value:info().state.blocks[1].text)
+      assert(assert(assert(assert(value:info()).state).blocks)[1]).text)
     assert.is_function(provider_callback)
-    provider_callback()
+    assert(provider_callback)()
     assert(vim.wait(1000, function()
       return value.refresh_scheduled == false
     end, 5))
@@ -1400,22 +1524,24 @@ describe("neoagent Provider Shell", function()
     assert.are.equal("fake", value:select("fake"))
     local cycled, cycle_err = value:cycle(0)
     assert.is_nil(cycled)
-    assert.matches("step must be", cycle_err.message)
+    assert.matches("step must be", assert(cycle_err).message)
 
     local pending = assert(value:run("pending"))
+    assert(type(pending) == "table")
     local blocked, blocked_err = value:run("complete")
     assert.is_nil(blocked)
-    assert.matches("already active", blocked_err.message)
+    assert.matches("already active", assert(blocked_err).message)
     assert.is_true(value:cancel())
     assert.is_false(wait(pending).ok)
     assert.is_true(cancelled)
 
     local failed = assert(value:run("fail"))
+    assert(type(failed) == "table")
     assert.is_false(wait(failed).ok)
-    assert.are.equal("failed", value:info().state.operation.state)
-    assert.are.equal("operation failed", value:info().state.operation.detail)
+    assert.are.equal("failed", assert(assert(assert(value:info()).state).operation).state)
+    assert.are.equal("operation failed", assert(assert(assert(value:info()).state).operation).detail)
     assert.is_true(wait(assert(value:run("report"))).ok)
-    assert.is_true(vim.iter(presented.notifications):any(function(notification)
+    assert.is_true(any(presented.notifications, function(notification)
       return notification.message:match("failed to open provider document")
         ~= nil
     end))
@@ -1432,12 +1558,12 @@ describe("neoagent Provider Shell", function()
 
   it("cancels login actions and reports provider adapter failures", function()
     local auth = authentication()
-    function auth:login(_, opts)
+    auth.login = function(self, _, opts)
       return async.run(function()
         return async.await(function(done)
           return function() done.reject(async.cancelled_error) end
         end)
-      end, { on_done = opts.on_done, error_kind = "auth" })
+      end, { on_done = opts and opts.on_done, error_kind = "auth" })
     end
     local managed = service("fake", "Fake")
     managed.subscribe = function() error("subscription failed") end
@@ -1453,26 +1579,28 @@ describe("neoagent Provider Shell", function()
       view = function() return surface end,
     })
 
-    assert.matches("subscription failed", surface.notifications[1][1])
-    assert.is_true(value:presenter():notify({ message = "notice" }))
-    assert.is_true(value:presenter():open_uri({ uri = "https://example.test" }))
+    assert.matches("subscription failed", assert(surface.notifications[1])[1])
+    value:presenter():notify({ message = "notice" })
+    assert.are.equal("notice", assert(surface.notifications[#surface.notifications])[1])
+    value:presenter():open_uri({ uri = "https://example.test" })
     assert.are.equal("https://example.test", surface.uris[1])
     local login = assert(value:login("fake"))
+    assert(type(login) == "table")
     assert.is_true(value:is_authenticating())
-    assert.are.same({ "Cancel login" }, labels(value:info().operations))
+    assert.are.same({ "Cancel login" }, labels(assert(value:info()).operations))
     local changed, changed_err = value:select("other")
     assert.is_nil(changed)
-    assert.matches("Finish the active provider action", changed_err.message)
-    assert.is_true(value:run(value:info().operations[1].id))
+    assert.matches("Finish the active provider action", assert(changed_err).message)
+    assert.is_true((value:run(assert(assert(value:info()).operations[1]).id)))
     assert.is_false(wait(login).ok)
     assert.is_false(value:cancel_login())
 
     local selected, select_err = value:login("missing")
     assert.is_nil(selected)
-    assert.matches("Unknown provider", select_err.message)
+    assert.matches("Unknown provider", assert(select_err).message)
     selected, select_err = value:logout("missing")
     assert.is_nil(selected)
-    assert.matches("Unknown provider", select_err.message)
+    assert.matches("Unknown provider", assert(select_err).message)
 
     local broken = shell({
       config = config({ broken = {
@@ -1486,16 +1614,19 @@ describe("neoagent Provider Shell", function()
       presenter = presenter(),
       view = function() return view() end,
     })
-    assert.is_true(broken:info().operations[1].label == "Log in")
-    assert.matches("environment credential",
-      broken:info().state.blocks[1].value)
+    assert.is_true(assert(assert(broken:info()).operations[1]).label == "Log in")
+    local credential_text = assert(assert(assert(assert(broken:info()).state).blocks)[1]).value
+    assert(type(credential_text) == "string")
+    assert.matches("environment credential", credential_text)
   end)
 
   it("bounds service, selection, and lifecycle failures", function()
     local presented = presenter()
     local managed = service("broken", "Broken", {
       bad = operation("Bad", function(ctx)
-        ctx.interact.progress({ state = "invalid" })
+        local malformed = { state = "invalid" }
+        ---@cast malformed Neoagent.ProviderOperationStatus
+        ctx.interact.progress(malformed)
         return async.run(function()
           return {
             ok = true,
@@ -1513,15 +1644,15 @@ describe("neoagent Provider Shell", function()
     })
 
     assert.are.equal("Provider state is unavailable",
-      value:info().state.blocks[1].text)
+      assert(assert(assert(assert(value:info()).state).blocks)[1]).text)
     assert.is_true(wait(assert(value:run("bad"))).ok)
     assert.is_true(#presented.notifications >= 3)
-    assert.is_nil(value:select("missing"))
-    assert.is_nil(value:run("missing"))
+    assert.is_nil((value:select("missing")))
+    assert.is_nil((value:run("missing")))
     value:destroy()
-    assert.is_nil(value:open())
-    assert.is_nil(value:select("broken"))
-    assert.is_nil(value:run("bad"))
+    assert.is_nil((value:open()))
+    assert.is_nil((value:select("broken")))
+    assert.is_nil((value:run("bad")))
 
     local empty_presenter = presenter()
     local empty = shell({
@@ -1533,14 +1664,14 @@ describe("neoagent Provider Shell", function()
     })
     local opened, err = empty:open()
     assert.is_nil(opened)
-    assert.matches("No Provider Shell", err.message)
-    assert.matches("No Provider Shell", empty_presenter.notifications[1].message)
+    assert.matches("No Provider Shell", assert(err).message)
+    assert.matches("No Provider Shell", assert(empty_presenter.notifications[1]).message)
     local cycled, cycle_err = empty:cycle(1)
     assert.is_nil(cycled)
-    assert.matches("No Provider Shell", cycle_err.message)
+    assert.matches("No Provider Shell", assert(cycle_err).message)
     local run, run_err = empty:run("missing")
     assert.is_nil(run)
-    assert.matches("No provider is selected", run_err.message)
+    assert.matches("No provider is selected", assert(run_err).message)
     assert.is_false(empty:cancel())
 
     local fallback_notifications, fallback_uris = {}, {}
@@ -1555,8 +1686,8 @@ describe("neoagent Provider Shell", function()
       return true
     end
     local fallback_view = view()
-    fallback_view.notify = nil
-    fallback_view.open_uri = nil
+    rawset(fallback_view, "notify", false)
+    rawset(fallback_view, "open_uri", false)
     local fallback_shell = shell({
       config = config({ fallback = { api = "fake", models = {} } },
         "fallback"),
@@ -1575,9 +1706,10 @@ describe("neoagent Provider Shell", function()
   end)
 
   it("routes owned selection resolution and cancellation from its surface", function()
+    ---@type Neoagent.ProviderShellViewOptions?
     local callbacks
     local surface = view()
-    function surface:set_presentation(snapshot)
+    surface.set_presentation = function(self, snapshot)
       self.presentation = util.copy(snapshot)
       return true
     end
@@ -1611,30 +1743,33 @@ describe("neoagent Provider Shell", function()
       assert(vim.wait(1000, function()
         return value.presentation and value.presentation.active
       end, 5))
-      return value.presentation.active
+      return assert(value.presentation).active
     end
 
     local resolved = assert(value:run("choose"))
+    assert(type(resolved) == "table")
     local request = active_selection()
-    assert.is_true(callbacks.on_presentation_resolve(request.id, "two"))
+    assert.is_true(assert(assert(callbacks).on_presentation_resolve)(assert(request).id, "two"))
     assert.is_true(wait(resolved).ok)
 
     local surface_cancelled = assert(value:run("choose"))
+    assert(type(surface_cancelled) == "table")
     request = active_selection()
-    assert.is_true(callbacks.on_presentation_cancel(request.id))
+    assert.is_true(assert(assert(callbacks).on_presentation_cancel)(assert(request).id))
     assert.is_false(wait(surface_cancelled).ok)
 
     local menu_cancelled = assert(value:run("choose"))
+    assert(type(menu_cancelled) == "table")
     active_selection()
-    local operations = value:info().operations
+    local operations = assert(value:info()).operations
     assert.are.equal("Cancel", operations[#operations].label)
-    assert.is_true(value:run(operations[#operations].id))
+    assert.is_true((value:run(operations[#operations].id)))
     assert.is_false(wait(menu_cancelled).ok)
   end)
 
   it("contains provider presentation and presentation-open failures", function()
     local surface = view()
-    function surface:set_presentation(snapshot)
+    surface.set_presentation = function(self, snapshot)
       if snapshot and snapshot.active then return false end
       return true
     end
@@ -1647,11 +1782,11 @@ describe("neoagent Provider Shell", function()
 
     local rejected = wait(value:presenter():input({ prompt = "Code" }))
     assert.is_false(rejected.ok)
-    assert.matches("presentation failed", rejected.error.message)
+    assert.matches("presentation failed", assert(rejected.error).message)
 
     local unopened_surface = view()
-    function unopened_surface:set_presentation() return true end
-    function unopened_surface:open()
+    unopened_surface.set_presentation = function(self) return true end
+    unopened_surface.open = function(self)
       return nil, util.error("ui", "surface cannot open")
     end
     local unopened_value = shell({
@@ -1662,10 +1797,11 @@ describe("neoagent Provider Shell", function()
     })
     local unopened = wait(unopened_value:presenter():input({ prompt = "Code" }))
     assert.is_false(unopened.ok)
-    assert.matches("surface cannot open", unopened.error.message)
+    assert.matches("surface cannot open", assert(unopened.error).message)
   end)
 
   it("bounds multibyte feedback and deduplicates an active focus refresh", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
     local finish
     local refreshes = 0
     local managed = service("fake", "Fake", {
@@ -1682,20 +1818,20 @@ describe("neoagent Provider Shell", function()
       runtimes = { fake = managed },
       view = function()
         local surface = view()
-        function surface:set_presentation() return true end
+        surface.set_presentation = function(self) return true end
         return surface
       end,
     })
 
     assert.is_true(value:presenter():notify({ message = string.rep("é", 300) }))
-    assert.is_true(util.is_valid_utf8(value.feedback.text))
-    assert.matches("…$", value.feedback.text)
+    assert.is_true(util.is_valid_utf8(assert(value.feedback).text))
+    assert.matches("…$", assert(value.feedback).text)
     assert(value:open())
     assert.are.equal(1, refreshes)
     assert(value:open())
     assert.are.equal(1, refreshes)
     assert.is_nil(value.pending_focus_provider_id)
-    finish.resolve({ ok = true })
+    assert(finish).resolve({ ok = true })
     assert(vim.wait(1000, function() return not value:is_active() end, 5))
   end)
 
@@ -1715,17 +1851,17 @@ describe("neoagent Provider Shell", function()
       end,
     })
     assert.is_true(value:is_authenticating())
-    local coordination = { finished = false }
+    local coordination = { active = true, finished = false }
     function coordination:finish() self.finished = true return true end
     local duplicate, duplicate_err = value:_start_action({
       kind = "service", provider_id = "fake", coordination = coordination,
       start = function() error("unused") end,
     })
     assert.is_nil(duplicate)
-    assert.matches("already active", duplicate_err.message)
+    assert.matches("already active", assert(duplicate_err).message)
     assert.is_true(coordination.finished)
-    first:cancel()
-    assert.is_false(wait(first).ok)
+    assert(first):cancel()
+    assert.is_false(wait(assert(first)).ok)
 
     local cases = {
       {
@@ -1750,7 +1886,7 @@ describe("neoagent Provider Shell", function()
         kind = "service", provider_id = "fake", start = case.start,
       }))
       assert.is_false(result.ok)
-      assert.matches(case.message, result.error.message)
+      assert.matches(case.message, assert(result.error).message)
     end
   end)
 
@@ -1768,7 +1904,7 @@ describe("neoagent Provider Shell", function()
       id = "fake",
       definition = {
         api = "fake",
-        catalog = { discover = function() end },
+        catalog = { discover = function() error("unexpected catalog discovery") end },
         models = {},
       },
       catalog = selected_catalog,
@@ -1788,7 +1924,7 @@ describe("neoagent Provider Shell", function()
       view = function() return view() end,
     })
     assert.is_false(value:_auth_state("missing").usable)
-    assert(vim.iter(value:info().state.blocks):any(function(block)
+    assert(any(assert(assert(assert(value:info()).state).blocks), function(block)
       return block.type == "status"
         and block.text:match("identity unavailable") ~= nil
     end))
@@ -1798,14 +1934,14 @@ describe("neoagent Provider Shell", function()
     local selected, select_err = value:select("other")
     value.authentication.is_active = is_active
     assert.is_nil(selected)
-    assert.matches("Finish the active provider action", select_err.message)
+    assert.matches("Finish the active provider action", assert(select_err).message)
 
     local token = assert(provider_service.begin_operation(managed, {
       mutating = true,
     }))
     local refreshed, refresh_err = value:run("neoagent.catalog.refresh")
     assert.is_nil(refreshed)
-    assert.matches("mutating provider operation", refresh_err.message)
+    assert.matches("mutating provider operation", assert(refresh_err).message)
     assert.is_true(token:finish())
 
     local schedule_refresh = value._schedule_refresh
@@ -1814,7 +1950,7 @@ describe("neoagent Provider Shell", function()
       mutating = false,
     }))
     assert(vim.wait(1000, function()
-      return vim.iter(presented.notifications):any(function(notification)
+      return any(presented.notifications, function(notification)
         return notification.message:match("runtime subscriber failed") ~= nil
       end)
     end, 5))
@@ -1823,17 +1959,17 @@ describe("neoagent Provider Shell", function()
 
     selected_catalog.snapshot = function() error("snapshot failed") end
     assert.is_nil(value:_refresh())
-    assert(vim.iter(presented.notifications):any(function(notification)
+    assert(any(presented.notifications, function(notification)
       return notification.message:match("snapshot failed") ~= nil
     end))
 
     value:destroy()
     local login, login_err = value:login()
     assert.is_nil(login)
-    assert.matches("destroyed", login_err.message)
+    assert.matches("destroyed", assert(login_err).message)
     local logout, logout_err = value:logout()
     assert.is_nil(logout)
-    assert.matches("destroyed", logout_err.message)
+    assert.matches("destroyed", assert(logout_err).message)
   end)
 
   it("reports a deferred authentication action that becomes unavailable", function()
@@ -1862,16 +1998,17 @@ describe("neoagent Provider Shell", function()
 
     assert(value:open())
     assert.is_true(value:is_active())
-    assert.is_true(value:login("beta"))
+    assert.is_true((value:login("beta")))
     assert(vim.wait(1000, function()
-      return value:info().id == "beta" and not value:is_active()
+      return assert(value:info()).id == "beta" and not value:is_active()
     end, 5))
-    assert(vim.iter(presented.notifications):any(function(notification)
+    assert(any(presented.notifications, function(notification)
       return notification.message:match("Login is unavailable") ~= nil
     end))
   end)
 
   it("propagates provider selection failures from logout", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
     local finish
     local value = shell({
       config = config({
@@ -1897,8 +2034,8 @@ describe("neoagent Provider Shell", function()
     assert.is_true(value:is_authenticating())
     local logged_out, err = value:logout("beta")
     assert.is_nil(logged_out)
-    assert.matches("active provider action", err.message)
-    finish.resolve({ ok = true })
-    assert.is_true(wait(active).ok)
+    assert.matches("active provider action", assert(err).message)
+    assert(finish).resolve({ ok = true })
+    assert.is_true(wait(assert(active)).ok)
   end)
 end)

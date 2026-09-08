@@ -1,4 +1,3 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 tests/ui/view_spec.lua
-tests/unit/provider_shell_spec.lua
 tests/unit/sandbox_spec.lua
