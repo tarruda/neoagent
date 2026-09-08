@@ -1,3 +1,26 @@
+---@class Neoagent.AgentContext
+---@field name? string|false
+---@field model? string
+---@field thinking? string|false
+---@field workspace? string
+---@field position? Neoagent.UiPosition
+---@field state? string
+---@field context_usage? Neoagent.ContextDisplay|false
+---@field provider_status? string|false
+---@field inference_stats? {prompt_tokens_per_second?: number, generation_tokens_per_second?: number}|false
+---@field steering? string[]
+
+---@class Neoagent.CompactionStartEvent
+---@field type 'compaction_start'
+---@field reason string
+
+---@class Neoagent.CompactionEndEvent
+---@field type 'compaction_end'
+---@field reason string
+---@field result Neoagent.CompactionResult
+
+---@alias Neoagent.AgentEvent Neoagent.AgentLoopEvent|Neoagent.CompactionStartEvent|Neoagent.CompactionEndEvent
+
 local config = require("neoagent.config")
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")

@@ -6,23 +6,137 @@ local ui = Applet.Pane.nodes
 local display = Applet.Pane.text
 local widgets = Applet.Pane.widgets
 
+---@class Neoagent.TranscriptBlock: Neoagent.RenderBlock
+---@field key string
+---@field revision integer
+---@field id? string
+
+---@class Neoagent.TranscriptCompactionMessage: Neoagent.CompactionSummary
+---@field _neoagent_entry_id? string
+
+---@alias Neoagent.TranscriptMessage Neoagent.ObservedMessage|Neoagent.TranscriptCompactionMessage
+
+---@class Neoagent.ActiveDialogSnapshot: Neoagent.DialogSnapshot
+---@field active Neoagent.Dialog
+
+---@class Neoagent.TranscriptPaneState
+---@field blocks Neoagent.TranscriptBlock[]
+---@field context Neoagent.AgentContext
+---@field dialog? Neoagent.ActiveDialogSnapshot
+---@field renderer Neoagent.Renderer<unknown>
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
+---@field config Neoagent.UIConfigInput
+---@field spinner string
+---@field details_key? string
+---@field dequeue_key? string
+---@field status_revision integer
+---@field dialog_revision integer
+---@field document_revision integer
+
+---@class Neoagent.TranscriptPaneCallbacks
+---@field details? fun(block: string): unknown
+---@field card_move? fun(direction: integer, count: integer): unknown
+---@field dialog? fun(dialog: string, action: string): unknown
+
+---@class Neoagent.TranscriptPaneOptions
+---@field renderer Neoagent.Renderer<unknown>
+---@field image_system? Applet.ImageSystem
+---@field on_error? fun(error: Applet.PaneError)
+---@field config? Neoagent.UIConfigInput
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
+---@field callbacks? Neoagent.TranscriptPaneCallbacks
+
+---@class Neoagent.TranscriptBlockSignature
+---@field revision integer
+---@field image_scope? string
+---@field previous_key string|false
+---@field previous_revision integer|false
+---@field following_key string|false
+---@field following_revision integer|false
+---@field width integer
+---@field surface_width integer
+---@field details_key string|false
+---@field wrap_cards boolean
+---@field show_images boolean
+
+---@class Neoagent.TranscriptBlockCache: Neoagent.TranscriptBlockSignature
+---@field node Applet.Node
+---@field region_revision string
+---@field renderer_continuation? unknown
+
+---@class Neoagent.TranscriptDocumentCache
+---@field revision integer
+---@field width integer
+---@field details_key? string
+---@field wrap_cards boolean
+---@field show_images boolean
+---@field block_regions Applet.RegionNode[]
+---@field block_snapshots Neoagent.TranscriptBlock[]
+---@field root Applet.ScopeNode
+---@field view Applet.ViewOptions
+
+---@class Neoagent.TranscriptRenderCache
+---@field blocks table<string, Neoagent.TranscriptBlockCache>
+---@field document? Neoagent.TranscriptDocumentCache
+
+---@class Neoagent.TranscriptPane
+---@field renderer Neoagent.Renderer<unknown>
+---@field image_system? Applet.ImageSystem
+---@field on_error? fun(error: Applet.PaneError)
+---@field config Neoagent.UIConfigInput
+---@field resolve_tool? fun(name?: string): Neoagent.RenderTool?
+---@field callbacks Neoagent.TranscriptPaneCallbacks
+---@field pane Applet.Pane<Neoagent.TranscriptPaneState>
+---@field blocks Neoagent.TranscriptBlock[]
+---@field messages Neoagent.TranscriptMessage[]
+---@field calls table<string, Neoagent.TranscriptBlock>
+---@field pending_calls table<string, Neoagent.TranscriptBlock>
+---@field live_texts table<string, Neoagent.TranscriptBlock>
+---@field live_thinkings table<string, Neoagent.TranscriptBlock>
+---@field live_text? Neoagent.TranscriptBlock
+---@field live_thinking? Neoagent.TranscriptBlock
+---@field response integer
+---@field counter integer
+---@field text_epoch integer
+---@field context Neoagent.AgentContext
+---@field spinner string
+---@field status_revision integer
+---@field dialog_revision integer
+---@field dialog? Neoagent.ActiveDialogSnapshot
+---@field render_cache Neoagent.TranscriptRenderCache
+---@field block_snapshots table<Neoagent.TranscriptBlock, Neoagent.TranscriptBlock>
+---@field snapshot_blocks Neoagent.TranscriptBlock[]
+---@field dirty_blocks table<Neoagent.TranscriptBlock, boolean>
+---@field block_indices table<Neoagent.TranscriptBlock, integer>
+---@field animated_blocks table<Neoagent.TranscriptBlock, boolean>
+---@field document_revision integer
+---@field image_scope string
 local Transcript = {}
 Transcript.__index = Transcript
 
+---@type fun(state: Neoagent.TranscriptPaneState, env: Applet.PaneRenderEnvironment, cache: Neoagent.TranscriptRenderCache): Applet.Tree
 local render
 local image_scope = 0
 
+---@return string
 local function next_image_scope()
   image_scope = image_scope + 1
   return "transcript:" .. image_scope
 end
 
+---@param value Neoagent.UIMapping?
+---@return string[]
 local function mapping_values(value)
   if type(value) == "string" then return { value } end
   if type(value) == "table" then return value end
   return {}
 end
 
+---@param result Applet.Binding[]
+---@param modes string|string[]
+---@param lhs Neoagent.UIMapping?
+---@param action Applet.Action
+---@param opts? {count?: boolean, desc?: string}
 local function add_bindings(result, modes, lhs, action, opts)
   modes = type(modes) == "table" and modes or { modes }
   for _, mode in ipairs(modes) do
@@ -38,9 +152,11 @@ local function add_bindings(result, modes, lhs, action, opts)
   end
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@return Applet.TextRun[]
 local function title(state)
   local parts = {}
-  local label = state.context.name or state.config.title
+  local label = state.context.name
   if type(label) == "string" and label ~= "" then parts[#parts + 1] = label end
   parts[#parts + 1] = state.context.model or "no model"
   if type(state.context.thinking) == "string" then
@@ -49,6 +165,8 @@ local function title(state)
   return { { text = " " .. table.concat(parts, " · ") .. " ", style = "window_title" } }
 end
 
+---@param value number
+---@return string
 local function token_count(value)
   if value < 1000 then return tostring(math.floor(value + 0.5)) end
   local divisor = value >= 1000000 and 1000000 or 1000
@@ -56,6 +174,8 @@ local function token_count(value)
   return string.format("%.1f", value / divisor):gsub("%.0$", "") .. suffix
 end
 
+---@param value number?
+---@return string?
 local function token_rate(value)
   if type(value) ~= "number" or value <= 0 or value ~= value
       or value == math.huge then
@@ -64,6 +184,8 @@ local function token_rate(value)
   return string.format("%.1f", value)
 end
 
+---@param border Applet.WindowBorder?
+---@return string
 local function border_character(border)
   if type(border) == "table" then
     local value = border[6] or border[2]
@@ -77,6 +199,10 @@ local function border_character(border)
   return "─"
 end
 
+---@param value string
+---@param width integer
+---@param from_end boolean
+---@return string
 local function slice_width(value, width, from_end)
   return display.truncate(value, width, {
     marker = "",
@@ -84,12 +210,19 @@ local function slice_width(value, width, from_end)
   })
 end
 
+---@param value string
+---@param width integer
+---@return string
 local function truncate(value, width)
   if display.width(value) <= width then return value end
   if width <= 1 then return "…" end
   return display.truncate(value, width)
 end
 
+---@param runs Applet.TextRun[]
+---@param width integer
+---@param maximum integer
+---@return Applet.TextRun[], integer
 local function fit_left(runs, width, maximum)
   if width <= maximum then return runs, width end
   if maximum <= 0 then return {}, 0 end
@@ -119,6 +252,9 @@ local function fit_left(runs, width, maximum)
   return fitted, fitted_width
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@param width integer
+---@return Applet.TextRun[]
 local function footer(state, width)
   local context = state.context
   local active = context.state == "running" or context.state == "stopping"
@@ -178,6 +314,7 @@ local function footer(state, width)
   left, left_width = fit_left(left, left_width, midpoint)
   if right then right = truncate(right, width - midpoint) end
   local runs, used = {}, 0
+  ---@param run Applet.TextRun
   local function add(run)
     if run.text == "" then return end
     runs[#runs + 1] = run
@@ -190,6 +327,8 @@ local function footer(state, width)
   return runs
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@return Applet.RegionNode?
 local function status_region(state)
   local steering = state.context.steering or {}
   if #steering == 0 then return nil end
@@ -216,10 +355,13 @@ local function status_region(state)
   })
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@return Applet.RegionNode?, Applet.MenuEntry?
 local function dialog_region(state)
   local snapshot = state.dialog
   if not snapshot then return nil end
   local dialog = snapshot.active
+  ---@type Applet.MenuItem[]
   local actions = {}
   for _, action in ipairs(dialog.actions or {}) do
     actions[#actions + 1] = {
@@ -263,6 +405,8 @@ local function dialog_region(state)
   }), entry
 end
 
+---@param self Neoagent.TranscriptPane
+---@return Applet.Pane<Neoagent.TranscriptPaneState>
 local function new_pane(self)
   return Applet.Pane.new({
     key = "transcript",
@@ -275,21 +419,25 @@ local function new_pane(self)
     end,
     handlers = {
       ["transcript.details"] = function(event)
-        self.callbacks.details(event.payload.block)
+        assert(self.callbacks.details)((event.payload --[[@as {block: string}]]).block)
       end,
       ["transcript.card_move"] = function(event)
-        self.callbacks.card_move(event.payload.direction, event.count)
+        assert(self.callbacks.card_move)((event.payload --[[@as {direction: integer}]]).direction, event.count)
       end,
       ["transcript.dialog"] = function(event)
-        self.callbacks.dialog(event.payload.dialog, event.payload.action)
+        local payload = event.payload --[[@as {dialog: string, action: string}]]
+        assert(self.callbacks.dialog)(payload.dialog, payload.action)
       end,
     },
     on_error = self.on_error,
   })
 end
 
+---@param state {config: Neoagent.UIConfigInput, dialog?: Neoagent.ActiveDialogSnapshot}
+---@return Applet.Binding[]
 local function root_bindings(state)
   local mappings = state.config.mappings or {}
+  ---@type Applet.Binding[]
   local bindings = {}
   if not state.dialog then
     add_bindings(bindings, "n", mappings.card_details,
@@ -306,9 +454,17 @@ local function root_bindings(state)
   return bindings
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@param env Applet.PaneRenderEnvironment
+---@param block Neoagent.TranscriptBlock
+---@param index integer
+---@param width integer
+---@param cache table<string, Neoagent.TranscriptBlockCache>
+---@return Applet.Node, string
 local function cached_block_node(state, env, block, index, width, cache)
   local previous = state.blocks[index - 1]
   local following = state.blocks[index + 1]
+  ---@type Neoagent.TranscriptBlockSignature
   local signature = {
     revision = block.revision,
     image_scope = block.image_scope,
@@ -351,7 +507,7 @@ local function cached_block_node(state, env, block, index, width, cache)
     previous = previous,
     following = following,
   }, cached and cached.renderer_continuation or nil)
-  if not node then error(continuation.message, 0) end
+  if not node then error(assert(continuation).message, 0) end
   local revision_parts = {}
   for _, key in ipairs({
     "revision", "image_scope", "previous_key", "previous_revision",
@@ -361,6 +517,7 @@ local function cached_block_node(state, env, block, index, width, cache)
     local value = tostring(signature[key])
     revision_parts[#revision_parts + 1] = #value .. ":" .. value
   end
+  ---@cast signature Neoagent.TranscriptBlockCache
   signature.region_revision = table.concat(revision_parts)
   signature.node = node
   signature.renderer_continuation = continuation
@@ -368,6 +525,10 @@ local function cached_block_node(state, env, block, index, width, cache)
   return node, signature.region_revision
 end
 
+---@param state Neoagent.TranscriptPaneState
+---@param env Applet.PaneRenderEnvironment
+---@param cache Neoagent.TranscriptRenderCache
+---@return Applet.Tree
 render = function(state, env, cache)
   local width = math.max(1, env.width - 2)
   local document = cache.document
@@ -382,7 +543,7 @@ render = function(state, env, cache)
         and (type(state.config.images) ~= "table"
           or state.config.images.display ~= "expanded"))
       and #state.blocks >= #(document.block_regions or {})
-    if reusable then
+    if reusable and document then
       for index, block in ipairs(state.blocks) do
         block_regions[index] = document.block_regions[index]
         if document.block_snapshots[index] ~= block then
@@ -415,10 +576,11 @@ render = function(state, env, cache)
     if status then regions[#regions + 1] = status end
     local dialog, dialog_entry = dialog_region(state)
     if dialog then regions[#regions + 1] = dialog end
+    ---@type Applet.ViewOptions
     local view = { scroll = "follow_end" }
     if dialog_entry then
       view.target_intent = widgets.menu_intent(dialog_entry,
-        "dialog-focus:" .. state.dialog.active.id)
+        "dialog-focus:" .. assert(state.dialog).active.id)
     end
     document = {
       revision = state.document_revision,
@@ -460,6 +622,8 @@ render = function(state, env, cache)
   }
 end
 
+---@param opts Neoagent.TranscriptPaneOptions
+---@return Neoagent.TranscriptPane
 function Transcript.new(opts)
   opts = opts or {}
   opts.config = opts.config or {}
@@ -504,6 +668,7 @@ function Transcript.new(opts)
   return self
 end
 
+---@return Neoagent.TranscriptPaneState
 function Transcript:_state()
   local details = (self.config.mappings or {}).card_details
   local dequeue = (self.config.mappings or {}).dequeue_steering
@@ -524,14 +689,15 @@ function Transcript:_state()
     resolve_tool = self.resolve_tool,
     config = util.copy(self.config),
     spinner = self.spinner,
-    details_key = type(details) == "table" and details[1] or details,
-    dequeue_key = type(dequeue) == "table" and dequeue[1] or dequeue,
+    details_key = mapping_values(details)[1],
+    dequeue_key = mapping_values(dequeue)[1],
     status_revision = self.status_revision,
     dialog_revision = self.dialog_revision,
     document_revision = self.document_revision,
   }
 end
 
+---@return Applet.Binding[]
 function Transcript:mapping_bindings()
   return root_bindings({
     config = self.config,
@@ -539,12 +705,14 @@ function Transcript:mapping_bindings()
   })
 end
 
+---@param config Neoagent.UIConfigInput?
 function Transcript:set_config(config)
   self.config = config or {}
   self.document_revision = self.document_revision + 1
   self:_publish()
 end
 
+---@param renderer Neoagent.Renderer<unknown>
 function Transcript:set_renderer(renderer)
   self.renderer = renderer
   self.render_cache = { blocks = {} }
@@ -553,21 +721,27 @@ function Transcript:set_renderer(renderer)
   self:_publish()
 end
 
+---@param eager boolean?
 function Transcript:_publish(eager)
   self.pane:set_state(self:_state(), eager and { eager = true } or nil)
 end
 
+---@param block Neoagent.TranscriptBlock
 function Transcript:_touch(block)
   block.revision = (block.revision or 0) + 1
   self.dirty_blocks[block] = true
   self.document_revision = self.document_revision + 1
 end
 
+---@param message Neoagent.TranscriptMessage?
+---@return string?
 local function entry_id(message)
   local value = type(message) == "table" and message._neoagent_entry_id
   return type(value) == "string" and value ~= "" and value or nil
 end
 
+---@param messages Neoagent.TranscriptMessage[]
+---@return boolean
 function Transcript:_can_append(messages)
   local count = #self.messages
   if count == 0 then return true end
@@ -579,10 +753,12 @@ function Transcript:_can_append(messages)
     and last == entry_id(messages[count])
 end
 
+---@param block Neoagent.TranscriptBlock
 function Transcript:_change(block)
   self:_touch(block)
 end
 
+---@return integer
 function Transcript:_next_text_epoch()
   self.text_epoch = self.text_epoch + 1
   return self.text_epoch
@@ -590,7 +766,7 @@ end
 
 function Transcript:_finish_text_streams()
   for _, blocks in ipairs({ self.live_texts, self.live_thinkings }) do
-    for _, block in pairs(blocks or {}) do
+    for _, block in pairs(blocks) do
       if block.text_epoch ~= nil then
         block.text_epoch = nil
         self:_change(block)
@@ -599,11 +775,15 @@ function Transcript:_finish_text_streams()
   end
 end
 
+---@param block Neoagent.RenderBlock
+---@param key string?
+---@return Neoagent.TranscriptBlock
 function Transcript:_add_block(block, key)
   self.counter = self.counter + 1
   block.key = key or "generated:" .. self.counter
   block.revision = 1
   block.image_scope = self.image_scope
+  ---@cast block Neoagent.TranscriptBlock
   self.blocks[#self.blocks + 1] = block
   self.block_indices[block] = #self.blocks
   self.dirty_blocks[block] = true
@@ -611,10 +791,15 @@ function Transcript:_add_block(block, key)
   return block
 end
 
+---@param block Neoagent.TranscriptBlock
+---@param active boolean
 function Transcript:_set_animated(block, active)
   self.animated_blocks[block] = active and true or nil
 end
 
+---@param message Neoagent.TranscriptMessage
+---@param prefix string?
+---@return Neoagent.TranscriptBlock?
 function Transcript:_message(message, prefix)
   prefix = prefix or "message:" .. (self.counter + 1)
   if message.role == "user" then
@@ -624,6 +809,7 @@ function Transcript:_message(message, prefix)
       text = util.text_content(message.content),
     }, prefix .. ":user")
   elseif message.role == "assistant" then
+    ---@cast message Neoagent.ObservedAssistantMessage
     for index, content in ipairs(message.content or {}) do
       if content.type == "thinking" and self.config.show_thinking ~= false then
         self:_add_block({ kind = "thinking", text = content.thinking or "" },
@@ -666,12 +852,13 @@ function Transcript:_message(message, prefix)
   end
 end
 
+---@param messages Neoagent.TranscriptMessage[]?
 function Transcript:set_messages(messages)
   messages = messages or {}
   if self:_can_append(messages) then
     local first = #self.messages + 1
     for index = first, #messages do
-      local message = util.copy(messages[index])
+      local message = util.copy((assert(messages[index])))
       self.messages[index] = message
       self:_message(message, "message:"
         .. tostring(message._neoagent_entry_id or index))
@@ -700,11 +887,12 @@ function Transcript:set_messages(messages)
   self:_publish()
 end
 
+---@param event Neoagent.AgentEvent
 function Transcript:apply(event)
   if event.type == "warning" then
     self:_add_block({ kind = "notice", text = "Warning: " .. event.message, warning = true })
   elseif event.type == "text_delta" then
-    self.live_texts = self.live_texts or {}
+    ---@cast event Neoagent.ModelTextDelta
     local key = event.index ~= nil and tostring(event.index) or "default"
     local block = self.live_texts[key]
     if not block then
@@ -720,8 +908,8 @@ function Transcript:apply(event)
     block.text = block.text .. (event.text or "")
     self:_change(block)
   elseif event.type == "thinking_delta" then
+    ---@cast event Neoagent.ModelThinkingDelta
     if self.config.show_thinking ~= false then
-      self.live_thinkings = self.live_thinkings or {}
       local key = event.index ~= nil and tostring(event.index) or "default"
       local block = self.live_thinkings[key]
       if not block then
@@ -738,6 +926,7 @@ function Transcript:apply(event)
       self:_change(block)
     end
   elseif event.type == "tool_call_delta" then
+    ---@cast event Neoagent.ModelToolDelta
     local key = self.response .. ":" .. tostring(event.index)
     local block = self.pending_calls[key]
     if not block then
@@ -756,13 +945,14 @@ function Transcript:apply(event)
     block.raw = block.raw .. (event.arguments_delta or "")
     self:_change(block)
   elseif event.type == "message_end" then
+    ---@cast event Neoagent.MessageEndEvent
     local message = event.message
     self.messages[#self.messages + 1] = util.copy(message)
     if message.role == "user" then
       self:_message(message)
     elseif message.role == "assistant" then
+      ---@cast message Neoagent.ObservedAssistantMessage
       local call_index = 0
-      self.live_texts = self.live_texts or {}
       for _, content in ipairs(message.content or {}) do
         if content.type == "text" then
           local key = content.index ~= nil and tostring(content.index) or "default"
@@ -779,7 +969,7 @@ function Transcript:apply(event)
           end
         elseif content.type == "thinking" and self.config.show_thinking ~= false then
           local key = content.index ~= nil and tostring(content.index) or "default"
-          local block = self.live_thinkings and self.live_thinkings[key]
+          local block = self.live_thinkings[key]
             or (key == "default" and self.live_thinking or nil)
           if block then
             block.text_epoch = nil
@@ -815,6 +1005,7 @@ function Transcript:apply(event)
       self.live_thinking, self.live_thinkings = nil, {}
     end
   elseif event.type == "tool_start" then
+    ---@cast event Neoagent.ToolStartEvent
     local block = self.calls[event.call.id]
     if not block then
       block = self:_add_block({ kind = "tool" }, "tool:" .. event.call.id)
@@ -825,9 +1016,11 @@ function Transcript:apply(event)
     self:_set_animated(block, true)
     self:_change(block)
   elseif event.type == "tool_update" then
+    ---@cast event Neoagent.ToolUpdateEvent
     local block = self.calls[event.call.id]
     if block then block.update = util.copy(event.result) self:_change(block) end
   elseif event.type == "tool_end" then
+    ---@cast event Neoagent.ToolEndEvent
     local block = self.calls[event.call.id]
     if not block then
       block = self:_add_block({ kind = "tool" }, "tool:" .. event.call.id)
@@ -840,9 +1033,11 @@ function Transcript:apply(event)
     self:_set_animated(block, false)
     self:_change(block)
   elseif event.type == "compaction_end" and event.result and not event.result.ok then
+    ---@cast event Neoagent.CompactionEndEvent
+    local failure = event.result --[[@as Neoagent.AsyncFailure]]
     self:_add_block({
       kind = "notice",
-      text = event.result.error and event.result.error.message or "Compaction failed",
+      text = failure.error and failure.error.message or "Compaction failed",
       error = true,
     })
   end
@@ -853,6 +1048,7 @@ function Transcript:apply(event)
   self:_publish(not streaming)
 end
 
+---@param result Neoagent.AgentLoopResult
 function Transcript:finish(result)
   self:_finish_text_streams()
   local cancelled = not result.ok
@@ -878,6 +1074,7 @@ function Transcript:finish(result)
   self:_publish(true)
 end
 
+---@param context Neoagent.AgentContext?
 function Transcript:set_context(context)
   local previous_steering = self.context and self.context.steering
   self.context = vim.tbl_extend("force", self.context or {}, util.copy(context or {}))
@@ -888,6 +1085,7 @@ function Transcript:set_context(context)
   self:_publish()
 end
 
+---@param snapshot Neoagent.ActiveDialogSnapshot?
 function Transcript:set_dialog(snapshot)
   self.dialog = snapshot and util.copy(snapshot) or nil
   self.dialog_revision = self.dialog_revision + 1
@@ -896,12 +1094,15 @@ function Transcript:set_dialog(snapshot)
   self:_publish(true)
 end
 
+---@param value string
 function Transcript:set_spinner(value)
   self.spinner = value
   for block in pairs(self.animated_blocks) do self:_change(block) end
   self:_publish()
 end
 
+---@param key string
+---@return Neoagent.TranscriptBlock?
 function Transcript:block(key)
   for _, block in ipairs(self.blocks) do
     if block.key == key then return block end

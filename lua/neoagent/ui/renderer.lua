@@ -11,7 +11,7 @@ local util = require("neoagent.util")
 ---@field warning? boolean
 ---@field name? string
 ---@field state? string
----@field call? Neoagent.ToolCallBlock
+---@field call? Neoagent.ToolCallData
 ---@field raw? string
 ---@field update? Neoagent.ToolResult
 ---@field message? Neoagent.ToolResultMessage

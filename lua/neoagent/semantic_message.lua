@@ -18,7 +18,15 @@ local M = {}
 ---@field thinkingSignature? string
 ---@field redacted? boolean
 
----@class Neoagent.ToolCallBlock
+---@class Neoagent.ToolCallData
+---@field type? 'toolCall'
+---@field id? string
+---@field name? string
+---@field arguments table<string, Neoagent.JsonValue>
+---@field argumentsError? string
+---@field index? integer
+
+---@class Neoagent.ToolCallBlock: Neoagent.ToolCallData
 ---@field type 'toolCall'
 ---@field id string
 ---@field name string
