@@ -66,7 +66,7 @@ local M = {}
 ---@field operations table<string, Neoagent.ProviderOperation>
 ---@field state fun(self: Neoagent.ProviderService): Neoagent.ProviderState|false
 ---@field subscribe? fun(self: Neoagent.ProviderService, listener: fun(state: Neoagent.ProviderState)): fun()
----@field on_event? fun(self: Neoagent.ProviderService, event: Neoagent.ModelEvent)
+---@field on_event? fun(self: Neoagent.ProviderService, event: unknown)
 ---@field wrap_model? fun(self: Neoagent.ProviderService, model: Neoagent.Model): Neoagent.Model
 ---@field destroy? fun(self: Neoagent.ProviderService)
 

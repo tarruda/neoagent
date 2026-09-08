@@ -3,7 +3,7 @@ local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
 local M = {}
----@class Neoagent.StateStore
+---@class Neoagent.StateStore: Neoagent.CatalogStorage
 ---@field directory string
 ---@field directory_error? Neoagent.Error
 local Store = {}

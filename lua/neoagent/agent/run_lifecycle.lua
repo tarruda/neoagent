@@ -23,7 +23,7 @@ local util = require("neoagent.util")
 ---@class Neoagent.AgentToolEnvironment
 ---@field workspace? Neoagent.Workspace
 ---@field agent? string
----@field session_id string
+---@field session_id table
 
 ---@class Neoagent.AgentToolset
 ---@field tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]

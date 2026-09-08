@@ -23,7 +23,7 @@ local provider_auth = require("neoagent.provider_auth")
 ---@field workspace_settings? boolean
 ---@field directory? string
 
----@class Neoagent.RecordingConfig
+---@class Neoagent.RecordingConfig: Neoagent.RecordingConfigInput
 ---@field enabled boolean
 ---@field format 'auto'|'yaml'|'json'
 ---@field retention 'rolling'|'all'

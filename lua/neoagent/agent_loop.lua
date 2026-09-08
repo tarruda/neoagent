@@ -8,7 +8,7 @@ local M = {}
 ---@class Neoagent.Tool<C>: Neoagent.ToolDefinition
 ---@field execute fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<C>): Neoagent.ToolResult
 ---@field capabilities? {read_files?: boolean}
----@field on_messages? fun(messages: Neoagent.Message[], context: C)
+---@field on_messages? fun(messages: Neoagent.ProjectionMessage[], context: C)
 ---@field current? fun(context: C): unknown
 ---@field render? fun(options: Neoagent.ToolPresentationOptions): unknown
 ---@field _neoagent_sandbox_options_added? boolean
