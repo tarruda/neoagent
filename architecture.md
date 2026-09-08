@@ -209,8 +209,11 @@ The recorder owns bounded response buffers and private spool files through
 finalization. Ordinary bodies and converted output can spill to disk and are
 serialized incrementally. Authentication-classified sensitive bodies remain
 in memory until masking; exceeding the buffer limit fails only the recording.
-Observer failure ends capture without stopping the underlying request. Failed
-closes remain recorder-owned for retry independently of exchange completion.
+Observer failure ends capture without stopping the underlying request. Cleanup
+retains handles whose native close has not started, independently of exchange
+completion. RegularFile relinquishes descriptor ownership before native close,
+including when that call reports an error; cleanup cannot retry a potentially
+recycled descriptor. Close errors still prevent recording publication.
 
 Each exchange's sanitizer owns protocol credentials and Authentication's
 response sensitivity classification. It prepares masked protocol fields and

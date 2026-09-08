@@ -261,6 +261,65 @@ describe("neoagent.fs", function()
     assert.are.equal("ownership", reopen_code)
   end)
 
+  for _, failure in ipairs({ "error", "exception" }) do
+    it("retires a regular descriptor after a native close " .. failure, function()
+      local directory = vim.fn.tempname()
+      paths[#paths + 1] = directory
+      assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+      local path = vim.fs.joinpath(directory, "owned")
+      assert(fs.write_all(path, "owned", "wx", 384))
+      local file = assert(fs.open_regular(path))
+      local fd = assert(file._fd)
+      ---@type integer?
+      local unrelated_fd
+      local released = false
+      local attempts = 0
+      local message = "EIO: synthetic close writeback failure"
+      local ok, err = xpcall(function()
+        vim.uv.fs_close = function(current)
+          if current ~= fd then return original.close(current) end
+          attempts = attempts + 1
+          assert(original.close(current))
+          released = true
+          if attempts == 1 then
+            unrelated_fd = assert(original.open(
+              vim.fs.joinpath(directory, "unrelated"), "w+", 384))
+            assert.are.equal(fd, unrelated_fd)
+            if failure == "exception" then error(message) end
+            return nil, message, "EIO"
+          end
+          return true
+        end
+        local called, closed, close_err, stage = pcall(file.close, file)
+        if failure == "exception" then
+          assert.is_false(called)
+          assert.matches(message, tostring(closed), 1, true)
+        else
+          assert.is_true(called)
+          assert.is_nil(closed)
+          assert.are.equal(message, close_err)
+          assert.are.equal("close", stage)
+        end
+        assert(file:close())
+        local payload = "still owned by the unrelated caller"
+        assert.are.equal(#payload,
+          original.write(assert(unrelated_fd), payload, 0))
+        assert.are.equal(1, attempts)
+        assert.is_nil((file:stat()))
+        assert.is_nil((file:read_all()))
+        assert.is_nil((file:append("must not write", 0)))
+        assert.is_nil((file:truncate(0)))
+        assert.are.equal(payload, original.read(assert(unrelated_fd), #payload, 0))
+      end, debug.traceback)
+      vim.uv.fs_close = original.close
+      if not released then assert(file:close()) end
+      if unrelated_fd and original.fstat(unrelated_fd) then
+        assert(original.close(unrelated_fd))
+      end
+      assert(ok, err)
+    end)
+  end
+
   it("reports regular file handle and identity failures", function()
     local observed = { type = "file", dev = 1, ino = 2, size = 6 }
     vim.uv.fs_lstat = function() return vim.deepcopy(observed) end

@@ -484,6 +484,75 @@ describe("neoagent HTTP recording", function()
     end)
   end
 
+  it("preserves unrelated descriptors and recording failure after native close EIO", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local reports = {}
+    ---@type integer?
+    local recording_fd
+    ---@type integer?
+    local unrelated_fd
+    local injected = false
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" }, directory = directory,
+      report = function(message)
+        reports[#reports + 1] = message
+        if injected and not unrelated_fd then
+          unrelated_fd = assert(vim.uv.fs_open(
+            fs.join(directory, "unrelated"), "w+", 384))
+        end
+      end,
+    }))
+    local identity = { provider = "example" }
+    local previous = recording:transport(transport({ "previous" }), identity)
+    assert.is_true(wait(assert(previous.request)({ request = {
+      url = "https://example.test/previous",
+    } })).ok)
+    local previous_path = assert(files(directory, ".jsonl")[1])
+    local previous_bytes = assert(fs.read(previous_path))
+    local original_open, original_close = fs.open_regular, vim.uv.fs_close
+    local close_attempts = 0
+    local ok, err = xpcall(function()
+      fs.open_regular = function(path, ...)
+        local file, open_err = original_open(path, ...)
+        if file and path:sub(-15) == ".partial.ndjson" then recording_fd = file._fd end
+        return file, open_err
+      end
+      vim.uv.fs_close = function(fd)
+        if fd == recording_fd then
+          close_attempts = close_attempts + 1
+          if not injected then
+            injected = true
+            assert(original_close(fd))
+            return nil, "EIO: synthetic close writeback failure", "EIO"
+          end
+        end
+        return original_close(fd)
+      end
+      local captured = recording:transport(transport({ "synthetic response" }), identity)
+      local completed = wait(assert(captured.request)({ request = {
+        url = "https://example.test/failed-close",
+      } }))
+      assert.is_true(completed.ok)
+      assert.is_true(injected)
+      assert.are.equal(recording_fd, assert(unrelated_fd))
+      recording:destroy()
+      local payload = "still owned by the unrelated caller"
+      assert.are.equal(#payload, vim.uv.fs_write(assert(unrelated_fd), payload, 0))
+      assert.are.equal(1, close_attempts)
+      assert.matches("failed to close recording", table.concat(reports, "\n"))
+      assert.are.equal(previous_bytes, assert(fs.read(previous_path)))
+      assert.are.equal(1, #files(directory, ".jsonl"))
+      assert.are.equal(1, #files(directory, ".partial.ndjson"))
+    end, debug.traceback)
+    fs.open_regular, vim.uv.fs_close = original_open, original_close
+    recording:destroy()
+    if unrelated_fd and vim.uv.fs_fstat(unrelated_fd) then
+      assert(original_close(unrelated_fd))
+    end
+    assert(ok, err)
+  end)
+
   it("validates an explicit, disabled-by-default recording configuration", function()
     local defaults = config.resolve({ default_registry = false })
     assert.is_false(defaults.recording.enabled)

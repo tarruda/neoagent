@@ -406,9 +406,11 @@ end
 function RegularFile:close()
   local fd = self._fd
   if not fd then return true end
+  -- Native close can release the descriptor before reporting an error.
+  -- Retire ownership first so cleanup cannot close a reused descriptor.
+  self._fd = nil
   local closed, close_err = self._uv.fs_close(fd)
   if not closed then return nil, close_err, "close" end
-  self._fd = nil
   return true
 end
 

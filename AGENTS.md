@@ -44,6 +44,9 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
+- RegularFile relinquishes descriptor ownership before native close; a close
+  error must not authorize retrying a potentially recycled descriptor.
+  Preserve the error independently of resource ownership.
 - Tool execution blocked when requested sandbox activation fails; host
   execution requires explicitly disabling sandboxing.
 - Private atomic credential storage; credentials excluded from provider state
