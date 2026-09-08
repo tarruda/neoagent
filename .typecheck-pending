@@ -1,5 +1,4 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-tests/integration/alibaba_token_plan_auth_spec.lua
 tests/integration/http_recording_spec.lua
 tests/integration/llama_http_spec.lua
 tests/integration/openai_codex_oauth_spec.lua
@@ -33,8 +32,6 @@ tests/ui/view_spec.lua
 tests/ui/workspace_trust_spec.lua
 tests/unit/agent_applet_boundaries_spec.lua
 tests/unit/agent_loop_spec.lua
-tests/unit/alibaba_token_plan_auth_spec.lua
-tests/unit/alibaba_token_plan_client_spec.lua
 tests/unit/anthropic_client_spec.lua
 tests/unit/anthropic_messages_spec.lua
 tests/unit/applet_consumer_boundary_spec.lua
