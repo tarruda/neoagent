@@ -7,9 +7,57 @@ local util = require("neoagent.util")
 
 local layout = Applet.layout
 local M = {}
+---@class Neoagent.ProviderShellViewState
+---@field revision integer
+
+---@class Neoagent.ProviderShellViewCallbacks
+---@field action fun(operation: string): unknown
+---@field select fun(provider: string): unknown
+---@field previous fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field next fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field close fun(): unknown
+---@field presentation_resolve fun(id: string, value: string): unknown
+---@field presentation_cancel fun(id: string): unknown
+
+---@class Neoagent.ProviderShellViewOptions
+---@field config Neoagent.UIConfigInput
+---@field renderer? Neoagent.Renderer<unknown>
+---@field host? Applet.HostSource<Neoagent.ProviderShellViewState>
+---@field on_action? fun(operation: string): unknown
+---@field on_select? fun(provider: string): unknown
+---@field on_previous? fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field on_next? fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field on_close? fun(): unknown
+---@field on_presentation_resolve? fun(id: string, value: string): unknown
+---@field on_presentation_cancel? fun(id: string): unknown
+---@field on_error? fun(error: Applet.Error|Applet.PaneError)
+---@field notify? fun(message: string, level?: integer)
+---@field open_uri? fun(uri: string): vim.SystemObj?, string?
+
+---@class Neoagent.ProviderShellPresentationMount
+---@field revision string
+---@field filetype string
+---@field sensitive? boolean
+---@field mode 'normal'|'insert'
+---@field window_options? Applet.Options
+
+---@class Neoagent.ProviderShellView: Neoagent.PresentationSurfaceView
+---@field config Neoagent.UIConfigInput
+---@field renderer Neoagent.Renderer<unknown>
+---@field callbacks Neoagent.ProviderShellViewCallbacks
+---@field applet_theme Applet.Theme
+---@field on_error? fun(error: Applet.Error|Applet.PaneError)
+---@field provider_count integer
+---@field provider_id? string
+---@field destroyed boolean
+---@field revision? integer
+---@field provider Neoagent.ProviderPane
+---@field providers Neoagent.ProvidersPane
+---@field applet Applet.Applet<Neoagent.ProviderShellViewState>
 local View = {}
 View.__index = View
 
+---@type Applet.Options
 local window_options = {
   wrap = false,
   number = false,
@@ -20,8 +68,11 @@ local window_options = {
   winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder,FloatTitle:NeoagentWindowTitle",
 }
 
-local function mount(component, config, required)
-  local pane = component.pane or component
+---@param pane Applet.Pane
+---@param config Neoagent.UIConfigInput
+---@param required boolean
+---@return Applet.MountNode
+local function mount(pane, config, required)
   return layout.mount(pane, {
     lifecycle = "retained",
     required = required == true,
@@ -38,8 +89,11 @@ local function mount(component, config, required)
   })
 end
 
-local function presentation_mount(component, config, opts)
-  local pane = component.pane or component
+---@param pane Applet.Pane
+---@param config Neoagent.UIConfigInput
+---@param opts Neoagent.ProviderShellPresentationMount
+---@return Applet.MountNode
+local function presentation_mount(pane, config, opts)
   local options = util.copy(window_options)
   for key, value in pairs(opts.window_options or {}) do options[key] = value end
   return layout.mount(pane, {
@@ -60,16 +114,21 @@ local function presentation_mount(component, config, opts)
   })
 end
 
+---@param value number?
+---@param fallback number
+---@return number
 local function dimension(value, fallback)
-  return value == nil and fallback or value
+  if value == nil then return fallback end
+  return value
 end
 
+---@param opts Neoagent.ProviderShellViewOptions
+---@return Neoagent.ProviderShellView
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell UI config is required")
-  local renderer = opts.renderer or opts.config.renderer
-    or require("neoagent.ui.renderers").get(opts.config.style)
-  renderer_protocol.assert(renderer, "Provider Shell Renderer")
+  local renderer = renderer_protocol.assert(opts.renderer or opts.config.renderer
+    or require("neoagent.ui.renderers").get(opts.config.style), "Provider Shell Renderer")
   local defined, err = renderer_protocol.define_highlights(renderer)
   assert(defined, err and err.message or "Provider Shell highlights failed")
 
@@ -153,8 +212,11 @@ function View.new(opts)
   return self
 end
 
+---@param env Applet.RenderEnvironment
+---@return Applet.LayoutTree
 function View:_render(env)
-  local provider = mount(self.provider, self.config, true)
+  local provider = mount(self.provider.pane, self.config, true)
+  ---@type Applet.LayoutNode
   local child = provider
   if self.provider_count > 1 then
     child = layout.split({
@@ -162,11 +224,12 @@ function View:_render(env)
       axis = "horizontal",
       children = {
         { key = "providers", basis = 22, grow = 0, min = 20,
-          child = mount(self.providers, self.config, true) },
+          child = mount(self.providers.pane, self.config, true) },
         { key = "provider", grow = 1, min = 24, child = provider },
       },
     })
   end
+  ---@type Applet.LayoutLayerNode[]
   local layers = {}
   if self.presentation and self.presentation.active
       and self.presentation_component then
@@ -174,22 +237,24 @@ function View:_render(env)
     local presentation = self.presentation_component
     local editable = request.kind == "input"
     local secret = editable and request.secret == true
+    ---@type Applet.LayoutNode
     local presentation_child
     if editable then
-      presentation_child = presentation_mount(presentation, self.config, {
+      ---@type Applet.Options
+      local input_options = { wrap = request.multiline == true, cursorline = false }
+      if secret then
+        input_options.conceallevel = 2
+        input_options.concealcursor = "niv"
+      end
+      presentation_child = presentation_mount(presentation.pane, self.config, {
         revision = request.id,
         filetype = secret and "neoagent-secret" or "neoagent-prompt",
         sensitive = secret,
         mode = "insert",
-        window_options = {
-          wrap = request.multiline == true,
-          cursorline = false,
-          conceallevel = secret and 2 or nil,
-          concealcursor = secret and "niv" or nil,
-        },
+        window_options = input_options,
       })
     elseif request.kind == "notice" then
-      presentation_child = presentation_mount(presentation, self.config, {
+      presentation_child = presentation_mount(presentation.pane, self.config, {
         revision = request.id,
         filetype = "neoagent-notice",
         mode = "normal",
@@ -205,7 +270,7 @@ function View:_render(env)
             key = "filter",
             basis = { content = true },
             grow = 0,
-            child = presentation_mount(presentation.filter, self.config, {
+            child = presentation_mount(assert(presentation.filter), self.config, {
               revision = request.id .. ":filter",
               filetype = "neoagent-prompt",
               mode = "insert",
@@ -216,7 +281,7 @@ function View:_render(env)
             key = "results",
             basis = { content = true },
             grow = 0,
-            child = presentation_mount(presentation.results, self.config, {
+            child = presentation_mount(assert(presentation.results), self.config, {
               revision = request.id .. ":results",
               filetype = "neoagent-prompt",
               mode = "normal",
@@ -256,6 +321,9 @@ function View:_submit()
   self.applet:set_state({ revision = self.revision })
 end
 
+---@param snapshot Neoagent.ProviderPanelSnapshot?
+---@param providers Neoagent.ProviderListEntry[]?
+---@return true?, Applet.Error?
 function View:set(snapshot, providers)
   local changed_provider = self.provider_id ~= nil
     and snapshot and snapshot.id ~= self.provider_id
@@ -272,22 +340,30 @@ function View:set(snapshot, providers)
   return true
 end
 
+---@param active Neoagent.PublicPresentation
+---@return Applet.Presentation
 function View:_new_presentation_component(active)
   return presentation_surface.new_component(self, active)
 end
 
+---@return boolean
 function View:_ensure_presentation_component()
   return presentation_surface.ensure(self)
 end
 
+---@return boolean
 function View:_seed_presentation()
   return presentation_surface.seed(self)
 end
 
+---@param snapshot Neoagent.PresentationSnapshot?
+---@return true?, Applet.Error?
 function View:set_presentation(snapshot)
   return presentation_surface.set(self, snapshot)
 end
 
+---@param key string?
+---@param default fun(): boolean
 function View:_pane_detached(key, default)
   default()
   if key == "presentation" or key == "presentation-filter"
@@ -300,6 +376,8 @@ function View:_pane_detached(key, default)
   end
 end
 
+---@param origin integer?
+---@return true?, Neoagent.Error|Applet.Error|nil
 function View:open(origin)
   if self.destroyed then
     return nil, util.error("ui", "Provider Shell View is destroyed")
@@ -316,6 +394,7 @@ function View:open(origin)
   return true
 end
 
+---@return boolean
 function View:close()
   if self.destroyed or not self:is_open() then return false end
   presentation_surface.retain_seed(self)
@@ -324,18 +403,25 @@ function View:close()
   return true
 end
 
+---@return boolean
 function View:is_open()
   return not self.destroyed and self.applet:is_open()
 end
 
+---@param key string
+---@return Applet.Pane?
 function View:pane(key)
   return self.applet:pane(key)
 end
 
+---@param message string
+---@param level integer?
 function View:notify(message, level)
   return self.applet:notify(message, level)
 end
 
+---@param uri string
+---@return vim.SystemObj?, string?
 function View:open_uri(uri)
   return self.applet:open_uri(uri)
 end

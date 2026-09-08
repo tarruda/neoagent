@@ -382,7 +382,7 @@ M.codex = new(codex)
 ---@type table<string, Neoagent.Renderer<Neoagent.RenderContinuation>>
 local values = { pi = M.pi, codex = M.codex }
 
----@param name string
+---@param name string?
 ---@return Neoagent.Renderer<Neoagent.RenderContinuation>?
 function M.get(name)
   return values[name]
