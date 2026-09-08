@@ -3,12 +3,6 @@ local util = require("neoagent.util")
 local ui = Applet.Pane.nodes
 local text = Applet.Pane.text
 
----@class Neoagent.RenderSpan: Neoagent.MarkdownSpan
----@field priority? integer
-
----@class Neoagent.RenderHighlight: Neoagent.RenderSpan
----@field row integer
-
 ---@class Neoagent.RenderRange
 ---@field first integer
 ---@field last integer
@@ -21,7 +15,7 @@ local text = Applet.Pane.text
 
 ---@class Neoagent.RenderContentInput
 ---@field lines? string[]
----@field highlights? Neoagent.RenderHighlight[]
+---@field highlights? Neoagent.TextHighlight[]
 ---@field line_groups? table<integer, string>
 ---@field card? Neoagent.RenderCard
 ---@field source? Neoagent.RenderSource
@@ -29,10 +23,12 @@ local text = Applet.Pane.text
 ---@field separators? table<string, integer>
 ---@field truncated? boolean
 ---@field animated? boolean
+---@field wrap? boolean
+---@field output_line_count? integer
 
 ---@class Neoagent.RenderContent: Neoagent.RenderContentInput
 ---@field lines string[]
----@field highlights Neoagent.RenderHighlight[]
+---@field highlights Neoagent.TextHighlight[]
 ---@field line_groups table<integer, string>
 
 ---@class Neoagent.MarkdownView
@@ -84,7 +80,7 @@ local text = Applet.Pane.text
 ---@field node Applet.RegionNode
 
 ---@alias Neoagent.RetainedMarkdown table<integer, Neoagent.RetainedMarkdownRegion>
----@alias Neoagent.RenderSpansByRow table<integer, Neoagent.RenderHighlight[]>
+---@alias Neoagent.RenderSpansByRow table<integer, Neoagent.TextHighlight[]>
 
 local M = {}
 
@@ -315,7 +311,7 @@ function M.focus(block, content, opts)
 end
 
 ---@param line string
----@param spans? Neoagent.RenderSpan[]
+---@param spans? Neoagent.TextSpan[]
 ---@return Applet.TextRun[]
 local function line_runs(line, spans)
   ---@type integer[]
@@ -566,13 +562,8 @@ function M.retained_markdown(key, view, opts, retained)
   if type(attachments) == "table" and #attachments > 0 then
     local slice = document:slice(first, last)
     ---@type Neoagent.RenderContent
-    local content = { lines = slice.lines, highlights = {},
+    local content = { lines = slice.lines, highlights = slice.highlights,
       markdown_blocks = slice.markdown_blocks, line_groups = {} }
-    for _, span in ipairs(slice.highlights) do
-      content.highlights[#content.highlights + 1] = {
-        row = span.row, col = span.col, end_col = span.end_col, group = span.group,
-      }
-    end
     for row, line in ipairs(content.lines) do
       if line ~= "" then
         for _, group in ipairs(view.markdown_groups or {}) do
@@ -627,6 +618,7 @@ function M.retained_markdown(key, view, opts, retained)
               col = span.col,
               end_col = span.end_col,
               group = span.group,
+              priority = span.priority,
             }
           end
           if row.text ~= "" then

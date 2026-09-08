@@ -1,19 +1,20 @@
 local text = require("applet").Pane.text
 
 local M = {}
----@class Neoagent.MarkdownSpan
+---@class Neoagent.TextSpan
 ---@field col integer
 ---@field end_col integer
----@field group string
+---@field group? string
+---@field priority? integer
 
 ---@class Neoagent.MarkdownParts
 ---@field parts string[]
----@field spans Neoagent.MarkdownSpan[]
+---@field spans Neoagent.TextSpan[]
 ---@field length integer
 
 ---@class Neoagent.MarkdownInline
 ---@field text string
----@field spans Neoagent.MarkdownSpan[]
+---@field spans Neoagent.TextSpan[]
 ---@field unstable_source? integer
 ---@field unstable_output? integer
 
@@ -22,7 +23,7 @@ local M = {}
 
 ---@class Neoagent.MarkdownRow
 ---@field text string
----@field spans Neoagent.MarkdownSpan[]
+---@field spans Neoagent.TextSpan[]
 
 ---@class Neoagent.MarkdownOptions
 ---@field width? integer
@@ -67,12 +68,12 @@ local M = {}
 ---@field last integer
 ---@field splittable boolean
 
----@class Neoagent.MarkdownHighlight: Neoagent.MarkdownSpan
+---@class Neoagent.TextHighlight: Neoagent.TextSpan
 ---@field row integer
 
 ---@class Neoagent.MarkdownContent
 ---@field lines string[]
----@field highlights Neoagent.MarkdownHighlight[]
+---@field highlights Neoagent.TextHighlight[]
 ---@field markdown_blocks Neoagent.MarkdownSemanticBlock[]
 
 ---@class Neoagent.MarkdownRegion
@@ -120,7 +121,7 @@ end
 
 ---@param target Neoagent.MarkdownParts
 ---@param value string
----@param spans? Neoagent.MarkdownSpan[]
+---@param spans? Neoagent.TextSpan[]
 ---@return integer
 local function append(target, value, spans)
   local offset = target.length
@@ -306,9 +307,9 @@ local function parse_inline(value, previous_char)
     unstable_source = unstable_source, unstable_output = unstable_output }
 end
 
----@param spans? Neoagent.MarkdownSpan[]
+---@param spans? Neoagent.TextSpan[]
 ---@param finish integer
----@return Neoagent.MarkdownSpan[]
+---@return Neoagent.TextSpan[]
 local function copy_prefix_spans(spans, finish)
   local result = {}
   for _, span in ipairs(spans or {}) do
@@ -391,10 +392,10 @@ local function pad(value, target)
   return value .. string.rep(" ", math.max(0, target - width(value)))
 end
 
----@param spans Neoagent.MarkdownSpan[]
+---@param spans Neoagent.TextSpan[]
 ---@param offset integer
 ---@param group? string
----@return Neoagent.MarkdownSpan[]
+---@return Neoagent.TextSpan[]
 local function shift_spans(spans, offset, group)
   local result = {}
   for _, span in ipairs(spans) do
@@ -415,7 +416,7 @@ local function shift_spans(spans, offset, group)
 end
 
 ---@param value string
----@param spans? Neoagent.MarkdownSpan[]
+---@param spans? Neoagent.TextSpan[]
 ---@return Neoagent.MarkdownRow
 local function row(value, spans)
   local kept = {}
