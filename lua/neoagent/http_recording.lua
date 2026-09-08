@@ -293,6 +293,11 @@ local function body_state(body, headers)
   if state.absent then return state end
   state.content_type = content_type(headers)
   if not state.valid_utf8 then return state end
+  if type(body) == "table" then
+    state.json = body
+    return state
+  end
+  body = state.body
   if state.content_type:find(
       "application/x%-www%-form%-urlencoded") then
     state.form = parse_form(body)

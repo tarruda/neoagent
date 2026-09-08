@@ -1053,6 +1053,61 @@ else:
     assert.is_false(absent[4].ok)
   end)
 
+  it("finalizes credential failures with structured error details", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local reports, messages = {}, {}
+    local recording = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json", retention = "all" },
+      directory = directory,
+      report = function(message) reports[#reports + 1] = message end,
+    }))
+    local details = {
+      { access_token = "structured-detail-secret", reason = "expired" },
+      true,
+      42,
+    }
+    for index, detail in ipairs(details) do
+      local failure = {
+        ok = false,
+        error = {
+          kind = "auth",
+          message = type(detail) == "table"
+            and "Authentication rejected structured-detail-secret"
+            or "Authentication failed",
+          detail = detail,
+        },
+      }
+      local url = "https://example.test/token/" .. index
+      messages[url] = type(detail) == "table"
+        and "Authentication rejected *" or "Authentication failed"
+      local http = recording:transport(transport(nil, failure), {
+        origin = "authentication",
+        credential_response_body = true,
+      })
+      for _, operation in ipairs({ "fetch", "request" }) do
+        local result = wait(http[operation]({ request = { url = url } }))
+        assert.is_false(result.ok)
+        assert.are.same(failure.error.detail, result.error.detail)
+      end
+    end
+    recording:destroy()
+
+    local paths = files(directory, ".jsonl")
+    assert.are.equal(6, #paths)
+    assert.are.same({}, files(directory, ".partial.ndjson"))
+    assert.are.same({}, reports)
+    for _, path in ipairs(paths) do
+      local parsed = records(path)
+      local completion = parsed[#parsed]
+      assert.are.equal("complete", completion.type)
+      assert.is_false(completion.ok)
+      assert.are.equal("*", completion.error.detail)
+      assert.are.equal(messages[parsed[1].request.url], completion.error.message)
+      assert.is_nil(assert(fs.read(path)):find("structured-detail-secret", 1, true))
+    end
+  end)
+
   it("records callback failures and keeps recording faults observational", function()
     local directory, workspace = tempdir(), tempdir()
     directories[#directories + 1] = directory
