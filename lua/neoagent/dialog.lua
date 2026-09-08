@@ -384,7 +384,7 @@ end
 
 ---@generic C
 ---@param dialogs Neoagent.DialogCapability
----@param next_execute_tool? Neoagent.ToolExecutor<C>
+---@param next_execute_tool? fun(tool: Neoagent.Tool<C>, arguments: Neoagent.JsonObject, ctx: Neoagent.DialogToolContext<C>): Neoagent.ToolResult
 ---@return Neoagent.ToolExecutor<C>
 function M.wrap(dialogs, next_execute_tool)
   assert(type(dialogs) == "table"

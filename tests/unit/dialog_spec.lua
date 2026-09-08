@@ -1,6 +1,8 @@
 local assert = require("luassert")
 local async = require("neoagent.async")
 
+---@param actions? Neoagent.DialogAction[]
+---@return Neoagent.DialogRequest
 local function dialog(actions)
   return {
     placement = "transcript",
@@ -13,6 +15,8 @@ local function dialog(actions)
   }
 end
 
+---@generic T, E
+---@param ... Neoagent.Run<T, E>
 local function wait(...)
   local runs = { ... }
   assert(vim.wait(1000, function()
@@ -23,30 +27,57 @@ local function wait(...)
   end, 5))
 end
 
+---@param execute? fun(arguments: Neoagent.JsonObject, ctx: Neoagent.ToolContext<unknown>): Neoagent.ToolResult
+---@return Neoagent.Tool<unknown>
+local function tool(execute)
+  return {
+    name = "custom", description = "Dialog test Tool", input_schema = {},
+    execute = execute or function() return { content = {} } end,
+  }
+end
+
+---@param value? {agent: string}
+---@return Neoagent.ToolContext<unknown>
+local function context(value)
+  return {
+    model = require("tests.helpers.fake_model").new(),
+    run = async.run(function()
+      return { ok = false, error = { kind = "cancelled", message = "test" } }
+    end),
+    execute_tool = function(selected, arguments, ctx)
+      return selected.execute(arguments, ctx)
+    end,
+    context = value,
+    call = { type = "toolCall", id = "dialog-call", name = "custom", arguments = {} },
+    on_update = function() end,
+  }
+end
+
 describe("neoagent dialog source", function()
   it("publishes arbitrary dialogs in FIFO order and returns chosen actions",
     function()
       local source = require("neoagent.dialog").new()
+      ---@type Neoagent.DialogSnapshot[]
       local snapshots = {}
       local detach = source:subscribe(function(snapshot)
         snapshots[#snapshots + 1] = snapshot
       end)
       local first = source:show(dialog())
-      local first_id = source:snapshot().active.id
+      local first_id = assert(source:snapshot().active).id
       local second = source:show(dialog())
-      assert.are.equal(first_id, source:snapshot().active.id)
+      assert.are.equal(first_id, assert(source:snapshot().active).id)
       assert.are.equal(1, source:snapshot().queue_count)
 
       local missing, missing_err = source:choose("missing", "proceed")
       assert.is_nil(missing)
-      assert.matches("is not active", missing_err.message)
+      assert.matches("is not active", assert(missing_err).message)
       local invalid, err = source:choose(first_id, "missing")
       assert.is_nil(invalid)
-      assert.are.equal("dialog", err.kind)
-      assert.is_true(source:choose(first_id, "proceed"))
-      local second_id = source:snapshot().active.id
+      assert.are.equal("dialog", assert(err).kind)
+      assert.is_true((source:choose(first_id, "proceed")))
+      local second_id = assert(source:snapshot().active).id
       assert.are_not.equal(first_id, second_id)
-      assert.is_true(source:choose(second_id, "skip"))
+      assert.is_true((source:choose(second_id, "skip")))
       wait(first, second)
       assert.are.same({ ok = true, action = "proceed" },
         first:result())
@@ -71,7 +102,7 @@ describe("neoagent dialog source", function()
       multiline = false,
     }
     local run = source:show(editable)
-    local id = source:snapshot().active.id
+    local id = assert(source:snapshot().active).id
     assert(source:choose(id, "save", "git diff"))
     wait(run)
     assert.are.same({
@@ -81,14 +112,14 @@ describe("neoagent dialog source", function()
     }, run:result())
 
     run = source:show(dialog())
-    id = source:snapshot().active.id
+    id = assert(source:snapshot().active).id
     local missing, missing_err = source:cancel("missing")
     assert.is_nil(missing)
-    assert.matches("is not active", missing_err.message)
+    assert.matches("is not active", assert(missing_err).message)
     assert(source:cancel(id, "surface closed"))
     wait(run)
-    assert.is_false(run:result().ok)
-    assert.are.equal("surface closed", run:result().error.message)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("surface closed", assert(assert(run:result()).error).message)
     detach()
   end)
 
@@ -105,7 +136,7 @@ describe("neoagent dialog source", function()
       first:cancel()
       wait(first)
       assert.are.equal(0, source:snapshot().queue_count)
-      assert(source:choose(source:snapshot().active.id, "skip"))
+      assert(source:choose(assert(source:snapshot().active).id, "skip"))
       wait(third)
 
       first = source:show(dialog())
@@ -113,8 +144,8 @@ describe("neoagent dialog source", function()
       assert.are.equal(2,
         source:choose_pending("skip", "caller selected all"))
       wait(first, second)
-      assert.are.equal("skip", first:result().action)
-      assert.are.equal("caller selected all", second:result().reason)
+      assert.are.equal("skip", assert(first:result()).action)
+      assert.are.equal("caller selected all", assert(second:result()).reason)
 
       first = source:show(dialog())
       second = source:show(dialog({
@@ -122,7 +153,7 @@ describe("neoagent dialog source", function()
       }))
       local count, err = source:choose_pending("skip")
       assert.is_nil(count)
-      assert.matches("does not provide action", err.message)
+      assert.matches("does not provide action", assert(err).message)
       assert.are.equal(1, source:snapshot().queue_count)
       source:cancel_pending("test teardown")
       wait(first, second)
@@ -137,12 +168,12 @@ describe("neoagent dialog source", function()
       first = source:show(editable)
       local editable_count, editable_err = source:choose_pending("proceed")
       assert.is_nil(editable_count)
-      assert.matches("individual input", editable_err.message)
+      assert.matches("individual input", assert(editable_err).message)
       source:cancel_pending("test teardown", {
         presenter_unavailable = true,
       })
       wait(first)
-      assert.is_true(first:result().presenter_unavailable)
+      assert.is_true(assert(first:result()).presenter_unavailable)
       assert.are.equal(0, source:choose_pending("proceed"))
       detach()
     end)
@@ -159,9 +190,9 @@ describe("neoagent dialog source", function()
 
     local source = require("neoagent.dialog").new()
     local invalid = {
-      function(value) value.placement = "sidebar" end,
+      function(value) rawset(value, "placement", "sidebar") end,
       function(value) value.agent = "" end,
-      function(value) value.agent = {} end,
+      function(value) rawset(value, "agent", {}) end,
       function(value) value.title = "" end,
       function(value) value.body = "bad\0body" end,
       function(value) value.default_action = "" end,
@@ -196,7 +227,7 @@ describe("neoagent dialog source", function()
     local detach = source:subscribe(function() end)
     local run = source:show(editable)
     assert.has_error(function()
-      source:choose(source:snapshot().active.id, "proceed", "a\nb")
+      source:choose(assert(source:snapshot().active).id, "proceed", "a\nb")
     end, "dialog response input must be one line")
     source:cancel_pending("test teardown")
     wait(run)
@@ -216,7 +247,7 @@ describe("neoagent dialog source", function()
     assert.are.equal(1, #notifications)
     assert.matches("subscriber exploded", notifications[1][1])
     assert.are.equal(vim.log.levels.ERROR, notifications[1][2])
-    assert(source:choose(source:snapshot().active.id, "skip"))
+    assert(source:choose(assert(source:snapshot().active).id, "skip"))
     wait(pending)
     broken()
     working()
@@ -225,79 +256,90 @@ describe("neoagent dialog source", function()
     assert.has_error(function()
       rejected:subscribe(function() error("cannot present") end)
     end, "cannot present")
-    assert.is_false(rejected:show(dialog()):result().ok)
+    assert.is_false(assert(rejected:show(dialog()):result()).ok)
 
     source = require("neoagent.dialog").new()
     local detach = source:subscribe(function() end)
     pending = source:show(dialog())
     detach()
     wait(pending)
-    assert.is_false(pending:result().ok)
-    assert.is_true(pending:result().presenter_unavailable)
+    assert.is_false(assert(pending:result()).ok)
+    assert.is_true(assert(pending:result()).presenter_unavailable)
   end)
 
   it("injects a lifetime-scoped optional ctx.dialog capability", function()
     local source = require("neoagent.dialog").new()
     local detach = source:subscribe(function() end)
+    ---@type Neoagent.DialogCapability?
     local retained
+    ---@type Neoagent.ToolExecutor<unknown>
     local execute = require("neoagent.dialog").wrap(source,
+      ---@async
+      ---@param ctx Neoagent.DialogToolContext<unknown>
       function(_, _, ctx)
         retained = ctx.dialog
-        return ctx.dialog:show(dialog()):await()
+        local chosen = ctx.dialog:show(dialog()):await()
+        assert(chosen.ok)
+        return { content = { { type = "text", text = chosen.action } } }
       end)
     local run = async.run(function()
-      return execute({ name = "custom" }, {}, {
-        context = { agent = "Review" },
-      })
+      return execute(tool(), {}, context({ agent = "Review" }))
     end)
     assert(vim.wait(1000, function()
       return source:snapshot().active ~= nil
     end, 5))
-    assert.are.equal("Review", source:snapshot().active.agent)
-    assert(source:choose(source:snapshot().active.id, "proceed"))
+    assert.are.equal("Review", assert(source:snapshot().active).agent)
+    assert(source:choose(assert(source:snapshot().active).id, "proceed"))
     wait(run)
-    assert.are.equal("proceed", run:result().action)
-    local ok, err = pcall(retained.show, retained, dialog())
+    assert.are.equal("proceed",
+      require("neoagent.util").text_content(assert(run:result()).content))
+    local ok, err = pcall(function() assert(retained):show(dialog()) end)
     assert.is_false(ok)
-    assert.are.equal("Dialog capability has expired", err.message)
+    assert.are.equal("Dialog capability has expired", rawget(assert(err), "message"))
 
+    ---@type Neoagent.DialogCapability?
     local retained_bulk
+    ---@type Neoagent.ToolExecutor<unknown>
     local bulk = require("neoagent.dialog").wrap(source,
+      ---@async
+      ---@param ctx Neoagent.DialogToolContext<unknown>
       function(_, _, ctx)
         retained_bulk = ctx.dialog
         local first = ctx.dialog:show(dialog())
         local second = ctx.dialog:show(dialog())
         assert.are.equal(2,
           ctx.dialog:choose_pending("skip", "selected by tool"))
-        return {
-          action = first:await().action,
-          reason = second:await().reason,
-        }
+        local chosen, queued = first:await(), second:await()
+        assert(chosen.ok and queued.ok)
+        return { content = {}, details = {
+          action = chosen.action, reason = queued.reason,
+        } }
       end)
-    local bulk_run = async.run(function() return bulk({}, {}, {}) end)
+    local bulk_run = async.run(function() return bulk(tool(), {}, context()) end)
     wait(bulk_run)
-    assert.are.equal("skip", bulk_run:result().action)
-    assert.are.equal("selected by tool", bulk_run:result().reason)
-    ok, err = pcall(
-      retained_bulk.choose_pending, retained_bulk, "skip")
+    assert.are.equal("skip", assert(assert(bulk_run:result()).details).action)
+    assert.are.equal("selected by tool", assert(assert(bulk_run:result()).details).reason)
+    ok, err = pcall(function()
+      assert(retained_bulk):choose_pending("skip")
+    end)
     assert.is_false(ok)
-    assert.are.equal("Dialog capability has expired", err.message)
+    assert.are.equal("Dialog capability has expired", rawget(assert(err), "message"))
 
     local default = require("neoagent.dialog").wrap(source)
-    assert.are.equal("direct", default({
-      execute = function(_, ctx)
-        assert.is_table(ctx.dialog)
-        return "direct"
-      end,
-    }, {}, {}))
+    local direct_result = { content = { { type = "text", text = "direct" } } }
+    assert.are.equal(direct_result, default(tool(function(_, ctx)
+      assert.is_table(rawget(ctx, "dialog"))
+      return direct_result
+    end), {}, context()))
     detach()
 
     local observed
+    ---@param ctx Neoagent.ToolContext<unknown>
     local direct = function(_, _, ctx)
-      observed = ctx.dialog
+      observed = rawget(ctx, "dialog")
       return "headless"
     end
-    assert.are.equal("headless", direct({}, {}, {}))
+    assert.are.equal("headless", direct(tool(), {}, context()))
     assert.is_nil(observed)
   end)
 end)
