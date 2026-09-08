@@ -5,6 +5,8 @@ local layout_changes = require("applet.pane.reconcile").changes
 local ui = Applet.Pane.nodes
 local widgets = Applet.Pane.widgets
 
+---@param pattern string
+---@param callback fun()
 local function error_matches(pattern, callback)
   local ok, err = pcall(callback)
   assert.is_false(ok)
@@ -24,9 +26,9 @@ describe("Pane content Trees and compilation", function()
     assert.are.same({ root = node, view = { scroll = "preserve" } },
       ui.tree(node, { view = { scroll = "preserve" } }))
 
-    error_matches("options must be a table", function() ui.text("bad") end)
+    error_matches("options must be a table", function() ui.text("bad" --[[@as Applet.TextOptions]]) end)
     error_matches("name must be", function() ui.action("") end)
-    error_matches("must be a node", function() ui.tree(false) end)
+    error_matches("must be a node", function() ui.tree(false --[[@as Applet.Node]]) end)
   end)
 
   it("compares immutable values exactly", function()
@@ -92,9 +94,9 @@ describe("Pane content Trees and compilation", function()
     assert.is_nil(theme:group(nil))
     assert.are.equal(4, theme.generation)
     assert.is_true(vim.api.nvim_get_hl(0, { name = "AppletTestStrong" }).bold)
-    error_matches("theme: must be", function() Theme.new(false) end)
-    error_matches("groups: must be", function() Theme.new({ groups = false }) end)
-    error_matches("highlights: must be", function() Theme.new({ highlights = false }) end)
+    error_matches("theme: must be", function() Theme.new(false --[[@as Applet.ThemeOptions]]) end)
+    error_matches("groups: must be", function() Theme.new({ groups = false --[[@as table<string, string>]] }) end)
+    error_matches("highlights: must be", function() Theme.new({ highlights = false --[[@as table<string, vim.api.keyset.highlight>]] }) end)
     error_matches("style: must be", function() theme:group("") end)
   end)
 
@@ -108,10 +110,10 @@ describe("Pane content Trees and compilation", function()
     assert.are.equal("..", text.truncate("abcdef", 2, { marker = "..." }))
     assert.are.same({ "one", "", "three" }, text.lines("one\n\nthree"))
     error_matches("non%-negative integral", function()
-      text.truncate("value", 1.5)
+      text.truncate("value", 1.5 --[[@as integer]])
     end)
     error_matches("right, left, or middle", function()
-      text.truncate("value", 3, { side = "outside" })
+      text.truncate("value", 3, { side = "outside" --[[@as "right"]] })
     end)
 
     local previous_terminal = vim.g.terminal_color_1
@@ -282,7 +284,7 @@ describe("Pane content Trees and compilation", function()
     assert.is_true(layout.scopes["outer-modal"].modal)
     assert.are.equal("outer-modal", layout.scopes["inner-modal"].parent)
     assert.are.equal("applet.focus.move",
-      layout.scopes["outer-modal"].bindings[1].action.action)
+      assert(layout.scopes["outer-modal"].bindings[1]).action.action)
   end)
 
   it("accepts modal ancestry through an intermediate scope", function()
@@ -442,31 +444,31 @@ describe("Pane content Trees and compilation", function()
     }, layout.view.target_intent)
     assert.is_true(#layout.lines > 5)
     assert.are.equal(2, #layout.regions)
-    assert.are.equal("message:1", layout.regions[1].key)
-    assert.are.equal(7, layout.regions[1].revision)
-    assert.are.equal(layout.regions[1].last + 1, layout.regions[2].first)
+    assert.are.equal("message:1", assert(layout.regions[1]).key)
+    assert.are.equal(7, assert(layout.regions[1]).revision)
+    assert.are.equal(assert(layout.regions[1]).last + 1, assert(layout.regions[2]).first)
     assert.are.equal("Visual", layout.targets["message:1:target"].focus_style)
     assert.are.equal("document", layout.targets["message:1:target"].role)
     local target = layout.targets["message:1:target"]
-    assert.are.same({ "open", "Comment" }, target.focus.active[1].chunks[1])
-    assert.are.equal(target.rectangles[1].row, target.focus.active[1].row)
-    assert.are.equal(target.rectangles[1].col + 1, target.focus.active[1].col)
+    assert.are.same({ "open", "Comment" }, assert(target.focus.active[1]).chunks[1])
+    assert.are.equal(assert(target.rectangles[1]).row, assert(target.focus.active[1]).row)
+    assert.are.equal(assert(target.rectangles[1]).col + 1, assert(target.focus.active[1]).col)
     local last_rectangle = target.rectangles[#target.rectangles]
     assert.are.equal(last_rectangle.row + last_rectangle.height,
-      target.focus.inactive[1].row)
-    assert.are.equal(target.rectangles[1].col + 4,
-      target.focus.inactive[1].win_col)
-    assert.are.equal(210, target.focus.inactive[1].priority)
+      assert(target.focus.inactive[1]).row)
+    assert.are.equal(assert(target.rectangles[1]).col + 4,
+      assert(target.focus.inactive[1]).win_col)
+    assert.are.equal(210, assert(target.focus.inactive[1]).priority)
     assert.are.equal("message:2:scope", layout.scopes["message:2:scope"].key)
     assert.are.equal("root:scope", layout.scopes["message:2:scope"].parent)
     assert.are.equal(2, #layout.binding_pairs)
-    assert.are.same({ " Applet ", "Bold" }, layout.chrome.title[1])
+    assert.are.same({ " Applet ", "Bold" }, assert(layout.chrome.title)[1])
     assert.are.equal("center", layout.chrome.title_pos)
-    assert.are.same({ " q close ", "Comment" }, layout.chrome.footer[1])
+    assert.are.same({ " q close ", "Comment" }, assert(layout.chrome.footer)[1])
     assert.are.equal("right", layout.chrome.footer_pos)
     assert.are.equal("follow_end", layout.view.scroll)
     assert.are.equal(1, #layout.source_ranges)
-    assert.are.equal("hello.lua", layout.source_ranges[1].path)
+    assert.are.equal("hello.lua", assert(layout.source_ranges[1]).path)
     assert.is_true(#layout.decorations > 2)
   end)
 
@@ -493,7 +495,7 @@ describe("Pane content Trees and compilation", function()
       }),
       width = 6,
     })
-    assert.are.equal(12, vim.fn.strdisplaywidth(layout.lines[1]))
+    assert.are.equal(12, vim.fn.strdisplaywidth((assert(layout.lines[1]))))
     assert.are.same({ row = 0, col = 6 }, layout.targets.right.point)
     error_matches("must cover the available width", function()
       compile({
@@ -671,7 +673,7 @@ describe("Pane content Trees and compilation", function()
     }, layout.scopes["layer:scope"].rectangles)
     assert.are.same({
       { row = 1, col = 1, width = 4, height = 1 },
-    }, layout.source_ranges[1].rectangles)
+    }, assert(layout.source_ranges[1]).rectangles)
     local groups = {}
     for _, decoration in ipairs(layout.decorations) do
       groups[decoration.group] = true
@@ -754,9 +756,9 @@ describe("Pane content Trees and compilation", function()
     })
 
     assert.are.same({ decomposed .. "界x  " }, layout.lines)
-    assert.are.equal("String", layout.decorations[1].group)
-    assert.are.equal(0, layout.decorations[1].col)
-    assert.are.equal(#decomposed + #"界x", layout.decorations[1].end_col)
+    assert.are.equal("String", assert(layout.decorations[1]).group)
+    assert.are.equal(0, assert(layout.decorations[1]).col)
+    assert.are.equal(#decomposed + #"界x", assert(layout.decorations[1]).end_col)
   end)
 
   it("clips sparse canvas spans without splitting wide glyphs", function()
@@ -866,10 +868,10 @@ describe("Pane content Trees and compilation", function()
       { row = 3, col = 0, width = 8, height = 1 },
     }, layout.images.image.visible)
     assert.are.same(layout.images.image.visible,
-      layout.source_ranges[1].rectangles)
+      assert(layout.source_ranges[1]).rectangles)
     assert.are.same({ first = 0, last = 4 }, {
-      first = layout.source_ranges[1].first,
-      last = layout.source_ranges[1].last,
+      first = assert(layout.source_ranges[1]).first,
+      last = assert(layout.source_ranges[1]).last,
     })
   end)
 
@@ -884,6 +886,8 @@ describe("Pane content Trees and compilation", function()
       layer_reuses = 0,
       composed_cells = 0,
     }
+    ---@param row integer
+    ---@param text string
     local function scene(row, text)
       return ui.container({
         key = "stage",
@@ -987,7 +991,7 @@ describe("Pane content Trees and compilation", function()
     }, initial.targets.right.rectangles)
 
     local moved_scene = require("applet.pane.scene").reposition(
-      initial.scene, "right:container", { col = 2 })
+      assert(initial.scene), "right:container", { col = 2 })
     local moved = compiler.project_scene({
       layout = initial,
       scene = moved_scene,
@@ -1000,8 +1004,8 @@ describe("Pane content Trees and compilation", function()
     }, moved.targets.right.rectangles)
     assert.are.same({ "right", "left" }, moved.hit_order)
 
-    local overlapping_scene = vim.deepcopy(initial.scene)
-    for _, layer in ipairs(overlapping_scene.layers) do
+    local overlapping_scene = vim.deepcopy((assert(initial.scene)))
+    for _, layer in ipairs(assert(overlapping_scene).layers) do
       local target = layer.fragment.targets.left
       if target then
         target.rectangles = {
@@ -1155,8 +1159,8 @@ describe("Pane content Trees and compilation", function()
       width = 5,
     })
     assert.are.equal(2, #word.lines)
-    assert.matches("…$", word.lines[2])
-    assert.are.equal("String", word.decorations[1].group)
+    assert.matches("…$", (assert(word.lines[2])))
+    assert.are.equal("String", assert(word.decorations[1]).group)
 
     local background = compile({
       tree = ui.text({
@@ -1167,8 +1171,8 @@ describe("Pane content Trees and compilation", function()
       width = 20,
     })
     assert.are.same({ "short" }, background.lines)
-    assert.are.equal("NormalFloat", background.decorations[1].group)
-    assert.is_true(background.decorations[1].whole_line)
+    assert.are.equal("NormalFloat", assert(background.decorations[1]).group)
+    assert.is_true(assert(background.decorations[1]).whole_line)
 
     local continuation = compile({
       tree = ui.text({
@@ -1179,10 +1183,10 @@ describe("Pane content Trees and compilation", function()
       }),
       width = 5,
     })
-    assert.are.equal(5, continuation.decorations[1].col)
-    assert.are.equal("NormalFloat", continuation.decorations[1].group)
-    assert.is_true(continuation.decorations[1].continuation)
-    assert.is_true(continuation.decorations[1].whole_line)
+    assert.are.equal(5, assert(continuation.decorations[1]).col)
+    assert.are.equal("NormalFloat", assert(continuation.decorations[1]).group)
+    assert.is_true(assert(continuation.decorations[1]).continuation)
+    assert.is_true(assert(continuation.decorations[1]).whole_line)
 
     local character = compile({
       tree = ui.text({
@@ -1255,7 +1259,7 @@ describe("Pane content Trees and compilation", function()
     local layout = compile({ tree = root, width = 20, height = 3, extent = "viewport" })
     assert.are.equal(1, #layout.lines)
     assert.are.equal(1, #layout.virtuals)
-    assert.are.same({ "queued", "Comment" }, layout.virtuals[1].lines[1][1])
+    assert.are.same({ "queued", "Comment" }, assert(assert(layout.virtuals[1]).lines[1])[1])
     error_matches("exceeds its height", function()
       compile({ tree = root, width = 20, height = 2, extent = "viewport" })
     end)
@@ -1265,8 +1269,10 @@ describe("Pane content Trees and compilation", function()
   end)
 
   it("clips or collapses viewport overflow explicitly", function()
+    ---@param overrides? Partial<Applet.ColumnOptions>
     local function content(overrides)
-      return ui.column(vim.tbl_extend("force", {
+      ---@type Applet.ColumnOptions
+      local options = {
         key = "bounded",
         children = {
           ui.text({ key = "one", text = "one" }),
@@ -1274,7 +1280,9 @@ describe("Pane content Trees and compilation", function()
           ui.text({ key = "three", text = "three" }),
           ui.text({ key = "four", text = "four" }),
         },
-      }, overrides or {}))
+      }
+      for key, value in pairs(overrides or {}) do options[key] = value end
+      return ui.column(options)
     end
     local prefix = compile({
       tree = content({
@@ -1286,7 +1294,7 @@ describe("Pane content Trees and compilation", function()
       extent = "viewport",
     })
     assert.are.same({ "one", "two", "more" }, prefix.lines)
-    assert.are.equal("bounded:clipped", prefix.regions[1].key)
+    assert.are.equal("bounded:clipped", assert(prefix.regions[1]).key)
 
     local suffix = compile({
       tree = content({ overflow = "clip", clip_from = "start" }),
@@ -1306,11 +1314,11 @@ describe("Pane content Trees and compilation", function()
       extent = "viewport",
     })
     assert.are.same({ "four rows" }, collapsed.lines)
-    assert.are.equal("bounded:collapsed", collapsed.regions[1].key)
+    assert.are.equal("bounded:collapsed", assert(collapsed.regions[1]).key)
 
     error_matches("must be error", function()
       compile({
-        tree = content({ overflow = "unknown" }),
+        tree = content({ overflow = "unknown" } --[[@as Partial<Applet.ColumnOptions>?]]),
         width = 10, height = 1, extent = "viewport",
       })
     end)
@@ -1322,7 +1330,7 @@ describe("Pane content Trees and compilation", function()
     end)
     error_matches("must be start", function()
       compile({
-        tree = content({ overflow = "clip", clip_from = "middle" }),
+        tree = content({ overflow = "clip", clip_from = "middle" } --[[@as Partial<Applet.ColumnOptions>?]]),
         width = 10, height = 2, extent = "viewport",
       })
     end)
@@ -1390,16 +1398,16 @@ describe("Pane content Trees and compilation", function()
       return decoration.group == "String"
     end, layout.decorations)
     assert.are.equal(1, #styled)
-    assert.are.equal(1, styled[1].row)
+    assert.are.equal(1, assert(styled[1]).row)
     assert.are.equal(1, #layout.targets["text:target"].rectangles)
-    assert.are.equal(1, layout.targets["text:target"].rectangles[1].row)
-    assert.are.equal(1, layout.targets["text:target"].focus.active[1].row)
-    assert.are.equal(1, layout.targets["text:target"].focus.inactive[1].row)
+    assert.are.equal(1, assert(layout.targets["text:target"].rectangles[1]).row)
+    assert.are.equal(1, assert(layout.targets["text:target"].focus.active[1]).row)
+    assert.are.equal(1, assert(layout.targets["text:target"].focus.inactive[1]).row)
     assert.is_true(layout.scopes["bounded:scope"].root)
     assert.are.equal(1, #layout.source_ranges)
     assert.are.same({ first = 1, last = 2 }, {
-      first = layout.source_ranges[1].first,
-      last = layout.source_ranges[1].last,
+      first = assert(layout.source_ranges[1]).first,
+      last = assert(layout.source_ranges[1]).last,
     })
     assert.are.equal(2, layout.images.picture.row)
     assert.are.equal(2, layout.images.picture.height)
@@ -1468,8 +1476,8 @@ describe("Pane content Trees and compilation", function()
     })
     assert.are.same({ "replacement" }, empty.lines)
     assert.are.same({ first = 0, last = 0 }, {
-      first = empty.regions[1].first,
-      last = empty.regions[1].last,
+      first = assert(empty.regions[1]).first,
+      last = assert(empty.regions[1]).last,
     })
     compile({
       tree = ui.region({
@@ -1539,7 +1547,7 @@ describe("Pane content Trees and compilation", function()
     assert.is_true(rawequal(first.regions[1], second.regions[1]))
     assert.is_true(rawequal(first.regions[2], second.regions[2]))
     assert.is_true(rawequal(first.virtuals[1], second.virtuals[1]))
-    assert.are.equal(3, second.region_document.changed_first)
+    assert.are.equal(3, assert(second.region_document).changed_first)
     assert.are.equal(1, stats.document_reuses)
     assert.are.equal(4, stats.region_compilations)
     assert.is_true(layout_changes(first, second).content)
@@ -1567,7 +1575,7 @@ describe("Pane content Trees and compilation", function()
     local second = compile({ tree = tree(), width = 80, cache = cache })
 
     assert.are.same({ marker }, second.lines)
-    assert.is_true(rawequal(first.regions[1].lines, second.regions[1].lines))
+    assert.is_true(rawequal(assert(first.regions[1]).lines, assert(second.regions[1]).lines))
   end)
 
   it("compares complete Layout semantics exactly", function()
@@ -1617,71 +1625,42 @@ describe("Pane content Trees and compilation", function()
   end)
 
   it("classifies every changed semantic in a retained document suffix", function()
-    local function region(key, values)
-      return {
-        key = key,
-        first = values.first or 0,
-        last = values.last or 1,
-        lines = { values.text },
-        decorations = { { value = values.decoration } },
-        targets = { target = values.target },
-        target_order = { values.target },
-        hit_order = { values.target },
-        scopes = { scope = values.scope },
-        images = { image = values.image },
-        source_ranges = { { language = values.source } },
-        virtuals = { { lines = { values.virtual } } },
+    local cache = {}
+    ---@param text string
+    ---@return Applet.PaneLayout
+    local function document(text)
+      local image_source = {
+        kind = "png_bytes", id = "image", data = "png", revision = text,
       }
+      local identity = require("applet.image.source").identity(image_source)
+      return compile({
+        width = 20,
+        cache = cache,
+        images = { status = "available", generation = 1, resources = {
+          [identity] = { id = identity, width = 1, height = 1 },
+        } },
+        tree = ui.column({ key = "document", children = {
+          ui.region({ key = "changed", revision = text, child = ui.scope({
+            key = "scope", bindings = { { lhs = "x", action = ui.action(text) } },
+            child = ui.column({ key = "content", children = {
+              ui.target({ key = "target", action = ui.action(text),
+                child = ui.text({ key = "text", runs = {
+                  { text = text, group = text },
+                } }) }),
+              ui.image({ key = "image", source = image_source,
+                alt = text, width = 1, height = 1 }),
+              ui.source({ key = "source", language = text,
+                child = ui.text({ key = "source:text", text = text }) }),
+              ui.virtual({ key = "virtual", lines = { { { text = text } } } }),
+            } }),
+          }) }),
+          ui.region({ key = "stable", revision = 1,
+            child = ui.text({ key = "stable:text", text = "stable" }) }),
+        } }),
+      })
     end
-    local stable = {
-      text = "stable",
-      decoration = "stable",
-      target = "stable",
-      scope = "stable",
-      image = "stable",
-      source = "stable",
-      virtual = "stable",
-    }
-    local previous = {
-      region_document = { shape = { kind = "column", gap = 0 } },
-      regions = {
-        region("changed", {
-          text = "before",
-          decoration = "before",
-          target = "before",
-          scope = "before",
-          image = "before",
-          source = "before",
-          virtual = "before",
-        }),
-        region("stable", stable),
-      },
-      edit = {},
-      chrome = {},
-      view = {},
-    }
-    local layout = {
-      region_document = {
-        shape = { kind = "column", gap = 0 },
-        changed_first = 1,
-      },
-      regions = {
-        region("changed", {
-          text = "after",
-          decoration = "after",
-          target = "after",
-          scope = "after",
-          image = "after",
-          source = "after",
-          virtual = "after",
-        }),
-        region("stable", stable),
-      },
-      edit = {},
-      chrome = {},
-      view = {},
-    }
-
+    local previous, layout = document("before"), document("after")
+    assert.are.equal(1, assert(layout.region_document).changed_first)
     local changed = layout_changes(previous, layout)
     for _, key in ipairs({
       "content", "decorations", "interaction", "images", "sources",
@@ -1728,7 +1707,10 @@ describe("Pane content Trees and compilation", function()
     assert.are.equal(3, stats.region_compilations)
     assert.are.equal(1, stats.region_reuses)
     error_matches("images.presented", function()
-      compile({ tree = tree(), width = 10, images = { presented = false } })
+      compile({ tree = tree(), width = 10, images = {
+        status = "available", generation = 1, resources = {},
+        presented = false --[[@as table<string, string>]],
+      } })
     end)
   end)
 
@@ -1873,11 +1855,11 @@ describe("Pane content Trees and compilation", function()
     })
     local unavailable = compile({ tree = node, width = 10 })
     assert.are.equal(3, #unavailable.lines)
-    assert.are.equal(10, vim.fn.strdisplaywidth(unavailable.lines[1]))
-    assert.matches("^  not", unavailable.lines[1])
+    assert.are.equal(10, vim.fn.strdisplaywidth((assert(unavailable.lines[1]))))
+    assert.matches("^  not", (assert(unavailable.lines[1])))
     assert.is_nil(unavailable.images.image)
     local identity = require("applet.image.source").identity(source)
-    local resource = { id = identity, content_id = 3 }
+    local resource = { id = identity, content_id = 3, width = 8, height = 6 }
     local available = compile({
       tree = node,
       width = 10,
@@ -1902,8 +1884,8 @@ describe("Pane content Trees and compilation", function()
       }),
       width = 30,
     })
-    assert.matches("Image unavailable", automatic.lines[1])
-    assert.are.equal(30, vim.fn.strdisplaywidth(automatic.lines[1]))
+    assert.matches("Image unavailable", (assert(automatic.lines[1])))
+    assert.are.equal(30, vim.fn.strdisplaywidth((assert(automatic.lines[1]))))
 
     local clipped = compile({
       tree = ui.image({
@@ -1938,7 +1920,7 @@ describe("Pane content Trees and compilation", function()
     assert.are.equal(2, #clipped.lines)
     assert.are.equal(2, #clipped.targets["fallback:target"].rectangles)
     assert.is_nil(clipped.targets["removed:target"])
-    assert.are.equal(2, clipped.source_ranges[1].last)
+    assert.are.equal(2, assert(clipped.source_ranges[1]).last)
 
     local clipped_point = compile({
       tree = ui.image({
@@ -2047,7 +2029,7 @@ describe("Pane content Trees and compilation", function()
     local next_binding = vim.tbl_filter(function(value)
       return value.lhs == "j"
     end, layout.scopes["menu:scope"].bindings)[1]
-    assert.are.equal("first", next_binding.action.payload.entry)
+    assert.are.equal("first", assert(next_binding).action.payload.entry)
     assert.are.equal("selected",
       layout.targets["menu:item:one"].focus_style)
     assert.is_nil(layout.targets["menu:item:two"].focus_style)
@@ -2136,7 +2118,7 @@ describe("Pane content Trees and compilation", function()
     end, explicit_activate.scopes["explicit-activate:modal"].bindings)
     assert.are.equal(1, #enter)
     assert.are.equal("explicit-activate:actions:item:continue",
-      enter[1].action.payload.target)
+      assert(enter[1]).action.payload.target)
 
     local card = compile({
       tree = widgets.card({
@@ -2148,20 +2130,22 @@ describe("Pane content Trees and compilation", function()
       }),
       width = 30,
     })
-    assert.are.equal("details", card.targets.card.action.action)
-    assert.are.equal("lua", card.source_ranges[1].language)
+    assert.are.equal("details", assert(card.targets.card.action).action)
+    assert.are.equal("lua", assert(card.source_ranges[1]).language)
   end)
 
   it("rejects malformed Trees before producing a Layout", function()
+    local missing_tree = { width = 2 }
+    local empty_intent = {}
     local cases = {
       { "layout.width", function() compile({ tree = ui.text({ key = "x", text = "x" }), width = 0 }) end },
-      { "layout.extent", function() compile({ tree = ui.text({ key = "x", text = "x" }), width = 2, extent = "page" }) end },
-      { "tree: must be", function() compile({ width = 2 }) end },
-      { "type: is unknown", function() compile({ tree = { type = "wat", key = "x" }, width = 2 }) end },
-      { "key: must be", function() compile({ tree = { type = "text", text = "x" }, width = 2 }) end },
+      { "layout.extent", function() compile({ tree = ui.text({ key = "x", text = "x" }), width = 2, extent = "page" --[[@as ("document"|"viewport")?]] }) end },
+      { "tree: must be", function() compile(missing_tree --[[@as Applet.PaneCompileOptions]]) end },
+      { "type: is unknown", function() compile({ tree = { type = "wat", key = "x" } --[[@as (Applet.Tree|Applet.Node)]], width = 2 }) end },
+      { "key: must be", function() compile({ tree = { type = "text", text = "x" } --[[@as (Applet.Tree|Applet.Node)]], width = 2 }) end },
       { "runs: must be", function() compile({ tree = ui.text({ key = "x", runs = {} }), width = 2 }) end },
-      { "wrap: must be", function() compile({ tree = ui.text({ key = "x", text = "x", wrap = "bad" }), width = 2 }) end },
-      { "overflow: must be", function() compile({ tree = ui.text({ key = "x", text = "x", overflow = "bad" }), width = 2 }) end },
+      { "wrap: must be", function() compile({ tree = ui.text({ key = "x", text = "x", wrap = "bad" --[[@as ("word"|"character"|"none"|"native")?]] }), width = 2 }) end },
+      { "overflow: must be", function() compile({ tree = ui.text({ key = "x", text = "x", overflow = "bad" --[[@as ("clip"|"ellipsis")?]] }), width = 2 }) end },
       { "tab without", function() compile({ tree = ui.text({ key = "x", text = "\t" }), width = 2 }) end },
       { "carriage", function() compile({ tree = ui.text({ key = "x", text = "\r" }), width = 2 }) end },
       { "style or group", function() compile({ tree = ui.text({ key = "x", runs = { { text = "x", style = "A", group = "B" } } }), width = 2 }) end },
@@ -2181,7 +2165,7 @@ describe("Pane content Trees and compilation", function()
         width = 2,
       }) end },
       { "layers: must be a list", function() compile({
-        tree = ui.container({ key = "x", width = 2, height = 1, layers = { bad = true } }),
+        tree = ui.container({ key = "x", width = 2, height = 1, layers = { bad = true } --[[@as Applet.ContainerNode[]?]] }),
         width = 2,
       }) end },
       { "must be a container", function() compile({
@@ -2189,7 +2173,7 @@ describe("Pane content Trees and compilation", function()
           key = "x",
           width = 2,
           height = 1,
-          layers = { ui.text({ key = "layer", text = "x" }) },
+          layers = { ui.text({ key = "layer", text = "x" }) } --[[@as Applet.ContainerNode[]?]],
         }),
         width = 2,
       }) end },
@@ -2211,7 +2195,7 @@ describe("Pane content Trees and compilation", function()
         width = 2,
       }) end },
       { "kind: must be single", function() compile({
-        tree = ui.container({ key = "x", width = 2, height = 1, border = "ornate" }),
+        tree = ui.container({ key = "x", width = 2, height = 1, border = "ornate" --[[@as (false|"none"|"single"|"rounded"|"double"|Applet.BorderOptions)?]] }),
         width = 4,
       }) end },
       { "shadow: must specify", function() compile({
@@ -2241,16 +2225,16 @@ describe("Pane content Trees and compilation", function()
       { "revision.*string or number", function() compile({
         tree = ui.region({
           key = "invalid-revision",
-          revision = {},
+          revision = {} --[[@as (string|number)?]],
           child = ui.text({ key = "content", text = "x" }),
         }),
         width = 4,
       }) end },
       { "duplicate target", function() compile({ tree = ui.column({ key = "x", children = { ui.target({ key = "same", child = ui.text({ key = "a", text = "a" }) }), ui.target({ key = "same", child = ui.text({ key = "b", text = "b" }) }) } }), width = 4 }) end },
-      { "focus: must be", function() compile({ tree = ui.target({ key = "x", focus = false, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
+      { "focus: must be", function() compile({ tree = ui.target({ key = "x", focus = false --[[@as Applet.TargetFocus?]], child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
       { "following boundary", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 2, chunks = { { text = "x" } } } } }, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
       { "chunks: must be", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 0, chunks = {} } } }, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
-      { "position: is unknown", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 0, chunks = { { text = "x" } }, position = "middle" } } }, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
+      { "position: is unknown", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 0, chunks = { { text = "x" } }, position = "middle" } } } --[[@as Applet.TargetFocus?]], child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
       { "cannot combine", function() compile({ tree = ui.target({ key = "x", focus = { active = { { row = 0, chunks = { { text = "x" } }, position = "eol", win_col = 1 } } }, child = ui.text({ key = "t", text = "x" }) }), width = 4 }) end },
       { "duplicates an image", function()
         local source = { kind = "png_bytes", id = "test", data = "same", revision = 1 }
@@ -2345,7 +2329,7 @@ describe("Pane content Trees and compilation", function()
           revision = 1,
           child = ui.image({
             key = "image",
-            source = { kind = "png_bytes", id = "test", data = "png" },
+            source = { kind = "png_bytes", id = "test", data = "png" } --[[@as Applet.ImageSource]],
             alt = "invalid",
             width = 1,
             height = 1,
@@ -2358,18 +2342,18 @@ describe("Pane content Trees and compilation", function()
         tree = {
           root = ui.text({ key = "x", text = "x" }),
           chrome = { title_pos = "middle" },
-        },
+        } --[[@as (Applet.Tree|Applet.Node)]],
         width = 4,
       }) end },
       { "chrome.footer_pos", function() compile({
         tree = {
           root = ui.text({ key = "x", text = "x" }),
           chrome = { footer_pos = false },
-        },
+        } --[[@as (Applet.Tree|Applet.Node)]],
         width = 4,
       }) end },
       { "view.scroll", function() compile({
-        tree = { root = ui.text({ key = "x", text = "x" }), view = { scroll = "jump" } },
+        tree = { root = ui.text({ key = "x", text = "x" }), view = { scroll = "jump" } } --[[@as (Applet.Tree|Applet.Node)]],
         width = 4,
       }) end },
       { "view.initial_target", function() compile({
@@ -2378,8 +2362,8 @@ describe("Pane content Trees and compilation", function()
       }) end },
       { "target_intent.key", function() compile({
         tree = { root = ui.text({ key = "x", text = "x" }), view = {
-          target_intent = {},
-        } }, width = 4,
+          target_intent = empty_intent --[[@as Applet.TargetIntent]],
+        } } --[[@as (Applet.Tree|Applet.Node)]], width = 4,
       }) end },
       { "target_intent.select", function() compile({
         tree = { root = ui.text({ key = "x", text = "x" }), view = {
@@ -2391,7 +2375,7 @@ describe("Pane content Trees and compilation", function()
           key = "x", child = ui.text({ key = "text", text = "x" }),
         }), view = { target_intent = {
           key = "intent", select = "x", reveal = true,
-        } } }, width = 4,
+        } } } --[[@as (Applet.Tree|Applet.Node)]], width = 4,
       }) end },
       { "target_intent.target", function() compile({
         tree = { root = ui.text({ key = "x", text = "x" }), view = {
@@ -2425,16 +2409,19 @@ describe("Pane content Trees and compilation", function()
   end)
 
   it("validates widget inputs directly", function()
-    error_matches("options must", function() widgets.menu(false) end)
-    error_matches("menu.key", function() widgets.menu({}) end)
+    local empty_options = {}
+    local incomplete_entry = { select = "target" }
+    local childless_card = { key = "x" }
+    error_matches("options must", function() widgets.menu(false --[[@as Applet.MenuOptions]]) end)
+    error_matches("menu.key", function() widgets.menu(empty_options --[[@as Applet.MenuOptions]]) end)
     error_matches("orientation", function()
-      widgets.menu({ key = "x", items = {}, orientation = "diagonal" })
+      widgets.menu({ key = "x", items = {}, orientation = "diagonal" --[[@as ("vertical"|"horizontal")?]] })
     end)
     error_matches("menu.text_wrap", function()
-      widgets.menu({ key = "x", items = {}, text_wrap = "window" })
+      widgets.menu({ key = "x", items = {}, text_wrap = "window" --[[@as Applet.TextWrap?]] })
     end)
     error_matches("menu.initial", function()
-      widgets.menu({ key = "x", items = {}, initial = false })
+      widgets.menu({ key = "x", items = {}, initial = false --[[@as string?]] })
     end)
     error_matches("menu.initial", function()
       widgets.menu({ key = "x", items = {}, initial = "missing" })
@@ -2459,18 +2446,18 @@ describe("Pane content Trees and compilation", function()
       widgets.menu({ key = "x", items = { { key = "a", label = "A" } } })
     end)
     error_matches("menu entry", function()
-      widgets.menu_intent(false, "intent")
+      widgets.menu_intent(false --[[@as Applet.MenuEntry?]], "intent")
     end)
     error_matches("menu entry.select", function()
-      widgets.menu_intent({}, "intent")
+      widgets.menu_intent(empty_options --[[@as Applet.MenuEntry]], "intent")
     end)
     error_matches("menu entry.reveal", function()
-      widgets.menu_intent({ select = "target" }, "intent")
+      widgets.menu_intent(incomplete_entry --[[@as Applet.MenuEntry]], "intent")
     end)
     error_matches("menu intent key", function()
       widgets.menu_intent({ select = "target", reveal = "target" }, "")
     end)
-    error_matches("dialog.key", function() widgets.dialog({}) end)
-    error_matches("card.child", function() widgets.card({ key = "x" }) end)
+    error_matches("dialog.key", function() widgets.dialog(empty_options --[[@as Applet.DialogOptions]]) end)
+    error_matches("card.child", function() widgets.card(childless_card --[[@as Applet.CardOptions]]) end)
   end)
 end)
