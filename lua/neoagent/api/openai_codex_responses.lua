@@ -56,7 +56,7 @@ local M = {}
 ---@field retry_after_ms? number
 ---@field request_id? string
 ---@field cf_ray? string
----@field authorization_error? string
+---@field authorization_error? boolean
 ---@field exit_code? integer
 
 ---@class Neoagent.CodexOptions: Neoagent.ResponsesOptions
@@ -73,6 +73,20 @@ local REQUEST_MAX_RETRIES = 4
 local STREAM_MAX_RETRIES = 5
 local INITIAL_RETRY_DELAY_MS = 200
 local MAX_RETRY_DELAY_MS = 60 * 1000
+
+-- Error envelopes may echo prompts or credentials in any string field.
+-- Diagnostics retain only this locally defined error-code vocabulary.
+local diagnostic_codes = {
+  invalid_request = true,
+  invalid_request_error = true,
+  context_length_exceeded = true,
+  internal_server_error = true,
+  server_error = true,
+  rate_limit_exceeded = true,
+  insufficient_quota = true,
+  usage_limit_reached = true,
+  upstream_error = true,
+}
 
 ---@param timer? uv.uv_timer_t
 local function close_timer(timer)
@@ -396,14 +410,15 @@ local function emit_diagnostic(self, call_opts, event_type, err, attempt, max_at
     request_max_attempts = max_attempts,
     stream_attempt = (call_opts.retry_attempt or 0) + 1,
     kind = err.kind,
-    message = err.message,
-    code = err.code,
+    message = err.status and ("HTTP " .. err.status .. " request failed")
+      or "Model request failed",
+    code = diagnostic_codes[err.code] and err.code or nil,
     status = err.status,
     retryable = err.retryable == true,
     retry_after_ms = delay_ms,
     request_id = err.request_id,
     cf_ray = err.cf_ray,
-    authorization_error = err.authorization_error,
+    authorization_error = err.authorization_error ~= nil or nil,
     exit_code = err.exit_code,
   }
   pcall(self._on_diagnostic, value)
