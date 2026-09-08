@@ -44,7 +44,6 @@ tests/unit/alibaba_token_plan_auth_spec.lua
 tests/unit/alibaba_token_plan_client_spec.lua
 tests/unit/anthropic_client_spec.lua
 tests/unit/anthropic_messages_spec.lua
-tests/unit/api_messages_spec.lua
 tests/unit/applet_consumer_boundary_spec.lua
 tests/unit/applet_image_spec.lua
 tests/unit/applet_layout_spec.lua
@@ -72,7 +71,6 @@ tests/unit/llama_auth_spec.lua
 tests/unit/llama_client_spec.lua
 tests/unit/llama_provider_spec.lua
 tests/unit/model_catalog_spec.lua
-tests/unit/model_rules_spec.lua
 tests/unit/model_spec.lua
 tests/unit/neoagent_applet_boundaries_spec.lua
 tests/unit/openai_client_spec.lua
@@ -111,12 +109,10 @@ tests/unit/semantic_message_spec.lua
 tests/unit/session_lifecycle_spec.lua
 tests/unit/session_spec.lua
 tests/unit/session_tree_spec.lua
-tests/unit/simple_renderer_spec.lua
 tests/unit/state_store_spec.lua
 tests/unit/steering_spec.lua
 tests/unit/storage_spec.lua
 tests/unit/switcher_spec.lua
-tests/unit/thinking_spec.lua
 tests/unit/tool_schema_spec.lua
 tests/unit/tools_spec.lua
 tests/unit/ui_renderer_spec.lua
