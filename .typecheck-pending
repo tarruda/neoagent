@@ -60,7 +60,6 @@ scripts/sandbox_linux_runtime.lua
 scripts/sandbox_macos_runtime.lua
 scripts/sandbox_windows_runtime.lua
 tests/helpers/applet_direct_focus.lua
-tests/helpers/callback_connections.lua
 tests/helpers/http_live.lua
 tests/helpers/http_replay.lua
 tests/helpers/presentation.lua
