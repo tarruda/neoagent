@@ -12,6 +12,7 @@ local Provider = require("neoagent.ui.panes.provider")
 local Providers = require("neoagent.ui.panes.providers")
 local Transcript = require("neoagent.ui.panes.transcript")
 
+---@param value integer
 local function uint32(value)
   return string.char(
     math.floor(value / 16777216) % 256,
@@ -20,12 +21,17 @@ local function uint32(value)
     value % 256)
 end
 
+---@param width integer
+---@param height integer
 local function png(width, height)
   return "\137PNG\r\n\26\n\0\0\0\rIHDR"
     .. uint32(width) .. uint32(height)
 end
 
+---@param overrides Partial<Applet.ImageBackend>?
+---@return Applet.ImageBackend
 local function image_backend(overrides)
+  ---@type Applet.ImageBackend
   local value = {
     name = "test",
     available = true,
@@ -40,10 +46,13 @@ local function image_backend(overrides)
   return value
 end
 
+---@param buffer integer
 local function lines(buffer)
   return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
 end
 
+---@param buffer integer
+---@param value string
 local function contains(buffer, value)
   for _, line in ipairs(lines(buffer)) do
     if line:find(value, 1, true) then return true end
@@ -51,40 +60,53 @@ local function contains(buffer, value)
   return false
 end
 
+---@param value Applet.ChromeRun[]?
 local function chrome_text(value)
   local result = {}
   for _, chunk in ipairs(value or {}) do
-    result[#result + 1] = chunk[1]
+    result[#result + 1] = assert(chunk[1] or chunk.text)
   end
   return table.concat(result)
 end
 
+---@param buffer integer
+---@param value string
+---@return integer?, string?
 local function line_index(buffer, value)
   for index, line in ipairs(lines(buffer)) do
     if line:find(value, 1, true) then return index, line end
   end
 end
 
+---@param buffer integer
+---@param namespace integer
+---@param row integer
+---@param start_col integer
+---@param end_col integer
 local function highlight_groups(buffer, namespace, row, start_col, end_col)
   local result = {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
     buffer, namespace, { row, start_col }, { row, end_col }, { details = true }
   )) do
+    ---@cast mark [integer, integer, integer, {end_row?: integer, end_col?: integer, hl_group?: string}]
     local details = mark[4]
     if mark[2] == row and mark[3] == start_col
-        and details.end_row == row and details.end_col == end_col
-        and details.hl_group then
-      result[details.hl_group] = true
+        and assert(details).end_row == row and assert(details).end_col == end_col
+        and assert(details).hl_group then
+      result[assert(details).hl_group] = true
     end
   end
   return result
 end
 
+---@param buffer integer
+---@param namespace integer
 local function persistent_highlight_counts(buffer, namespace)
   local result = {}
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
     buffer, namespace, 0, -1, { details = true }
   )) do
+    ---@cast mark [integer, integer, integer, {hl_group?: string, line_hl_group?: string}]
     local group = mark[4].hl_group or mark[4].line_hl_group
     if group then result[group] = (result[group] or 0) + 1 end
   end
@@ -92,9 +114,11 @@ local function persistent_highlight_counts(buffer, namespace)
 end
 
 describe("neoagent Applet View composition", function()
+  ---@type (Neoagent.View|Neoagent.ProviderShellView)[]
   local views = {}
+  ---@type (Neoagent.InputPane|Neoagent.DialogPane|Neoagent.ProviderPane|Neoagent.ProvidersPane)[]
   local components = {}
-  local base64_decode
+  local base64_decode = vim.base64.decode
 
   before_each(function()
     config._reset()
@@ -114,6 +138,7 @@ describe("neoagent Applet View composition", function()
     vim.cmd("stopinsert")
   end)
 
+  ---@param opts Neoagent.UIConfigInput?
   local function view(opts)
     local resolved = config.setup({
       ui = vim.tbl_extend("force", {
@@ -150,7 +175,7 @@ describe("neoagent Applet View composition", function()
       completion = false,
       virtual_lines = {},
     })
-    assert.are.equal("<C-g>", input:mapping_bindings()[1].lhs)
+    assert.are.equal("<C-g>", assert(input:mapping_bindings()[1]).lhs)
 
     local dialog = Dialog.new({
       editable = true,
@@ -206,8 +231,8 @@ describe("neoagent Applet View composition", function()
     assert.is_true(value.input.pane:is_editable())
     assert.is_false(vim.bo[view_handles.buffer(value, "transcript")].modifiable)
     assert.is_true(vim.bo[view_handles.buffer(value, "input")].modifiable)
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "question"))
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "answer"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "question"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "answer"))
     assert.are.equal("draft", value:get_input())
     assert.is_nil(rawget(value, "domain"))
     assert.is_nil(rawget(value, "namespace"))
@@ -230,10 +255,11 @@ describe("neoagent Applet View composition", function()
   end)
 
   it("owns the configured image system for the transcript lifecycle", function()
+    ---@type Applet.ImageOptions?
     local image_options
     local image_new = Applet.ImageSystem.new
     Applet.ImageSystem.new = function(options)
-      image_options = vim.deepcopy(options)
+      image_options = options and vim.deepcopy(options) or nil
       return image_new(options)
     end
     local ok, value = pcall(view)
@@ -243,12 +269,12 @@ describe("neoagent Applet View composition", function()
     local images = value.image_system
 
     assert.is_table(images)
-    assert.are.equal("unavailable", images.status)
+    assert.are.equal("unavailable", assert(images).status)
     assert.are.equal(images, value.transcript.image_system)
     assert.are.equal(images, value.transcript.pane.image_system)
 
     value:destroy()
-    assert.is_true(images.destroyed)
+    assert.is_true(assert(images).destroyed)
 
     local disabled = view({ images = false })
     assert.is_nil(disabled.image_system)
@@ -312,7 +338,7 @@ describe("neoagent Applet View composition", function()
     assert.are.equal(4, placements[#placements].resource.width)
     assert.are.equal(3, placements[#placements].resource.height)
     assert.are.equal(12, placements[#placements].height)
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "Image · PNG"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG"))
     value:destroy()
     images:destroy()
   end)
@@ -339,6 +365,9 @@ describe("neoagent Applet View composition", function()
     })
     views[#views + 1] = value
 
+    ---@param width integer
+    ---@param revision integer
+    ---@return Neoagent.ImageBlock
     local function frame(width, revision)
       return {
         type = "image",
@@ -349,6 +378,8 @@ describe("neoagent Applet View composition", function()
       }
     end
 
+    ---@param pane Applet.Pane
+    ---@param width integer
     local function source_id(pane, width)
       local resources = images:snapshot(pane).resources
       for _, image in pairs(pane.layout and pane.layout.images or {}) do
@@ -359,12 +390,12 @@ describe("neoagent Applet View composition", function()
       end
     end
 
-    value:apply({ type = "tool_start", call = {
+    value:apply({ type = "tool_start", call = { type = "toolCall",
       id = "animated", name = "animate", arguments = {},
     } })
     value:apply({
       type = "tool_update",
-      call = { id = "animated", name = "animate" },
+      call = { type = "toolCall", arguments = {}, id = "animated", name = "animate" },
       result = { content = { frame(12, 1) } },
     })
     assert(value:open())
@@ -383,7 +414,7 @@ describe("neoagent Applet View composition", function()
 
     value:apply({
       type = "tool_update",
-      call = { id = "animated", name = "animate" },
+      call = { type = "toolCall", arguments = {}, id = "animated", name = "animate" },
       result = { content = { frame(18, 2) } },
     })
     assert(vim.wait(1000, function()
@@ -394,11 +425,11 @@ describe("neoagent Applet View composition", function()
     end))
 
     assert(value.transcript.pane:flush())
-    assert(value.details.pane:flush())
+    assert(assert(value.details).pane:flush())
     local batch_count = #batches
     value:apply({
       type = "tool_end",
-      call = { id = "animated", name = "animate", arguments = {} },
+      call = { type = "toolCall", id = "animated", name = "animate", arguments = {} },
       message = {
         role = "toolResult",
         toolCallId = "animated",
@@ -408,17 +439,17 @@ describe("neoagent Applet View composition", function()
       },
     })
     assert(value.transcript.pane:flush())
-    assert(value.details.pane:flush())
+    assert(assert(value.details).pane:flush())
     assert.are.equal(2, images:_stats().preparations)
     assert.are.equal(batch_count, #batches)
-    assert.is_nil(value.transcript:block("tool:animated").update)
+    assert.is_nil(assert(value.transcript:block("tool:animated")).update)
 
-    value:apply({ type = "tool_start", call = {
+    value:apply({ type = "tool_start", call = { type = "toolCall",
       id = "removed", name = "animate", arguments = {},
     } })
     value:apply({
       type = "tool_update",
-      call = { id = "removed", name = "animate" },
+      call = { type = "toolCall", arguments = {}, id = "removed", name = "animate" },
       result = { content = { frame(15, 1) } },
     })
     assert(vim.wait(1000, function()
@@ -433,7 +464,7 @@ describe("neoagent Applet View composition", function()
 
     value:apply({
       type = "tool_end",
-      call = { id = "removed", name = "animate", arguments = {} },
+      call = { type = "toolCall", id = "removed", name = "animate", arguments = {} },
       message = {
         role = "toolResult",
         toolCallId = "removed",
@@ -448,7 +479,7 @@ describe("neoagent Applet View composition", function()
         and source_id(value.transcript.pane, 15) == nil
     end))
     assert.is_true(#batches >= batch_count + 2)
-    assert.is_nil(value.transcript:block("tool:removed").update)
+    assert.is_nil(assert(value.transcript:block("tool:removed")).update)
     images:destroy()
   end)
 
@@ -497,28 +528,28 @@ describe("neoagent Applet View composition", function()
     assert(value:open())
     assert(vim.wait(1000, function()
       return #batches > 0 and #batches[#batches] > 0
-        and contains(view_handles.buffer(value, "transcript"), "thinking line 11")
+        and contains((assert(view_handles.buffer(value, "transcript"))), "thinking line 11")
     end))
     value.transcript.pane:flush()
 
     local batch_count = #batches
     local decode_count = decodes
-    local image_layout = vim.deepcopy(value.transcript.pane.layout.images)
+    local image_layout = vim.deepcopy(assert(value.transcript.pane.layout).images)
     value:apply({
       type = "thinking_delta",
       index = 0,
       text = "\nthinking line 12",
     })
     assert(value.transcript.pane:flush())
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "thinking line 12"))
-    assert.are.same(image_layout, value.transcript.pane.layout.images)
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "thinking line 12"))
+    assert.are.same(image_layout, assert(value.transcript.pane.layout).images)
     assert.are.equal(batch_count, #batches)
     assert.are.equal(decode_count, decodes)
 
-    local row, line = line_index(view_handles.buffer(value, "transcript"), "thinking line 12")
-    row = row - 1
-    local start = assert(line:find("thinking line 12", 1, true)) - 1
-    local groups = highlight_groups(view_handles.buffer(value, "transcript"),
+    local row, line = line_index((assert(view_handles.buffer(value, "transcript"))), "thinking line 12")
+    row = assert(row) - 1
+    local start = assert((assert(line):find("thinking line 12", 1, true))) - 1
+    local groups = highlight_groups((assert(view_handles.buffer(value, "transcript"))),
       value.transcript.pane.namespace, row, start, start + #"thinking line 12")
     assert.is_true(groups.NeoagentThinking)
     assert.is_true(groups.NeoagentMarkdownItalic)
@@ -564,28 +595,28 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return value.transcript.pane.layout
         and next(value.transcript.pane.layout.images) ~= nil
-        and contains(view_handles.buffer(value, "transcript"), "after screenshot")
+        and contains((assert(view_handles.buffer(value, "transcript"))), "after screenshot")
     end))
     value.transcript.pane:flush()
     value:focus_transcript()
 
     local transcript_buffer = view_handles.buffer(value, "transcript")
-    local image_key = assert(next(value.transcript.pane.layout.images))
-    local image = value.transcript.pane.layout.images[image_key]
+    local image_key = assert(next(assert(value.transcript.pane.layout).images))
+    local image = assert(value.transcript.pane.layout).images[image_key]
     local separator_row = assert(line_index(
-      transcript_buffer, "────────────────")) - 1
+      (assert(transcript_buffer)), "────────────────")) - 1
     assert.are.equal(image.row + image.height, separator_row)
 
-    local header_row = assert(line_index(transcript_buffer, "/tmp/shot.png"))
+    local header_row = assert(line_index((assert(transcript_buffer)), "/tmp/shot.png"))
     vim.api.nvim_win_set_cursor(
-      view_handles.window(value, "transcript"), { header_row, 0 })
+      (assert(view_handles.window(value, "transcript"))), { header_row, 0 })
     vim.api.nvim_exec_autocmds("CursorMoved", {
       buffer = view_handles.buffer(value, "transcript"),
     })
 
     local bottom_row
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      view_handles.buffer(value, "transcript"),
+      (assert(view_handles.buffer(value, "transcript"))),
       value.transcript.pane.focus_namespace, 0, -1, { details = true }
     )) do
       for _, chunk in ipairs(mark[4].virt_text or {}) do
@@ -607,6 +638,9 @@ describe("neoagent Applet View composition", function()
       image_system = images,
     })
     views[#views + 1] = value
+    ---@param width integer
+    ---@param height integer
+    ---@return Neoagent.TranscriptMessage[]
     local function messages(width, height)
       return { {
         role = "user",
@@ -625,7 +659,7 @@ describe("neoagent Applet View composition", function()
     end))
 
     value:set_messages(messages(2, 2))
-    assert.is_true(value.transcript.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
     assert(vim.wait(1000, function()
       local stats = images:_stats()
       return stats.preparations == 2
@@ -673,17 +707,17 @@ describe("neoagent Applet View composition", function()
     } })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "Image · PNG · 6×5")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG · 6×5")
     end))
-    assert.is_false(vim.wait(100, function() return #placements > 0 end))
+    assert.is_false((vim.wait(100, function() return #placements > 0 end)))
 
     assert(value:show_card_details(value.blocks[#value.blocks].key))
     assert(vim.wait(1000, function() return #placements > 0 end))
     assert.are.equal(6, placements[#placements].resource.width)
     assert.are.equal(5, placements[#placements].resource.height)
-    local detail_image = assert(next(value.details.pane.layout.images))
-    assert.are.equal(6, value.details.pane.layout.images[detail_image].width)
-    assert.are.equal(5, value.details.pane.layout.images[detail_image].height)
+    local detail_image = assert(next(assert(assert(value.details).pane.layout).images))
+    assert.are.equal(6, assert(assert(value.details).pane.layout).images[detail_image].width)
+    assert.are.equal(5, assert(assert(value.details).pane.layout).images[detail_image].height)
     images:destroy()
   end)
 
@@ -696,11 +730,11 @@ describe("neoagent Applet View composition", function()
     })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return line_index(view_handles.buffer(value, "transcript"), "expand this response") ~= nil
+      return line_index((assert(view_handles.buffer(value, "transcript"))), "expand this response") ~= nil
     end))
     value:focus_transcript()
-    local row = assert(line_index(view_handles.buffer(value, "transcript"), "expand this response"))
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "transcript"), { row, 0 })
+    local row = assert(line_index((assert(view_handles.buffer(value, "transcript"))), "expand this response"))
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "transcript"))), { row, 0 })
 
     local resize_events = 0
     local group = vim.api.nvim_create_augroup(
@@ -712,7 +746,7 @@ describe("neoagent Applet View composition", function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
       "<CR>", true, false, true), "x", false)
     assert(vim.wait(1000, function()
-      return view_handles.window(value, "details") and vim.api.nvim_win_is_valid(view_handles.window(value, "details"))
+      return view_handles.window(value, "details") and vim.api.nvim_win_is_valid((assert(view_handles.window(value, "details"))))
     end))
     assert.are.equal(view_handles.window(value, "details"), vim.api.nvim_get_current_win())
 
@@ -742,12 +776,12 @@ describe("neoagent Applet View composition", function()
     assert(value:open())
     assert(vim.wait(1000, function()
       return line_index(
-        view_handles.buffer(value, "transcript"), "seed 100") ~= nil
+        (assert(view_handles.buffer(value, "transcript"))), "seed 100") ~= nil
     end))
     value:focus_transcript()
     local row = assert(line_index(
-      view_handles.buffer(value, "transcript"), "seed 100"))
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "transcript"), { row, 0 })
+      (assert(view_handles.buffer(value, "transcript"))), "seed 100"))
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "transcript"))), { row, 0 })
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(
       "<CR>", true, false, true), "x", false)
     assert(vim.wait(1000, function()
@@ -755,7 +789,7 @@ describe("neoagent Applet View composition", function()
     end))
 
     local details = value.details
-    local before = details.pane:_stats()
+    local before = assert(details).pane:_stats()
     local started = vim.uv.hrtime()
     for index = 1, 24 do
       value:apply({
@@ -766,10 +800,10 @@ describe("neoagent Applet View composition", function()
       vim.wait(4, function() return false end, 1)
     end
     assert(vim.wait(3000, function()
-      return details:text():find("live trace 24", 1, true) ~= nil
+      return assert(details):text():find("live trace 24", 1, true) ~= nil
     end))
 
-    local after = details.pane:_stats()
+    local after = assert(details).pane:_stats()
     local frame_interval_ns = 50 * 1000000
     local maximum_frames = math.ceil(
       (vim.uv.hrtime() - started) / frame_interval_ns
@@ -817,34 +851,35 @@ describe("neoagent Applet View composition", function()
 
     local details = value.details
     local details_buffer = view_handles.buffer(value, "details")
-    local first_line = lines(details_buffer)[1]
-    local emphasis_first, emphasis_last = assert(
-      first_line:find("stable emphasis", 1, true))
-    local initial_groups = highlight_groups(details_buffer,
-      details.pane.namespace, 0, emphasis_first - 1, emphasis_last)
+    local first_line = lines((assert(details_buffer)))[1]
+    local emphasis_first, emphasis_last = assert(first_line):find("stable emphasis", 1, true)
+    assert(emphasis_first)
+    assert(emphasis_last)
+    local initial_groups = highlight_groups((assert(details_buffer)),
+      assert(details).pane.namespace, 0, emphasis_first - 1, (assert(emphasis_last)))
     assert.is_true(initial_groups.NeoagentMarkdownBold)
-    assert.is_true(highlight_groups(details_buffer,
-      details.pane.namespace, 0, 0, #first_line).NeoagentThinking)
-    local before = details.pane:_stats()
+    assert.is_true(highlight_groups((assert(details_buffer)),
+      assert(details).pane.namespace, 0, 0, #first_line).NeoagentThinking)
+    local before = assert(details).pane:_stats()
     value:apply({
       type = "thinking_delta",
       index = 0,
       text = " continues",
     })
-    assert(details.pane:flush())
-    local after = details.pane:_stats()
+    assert(assert(details).pane:flush())
+    local after = assert(details).pane:_stats()
 
-    assert.is_true(#details.pane.layout.regions >= 3)
+    assert.is_true(#assert(assert(details).pane.layout).regions >= 3)
     assert.are.equal(before.document_reuses + 1, after.document_reuses)
     assert.are.equal(before.region_compilations + 1,
       after.region_compilations)
-    assert.is_true(details:text():find(
+    assert.is_true(assert(details):text():find(
       "reasoning line 160 with stable emphasis continues", 1, true) ~= nil)
-    local retained_groups = highlight_groups(details_buffer,
-      details.pane.namespace, 0, emphasis_first - 1, emphasis_last)
+    local retained_groups = highlight_groups((assert(details_buffer)),
+      assert(details).pane.namespace, 0, emphasis_first - 1, (assert(emphasis_last)))
     assert.is_true(retained_groups.NeoagentMarkdownBold)
-    assert.is_true(highlight_groups(details_buffer,
-      details.pane.namespace, 0, 0, #first_line).NeoagentThinking)
+    assert.is_true(highlight_groups((assert(details_buffer)),
+      assert(details).pane.namespace, 0, 0, #first_line).NeoagentThinking)
   end)
 
   it("coalesces spinner frames while the interaction domain is unsafe", function()
@@ -854,7 +889,7 @@ describe("neoagent Applet View composition", function()
     } } })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return line_index(view_handles.buffer(value, "transcript"), "keep this transcript stable") ~= nil
+      return line_index((assert(view_handles.buffer(value, "transcript"))), "keep this transcript stable") ~= nil
     end))
     value:focus_transcript()
     vim.api.nvim_feedkeys("v", "x", false)
@@ -862,19 +897,22 @@ describe("neoagent Applet View composition", function()
 
     value:set_context({ state = "running" })
     local requested = value.transcript.pane:_stats().requested_generations
-    vim.wait(300, function() return false end, 10)
+    assert.is_false((vim.wait(300, function()
+      return value.transcript.pane:_stats().requested_generations ~= requested
+    end, 10)))
     assert.are.equal(requested,
       value.transcript.pane:_stats().requested_generations)
 
     vim.api.nvim_feedkeys("v", "x", false)
     assert.are.equal("n", vim.api.nvim_get_mode().mode)
-    assert.is_true(value.transcript.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
     assert.are.equal(value.transcript.pane.generation,
       value.transcript.pane.committed_generation)
   end)
 
   it("returns Renderer continuations to transcript and details updates", function()
     local continued = { transcript = false, details = false }
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "retained-renderer",
       theme = renderers.pi.theme,
@@ -894,19 +932,20 @@ describe("neoagent Applet View composition", function()
     local value = view({ renderer = renderer })
     assert(value:open())
     value:apply({ type = "text_delta", text = "streamed prefix" })
-    assert.is_true(value.transcript.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
     local block = assert(value.transcript.live_text)
     assert.is_true(value:show_card_details(block.key))
 
     value:apply({ type = "text_delta", text = " and suffix" })
-    assert.is_true(value.transcript.pane:flush())
-    assert.is_true(value.details.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
+    assert.is_true((assert(value.details).pane:flush()))
     assert.is_true(continued.transcript)
     assert.is_true(continued.details)
   end)
 
   it("renders only changed regions during long-transcript streaming", function()
     local calls = 0
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "render-count",
       theme = renderers.pi.theme,
@@ -926,7 +965,7 @@ describe("neoagent Applet View composition", function()
     value:set_messages(messages)
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "history 200")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "history 200")
     end))
 
     local stable_snapshot = value.transcript.pane.pending_state.blocks[1]
@@ -936,8 +975,8 @@ describe("neoagent Applet View composition", function()
       value:apply({ type = "text_delta", index = 0,
         text = " streamed " .. index })
     end
-    assert.is_true(value.transcript.pane:flush())
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "streamed 50"))
+    assert.is_true((value.transcript.pane:flush()))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "streamed 50"))
     local after = value.transcript.pane:_stats()
     assert.is_true(after.renders <= before.renders + 2)
     assert.is_true(after.region_compilations <= before.region_compilations + 3)
@@ -957,7 +996,7 @@ describe("neoagent Applet View composition", function()
     } })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"),
+      return contains((assert(view_handles.buffer(value, "transcript"))),
         "stream a response")
     end))
 
@@ -972,7 +1011,7 @@ describe("neoagent Applet View composition", function()
       vim.wait(4, function() return false end, 1)
     end
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "part-24")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "part-24")
     end))
 
     local after = value.transcript.pane:_stats()
@@ -986,6 +1025,7 @@ describe("neoagent Applet View composition", function()
 
   it("appends a submitted message without rebuilding a long transcript", function()
     local calls = 0
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "append-count",
       theme = renderers.pi.theme,
@@ -1011,7 +1051,7 @@ describe("neoagent Applet View composition", function()
     value:set_messages(messages)
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "answer 200")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "answer 200")
     end))
 
     local stable_snapshot = value.transcript.pane.pending_state.blocks[1]
@@ -1022,9 +1062,9 @@ describe("neoagent Applet View composition", function()
       _neoagent_entry_id = "entry-201",
     }
     value:set_messages(messages)
-    assert.is_true(value.transcript.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
 
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "new prompt"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "new prompt"))
     assert.is_true(calls <= 3)
     assert.is_true(rawequal(stable_snapshot,
       value.transcript.pane.pending_state.blocks[1]))
@@ -1032,6 +1072,7 @@ describe("neoagent Applet View composition", function()
 
   it("coalesces resize bursts before reflowing a long transcript", function()
     local calls = 0
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "resize-count",
       theme = renderers.pi.theme,
@@ -1051,7 +1092,7 @@ describe("neoagent Applet View composition", function()
     value:set_messages(messages)
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "history 200")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "history 200")
     end))
 
     calls = 0
@@ -1065,7 +1106,7 @@ describe("neoagent Applet View composition", function()
       return value.transcript.pane.committed_generation
         == value.transcript.pane.generation
         and value.transcript.pane.last_width
-          == vim.api.nvim_win_get_width(view_handles.window(value, "transcript"))
+          == vim.api.nvim_win_get_width((assert(view_handles.window(value, "transcript"))))
     end))
 
     assert.is_true(calls <= 250)
@@ -1081,14 +1122,14 @@ describe("neoagent Applet View composition", function()
     value:set_context({ state = "running" })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "history 200")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "history 200")
     end))
 
     local before = value.transcript.pane:_stats()
     value.transcript:set_spinner("*")
-    assert.is_true(value.transcript.pane:flush())
+    assert.is_true((value.transcript.pane:flush()))
     local after = value.transcript.pane:_stats()
-    local transcript = vim.api.nvim_win_get_config(view_handles.window(value, "transcript"))
+    local transcript = vim.api.nvim_win_get_config((assert(view_handles.window(value, "transcript"))))
 
     assert.matches("%* Working%.%.%.", chrome_text(transcript.footer))
     assert.are.equal(before.region_compilations, after.region_compilations)
@@ -1104,13 +1145,13 @@ describe("neoagent Applet View composition", function()
         and value.input.pane.layout ~= nil
     end))
 
-    local transcript = vim.api.nvim_win_get_config(view_handles.window(value, "transcript"))
-    local input = vim.api.nvim_win_get_config(view_handles.window(value, "input"))
+    local transcript = vim.api.nvim_win_get_config((assert(view_handles.window(value, "transcript"))))
+    local input = vim.api.nvim_win_get_config((assert(view_handles.window(value, "input"))))
     assert.are.equal("center", transcript.title_pos)
     assert.are.equal("left", transcript.footer_pos)
     assert.are.equal("center", input.footer_pos)
 
-    local width = vim.api.nvim_win_get_width(view_handles.window(value, "transcript"))
+    local width = vim.api.nvim_win_get_width((assert(view_handles.window(value, "transcript"))))
     local before = math.floor((width - vim.fn.strdisplaywidth(" Idle ")) / 2)
     local idle = string.rep("═", before) .. " Idle "
       .. string.rep("═", width - before - vim.fn.strdisplaywidth(" Idle "))
@@ -1124,7 +1165,7 @@ describe("neoagent Applet View composition", function()
     })
     value.transcript:set_spinner("*")
     value.transcript.pane:flush()
-    transcript = vim.api.nvim_win_get_config(view_handles.window(value, "transcript"))
+    transcript = vim.api.nvim_win_get_config((assert(view_handles.window(value, "transcript"))))
     local working = chrome_text(transcript.footer)
     assert.are.equal(width, vim.fn.strdisplaywidth(working))
     assert.matches("Working%.%.%.", working)
@@ -1142,19 +1183,20 @@ describe("neoagent Applet View composition", function()
         and value.transcript.pane.layout.targets[
           "card:message:1:text:1"] ~= nil
     end))
-    local target = value.transcript.pane.layout.targets[
+    local target = assert(value.transcript.pane.layout).targets[
       "card:message:1:text:1"]
     local rectangle = target.rectangles[1]
-    vim.api.nvim_set_current_win(view_handles.window(value, "transcript"))
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "transcript"), {
-      rectangle.row + 1, rectangle.col,
+    vim.api.nvim_set_current_win((assert(view_handles.window(value, "transcript"))))
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "transcript"))), {
+      assert(rectangle).row + 1, assert(rectangle).col,
     })
     value.transcript.pane:_draw_focus()
 
     local decorations = {}
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-        view_handles.buffer(value, "transcript"), value.transcript.pane.focus_namespace, 0, -1,
+        (assert(view_handles.buffer(value, "transcript"))), value.transcript.pane.focus_namespace, 0, -1,
         { details = true })) do
+      ---@cast mark [integer, integer, integer, {virt_text?: [string, string?][]}]
       local chunks = mark[4].virt_text
       if chunks then
         decorations[#decorations + 1] = table.concat(
@@ -1164,7 +1206,7 @@ describe("neoagent Applet View composition", function()
     local text = table.concat(decorations)
     assert.matches("╭", text)
     assert.matches("<CR> to expand", text)
-    assert.is_nil(text:find("word", 1, true))
+    assert.is_nil((text:find("word", 1, true)))
   end)
 
   it("uses Tree dialog actions for inline and editable floating dialogs", function()
@@ -1192,19 +1234,19 @@ describe("neoagent Applet View composition", function()
     value:set_dialog(inline)
     value.transcript.pane:flush()
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "Continue?")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "Continue?")
     end))
-    local action = value.transcript.pane.layout.targets[
+    local action = assert(value.transcript.pane.layout).targets[
       "dialog:inline:widget:actions:item:yes"].action
     assert.is_true(applet_input.dispatch_action(value.transcript.pane,
-      action, value.transcript.pane.layout.targets[
+      (assert(action)), assert(value.transcript.pane.layout).targets[
         "dialog:inline:widget:actions:item:yes"], 1, "n", 0, 0))
     assert.are.same({ "inline", "yes", nil }, chosen)
 
     inline.active.body = "Changed inline question"
     value:set_dialog(inline)
     value.transcript.pane:flush()
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "Changed inline question"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "Changed inline question"))
 
     value:set_dialog({
       active = {
@@ -1220,7 +1262,7 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return value.dialog_component and value.dialog_component.pane.layout ~= nil
     end))
-    value.dialog_component:set({
+    assert(value.dialog_component):set({
       active = {
         id = "input",
         placement = "float",
@@ -1231,14 +1273,14 @@ describe("neoagent Applet View composition", function()
       },
       queue_count = 1,
     })
-    assert.are.equal("reset", value.dialog_component:text())
-    assert(value.dialog_component.pane:replace_text("new"))
-    assert.is_true(applet_input.dispatch_action(value.dialog_component.pane,
+    assert.are.equal("reset", assert(value.dialog_component):text())
+    assert(assert(value.dialog_component).pane:replace_text("new"))
+    assert.is_true(applet_input.dispatch_action(assert(value.dialog_component).pane,
       Applet.Pane.nodes.action("dialog.changed"), nil, 1, "i", 0, 0))
-    assert.are.equal("new", value.dialog_component.input_value)
-    local dialog_target = value.dialog_component.pane.layout.targets
+    assert.are.equal("new", assert(value.dialog_component).input_value)
+    local dialog_target = assert(assert(value.dialog_component).pane.layout).targets
     assert.is_table(dialog_target)
-    assert.is_true(applet_input.dispatch(value.dialog_component.pane, "i", "s"))
+    assert.is_true(applet_input.dispatch(assert(value.dialog_component).pane, "i", "s"))
     assert.are.same({ "input", "send", "new" }, chosen)
 
     local dismissed = {}
@@ -1260,7 +1302,7 @@ describe("neoagent Applet View composition", function()
     end))
     vim.wait(50)
     assert.are.same({}, dismissed)
-    assert.is_true(applet_input.dispatch_action(value.dialog_component.pane,
+    assert.is_true(applet_input.dispatch_action(assert(value.dialog_component).pane,
       Applet.Pane.nodes.action("dialog.cancel"), nil, 1, "n", 0, 0))
     assert.are.same({ "info" }, dismissed)
   end)
@@ -1302,7 +1344,7 @@ describe("neoagent Applet View composition", function()
     })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "summary")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "summary")
     end))
     value:set_context({ state = "running", model = "fake" })
     value:apply({ type = "text_delta", index = 0, text = "stream" })
@@ -1316,32 +1358,32 @@ describe("neoagent Applet View composition", function()
         { type = "toolCall", id = "stream-call", name = "shell", arguments = {} },
       },
     } })
-    value:apply({ type = "tool_start", call = {
+    value:apply({ type = "tool_start", call = { type = "toolCall",
       id = "stream-call", name = "shell", arguments = {},
     } })
-    value:apply({ type = "tool_update", call = { id = "stream-call" },
+    value:apply({ type = "tool_update", call = { type = "toolCall", arguments = {}, name = "shell", id = "stream-call" },
       result = { content = { { type = "text", text = "working" } } } })
-    value:apply({ type = "tool_end", call = {
+    value:apply({ type = "tool_end", call = { type = "toolCall",
       id = "stream-call", name = "shell", arguments = {},
     }, message = {
       role = "toolResult", toolCallId = "stream-call", toolName = "shell",
       isError = true, content = { { type = "text", text = "failed" } },
     } })
-    value:apply({ type = "compaction_end", result = {
-      ok = false, error = { message = "compaction failed" },
+    value:apply({ type = "compaction_end", reason = "manual", result = {
+      ok = false, error = { kind = "test", message = "compaction failed" },
     } })
     value.transcript.pane:flush()
-    assert(contains(view_handles.buffer(value, "transcript"), "compaction failed"))
+    assert(contains((assert(view_handles.buffer(value, "transcript"))), "compaction failed"))
     local block = value.transcript.blocks[1]
-    assert(value:show_card_details(block.key))
+    assert(value:show_card_details(assert(block).key))
     assert(vim.wait(1000, function()
       return value.details and value.details.pane.layout ~= nil
     end))
-    assert.is_true(applet_input.dispatch_action(value.details.pane,
+    assert.is_true(applet_input.dispatch_action(assert(value.details).pane,
       Applet.Pane.nodes.action("details.raw"), nil, 1, "n", 0, 0))
-    value.details.pane:flush()
-    assert.is_true(value.details:text():find("trace", 1, true) ~= nil)
-    assert.is_true(applet_input.dispatch_action(value.details.pane,
+    assert(value.details).pane:flush()
+    assert.is_true(assert(value.details):text():find("trace", 1, true) ~= nil)
+    assert.is_true(applet_input.dispatch_action(assert(value.details).pane,
       Applet.Pane.nodes.action("details.close"), nil, 1, "n", 0, 0))
     value:finish({ ok = false, error = { kind = "cancelled", message = "cancelled" } })
     value.transcript.pane:flush()
@@ -1357,23 +1399,23 @@ describe("neoagent Applet View composition", function()
     })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return line_index(view_handles.buffer(value, "transcript"), "private trace") ~= nil
+      return line_index((assert(view_handles.buffer(value, "transcript"))), "private trace") ~= nil
     end))
 
     local thinking_row, thinking_line = line_index(
-      view_handles.buffer(value, "transcript"), "private trace")
-    thinking_row = thinking_row - 1
-    local thinking_start = assert(thinking_line:find("private trace", 1, true)) - 1
-    local thinking = highlight_groups(view_handles.buffer(value, "transcript"),
+      (assert(view_handles.buffer(value, "transcript"))), "private trace")
+    thinking_row = assert(thinking_row) - 1
+    local thinking_start = assert((assert(thinking_line):find("private trace", 1, true))) - 1
+    local thinking = highlight_groups((assert(view_handles.buffer(value, "transcript"))),
       value.transcript.pane.namespace, thinking_row, thinking_start,
       thinking_start + #"private trace")
     assert.is_true(thinking.NeoagentThinking)
     assert.is_true(thinking.NeoagentMarkdownItalic)
 
-    local heading_row, heading_line = line_index(view_handles.buffer(value, "transcript"), "Visible answer")
-    heading_row = heading_row - 1
-    local heading_start = assert(heading_line:find("Visible answer", 1, true)) - 1
-    local heading = highlight_groups(view_handles.buffer(value, "transcript"),
+    local heading_row, heading_line = line_index((assert(view_handles.buffer(value, "transcript"))), "Visible answer")
+    heading_row = assert(heading_row) - 1
+    local heading_start = assert((assert(heading_line):find("Visible answer", 1, true))) - 1
+    local heading = highlight_groups((assert(view_handles.buffer(value, "transcript"))),
       value.transcript.pane.namespace, heading_row, heading_start,
       heading_start + #"Visible answer")
     assert.is_true(heading.NeoagentMarkdownHeading)
@@ -1386,21 +1428,22 @@ describe("neoagent Applet View composition", function()
     value:set_context({ state = "running" })
     value:apply({ type = "thinking_delta", text = "Unfinished reasoning" })
     assert(value:open())
-    assert(value:show_card_details(value.transcript.blocks[1].key))
+    assert(value:show_card_details(assert(value.transcript.blocks[1]).key))
     local details = value.details
-    assert(details.pane:flush())
+    assert(assert(details).pane:flush())
     local function has_follow_binding()
       for _, binding in ipairs(vim.api.nvim_buf_get_keymap(
-        view_handles.buffer(value, "details"), "n")) do
+        (assert(view_handles.buffer(value, "details"))), "n")) do
+        ---@cast binding {lhs: string}
         if binding.lhs == "F" then return true end
       end
       return false
     end
     assert.is_true(has_follow_binding())
     value:finish({ ok = false, error = { kind = "cancelled", message = "Cancelled" } })
-    assert(details.pane:flush())
+    assert(assert(details).pane:flush())
     assert.is_false(has_follow_binding())
-    assert.matches("Unfinished reasoning", details:text(), 1, true)
+    assert.matches("Unfinished reasoning", assert(details):text(), 1, true)
   end)
 
   it("preserves transcript highlights while scrolling during streaming", function()
@@ -1421,29 +1464,29 @@ describe("neoagent Applet View composition", function()
     value:apply({ type = "text_delta", text = "# Live **answer**" })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return line_index(view_handles.buffer(value, "transcript"), "live trace") ~= nil
+      return line_index((assert(view_handles.buffer(value, "transcript"))), "live trace") ~= nil
     end))
 
     local before = persistent_highlight_counts(
-      view_handles.buffer(value, "transcript"), value.transcript.pane.namespace)
+      (assert(view_handles.buffer(value, "transcript"))), value.transcript.pane.namespace)
     assert.is_true((before.NeoagentThinking or 0) >= 4)
     assert.is_true((before.NeoagentMarkdownHeading or 0) >= 3)
     value:focus_transcript()
-    vim.api.nvim_win_call(view_handles.window(value, "transcript"), function()
+    vim.api.nvim_win_call((assert(view_handles.window(value, "transcript"))), function()
       vim.cmd("normal! gg")
       vim.cmd("normal! G")
     end)
-    assert.is_true(vim.api.nvim_win_call(view_handles.window(value, "transcript"),
+    assert.is_true(vim.api.nvim_win_call((assert(view_handles.window(value, "transcript"))),
       function() return vim.fn.winsaveview().topline end) > 1)
 
     for index = 1, 2 do
       value:apply({ type = "thinking_delta", text = "\ndelta" .. index })
     end
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "delta2")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "delta2")
     end))
     local after = persistent_highlight_counts(
-      view_handles.buffer(value, "transcript"), value.transcript.pane.namespace)
+      (assert(view_handles.buffer(value, "transcript"))), value.transcript.pane.namespace)
     assert.is_true((after.NeoagentThinking or 0) >= 4)
     assert.is_true((after.NeoagentMarkdownHeading or 0) >= 4)
     assert.is_true((after.NeoagentMarkdownBold or 0) >= 4)
@@ -1458,10 +1501,10 @@ describe("neoagent Applet View composition", function()
     value:finish({ ok = true })
     value.transcript.pane:flush()
     local heading_row, heading_line = line_index(
-      view_handles.buffer(value, "transcript"), "Live answer")
-    heading_row = heading_row - 1
-    local heading_start = assert(heading_line:find("Live answer", 1, true)) - 1
-    local heading = highlight_groups(view_handles.buffer(value, "transcript"),
+      (assert(view_handles.buffer(value, "transcript"))), "Live answer")
+    heading_row = assert(heading_row) - 1
+    local heading_start = assert((assert(heading_line):find("Live answer", 1, true))) - 1
+    local heading = highlight_groups((assert(view_handles.buffer(value, "transcript"))),
       value.transcript.pane.namespace, heading_row, heading_start,
       heading_start + #"Live answer")
     assert.is_true(heading.NeoagentMarkdownHeading)
@@ -1508,7 +1551,8 @@ describe("neoagent Applet View composition", function()
     completion.input:set_virtual_lines({ { { text = "status", style = "muted" } } })
     completion.input:set_config(completion.config)
     completion.input:replace_text("")
-    completion.input:_close_empty("<C-c>")
+    applet_input.dispatch_action(completion.input.pane,
+      Applet.Pane.nodes.action("input.close_empty"), nil, 1, "i", 0, 0)
     assert.is_not_truthy(completion:is_open())
   end)
 
@@ -1543,32 +1587,35 @@ describe("neoagent Applet View composition", function()
         { type = "toolCall", id = "new-call", name = "inspect", arguments = {} },
       },
     } })
-    value:apply({ type = "tool_start", call = {
+    value:apply({ type = "tool_start", call = { type = "toolCall",
       id = "unannounced", name = "inspect", arguments = {},
     } })
-    value:apply({ type = "tool_update", call = { id = "unannounced" },
+    value:apply({ type = "tool_update", call = { type = "toolCall", arguments = {}, name = "inspect", id = "unannounced" },
       result = { content = { { type = "text", text = "progress" } } } })
-    value:apply({ type = "tool_end", call = {
+    value:apply({ type = "tool_end", call = { type = "toolCall",
       id = "unannounced", name = "inspect", arguments = {},
     }, message = {
       role = "toolResult", toolCallId = "unannounced", toolName = "inspect",
       isError = false, content = { { type = "text", text = "done" } },
     } })
-    value:apply({ type = "tool_end", call = {
+    value:apply({ type = "tool_end", call = { type = "toolCall",
       id = "second-unannounced", name = "inspect", arguments = {},
     }, message = {
       role = "toolResult", toolCallId = "second-unannounced",
       toolName = "inspect", isError = true, content = {},
     } })
-    value:apply({ type = "compaction_end", result = { ok = false } })
+    local incomplete_failure = { ok = false }
+    value:apply({ type = "compaction_end", reason = "manual",
+      result = incomplete_failure --[[@as Neoagent.AsyncFailure]],
+    })
     transcript:set_spinner("*")
     assert(value:open())
     transcript.pane:flush()
-    local title = vim.api.nvim_win_get_config(view_handles.window(value, "transcript")).title
+    local title = vim.api.nvim_win_get_config((assert(view_handles.window(value, "transcript")))).title
     assert.matches("Status", title[1][1])
-    assert.is_true(#transcript.pane.layout.virtuals > 0)
-    assert(contains(view_handles.buffer(value, "transcript"), "new prompt"))
-    assert(contains(view_handles.buffer(value, "transcript"), "compact"))
+    assert.is_true(#assert(transcript.pane.layout).virtuals > 0)
+    assert(contains((assert(view_handles.buffer(value, "transcript"))), "new prompt"))
+    assert(contains((assert(view_handles.buffer(value, "transcript"))), "compact"))
     value:finish({ ok = true })
     transcript.pane:flush()
   end)
@@ -1604,10 +1651,6 @@ describe("neoagent Applet View composition", function()
       completion = false,
     })
     input.pane:flush()
-    input.replacing = true
-    input:_changed()
-    input.replacing = false
-    input:_changed()
     local original_pumvisible = vim.fn.pumvisible
     vim.fn.pumvisible = function() return 1 end
     assert(value:_submit("completed"))
@@ -1617,12 +1660,12 @@ describe("neoagent Applet View composition", function()
     assert(input:_move_history(-1))
     vim.fn.pumvisible = original_pumvisible
     input:set_text("draft")
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "input"), { 1, 1 })
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "input"))), { 1, 1 })
     assert.is_false(input:_move_history(-1))
     input:set_text("one\ntwo")
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "input"), { 1, 0 })
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "input"))), { 1, 0 })
     assert.is_false(input:_move_history(1))
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "input"), { 2, 0 })
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "input"))), { 2, 0 })
     assert.is_false(input:_move_history(1))
 
     value:set_input("current")
@@ -1641,7 +1684,7 @@ describe("neoagent Applet View composition", function()
     value.config.margin = 1000
     local positioned, position_error = value:_reposition()
     assert.is_nil(positioned)
-    assert.matches("does not fit", position_error)
+    assert.matches("does not fit", (assert(position_error)))
     value.config.margin = margin
     assert(value:_reposition())
     assert(value:set_position("left"))
@@ -1656,7 +1699,7 @@ describe("neoagent Applet View composition", function()
     })
     value.transcript.pane:flush()
     assert(value:_focus_previous_card())
-    assert.are.equal("two", value:_current_block().text)
+    assert.are.equal("two", assert(value:_current_block()).text)
     assert.is_true(applet_input.dispatch_action(value.transcript.pane,
       Applet.Pane.nodes.action("transcript.card_move", { direction = -1 }),
       nil, 1, "n", 0, 0))
@@ -1675,11 +1718,11 @@ describe("neoagent Applet View composition", function()
     assert(value:_focus_previous_card())
     assert(value:_navigate_transcript(1, 1))
     assert.are.equal(view_handles.window(value, "input"), vim.api.nvim_get_current_win())
-    assert(value:show_card_details(value.transcript.blocks[1].key))
+    assert(value:show_card_details(assert(value.transcript.blocks[1]).key))
     assert(value:_details_move(1))
     assert(value:_details_move(1))
     assert.is_nil(view_handles.window(value, "details"))
-    assert(value:show_card_details(value.transcript.blocks[1].key))
+    assert(value:show_card_details(assert(value.transcript.blocks[1]).key))
     assert.is_false(value:_details_move(-1))
     value:set_messages({})
     assert.is_nil(view_handles.window(value, "details"))
@@ -1694,9 +1737,9 @@ describe("neoagent Applet View composition", function()
       },
       queue_count = 0,
     })
-    assert.is_true(vim.api.nvim_win_is_valid(view_handles.window(value, "dialog")))
+    assert.is_true(vim.api.nvim_win_is_valid((assert(view_handles.window(value, "dialog")))))
     local dialog_window = view_handles.window(value, "dialog")
-    vim.api.nvim_win_close(dialog_window, true)
+    vim.api.nvim_win_close((assert(dialog_window)), true)
     assert.is_nil(view_handles.window(value, "dialog"))
     value:set_renderer(renderers.codex)
     value:set_dialog(nil)
@@ -1711,9 +1754,9 @@ describe("neoagent Applet View composition", function()
     } } })
     value:set_input("renderer draft")
     assert(value:open())
-    assert(value:show_card_details(value.transcript.blocks[1].key))
-    value.details:set(value.details.block, true)
-    value.details.pane:flush()
+    assert(value:show_card_details(assert(value.transcript.blocks[1]).key))
+    assert(value.details):set(assert(value.details).block, true)
+    assert(value.details).pane:flush()
     value:set_dialog({
       active = {
         id = "renderer-dialog",
@@ -1724,6 +1767,7 @@ describe("neoagent Applet View composition", function()
       },
       queue_count = 0,
     })
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "native-test",
       theme = renderers.pi.theme,
@@ -1748,7 +1792,7 @@ describe("neoagent Applet View composition", function()
     value:apply({ type = "text_delta", text = "updated" })
     value.transcript.pane:flush()
     assert(vim.wait(1000, function()
-      return contains(view_handles.buffer(value, "transcript"), "native updated")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "native updated")
     end))
     assert.is_nil(rawget(value, "domain"))
     assert.are.equal("native-test", value.renderer.name)
@@ -1759,9 +1803,9 @@ describe("neoagent Applet View composition", function()
     assert.are.equal(transcript_buffer, view_handles.buffer(value, "transcript"))
     assert.are.equal(input_buffer, view_handles.buffer(value, "input"))
     assert.are.equal("renderer draft", value:get_input())
-    assert.is_true(vim.api.nvim_win_is_valid(view_handles.window(value, "details")))
-    assert.is_true(value.details.raw)
-    assert.is_true(vim.api.nvim_win_is_valid(view_handles.window(value, "dialog")))
+    assert.is_true(vim.api.nvim_win_is_valid((assert(view_handles.window(value, "details")))))
+    assert.is_true(assert(value.details).raw)
+    assert.is_true(vim.api.nvim_win_is_valid((assert(view_handles.window(value, "dialog")))))
   end)
 
   it("preserves the transcript viewport when the Renderer changes", function()
@@ -1776,11 +1820,11 @@ describe("neoagent Applet View composition", function()
     assert(value:open())
     assert(vim.wait(1000, function()
       return value.transcript.pane.layout ~= nil
-        and vim.api.nvim_buf_line_count(view_handles.buffer(value, "transcript")) >= 80
+        and vim.api.nvim_buf_line_count((assert(view_handles.buffer(value, "transcript")))) >= 80
     end))
     value:focus_transcript()
-    vim.api.nvim_win_set_cursor(view_handles.window(value, "transcript"), { 35, 0 })
-    vim.api.nvim_win_call(view_handles.window(value, "transcript"), function()
+    vim.api.nvim_win_set_cursor((assert(view_handles.window(value, "transcript"))), { 35, 0 })
+    vim.api.nvim_win_call((assert(view_handles.window(value, "transcript"))), function()
       vim.cmd("normal! zt")
     end)
 
@@ -1789,7 +1833,7 @@ describe("neoagent Applet View composition", function()
       return value.transcript.pane.committed_generation
         == value.transcript.pane.generation
     end))
-    local restored = vim.api.nvim_win_call(view_handles.window(value, "transcript"), function()
+    local restored = vim.api.nvim_win_call((assert(view_handles.window(value, "transcript"))), function()
       return vim.fn.winsaveview()
     end)
     assert.are.equal(35, restored.lnum)
@@ -1798,6 +1842,7 @@ describe("neoagent Applet View composition", function()
 
   it("invalidates adjacency-dependent transcript regions", function()
     local value = view()
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "neighbors",
       theme = renderers.pi.theme,
@@ -1818,17 +1863,18 @@ describe("neoagent Applet View composition", function()
       name = "shell", arguments_delta = "{}",
     })
     value.transcript.pane:flush()
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "answer next=pending"))
-    value:apply({ type = "tool_start", call = {
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "answer next=pending"))
+    value:apply({ type = "tool_start", call = { type = "toolCall",
       id = "call", name = "shell", arguments = {},
     } })
     value.transcript.pane:flush()
-    assert.is_true(contains(view_handles.buffer(value, "transcript"), "answer next=running"))
+    assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "answer next=running"))
   end)
 
   it("bounds transcript invalidation to a changed block and its neighbors", function()
     local calls = {}
     local value = view()
+    ---@type Neoagent.Renderer<unknown>
     local renderer = {
       name = "bounded-neighbors",
       theme = renderers.pi.theme,
@@ -1896,10 +1942,10 @@ describe("neoagent Applet View composition", function()
     })
     assert(value:open())
     local block = value.transcript.blocks[1]
-    assert(value:show_card_details(block.key))
+    assert(value:show_card_details(assert(block).key))
     assert(vim.wait(1000, function()
       return view_handles.buffer(value, "details")
-        and contains(view_handles.buffer(value, "details"), "semantic full detail")
+        and contains((assert(view_handles.buffer(value, "details"))), "semantic full detail")
     end))
   end)
 
@@ -1912,13 +1958,13 @@ describe("neoagent Applet View composition", function()
       position = "auto",
     })
     assert(value:open(origin))
-    local config_before = vim.api.nvim_win_get_config(view_handles.window(value, "transcript"))
+    local config_before = vim.api.nvim_win_get_config((assert(view_handles.window(value, "transcript"))))
     local host_position = vim.api.nvim_win_get_position(host)
     assert.is_true(config_before.col >= host_position[2])
     assert.is_true(config_before.width <= vim.api.nvim_win_get_width(host))
 
     value:set_position("center")
-    assert.is_true(vim.api.nvim_win_is_valid(view_handles.window(value, "transcript")))
+    assert.is_true(vim.api.nvim_win_is_valid((assert(view_handles.window(value, "transcript")))))
   end)
 
   it("redefines bundled highlights after a colorscheme event", function()
@@ -1939,14 +1985,14 @@ describe("neoagent Applet View composition", function()
       { _neoagent_entry_id = "entry-b", role = "user", content = "second" },
       { _neoagent_entry_id = "entry-c", role = "user", content = "third" },
     })
-    assert.are.equal("message:entry-b:user", value.transcript.blocks[1].key)
-    assert.are.equal("message:entry-c:user", value.transcript.blocks[2].key)
+    assert.are.equal("message:entry-b:user", assert(value.transcript.blocks[1]).key)
+    assert.are.equal("message:entry-c:user", assert(value.transcript.blocks[2]).key)
     value:set_messages({
       { _neoagent_entry_id = "entry-a", role = "user", content = "first" },
       { _neoagent_entry_id = "entry-b", role = "user", content = "second" },
       { _neoagent_entry_id = "entry-c", role = "user", content = "third" },
     })
-    assert.are.equal("message:entry-b:user", value.transcript.blocks[2].key)
+    assert.are.equal("message:entry-b:user", assert(value.transcript.blocks[2]).key)
   end)
 
   it("resolves custom Hosts and restores pending input presentations on reopen", function()
@@ -1957,6 +2003,7 @@ describe("neoagent Applet View composition", function()
         provider_shell = { position = "right", width = 20 },
       },
     }).ui
+    ---@type Neoagent.ViewState?, Neoagent.UIConfig?
     local host_state, host_config
     local value = neoagent_ui.new({
       config = resolved,
@@ -2001,17 +2048,17 @@ describe("neoagent Applet View composition", function()
       queue_count = 0,
     }))
     assert(value:open())
-    assert.are.equal("center", host_state.position)
-    assert.are.equal(20, host_config.provider_shell.width)
-    assert.are.equal("seed", value.presentation_component:text())
+    assert.are.equal("center", assert(host_state).position)
+    assert.are.equal(20, assert(host_config).provider_shell.width)
+    assert.are.equal("seed", assert(value.presentation_component):text())
 
-    value:pane("presentation"):replace_text("edited", {
+    assert(value:pane("presentation")):replace_text("edited", {
       line = 1,
       column = 6,
     })
     value:close()
     assert(value:open())
-    assert.are.equal("seed", value.presentation_component:text())
+    assert.are.equal("seed", assert(value.presentation_component):text())
     assert(value:set_presentation({ active = nil, queue_count = 0 }))
   end)
 
@@ -2040,28 +2087,30 @@ describe("neoagent Applet View composition", function()
       queue_count = 2,
     }))
     assert.are.equal(stable, value.presentation_component)
-    assert.are.equal(2, value.presentation.queue_count)
+    assert.are.equal(2, assert(value.presentation).queue_count)
     assert.is_false(value:_seed_presentation())
     local flush = value.applet.flush
-    value.applet.flush = function()
-      return nil, "injected frame failure"
+    function value.applet:flush()
+      return nil, { applet = self.name, phase = "flush",
+        generation = self.generation, message = "injected frame failure" }
     end
     local presented, presentation_error = value:set_presentation({
       active = {
         id = "replacement",
         kind = "input",
         prompt = "Replacement",
-        default = "draft",
+        default = "draft", multiline = false, secret = false,
+        allow_empty = true, mask = "•",
       },
       queue_count = 0,
     })
     value.applet.flush = flush
     assert.is_nil(presented)
-    assert.are.equal("injected frame failure", presentation_error)
+    assert.are.equal("injected frame failure", assert(presentation_error).message)
     assert.are.equal(stable, value.presentation_component)
-    assert.are.equal("stable", value.presentation.active.id)
+    assert.are.equal("stable", assert(assert(value.presentation).active).id)
     assert(require("applet.pane.input").dispatch(
-      value.presentation_component.pane, "n", "q"))
+      assert(value.presentation_component).pane, "n", "q"))
     assert.are.equal("stable", cancelled)
 
     local failing_details = view()
@@ -2069,11 +2118,12 @@ describe("neoagent Applet View composition", function()
       { role = "assistant", content = { { type = "text", text = "answer" } } },
     })
     assert(failing_details:open())
-    failing_details.applet.flush = function()
-      return nil, "injected details failure"
+    function failing_details.applet:flush()
+      return nil, { applet = self.name, phase = "flush",
+        generation = self.generation, message = "injected details failure" }
     end
     assert.is_false(failing_details:show_card_details(
-      failing_details.transcript.blocks[1].key))
+      assert(failing_details.transcript.blocks[1]).key))
     assert.is_nil(failing_details.details_component)
   end)
 
@@ -2084,7 +2134,7 @@ describe("neoagent Applet View composition", function()
     local replacement = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_buf_set_lines(replacement, 0, -1, false, { "foreign" })
 
-    vim.api.nvim_win_set_buf(view_handles.window(value, "input"), replacement)
+    vim.api.nvim_win_set_buf((assert(view_handles.window(value, "input"))), replacement)
 
     assert(vim.wait(1000, function() return not value:is_open() end))
     assert.is_true(vim.api.nvim_buf_is_valid(replacement))
