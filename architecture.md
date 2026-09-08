@@ -211,8 +211,10 @@ serialized incrementally. Authentication-classified sensitive bodies remain
 in memory until masking; exceeding the buffer limit fails only the recording.
 Observer failure releases its handles without stopping the underlying request.
 
-Sanitization masks protocol credentials and Authentication-classified
-sensitive response bodies. Model and ordinary provider bodies retain their
-content. Recordings use private storage; failures emit content-free
-diagnostics. Storage, formats, and sharing precautions are documented in
+Each exchange's sanitizer owns protocol credentials and Authentication's
+response sensitivity classification. It prepares masked protocol fields and
+sensitive bodies for the recorder, without owning transport or files. Model
+and ordinary provider bodies retain their content. Recordings use private
+storage; failures emit content-free diagnostics. Storage, formats, and sharing
+precautions are documented in
 `:help neoagent-recording`.
