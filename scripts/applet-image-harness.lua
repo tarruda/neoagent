@@ -3,8 +3,42 @@
 -- harness. Native mode uses three Neovim floating windows; Pane mode renders
 -- the same fixture through one Pane container scene.
 
+---@alias Applet.HarnessLayerName 'main'|'detail'|'badge'
+---@alias Applet.HarnessDirection 'h'|'j'|'k'|'l'
+---@alias Applet.HarnessSegment 'a'|'b'|'c'|'d'|'e'|'f'|'g'
+
+---@class Applet.HarnessConfig: vim.api.keyset.win_config
+---@field row integer
+---@field col integer
+
+---@class Applet.HarnessSurfaceOptions
+---@field name string
+---@field domain Applet.InteractionDomain
+---@field enter? boolean
+---@field config Applet.HarnessConfig
+---@field buffer_options Applet.Options
+---@field window_options Applet.Options
+
+---@class Applet.HarnessLayer
+---@field name Applet.HarnessLayerName
+---@field image_key string
+---@field row integer
+---@field col integer
+---@field width integer
+---@field height integer
+---@field image_width integer
+---@field image_rows integer
+---@field zindex integer
+---@field open boolean
+---@field title string
+---@field pane? Applet.Pane
+---@field surface? Applet.HarnessSurface
+---@field buffer? integer
+---@field window? integer
+
 local ACTIVE_KEY = "__applet_image_harness_active"
 
+---@return string
 local function image_executable()
   for _, executable in ipairs({ "magick", "convert" }) do
     if vim.fn.executable(executable) == 1 then return executable end
@@ -12,6 +46,7 @@ local function image_executable()
   error("applet image harness requires ImageMagick on PATH", 0)
 end
 
+---@type table<integer, Applet.HarnessSegment[]>
 local digit_segments = {
   [0] = { "a", "b", "c", "d", "e", "f" },
   [1] = { "b", "c" },
@@ -25,6 +60,7 @@ local digit_segments = {
   [9] = { "a", "b", "c", "d", "f", "g" },
 }
 
+---@type table<Applet.HarnessSegment, [integer, integer, integer, integer]>
 local segment_rectangles = {
   a = { 4, 0, 16, 3 },
   b = { 16, 4, 19, 14 },
@@ -35,9 +71,13 @@ local segment_rectangles = {
   g = { 4, 15, 16, 18 },
 }
 
+---@param command string[]
+---@param digit integer
+---@param x integer
+---@param y integer
 local function draw_digit(command, digit, x, y)
-  for _, segment in ipairs(digit_segments[digit]) do
-    local rect = segment_rectangles[segment]
+  for _, segment in ipairs(assert(digit_segments[digit])) do
+    local rect = assert(segment_rectangles[segment])
     vim.list_extend(command, {
       "-draw", ("rectangle %d,%d %d,%d"):format(
         x + rect[1], y + rect[2], x + rect[3], y + rect[4]),
@@ -75,6 +115,8 @@ local frame_palettes = {
   },
 }
 
+---@param frame integer
+---@return string
 local function generated_png(frame)
   local executable = image_executable()
   local palette = assert(frame_palettes[frame])
@@ -86,7 +128,7 @@ local function generated_png(frame)
     local top = index * 150 - 80
     local bottom = top + 330
     vim.list_extend(command, {
-      "-fill", palette.colors[index % #palette.colors + 1],
+      "-fill", assert(palette.colors[index % #palette.colors + 1]),
       "-stroke", "#0f172a", "-strokewidth", "5",
       "-draw", ("polygon %d,0 %d,0 %d,511 %d,511"):format(
         top, top + 105, bottom + 105, bottom),
@@ -123,6 +165,9 @@ local function generated_png(frame)
   return result.stdout
 end
 
+---@param row integer
+---@param width integer
+---@return string
 local function character_line(row, width)
   local prefix = ("%03d "):format(row)
   local pattern = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ|"
@@ -131,6 +176,10 @@ local function character_line(row, width)
   return prefix .. body
 end
 
+---@param first integer
+---@param count integer
+---@param width integer
+---@return string
 local function character_block(first, count, width)
   local lines = {}
   for offset = 0, count - 1 do
@@ -140,12 +189,14 @@ local function character_block(first, count, width)
 end
 
 local function close_active()
-  local active = rawget(_G, ACTIVE_KEY)
+  local active = rawget(_G, ACTIVE_KEY) --[[@as Applet.ImageHarness?]]
   if active and active.close then active.close() end
 end
 
 local surface_sequence = 0
 
+---@param config Applet.HarnessConfig
+---@return boolean
 local function outside_editor(config)
   if config.relative ~= "editor" then return false end
   local border = config.border and config.border ~= "none" and 2 or 0
@@ -155,6 +206,8 @@ local function outside_editor(config)
     or config.col >= vim.o.columns or config.row >= vim.o.lines
 end
 
+---@param opts Applet.HarnessSurfaceOptions
+---@return Applet.HarnessSurface
 local function create_surface(opts)
   local logical = vim.deepcopy(opts.config)
   logical.hide = logical.hide == true
@@ -166,6 +219,14 @@ local function create_surface(opts)
   local buffer = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_name(buffer, opts.name)
   local window = vim.api.nvim_open_win(buffer, opts.enter == true, projected)
+  ---@class Applet.HarnessSurface: Applet.PaneSurface<Applet.Pane>
+  ---@field domain Applet.InteractionDomain
+  ---@field _window? integer
+  ---@field _config Applet.HarnessConfig
+  ---@field _outside boolean
+  ---@field pane? Applet.Pane
+  ---@field group? integer
+  ---@field destroyed? boolean
   local self = {
     buffer = buffer,
     owns_buffer = false,
@@ -184,6 +245,8 @@ local function create_surface(opts)
     return self.window() ~= nil and not self._config.hide and not self._outside
   end
 
+  ---@param pane Applet.Pane
+  ---@return Applet.HarnessSurface
   function self:_connect(pane)
     pane:_connect(self)
     self.pane = pane
@@ -191,16 +254,18 @@ local function create_surface(opts)
     return self
   end
 
+  ---@return Applet.HarnessConfig
   function self:config()
     assert(self.window(), "surface is closed")
     return vim.deepcopy(self._config)
   end
 
+  ---@param config vim.api.keyset.win_config
+  ---@return Applet.HarnessSurface
   function self:set_config(config)
     local current = assert(self.window(), "surface is closed")
-    for key, value in pairs(config) do
-      self._config[key] = vim.deepcopy(value)
-    end
+    self._config = vim.tbl_extend("force", self._config,
+      vim.deepcopy(config)) --[[@as Applet.HarnessConfig]]
     self._outside = outside_editor(self._config)
     if self._config.hide or self._outside then
       vim.api.nvim_win_set_config(current, { hide = true })
@@ -211,6 +276,7 @@ local function create_surface(opts)
     return self
   end
 
+  ---@return boolean
   function self:focus()
     local current = self.window()
     if not current or self._config.hide or self._outside then return false end
@@ -255,6 +321,9 @@ local function create_surface(opts)
   return self
 end
 
+---@param backend "kitty"
+---@param layout_mode? "native"|"pane"
+---@return Applet.ImageHarness
 _G.applet_image_harness = function(backend, layout_mode)
   if backend ~= "kitty" then
     error('backend must be "kitty"', 0)
@@ -270,22 +339,29 @@ _G.applet_image_harness = function(backend, layout_mode)
     "applet image harness needs a terminal of at least 32x14 cells")
   local width = math.min(100, columns - 8)
   local height = math.min(30, lines - 6)
+  ---@type {index: integer, png: string}[]
   local frames = {}
   for index = 1, #frame_palettes do
     frames[index] = { index = index, png = generated_png(index) }
   end
-  local png = frames[1].png
+  local png = assert(frames[1]).png
   local Applet = require("applet")
   local ui = Applet.Pane.nodes
   local ImageSource = require("applet.image.source")
 
   close_active()
   local domain = Applet.InteractionDomain.new()
-  local active
+  ---@type string?
   local held_identity
+  ---@type fun()?
   local held_start
+  ---@param value Applet.ImageSource
+  ---@param limits Applet.ImageLoadOptions
+  ---@param done Applet.ImageLoadDone
+  ---@return fun()
   local function load_source(value, limits, done)
     local identity = ImageSource.identity(value)
+    ---@type {cancelled: boolean, started: boolean, cancel?: fun()}
     local operation = { cancelled = false, started = false }
     local function start()
       if operation.cancelled or operation.started then return end
@@ -309,26 +385,13 @@ _G.applet_image_harness = function(backend, layout_mode)
     _load_source = load_source,
   })
   local closed = false
+  ---@type uv.uv_timer_t?
   local center_timer
+  ---@type fun()
   local close
-  active = {
-    backend = backend,
-    layout_mode = layout_mode,
-    domain = domain,
-    images = images,
-    layers = {},
-    fixture = {
-      png = png,
-      frames = frames,
-      width = 960,
-      height = 512,
-      palette_target = 256,
-      true_color = true,
-    },
-  }
-  _G[ACTIVE_KEY] = active
-
   local cells = images:snapshot()
+  ---@param image_width integer
+  ---@return integer
   local function natural_rows(image_width)
     return math.max(3, math.floor(
       512 / 960 * image_width * cells.cell_width
@@ -357,16 +420,14 @@ _G.applet_image_harness = function(backend, layout_mode)
   local document_height = 1 + height * 4 + main_image_rows
   local image_document_row = 1 + height * 2
 
+  ---@type Applet.PngBytes
   local source = {
     kind = "png_bytes",
     id = "applet-image-harness",
     data = png,
     revision = 1,
   }
-  active.frame_index = 1
-  active.frame_revision = 1
-  active.frame_pending = false
-  active.source_identity = ImageSource.identity(source)
+  ---@type table<Applet.HarnessLayerName, Applet.HarnessLayer>
   local layer_specs = {
     main = {
       name = "main",
@@ -414,18 +475,56 @@ _G.applet_image_harness = function(backend, layout_mode)
       title = " badge · g+hjkl · t ",
     },
   }
-  for _, name in ipairs({ "main", "detail", "badge" }) do
-    active.layers[name] = layer_specs[name]
-  end
-  active.horizontal_gutter = horizontal_gutter
-  active.scroll = {
-    row = math.max(0,
-      image_document_row - math.floor((height - main_image_rows) / 2)),
-    col = math.max(0, width - horizontal_gutter),
-  }
-
+  ---@type Applet.PaneError[]
   local errors = {}
-  active.errors = errors
+  ---@class Applet.ImageHarness
+  ---@field backend 'kitty'
+  ---@field layout_mode 'native'|'pane'
+  ---@field domain Applet.InteractionDomain
+  ---@field images Applet.ImageSystem
+  ---@field layers table<Applet.HarnessLayerName, Applet.HarnessLayer>
+  ---@field fixture {png: string, frames: {index: integer, png: string}[], width: integer, height: integer, palette_target: integer, true_color: boolean}
+  ---@field frame_index integer
+  ---@field frame_revision integer
+  ---@field frame_pending boolean
+  ---@field source_identity string
+  ---@field horizontal_gutter integer
+  ---@field scroll {row: integer, col: integer}
+  ---@field errors Applet.PaneError[]
+  ---@field pane? Applet.Pane
+  ---@field surface? Applet.HarnessSurface
+  ---@field buffer? integer
+  ---@field window? integer
+  ---@field group? integer
+  ---@field centered? boolean
+  local active = {
+    backend = backend,
+    layout_mode = layout_mode,
+    domain = domain,
+    images = images,
+    layers = layer_specs,
+    frame_index = 1,
+    frame_revision = 1,
+    frame_pending = false,
+    source_identity = ImageSource.identity(source),
+    horizontal_gutter = horizontal_gutter,
+    scroll = {
+      row = math.max(0, image_document_row - math.floor((height - main_image_rows) / 2)),
+      col = math.max(0, width - horizontal_gutter),
+    },
+    errors = errors,
+    fixture = {
+      png = png,
+      frames = frames,
+      width = 960,
+      height = 512,
+      palette_target = 256,
+      true_color = true,
+    },
+  }
+  _G[ACTIVE_KEY] = active
+
+  ---@param err Applet.PaneError
   local function report(err)
     errors[#errors + 1] = err
     vim.schedule(function()
@@ -438,6 +537,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     side_lines[row] = ("|M%02dM|"):format(row % 100)
   end
 
+  ---@return Applet.ColumnNode
   local function main_document()
     return ui.column({
       key = "harness:document",
@@ -505,6 +605,8 @@ _G.applet_image_harness = function(backend, layout_mode)
     })
   end
 
+  ---@param layer Applet.HarnessLayer
+  ---@return Applet.ColumnNode
   local function overlay_tree(layer)
     local left, right = {}, {}
     for row = 1, layer.image_rows do
@@ -565,6 +667,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     })
   end
 
+  ---@type Applet.Binding[]
   local bindings = {}
   for _, direction in ipairs({ "h", "j", "k", "l" }) do
     bindings[#bindings + 1] = {
@@ -631,9 +734,13 @@ _G.applet_image_harness = function(backend, layout_mode)
     action = ui.action("harness.close"),
   }
 
+  ---@type Applet.Pane
   local main_pane
+  ---@type fun(layer: Applet.HarnessLayer, enter: boolean): boolean
   local open_native_layer
+  ---@type fun(layer: Applet.HarnessLayer)
   local close_native_layer
+  ---@return Applet.ScopeNode
   local function native_main_tree()
     return ui.scope({
       key = "harness:scope",
@@ -642,6 +749,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     })
   end
 
+  ---@return Applet.ScopeNode
   local function pane_scene()
     local scene_layers = {
       ui.container({
@@ -658,7 +766,7 @@ _G.applet_image_harness = function(backend, layout_mode)
       }),
     }
     for _, name in ipairs({ "detail", "badge" }) do
-      local layer = active.layers[name]
+      local layer = assert(active.layers[name])
       if layer.open then
         scene_layers[#scene_layers + 1] = ui.container({
           key = "harness:" .. name .. ":container",
@@ -710,13 +818,15 @@ _G.applet_image_harness = function(backend, layout_mode)
     if not main_pane then return end
     if layout_mode == "native" then
       main_pane:update(native_main_tree())
-      active.layers.detail.pane:update(overlay_tree(active.layers.detail))
-      active.layers.badge.pane:update(overlay_tree(active.layers.badge))
+      assert(active.layers.detail.pane):update(overlay_tree(active.layers.detail))
+      assert(active.layers.badge.pane):update(overlay_tree(active.layers.badge))
     else
       refresh_pane_scene()
     end
   end
 
+  ---@param index integer
+  ---@param hold? boolean
   function active:set_frame(index, hold)
     assert(type(index) == "number" and index % 1 == 0
       and frames[index], "image harness frame must exist")
@@ -728,7 +838,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     source = {
       kind = "png_bytes",
       id = "applet-image-harness",
-      data = frames[index].png,
+      data = assert(frames[index]).png,
       revision = self.frame_revision,
     }
     self.source_identity = ImageSource.identity(source)
@@ -772,6 +882,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     h = "zh",
     l = "zl",
   }
+  ---@type table<Applet.HarnessDirection, [integer, integer]>
   local movement = {
     h = { 0, -1 },
     j = { 1, 0 },
@@ -779,9 +890,11 @@ _G.applet_image_harness = function(backend, layout_mode)
     l = { 0, 1 },
   }
 
+  ---@param event Applet.ActionEvent<Applet.Pane>
   local function scroll(event)
-    local count = (event.count or 1) * (event.payload.step or 1)
-    local direction = event.payload.direction
+    local payload = event.payload --[[@as {direction: Applet.HarnessDirection, step?: integer}]]
+    local count = (event.count or 1) * (payload.step or 1)
+    local direction = payload.direction
     if layout_mode == "native" then
       local window = active.layers.main.surface
         and active.layers.main.surface.window() or nil
@@ -808,15 +921,17 @@ _G.applet_image_harness = function(backend, layout_mode)
     })
   end
 
+  ---@param event Applet.ActionEvent<Applet.Pane>
   local function move_layer(event)
-    local layer = active.layers[event.payload.layer]
-    local delta = movement[event.payload.direction]
+    local payload = event.payload --[[@as {layer: Applet.HarnessLayerName, direction: Applet.HarnessDirection}]]
+    local layer = active.layers[payload.layer]
+    local delta = movement[payload.direction]
     if closed or not layer or not delta or not layer.open then return end
     local count = math.max(1, event.count or 1)
     layer.row = layer.row + delta[1] * count
     layer.col = layer.col + delta[2] * count
     if layout_mode == "native" then
-      layer.surface:set_config({
+      assert(layer.surface):set_config({
         relative = "editor",
         row = layer.row,
         col = layer.col,
@@ -829,8 +944,10 @@ _G.applet_image_harness = function(backend, layout_mode)
     end
   end
 
+  ---@param event Applet.ActionEvent<Applet.Pane>
   local function toggle_layer(event)
-    local layer = active.layers[event.payload.layer]
+    local payload = event.payload --[[@as {layer: Applet.HarnessLayerName}]]
+    local layer = active.layers[payload.layer]
     if not layer or layer.name == "main" then return end
     if layout_mode == "native" then
       if layer.open then
@@ -870,8 +987,8 @@ _G.applet_image_harness = function(backend, layout_mode)
       })
     end
     main_pane:update(native_main_tree())
-    active.layers.detail.pane:update(overlay_tree(active.layers.detail))
-    active.layers.badge.pane:update(overlay_tree(active.layers.badge))
+    assert(active.layers.detail.pane):update(overlay_tree(active.layers.detail))
+    assert(active.layers.badge.pane):update(overlay_tree(active.layers.badge))
   else
     active.layers.detail.pane = main_pane
     active.layers.badge.pane = main_pane
@@ -887,6 +1004,8 @@ _G.applet_image_harness = function(backend, layout_mode)
     end
   end
 
+  ---@param layer Applet.HarnessLayer
+  ---@return Applet.HarnessConfig
   local function surface_config(layer)
     return {
       relative = "editor",
@@ -924,7 +1043,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     surface:_connect(layer.pane)
     layer.buffer = surface.buffer
     layer.window = surface.window()
-    layer.pane:flush()
+    assert(layer.pane):flush()
     if layer.name == "main" then
       active.pane = layer.pane
       active.surface = surface
@@ -942,7 +1061,7 @@ _G.applet_image_harness = function(backend, layout_mode)
   end
 
   local function open_pane_surface()
-    local main = active.layers.main
+    local main = assert(active.layers.main)
     local surface = create_surface({
       name = "applet-image-harness-main",
       domain = domain,
@@ -959,7 +1078,7 @@ _G.applet_image_harness = function(backend, layout_mode)
     })
     surface:_connect(main_pane)
     for _, name in ipairs({ "main", "detail", "badge" }) do
-      local layer = active.layers[name]
+      local layer = assert(active.layers[name])
       layer.surface = surface
       layer.buffer = surface.buffer
       layer.window = surface.window()
@@ -982,12 +1101,12 @@ _G.applet_image_harness = function(backend, layout_mode)
         close_native_layer(active.layers[name])
       end
       for _, name in ipairs({ "badge", "detail", "main" }) do
-        active.layers[name].pane:destroy()
+        assert(active.layers[name].pane):destroy()
       end
     else
       local surface = active.surface
       for _, name in ipairs({ "main", "detail", "badge" }) do
-        local layer = active.layers[name]
+        local layer = assert(active.layers[name])
         layer.surface, layer.buffer, layer.window = nil, nil, nil
       end
       if surface then surface:destroy() end
@@ -1006,16 +1125,20 @@ _G.applet_image_harness = function(backend, layout_mode)
   else
     open_pane_surface()
   end
-  active.layers.main.surface:focus()
+  assert(active.layers.main.surface):focus()
   assert(domain:flush())
 
+  ---@param layer Applet.HarnessLayer
+  ---@return integer?
   function active.layer_window(layer)
     return layer.open and layer.surface and layer.surface.window() or nil
   end
 
+  ---@param layer Applet.HarnessLayer
+  ---@return Applet.HarnessConfig?
   function active.layer_config(layer)
     if layout_mode == "native" then
-      return layer.surface and layer.surface:config() or nil
+      return layer.surface and assert(layer.surface):config() or nil
     end
     return {
       relative = "editor",
@@ -1031,6 +1154,8 @@ _G.applet_image_harness = function(backend, layout_mode)
     }
   end
 
+  ---@param layer Applet.HarnessLayer
+  ---@return table?
   function active.layer_view(layer)
     local window = active.layer_window(layer)
     if not window then return nil end
@@ -1043,9 +1168,11 @@ _G.applet_image_harness = function(backend, layout_mode)
     return vim.api.nvim_win_call(window, vim.fn.winsaveview)
   end
 
+  ---@param layer Applet.HarnessLayer
+  ---@return Applet.CompiledImage?
   function active.snapshot_image(layer)
-    local image = layer.pane.layout
-      and layer.pane.layout.images[layer.image_key]
+    local pane = assert(layer.pane)
+    local image = pane.layout and pane.layout.images[layer.image_key]
     if not image then return nil end
     local result = vim.deepcopy(image)
     if layout_mode == "pane" and layer.name == "main" then
@@ -1058,19 +1185,19 @@ _G.applet_image_harness = function(backend, layout_mode)
   function active.flush()
     if layout_mode == "native" then
       for _, name in ipairs({ "main", "detail", "badge" }) do
-        local layer = active.layers[name]
-        if layer.surface then layer.pane:flush() end
+        local layer = assert(active.layers[name])
+        if layer.surface then assert(layer.pane):flush() end
       end
     elseif active.surface then
       main_pane:flush()
     end
   end
 
-  center_timer = vim.uv.new_timer()
+  center_timer = assert(vim.uv.new_timer())
   local attempts = 0
   center_timer:start(10, 20, vim.schedule_wrap(function()
     if active.centered then return end
-    local main = active.layers.main
+    local main = assert(active.layers.main)
     local window = active.layer_window(main)
     if closed or not window then
       close()
@@ -1078,13 +1205,13 @@ _G.applet_image_harness = function(backend, layout_mode)
     end
     attempts = attempts + 1
     active.flush()
-    local image = main.pane.layout and main.pane.layout.images
-      and main.pane.layout.images[main.image_key]
+    local pane = assert(main.pane)
+    local image = pane.layout and pane.layout.images[main.image_key]
     if image then
       stop_center_timer()
       vim.api.nvim_win_call(window, function()
         local line = vim.api.nvim_buf_get_lines(
-          main.buffer, image.row, image.row + 1, false)[1] or ""
+          assert(main.buffer), image.row, image.row + 1, false)[1] or ""
         local cursor_col = require("applet.util").byte_col(line, image.col)
         vim.api.nvim_win_set_cursor(window, { image.row + 1, cursor_col })
         if layout_mode == "native" then

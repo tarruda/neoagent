@@ -1,5 +1,4 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-scripts/applet-image-harness.lua
 scripts/sandbox_windows_runtime.lua
 tests/helpers/applet_direct_focus.lua
 tests/helpers/http_live.lua
