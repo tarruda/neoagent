@@ -659,7 +659,7 @@ function M.retained_markdown(key, view, opts, retained)
 end
 
 ---@param key string
----@param content? Neoagent.RenderContentInput
+---@param content? Neoagent.RenderContentInput|Neoagent.MarkdownContent
 ---@param opts? Neoagent.TreeContentOptions
 ---@return Applet.ColumnNode
 function M.content(key, content, opts)
