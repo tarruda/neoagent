@@ -410,7 +410,8 @@ end
 local function weighted_change(items, amount, growing)
   local candidates, weight_total = {}, 0
   for index, item in ipairs(items) do
-    local capacity = growing and item.max - item.size or item.size - item.min
+    local capacity = growing and (item.max or item.size + amount) - item.size
+      or item.size - item.min
     local weight = growing and item.grow or item.shrink
     if capacity > 0 and weight > 0 then
       candidates[#candidates + 1] = {
@@ -480,11 +481,11 @@ local function allocate(children, total, axis, ctx, path)
     local intrinsic = math.max(1, child_decoration(ctx, value.child, axis) + 1)
     local minimum = declared_min and resolve_scalar(declared_min, total) or intrinsic
     minimum = math.max(intrinsic, minimum)
-    local maximum = declared_max and resolve_scalar(declared_max, total) or math.huge
-    util.expect(maximum >= minimum, item_path, "max must be at least min", 4)
+    local maximum = declared_max and resolve_scalar(declared_max, total) or nil
+    util.expect((maximum == nil or maximum >= minimum), item_path, "max must be at least min", 4)
     local size = basis and resolve_content_dimension(
       basis, total, value.child, axis, ctx) or minimum
-    size = math.max(minimum, math.min(maximum, size))
+    size = math.max(minimum, maximum and math.min(maximum, size) or size)
     local grow = value.grow
     if grow == nil then grow = basis == nil and 1 or 0 end
     local shrink = value.shrink == nil and 1 or value.shrink
@@ -513,7 +514,7 @@ local function allocate(children, total, axis, ctx, path)
     if changed < remaining then
       for index = #items, 1, -1 do
         local item = items[index]
-        local capacity = item.max - item.size
+        local capacity = (item.max or item.size + remaining - changed) - item.size
         local cells = math.min(capacity, remaining - changed)
         item.size = item.size + cells
         changed = changed + cells
@@ -754,7 +755,8 @@ local function project_split(ctx, node, rect, state, path)
       and type(override.sizes) == "table" and #override.sizes == #items then
     local total = 0
     for index, size in ipairs(override.sizes) do
-      if not integer(size) or size < items[index].min or size > items[index].max then
+      if not integer(size) or size < items[index].min
+          or (items[index].max and size > items[index].max) then
         total = -1
         break
       end
@@ -780,7 +782,7 @@ local function project_split(ctx, node, rect, state, path)
       key = item.key,
       size = item.size,
       min = item.min,
-      max = item.max == math.huge and nil or item.max,
+      max = item.max,
       child = projected,
     }
     offset = offset + item.size

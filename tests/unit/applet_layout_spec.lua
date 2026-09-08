@@ -230,6 +230,29 @@ describe("Applet layout compilation", function()
     end)
   end)
 
+  it("preserves bounded and unbounded split constraints in the compiled layout", function()
+    local first, second = new_pane("first"), new_pane("second")
+    local compiled = compile({
+      host = host.tab(),
+      editor = { width = 10, height = 5 },
+      tree = {
+        root = ui.frame({
+          key = "frame",
+          child = ui.split({
+            key = "main", axis = "horizontal",
+            children = {
+              { key = "first", max = 4, child = ui.mount(first) },
+              { key = "second", child = ui.mount(second) },
+            },
+          }),
+        }),
+      },
+    })
+    assert.are.equal(4, compiled.topology.children[1].max)
+    assert.is_nil(compiled.topology.children[2].max)
+    assert.are.same({ 4, 6 }, compiled.splits.main.sizes)
+  end)
+
   it("honors valid split overrides and deterministic maximum allocation", function()
     local first, second = new_pane("first"), new_pane("second")
     local value = {
