@@ -2,6 +2,19 @@ local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
+local common = require("neoagent.tools.common")
+local fake_model = require("tests.helpers.fake_model")
+
+---@class Neoagent.TestSandboxEnvironment
+---@field workspace Neoagent.Workspace
+---@field agent string
+---@field session_id? string
+
+---@class Neoagent.TestSandboxContext: Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+---@field context Neoagent.TestSandboxEnvironment
+
+---@type Neoagent.Run<Neoagent.AgentLoopResult, Neoagent.AgentLoopEvent>[]
+local context_runs = {}
 
 local function temporary_directory()
   local path = vim.fn.tempname()
@@ -9,23 +22,50 @@ local function temporary_directory()
   return assert(vim.uv.fs_realpath(path))
 end
 
+---@param root string
 local function workspace(root)
   return require("neoagent.workspace").new({ root = root, cwd = root })
 end
 
+---@param root string
+---@return Neoagent.TestSandboxContext
 local function context(root)
-  return { context = { workspace = workspace(root), agent = "Neo" } }
+  -- Keep the execution owner live until this scenario's teardown.
+  ---@async
+  ---@return Neoagent.AgentLoopResult
+  local function lifetime()
+    return async.await(
+      ---@param _ Neoagent.AwaitCallbacks<Neoagent.AgentLoopResult>
+      function(_) end)
+  end
+  local run = async.run(lifetime)
+  context_runs[#context_runs + 1] = run
+  return {
+    context = { workspace = workspace(root), agent = "Neo" },
+    model = fake_model.new(), run = run,
+    execute_tool = function(tool, arguments, ctx) return tool.execute(arguments, ctx) end,
+    call = { type = "toolCall", id = "sandbox-probe", name = "probe", arguments = {} },
+    on_update = function() end,
+  }
 end
 
+---@param root string
+---@param show fun(request: Neoagent.DialogRequest): unknown
+---@param choose_pending? fun(self: Neoagent.DialogCapability, action: string, reason?: string): integer?, Neoagent.Error?
+---@return Neoagent.TestSandboxContext
 local function dialog_context(root, show, choose_pending)
   local ctx = context(root)
-  ctx.dialog = {
+  -- Exercise both completed decisions and malformed presenter responses.
+  rawset(ctx, "dialog", {
     show = function(_, request) return show(request) end,
     choose_pending = choose_pending or function() return 0 end,
-  }
+  })
   return ctx
 end
 
+---@param root string
+---@param entries? Neoagent.SandboxFilesystemEntry[]
+---@return Neoagent.SandboxProfile
 local function profile(root, entries)
   return {
     id = "test",
@@ -42,16 +82,22 @@ local function profile(root, entries)
   }
 end
 
+---@generic T
+---@param fn async fun(): T
+---@return Neoagent.RunResult<T>
 local function complete(fn)
   local run = async.run(fn)
   assert(vim.wait(1000, function() return run:is_done() end, 5))
-  return run:result()
+  local value = assert(run:result())
+  return value
 end
 
 describe("neoagent sandbox composition", function()
   local paths = {}
 
   after_each(function()
+    for _, run in ipairs(context_runs) do run:cancel() end
+    context_runs = {}
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
     require("neoagent.config")._reset()
@@ -74,12 +120,12 @@ describe("neoagent sandbox composition", function()
       })
     end, "unsupported sandbox setting: future_policy")
     assert.has_error(function()
-      require("neoagent.config").resolve({ sandbox = false })
+      require("neoagent.config").resolve({ sandbox = false } --[[@as Neoagent.ConfigInput]])
     end, "sandbox must be a table")
     assert.has_error(function()
       require("neoagent.config").resolve({
         sandbox = { enabled = "yes" },
-      })
+      } --[[@as Neoagent.ConfigInput]])
     end, "sandbox.enabled must be boolean")
 
     local agent = require("neoagent.agent").new({
@@ -110,7 +156,7 @@ describe("neoagent sandbox composition", function()
       require("neoagent.sandbox.profile").validate(source)
     assert.is_string(fingerprint)
     assert.are.equal(4, #normalized.filesystem.entries)
-    assert.are.equal("write", normalized.filesystem.entries[1].access)
+    assert.are.equal("write", assert(normalized.filesystem.entries[1]).access)
     local retained_missing_read, retained_missing_deny = false, false
     for _, entry in ipairs(normalized.filesystem.entries) do
       if entry.path == missing_read and entry.access == "read" then
@@ -174,12 +220,12 @@ describe("neoagent sandbox composition", function()
     end
 
     invalid = profile(root)
-    invalid.filesystem.entries[1].path = link
+    assert(invalid.filesystem.entries[1]).path = link
     local ok, err = pcall(function()
       require("neoagent.sandbox.profile").validate(invalid)
     end)
     assert.is_false(ok)
-    assert.matches("must use a canonical path", err.message)
+    assert.matches("must use a canonical path", util.normalize_error(err).message)
     assert.has_error(function()
       require("neoagent.sandbox.policy").resolve_path({}, "relative")
     end)
@@ -195,7 +241,7 @@ describe("neoagent sandbox composition", function()
     assert.are.equal("/missing/child", fallback_lexical)
     assert.are.equal("/missing/child", fallback_canonical)
     invalid = profile(root)
-    invalid.filesystem.entries[1].path = "/"
+    assert(invalid.filesystem.entries[1]).path = "/"
     assert.has_error(function()
       require("neoagent.sandbox.profile").validate(invalid)
     end)
@@ -209,10 +255,11 @@ describe("neoagent sandbox composition", function()
         { path = bravo, access = "read" },
         { path = alpha, access = "read" },
       }))
-    assert.are.equal(alpha, normalized.filesystem.entries[1].path)
-    assert.are.equal(bravo, normalized.filesystem.entries[2].path)
+    assert.are.equal(alpha, assert(normalized.filesystem.entries[1]).path)
+    assert.are.equal(bravo, assert(normalized.filesystem.entries[2]).path)
 
     local granted = policy.access({
+      id = "test", network = "restricted", environment = { clear = true, inherit = {}, set = {} },
       filesystem = {
         default = "read",
         entries = {
@@ -239,7 +286,10 @@ describe("neoagent sandbox composition", function()
       end,
       stat = function(path)
         local key = vim.fn.tolower((path:gsub("/", "\\")))
-        return existing[key] and { type = "directory" } or nil
+        if not existing[key] then return end
+        local value = assert(vim.uv.fs_stat("."))
+        value.type = "directory"
+        return value
       end,
     })
 
@@ -303,8 +353,8 @@ describe("neoagent sandbox composition", function()
     assert.are.same({ "Path", "TEMP" }, normalized.environment.inherit)
     assert.are.same({ Path = "C:\\bin", TEMP = "C:\\Temp" },
       normalized.environment.set)
-    assert.are.equal("write", normalized.filesystem.entries[1].access)
-    assert.are.equal("read", normalized.filesystem.entries[2].access)
+    assert.are.equal("write", assert(normalized.filesystem.entries[1]).access)
+    assert.are.equal("read", assert(normalized.filesystem.entries[2]).access)
 
     local fake_workspace = {
       resolve = function(_, value)
@@ -350,7 +400,17 @@ describe("neoagent sandbox composition", function()
   end)
 
   it("dispatches platforms explicitly and reports unsupported systems", function()
-    local linux, macos, windows = {}, {}, {}
+    ---@param name string
+    ---@return Neoagent.SandboxPlatform
+    local function platform(name)
+      return {
+        name = name,
+        check = function() return { ok = true, platform = name } end,
+        exec = function() error("dispatch must not execute") end,
+        fs = function() error("dispatch must not access files") end,
+      }
+    end
+    local linux, macos, windows = platform("linux"), platform("macos"), platform("windows")
     local dispatch = require("neoagent.sandbox.platform")
     assert.are.equal(linux,
       dispatch.select("Linux",
@@ -365,7 +425,7 @@ describe("neoagent sandbox composition", function()
       dispatch.select("Plan9",
         { linux = linux, macos = macos, windows = windows })
     assert.is_nil(selected)
-    assert.is_false(status.ok)
+    assert.is_false(assert(status).ok)
     assert.matches("unsupported platform",
       dispatch.status_error(status).message)
   end)
@@ -387,14 +447,15 @@ describe("neoagent sandbox composition", function()
           return {
             content = { {
               type = "text",
-              text = ctx.process and "restricted" or "host",
+              text = (ctx --[[@as Neoagent.ToolCapabilities]]).process and "restricted" or "host",
             } },
           }
         end,
       } },
-      _tools_supplied = true,
+
     }
     local checked = 0
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
       check = function()
@@ -420,30 +481,30 @@ describe("neoagent sandbox composition", function()
     })
     assert.is_true(toolset_status.active)
     assert.are.equal(dialog_source, returned_dialogs)
-    assert.is_table(toolset.tools[1].input_schema.properties.options)
+    assert.is_table(assert(assert(assert(toolset).tools[1]).input_schema.properties).options)
     assert.is_nil(original.tools[1].input_schema.properties.options)
 
     local composed, dialogs =
-      composition.agent(original, { platform = platform })
+      composition.agent(require("neoagent.config").resolve(original), { platform = platform })
     assert.are.equal(1, checked)
     assert.is_table(dialogs)
-    assert.are.equal("custom", composed.tools[1].name)
+    assert.are.equal("custom", assert(assert(composed.tools)[1]).name)
     assert.is_table(
-      composed.tools[1].input_schema.properties.options)
+      assert(assert(assert(composed.tools)[1]).input_schema.properties).options)
     assert.is_nil(
       original.tools[1].input_schema.properties.options)
-    local value = composed.execute_tool(
-      composed.tools[1], {}, context(root))
-    assert.are.equal("restricted", value.content[1].text)
+    local value = assert(composed.execute_tool)(
+      assert(assert(composed.tools)[1]), {}, context(root))
+    assert.are.equal("restricted", assert(value.content[1]).text)
 
     local disabled = util.copy(original)
     disabled.sandbox.enabled = false
     local untouched, broker =
       require("neoagent.sandbox.composition").agent(
-        disabled, { platform = platform })
+        require("neoagent.config").resolve(disabled), { platform = platform })
     assert.is_nil(broker)
     assert.are.equal(original.tools[1].execute,
-      untouched.tools[1].execute)
+      assert(assert(untouched.tools)[1]).execute)
     assert.are.equal(1, checked)
 
     local dispatch_module = package.loaded["neoagent.sandbox.platform"]
@@ -453,7 +514,7 @@ describe("neoagent sandbox composition", function()
       end,
     }
     local selected_ok, selected_value = pcall(
-      require("neoagent.sandbox.composition").agent, original)
+      require("neoagent.sandbox.composition").agent, require("neoagent.config").resolve(original))
     package.loaded["neoagent.sandbox.platform"] = dispatch_module
     assert.is_true(selected_ok)
     assert.is_function(selected_value.execute_tool)
@@ -474,13 +535,14 @@ describe("neoagent sandbox composition", function()
           return {
             content = { {
               type = "text",
-              text = ctx.process and "restricted" or "host",
+              text = (ctx --[[@as Neoagent.ToolCapabilities]]).process and "restricted" or "host",
             } },
           }
         end,
       } },
-      _tools_supplied = true,
+
     }
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
       check = function() return { ok = true, platform = "test" } end,
@@ -501,22 +563,22 @@ describe("neoagent sandbox composition", function()
       dialogs = require("neoagent.dialog").new(),
     })
     assert.is_true(status.active)
-    assert.is_string(toolset.system_prompt)
-    assert.matches("Sandboxed execution", toolset.system_prompt)
-    assert.matches("native test sandbox", toolset.system_prompt)
-    assert.matches("require_escalation", toolset.system_prompt)
-    assert.matches("denial", toolset.system_prompt)
+    assert.is_string(assert(toolset).system_prompt)
+    assert.matches("Sandboxed execution", (assert(assert(toolset).system_prompt)))
+    assert.matches("native test sandbox", (assert(assert(toolset).system_prompt)))
+    assert.matches("require_escalation", (assert(assert(toolset).system_prompt)))
+    assert.matches("denial", (assert(assert(toolset).system_prompt)))
 
-    local composed = composition.agent(original, {
+    local composed = composition.agent(require("neoagent.config").resolve(original), {
       platform = platform,
     })
-    assert.are.equal(toolset.system_prompt,
+    assert.are.equal(assert(toolset).system_prompt,
       composed._sandbox_system_prompt)
 
     local disabled = util.copy(original)
     disabled.sandbox.enabled = false
     local untouched =
-      composition.agent(disabled, { platform = platform })
+      composition.agent(require("neoagent.config").resolve(disabled), { platform = platform })
     assert.is_nil(untouched._sandbox_system_prompt)
   end)
 
@@ -535,10 +597,11 @@ describe("neoagent sandbox composition", function()
         assert.is_nil(arguments.options)
         return { content = { {
           type = "text",
-          text = ctx.process and "sandbox" or "host",
+          text = (ctx --[[@as Neoagent.ToolCapabilities]]).process and "sandbox" or "host",
         } } }
       end,
     }
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
       check = function()
@@ -553,25 +616,25 @@ describe("neoagent sandbox composition", function()
         tools = { tool },
       }, { enabled = false }, { platform = platform })
     local original_tools = util.copy(stable.tools)
-    local execute = stable.execute_tool
+    local execute = assert(stable.execute_tool)
     assert.is_false(status.enabled)
     assert.are.equal(0, checks)
-    local value = execute(stable.tools[1], { options = {
+    local value = execute(assert(stable.tools[1]), { options = {
       require_escalation = true,
       escalation_justification = "inspect host execution",
     } }, context(root))
-    assert.are.equal("host", value.content[1].text)
+    assert.are.equal("host", assert(value.content[1]).text)
 
     status = assert(runtime:set_enabled(true))
     assert.is_true(status.active)
     assert.are.equal(1, checks)
-    value = execute(stable.tools[1], {}, context(root))
-    assert.are.equal("sandbox", value.content[1].text)
+    value = execute(assert(stable.tools[1]), {}, context(root))
+    assert.are.equal("sandbox", assert(value.content[1]).text)
 
     status = assert(runtime:set_enabled(false))
     assert.is_false(status.enabled)
-    value = execute(stable.tools[1], {}, context(root))
-    assert.are.equal("host", value.content[1].text)
+    value = execute(assert(stable.tools[1]), {}, context(root))
+    assert.are.equal("host", assert(value.content[1]).text)
     assert(runtime:set_enabled(true))
     assert.are.equal(1, checks)
     assert.are.equal(execute, stable.execute_tool)
@@ -579,16 +642,17 @@ describe("neoagent sandbox composition", function()
   end)
 
   it("publishes a failed activation warning for Agent presentation", function()
+    ---@type Neoagent.ConfigInput<Neoagent.TestSandboxEnvironment>
     local configured = {
       name = "Neo",
       sandbox = { enabled = true },
       tools = {},
-      _tools_supplied = true,
+
     }
     local composed, broker =
-      require("neoagent.sandbox.composition").agent(configured, {
+      require("neoagent.sandbox.composition").agent(require("neoagent.config").resolve(configured), {
         status = {
-          ok = false,
+          ok = false, platform = "test",
           stage = "probe",
           message = "native support is unavailable",
         },
@@ -596,7 +660,7 @@ describe("neoagent sandbox composition", function()
     assert.is_nil(broker)
     assert.is_string(composed._sandbox_warning)
     assert.matches("tools will run without a sandbox",
-      composed._sandbox_warning)
+      (assert(composed._sandbox_warning)))
   end)
 
   it("merges profile tables and calls profile callbacks with defaults", function()
@@ -604,7 +668,7 @@ describe("neoagent sandbox composition", function()
     local composition = require("neoagent.sandbox.composition")
     local defaults = composition.default_profile(context(root))
     assert.are.equal(root,
-      defaults.filesystem.entries[1].path)
+      assert(defaults.filesystem.entries[1]).path)
     assert.are.equal("restricted", defaults.network)
     assert.is_true(defaults.environment.clear)
     assert.are.equal(
@@ -627,12 +691,14 @@ describe("neoagent sandbox composition", function()
     vim.uv.fs_realpath = original_realpath
     assert.is_false(has_temporary)
     assert.matches("requires a host temporary directory",
-      temporary_err.message)
+      util.normalize_error(temporary_err).message)
 
+    ---@type {default: Neoagent.SandboxProfile, ctx: Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>}?
     local seen
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
-      check = function() return { ok = true } end,
+      check = function() return { ok = true, platform = "test" } end,
       fs = function() return "contents" end,
       exec = function()
         return {
@@ -641,6 +707,7 @@ describe("neoagent sandbox composition", function()
         }
       end,
     }
+    ---@type Neoagent.ConfigInput<Neoagent.TestSandboxEnvironment>
     local configured = {
       name = "Neo",
       sandbox = {
@@ -652,19 +719,27 @@ describe("neoagent sandbox composition", function()
         end,
       },
       tools = { require("neoagent.tools.read_file").new() },
-      _tools_supplied = true,
+
     }
     local composed = composition.agent(
-      configured, { platform = platform })
-    assert.is_true(composed._sandbox_status.active)
-    local value = composed.execute_tool(
-      composed.tools[1], { path = "file" }, context(root))
-    assert.are.equal("contents", value.content[1].text)
-    assert.are.equal("enabled", seen.default.network)
+      require("neoagent.config").resolve(configured), { platform = platform })
+    assert.is_true(assert(composed._sandbox_status).active)
+    local value = assert(composed.execute_tool)(
+      assert(assert(composed.tools)[1]), { path = "file" }, context(root))
+    assert.are.equal("contents", assert(value.content[1]).text)
+    assert.are.equal("enabled", assert(seen).default.network)
     assert.are.equal(root,
-      seen.ctx.context.workspace.root)
+      assert(assert(seen).ctx.context).workspace.root)
 
-    configured.sandbox.profile = { network = "enabled" }
+    assert(configured.sandbox).profile = { network = "enabled" }
+    ---@async
+    ---@param arguments Neoagent.JsonObject
+    ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+    ---@return Neoagent.ToolResult
+    local function run_process(arguments, ctx)
+      common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "true" }, { cwd = root })
+      return { content = { { type = "text", text = "ok" } } }
+    end
     configured.tools = { {
       name = "process",
       description = "process",
@@ -673,10 +748,7 @@ describe("neoagent sandbox composition", function()
         properties = {},
         additionalProperties = false,
       },
-      execute = function(_, ctx)
-        ctx.process({ "true" }, { cwd = root })
-        return { content = { { type = "text", text = "ok" } } }
-      end,
+      execute = run_process,
     } }
     platform.exec = function(request)
       assert.are.equal("enabled", request.profile.network)
@@ -686,36 +758,39 @@ describe("neoagent sandbox composition", function()
       }
     end
     composed = composition.agent(
-      configured, { platform = platform })
-    value = composed.execute_tool(
-      composed.tools[1], {}, context(root))
-    assert.are.equal("ok", value.content[1].text)
+      require("neoagent.config").resolve(configured), { platform = platform })
+    value = assert(composed.execute_tool)(
+      assert(assert(composed.tools)[1]), {}, context(root))
+    assert.are.equal("ok", assert(value.content[1]).text)
 
     local ok, err = pcall(function()
       composition.default_profile({})
     end)
     assert.is_false(ok)
-    assert.are.equal("Sandbox requires a workspace root", err.message)
-    local failed = composition.agent(configured, {
+    assert.are.equal("Sandbox requires a workspace root", util.normalize_error(err).message)
+    local failed = composition.agent(require("neoagent.config").resolve(configured), {
       platform = {
         name = "broken",
+        fs = function() error("probe failed") end,
+        exec = function() error("probe failed") end,
         check = function() error("probe exploded") end,
       },
     })
-    assert.is_false(failed._sandbox_status.active)
-    assert.are.equal("requirements", failed._sandbox_status.stage)
+    assert.is_false(assert(failed._sandbox_status).active)
+    assert.are.equal("requirements", assert(failed._sandbox_status).stage)
     assert.is_string(failed._sandbox_warning)
   end)
 
   it("keeps a root workspace bounded to shared temporary writes", function()
+    ---@type Neoagent.SandboxProfile?
     local seen_profile
-    local composed = require("neoagent.sandbox.composition").agent({
+    local composed = require("neoagent.sandbox.composition").agent(require("neoagent.config").resolve({
       name = "Root",
       sandbox = { enabled = true },
       tools = { require("neoagent.tools.read_file").new() },
-      _tools_supplied = true,
-    }, {
-      platform = {
+
+    }), {
+      platform = { check = function() return { ok = true, platform = "test" } end,
         name = "test",
         fs = function(request)
           seen_profile = request.profile
@@ -729,15 +804,15 @@ describe("neoagent sandbox composition", function()
         capabilities = { filesystem = true },
       },
     })
-    local value = composed.execute_tool(
-      composed.tools[1], { path = "/etc/hosts" }, context("/"))
-    assert.are.equal("root-readable", value.content[1].text)
-    assert.are.equal("read", seen_profile.filesystem.default)
+    local value = assert(composed.execute_tool)(
+      assert(assert(composed.tools)[1]), { path = "/etc/hosts" }, context("/"))
+    assert.are.equal("root-readable", assert(value.content[1]).text)
+    assert.are.equal("read", assert(seen_profile).filesystem.default)
     local allowed_writes = {
       [vim.uv.fs_realpath(vim.uv.os_tmpdir())] = true,
       [vim.uv.fs_realpath("/tmp")] = true,
     }
-    for _, entry in ipairs(seen_profile.filesystem.entries) do
+    for _, entry in ipairs(assert(seen_profile).filesystem.entries) do
       assert.are_not.equal("/", entry.path)
       if entry.access == "write" then
         assert.is_true(allowed_writes[entry.path])
@@ -826,10 +901,10 @@ describe("neoagent sandbox protocol and native profiles", function()
         data = "early",
       }))
     assert.is_nil(invalid)
-    assert.matches("precedes ready", invalid_err)
+    assert.matches("precedes ready", tostring(invalid_err))
     local events, err = protocol.decode_all("\255\255\255\255")
     assert.is_nil(events)
-    assert.matches("frame length", err)
+    assert.matches("frame length", tostring(err))
 
     local invalid_events = {
       {},
@@ -869,25 +944,25 @@ describe("neoagent sandbox protocol and native profiles", function()
     assert.is_true(abi.supported("x64"))
     assert.is_true(abi.supported("arm64"))
     assert.is_false(abi.supported("mips"))
-    assert.are.equal(155, abi.current("x64").pivot_root)
-    assert.are.equal(41, abi.current("arm64").pivot_root)
+    assert.are.equal(155, assert(abi.current("x64")).pivot_root)
+    assert.are.equal(41, assert(abi.current("arm64")).pivot_root)
     local seccomp = require("neoagent.sandbox.linux.seccomp")
     local restricted = seccomp.rules("x64", "restricted")
-    assert.are.equal(41, restricted.socket)
-    assert.are.equal(53, restricted.socketpair)
-    assert.are.equal(56, restricted.clone)
-    assert.are.equal(435, restricted.clone3)
-    assert.is_false(vim.list_contains(restricted.deny, restricted.clone3))
-    assert.are.equal(0x7e020080, restricted.namespace_flags)
-    assert.is_true(vim.list_contains(restricted.network_deny, 42))
-    assert.is_true(vim.list_contains(restricted.network_deny, 307))
-    assert.is_nil(seccomp.rules("x64", "enabled").socket)
-    assert.is_nil(seccomp.rules("x64", "enabled").socketpair)
-    assert.is_nil(seccomp.rules("x64", "enabled").network_deny)
+    assert.are.equal(41, assert(restricted).socket)
+    assert.are.equal(53, assert(restricted).socketpair)
+    assert.are.equal(56, assert(restricted).clone)
+    assert.are.equal(435, assert(restricted).clone3)
+    assert.is_false(vim.list_contains(assert(restricted).deny, assert(restricted).clone3))
+    assert.are.equal(0x7e020080, assert(restricted).namespace_flags)
+    assert.is_true(vim.list_contains(assert(assert(restricted).network_deny), 42))
+    assert.is_true(vim.list_contains(assert(assert(restricted).network_deny), 307))
+    assert.is_nil(assert(seccomp.rules("x64", "enabled")).socket)
+    assert.is_nil(assert(seccomp.rules("x64", "enabled")).socketpair)
+    assert.is_nil(assert(seccomp.rules("x64", "enabled")).network_deny)
     local arm = seccomp.rules("arm64", "restricted")
-    assert.are.equal(198, arm.socket)
-    assert.are.equal(199, arm.socketpair)
-    assert.is_true(vim.list_contains(arm.network_deny, 203))
+    assert.are.equal(198, assert(arm).socket)
+    assert.are.equal(199, assert(arm).socketpair)
+    assert.is_true(vim.list_contains(assert(assert(arm).network_deny), 203))
     assert.is_nil(seccomp.rules("mips", "restricted"))
   end)
 
@@ -905,8 +980,8 @@ describe("neoagent sandbox protocol and native profiles", function()
       },
       network = "restricted",
     }, { { path = "/tmp/internal", access = "write" } })
-    assert.is_nil(policy:find(root, 1, true))
-    assert.is_nil(policy:find("network-outbound", 1, true))
+    assert.is_nil((policy:find(root, 1, true)))
+    assert.is_nil((policy:find("network-outbound", 1, true)))
     assert.is_true(#parameters > 0)
     local argv = compiler.argv("/usr/bin/sandbox-exec",
       policy, parameters)
@@ -917,7 +992,7 @@ describe("neoagent sandbox protocol and native profiles", function()
       network = "enabled",
     })
     assert.matches("network%-outbound",
-      compiler.compile(enabled))
+      (compiler.compile(enabled)))
 
     local alpha = "/tmp/alpha"
     local bravo = "/tmp/bravo"
@@ -931,8 +1006,8 @@ describe("neoagent sandbox protocol and native profiles", function()
       },
       network = "restricted",
     })
-    assert.are.equal(alpha, ordered[2].value)
-    assert.are.equal(bravo, ordered[3].value)
+    assert.are.equal(alpha, assert(ordered[2]).value)
+    assert.are.equal(bravo, assert(ordered[3]).value)
   end)
 end)
 
@@ -940,6 +1015,8 @@ describe("neoagent sandbox execution", function()
   local paths = {}
 
   after_each(function()
+    for _, run in ipairs(context_runs) do run:cancel() end
+    context_runs = {}
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
   end)
@@ -953,7 +1030,7 @@ describe("neoagent sandbox execution", function()
   it("preserves ordinary nonzero command results", function()
     local root = temp()
     local box = require("neoagent.sandbox.enforce").new({
-      platform = {
+      platform = { check = function() return { ok = true, platform = "test" } end,
         name = "test",
         fs = function() return true end,
         exec = function()
@@ -975,24 +1052,32 @@ describe("neoagent sandbox execution", function()
       context(root))
 
     assert.is_true(value.isError)
-    assert.are.equal(1, value.details.exit_code)
-    assert.is_nil(value.details.sandbox)
+    assert.are.equal(1, assert(value.details).exit_code)
+    assert.is_nil(assert(value.details).sandbox)
     assert.are.equal(
       "[Command exited with status 1]\n(no output)",
-      value.content[1].text)
+      assert(value.content[1]).text)
 
+    ---@type Neoagent.ToolResult
     local expected = {
-      content = { { type = "image", data = "ordinary-error" } },
+      content = { { type = "image", data = "ordinary-error", mimeType = "image/png" } },
       is_error = true,
       details = { exit_code = 1, source = "command" },
     }
+    ---@async
+    ---@param arguments Neoagent.JsonObject
+    ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+    ---@return Neoagent.ToolResult
+    local function preserve_result(arguments, ctx)
+      local process_result =
+        common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "grep" }, { cwd = root })
+      assert.are.equal(1, process_result.code)
+      return expected
+    end
     local custom = box:wrap()({
-      execute = function(_, ctx)
-        local process_result =
-          ctx.process({ "grep" }, { cwd = root })
-        assert.are.equal(1, process_result.code)
-        return expected
-      end,
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
+      execute = preserve_result,
     }, {}, context(root))
     assert.are.same(expected, custom)
 
@@ -1001,27 +1086,28 @@ describe("neoagent sandbox execution", function()
       { pattern = "missing" },
       context(root))
     assert.is_nil(no_matches.isError)
-    assert.are.equal("No matches found", no_matches.content[1].text)
+    assert.are.equal("No matches found", assert(no_matches.content[1]).text)
   end)
 
   it("classifies likely sandbox denials from bounded process evidence",
     function()
       local root = temp()
+      ---@type table<string, {code: integer, signal?: integer, stdout?: string, stderr?: string, output?: string, stdout_stream?: string, stream?: string, extra_stream?: string}>
       local responses = {}
       local streamed = {}
       local box = require("neoagent.sandbox.enforce").new({
-        platform = {
+        platform = { check = function() return { ok = true, platform = "test" } end,
           name = "linux",
           fs = function() return true end,
           exec = function(request)
-            local response = assert(responses[request.argv[1]])
+            local response = assert(responses[assert(request.argv[1])])
             if response.stdout_stream then
-              request.on_output(response.stdout_stream, false)
+              assert(request.on_output)(response.stdout_stream, false, response.stdout_stream, "", response.stdout_stream)
             end
             if response.stream then
-              request.on_output(response.stream, true)
+              assert(request.on_output)(response.stream, true, "", response.stream, response.stream)
               streamed[#streamed + 1] = response.stream
-              if response.extra_stream then request.on_output(response.extra_stream, true) end
+              if response.extra_stream then assert(request.on_output)(response.extra_stream, true, "", response.extra_stream, response.extra_stream) end
             end
             return {
               code = response.code,
@@ -1035,32 +1121,45 @@ describe("neoagent sandbox execution", function()
         },
         profile = profile(root),
       })
+      ---@param name string
+      ---@param returned? Neoagent.ToolResult
+      ---@param throws? boolean
+      ---@return Neoagent.ToolResult
       local function execute(name, returned, throws)
+        ---@async
+        ---@param arguments Neoagent.JsonObject
+        ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+        ---@return Neoagent.ToolResult
+        local function run_command(arguments, ctx)
+          local process_result = common.process(ctx --[[@as Neoagent.ToolCapabilities]], { name }, {
+            cwd = root,
+            on_output = function(data)
+              assert.is_string(data)
+            end,
+          })
+          if throws then
+            error("tool rejected status " .. process_result.code)
+          end
+          return returned or {
+            content = { { type = "text", text = name } },
+            details = { exit_code = process_result.code },
+            isError = true,
+          }
+        end
         return box:wrap()({
-          execute = function(_, ctx)
-            local process_result = ctx.process({ name }, {
-              cwd = root,
-              on_output = function(data)
-                assert.is_string(data)
-              end,
-            })
-            if throws then
-              error("tool rejected status " .. process_result.code)
-            end
-            return returned or {
-              content = { { type = "text", text = name } },
-              details = { exit_code = process_result.code },
-              isError = true,
-            }
-          end,
+          name = "probe", description = "Probe sandbox behavior",
+          input_schema = { type = "object", properties = {} },
+          execute = run_command,
         }, {}, context(root))
       end
+      ---@param value Neoagent.ToolResult
       local function assert_restricted(value)
         assert.is_true(value.isError or value.is_error)
-        assert.is_true(value.details.sandbox.ran_restricted)
+        assert.is_true(assert(assert(value.details).sandbox).ran_restricted)
         assert.matches("blocked by the sandbox",
-          value.content[1].text, 1, true)
+          assert(assert(value.content[1]).text), 1, true)
       end
+      ---@type {name: string, code?: integer, stderr?: string, stdout?: string, output?: string, stream?: string}[]
       local cases = {
         {
           name = "operation",
@@ -1092,8 +1191,7 @@ describe("neoagent sandbox execution", function()
         },
       }
       for _, item in ipairs(cases) do
-        item.code = 1
-        responses[item.name] = item
+        responses[item.name] = { code = 1, stdout = item.stdout, stderr = item.stderr, output = item.output, stream = item.stream }
         assert_restricted(execute(item.name))
       end
       assert.are.same({ "Permission denied" }, streamed)
@@ -1103,13 +1201,13 @@ describe("neoagent sandbox execution", function()
         stderr = "Permission denied",
       }
       local image = execute("image", {
-        content = { { type = "image", data = "bytes" } },
+        content = { { type = "image", data = "bytes", mimeType = "image/png" } },
         details = { source = "custom" },
         is_error = true,
       })
       assert_restricted(image)
-      assert.are.equal("custom", image.details.source)
-      assert.are.equal("image", image.content[2].type)
+      assert.are.equal("custom", assert(image.details).source)
+      assert.are.equal("image", assert(image.content[2]).type)
 
       for _, details in ipairs({
         "tool detail", 7, false, vim.NIL, { "first", "second" },
@@ -1123,7 +1221,7 @@ describe("neoagent sandbox execution", function()
         }
         local annotated = execute("image", original)
         assert.are.same(details, annotated.details)
-        assert.matches("blocked by the sandbox", annotated.content[1].text,
+        assert.matches("blocked by the sandbox", (assert(assert(annotated.content[1]).text)),
           1, true)
         assert.are.equal("custom failure", original.content[1].text)
       end
@@ -1135,28 +1233,35 @@ describe("neoagent sandbox execution", function()
       local thrown = execute("thrown", nil, true)
       assert_restricted(thrown)
       assert.matches("tool rejected status 1",
-        thrown.content[1].text, 1, true)
+        (assert(assert(thrown.content[1]).text)), 1, true)
 
       responses.cancelled = {
         code = 1,
         stderr = "operation not permitted",
       }
       local cancel_execute = box:wrap()
+      ---@async
+      ---@param arguments Neoagent.JsonObject
+      ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+      ---@return Neoagent.ToolResult
+      local function cancel_after_process(arguments, ctx)
+        common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "cancelled" }, { cwd = root })
+        error({ kind = "cancelled", message = "cancelled" }, 0)
+      end
       local completed, cancelled = pcall(cancel_execute, {
-        execute = function(_, ctx)
-          ctx.process({ "cancelled" }, { cwd = root })
-          error({ kind = "cancelled", message = "cancelled" }, 0)
-        end,
+        name = "probe", description = "Probe sandbox behavior",
+        input_schema = { type = "object", properties = {} },
+        execute = cancel_after_process,
       }, {}, context(root))
       assert.is_false(completed)
-      assert.are.equal("cancelled", cancelled.kind)
+      assert.are.equal("cancelled", util.normalize_error(cancelled).kind)
 
       for _, code in ipairs({ 2, 126, 127 }) do
         local name = "ordinary-" .. code
         responses[name] = { code = code, stderr = "command not found" }
         local ordinary = execute(name)
-        assert.is_nil(ordinary.details.sandbox)
-        assert.are.equal(name, ordinary.content[1].text)
+        assert.is_nil(assert(ordinary.details).sandbox)
+        assert.are.equal(name, assert(ordinary.content[1]).text)
       end
 
       responses.success = {
@@ -1164,7 +1269,7 @@ describe("neoagent sandbox execution", function()
         stderr = "operation not permitted",
       }
       local success = execute("success")
-      assert.is_nil(success.details.sandbox)
+      assert.is_nil(assert(success.details).sandbox)
 
       responses.bounded = {
         code = 1,
@@ -1172,7 +1277,7 @@ describe("neoagent sandbox execution", function()
         extra_stream = "permission denied",
       }
       local bounded = execute("bounded")
-      assert.is_nil(bounded.details.sandbox)
+      assert.is_nil(assert(bounded.details).sandbox)
 
       responses.contention = {
         code = 1,
@@ -1181,7 +1286,8 @@ describe("neoagent sandbox execution", function()
       }
       assert_restricted(execute("contention"))
 
-      local sigsys = vim.uv.constants and vim.uv.constants.SIGSYS
+      local constants = (vim.uv --[[@as {constants?: table<string, integer>}]]).constants
+      local sigsys = constants and constants.SIGSYS
       if sigsys then
         responses.sigsys = { code = 128 + sigsys, signal = sigsys }
         assert_restricted(execute("sigsys"))
@@ -1192,9 +1298,12 @@ describe("neoagent sandbox execution", function()
     local root = temp()
     local protected = vim.fs.joinpath(root, ".git")
     assert.are.equal(1, vim.fn.mkdir(protected, "p"))
+    ---@type (Neoagent.SandboxFilesystemRequest|Neoagent.SandboxProcessRequest)[], Neoagent.ToolCapabilities
     local calls, retained = {}, {}
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
+      check = function() return { ok = true, platform = "test" } end,
       fs = function(request)
         calls[#calls + 1] = request
         if request.operation == "read" then return "read:" .. request.path end
@@ -1202,7 +1311,7 @@ describe("neoagent sandbox execution", function()
       end,
       exec = function(request)
         calls[#calls + 1] = request
-        if request.on_output then request.on_output("chunk", false) end
+        if request.on_output then request.on_output("chunk", false, "chunk", "", "chunk") end
         return {
           code = request.argv[1] == "fail" and 2 or 0,
           signal = 0,
@@ -1224,89 +1333,105 @@ describe("neoagent sandbox execution", function()
       end,
     })
     local execute = box:wrap(function(tool, arguments, ctx)
-      retained.fs, retained.process = ctx.fs, ctx.process
+      retained.fs, retained.process = (ctx --[[@as Neoagent.ToolCapabilities]]).fs, (ctx --[[@as Neoagent.ToolCapabilities]]).process
       return tool.execute(arguments, ctx)
     end)
-    local read = {
+    local read = { name = "probe", description = "Read through sandbox", input_schema = { type = "object", properties = {} },
       execute = function(arguments, ctx)
         return {
           content = { {
             type = "text",
-            text = assert(ctx.fs.read(arguments.path)),
+            text = assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).read(arguments.path)),
           } },
         }
       end,
     }
     local value = execute(read, { path = "file" }, context(root))
-    assert.matches(root, value.content[1].text, 1, true)
-    value = execute({
+    assert.matches(root, (assert(assert(value.content[1]).text)), 1, true)
+    value = execute({ name = "probe", description = "Probe sandbox behavior", input_schema = { type = "object", properties = {} },
       execute = function(_, ctx)
-        assert(ctx.fs.atomic_replace(root .. "/file", "changed", {
+        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).atomic_replace(root .. "/file", "changed", {
           preserve_mode = true,
           new_mode = 420,
         }))
         return { content = { { type = "text", text = "replaced" } } }
       end,
     }, {}, context(root))
-    assert.are.equal("replaced", value.content[1].text)
+    assert.are.equal("replaced", assert(value.content[1]).text)
     local replacement = calls[#calls]
-    assert.are.equal("atomic_replace", replacement.operation)
-    assert.are.equal("changed", replacement.data)
+    assert.are.equal("atomic_replace", assert(replacement).operation)
+    assert.are.equal("changed", assert(replacement).data)
     assert.are.same({ preserve_mode = true, new_mode = 420 },
-      replacement.policy)
-    assert.are.equal(32, #replacement.suffix)
+      assert(replacement).policy)
+    assert.are.equal(32, #assert(replacement).suffix)
     local denied = execute({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
       execute = function(_, ctx)
-        ctx.fs.write_all(protected .. "/config", "x")
+        common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).write_all(protected .. "/config", "x")
+        error("denied write must not return")
       end,
     }, {}, context(root))
     assert.is_true(denied.isError)
-    assert.is_true(denied.details.sandbox.denied)
-    assert.matches("require_escalation", denied.content[1].text)
+    assert.is_true(assert(assert(denied.details).sandbox).denied)
+    assert.matches("require_escalation", (assert(assert(denied.content[1]).text)))
 
     local updates = {}
+    ---@async
+    ---@param arguments Neoagent.JsonObject
+    ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+    ---@return Neoagent.ToolResult
+    local function failed_command(arguments, ctx)
+      local result = common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "fail", "" }, {
+        cwd = root,
+        on_output = function(data) updates[#updates + 1] = data end,
+      })
+      return {
+        content = { { type = "text", text = "failed" } },
+        isError = result.code ~= 0,
+      }
+    end
     local failed = execute({
-      execute = function(_, ctx)
-        local result = ctx.process({ "fail", "" }, {
-          cwd = root,
-          on_output = function(data) updates[#updates + 1] = data end,
-        })
-        return {
-          content = { { type = "text", text = "failed" } },
-          isError = result.code ~= 0,
-        }
-      end,
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
+      execute = failed_command,
     }, {}, context(root))
     assert.are.same({ "chunk" }, updates)
     assert.is_true(failed.isError)
-    assert.are.equal("failed", failed.content[1].text)
+    assert.are.equal("failed", assert(failed.content[1]).text)
     assert.is_nil(failed.details)
     assert.has_error(function()
-      execute({
-        execute = function(_, ctx)
-          local process_result = ctx.process({ "fail" }, { cwd = root })
-          error("native tool rejected status " .. process_result.code)
-        end,
+      ---@async
+      ---@param arguments Neoagent.JsonObject
+      ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+      ---@return Neoagent.ToolResult
+      local function reject_status(arguments, ctx)
+        local process_result = common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "fail" }, { cwd = root })
+        error("native tool rejected status " .. process_result.code)
+      end
+      execute({ name = "probe", description = "Probe sandbox behavior", input_schema = { type = "object", properties = {} },
+        execute = reject_status,
       }, {}, context(root))
     end, "native tool rejected status 2")
     local process_request = calls[#calls]
     assert.are.same({ PATH = "/bin", TEST_SANDBOX = "yes" },
-      process_request.env)
-    assert.has_error(function() retained.fs.read(root) end)
+      assert(process_request).env)
+    assert.has_error(function() assert(retained.fs).read(root) end)
     assert.has_error(function()
-      retained.fs.atomic_replace(root .. "/file", "late", {
+      assert(retained.fs).atomic_replace(root .. "/file", "late", {
         preserve_mode = true, new_mode = 420,
       })
     end)
-    assert.has_error(function() retained.process({ "true" }) end)
+    assert.has_error(function() assert(retained.process)({ "true" }) end)
   end)
 
   it("shares temporary read mounts across tool calls only while file identity is unchanged", function()
     local root = temp()
+    ---@type Neoagent.SandboxFilesystemRequest[]
     local requests = {}
     local box = require("neoagent.sandbox.enforce").new({
       profile = profile(root), temporary_root = root,
-      platform = {
+      platform = { check = function() return { ok = true, platform = "test" } end,
         name = "test",
         compile = function(selected)
           selected = vim.deepcopy(selected)
@@ -1323,25 +1448,47 @@ describe("neoagent sandbox execution", function()
       },
     })
     local execute = box:wrap()
-    local path = execute({ execute = function(_, ctx)
-      local name = assert(ctx.fs.create_temp("spill-"))
-      assert(ctx.fs.write_all(name, "original"))
-      return name
-    end }, {}, context(root))
-    local read = { execute = function(_, ctx) return ctx.fs.read(path) end }
-    assert.are.equal("original", execute(read, {}, context(root)))
+    local created = execute({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
+      execute = function(_, ctx)
+        local files = common.fs(ctx --[[@as Neoagent.ToolCapabilities]])
+        local name = assert(files.create_temp("spill-"))
+        assert(files.write_all(name, "original"))
+        return { content = { { type = "text", text = name } } }
+      end,
+    }, {}, context(root))
+    local path = util.text_content(created.content)
+    local read = {
+      name = "probe", description = "Read through sandbox",
+      input_schema = { type = "object", properties = {} },
+      execute = function(_, ctx)
+        local files = common.fs(ctx --[[@as Neoagent.ToolCapabilities]])
+        return { content = { { type = "text", text = assert(files.read(path)) } } }
+      end,
+    }
+    assert.are.equal("original", util.text_content(execute(read, {}, context(root)).content))
     local entries = requests[#requests].profile.filesystem.entries
     assert.are.same({ path = path, access = "read" }, entries[#entries])
     local inode = assert(vim.uv.fs_stat(path)).ino
     assert(fs.atomic_replace(path, "replacement", { preserve_mode = true, new_mode = 384 }))
     assert.are_not.equal(inode, assert(vim.uv.fs_stat(path)).ino)
-    assert.are.equal("replacement", execute(read, {}, context(root)))
+    assert.are.equal("replacement", util.text_content(execute(read, {}, context(root)).content))
     entries = requests[#requests].profile.filesystem.entries
     assert.are.same({ path = root .. "/protected", access = "deny" }, entries[#entries])
-    assert.are.equal("replacement", execute(read, {}, context(root)))
-    local denied = execute({ execute = function(_, ctx) return ctx.fs.read(root .. "/protected") end }, {}, context(root))
+    assert.are.equal("replacement", util.text_content(execute(read, {}, context(root)).content))
+    local denied = execute({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
+      execute = function(_, ctx)
+        local files = common.fs(ctx --[[@as Neoagent.ToolCapabilities]])
+        return { content = { {
+          type = "text", text = assert(files.read(root .. "/protected")),
+        } } }
+      end,
+    }, {}, context(root))
     assert.is_true(denied.isError)
-    assert.is_true(denied.details.sandbox.denied)
+    assert.is_true(assert(assert(denied.details).sandbox).denied)
     assert.are.equal(3, #requests)
   end)
 
@@ -1350,6 +1497,7 @@ describe("neoagent sandbox execution", function()
     local temporary = vim.fs.joinpath(root, "spill")
     local raw_calls = {}
     local raw_fs = {
+      create_temp_directory = fs.create_temp_directory,
       create_temp = function(_, directory)
         raw_calls[#raw_calls + 1] = "create_temp:" .. tostring(directory)
         return temporary
@@ -1371,8 +1519,10 @@ describe("neoagent sandbox execution", function()
         return true
       end,
     }
+    ---@type Neoagent.SandboxPlatform<Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>>
     local platform = {
       name = "test",
+      check = function() return { ok = true, platform = "test" } end,
       fs = function(request)
         raw_calls[#raw_calls + 1] = "platform:" .. request.operation
         return true
@@ -1392,18 +1542,20 @@ describe("neoagent sandbox execution", function()
     })
     local execute = box:wrap()
     local value = execute({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
       execute = function(_, ctx)
-        local path = assert(ctx.fs.create_temp("spill-"))
-        assert(ctx.fs.write_all(path, "data", "a", 384))
-        assert(ctx.fs.atomic_replace(path, "replacement", {
+        local path = assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).create_temp("spill-"))
+        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).write_all(path, "data", "a", 384))
+        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).atomic_replace(path, "replacement", {
           preserve_mode = true, new_mode = 420,
         }))
-        assert.are.equal("temporary", ctx.fs.read(path))
-        assert(ctx.fs.mkdirp(vim.fs.joinpath(root, "directory")))
+        assert.are.equal("temporary", common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).read(path))
+        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).mkdirp(vim.fs.joinpath(root, "directory")))
         return { content = { { type = "text", text = "ok" } } }
       end,
     }, {}, context(root))
-    assert.are.equal("ok", value.content[1].text)
+    assert.are.equal("ok", assert(value.content[1]).text)
     assert.are.same({
       "create_temp:" .. root,
       "write:" .. temporary,
@@ -1413,21 +1565,30 @@ describe("neoagent sandbox execution", function()
     }, raw_calls)
 
     local calls_before_escape = #raw_calls
-    value = execute({
+    value = execute({ name = "probe", description = "Probe sandbox behavior", input_schema = { type = "object", properties = {} },
       execute = function(_, ctx)
-        ctx.fs.create_temp("../outside-")
+        common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).create_temp("../outside-")
         return { content = { { type = "text", text = "escaped" } } }
       end,
     }, {}, context(root))
     assert.is_true(value.isError)
-    assert.is_true(value.details.sandbox.unavailable)
+    assert.is_true(assert(assert(value.details).sandbox).unavailable)
     assert.are.equal(calls_before_escape, #raw_calls)
 
+    ---@async
+    ---@param arguments Neoagent.JsonObject
+    ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+    ---@return Neoagent.ToolResult
+    local function malformed_process(arguments, ctx)
+      -- Deliberately malformed process inputs must reach sandbox validation.
+      common.process(ctx --[[@as Neoagent.ToolCapabilities]],
+        arguments.argv --[[@as string[] ]], arguments.opts --[[@as Neoagent.ProcessOptions]])
+      return { content = { { type = "text", text = "unexpected" } } }
+    end
     local process_tool = {
-      execute = function(arguments, ctx)
-        ctx.process(arguments.argv, arguments.opts)
-        return { content = { { type = "text", text = "unexpected" } } }
-      end,
+      name = "probe", description = "Run through sandbox",
+      input_schema = { type = "object", properties = {} },
+      execute = malformed_process,
     }
     for _, arguments in ipairs({
       { argv = {}, opts = { cwd = root } },
@@ -1438,7 +1599,7 @@ describe("neoagent sandbox execution", function()
     }) do
       value = execute(process_tool, arguments, context(root))
       assert.is_true(value.isError)
-      assert.is_true(value.details.sandbox.unavailable)
+      assert.is_true(assert(assert(value.details).sandbox).unavailable)
     end
 
     local denied_root = vim.fs.joinpath(root, "denied")
@@ -1455,14 +1616,14 @@ describe("neoagent sandbox execution", function()
       argv = { "true" },
       opts = { cwd = denied_root },
     }, context(root))
-    assert.is_true(value.details.sandbox.denied)
+    assert.is_true(assert(assert(value.details).sandbox).denied)
 
-    platform.exec = function() return {} end
+    rawset(platform, "exec", function() return {} end)
     value = execute(process_tool, {
       argv = { "true" },
       opts = { cwd = root },
     }, context(root))
-    assert.is_true(value.details.sandbox.unavailable)
+    assert.is_true(assert(assert(value.details).sandbox).unavailable)
 
     platform.exec = function()
       error(util.error("sandbox_unavailable", "backend unavailable"), 0)
@@ -1471,14 +1632,16 @@ describe("neoagent sandbox execution", function()
       argv = { "true" },
       opts = { cwd = root },
     }, context(root))
-    assert.matches("backend unavailable", value.content[1].text)
+    assert.matches("backend unavailable", (assert(assert(value.content[1]).text)))
 
     local dynamic = require("neoagent.sandbox.enforce").new({
       platform = platform,
       profile = function() error("profile failed") end,
     }):wrap()
-    value = dynamic({ execute = function() end }, {}, context(root))
-    assert.is_true(value.details.sandbox.unavailable)
+    value = dynamic({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} }, execute = function() error("tool must not run") end }, {}, context(root))
+    assert.is_true(assert(assert(value.details).sandbox).unavailable)
 
     platform.exec = function()
       return {
@@ -1487,7 +1650,9 @@ describe("neoagent sandbox execution", function()
       }
     end
     assert.has_error(function()
-      execute({ execute = function() error("ordinary failure") end },
+      execute({
+        name = "probe", description = "Probe sandbox behavior",
+        input_schema = { type = "object", properties = {} }, execute = function() error("ordinary failure") end },
         {}, context(root))
     end, "ordinary failure")
   end)
@@ -1517,18 +1682,20 @@ describe("neoagent sandbox execution", function()
         },
         additionalProperties = false,
       },
-      execute = function() end,
+      execute = function() error("tool must not run") end,
     }
+    ---@type Neoagent.JsonObject?, Neoagent.ToolFilesystem?, (fun(argv: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult)?, Neoagent.DialogRequest?
     local seen, retained_fs, retained_process, approval
     local escalation = require("neoagent.sandbox.escalation").new({
       fs = {
         read = function(path) return "host:" .. path end,
         create_temp = fs.create_temp,
+        atomic_replace = fs.atomic_replace,
         mkdirp = fs.mkdirp,
         write_all = fs.write_all,
       },
       process = function()
-        return { code = 0, signal = 0 }
+        return { code = 0, signal = 0, stdout = "", stderr = "", output = "", timed_out = false }
       end,
     })
     local approved_ctx = dialog_context(root, function(value)
@@ -1538,52 +1705,58 @@ describe("neoagent sandbox execution", function()
     local transformed = escalation:tools({ tool })
     assert.is_nil(
       tool.input_schema.properties.options.properties.require_escalation)
-    assert.is_table(transformed[1].input_schema.properties.options
-      .properties.require_escalation)
+    assert.is_table(assert(assert(assert(transformed[1]).input_schema.properties).options
+      .properties).require_escalation)
+    ---@async
+    ---@param arguments Neoagent.JsonObject
+    ---@param ctx Neoagent.ToolContext<Neoagent.TestSandboxEnvironment>
+    ---@return Neoagent.ToolResult
+    local function elevated_read(_, arguments, ctx)
+      assert(type(arguments.path) == "string")
+      seen = arguments
+      retained_fs = (ctx --[[@as Neoagent.ToolCapabilities]]).fs
+      retained_process = (ctx --[[@as Neoagent.ToolCapabilities]]).process
+      local process_value = common.process(ctx --[[@as Neoagent.ToolCapabilities]], { "true" })
+      return {
+        content = { {
+          type = "text",
+          text = common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).read(arguments.path)
+            .. ":" .. tostring(process_value.code),
+        } },
+      }
+    end
     local execute = escalation:wrap({
       restricted = function() error("restricted path ran") end,
-      elevated = function(_, arguments, ctx)
-        seen = arguments
-        retained_fs = ctx.fs
-        retained_process = ctx.process
-        local process_value = ctx.process({ "true" })
-        return {
-          content = { {
-            type = "text",
-            text = ctx.fs.read(arguments.path)
-              .. ":" .. tostring(process_value.code),
-          } },
-        }
-      end,
+      elevated = elevated_read,
     })
     local value = execute(
-      transformed[1], original_arguments, approved_ctx)
-    assert.are.equal("host:file:0", value.content[1].text)
+      assert(transformed[1]), original_arguments, approved_ctx)
+    assert.are.equal("host:file:0", assert(value.content[1]).text)
     assert.are.same({ path = "file", options = { native = "keep" } },
       seen)
     assert.is_true(original_arguments.options.require_escalation)
-    assert.are.equal("transcript", approval.placement)
-    assert.matches("Tool: custom", approval.body)
-    assert.matches("needed for this test", approval.body)
+    assert.are.equal("transcript", assert(approval).placement)
+    assert.matches("Tool: custom", assert(approval).body)
+    assert.matches("needed for this test", assert(approval).body)
     assert.are.same({
       { id = "approve", label = "approve", key = "y" },
       { id = "deny", label = "deny", key = "n" },
       { id = "deny_all", label = "deny all pending", key = "N" },
-    }, approval.actions)
-    assert.has_error(function() retained_fs.read("later") end)
-    assert.has_error(function() retained_process({ "true" }) end)
+    }, assert(approval).actions)
+    assert.has_error(function() assert(retained_fs).read("later") end)
+    assert.has_error(function() assert(retained_process)({ "true" }) end)
 
-    local malformed = execute(transformed[1], {
+    local malformed = execute(assert(transformed[1]), {
       options = { require_escalation = true },
     }, context(root))
-    assert.is_true(malformed.details.sandbox.invalid_escalation)
+    assert.is_true(assert(assert(malformed.details).sandbox).invalid_escalation)
 
     local denied = require("neoagent.sandbox.escalation").new():wrap({
       restricted = function() error("restricted path ran") end,
       elevated = function() error("elevated path ran") end,
-    })(transformed[1], original_arguments,
+    })(assert(transformed[1]), original_arguments,
       dialog_context(root, function() return "deny" end))
-    assert.is_true(denied.details.sandbox.denied_by_user)
+    assert.is_true(assert(assert(denied.details).sandbox).denied_by_user)
   end)
 
   it("renders shell approval commands separately from agent justification",
@@ -1593,12 +1766,13 @@ describe("neoagent sandbox execution", function()
       local shell = module.new():tools({
         require("neoagent.tools.shell").new(),
       })[1]
+      ---@type Neoagent.DialogRequest?
       local request
       local execute = module.new():wrap({
         restricted = function() error("restricted") end,
         elevated = function() error("elevated") end,
       })
-      local value = execute(shell, {
+      local value = execute(assert(shell), {
         command = "rm /outside/test.md",
         options = {
           require_escalation = true,
@@ -1609,7 +1783,7 @@ describe("neoagent sandbox execution", function()
         request = candidate
         return "deny"
       end))
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
       assert.are.equal(table.concat({
         "Run this tool once outside the sandbox?",
         "",
@@ -1620,7 +1794,7 @@ describe("neoagent sandbox execution", function()
         "$ rm /outside/test.md",
         "",
         "This grants the tool your full user filesystem, process, environment, and network authority for this call.",
-      }, "\n"), request.body)
+      }, "\n"), assert(request).body)
     end)
 
   it("remembers edited shell command prefixes for the current session",
@@ -1642,6 +1816,9 @@ describe("neoagent sandbox execution", function()
           return { content = { { type = "text", text = "elevated" } } }
         end,
       })
+      ---@param command string
+      ---@param requested? boolean
+      ---@return Neoagent.JsonObject
       local function arguments(command, requested)
         local value = { command = command }
         if requested ~= false then
@@ -1652,6 +1829,9 @@ describe("neoagent sandbox execution", function()
         end
         return value
       end
+      ---@param session_id string
+      ---@param replies (string|Neoagent.DialogResult)[]
+      ---@param seen Neoagent.DialogRequest[]
       local function with_dialog(session_id, replies, seen)
         local ctx = dialog_context(root, function(request)
           seen[#seen + 1] = request
@@ -1664,7 +1844,7 @@ describe("neoagent sandbox execution", function()
       end
 
       local seen = {}
-      local value = execute(shell, arguments("git status --short"),
+      local value = execute(assert(shell), arguments("git status --short"),
         with_dialog("session-one", {
           "approve_prefix",
           {
@@ -1673,7 +1853,7 @@ describe("neoagent sandbox execution", function()
             input = "git status",
           },
         }, seen))
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
       assert.are.equal("transcript", seen[1].placement)
       assert.are.same({
         "approve", "approve_prefix", "deny", "deny_all",
@@ -1686,7 +1866,7 @@ describe("neoagent sandbox execution", function()
         { id = "cancel_prefix", label = "cancel", key = "<C-c>" },
       }, seen[2].actions)
 
-      execute(shell, arguments("git status --porcelain"),
+      execute(assert(shell), arguments("git status --porcelain"),
         with_dialog("session-one", {}, {}))
       assert.are.same({
         "git status --short",
@@ -1694,9 +1874,9 @@ describe("neoagent sandbox execution", function()
       }, elevated)
 
       local prompted = {}
-      value = execute(shell, arguments("git status-danger"),
+      value = execute(assert(shell), arguments("git status-danger"),
         with_dialog("session-one", { "deny" }, prompted))
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
       assert.are.equal(1, #prompted)
 
       prompted = {}
@@ -1710,33 +1890,33 @@ describe("neoagent sandbox execution", function()
         "git status 'unterminated",
         "git status\nrm -rf /tmp/should-not-run",
       }) do
-        value = execute(shell, arguments(command),
+        value = execute(assert(shell), arguments(command),
           with_dialog("session-one", { "deny" }, prompted))
-        assert.is_true(value.details.sandbox.denied_by_user)
+        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
         assert.is_true(vim.tbl_contains(
           vim.tbl_map(function(action) return action.id end,
             prompted[#prompted].actions), "approve_prefix"), command)
       end
 
       prompted = {}
-      value = execute(shell, arguments("$(whoami) --version"),
+      value = execute(assert(shell), arguments("$(whoami) --version"),
         with_dialog("session-one", { "deny" }, prompted))
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
       assert.is_false(vim.tbl_contains(
         vim.tbl_map(function(action) return action.id end,
           prompted[#prompted].actions), "approve_prefix"))
 
-      execute(shell, arguments("git status '&&'"),
+      execute(assert(shell), arguments("git status '&&'"),
         with_dialog("session-one", {}, {}))
       assert.are.equal("git status '&&'", elevated[#elevated])
 
-      value = execute(shell, arguments("git status --porcelain"),
+      value = execute(assert(shell), arguments("git status --porcelain"),
         with_dialog("session-two", { "deny" }, {}))
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
 
-      value = execute(shell, arguments("git status --short", false),
+      value = execute(assert(shell), arguments("git status --short", false),
         with_dialog("session-one", {}, {}))
-      assert.are.equal("restricted", value.content[1].text)
+      assert.are.equal("restricted", assert(value.content[1]).text)
       assert.are.same({ "git status --short" }, restricted)
     end)
 
@@ -1784,7 +1964,7 @@ describe("neoagent sandbox execution", function()
       local elevated = false
       local execute = escalation:wrap({
         restricted = function() error("restricted") end,
-        elevated = function() elevated = true end,
+        elevated = function() elevated = true return { content = {} } end,
       })
       local requests = {}
       local replies = {
@@ -1802,14 +1982,14 @@ describe("neoagent sandbox execution", function()
         return table.remove(replies, 1)
       end)
       ctx.context.session_id = "attack-" .. index
-      local value = execute(shell, {
+      local value = execute(assert(shell), {
         command = "git status --short",
         options = {
           require_escalation = true,
           escalation_justification = "test unsafe prefix",
         },
       }, ctx)
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
       assert.is_false(elevated)
       assert.are.equal(4, #requests)
       assert.matches("cannot be remembered", requests[3].body)
@@ -1839,7 +2019,7 @@ describe("neoagent sandbox execution", function()
       return table.remove(replies, 1)
     end)
     ctx.context.session_id = "quoted-operator"
-    execute(shell, {
+    execute(assert(shell), {
       command = [[printf "%s" "&&"]],
       options = {
         require_escalation = true,
@@ -1850,7 +2030,7 @@ describe("neoagent sandbox execution", function()
       error("remembered quoted operator unexpectedly prompted")
     end)
     remembered_ctx.context.session_id = "quoted-operator"
-    execute(shell, {
+    execute(assert(shell), {
       command = [[printf "%s" "&&" ignored]],
       options = {
         require_escalation = true,
@@ -1865,15 +2045,19 @@ describe("neoagent sandbox execution", function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
       local shell_tool = require("neoagent.tools.shell").new()
+      ---@param shell string
+      ---@param command string
+      ---@return string[]
       local function action_ids(shell, command)
         local escalation = module.new({ shell = shell })
         local tool = escalation:tools({ shell_tool })[1]
+        ---@type Neoagent.DialogRequest?
         local request
         local execute = escalation:wrap({
           restricted = function() error("restricted") end,
           elevated = function() error("elevated") end,
         })
-        local value = execute(tool, {
+        local value = execute(assert(tool), {
           command = command,
           options = {
             require_escalation = true,
@@ -1883,10 +2067,13 @@ describe("neoagent sandbox execution", function()
           request = candidate
           return "deny"
         end))
-        assert.is_true(value.details.sandbox.denied_by_user)
+        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
         return vim.tbl_map(function(action) return action.id end,
-          request.actions)
+          assert(request).actions)
       end
+      ---@param shell string
+      ---@param command string
+      ---@return boolean
       local function supports(shell, command)
         return vim.tbl_contains(action_ids(shell, command),
           "approve_prefix")
@@ -1955,6 +2142,8 @@ describe("neoagent sandbox execution", function()
         return { content = { { type = "text", text = "ok" } } }
       end,
     })
+    ---@param command string
+    ---@param replies (string|Neoagent.DialogResult)[]
     local function run(command, replies)
       local ctx = dialog_context(root, function()
         local reply = table.remove(replies, 1)
@@ -1962,16 +2151,18 @@ describe("neoagent sandbox execution", function()
         return reply
       end)
       ctx.context.session_id = "coalesced"
-      local value = execute(shell, {
+      local value = execute(assert(shell), {
         command = command,
         options = {
           require_escalation = true,
           escalation_justification = "test rule coalescing",
         },
       }, ctx)
-      assert.are.equal("ok", value.content[1].text)
+      assert.are.equal("ok", assert(value.content[1]).text)
       assert.are.equal(0, #replies)
     end
+    ---@param command string
+    ---@param prefix string
     local function remember(command, prefix)
       run(command, {
         "approve_prefix",
@@ -2009,6 +2200,10 @@ describe("neoagent sandbox execution", function()
           return { content = { { type = "text", text = "elevated" } } }
         end,
       })
+      ---@param command string
+      ---@param replies (string|Neoagent.DialogResult)[]
+      ---@param seen? Neoagent.DialogRequest[]
+      ---@return Neoagent.ToolResult
       local function run(command, replies, seen)
         local ctx = dialog_context(root, function(request)
           if seen then seen[#seen + 1] = request end
@@ -2017,7 +2212,7 @@ describe("neoagent sandbox execution", function()
           return reply
         end)
         ctx.context.session_id = "any-prefix"
-        local value = execute(shell, {
+        local value = execute(assert(shell), {
           command = command,
           options = {
             require_escalation = true,
@@ -2027,6 +2222,8 @@ describe("neoagent sandbox execution", function()
         assert.are.equal(0, #replies)
         return value
       end
+      ---@param request Neoagent.DialogRequest
+      ---@return boolean
       local function offered(request)
         return vim.tbl_contains(
           vim.tbl_map(function(action) return action.id end, request.actions),
@@ -2038,16 +2235,16 @@ describe("neoagent sandbox execution", function()
         "approve_prefix",
         { ok = true, action = "accept_prefix", input = "python3" },
       }, seen)
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
       assert.is_true(offered(seen[1]))
 
       value = run("python3 tools/cleanup.py", {})
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
 
       seen = {}
       value = run("python3 tools/cleanup.py && rm -rf /tmp/owned",
         { "deny" }, seen)
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
       assert.is_true(offered(seen[1]))
 
       seen = {}
@@ -2055,18 +2252,18 @@ describe("neoagent sandbox execution", function()
         "approve_prefix",
         { ok = true, action = "accept_prefix", input = "git" },
       }, seen)
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
       assert.is_true(offered(seen[1]))
       assert.are.equal("git status && git push", seen[2].input.value)
 
       value = run("git", {})
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
 
       value = run("git status --short", {})
-      assert.are.equal("elevated", value.content[1].text)
+      assert.are.equal("elevated", assert(value.content[1]).text)
 
       value = run("git status; rm -rf /tmp/owned", { "deny" })
-      assert.is_true(value.details.sandbox.denied_by_user)
+      assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
 
       assert.are.same({
         "python3 scripts/report.py --json",
@@ -2081,6 +2278,8 @@ describe("neoagent sandbox execution", function()
     function()
       local root = temp()
       local module = require("neoagent.sandbox.escalation")
+      ---@param shell_path string
+      ---@param session string
       local function harness(shell_path, session)
         local escalation = module.new({ shell = shell_path })
         local tool = escalation:tools({
@@ -2094,6 +2293,10 @@ describe("neoagent sandbox execution", function()
             return { content = { { type = "text", text = "elevated" } } }
           end,
         })
+        ---@param command string
+        ---@param replies (string|Neoagent.DialogResult)[]
+        ---@param seen? Neoagent.DialogRequest[]
+        ---@return Neoagent.ToolResult
         local function run(command, replies, seen)
           local ctx = dialog_context(root, function(request)
             if seen then seen[#seen + 1] = request end
@@ -2103,7 +2306,7 @@ describe("neoagent sandbox execution", function()
             return reply
           end)
           ctx.context.session_id = session
-          local value = execute(tool, {
+          local value = execute(assert(tool), {
             command = command,
             options = {
               require_escalation = true,
@@ -2115,6 +2318,10 @@ describe("neoagent sandbox execution", function()
         end
         return run, elevated
       end
+      ---@param shell_path string
+      ---@param session string
+      ---@param compound string[]
+      ---@param chained_prefix string
       local function check(shell_path, session, compound, chained_prefix)
         local run, elevated = harness(shell_path, session)
         local requests = {}
@@ -2124,7 +2331,7 @@ describe("neoagent sandbox execution", function()
           "cancel_prefix",
           "deny",
         }, requests)
-        assert.is_true(value.details.sandbox.denied_by_user)
+        assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
         assert.matches("cannot be remembered", requests[3].body)
         run("git status --short", {
           "approve_prefix",
@@ -2133,7 +2340,7 @@ describe("neoagent sandbox execution", function()
         run("git status --porcelain", {})
         for _, command in ipairs(compound) do
           value = run(command, { "deny" })
-          assert.is_true(value.details.sandbox.denied_by_user, command)
+          assert.is_true(assert(assert(value.details).sandbox).denied_by_user, command)
         end
         assert.are.same({
           "git status --short",
@@ -2165,6 +2372,7 @@ describe("neoagent sandbox execution", function()
   it("fails closed when command-prefix editing cannot settle", function()
     local root = temp()
     local module = require("neoagent.sandbox.escalation")
+    ---@param replies (string|Neoagent.DialogResult)[]
     local function attempt(replies)
       local escalation = module.new({ shell = "/bin/sh" })
       local shell = escalation:tools({
@@ -2180,14 +2388,14 @@ describe("neoagent sandbox execution", function()
         return reply
       end)
       ctx.context.session_id = "unsettled"
-      local value = execute(shell, {
+      local value = execute(assert(shell), {
         command = "git status --short",
         options = {
           require_escalation = true,
           escalation_justification = "test failed editor",
         },
       }, ctx)
-      assert.is_true(value.details.sandbox.approval_unavailable)
+      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
       assert.are.equal(0, #replies)
     end
 
@@ -2200,6 +2408,7 @@ describe("neoagent sandbox execution", function()
       },
     })
 
+    ---@type (string|Neoagent.DialogResult)[]
     local invalid = { "approve_prefix" }
     for _ = 1, 16 do
       invalid[#invalid + 1] = {
@@ -2229,7 +2438,7 @@ describe("neoagent sandbox execution", function()
           properties = {},
           additionalProperties = false,
         },
-        execute = function() end,
+        execute = function() error("tool must not run") end,
       }
     end
     local module = require("neoagent.sandbox.escalation")
@@ -2289,8 +2498,8 @@ describe("neoagent sandbox execution", function()
         return { content = { { type = "text", text = "elevated" } } }
       end,
     })
-    local value = execute(transformed, {}, context(root))
-    assert.are.equal("restricted", value.content[1].text)
+    local value = execute(assert(transformed), {}, context(root))
+    assert.are.equal("restricted", assert(value.content[1]).text)
     for _, arguments in ipairs({
       "invalid",
       { options = "invalid" },
@@ -2307,8 +2516,8 @@ describe("neoagent sandbox execution", function()
         },
       },
     }) do
-      value = execute(transformed, arguments, context(root))
-      assert.is_true(value.details.sandbox.invalid_escalation)
+      value = execute(assert(transformed), arguments --[[@as Neoagent.JsonObject]], context(root))
+      assert.is_true(assert(assert(value.details).sandbox).invalid_escalation)
     end
 
     local pending = async.run(function()
@@ -2317,13 +2526,13 @@ describe("neoagent sandbox execution", function()
     value = module.new():wrap({
       restricted = function() error("restricted") end,
       elevated = function() error("elevated") end,
-    })(transformed, {
+    })(assert(transformed), {
       options = {
         require_escalation = true,
         escalation_justification = "reason",
       },
     }, dialog_context(root, function() return pending end))
-    assert.is_true(value.details.sandbox.approval_unavailable)
+    assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
     assert.is_true(pending:is_cancelled())
 
     for _, decision in ipairs({
@@ -2348,19 +2557,19 @@ describe("neoagent sandbox execution", function()
       value = module.new():wrap({
         restricted = function() error("restricted") end,
         elevated = function() error("elevated") end,
-      })(transformed, {
+      })(assert(transformed), {
         options = {
           require_escalation = true,
           escalation_justification = "reason",
         },
       }, dialog_context(root, decision))
-      assert.is_true(value.details.sandbox.approval_unavailable)
+      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
     end
 
     value = module.new():wrap({
       restricted = function() error("restricted") end,
       elevated = function() error("elevated") end,
-    })(transformed, {
+    })(assert(transformed), {
       options = {
         require_escalation = true,
         escalation_justification = "reason",
@@ -2368,8 +2577,9 @@ describe("neoagent sandbox execution", function()
     }, dialog_context(root, function()
       return { ok = true, action = "deny" }
     end))
-    assert.is_true(value.details.sandbox.denied_by_user)
+    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
 
+    ---@type Neoagent.DialogRequest?
     local summarized
     local summary_transform = module.new({
       summarize = function()
@@ -2381,7 +2591,7 @@ describe("neoagent sandbox execution", function()
       restricted = function() error("restricted") end,
       elevated = function() error("elevated") end,
     })
-    value = summary_execute(summary_tool, {
+    value = summary_execute(assert(summary_tool), {
       options = {
         require_escalation = true,
         escalation_justification = "bad\0reason",
@@ -2390,9 +2600,9 @@ describe("neoagent sandbox execution", function()
       summarized = request
       return "deny"
     end))
-    assert.is_true(value.details.sandbox.denied_by_user)
-    assert.matches("current arguments", summarized.body)
-    assert.matches("\\x00", summarized.body, 1, true)
+    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
+    assert.matches("current arguments", assert(summarized).body)
+    assert.matches("\\x00", assert(summarized).body, 1, true)
 
     local escalation_arguments = {
       options = {
@@ -2401,11 +2611,11 @@ describe("neoagent sandbox execution", function()
       },
     }
     local incomplete = context(root)
-    incomplete.dialog = {
+    rawset(incomplete, "dialog", {
       show = function() return "approve" end,
-    }
-    value = execute(transformed, escalation_arguments, incomplete)
-    assert.is_true(value.details.sandbox.approval_unavailable)
+    })
+    value = execute(assert(transformed), escalation_arguments, incomplete)
+    assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
 
     for _, choose_pending in ipairs({
       function() error("bulk action failed") end,
@@ -2413,19 +2623,19 @@ describe("neoagent sandbox execution", function()
         return nil, util.error("dialog", "bulk action unavailable")
       end,
     }) do
-      value = execute(transformed, escalation_arguments,
+      value = execute(assert(transformed), escalation_arguments,
         dialog_context(root, function() return "deny_all" end,
           choose_pending))
-      assert.is_true(value.details.sandbox.approval_unavailable)
+      assert.is_true(assert(assert(value.details).sandbox).approval_unavailable)
     end
-    value = execute(transformed, escalation_arguments,
+    value = execute(assert(transformed), escalation_arguments,
       dialog_context(root, function() return "deny_all" end,
         function(_, action, reason)
           assert.are.equal("deny", action)
-          assert.matches("another sandbox request", reason)
+          assert.matches("another sandbox request", (assert(reason)))
           return 2
         end))
-    assert.is_true(value.details.sandbox.denied_by_user)
+    assert.is_true(assert(assert(value.details).sandbox).denied_by_user)
 
     local source = require("neoagent.dialog").new()
     local detach = source:subscribe(function() end)
@@ -2434,7 +2644,7 @@ describe("neoagent sandbox execution", function()
       elevated = function() error("elevated") end,
     })
     local run = async.run(function()
-      return composed(transformed, {
+      return composed(assert(transformed), {
         options = {
           require_escalation = true,
           escalation_justification = "reason",
@@ -2451,9 +2661,9 @@ describe("neoagent sandbox execution", function()
     detach()
     assert(vim.wait(1000, function() return run:is_done() end, 5))
     assert.is_true(
-      run:result().details.sandbox.approval_unavailable)
+      assert(assert(assert(run:result()).details).sandbox).approval_unavailable)
     assert.is_false(
-      run:result().details.sandbox.denied_by_user == true)
+      assert(assert(assert(run:result()).details).sandbox).denied_by_user == true)
     assert.are.equal(1, calls)
   end)
 
@@ -2477,12 +2687,12 @@ describe("neoagent sandbox execution", function()
       read_agent_documentation = {},
     }
     for name, arguments in pairs(cases) do
-      local summary = summarize({ name = name }, arguments, ctx)
+      local summary = summarize({ name = name, description = "Probe summary", input_schema = { type = "object", properties = {} } }, arguments, ctx)
       assert.is_string(summary)
       assert.is_true(summary ~= "")
-      assert.is_nil(summary:find("private contents", 1, true))
+      assert.is_nil((summary:find("private contents", 1, true)))
     end
     assert.matches("custom",
-      summarize({ name = "custom" }, {}, ctx))
+      summarize({ name = "custom", description = "Probe summary", input_schema = { type = "object", properties = {} } }, {}, ctx))
   end)
 end)

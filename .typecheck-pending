@@ -1,2 +1,1 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-tests/unit/sandbox_spec.lua
