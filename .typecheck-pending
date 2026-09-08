@@ -78,12 +78,9 @@ tests/unit/pane_compile_spec.lua
 tests/unit/presenter_spec.lua
 tests/unit/process_spec.lua
 tests/unit/profile_sessions_spec.lua
-tests/unit/provider_alibaba_spec.lua
 tests/unit/provider_catalog_sources_spec.lua
-tests/unit/provider_codex_spec.lua
 tests/unit/provider_credentials_spec.lua
 tests/unit/provider_models_spec.lua
-tests/unit/provider_opencode_go_spec.lua
 tests/unit/provider_runtimes_spec.lua
 tests/unit/provider_service_spec.lua
 tests/unit/provider_shell_spec.lua

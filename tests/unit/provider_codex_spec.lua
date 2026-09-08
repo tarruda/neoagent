@@ -4,34 +4,25 @@ local codex = require("neoagent.providers.codex")
 local provider_service = require("neoagent.provider_service")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("neoagent Codex provider service", function()
-  local function block(snapshot, block_type, label)
-    for _, candidate in ipairs(snapshot.blocks or {}) do
-      if candidate.type == block_type
-          and (label == nil or candidate.label == label) then
-        return candidate
-      end
-    end
-  end
+  local block = require("tests.helpers.provider_state").block
 
-  local function list_block(snapshot, title)
-    for _, candidate in ipairs(snapshot.blocks or {}) do
-      if candidate.type == "list" and candidate.title == title then
-        return candidate
-      end
-    end
-  end
 
+  ---@return Neoagent.Run<Neoagent.AuthResolution, nil>
   local function auth_context()
     return async.run(function()
       return {
         ok = true,
         configured = true,
+        method = "test",
         credential_type = "oauth",
         request_opts = { headers = {
           Authorization = "Bearer secret-token",
@@ -42,7 +33,12 @@ describe("neoagent Codex provider service", function()
     end)
   end
 
+  ---@param confirm? boolean
+  ---@return Neoagent.ProviderInteraction
   local function interact(confirm)
+    ---@generic T
+    ---@param _ unknown
+    ---@param done Neoagent.AwaitCallbacks<T>
     local function unused(_, done)
       done.reject({ kind = "provider", message = "unused interaction" })
     end
@@ -55,11 +51,15 @@ describe("neoagent Codex provider service", function()
     }
   end
 
+  ---@param service Neoagent.ProviderService
+  ---@param id string
+  ---@param confirm? boolean
+  ---@return Neoagent.ProviderOperationRun
   local function operation(service, id, confirm)
-    return provider_service.run(service, id, {
+    return (assert(provider_service.run(service, id, {
       resolve_auth = auth_context,
       interact = interact(confirm),
-    })
+    })))
   end
 
   it("labels structured quota windows", function()
@@ -85,11 +85,12 @@ describe("neoagent Codex provider service", function()
     assert(initial, err and err.message)
     assert.are.same({}, initial.blocks)
 
+    ---@type Neoagent.ProviderState?
     local published
-    local unsubscribe = service:subscribe(function(snapshot)
+    local unsubscribe = assert(service.subscribe)(service, function(snapshot)
       published = snapshot
     end)
-    service:on_event({
+    assert(service.on_event)(service, {
       type = "provider_status",
       text = "weekly 84% left · 5h 60% left",
       details = {
@@ -119,73 +120,77 @@ describe("neoagent Codex provider service", function()
     })
 
     local snapshot = service:state()
+    assert(snapshot)
     assert.is_nil(block(snapshot, "status"))
-    assert.are.equal(0.6, block(snapshot, "limit", "5h limit").remaining)
+    assert.are.equal(0.6, assert(block(snapshot, "limit", "5h limit")).remaining)
     assert.are.equal(1787793900,
-      block(snapshot, "limit", "5h limit").resets_at)
+      assert(block(snapshot, "limit", "5h limit")).resets_at)
     assert.are.equal(0.84,
-      block(snapshot, "limit", "Weekly limit").remaining)
+      assert(block(snapshot, "limit", "Weekly limit")).remaining)
     assert.are.equal(0.8,
-      block(snapshot, "limit", "Sonic monthly limit").remaining)
+      assert(block(snapshot, "limit", "Sonic monthly limit")).remaining)
     assert.are.equal("12.50",
-      block(snapshot, "field", "Credits").value)
+      assert(block(snapshot, "field", "Credits")).value)
     assert.are.equal(0.84,
-      block(published, "limit", "Weekly limit").remaining)
-    snapshot.blocks[2].remaining = 0
+      assert(block((assert(published)), "limit", "Weekly limit")).remaining)
+    assert(block(snapshot, "limit", "Weekly limit")).remaining = 0
     assert.are.equal(0.84,
-      block(service:state(), "limit", "Weekly limit").remaining)
+      assert(block(service:state(), "limit", "Weekly limit")).remaining)
 
-    service:on_event({ type = "provider_status", text = "Reconnecting… 1/3" })
+    assert(service.on_event)(service, { type = "provider_status", text = "Reconnecting… 1/3" })
     snapshot = service:state()
+    assert(snapshot)
     assert.are.same({
       type = "status", text = "Reconnecting… 1/3", level = "warn",
     }, snapshot.blocks[1])
     assert.are.equal(0.84,
-      block(snapshot, "limit", "Weekly limit").remaining)
+      assert(block(snapshot, "limit", "Weekly limit")).remaining)
 
     unsubscribe()
-    service:on_event({ type = "provider_status", text = "weekly 50% left" })
-    assert.are.equal("Reconnecting… 1/3", published.blocks[1].text)
+    assert(service.on_event)(service, { type = "provider_status", text = "weekly 50% left" })
+    assert.are.equal("Reconnecting… 1/3", assert(block((assert(published)), "status")).text)
 
-    service:destroy()
+    assert(service.destroy)(service)
     assert.are.same({}, service:state().blocks)
   end)
 
   it("publishes a secondary quota before any primary window arrives", function()
     local service = codex.new()
+    ---@type Neoagent.ProviderState?
     local published
-    service:subscribe(function(snapshot) published = snapshot end)
-    service:on_event({ type = "provider_status", details = {
+    assert(service.subscribe)(service, function(snapshot) published = snapshot end)
+    assert(service.on_event)(service, { type = "provider_status", details = {
       limits = { { id = "codex", secondary = {
         remaining = 0.75, window_minutes = 10080, resets_at = 1787870220,
       } } },
     } })
-    local weekly = block(published, "limit", "Weekly limit")
+    local weekly = block((assert(published)), "limit", "Weekly limit")
     assert.are.same({
       type = "limit", label = "Weekly limit", remaining = 0.75,
       resets_at = 1787870220, level = "success",
     }, weekly)
     assert.are.same(published, service:state())
 
-    service:on_event({ type = "provider_status", details = {
+    assert(service.on_event)(service, { type = "provider_status", details = {
       limits = { { id = "codex", primary = {
         remaining = 0.5, window_minutes = 300,
       } } },
     } })
-    assert.are.equal(0.5, block(published, "limit", "5h limit").remaining)
-    assert.are.equal(0.75, block(published, "limit", "Weekly limit").remaining)
-    service:destroy()
+    assert.are.equal(0.5, assert(block((assert(published)), "limit", "5h limit")).remaining)
+    assert.are.equal(0.75, assert(block((assert(published)), "limit", "Weekly limit")).remaining)
+    assert(service.destroy)(service)
   end)
 
   it("pushes request token usage without polling", function()
     local service = codex.new()
     local publications = 0
-    service:subscribe(function() publications = publications + 1 end)
-    service:on_event({
+    assert(service.subscribe)(service, function() publications = publications + 1 end)
+    assert(service.on_event)(service, {
       type = "usage",
       usage = { inputTokens = 1250, outputTokens = 87, totalTokens = 1337 },
     })
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal("Last response", snapshot.blocks[#snapshot.blocks].label)
     assert.are.equal("1,250 in · 87 out",
       snapshot.blocks[#snapshot.blocks].value)
@@ -194,8 +199,8 @@ describe("neoagent Codex provider service", function()
 
   it("ignores events without usable status or usage", function()
     local service = codex.new()
-    service:on_event({ type = "usage" })
-    service:on_event({ type = "provider_status" })
+    assert(service.on_event)(service, { type = "usage" })
+    assert(service.on_event)(service, { type = "provider_status" })
     assert.are.same({}, service:state().blocks)
   end)
 
@@ -204,7 +209,7 @@ describe("neoagent Codex provider service", function()
     local notifications = {}
     local original_notify = vim.notify
     vim.notify = function(message) notifications[#notifications + 1] = message end
-    service:on_event({
+    assert(service.on_event)(service, {
       type = "provider_status",
       text = string.rep("x", 513),
     })
@@ -219,18 +224,19 @@ describe("neoagent Codex provider service", function()
     local service = codex.new({ base_url = "https://example.test/backend-api" }, {
       transport = transport,
     })
-    local unsubscribe = service:subscribe(function() end)
+    local unsubscribe = assert(service.subscribe)(service, function() end)
     vim.wait(20)
     assert.are.equal(0, #transport.fetch_requests)
     unsubscribe()
 
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.matches("quota information unavailable",
-      block(snapshot, "status").text)
+      assert(block(snapshot, "status")).text)
     assert.are.equal("account@example.com (Plus)",
-      block(snapshot, "field", "Account").value)
-    assert.is_nil(vim.inspect(snapshot):find("checked_at", 1, true))
+      assert(block(snapshot, "field", "Account")).value)
+    assert.is_nil((vim.inspect(snapshot):find("checked_at", 1, true)))
 
     service = codex.new({ base_url = "https://example.test/backend-api" }, {
       transport = fake_transport.new(),
@@ -241,6 +247,7 @@ describe("neoagent Codex provider service", function()
           return {
             ok = true,
             configured = true,
+            method = "test",
             credential_type = "api_key",
             request_opts = { headers = { Authorization = "Bearer secret" } },
           }
@@ -250,8 +257,9 @@ describe("neoagent Codex provider service", function()
     }))
     assert.is_false(result.ok)
     snapshot = service:state()
-    assert.matches("API key authentication", block(snapshot, "status").text)
-    assert.is_nil(vim.inspect(snapshot):find("Bearer secret", 1, true))
+    assert(snapshot)
+    assert.matches("API key authentication", assert(block(snapshot, "status")).text)
+    assert.is_nil((vim.inspect(snapshot):find("Bearer secret", 1, true)))
   end)
 
   it("refreshes authoritative account quotas and marks old data stale", function()
@@ -303,28 +311,30 @@ describe("neoagent Codex provider service", function()
     local result = wait(operation(service, "refresh"))
     assert.is_true(result.ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.is_nil(block(snapshot, "status"))
     assert.are.equal("account@example.com (Business)",
-      block(snapshot, "field", "Account").value)
+      assert(block(snapshot, "field", "Account")).value)
     assert.are.equal(0.55,
-      block(snapshot, "limit", "5h limit").remaining)
+      assert(block(snapshot, "limit", "5h limit")).remaining)
     assert.are.equal(0.97,
-      block(snapshot, "limit", "Weekly limit").remaining)
+      assert(block(snapshot, "limit", "Weekly limit")).remaining)
     assert.are.equal(0.8,
-      block(snapshot, "limit", "Sonic monthly limit").remaining)
+      assert(block(snapshot, "limit", "Sonic monthly limit")).remaining)
     assert.are.equal("$12.50",
-      block(snapshot, "field", "Credits").value)
+      assert(block(snapshot, "field", "Credits")).value)
     assert.are.equal(0.75,
-      block(snapshot, "limit", "Monthly spend control").remaining)
+      assert(block(snapshot, "limit", "Monthly spend control")).remaining)
     assert.are.equal("2",
-      block(snapshot, "field", "Reset credits").value)
-    assert.are.equal("GET", transport.fetch_requests[1].method)
+      assert(block(snapshot, "field", "Reset credits")).value)
+    assert.are.equal("GET", assert(transport.fetch_requests[1]).method)
 
     clock = clock + 15 * 60 * 1000 + 1
     snapshot = service:state()
-    assert.matches("Usage data is stale", block(snapshot, "status").text)
+    assert(snapshot)
+    assert.matches("Usage data is stale", assert(block(snapshot, "status")).text)
     assert.are.equal(0.97,
-      block(snapshot, "limit", "Weekly limit").remaining)
+      assert(block(snapshot, "limit", "Weekly limit")).remaining)
   end)
 
   it("clears recovered reconnect state without hiding usage warnings", function()
@@ -344,29 +354,29 @@ describe("neoagent Codex provider service", function()
     })
     assert.is_true(wait(operation(service, "refresh")).ok)
 
-    service:on_event({
+    assert(service.on_event)(service, {
       type = "provider_status",
       text = "Reconnecting… 1/4",
       reconnecting = true,
     })
-    assert.matches("Reconnecting", block(service:state(), "status").text)
-    service:on_event({ type = "provider_status", reconnecting = false })
+    assert.matches("Reconnecting", assert(block(service:state(), "status")).text)
+    assert(service.on_event)(service, { type = "provider_status", reconnecting = false })
     assert.is_nil(block(service:state(), "status"))
     assert.are.equal(0.55,
-      block(service:state(), "limit", "Weekly limit").remaining)
+      assert(block(service:state(), "limit", "Weekly limit")).remaining)
 
     clock = clock + 15 * 60 * 1000 + 1
     assert.matches("Usage data is stale",
-      block(service:state(), "status").text)
-    service:on_event({
+      assert(block(service:state(), "status")).text)
+    assert(service.on_event)(service, {
       type = "provider_status",
       text = "Reconnecting… 1/4",
       reconnecting = true,
     })
-    assert.matches("Reconnecting", block(service:state(), "status").text)
-    service:on_event({ type = "provider_status", reconnecting = false })
+    assert.matches("Reconnecting", assert(block(service:state(), "status")).text)
+    assert(service.on_event)(service, { type = "provider_status", reconnecting = false })
     assert.matches("Usage data is stale",
-      block(service:state(), "status").text)
+      assert(block(service:state(), "status")).text)
   end)
 
   it("renders account quota variants and bounded window durations", function()
@@ -422,27 +432,28 @@ describe("neoagent Codex provider service", function()
 
     assert.is_true(wait(operation(service, "refresh")).ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal(0.9,
-      block(snapshot, "limit", "1 day limit").remaining)
+      assert(block(snapshot, "limit", "1 day limit")).remaining)
     assert.are.equal(0.8,
-      block(snapshot, "limit", "2 days limit").remaining)
+      assert(block(snapshot, "limit", "2 days limit")).remaining)
     assert.are.equal(0.7,
-      block(snapshot, "limit", "Sonic 2h limit").remaining)
+      assert(block(snapshot, "limit", "Sonic 2h limit")).remaining)
     assert.are.equal(0.6,
-      block(snapshot, "limit", "Pulse 45m limit").remaining)
+      assert(block(snapshot, "limit", "Pulse 45m limit")).remaining)
     assert.are.equal(0.2,
-      block(snapshot, "limit", "Metered usage limit").remaining)
-    assert.are.equal("Unlimited", block(snapshot, "field", "Credits").value)
+      assert(block(snapshot, "limit", "Metered usage limit")).remaining)
+    assert.are.equal("Unlimited", assert(block(snapshot, "field", "Credits")).value)
     assert.are.equal("Reached",
-      block(snapshot, "field", "Spend control").value)
-    assert.are.equal("Weekly limit", block(snapshot, "status").text)
+      assert(block(snapshot, "field", "Spend control")).value)
+    assert.are.equal("Weekly limit", assert(block(snapshot, "status")).text)
 
     assert.is_true(wait(operation(service, "refresh")).ok)
     assert.are.equal("Available",
-      block(service:state(), "field", "Credits").value)
+      assert(block(service:state(), "field", "Credits")).value)
     assert.is_true(wait(operation(service, "refresh")).ok)
     assert.are.equal("None",
-      block(service:state(), "field", "Credits").value)
+      assert(block(service:state(), "field", "Credits")).value)
 
     local no_metadata = provider_service.run(service, "refresh", {
       resolve_auth = function()
@@ -450,6 +461,7 @@ describe("neoagent Codex provider service", function()
           return {
             ok = true,
             configured = true,
+            method = "test",
             credential_type = "oauth",
             request_opts = { headers = {} },
             metadata = {},
@@ -458,9 +470,9 @@ describe("neoagent Codex provider service", function()
       end,
       interact = interact(),
     })
-    assert.is_true(wait(no_metadata).ok)
+    assert.is_true(wait((assert(no_metadata))).ok)
     assert.are.equal("ChatGPT",
-      block(service:state(), "field", "Account").value)
+      assert(block(service:state(), "field", "Account")).value)
   end)
 
   it("keeps rich state visible when refresh fails and accepts header updates", function()
@@ -481,12 +493,13 @@ describe("neoagent Codex provider service", function()
     local failed = wait(operation(service, "refresh"))
     assert.is_false(failed.ok)
     local snapshot = service:state()
-    assert.matches("Usage data is stale", block(snapshot, "status").text)
-    assert.is_nil(block(snapshot, "status").text:find("secret", 1, true))
+    assert(snapshot)
+    assert.matches("Usage data is stale", assert(block(snapshot, "status")).text)
+    assert.is_nil((assert(block(snapshot, "status")).text:find("secret", 1, true)))
     assert.are.equal(0.5,
-      block(snapshot, "limit", "5h limit").remaining)
+      assert(block(snapshot, "limit", "5h limit")).remaining)
 
-    service:on_event({
+    assert(service.on_event)(service, {
       type = "provider_status",
       text = "5h 40% left",
       details = { source = "headers", limits = { {
@@ -495,9 +508,10 @@ describe("neoagent Codex provider service", function()
       } } },
     })
     snapshot = service:state()
-    assert.matches("Usage data is stale", block(snapshot, "status").text)
+    assert(snapshot)
+    assert.matches("Usage data is stale", assert(block(snapshot, "status")).text)
     assert.are.equal(0.4,
-      block(snapshot, "limit", "5h limit").remaining)
+      assert(block(snapshot, "limit", "5h limit")).remaining)
   end)
 
   it("loads activity, workspaces, reset credits, and redeems with confirmation", function()
@@ -548,12 +562,13 @@ describe("neoagent Codex provider service", function()
     assert.is_true(wait(operation(service, "workspaces")).ok)
     assert.is_true(wait(operation(service, "reset_credits")).ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal("12,500",
-      list_block(snapshot, "Account activity").items[1].detail)
+      assert(assert(block(snapshot, "list", "Account activity")).items[1]).detail)
     assert.are.same({ label = "Acme", detail = "Default" },
-      list_block(snapshot, "Workspaces").items[1])
+      assert(block(snapshot, "list", "Workspaces")).items[1])
     assert.are.equal("Full reset",
-      list_block(snapshot, "Reset credits").items[1].label)
+      assert(assert(block(snapshot, "list", "Reset credits")).items[1]).label)
     local state_text = vim.inspect(snapshot)
     assert.is_nil(state_text:find("secret%-workspace%-id"))
     assert.is_nil(state_text:find("secret%-credit%-id"))
@@ -564,12 +579,13 @@ describe("neoagent Codex provider service", function()
     assert.are.same({
       redeem_request_id = "stable-redeem-id",
       credit_id = "secret-credit-id",
-    }, vim.json.decode(transport.fetch_requests[4].body))
+    }, vim.json.decode((assert(assert(transport.fetch_requests[4]).body))))
     snapshot = service:state()
+    assert(snapshot)
     assert.are.equal("0",
-      block(snapshot, "field", "Reset credits").value)
+      assert(block(snapshot, "field", "Reset credits")).value)
     assert.are.equal(1,
-      block(snapshot, "limit", "5h limit").remaining)
+      assert(block(snapshot, "limit", "5h limit")).remaining)
   end)
 
   it("reports malformed and unavailable auxiliary account responses", function()
@@ -593,27 +609,27 @@ describe("neoagent Codex provider service", function()
 
     local unavailable = wait(operation(service, "activity"))
     assert.is_false(unavailable.ok)
-    assert.is_nil(block(service:state(), "status").text:find(
-      "private body", 1, true))
+    assert.is_nil((assert(block(service:state(), "status")).text:find(
+      "private body", 1, true)))
 
     local malformed = wait(operation(service, "activity"))
     assert.is_false(malformed.ok)
-    assert.matches("activity response is malformed", malformed.error.message)
+    assert.matches("activity response is malformed", assert(malformed.error).message)
 
     malformed = wait(operation(service, "workspaces"))
     assert.is_false(malformed.ok)
-    assert.matches("workspace response is malformed", malformed.error.message)
+    assert.matches("workspace response is malformed", assert(malformed.error).message)
 
     assert.is_true(wait(operation(service, "workspaces")).ok)
     assert.are.same({ label = "Personal", detail = "personal" },
-      list_block(service:state(), "Workspaces").items[1])
+      assert(block(service:state(), "list", "Workspaces")).items[1])
     assert.is_nil(vim.inspect(service:state()):find(
       "private%-workspace%-id"))
 
     malformed = wait(operation(service, "reset_credits"))
     assert.is_false(malformed.ok)
     assert.matches("reset%-credit response is malformed",
-      malformed.error.message)
+      assert(malformed.error).message)
   end)
 
   it("reports terminal redemption outcomes and preserves refresh failures", function()
@@ -632,37 +648,39 @@ describe("neoagent Codex provider service", function()
 
     local result = wait(operation(service, "redeem"))
     assert.is_false(result.ok)
-    assert.matches("request failed", block(service:state(), "status").text)
+    assert.matches("request failed", assert(block(service:state(), "status")).text)
     assert.is_nil(vim.inspect(service:state()):find(
       "private redeem body", 1, true))
 
     result = wait(operation(service, "redeem"))
     assert.is_false(result.ok)
-    assert.matches("No reset credit", result.error.message)
+    assert.matches("No reset credit", assert(result.error).message)
     result = wait(operation(service, "redeem"))
     assert.is_false(result.ok)
-    assert.matches("No rate%-limit window", result.error.message)
+    assert.matches("No rate%-limit window", assert(result.error).message)
     result = wait(operation(service, "redeem"))
     assert.is_false(result.ok)
-    assert.matches("response is malformed", result.error.message)
+    assert.matches("response is malformed", assert(result.error).message)
 
     result = wait(operation(service, "redeem"))
     assert.is_true(result.ok)
     assert.are.equal("already_redeemed", result.code)
-    assert.matches("request failed", block(service:state(), "status").text)
-    assert.is_nil(vim.inspect(service:state()):find("private usage body", 1, true))
+    assert.matches("request failed", assert(block(service:state(), "status")).text)
+    assert.is_nil((vim.inspect(service:state()):find("private usage body", 1, true)))
 
     for index = 1, 5 do
-      local body = vim.json.decode(transport.fetch_requests[index].body)
+      local body = vim.json.decode((assert(assert(transport.fetch_requests[index]).body)))
       assert.matches("^neoagent%-%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x"
         .. "%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$", body.redeem_request_id)
     end
   end)
 
   it("deduplicates refreshes and cancels them during destruction", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ByteFetchResult>?
     local pending
     local cancelled = false
     local requests = 0
+    ---@type Neoagent.ByteBackend
     local transport = {
       fetch = function()
         requests = requests + 1
@@ -682,25 +700,29 @@ describe("neoagent Codex provider service", function()
       transport = transport,
     })
     local ctx = {
+      provider = { id = service.id, name = service.name, config = {} },
+      args = "",
       resolve_auth = auth_context,
       interact = interact(),
     }
-    local first = service.operations.refresh.run(ctx)
-    local second = service.operations.refresh.run(ctx)
+    local first = assert(service.operations.refresh).run(ctx)
+    local second = assert(service.operations.refresh).run(ctx)
     assert.are.equal(first, second)
     assert(vim.wait(1000, function() return requests == 1 end))
     assert.are.equal(1, requests)
-    service:destroy()
+    assert(service.destroy)(service)
     assert.is_true(cancelled)
     assert.is_false(wait(first).ok)
     assert.are.same({}, service:state().blocks)
-    pending.resolve({ ok = true, status = 200, body = "{}" })
+    assert(pending).resolve({ ok = true, status = 200, headers = {}, body = "{}" })
   end)
 
   it("requires redemption confirmation and cancels a pending redemption", function()
     local requests = 0
     local cancelled = false
+    ---@type string?
     local last_body
+    ---@type Neoagent.ByteBackend
     local transport = {
       fetch = function(opts)
         requests = requests + 1
@@ -728,11 +750,11 @@ describe("neoagent Codex provider service", function()
     local run = operation(service, "redeem", true)
     assert(vim.wait(1000, function() return requests == 1 end))
     assert.are.equal("stable-cancel-id",
-      vim.json.decode(last_body).redeem_request_id)
+      vim.json.decode((assert(last_body))).redeem_request_id)
     run:cancel()
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.is_true(cancelled)
   end)
 end)
