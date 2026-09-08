@@ -6,23 +6,25 @@ local models = require("neoagent.models")
 local provider_runtimes = require("neoagent.provider_runtimes")
 local state_store = require("neoagent.state_store")
 local util = require("neoagent.util")
+local test_auth = require("tests.helpers.auth_manager")
+local fake_model = require("tests.helpers.fake_model")
 
 describe("neoagent provider model catalogs", function()
   before_each(function() config._reset() end)
   after_each(function() config._reset() end)
 
+  ---@param resolved Neoagent.ResolvedApi
+  ---@return Neoagent.Model
   local function api_factory(resolved)
-    local model = {
-      api = resolved.api,
-      provider = resolved.provider_id,
-      id = resolved.model_id,
-      input = util.copy(resolved.model.input or { "text" }),
-      stream = function() end,
-    }
-    for key, value in pairs(resolved.model) do model[key] = value end
+    local model = fake_model.new()
+    model.api, model.provider, model.id = resolved.api, resolved.provider_id, resolved.model_id
+    model.input = util.copy(resolved.model.input or { "text" })
+    for key, value in pairs(resolved.model) do rawset(model, key, value) end
     return model
   end
 
+  ---@param provider Neoagent.ProviderOptions
+  ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
   local function configured(provider)
     return config.setup({
       default_registry = false,
@@ -32,6 +34,9 @@ describe("neoagent provider model catalogs", function()
     })
   end
 
+  ---@param provider Neoagent.ProviderOptions
+  ---@param opts? Neoagent.ProviderRuntimeOptions
+  ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>, Neoagent.ProviderRuntimes
   local function runtime(provider, opts)
     local value = configured(provider)
     local runtimes, err = provider_runtimes.compose(value,
@@ -56,7 +61,7 @@ describe("neoagent provider model catalogs", function()
   it("restores cached OpenCode Go discoveries before the first selector read", function()
     local directory = vim.fn.tempname()
     local store = state_store.new({ directory = directory })
-    local definition = require("neoagent.registry").defaults()["opencode-go"]
+    local definition = assert(require("neoagent.registry").defaults()["opencode-go"])
     assert(store:write("opencode-go", {
       version = 2,
       source_fingerprint = assert(model_catalog.source_fingerprint({
@@ -75,9 +80,9 @@ describe("neoagent provider model catalogs", function()
       startup = false,
       store = store,
     }))
-    local available = assert(models.available(value, {
-      has_credentials = function() return true end,
-    }, runtimes))
+    local manager = test_auth.new()
+    function manager:has_credentials() return true end
+    local available = assert(models.available(value, manager, runtimes))
     assert.is_true(vim.tbl_contains(available,
       "opencode-go/ox-alpha-free"))
     provider_runtimes.destroy(runtimes)
@@ -111,7 +116,7 @@ describe("neoagent provider model catalogs", function()
     assert.are.same({ "text", "image" }, seed.input)
     local added = models.resolve("dynamic", "added", value, nil, runtimes)
     assert.are.equal(16000, added.context_window)
-    assert.are.equal(2000, added.max_output_tokens)
+    assert.are.equal(2000, rawget(added, "max_output_tokens"))
     provider_runtimes.destroy(runtimes)
   end)
 
@@ -129,13 +134,14 @@ describe("neoagent provider model catalogs", function()
 
   it("wraps Models through the runtime service", function()
     local wrapped = {}
+    ---@type Neoagent.Model
     local replacement = {
       api = "fake",
       provider = "dynamic",
       id = "seed",
       input = { "text" },
       request_timeout_ms = 30000,
-      stream = function() end,
+      stream = function() error("unexpected model request") end,
     }
     local value, runtimes = runtime({
       api = "fake",
@@ -155,7 +161,7 @@ describe("neoagent provider model catalogs", function()
       end,
     })
     local resolved = models.resolve("dynamic", "seed", value, nil, runtimes)
-    assert.are.equal(30000, resolved.request_timeout_ms)
+    assert.are.equal(30000, rawget(resolved, "request_timeout_ms"))
     assert.are.equal(1, #wrapped)
     assert.are.equal(replacement, resolved)
     assert.are_not.equal(resolved, wrapped[1])
@@ -178,7 +184,7 @@ describe("neoagent provider model catalogs", function()
             name = "Dynamic",
             operations = {},
             state = function() return false end,
-            wrap_model = wrap_model,
+            wrap_model = wrap_model --[[@as fun(self: Neoagent.ProviderService, model: Neoagent.Model): Neoagent.Model]],
           }
         end,
       })
@@ -212,9 +218,14 @@ describe("neoagent provider model catalogs", function()
         api = "fake",
         catalog = { seed = { { id = "seed" } } },
       })
-      runtimes.dynamic.definition.auth = "test"
+      assert(runtimes.dynamic).definition.auth = "test"
+      local manager = test_auth.new()
+      function manager:wrap(model, id, opts)
+        local invalid_wrapper = case.wrap --[[@as fun(): Neoagent.Model]]
+        return invalid_wrapper()
+      end
       local ok, err = pcall(models.resolve,
-        "dynamic", "seed", value, { wrap = case.wrap }, runtimes)
+        "dynamic", "seed", value, manager, runtimes)
 
       assert.is_false(ok)
       assert.matches(case.message, tostring(err))
@@ -225,14 +236,15 @@ describe("neoagent provider model catalogs", function()
       api = "fake",
       catalog = { seed = { { id = "seed" } } },
     })
-    runtimes.dynamic.definition.auth = "test"
+    assert(runtimes.dynamic).definition.auth = "test"
+    ---@type Neoagent.Model
     local replacement = {
       api = "fake", provider = "dynamic", id = "seed",
-      input = { "text" }, stream = function() end,
+      input = { "text" }, stream = function() error("unexpected model request") end,
     }
-    local resolved = models.resolve("dynamic", "seed", value, {
-      wrap = function() return replacement end,
-    }, runtimes)
+    local manager = test_auth.new()
+    function manager:wrap() return replacement end
+    local resolved = models.resolve("dynamic", "seed", value, manager, runtimes)
     assert.are.equal(replacement, resolved)
     provider_runtimes.destroy(runtimes)
   end)
@@ -240,6 +252,7 @@ describe("neoagent provider model catalogs", function()
   it("reports Codex diagnostic sink failures through its runtime", function()
     local path = vim.fn.tempname()
     assert(fs.write_all(path, "blocking file", "w"))
+    ---@type {message: string, level: integer}[]
     local reports = {}
     local value, runtimes = runtime({
       api = "openai-codex-responses",
@@ -253,16 +266,17 @@ describe("neoagent provider model catalogs", function()
     })
     local model = models.resolve("dynamic", "seed", value, nil, runtimes)
 
-    model._on_diagnostic({
+    rawget(model, "_on_diagnostic")({
       type = "request_failed",
       detail = "private response body",
     })
-    model._on_diagnostic({ type = "request_failed" })
+    rawget(model, "_on_diagnostic")({ type = "request_failed" })
 
     assert(vim.wait(1000, function() return #reports == 1 end))
-    assert.matches("diagnostic log failed", reports[1].message)
-    assert.not_matches("private response body", reports[1].message)
-    assert.are.equal(vim.log.levels.WARN, reports[1].level)
+    local report = assert(reports[1])
+    assert.matches("diagnostic log failed", report.message)
+    assert.is_not_matches("private response body", report.message)
+    assert.are.equal(vim.log.levels.WARN, report.level)
     provider_runtimes.destroy(runtimes)
     vim.fn.delete(path)
   end)
@@ -274,7 +288,7 @@ describe("neoagent provider model catalogs", function()
       models = {},
     })
     local first = models.resolve("dynamic", "seed", value, nil, runtimes)
-    assert(runtimes.dynamic.catalog:publish_discoveries({
+    assert(assert(runtimes.dynamic).catalog:publish_discoveries({
       { id = "seed", context_window = 32000 },
       { id = "new" },
     }))
@@ -299,17 +313,17 @@ describe("neoagent provider model catalogs", function()
         publications[#publications + 1] = choices
       end)
     assert.are.same({ "dynamic/seed" }, publications[1])
-    assert(runtimes.dynamic.catalog:publish_discoveries({
+    assert(assert(runtimes.dynamic).catalog:publish_discoveries({
       { id = "seed" }, { id = "new" },
     }))
     assert.are.same({ "dynamic/new", "dynamic/seed" }, publications[2])
-    assert(runtimes.dynamic.catalog:publish_discoveries({
+    assert(assert(runtimes.dynamic).catalog:publish_discoveries({
       { id = "new" }, { id = "seed" },
     }))
     assert.are.equal(2, #publications)
     assert.is_true(unsubscribe())
     assert.is_false(unsubscribe())
-    assert(runtimes.dynamic.catalog:publish_discoveries({ { id = "later" } }))
+    assert(assert(runtimes.dynamic).catalog:publish_discoveries({ { id = "later" } }))
     assert.are.equal(2, #publications)
     provider_runtimes.destroy(runtimes)
   end)
@@ -322,8 +336,8 @@ describe("neoagent provider model catalogs", function()
     })
     local runtimes, err = provider_runtimes.compose(value, { startup = false })
     assert.is_nil(runtimes)
-    assert.are.equal("provider", err.kind)
-    assert.matches("input must be a non%-empty list", err.detail.message)
+    assert.are.equal("provider", assert(err).kind)
+    assert.matches("input must be a non%-empty list", rawget(assert(err).detail, "message"))
 
     value = configured({
       api = "fake",
@@ -336,7 +350,7 @@ describe("neoagent provider model catalogs", function()
     })
     runtimes, err = provider_runtimes.compose(value, { startup = false })
     assert.is_nil(runtimes)
-    assert.matches("mutually exclusive", err.detail.message)
+    assert.matches("mutually exclusive", rawget(assert(err).detail, "message"))
   end)
 
   it("retains exact removals and callback order across registry composition", function()
@@ -354,16 +368,16 @@ describe("neoagent provider model catalogs", function()
         end },
       },
     }, true)
-    assert.is_false(first.openai.models["gpt-4"])
-    assert.is_function(first.openai.catalog.transform_model)
+    assert.is_false(assert(assert(first.openai).models)["gpt-4"])
+    assert.is_function(assert(assert(first.openai).catalog).transform_model)
     local value = config.setup({
       default_registry = false,
       providers = { openai = first.openai },
     })
     local runtimes = assert(provider_runtimes.compose(value, { startup = false }))
-    assert.is_nil(runtimes.openai.catalog:snapshot().models["gpt-4"])
+    assert.is_nil(assert(runtimes.openai).catalog:snapshot().models["gpt-4"])
     assert.are.equal(vim.tbl_count(
-      runtimes.openai.catalog:snapshot().models) + 1, #order)
+      assert(runtimes.openai).catalog:snapshot().models) + 1, #order)
     assert.is_true(vim.tbl_contains(order, "gpt-4"))
     provider_runtimes.destroy(runtimes)
   end)
