@@ -23,7 +23,7 @@ local applet_expect = util.expect
 ---@class Applet.LayoutContainer: Applet.LayoutRectangleInput
 ---@field available? true
 
----@alias Applet.ContainerGeometry Applet.LayoutContainer|{available: false}
+---@alias Applet.ContainerGeometry Applet.LayoutContainer|Applet.Rectangle|{available: false}
 
 ---@class Applet.LayoutEnvironmentOptions
 ---@field host Applet.HostInput
@@ -447,7 +447,7 @@ local function copy_rect(rect)
   }
 end
 
----@param value Applet.LayoutRectangleInput
+---@param value Applet.LayoutRectangleInput|Applet.Rectangle
 ---@param path string
 ---@return Applet.Rectangle
 local function normalize_rect(value, path)

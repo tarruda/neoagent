@@ -4,6 +4,53 @@ local Base = require("applet.host.base")
 local Domain = require("applet.interaction_domain")
 local util = require("applet.util")
 
+---@class Applet.Counters
+---@field requested_generations integer
+---@field renders integer
+---@field frame_compilations integer
+---@field frame_commits integer
+---@field host_publications integer
+---@field host_snapshot_refreshes integer
+---@field observation_batches integer
+---@field external_changes integer
+---@field default_external_handlers integer
+---@field tab_opens integer
+---@field tab_closes integer
+---@field topology_rebuilds integer
+---@field pane_mounts integer
+---@field pane_unmounts integer
+---@field buffer_creations integer
+---@field window_opens integer
+---@field window_closes integer
+---@field window_config_changes integer
+---@field split_size_changes integer
+---@field focus_changes integer
+---@field mapping_scope_changes integer
+---@field measurement_passes integer
+---@field surface_invalidations integer
+---@field rollbacks integer
+---@field observer_activations integer
+---@field observer_releases integer
+---@field observer_callbacks integer
+---@field observer_relevant_callbacks integer
+---@field observer_record_scans integer
+
+---@class Applet.Applet
+---@field name string
+---@field id integer
+---@field _windows table<integer, string>
+---@field records table<string, Applet.HostRecord>
+---@field domain Applet.InteractionDomain
+---@field lifecycle 'open'|'opening'|'closing'|'closed'|'destroyed'
+---@field mutating? boolean
+---@field driver? Applet.HostDriver
+---@field observed_snapshot Applet.HostSnapshot
+---@field augroup? integer
+---@field observer_scope? 'live'|'retained'
+---@field counters Applet.Counters
+---@field _content_committed fun(self: Applet.Applet, record: Applet.HostRecord, info?: Applet.PaneCommit): boolean
+---@field _surface_interaction fun(self: Applet.Applet, record: Applet.HostRecord): Applet.HostInteraction
+---@field _schedule_observe fun(self: Applet.Applet, kind: string, native: Applet.NativeObservation)
 local Applet = {}
 Applet.__index = Applet
 
@@ -547,6 +594,8 @@ function Applet:_finalize_replaced_records(checkpoint)
   end
 end
 
+---@param record Applet.HostRecord
+---@return Applet.HostInteraction
 function Applet:_surface_interaction(record)
   local descriptor = record.descriptor
   local interaction = {
@@ -733,6 +782,9 @@ function Applet:_measure()
   return changed
 end
 
+---@param record Applet.HostRecord
+---@param info? Applet.PaneCommit
+---@return boolean
 function Applet:_content_committed(record, info)
   if self.lifecycle ~= "open" or self.mutating or self.measuring
       or not record.active or not self.frame then return false end
@@ -1333,6 +1385,8 @@ function Applet:_sync_closed_observed()
   self:_publish_snapshot(self:_closed_snapshot(), false)
 end
 
+---@param kind string
+---@param native Applet.NativeObservation
 function Applet:_schedule_observe(kind, native)
   if self.lifecycle == "destroyed" then return end
   self.observation_kinds = self.observation_kinds or {}
