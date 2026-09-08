@@ -158,8 +158,8 @@ No file is created for an empty Session.
 
 Persistence uses private files, verified atomic publication, and cross-process
 locks. Uncertain write outcomes make the affected Store reject later
-mutations. Opening a Session can recover an incomplete final record before
-validating the tree.
+mutations. Opening a Session validates its complete document prefix before
+recovering an incomplete final record under the file lock.
 
 Accepted user messages record model and thinking choices. Resuming or
 branching restores choices from the selected path. Workspace settings store
