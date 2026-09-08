@@ -143,6 +143,8 @@ The Agent adds configured AGENTS.md and skill resources to its prompt.
 Workspace trust guards project resource loading and tool-capable execution in
 Neo. Sandboxing decorates the executor with restricted capabilities;
 escalation supplies host capabilities for one approved call.
+Requested sandboxing blocks tool execution when activation fails; host
+execution requires explicitly disabling sandboxing.
 
 ## Sessions and persistence
 

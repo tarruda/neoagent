@@ -496,6 +496,10 @@ state for the built-in Neo Profile with: >lua
 `:NeoagentSandboxInfo` reports the selected backend and capabilities. A tool
 call keeps the mode it started with.
 
+If sandbox activation fails, tool execution is blocked. Inspect the reason
+with `:NeoagentSandboxInfo`, then restore sandbox support or explicitly turn
+sandboxing off with `:NeoagentToggleSandbox` to permit host execution.
+
 The default profile grants read-only host access, writes within the Workspace
 and shared temporary directory, read-only access to `.git`, restricted
 networking, and a small inherited environment. Override it with a table or

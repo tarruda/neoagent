@@ -44,6 +44,8 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
+- Tool execution blocked when requested sandbox activation fails; host
+  execution requires explicitly disabling sandboxing.
 - Private atomic credential storage; credentials excluded from provider state
   and diagnostics; HTTP and conversation bodies excluded from provider
   diagnostics. Persistence uncertainty blocks later Store mutations.

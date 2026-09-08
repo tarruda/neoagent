@@ -1,5 +1,6 @@
 local util = require("neoagent.util")
 local path_module = require("neoagent.sandbox.path")
+local result = require("neoagent.sandbox.result")
 
 ---@alias Neoagent.SandboxProfileSetting<C> Neoagent.SandboxProfileOverrides|(fun(default: Neoagent.SandboxProfile, ctx: C): Neoagent.SandboxProfile)
 
@@ -221,8 +222,20 @@ function M.warning(name, status)
     reason = status.stage .. ": " .. reason
   end
   return string.format(
-    "neoagent: sandbox unavailable for %s; tools will run without a sandbox: %s",
+    "neoagent: sandbox unavailable for %s; tool execution is blocked: %s",
     bounded(name or "Neo"), bounded(reason))
+end
+
+---@param status Neoagent.SandboxActivation
+---@return Neoagent.ToolResult
+local function unavailable(status)
+  return result.sandbox("Sandbox unavailable; tool execution is blocked: "
+    .. bounded(status.message)
+    .. "\nDisable sandboxing explicitly to run tools on the host.", {
+      unavailable = true,
+      kind = "sandbox_unavailable",
+      backend = status.platform,
+    })
 end
 
 ---@param status Neoagent.SandboxActivation
@@ -361,6 +374,7 @@ function Runtime:set_enabled(enabled)
     self._status.active = false
     return self:status()
   end
+  self._enabled = true
   if not self._active_execute then
     local requested = util.copy(self._settings)
     requested.enabled = true
@@ -370,7 +384,12 @@ function Runtime:set_enabled(enabled)
       return M.compose(self._toolset, requested, compose_opts)
     end)
     if not ok then
-      return nil, util.normalize_error(composed, "sandbox")
+      local err = util.normalize_error(composed, "sandbox")
+      self._status = {
+        enabled = true, active = false, ok = false,
+        stage = "activation", message = err.message,
+      }
+      return nil, err
     end
     self._status = util.copy(status)
     if composed then
@@ -381,7 +400,6 @@ function Runtime:set_enabled(enabled)
     self._status.enabled = true
     self._status.active = true
   end
-  self._enabled = true
   return self:status()
 end
 
@@ -420,8 +438,11 @@ function M.switchable(toolset, settings, opts)
   local stable = {
     tools = escalation:tools(toolset.tools),
     execute_tool = function(tool, arguments, ctx)
-      local execute = runtime._enabled and runtime._active_execute
-        or runtime._host_execute
+      local execute = runtime._host_execute
+      if runtime._enabled then
+        if not runtime._active_execute then return unavailable(runtime._status) end
+        execute = runtime._active_execute
+      end
       return execute(tool, arguments, ctx)
     end,
     system_prompt = #toolset.tools > 0 and switchable_guidance or nil,
@@ -456,6 +477,7 @@ function M.agent(configured, opts)
   if not settings.enabled then return copied end
   if not toolset then
     copied._sandbox_warning = M.warning(copied.name or "Neo", status)
+    copied.execute_tool = function() return unavailable(status) end
     return copied
   end
   copied.tools = toolset.tools

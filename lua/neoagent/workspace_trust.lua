@@ -331,7 +331,7 @@ local function sandbox_text(status)
   local reason = status.message or "sandbox activation failed"
   reason = tostring(reason):gsub("[%z\1-\31\127]", " ")
   if #reason > 500 then reason = reason:sub(1, 497) .. "..." end
-  return "Tools run on the host because sandbox activation failed: " .. reason
+  return "Tool execution is blocked because sandbox activation failed: " .. reason
 end
 
 ---@param target string

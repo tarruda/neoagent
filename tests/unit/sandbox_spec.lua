@@ -641,6 +641,74 @@ describe("neoagent sandbox composition", function()
     assert.are.same(original_tools, stable.tools)
   end)
 
+  it("blocks unavailable sandbox execution until explicitly disabled", function()
+    local root = temp()
+    local executions = 0
+    local tool = {
+      name = "inspect", description = "Inspect", input_schema = { type = "object" },
+      execute = function()
+        executions = executions + 1
+        return { content = { { type = "text", text = "host" } } }
+      end,
+    }
+    local composition = require("neoagent.sandbox.composition")
+    local options = { status = { ok = false, platform = "test", message = "unavailable" } }
+    local stable, status, _, runtime = composition.switchable(
+      { tools = { tool } }, { enabled = true }, options)
+
+    assert.is_true(status.enabled)
+    assert.is_false(status.active)
+    local execute_stable = assert(stable.execute_tool)
+    local blocked = execute_stable(assert(stable.tools[1]), {}, context(root))
+    assert.is_true(blocked.isError)
+    assert.is_true(assert(assert(blocked.details).sandbox).unavailable)
+    assert.are.equal(0, executions)
+
+    assert(runtime:set_enabled(false))
+    local permitted = execute_stable(assert(stable.tools[1]), {}, context(root))
+    assert.are.equal("host", assert(permitted.content[1]).text)
+    assert.are.equal(1, executions)
+
+    local direct = composition.agent(require("neoagent.config").resolve({
+      tools = { tool }, sandbox = { enabled = true },
+    }), options)
+    local execute = direct.execute_tool or function(selected, arguments, ctx)
+      return selected.execute(arguments, ctx)
+    end
+    blocked = execute(assert(assert(direct.tools)[1]), {}, context(root))
+    assert.is_true(blocked.isError)
+    assert.are.equal(1, executions)
+  end)
+
+  it("keeps a failed activation exception from restoring host authority", function()
+    local root = temp()
+    local executions = 0
+    local tool = {
+      name = "inspect", description = "Inspect", input_schema = { type = "object" },
+      execute = function()
+        executions = executions + 1
+        return { content = { { type = "text", text = "host" } } }
+      end,
+    }
+    local stable, _, _, runtime = require("neoagent.sandbox.composition").switchable(
+      { tools = { tool } }, { enabled = false }, { platform = {
+        name = "test",
+        check = function() return { ok = true, platform = "test" } end,
+        temporary_root = function() error("backend setup failed") end,
+        fs = function() error("must not access files") end,
+        exec = function() error("must not execute") end,
+      } })
+
+    local status, err = runtime:set_enabled(true)
+
+    assert.is_nil(status)
+    assert.matches("backend setup failed", assert(err).message)
+    assert.is_true(runtime:status().enabled)
+    assert.is_false(runtime:status().active)
+    assert.is_true(assert(stable.execute_tool)(assert(stable.tools[1]), {}, context(root)).isError)
+    assert.are.equal(0, executions)
+  end)
+
   it("publishes a failed activation warning for Agent presentation", function()
     ---@type Neoagent.ConfigInput<Neoagent.TestSandboxEnvironment>
     local configured = {
@@ -659,7 +727,7 @@ describe("neoagent sandbox composition", function()
       })
     assert.is_nil(broker)
     assert.is_string(composed._sandbox_warning)
-    assert.matches("tools will run without a sandbox",
+    assert.matches("tool execution is blocked",
       (assert(composed._sandbox_warning)))
   end)
 

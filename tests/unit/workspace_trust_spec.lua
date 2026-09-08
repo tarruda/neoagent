@@ -337,7 +337,7 @@ describe("neoagent workspace trust", function()
       message = "native probe failed",
     }, second)
     assert.is_not_nil((failed.body:find(
-      "sandbox activation failed: native probe failed", 1, true)))
+      "Tool execution is blocked because sandbox activation failed: native probe failed", 1, true)))
 
     local invalid_path = directory .. "/invalid.json"
     vim.fn.mkdir(directory, "p")
