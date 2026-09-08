@@ -13,7 +13,6 @@ tests/integration/opencode_go_recovery_spec.lua
 tests/integration/provider_management_spec.lua
 tests/integration/provider_surfaces_spec.lua
 tests/integration/recorded_providers_spec.lua
-tests/minimal_init.lua
 tests/native_sandbox/sandbox_spec.lua
 tests/terminal/image_harness.lua
 tests/terminal/image_resume.lua

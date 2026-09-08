@@ -1,4 +1,5 @@
-return {
+---@type LuaCov.Configuration
+local config = {
   statsfile = ".coverage/luacov.stats.out",
   reportfile = ".coverage/luacov.report.out",
   include = {
@@ -10,3 +11,5 @@ return {
   modules = {},
   includeuntestedfiles = false,
 }
+
+return config
