@@ -3,14 +3,22 @@ local Applet = require("applet")
 local layout = Applet.layout
 local ui = Applet.Pane.nodes
 
+---@class Applet.TestBoundaryState
+---@field text? string
+---@field fail? string
+
 local sequence = 0
 
+---@param key string
+---@param opts? {mode?: "managed"|"editable", text?: string, fail?: string}
+---@return Applet.Pane<Applet.TestBoundaryState>
 local function component(key, opts)
   opts = opts or {}
   sequence = sequence + 1
   local value = Applet.Pane.new({
     key = key,
     buffer_mode = opts.mode or "managed",
+    ---@param state Applet.TestBoundaryState
     render = function(state)
       if state.fail then error(state.fail) end
       return ui.text({ key = "content", text = state.text or "" })
@@ -20,6 +28,26 @@ local function component(key, opts)
   return value
 end
 
+---@class Applet.TestBoundaryMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field owns_pane? boolean
+---@field required? boolean
+---@field mount_revision? string|number
+---@field name? string
+---@field uri? string
+---@field filetype? string
+---@field sensitive? boolean
+---@field buffer_options? Applet.Options
+---@field border? Applet.WindowBorder
+---@field window_options? Applet.Options
+---@field host_options? {floating?: Applet.Options, tab?: Applet.Options}
+---@field focus_mode? "normal"|"insert"|"preserve"
+---@field cursor? "preserve"|"start"|"end"
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.TestBoundaryMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -47,6 +75,9 @@ local function pane(key, value, opts)
   })
 end
 
+---@param child Applet.LayoutNode
+---@param opts? {layers?: Applet.LayoutLayerNode[], focus?: string}
+---@return Applet.LayoutTree
 local function frame(child, opts)
   opts = opts or {}
   return {
@@ -59,31 +90,51 @@ local function frame(child, opts)
   }
 end
 
+---@param axis Applet.LayoutAxis
+---@param children Applet.LayoutSplitChild[]
+---@param key? string
+---@return Applet.LayoutSplitNode
 local function split(axis, children, key)
   return layout.split({ key = key or "split", axis = axis, children = children })
 end
 
+---@param kind "floating"|"tab"
+---@param opts? Applet.TabHostOptions
+---@return Applet.Host
 local function host(kind, opts)
   if kind == "tab" then return Applet.host.tab(opts or { label = "Boundary" }) end
-  return Applet.host.floating(opts or { width = 60, height = 20 })
+  return Applet.host.floating({ width = 60, height = 20 })
 end
 
+---@generic T
+---@param ok T
+---@param err? Applet.Error
+---@return T
 local function succeeds(ok, err)
   assert(ok, err and err.message or tostring(err))
   return ok
 end
 
 describe("Applet ownership boundaries", function()
+  ---@type Applet.Applet[]
   local applets = {}
+  ---@type Applet.Pane[]
   local panes = {}
+  ---@type integer[]
   local foreign_buffers = {}
 
+  ---@param key string
+  ---@param opts? {mode?: "managed"|"editable", text?: string, fail?: string}
+  ---@return Applet.Pane<Applet.TestBoundaryState>
   local function new_pane(key, opts)
     local value = component(key, opts)
     panes[#panes + 1] = value
     return value
   end
 
+  ---@generic S
+  ---@param opts Applet.AppletOptions<S>
+  ---@return Applet.Applet<S>
   local function applet(opts)
     local value = Applet.new(opts)
     applets[#applets + 1] = value
@@ -131,7 +182,7 @@ describe("Applet ownership boundaries", function()
       end
       value:update(requested("applet://boundary/one", { buflisted = true }))
       succeeds(value:open())
-      local original = value:pane("content"):native()
+      local original = assert(value:pane("content")):native()
       assert.is_true(vim.api.nvim_get_option_value("buflisted", {
         buf = original.buffer,
       }))
@@ -141,12 +192,12 @@ describe("Applet ownership boundaries", function()
 
       value:update(requested("applet://boundary/two"))
       succeeds(value:flush())
-      local replacement = value:pane("content"):native()
+      local replacement = assert(value:pane("content")):native()
       assert.are_not.equal(original.buffer, replacement.buffer)
-      assert.is_false(vim.api.nvim_buf_is_valid(original.buffer))
-      assert.are.equal(replacement.buffer, content.surface.buffer)
+      assert.is_false(vim.api.nvim_buf_is_valid((assert(original.buffer))))
+      assert.are.equal(replacement.buffer, assert(content.surface).buffer)
       assert.are.same({ "retained content" },
-        vim.api.nvim_buf_get_lines(replacement.buffer, 0, -1, false))
+        vim.api.nvim_buf_get_lines((assert(replacement.buffer)), 0, -1, false))
     end)
   end
 
@@ -196,7 +247,7 @@ describe("Applet ownership boundaries", function()
     end)
     local text = table.concat(vim.api.nvim_buf_get_lines(
       ordinary_buffer, 0, -1, false), "\n")
-    assert.is_nil(text:find("s3cr3t", 1, true))
+    assert.is_nil((text:find("s3cr3t", 1, true)))
   end)
 
   it("restores a removed buffer option on a retained Pane", function()
@@ -212,7 +263,7 @@ describe("Applet ownership boundaries", function()
     end
     value:update(requested({ buflisted = true }))
     succeeds(value:open())
-    local native = value:pane("content"):native()
+    local native = assert(value:pane("content")):native()
     assert.is_true(vim.api.nvim_get_option_value("buflisted", { buf = native.buffer }))
     value:update(requested())
     succeeds(value:flush())
@@ -232,9 +283,9 @@ describe("Applet ownership boundaries", function()
     second:update(frame(pane("content", second_content, { uri = uri })))
     local opened, err = second:open()
     assert.is_nil(opened)
-    assert.matches("failed to name Pane buffer", err.message)
+    assert.matches("failed to name Pane buffer", assert(err).message)
     assert.are.equal(buffers, #vim.api.nvim_list_bufs())
-    assert.is_true(first:pane("content"):is_mounted())
+    assert.is_true(assert(first:pane("content")):is_mounted())
   end)
 
   it("projects scoped horizontal topology and moves one Pane through a Layer", function()
@@ -260,7 +311,7 @@ describe("Applet ownership boundaries", function()
     value:update(frame(main_with_movable(), { focus = "movable" }))
     succeeds(value:open())
     assert.are.equal("", vim.api.nvim_win_get_config(
-      value:pane("movable"):native().window).relative)
+      (assert(assert(value:pane("movable")):native().window))).relative)
 
     value:update(frame(pane("stable", stable), {
       focus = "movable",
@@ -276,12 +327,12 @@ describe("Applet ownership boundaries", function()
     }))
     succeeds(value:flush())
     assert.are_not.equal("", vim.api.nvim_win_get_config(
-      value:pane("movable"):native().window).relative)
+      (assert(assert(value:pane("movable")):native().window))).relative)
 
     value:update(frame(main_with_movable(), { focus = "movable" }))
     succeeds(value:flush())
     assert.are.equal("", vim.api.nvim_win_get_config(
-      value:pane("movable"):native().window).relative)
+      (assert(assert(value:pane("movable")):native().window))).relative)
   end)
 
   it("builds nested split topology from each descendant Pane", function()
@@ -303,9 +354,9 @@ describe("Applet ownership boundaries", function()
     local layout = vim.fn.winlayout()
     assert.are.equal("row", layout[1])
     assert.are.equal("col", layout[2][2][1])
-    assert.is_true(value:pane("first"):is_mounted())
-    assert.is_true(value:pane("second"):is_mounted())
-    assert.is_true(value:pane("third"):is_mounted())
+    assert.is_true(assert(value:pane("first")):is_mounted())
+    assert.is_true(assert(value:pane("second")):is_mounted())
+    assert.is_true(assert(value:pane("third")):is_mounted())
   end)
 
   it("orders directional focus by primary and secondary distance", function()
@@ -384,7 +435,7 @@ describe("Applet ownership boundaries", function()
       })
       value:update(frame(pane("content", content)))
       succeeds(value:open())
-      local tab = vim.api.nvim_win_get_tabpage(value:pane("content"):native().window)
+      local tab = vim.api.nvim_win_get_tabpage((assert(assert(value:pane("content")):native().window)))
       if position == "first" then
         assert.are.equal(1, vim.api.nvim_tabpage_get_number(tab))
       elseif position == "last" then
@@ -422,7 +473,7 @@ describe("Applet ownership boundaries", function()
     value:update(requested(true))
     succeeds(value:flush())
     assert.are.equal(origin, vim.api.nvim_get_current_tabpage())
-    assert.is_true(value:pane("third"):is_mounted())
+    assert.is_true(assert(value:pane("third")):is_mounted())
   end)
 
   it("rolls back a tab topology build failure", function()
@@ -444,8 +495,8 @@ describe("Applet ownership boundaries", function()
     end
     value:update(requested(false))
     succeeds(value:open())
-    local first_native, second_native = value:pane("first"):native(),
-      value:pane("second"):native()
+    local first_native, second_native = assert(value:pane("first")):native(),
+      assert(value:pane("second")):native()
     local original_open = vim.api.nvim_open_win
     vim.api.nvim_open_win = function(buffer, enter, config)
       if config and config.split then error("injected split creation failure") end
@@ -456,9 +507,9 @@ describe("Applet ownership boundaries", function()
     vim.api.nvim_open_win = original_open
     assert.is_true(call_ok)
     assert.is_nil(committed)
-    assert.matches("injected split creation failure", err.message)
-    assert.are.same(first_native, value:pane("first"):native())
-    assert.are.same(second_native, value:pane("second"):native())
+    assert.matches("injected split creation failure", assert(err).message)
+    assert.are.same(first_native, assert(value:pane("first")):native())
+    assert.are.same(second_native, assert(value:pane("second")):native())
   end)
 
   it("rolls back added and reconfigured tab Layers after content failure", function()
@@ -478,8 +529,8 @@ describe("Applet ownership boundaries", function()
       layers = { layer("existing", existing, 20) },
     }))
     succeeds(value:open())
-    local existing_native = value:pane("existing"):native()
-    local original_config = vim.api.nvim_win_get_config(existing_native.window)
+    local existing_native = assert(value:pane("existing")):native()
+    local original_config = vim.api.nvim_win_get_config((assert(existing_native.window)))
     local windows = #vim.api.nvim_list_wins()
 
     value:update(frame(pane("main", main), {
@@ -490,11 +541,11 @@ describe("Applet ownership boundaries", function()
     }))
     local committed, err = value:flush()
     assert.is_nil(committed)
-    assert.matches("injected Layer failure", err.message)
+    assert.matches("injected Layer failure", assert(err).message)
     assert.are.equal(windows, #vim.api.nvim_list_wins())
     assert.are.same(original_config,
-      vim.api.nvim_win_get_config(existing_native.window))
-    assert.are.same(existing_native, value:pane("existing"):native())
+      vim.api.nvim_win_get_config((assert(existing_native.window))))
+    assert.are.same(existing_native, assert(value:pane("existing")):native())
   end)
 
   it("adds and removes a tab Layer without rebuilding main topology", function()
@@ -503,7 +554,7 @@ describe("Applet ownership boundaries", function()
     local value = applet({ name = "tab-layer-reconcile", host = host("tab") })
     value:update(frame(pane("main", main)))
     succeeds(value:open())
-    local main_native = value:pane("main"):native()
+    local main_native = assert(value:pane("main")):native()
     local requested = frame(pane("main", main), {
       layers = {
         layout.layer({
@@ -517,11 +568,11 @@ describe("Applet ownership boundaries", function()
     value:update(requested)
     succeeds(value:flush())
     assert.are_not.equal("", vim.api.nvim_win_get_config(
-      value:pane("overlay"):native().window).relative)
+      (assert(assert(value:pane("overlay")):native().window))).relative)
     value:update(frame(pane("main", main)))
     succeeds(value:flush())
-    assert.are.same(main_native, value:pane("main"):native())
-    assert.is_false(value:pane("overlay"):is_mounted())
+    assert.are.same(main_native, assert(value:pane("main")):native())
+    assert.is_false(assert(value:pane("overlay")):is_mounted())
   end)
 
   it("releases an unobserved floating window after its buffer changes", function()
@@ -530,17 +581,17 @@ describe("Applet ownership boundaries", function()
     local requested = frame(pane("content", content))
     value:update(requested)
     succeeds(value:open())
-    local native = value:pane("content"):native()
+    local native = assert(value:pane("content")):native()
     local replacement = vim.api.nvim_create_buf(false, true)
     foreign_buffers[#foreign_buffers + 1] = replacement
-    vim.api.nvim_win_call(native.window, function()
+    vim.api.nvim_win_call((assert(native.window)), function()
       vim.cmd("noautocmd buffer " .. replacement)
     end)
     value:update(requested)
     succeeds(value:flush())
-    assert.is_true(vim.api.nvim_win_is_valid(native.window))
-    assert.are.equal(replacement, vim.api.nvim_win_get_buf(native.window))
-    assert.are_not.equal(native.window, value:pane("content"):native().window)
+    assert.is_true(vim.api.nvim_win_is_valid((assert(native.window))))
+    assert.are.equal(replacement, vim.api.nvim_win_get_buf((assert(native.window))))
+    assert.are_not.equal(native.window, assert(value:pane("content")):native().window)
   end)
 
   for _, kind in ipairs({ "floating", "tab" }) do
@@ -549,10 +600,10 @@ describe("Applet ownership boundaries", function()
       local value = applet({ name = "inactive-focus-" .. kind, host = host(kind) })
       value:update(frame(pane("content", content), { focus = "content" }))
       succeeds(value:open())
-      local host_tab = vim.api.nvim_win_get_tabpage(value:pane("content"):native().window)
+      local host_tab = vim.api.nvim_win_get_tabpage((assert(assert(value:pane("content")):native().window)))
       vim.cmd("tabnew")
       assert.are_not.equal(host_tab, vim.api.nvim_get_current_tabpage())
-      assert.is_true(value:pane("content"):focus())
+      assert.is_true(assert(value:pane("content")):focus())
       assert.are.equal(host_tab, vim.api.nvim_get_current_tabpage())
     end)
   end
@@ -605,7 +656,7 @@ describe("Applet ownership boundaries", function()
     }, "moved-main")))
     succeeds(value:flush())
     assert.is_false(moved.destroyed)
-    assert.are.equal(moved.surface.buffer, value:pane("moved"):native().buffer)
+    assert.are.equal(assert(moved.surface).buffer, assert(value:pane("moved")):native().buffer)
   end)
 
   it("validates direct Trees against resolver Hosts and invalidates closed state", function()
@@ -619,7 +670,7 @@ describe("Applet ownership boundaries", function()
     value:set_host(function() return host("floating") end)
     local committed, err = value:flush()
     assert.is_nil(committed)
-    assert.matches("resolver requires state%-driven rendering", err.message)
+    assert.matches("resolver requires state%-driven rendering", assert(err).message)
     value:set_host(host("tab"))
     local generation = value:invalidate({ reset_sizes = true })
     assert.are.equal(generation + 1, value:invalidate({}))

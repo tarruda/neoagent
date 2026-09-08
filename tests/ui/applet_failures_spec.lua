@@ -5,14 +5,22 @@ local ui = Applet.Pane.nodes
 local Base = require("applet.host.base")
 local FloatingDriver = require("applet.host.float")
 
+---@class Applet.TestFailureState
+---@field text? string
+---@field fail? string
+
 local sequence = 0
 
+---@param key string
+---@param opts? {mode?: "managed"|"editable", text?: string, fail?: string}
+---@return Applet.Pane<Applet.TestFailureState>
 local function component(key, opts)
   opts = opts or {}
   sequence = sequence + 1
   local value = Applet.Pane.new({
     key = key,
     buffer_mode = opts.mode or "managed",
+    ---@param state Applet.TestFailureState
     render = function(state)
       if state.fail then error(state.fail) end
       return ui.text({ key = "content", text = state.text or "" })
@@ -22,6 +30,18 @@ local function component(key, opts)
   return value
 end
 
+---@class Applet.TestFailureMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field owns_pane? boolean
+---@field required? boolean
+---@field uri? string
+---@field border? Applet.WindowBorder
+---@field mode? "normal"|"insert"|"preserve"
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.TestFailureMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -42,6 +62,9 @@ local function pane(key, value, opts)
   })
 end
 
+---@param child Applet.LayoutNode
+---@param opts? {layers?: Applet.LayoutLayerNode[], focus?: string}
+---@return Applet.LayoutTree
 local function frame(child, opts)
   opts = opts or {}
   return {
@@ -54,6 +77,10 @@ local function frame(child, opts)
   }
 end
 
+---@param main Applet.Pane
+---@param detail Applet.Pane
+---@param height Applet.LayoutDimension
+---@return Applet.LayoutTree
 local function measured_tree(main, detail, height)
   return frame(pane("main", main), {
     focus = "main",
@@ -68,6 +95,8 @@ local function measured_tree(main, detail, height)
   })
 end
 
+---@param size integer
+---@return Applet.LayoutMeasurement
 local function measurement(size)
   return {
     content_lines = size,
@@ -76,11 +105,21 @@ local function measurement(size)
   }
 end
 
+---@generic T
+---@param ok T
+---@param err? Applet.Error
+---@return T
 local function succeeds(ok, err)
   assert(ok, err and err.message or tostring(err))
   return ok
 end
 
+---@generic O: table, K: string, R, E
+---@param target O
+---@param key K
+---@param replacement O[K]
+---@param callback fun(): R?, E?
+---@return R?, E?
 local function with_patch(target, key, replacement, callback)
   local original = target[key]
   target[key] = replacement
@@ -91,15 +130,23 @@ local function with_patch(target, key, replacement, callback)
 end
 
 describe("Applet failure boundaries", function()
+  ---@type Applet.Applet[]
   local applets = {}
+  ---@type Applet.Pane[]
   local panes = {}
 
+  ---@param key string
+  ---@param opts? {mode?: "managed"|"editable", text?: string, fail?: string}
+  ---@return Applet.Pane<Applet.TestFailureState>
   local function new_pane(key, opts)
     local value = component(key, opts)
     panes[#panes + 1] = value
     return value
   end
 
+  ---@generic S
+  ---@param opts Applet.AppletOptions<S>
+  ---@return Applet.Applet<S>
   local function applet(opts)
     local value = Applet.new(opts)
     applets[#applets + 1] = value
@@ -138,18 +185,18 @@ describe("Applet failure boundaries", function()
     }))
     succeeds(value:open())
     local content = value:pane("content")
-    assert.is_false(content:is_mounted())
-    assert.are.same({ line = 1, column = 0 }, content:cursor())
-    assert.is_true(content:set_cursor({ line = 1, column = 3 }))
-    assert.are.same({ line = 1, column = 3 }, content:cursor())
+    assert.is_false(assert(content):is_mounted())
+    assert.are.same({ line = 1, column = 0 }, assert(content):cursor())
+    assert.is_true(assert(content):set_cursor({ line = 1, column = 3 }))
+    assert.are.same({ line = 1, column = 3 }, assert(content):cursor())
     assert.are.equal("commit", errors[#errors].phase)
 
     succeeds(value:close())
     value:update(frame(pane("content", broken), { focus = "content" }))
     local opened, err = value:open()
     assert.is_nil(opened)
-    assert.are.equal("commit", err.phase)
-    assert.matches("required Pane could not be mounted", err.message)
+    assert.are.equal("commit", assert(err).phase)
+    assert.matches("required Pane could not be mounted", assert(err).message)
   end)
 
   it("detaches an optional failed Layer from a tab Host", function()
@@ -171,8 +218,8 @@ describe("Applet failure boundaries", function()
       },
     }))
     succeeds(value:open())
-    assert.is_true(value:pane("main"):is_mounted())
-    assert.is_false(value:pane("optional"):is_mounted())
+    assert.is_true(assert(value:pane("main")):is_mounted())
+    assert.is_false(assert(value:pane("optional")):is_mounted())
   end)
 
   it("releases a transient Layer removed from a committed frame", function()
@@ -197,11 +244,11 @@ describe("Applet failure boundaries", function()
       },
     }))
     succeeds(value:open())
-    local buffer = value:pane("transient"):native().buffer
+    local buffer = assert(value:pane("transient")):native().buffer
     value:update(frame(pane("main", main), { focus = "main" }))
     succeeds(value:flush())
     assert.is_true(transient.destroyed)
-    assert.is_false(vim.api.nvim_buf_is_valid(buffer))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(buffer))))
     assert.is_nil(value:pane("transient"))
   end)
 
@@ -217,16 +264,16 @@ describe("Applet failure boundaries", function()
       owns_pane = true,
     })))
     succeeds(value:open())
-    local old_buffer = value:pane("content"):native().buffer
+    local old_buffer = assert(value:pane("content")):native().buffer
 
     value:update(frame(pane("content", replacement, {
       uri = "applet://failure/replacement",
     })))
     succeeds(value:flush())
     assert.is_true(original.destroyed)
-    assert.is_false(vim.api.nvim_buf_is_valid(old_buffer))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(old_buffer))))
     assert.are.same({ "replacement" }, vim.api.nvim_buf_get_lines(
-      value:pane("content"):native().buffer, 0, -1, false))
+      (assert(assert(value:pane("content")):native().buffer)), 0, -1, false))
   end)
 
   it("releases a partial observer installation before retrying open", function()
@@ -243,8 +290,8 @@ describe("Applet failure boundaries", function()
       return value:open()
     end)
     assert.is_nil(opened)
-    assert.are.equal("host", err.phase)
-    assert.matches("observer installation failed", err.message)
+    assert.are.equal("host", assert(err).phase)
+    assert.matches("observer installation failed", assert(err).message)
     assert.is_false(value:is_open())
     assert.is_nil(value.augroup)
     assert.is_nil(value:_stats().observer_scope)
@@ -263,25 +310,25 @@ describe("Applet failure boundaries", function()
     local requested = frame(pane("content", content), { focus = "content" })
     value:update(requested)
     succeeds(value:open())
-    local native = value:pane("content"):native()
+    local native = assert(value:pane("content")):native()
 
-    local begin = value.driver.begin
-    value.driver.begin = function() error("transaction startup failed") end
+    local begin = assert(value.driver).begin
+    assert(value.driver).begin = function() error("transaction startup failed") end
     value:update(requested)
     local committed, err = value:flush()
-    value.driver.begin = begin
+    assert(value.driver).begin = begin
     assert.is_nil(committed)
-    assert.matches("transaction startup failed", err.message)
-    assert.are.same(native, value:pane("content"):native())
+    assert.matches("transaction startup failed", assert(err).message)
+    assert.are.same(native, assert(value:pane("content")):native())
 
-    local publish = value.driver.publish
-    value.driver.publish = function() error("transaction publication failed") end
+    local publish = assert(value.driver).publish
+    assert(value.driver).publish = function() error("transaction publication failed") end
     value:update(requested)
     committed, err = value:flush()
-    value.driver.publish = publish
+    assert(value.driver).publish = publish
     assert.is_nil(committed)
-    assert.matches("transaction publication failed", err.message)
-    assert.are.same(native, value:pane("content"):native())
+    assert.matches("transaction publication failed", assert(err).message)
+    assert.are.same(native, assert(value:pane("content")):native())
     assert.is_true(value:is_open())
   end)
 
@@ -295,14 +342,14 @@ describe("Applet failure boundaries", function()
     value:update(requested)
     succeeds(value:open())
     local driver = value.driver
-    local begin, rollback = driver.begin, driver.rollback
-    driver.begin = function() error("startup failed") end
-    driver.rollback = function() error("rollback failed") end
+    local begin, rollback = assert(driver).begin, assert(driver).rollback
+    assert(driver).begin = function() error("startup failed") end
+    assert(driver).rollback = function() error("rollback failed") end
     value:update(requested)
     local committed, err = value:flush()
-    driver.begin, driver.rollback = begin, rollback
+    assert(driver).begin, assert(driver).rollback = begin, rollback
     assert.is_nil(committed)
-    assert.matches("rollback failed", err.message)
+    assert.matches("rollback failed", assert(err).message)
     assert.is_false(value:is_open())
   end)
 
@@ -324,8 +371,8 @@ describe("Applet failure boundaries", function()
       return repeated:open()
     end)
     assert.is_nil(opened)
-    assert.are.equal("measure", repeated_error.phase)
-    assert.matches("did not settle", repeated_error.message)
+    assert.are.equal("measure", assert(repeated_error).phase)
+    assert.matches("did not settle", assert(repeated_error).message)
 
     local divergent_main = new_pane("main", { text = "main" })
     local divergent_detail = new_pane("detail", { text = "detail" })
@@ -344,8 +391,8 @@ describe("Applet failure boundaries", function()
       return divergent:open()
     end)
     assert.is_nil(opened)
-    assert.are.equal("measure", divergent_error.phase)
-    assert.matches("exceeded two recompilations", divergent_error.message)
+    assert.are.equal("measure", assert(divergent_error).phase)
+    assert.matches("exceeded two recompilations", assert(divergent_error).message)
   end)
 
   it("accepts content measurement that settles on its final bounded pass", function()
@@ -379,7 +426,7 @@ describe("Applet failure boundaries", function()
       { content = true, min = 4, max = 4 })
     value:update(requested)
     succeeds(value:open())
-    local native = value:pane("main"):native()
+    local native = assert(value:pane("main")):native()
     value:update(requested)
     local calls = 0
     local committed, err = with_patch(Base, "measure", function()
@@ -389,8 +436,8 @@ describe("Applet failure boundaries", function()
       return value:flush()
     end)
     assert.is_nil(committed)
-    assert.are.equal("measure", err.phase)
-    assert.are.same(native, value:pane("main"):native())
+    assert.are.equal("measure", assert(err).phase)
+    assert.are.same(native, assert(value:pane("main")):native())
     assert.is_true(value:is_open())
   end)
 
@@ -414,10 +461,10 @@ describe("Applet failure boundaries", function()
       if calls == 1 then return settled end
       return measurement(30 + calls)
     end, function()
-      record.surface.on_commit({ generation = 77 })
-      record.surface.on_commit({ generation = 77 })
-      record.surface.on_commit({ generation = 77 })
-      record.surface.on_commit({ generation = 77 })
+      assert(record.surface).on_commit({ generation = 77, content = true, chrome = false, view = false })
+      assert(record.surface).on_commit({ generation = 77, content = true, chrome = false, view = false })
+      assert(record.surface).on_commit({ generation = 77, content = true, chrome = false, view = false })
+      assert(record.surface).on_commit({ generation = 77, content = true, chrome = false, view = false })
     end)
     assert.are.equal("measure", errors[#errors].phase)
     assert.matches("exceeded two recompilations", errors[#errors].message)
@@ -437,7 +484,7 @@ describe("Applet failure boundaries", function()
         driver.publish = function() error("open publication failed") end
         if rollback_failure then
           local destroy = driver.destroy
-          driver.destroy = function(self, records)
+          function driver:destroy(records)
             destroy(self, records)
             error("open release failed")
           end
@@ -450,11 +497,11 @@ describe("Applet failure boundaries", function()
 
     local opened, err = attempt("open-publication", false)
     assert.is_nil(opened)
-    assert.matches("open publication failed", err.message)
+    assert.matches("open publication failed", assert(err).message)
     opened, err = attempt("open-rollback", true)
     assert.is_nil(opened)
-    assert.matches("open rollback failed", err.message)
-    assert.matches("open release failed", err.message)
+    assert.matches("open rollback failed", assert(err).message)
+    assert.matches("open release failed", assert(err).message)
   end)
 
   it("reports preparation failure and focuses an already open Applet", function()
@@ -464,7 +511,7 @@ describe("Applet failure boundaries", function()
     })
     local opened, err = empty:open()
     assert.is_nil(opened)
-    assert.are.equal("render", err.phase)
+    assert.are.equal("render", assert(err).phase)
     assert.is_false(empty:is_open())
 
     local content = new_pane("content", { text = "ready" })
@@ -474,9 +521,9 @@ describe("Applet failure boundaries", function()
     })
     value:update(frame(pane("content", content), { focus = "content" }))
     succeeds(value:open())
-    vim.api.nvim_set_current_win(empty.origin.window)
+    vim.api.nvim_set_current_win(assert(empty.origin).window)
     succeeds(value:open())
-    assert.is_true(value:pane("content"):is_focused())
+    assert.is_true(assert(value:pane("content")):is_focused())
   end)
 
   it("contains focus callback failures from requested and native focus", function()
@@ -499,7 +546,7 @@ describe("Applet failure boundaries", function()
     }), { focus = "second" }))
     succeeds(value:open())
     assert.are.equal("action", errors[#errors].phase)
-    vim.api.nvim_set_current_win(value:pane("first"):native().window)
+    vim.api.nvim_set_current_win((assert(assert(value:pane("first")):native().window)))
     assert(vim.wait(1000, function() return #errors >= 2 end))
     assert.are.equal("action", errors[#errors].phase)
     assert.matches("focus callback failed", errors[#errors].message)
