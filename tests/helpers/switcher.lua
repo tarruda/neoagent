@@ -1,9 +1,13 @@
 local M = {}
 
+---@param key string
+---@return string
 local function buffer_name(key)
   return "/agent%-switcher%-" .. key .. "$"
 end
 
+---@param key string
+---@return integer?
 function M.buffer(key)
   for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buffer)
@@ -13,6 +17,8 @@ function M.buffer(key)
   end
 end
 
+---@param key string
+---@return integer?
 function M.window(key)
   local buffer = M.buffer(key)
   if not buffer then return nil end
@@ -21,15 +27,19 @@ function M.window(key)
   end
 end
 
+---@return boolean
 function M.is_open()
   return M.window("filter") ~= nil and M.window("results") ~= nil
 end
 
+---@return string[]
 function M.lines()
   local buffer = M.buffer("results")
   return buffer and vim.api.nvim_buf_get_lines(buffer, 0, -1, false) or {}
 end
 
+---@param value string
+---@return string
 function M.set_filter(value)
   local buffer = assert(M.buffer("filter"))
   vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { value })
@@ -46,6 +56,7 @@ function M.set_filter(value)
   return value
 end
 
+---@param keys string
 function M.press(keys)
   local window = assert(M.window("filter"))
   vim.api.nvim_set_current_win(window)

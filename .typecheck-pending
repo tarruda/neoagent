@@ -1,10 +1,4 @@
 # Temporary adoption list: remove each exact path when its types are checked.
-tests/helpers/applet_direct_focus.lua
-tests/helpers/http_live.lua
-tests/helpers/presentation.lua
-tests/helpers/read_only_focus.lua
-tests/helpers/switcher.lua
-tests/helpers/view_handles.lua
 tests/http_live/callback_spec.lua
 tests/http_live/curl_spec.lua
 tests/integration/alibaba_token_plan_auth_spec.lua
