@@ -1,6 +1,5 @@
 # Temporary adoption list: remove each exact path when its types are checked.
 tests/native_sandbox/sandbox_spec.lua
-tests/ui/agent_spec.lua
 tests/ui/pane_spec.lua
 tests/ui/view_spec.lua
 tests/unit/provider_shell_spec.lua
