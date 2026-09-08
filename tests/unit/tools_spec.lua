@@ -1184,6 +1184,7 @@ describe("neoagent bundled tools", function()
     assert.are.equal("No matches found", none.content[1].text)
     local found = execute(require("neoagent.tools.find"), { pattern = "*.lua" }, ctx(workspace))
     assert.matches("one.lua", found.content[1].text)
+    assert.are.equal(0, found.details.truncation.linesTruncated)
     local no_files = execute(
       require("neoagent.tools.find"), { pattern = "*.missing" }, ctx(workspace))
     assert.are.equal("No files found", no_files.content[1].text)
@@ -1219,7 +1220,9 @@ describe("neoagent bundled tools", function()
       assert.is_function(opts.on_output)
       local prefix = command[1] == "rg" and "file.lua:1:" or ""
       for index = 1, 1000 do
-        opts.on_output(prefix .. "result-" .. index .. "\n", false)
+        local entry_prefix = prefix
+        if command[1] == "fd" and index % 2 == 1 then entry_prefix = "./" end
+        opts.on_output(entry_prefix .. "result-" .. index .. "\n", false)
       end
       return { code = 0, signal = 0, stdout = "", stderr = "", output = "" }
     end
@@ -1237,5 +1240,7 @@ describe("neoagent bundled tools", function()
     assert.matches("showing 2 of at least 1000 entries", found.content[1].text)
     assert.is_true(#grep.content[1].text < 1024)
     assert.is_true(#found.content[1].text < 1024)
+    assert.are.equal(0, found.details.truncation.linesTruncated)
+    assert.matches("^result%-1\nresult%-2", found.content[1].text)
   end)
 end)

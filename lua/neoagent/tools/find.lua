@@ -31,7 +31,7 @@ local function new()
           max_bytes = truncate.MAX_BYTES,
           max_line_bytes = truncate.MAX_BYTES + 1,
           transform = function(line)
-            return line:gsub("\\", "/"):gsub("^%./", "")
+            return (line:gsub("\\", "/"):gsub("^%./", "")), false
           end,
         },
       })
