@@ -2,26 +2,41 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@overload fun(body: unknown, fallback: string): string
+---@param body unknown
+---@param fallback? string
+---@return string?
+function M.error_message(body, fallback)
+  if type(body) ~= "table" then return fallback end
+  local message = body.error
+  if type(message) == "table" then message = message.message or message.code end
+  if type(message) ~= "string" then message = body.message or body.detail end
+  if type(message) == "string" then return message end
+  return fallback
+end
+
 -- API adapters classify unsuccessful HTTP responses. The HTTP client itself
 -- leaves status handling to its consumer (including auth polling and caches).
+---@param result Neoagent.HttpResult
+---@return Neoagent.HttpSuccess
 function M.check(result)
-  local response = result.ok and result or result.error and result.error.response or {}
+  ---@type Neoagent.HttpError?
+  local failure = not result.ok and result.error or nil
+  local response = result.ok and result or failure and failure.response or { headers = {} }
   local status = response.status
   if status and (status < 200 or status >= 300) then
-    local err = result.error or util.error("transport", "HTTP " .. status)
-    local body = result.body
-    local message = type(body) == "table" and body.error or nil
-    if type(message) == "table" then message = message.message or message.code end
-    if type(message) ~= "string" and type(body) == "table" then
-      message = body.message or body.detail
-    end
+    ---@type Neoagent.HttpError
+    local err = failure or util.error("transport", "HTTP " .. status)
+    local message = M.error_message(result.ok and result.body or nil)
     if type(message) ~= "string" and err.kind ~= "transport" then message = err.message end
     err.message = "HTTP " .. status .. (type(message) == "string" and ": " .. message or "")
     err.response = { status = status, headers = response.headers or {} }
-    err.detail = result.detail or err.detail
+    err.detail = result.ok and result.detail or err.detail
     error(err, 0)
   end
   if not result.ok then error(result.error, 0) end
+  -- Only successful transport results survive classification.
+  ---@cast result Neoagent.HttpSuccess
   return result
 end
 

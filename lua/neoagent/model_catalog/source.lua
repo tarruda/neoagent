@@ -2,14 +2,41 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.CatalogSourceProvider: Neoagent.ProviderCredentialConfig
+---@field api? string
+---@field base_url? string
+---@field service_opts? table<string, unknown>
+
+---@alias Neoagent.CatalogSourceProjection {api?: string, base_url?: string, auth?: string, auth_optional?: boolean, service_opts?: table<string, unknown>}
+
+---@class Neoagent.CatalogSourceDefinition
+---@field source_id? string
+---@field source_revision? string|number
+---@field source_options? fun(provider: Neoagent.CatalogSourceProjection): unknown
+---@field account_scoped? boolean
+
+---@alias Neoagent.CatalogAccountIdentity {cache_identity?: (fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?)}
+
+---@class Neoagent.CatalogFingerprintOptions
+---@field provider_id? string
+---@field provider? Neoagent.CatalogSourceProvider
+---@field definition? Neoagent.CatalogSourceDefinition
+---@field credentials? Neoagent.ProviderCredentials
+---@field authentication? Neoagent.CatalogAccountIdentity
+
+
 local MAX_SOURCE_OPTIONS_BYTES = 16 * 1024
 
+---@param value unknown
+---@return string
 local function normalize_base_url(value)
   if type(value) ~= "string" then return "" end
   value = util.trim(value)
   local scheme, authority, tail = value:match(
     "^([%a][%w+.-]*)://([^/]*)(.*)$")
-  if not scheme then return value:gsub("/+$", "") end
+  if not scheme then return (value:gsub("/+$", "")) end
+  ---@cast authority string
+  ---@cast tail string
   scheme = scheme:lower()
   authority = authority:lower()
   if scheme == "https" then authority = authority:gsub(":443$", "") end
@@ -18,16 +45,23 @@ local function normalize_base_url(value)
   return scheme .. "://" .. authority .. tail
 end
 
+---@param value unknown
+---@return string
 local function fingerprint_part(value)
   value = tostring(value or "")
   return tostring(#value) .. ":" .. value
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_text(value)
   return type(value) == "string" and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param value unknown
+---@param stack table<table, true>
+---@return Neoagent.JsonValue?
 local function copy_json(value, stack)
   local kind = type(value)
   if kind == "nil" or kind == "boolean" then return value end
@@ -64,6 +98,8 @@ local function copy_json(value, stack)
   return result
 end
 
+---@param provider Neoagent.CatalogSourceProvider
+---@return Neoagent.CatalogSourceProjection
 function M.provider_projection(provider)
   local result = {}
   for _, key in ipairs({
@@ -74,6 +110,9 @@ function M.provider_projection(provider)
   return result
 end
 
+---@param provider Neoagent.CatalogSourceProvider
+---@param definition Neoagent.CatalogSourceDefinition
+---@return string?, Neoagent.Error?
 local function source_options(provider, definition)
   if type(definition.source_options) ~= "function" then return "" end
   local ok, value = pcall(
@@ -95,6 +134,10 @@ local function source_options(provider, definition)
   return encoded
 end
 
+---@param opts Neoagent.CatalogFingerprintOptions
+---@param provider Neoagent.CatalogSourceProvider
+---@param definition Neoagent.CatalogSourceDefinition
+---@return string?, Neoagent.Error?
 local function account_identity(opts, provider, definition)
   if definition.account_scoped ~= true then return "" end
   local owner = opts.credentials or opts.authentication
@@ -104,10 +147,15 @@ local function account_identity(opts, provider, definition)
   end
   local ok, identity, err
   if opts.credentials then
-    ok, identity, err = pcall(owner.cache_identity, owner)
+    ok, identity, err = pcall(opts.credentials.cache_identity, opts.credentials)
   else
-    ok, identity, err = pcall(
-      owner.cache_identity, owner, provider.auth)
+    local authentication = opts.authentication
+    ---@cast authentication Neoagent.CatalogAccountIdentity
+    local lookup = authentication.cache_identity
+    ---@cast lookup fun(self: Neoagent.CatalogAccountIdentity, id: string): string?, Neoagent.Error?
+    ok, identity, err = pcall(function()
+      return lookup(authentication, assert(provider.auth))
+    end)
   end
   if not ok then
     return nil, util.error("auth", "Model catalog account identity failed")
@@ -123,6 +171,8 @@ local function account_identity(opts, provider, definition)
   return identity
 end
 
+---@param opts? Neoagent.CatalogFingerprintOptions
+---@return string?, Neoagent.Error?
 function M.fingerprint(opts)
   opts = opts or {}
   local provider = opts.provider or {}
@@ -157,6 +207,7 @@ function M.fingerprint(opts)
 end
 
 M.MAX_SOURCE_OPTIONS_BYTES = MAX_SOURCE_OPTIONS_BYTES
+---@return Neoagent.JsonObject
 M.no_options = function() return {} end
 
 return M

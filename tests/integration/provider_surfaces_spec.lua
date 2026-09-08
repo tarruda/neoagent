@@ -1,32 +1,47 @@
+local assert = require("luassert")
 local auth = require("neoagent.auth")
 local api_key = require("neoagent.auth.api_key")
 local store = require("neoagent.auth.store")
 local replay = require("tests.helpers.http_replay")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  local result = run:result()
-  assert(result.ok ~= false, vim.inspect(result.error))
+  local result = assert(run:result())
+  assert(result.ok ~= false, (vim.inspect(result.error)))
   return result
 end
 
 describe("provider API surface replay", function()
-  local scenarios, directories
+  ---@type Neoagent.TestHttpReplay[]
+  local scenarios = {}
+  ---@type string[]
+  local directories = {}
   before_each(function() scenarios, directories = {}, {} end)
   after_each(function()
     for _, value in ipairs(scenarios) do replay.finish(value) end
     for _, directory in ipairs(directories) do vim.fn.delete(directory, "rf") end
   end)
+  ---@param exchanges (string|Neoagent.ReplayEntryOptions)[]
+  ---@return Neoagent.TestHttpReplay
   local function open(exchanges)
     local value = replay.open(exchanges)
     scenarios[#scenarios + 1] = value
     return value
   end
+  ---@param method Neoagent.AuthMethod<Neoagent.Credential>
+  ---@param now? fun(): number
+  ---@return Neoagent.AuthManager
   local function manager(method, now)
     local directory = vim.fn.tempname()
     directories[#directories + 1] = directory
     return auth.new({ methods = { test = method }, store = store.new(directory .. "/credentials.json"), now = now })
   end
+  ---@param key string
+  ---@param header? string
+  ---@return Neoagent.ProviderAuthContext
   local function key_context(key, header)
     local value = manager(api_key.new({ name = "Test", request_opts = function(credential)
       return { headers = { [header or "Authorization"] = header and credential.key or "Bearer " .. credential.key } }
@@ -69,10 +84,10 @@ describe("provider API surface replay", function()
     })
     local client = require("neoagent.providers.opencode_go.client").new({ base_url = scenario.url .. "/v1", transport = scenario })
     assert.are.same({ "glm-5.3", "minimax-m3" }, wait(client:models()).models)
-    assert.is_nil(scenario.requests[1].headers.Authorization)
+    assert.is_nil(rawget(assert(assert(scenario.requests[1]).headers), "Authorization"))
     local result = wait(client:usage(key_context("go-key")))
-    assert.are.equal(0.55, result.usage.rolling.remaining)
-    assert.are.equal(0.88, result.usage.weekly.remaining)
+    assert.are.equal(0.55, assert(assert(result.usage).rolling).remaining)
+    assert.are.equal(0.88, assert(assert(result.usage).weekly).remaining)
   end)
 
   it("uses subscription credentials for every Codex account operation and conditional inventory", function()
@@ -90,18 +105,26 @@ describe("provider API surface replay", function()
       expires = 9999999999999, accountId = "secret-account" }))
     local ctx = { resolve_auth = function() return value:resolve("test") end }
     local client = require("neoagent.providers.codex_management").new({ base_url = scenario.url .. "/backend-api", transport = scenario })
-    assert.are.equal(3, wait(client:activity(ctx)).value.stats.active_days)
-    assert.are.same({}, wait(client:accounts(ctx)).value.accounts)
-    assert.are.equal(1, wait(client:reset_credits(ctx)).value.available_count)
-    assert.are.equal(2, wait(client:redeem(ctx, "stable-request", "credit-1")).value.windows_reset)
-    ctx.provider = { base_url = scenario.url .. "/backend-api" }
-    ctx.transport = scenario
+    assert.are.equal(3, assert(assert(wait(client:activity(ctx)).value).stats).active_days)
+    assert.are.same({}, assert(wait(client:accounts(ctx)).value).accounts)
+    assert.are.equal(1, assert(wait(client:reset_credits(ctx)).value).available_count)
+    assert.are.equal(2, assert(wait(client:redeem(ctx, "stable-request", "credit-1")).value).windows_reset)
+    ---@type Neoagent.CatalogDiscoveryContext<Neoagent.CatalogSourceProjection>
+    local catalog_ctx = {
+      provider_id = "openai-codex",
+      provider = { base_url = scenario.url .. "/backend-api" },
+      transport = scenario,
+      resolve_auth = ctx.resolve_auth,
+      resolve_api_key = function() return nil end,
+      force = false,
+      now = function() return 0 end,
+    }
     local catalog = require("neoagent.providers.codex.catalog")
-    local inventory = wait(catalog.discover(ctx))
-    assert.are.equal("gpt-test", inventory.models[1].id)
-    assert.are.equal("inventory-1", inventory.validator.etag)
-    ctx.validator = inventory.validator
-    assert.is_true(wait(catalog.discover(ctx)).unchanged)
+    local inventory = wait(catalog.discover(catalog_ctx))
+    assert.are.equal("gpt-test", assert(assert(inventory.models)[1]).id)
+    assert.are.equal("inventory-1", assert(inventory.validator).etag)
+    catalog_ctx.validator = inventory.validator
+    assert.is_true(wait(catalog.discover(catalog_ctx)).unchanged)
   end)
 
   it("searches and inspects gated Hugging Face models using the discovery token", function()
@@ -129,7 +152,7 @@ describe("provider API surface replay", function()
       done.resolve(prompt.type == "secret" and "router-key" or scenario.url)
     end }))
     local resolved = wait(value:resolve("test"))
-    assert.are.equal("Bearer router-key", resolved.request_opts.headers.Authorization)
+    assert.are.equal("Bearer router-key", rawget(assert(assert(resolved.request_opts).headers), "Authorization"))
     local anonymous = open({
       { path = "tests/recordings/llama/anonymous-01.yaml", headers_subset = true },
     })
@@ -137,7 +160,7 @@ describe("provider API surface replay", function()
     wait(value:login("test", { prompt = function(prompt, done)
       assert.are.equal("text", prompt.type); done.resolve(anonymous.url)
     end }))
-    assert.is_nil(wait(value:resolve("test")).request_opts.headers)
+    assert.is_nil(assert(wait(value:resolve("test")).request_opts).headers)
   end)
 
   it("performs device polling, slowdown and credential refresh through the real manager", function()
@@ -157,23 +180,24 @@ describe("provider API surface replay", function()
       sleep = function(ms) sleeps[#sleeps + 1] = ms end,
     })
     local value = manager(method, function() return now end)
+    ---@type Neoagent.AuthEvent[]
     local events = {}
     wait(value:login("test", {
       prompt = function(_, done) done.resolve("device_code") end,
       notify = function(event) events[#events + 1] = event end,
     }))
-    assert.are.equal("ABCD", events[1].userCode)
+    assert.are.equal("ABCD", assert(events[1]).userCode)
     assert.are.same({ 0, 0, 0, 5000 }, sleeps)
     local first = wait(value:resolve("test"))
-    assert.are.equal("device-account", first.request_opts.headers["chatgpt-account-id"])
+    assert.are.equal("device-account", rawget(assert(assert(first.request_opts).headers), "chatgpt-account-id"))
     now = 12000
     local first_refresh, second_refresh = value:resolve("test"), value:resolve("test")
     local refreshed = wait(first_refresh)
     assert.are.same(refreshed.request_opts, wait(second_refresh).request_opts)
-    assert.are_not.equal(first.request_opts.headers.Authorization, refreshed.request_opts.headers.Authorization)
-    assert.are.equal("device-account", refreshed.request_opts.headers["chatgpt-account-id"])
-    assert.are.equal("rotated-refresh", value.store:read("test").refresh)
-    assert.are.equal(3612000, value.store:read("test").expires)
+    assert.are_not.equal(rawget(assert(assert(first.request_opts).headers), "Authorization"), rawget(assert(assert(refreshed.request_opts).headers), "Authorization"))
+    assert.are.equal("device-account", rawget(assert(assert(refreshed.request_opts).headers), "chatgpt-account-id"))
+    assert.are.equal("rotated-refresh", assert(value.store:read("test")).refresh)
+    assert.are.equal(3612000, assert(value.store:read("test")).expires)
     local model = require("neoagent.api.openai_codex_responses").new({
       provider = "openai-codex", model = "gpt-test", base_url = scenario.url .. "/v1",
       transport = scenario, request_max_retries = 0,

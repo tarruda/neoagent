@@ -1,10 +1,11 @@
+local assert = require("luassert")
 local Steering = require("neoagent.agent.steering")
 
 describe("neoagent Agent steering ownership", function()
   it("offers, acknowledges, claims, and restores records by identity", function()
     local queue = Steering.new()
     local first = queue:enqueue(1, "first", 10)
-    local second = queue:enqueue(2, "second", 20)
+    local second = assert(queue:enqueue(2, "second", 20))
     assert.are.same({
       id = 1,
       message = { role = "user", content = "first", timestamp = 10 },
@@ -12,11 +13,13 @@ describe("neoagent Agent steering ownership", function()
     assert.are.same({ "first", "second" }, queue:texts())
 
     local offered, reject = queue:offer()
+    assert(reject)
     assert.are.same(first, offered)
     assert.are.same(first, reject(false))
     assert.are.same({ "first", "second" }, queue:texts())
 
     offered, reject = queue:offer()
+    assert(reject)
     assert.are.same(first, offered)
     assert.are.same(first, reject(true))
     assert.is_false(reject(true))
@@ -39,11 +42,11 @@ describe("neoagent Agent steering ownership", function()
     local queue = Steering.new()
     queue:enqueue(3, "queued", 30)
     local records = queue:dequeue_all()
-    records[1].text = "changed"
+    assert(records[1]).message.content = "changed"
     assert.are.same({}, queue:texts())
     local claim, err = queue:claim(3)
     assert.is_nil(claim)
-    assert.matches("unavailable", err.message)
+    assert.matches("unavailable", assert(err).message)
   end)
 
   it("rejects invalid messages without changing the queue", function()
@@ -57,9 +60,10 @@ describe("neoagent Agent steering ownership", function()
       { 0, "text", 20 },
       { 1, "duplicate", 20 },
     }) do
-      local record, err = queue:enqueue(unpack(values))
+      local record, err = queue:enqueue(values[1] --[[@as integer]], values[2] --[[@as string]],
+        values[3] --[[@as integer]])
       assert.is_nil(record)
-      assert.are.equal("steering", err.kind)
+      assert.are.equal("steering", assert(err).kind)
       assert.are.same({ "valid" }, queue:texts())
     end
   end)

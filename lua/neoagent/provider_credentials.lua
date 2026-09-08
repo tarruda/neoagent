@@ -2,13 +2,42 @@ local provider_auth = require("neoagent.provider_auth")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.ProviderCredentialConfig: Neoagent.ProviderAuthConfig
+---@field api_key? string|fun(): string?
+---@field auth_optional? boolean
+
+---@class Neoagent.ProviderCredentialState
+---@field usable boolean
+---@field source "error"|"stored"|"configured"|"environment"|"none"|"optional"|"logged_out"
+---@field method_id? string
+---@field method_name? string
+---@field error? Neoagent.Error
+
+---@class Neoagent.ProviderCredentialOptions
+---@field provider_id string
+---@field provider Neoagent.ProviderCredentialConfig
+---@field authentication? Neoagent.AuthManager
+---@field method? Neoagent.AuthMethod<Neoagent.Credential>
+---@field scope? string
+
+---@class Neoagent.ProviderCredentials
+---@field provider_id string
+---@field provider Neoagent.ProviderCredentialConfig
+---@field authentication? Neoagent.AuthManager
+---@field method? Neoagent.AuthMethod<Neoagent.Credential>
+---@field scope? string
 local ProviderCredentials = {}
 ProviderCredentials.__index = ProviderCredentials
 
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function auth_error(message, detail)
   return util.error("auth", message, detail)
 end
 
+---@param opts Neoagent.ProviderCredentialOptions
+---@return Neoagent.ProviderCredentials
 function ProviderCredentials.new(opts)
   opts = opts or {}
   assert(type(opts.provider_id) == "string" and opts.provider_id ~= "",
@@ -32,10 +61,12 @@ function ProviderCredentials.new(opts)
   }, ProviderCredentials)
 end
 
+---@return string?, boolean
 function ProviderCredentials:_method_id()
   return provider_auth.for_scope(self.provider, self.scope)
 end
 
+---@return boolean?, Neoagent.Error?
 function ProviderCredentials:_stored()
   local method_id = self:_method_id()
   if method_id == nil then return false end
@@ -58,6 +89,7 @@ function ProviderCredentials:_stored()
   return stored == true
 end
 
+---@return string?, "configured"|"environment"?, Neoagent.Error?
 function ProviderCredentials:_ambient()
   if self.scope ~= nil and self.scope ~= "inference" then return nil end
   local source = self.provider.api_key
@@ -74,6 +106,7 @@ function ProviderCredentials:_ambient()
       and "configured" or "environment"
 end
 
+---@return Neoagent.ProviderCredentialState
 function ProviderCredentials:state()
   local method_id = self:_method_id()
   local method_name = self.method and self.method.name or method_id
@@ -133,6 +166,7 @@ function ProviderCredentials:state()
   }
 end
 
+---@return string?
 function ProviderCredentials:ambient_api_key()
   local stored, stored_err = self:_stored()
   if stored == nil then error(stored_err, 0) end
@@ -142,6 +176,7 @@ function ProviderCredentials:ambient_api_key()
   return key
 end
 
+---@return string?, Neoagent.Error?
 function ProviderCredentials:cache_identity()
   local method_id = self:_method_id()
   if type(method_id) ~= "string" then
@@ -195,6 +230,8 @@ function ProviderCredentials:cache_identity()
   return identity
 end
 
+---@param method_id unknown
+---@return boolean
 function ProviderCredentials:uses_method(method_id)
   return provider_auth.uses(self.provider, method_id)
 end

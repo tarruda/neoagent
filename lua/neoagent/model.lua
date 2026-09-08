@@ -3,10 +3,103 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ToolDefinition
+---@field name string
+---@field description string
+---@field input_schema Neoagent.ToolSchema
+
+---@class Neoagent.ModelTextDelta
+---@field type 'text_delta'
+---@field text string
+---@field index? integer
+---@field phase? string
+
+---@class Neoagent.ModelThinkingDelta
+---@field type 'thinking_delta'
+---@field text string
+---@field index? integer
+
+---@class Neoagent.ModelToolDelta
+---@field type 'tool_call_delta'
+---@field index integer
+---@field id? string
+---@field name? string
+---@field arguments_delta? string
+
+---@class Neoagent.ModelUsageEvent
+---@field type 'usage'
+---@field usage Neoagent.Usage
+
+---@class Neoagent.ModelInferenceStats
+---@field type 'inference_stats'
+---@field generation_tokens_per_second? number
+---@field prompt_tokens_per_second? number
+---@field elapsed_ms? number
+
+---@class Neoagent.ModelWarning
+---@field type 'warning'
+---@field message string
+
+---@class Neoagent.ModelProviderStatus
+---@field type 'provider_status'
+---@field text? string
+---@field details? Neoagent.JsonObject
+---@field reconnecting? boolean
+
+---@alias Neoagent.ModelEvent Neoagent.ModelTextDelta|Neoagent.ModelThinkingDelta|Neoagent.ModelToolDelta|Neoagent.ModelUsageEvent|Neoagent.ModelInferenceStats|Neoagent.ModelWarning|Neoagent.ModelProviderStatus
+
+---@class Neoagent.ModelSuccess
+---@field ok true
+---@field message Neoagent.AssistantMessage
+---@field text? string
+
+---@class Neoagent.ModelFailure: Neoagent.AsyncFailure
+---@field message? Neoagent.AssistantMessage
+---@field text? string
+
+---@alias Neoagent.ModelResult Neoagent.ModelSuccess|Neoagent.ModelFailure
+
+---@class Neoagent.StreamOverrides
+---@field retry_attempt? integer
+---@field system_prompt? string
+---@field tools? Neoagent.ToolDefinition[]
+---@field request_opts? Neoagent.RequestLayer
+---@field request_context? Neoagent.RequestIdentity
+---@field timeout_ms? number|false
+---@field on_event? fun(event: Neoagent.ModelEvent)
+---@field on_done? fun(result: Neoagent.ModelResult)
+
+---@class Neoagent.StreamOptions: Neoagent.StreamOverrides
+---@field messages Neoagent.Message[]
+
+---@class Neoagent.MessageTarget
+---@field input ("text"|"image")[]
+---@field api? string
+---@field provider? string
+---@field id? string
+
+---@class Neoagent.Model: Neoagent.MessageTarget
+---@field api string
+---@field provider string
+---@field id string
+---@field input ('text'|'image')[]
+---@field context_window? number
+---@field timeout_ms? number
+---@field thinking? table<Neoagent.ThinkingLevel, Neoagent.RequestLayer>
+---@field stream fun(self: Neoagent.Model, opts: Neoagent.StreamOptions): Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+
+---@param message string
+---@return nil
+---@return Neoagent.Error
 local function failure(message)
   return nil, util.error("model", message)
 end
 
+---@param value unknown
+---@param name string
+---@param maximum integer
+---@return string? value
+---@return Neoagent.Error? error
 local function safe_text(value, name, maximum)
   if type(value) ~= "string" or value == "" or #value > maximum
       or not util.is_valid_utf8(value)
@@ -17,11 +110,16 @@ local function safe_text(value, name, maximum)
   return value
 end
 
+---@param value unknown
+---@return TypeGuard<number>
 local function positive_finite(value)
   return type(value) == "number" and value > 0 and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@return Neoagent.Model? model
+---@return Neoagent.Error? error
 function M.capabilities(value)
   if type(value) ~= "table" or util.is_list(value) then
     return failure("Model must be an object")
@@ -87,6 +185,9 @@ function M.capabilities(value)
   return result
 end
 
+---@param value unknown
+---@return Neoagent.Model? model
+---@return Neoagent.Error? error
 function M.validate(value)
   local capabilities, err = M.capabilities(value)
   if not capabilities then return nil, err end
@@ -95,6 +196,9 @@ function M.validate(value)
   return value
 end
 
+---@param value unknown
+---@param owner? string
+---@return Neoagent.Model
 function M.assert(value, owner)
   local validated, err = M.validate(value)
   assert(validated, (owner or "Model") .. " must return a complete Model: "
@@ -105,6 +209,9 @@ end
 -- Cancellation interrupts await even when the child has already produced a
 -- partial message. Model wrappers must preserve that output without turning a
 -- cancelled parent back into a successful operation.
+---@async
+---@param child Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+---@return Neoagent.ModelResult
 function M.await_result(child)
   local ok, result = pcall(child.await, child)
   if ok then return result end

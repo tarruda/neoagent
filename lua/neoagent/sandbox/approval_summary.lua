@@ -1,15 +1,22 @@
 local M = {}
 
+---@alias Neoagent.SandboxApprovalContext {context?: {cwd?: string}|{workspace?: {cwd?: string}}}
+
+---@param ctx? Neoagent.SandboxApprovalContext
+---@return {cwd?: string}?
 local function workspace(ctx)
   local context = ctx and ctx.context
-  return context and context.workspace or context
+  return context and rawget(context, "workspace") or context
 end
 
+---@param ctx? Neoagent.SandboxApprovalContext
+---@return string?
 local function cwd(ctx)
   local value = workspace(ctx)
   return type(value) == "table" and value.cwd or nil
 end
 
+---@type table<string, fun(arguments: Neoagent.JsonObject, ctx?: Neoagent.SandboxApprovalContext): string>
 local summaries = {
   shell = function(arguments)
     return "$ " .. tostring(arguments.command)
@@ -28,17 +35,21 @@ local summaries = {
   end,
   grep = function(arguments, ctx)
     local root = arguments.path or cwd(ctx) or "the workspace"
-    return "Search for " .. tostring(arguments.pattern) .. " in " .. root
+    return "Search for " .. tostring(arguments.pattern) .. " in " .. tostring(root)
   end,
   find = function(arguments, ctx)
     local root = arguments.path or cwd(ctx) or "the workspace"
-    return "Find " .. tostring(arguments.pattern) .. " in " .. root
+    return "Find " .. tostring(arguments.pattern) .. " in " .. tostring(root)
   end,
   read_agent_documentation = function()
     return "Read Neoagent documentation"
   end,
 }
 
+---@param tool Neoagent.ToolDefinition
+---@param arguments Neoagent.JsonObject
+---@param ctx? Neoagent.SandboxApprovalContext
+---@return string
 function M.for_tool(tool, arguments, ctx)
   local summarize = summaries[tool.name]
   if summarize then return summarize(arguments, ctx) end

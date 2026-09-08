@@ -1,16 +1,25 @@
+local exit = os.exit --[[@as fun(status?: integer): never]]
+
+---@param message unknown
+---@return never
 local function fail(message)
   io.stderr:write("neoagent macOS sandbox runtime: ",
     tostring(message), "\n")
-  os.exit(70)
+  return exit(70)
 end
 
 if jit.os ~= "OSX" then fail("macOS is required") end
 
+---@param err string?
+---@param code string?
+---@return boolean
 local function missing(err, code)
   return code == "ENOENT"
     or type(err) == "string" and err:find("ENOENT", 1, true) ~= nil
 end
 
+---@param data string
+---@return string
 local function content_fingerprint(data)
   local seeds = {
     0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
@@ -31,6 +40,8 @@ local function content_fingerprint(data)
   return table.concat(parts)
 end
 
+---@param stat uv.fs_stat.result?
+---@return Neoagent.FileObservation
 local function target_observation(stat)
   return {
     exists = stat ~= nil,
@@ -42,12 +53,17 @@ local function target_observation(stat)
   }
 end
 
+---@param left Neoagent.FileObservation
+---@param right Neoagent.FileObservation
+---@return boolean
 local function same_target(left, right)
   return left.exists == right.exists and left.type == right.type
     and left.device == right.device and left.inode == right.inode
     and left.mode == right.mode
 end
 
+---@param request Neoagent.SandboxFilesystemOperation
+---@param data string
 local function atomic_replace(request, data)
   local policy = request.policy
   if type(policy) ~= "table" or vim.islist(policy)
@@ -169,6 +185,7 @@ local function atomic_replace(request, data)
   end
 end
 
+---@param encoded string
 local function filesystem_request(encoded)
   if #encoded > 16 * 1024 then fail("invalid request") end
   local ok, request = pcall(vim.json.decode, encoded)
@@ -178,6 +195,7 @@ local function filesystem_request(encoded)
     fail("invalid request")
   end
 
+  ---@cast request Neoagent.SandboxFilesystemOperation
   if request.operation == "read" then
     local stat, stat_err = vim.uv.fs_stat(request.path)
     if not stat or stat.type ~= "file" then
@@ -234,6 +252,7 @@ local command = vim.list_slice(arg)
 if command[1] == "--" then table.remove(command, 1) end
 if #command == 0 then fail("command is required") end
 
+---@type uv.uv_signal_t[]
 local signal_watchers = {}
 local stopping = false
 local cleanup_started = false
@@ -247,11 +266,12 @@ local function close_signal_watchers()
   signal_watchers = {}
 end
 
+---@return true?, string?
 local function schedule_descendant_cleanup()
   if cleanup_started then return true end
   -- The detached peer waits for this supervisor to exit before terminating
   -- every process that remains in the Seatbelt sandbox.
-  local handle, err = vim.uv.spawn("/bin/sh", {
+  local spawn_options = {
     args = {
       "-c",
       "parent=$PPID; while kill -0 \"$parent\" 2>/dev/null; "
@@ -259,13 +279,16 @@ local function schedule_descendant_cleanup()
     },
     detached = true,
     stdio = { nil, nil, nil },
-  }, function() end)
-  if not handle then return nil, err end
+  }
+  local handle, err = vim.uv.spawn("/bin/sh",
+    spawn_options --[[@as uv.spawn.options]], function() end)
+  if not handle then return nil, err --[[@as string?]] end
   cleanup_started = true
   handle:unref()
   return true
 end
 
+---@param signal integer
 local function stop(signal)
   if stopping then return end
   stopping = true
@@ -275,7 +298,7 @@ local function stop(signal)
     if not cleanup_ok then
       fail("could not start descendant cleanup: " .. tostring(cleanup_err))
     end
-    os.exit(128 + signal)
+    exit(128 + signal)
   end)
 end
 
@@ -287,6 +310,7 @@ for _, signal in ipairs({ 1, 2, 15 }) do
 end
 
 local input = io.stdin:read("*a")
+---@type vim.SystemCompleted?
 local completed
 local started, process = pcall(vim.system, command, {
   clear_env = true,
@@ -320,8 +344,9 @@ close_signal_watchers()
 if not cleanup_ok then
   fail("could not start descendant cleanup: " .. tostring(cleanup_err))
 end
+assert(completed)
 if completed.signal ~= 0 then
-  pcall(vim.uv.kill, vim.fn.getpid(), completed.signal)
-  os.exit(128 + completed.signal)
+  pcall(vim.uv.kill, vim.fn.getpid(), completed.signal --[[@as integer]])
+  exit(128 + completed.signal --[[@as integer]])
 end
-os.exit(completed.code)
+exit(completed.code --[[@as integer]])

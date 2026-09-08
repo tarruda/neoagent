@@ -1,5 +1,7 @@
 local M = {}
 
+---@param env? {TERM?: unknown, TMUX?: unknown}
+---@return "tmux"?
 function M.envelope(env)
   env = env or vim.env
   local term = type(env.TERM) == "string" and env.TERM or ""
@@ -7,12 +9,25 @@ function M.envelope(env)
   return nil
 end
 
+---@param uis? unknown[]
+---@return boolean
 function M.eligible(uis)
   uis = uis or vim.api.nvim_list_uis()
   return #uis == 1 and type(uis[1]) == "table"
     and type(uis[1].chan) == "number"
 end
 
+---@class Applet.ImageDiagnostic
+---@field level "error"|"warn"|"ok"
+---@field message string
+
+---@class Applet.ImageDetectionOptions
+---@field env? {TERM?: unknown, TMUX?: unknown}
+---@field executable? fun(command: string): integer
+---@field system? fun(command: string[]): string?, integer
+
+---@param opts? Applet.ImageDetectionOptions
+---@return Applet.ImageDiagnostic[]
 function M.diagnostics(opts)
   opts = opts or {}
   if M.envelope(opts.env) ~= "tmux" then return {} end

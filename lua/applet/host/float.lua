@@ -1,11 +1,20 @@
 local base = require("applet.host.base")
 local util = require("applet.util")
 
+---@class Applet.FloatingDriver: Applet.HostDriver
+---@field kind 'floating'
+---@field tab integer
+---@field published boolean
+---@field released boolean
+---@field transaction? Applet.HostTransaction<Applet.HostWindowState>
 local Driver = {}
 Driver.__index = Driver
 
+---@param record Applet.HostRecord
+---@return vim.api.keyset.win_config
 local function desired_config(record)
-  local requested = record.descriptor.projection.config
+  local projection = record.descriptor.projection --[[@as Applet.FloatingProjection]]
+  local requested = projection.config
   if not util.equal(record.requested_float_config, requested) then
     record.requested_float_config = util.copy(requested)
     record.adopted_float_config = nil
@@ -13,13 +22,19 @@ local function desired_config(record)
   return util.copy(record.adopted_float_config or requested)
 end
 
+---@param record Applet.HostRecord
+---@return vim.api.keyset.win_config
 local function staged_config(record)
   local config = desired_config(record)
   config.hide = true
   return config
 end
 
+---@param applet Applet.Applet
+---@param origin? Applet.NativeOrigin
+---@return Applet.FloatingDriver
 function Driver.new(applet, origin)
+  ---@type Applet.FloatingDriver
   local self = setmetatable({
     kind = "floating",
     applet = applet,
@@ -30,8 +45,11 @@ function Driver.new(applet, origin)
   return self
 end
 
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:begin(records)
   assert(not self.transaction, "floating Host transaction is already active")
+  ---@type table<string, Applet.HostWindowState>
   local windows = {}
   for key, record in pairs(records) do
     if self:owns_window(record.window, record)
@@ -47,36 +65,46 @@ function Driver:begin(records)
   return true
 end
 
+---@return boolean
 function Driver:is_open()
-  return not self.released and base.valid_tab(self.tab)
+  return not self.released and base.valid_tab(self.tab) == true
 end
 
+---@return boolean
 function Driver:is_visible()
   return self.published and self:is_open()
     and vim.api.nvim_get_current_tabpage() == self.tab
 end
 
+---@param record Applet.HostRecord
+---@return boolean
 function Driver:pane_visible(record)
   if not self:is_visible() or not base.valid_window(record.window) then return false end
   local config = vim.api.nvim_win_get_config(record.window)
   return not config.hide and vim.api.nvim_win_get_buf(record.window) == record.buffer
 end
 
+---@param window? integer
+---@param record? Applet.HostRecord
+---@return boolean
 function Driver:owns_window(window, record)
   return base.valid_window(window)
     and self.applet._windows[window] == (record and record.key)
     and vim.api.nvim_win_get_tabpage(window) == self.tab
 end
 
+---@return integer
 function Driver:foreign_windows()
   return 0
 end
 
+---@param record Applet.HostRecord
+---@return integer
 function Driver:_open(record)
   local config = self.published and not self.transaction
       and desired_config(record) or staged_config(record)
   local window = base.with_tab(self.tab, function()
-    return vim.api.nvim_open_win(record.buffer, false, config)
+    return vim.api.nvim_open_win(assert(record.buffer), false, config)
   end)
   record.window = window
   self.applet._windows[window] = record.key
@@ -84,6 +112,9 @@ function Driver:_open(record)
   return window
 end
 
+---@param _? Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:publish(_, records)
   assert(self:is_open(), "floating Host is closed")
   self.published = true
@@ -119,6 +150,8 @@ function Driver:publish(_, records)
   return true
 end
 
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:rollback(records)
   local transaction = self.transaction
   if not transaction then return true end
@@ -147,6 +180,7 @@ function Driver:rollback(records)
   return true
 end
 
+---@param record Applet.HostRecord
 function Driver:_close(record)
   local window = record.window
   record.window = nil
@@ -157,6 +191,10 @@ function Driver:_close(record)
   end
 end
 
+---@param _? Applet.CompiledLayout
+---@param frame Applet.CompiledLayout
+---@param records table<string, Applet.HostRecord>
+---@return boolean
 function Driver:reconcile(_, frame, records)
   assert(self:is_open(), "floating Host is closed")
   local desired = {}
@@ -203,6 +241,8 @@ function Driver:reconcile(_, frame, records)
   return true
 end
 
+---@param record? Applet.HostRecord
+---@return boolean
 function Driver:focus(record)
   if not record or not self:pane_visible(record) then
     if base.valid_tab(self.tab) and vim.api.nvim_get_current_tabpage() ~= self.tab then
@@ -213,10 +253,12 @@ function Driver:focus(record)
   return base.focus_mode(record)
 end
 
+---@param record Applet.HostRecord
 function Driver:detach(record)
   self:_close(record)
 end
 
+---@param records table<string, Applet.HostRecord>
 function Driver:release(records)
   if self.released then return end
   if self.transaction then self:rollback(records) end
@@ -227,6 +269,7 @@ function Driver:release(records)
   end
 end
 
+---@param records table<string, Applet.HostRecord>
 function Driver:destroy(records)
   self:release(records)
 end

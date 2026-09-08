@@ -31,6 +31,8 @@ if surface == "provider" then
   assert(shell:open())
 end
 
+---@param ok boolean
+---@param err? unknown
 local function finish(ok, err)
   vim.cmd("stopinsert")
   if shell then shell:destroy() end
@@ -49,8 +51,8 @@ vim.defer_fn(function()
     assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "i",
       "input did not enter Insert mode")
     local target = surface == "provider"
-      and assert(shell:pane("provider")):native().window
-      or view_handles.window(view, "transcript")
+      and assert(assert(assert(shell):pane("provider")):native().window)
+      or assert(view_handles.window(view, "transcript"))
     vim.api.nvim_set_current_win(target)
   end, debug.traceback)
   if not ok then finish(false, err) return end

@@ -4,6 +4,86 @@ local tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.StoredSessionMetadata: Neoagent.SessionMetadata
+---@field path string
+---@field cwd string
+---@field timestamp string
+---@field persisted boolean
+
+---@class Neoagent.StoredSessionInfo
+---@field path string
+---@field id string
+---@field cwd string
+---@field parent_session? string
+---@field created_at string
+---@field modified_at number
+---@field message_count integer
+---@field first_message string
+
+---@class Neoagent.SessionIndexEntry
+---@field text string
+---@field parent_session? string
+---@field attributes? Neoagent.JsonObject
+
+---@class Neoagent.SessionIndex
+---@field version integer
+---@field sessions table<string, Neoagent.SessionIndexEntry>
+
+---@class Neoagent.ListedSession: Neoagent.SessionIndexEntry
+---@field path string
+---@field modified_at number
+
+---@class Neoagent.StoredSessionHeader: Neoagent.StoredSessionRecord
+---@field type "session"
+---@field version 3
+---@field id string
+---@field timestamp string
+---@field cwd string
+---@field parentSession? string|vim.NIL
+---@field metadata? Neoagent.JsonObject|vim.NIL
+
+---@class Neoagent.StoredSessionRecord: Neoagent.JournalEntryInput
+---@field version? unknown
+---@field cwd? unknown
+---@field parentSession? unknown
+---@field metadata? unknown
+
+---@class Neoagent.StoreOptions
+---@field directory string
+---@field cwd string
+---@field parent_session? string
+---@field metadata? Neoagent.JsonObject
+---@field index_attributes? Neoagent.JsonObject
+
+---@class Neoagent.ForkOptions
+---@field directory string
+---@field cwd? string
+---@field entry_id? string
+---@field position? "before"|"at"
+---@field metadata? Neoagent.JsonObject
+---@field index_attributes? Neoagent.JsonObject
+
+---@alias Neoagent.IndexProjector fun(metadata?: Neoagent.JsonObject): Neoagent.JsonObject
+---@alias Neoagent.StoreProjection {type: "append"|"replace", messages: Neoagent.ProjectionMessage[]}
+
+---@class Neoagent.SessionStore: Neoagent.SessionStorage
+---@field _cwd string
+---@field _id string
+---@field _timestamp string
+---@field _path string
+---@field _index_path? string
+---@field _persisted boolean
+---@field _messages Neoagent.ProjectionMessage[]
+---@field _entries Neoagent.JournalEntry[]
+---@field _by_id Neoagent.JournalIndex
+---@field _pending Neoagent.JournalEntry[]
+---@field _leaf_id? string
+---@field _state Neoagent.SelectionState
+---@field _file_identity? Neoagent.FileIdentity
+---@field _parent_session? string
+---@field _metadata? Neoagent.JsonObject
+---@field _index_attributes? Neoagent.JsonObject
+---@field _unusable? Neoagent.Error
 local Store = {}
 Store.__index = Store
 
@@ -12,6 +92,8 @@ local INDEX_VERSION = 3
 local INDEX_LOCK_TIMEOUT_MS = 15000
 local INDEX_LOCK_POLL_MS = 50
 
+---@param path string
+---@return Neoagent.FileLock
 local function session_lock(path)
   return file_lock.new({
     path = path .. ".lock",
@@ -20,21 +102,33 @@ local function session_lock(path)
   })
 end
 
+---@param bytes? integer
+---@return string
 local function random_id(bytes)
-  return (vim.uv.random(bytes or 8):gsub(".", function(char)
+  return (assert(vim.uv.random(bytes or 8)):gsub(".", function(char)
     return string.format("%02x", char:byte())
   end))
 end
 
+---@param ms integer
+---@return string
 local function iso_time(ms)
   local seconds = math.floor(ms / 1000)
   return os.date("!%Y-%m-%dT%H:%M:%S", seconds) .. string.format(".%03dZ", ms % 1000)
 end
 
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function storage_error(message, detail)
   return util.error("storage", message, detail)
 end
 
+---@param value unknown
+---@param label string
+---@return string?, Neoagent.Error?
+---@return_overload string
+---@return_overload nil, Neoagent.Error
 local function encode_session_value(value, label)
   local ok, encoded = pcall(vim.json.encode, value)
   if not ok then return nil, storage_error("Failed to encode " .. label, encoded) end
@@ -44,25 +138,29 @@ local function encode_session_value(value, label)
   return encoded
 end
 
-local function is_null(value)
-  return value == nil or value == vim.NIL
-end
-
+---@generic T
+---@param value T
+---@return T
 local function copy_metadata(value)
   if type(value) == "table" and next(value) == nil then return vim.empty_dict() end
   return util.copy(value)
 end
 
+---@param stat? uv.fs_stat.result
+---@return number
 local function mtime_ms(stat)
   local mtime = stat and stat.mtime or {}
   return (tonumber(mtime.sec) or 0) * 1000
     + math.floor((tonumber(mtime.nsec) or 0) / 1000000)
 end
 
+---@return Neoagent.SessionIndex
 local function empty_index()
   return { version = INDEX_VERSION, sessions = vim.empty_dict() }
 end
 
+---@param value unknown
+---@return Neoagent.SessionIndexEntry?
 local function index_entry(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.text) ~= "string" or value.text == "" then
@@ -72,6 +170,7 @@ local function index_entry(value)
       and type(value.parent_session) ~= "string" then
     return nil
   end
+  ---@type Neoagent.SessionIndexEntry
   local result = { text = value.text }
   if type(value.parent_session) == "string" then
     result.parent_session = value.parent_session
@@ -86,6 +185,8 @@ local function index_entry(value)
   return result
 end
 
+---@param path string
+---@return Neoagent.SessionIndex
 local function read_index(path)
   if not vim.uv.fs_stat(path) then return empty_index() end
   local data = fs.read(path)
@@ -96,6 +197,7 @@ local function read_index(path)
       or type(decoded.sessions) ~= "table" or util.is_list(decoded.sessions) then
     return empty_index()
   end
+  ---@type table<string, Neoagent.SessionIndexEntry>
   local sessions = vim.empty_dict()
   for filename, value in pairs(decoded.sessions) do
     if type(filename) == "string" and filename ~= ""
@@ -107,12 +209,18 @@ local function read_index(path)
   return { version = INDEX_VERSION, sessions = sessions }
 end
 
+---@param path string
+---@param document Neoagent.SessionIndex
+---@return true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?
 local function write_index(path, document)
   return fs.atomic_replace(path, util.json_encode(document) .. "\n", {
     mode = 384,
   })
 end
 
+---@param path string
+---@param modifier fun(sessions: table<string, Neoagent.SessionIndexEntry>)
+---@return true?
 local function modify_index(path, modifier)
   local ok, result = pcall(function()
     return file_lock.new({
@@ -129,16 +237,22 @@ local function modify_index(path, modifier)
   return result
 end
 
+---@param workspace Neoagent.WorkspaceSettings
+---@return string
 local function workspace_index_path(workspace)
   return fs.join(workspace.directory, INDEX_FILENAME)
 end
 
+---@param path string
+---@return string?
 local function session_index_path(path)
   local sessions_directory = vim.fs.dirname(path)
   if vim.fs.basename(sessions_directory) ~= "sessions" then return nil end
   return fs.join(vim.fs.dirname(sessions_directory), INDEX_FILENAME)
 end
 
+---@param value unknown
+---@return string
 local function picker_text(value)
   value = type(value) == "string" and value or ""
   value = util.trim(value:gsub("[%c%s]+", " "))
@@ -146,6 +260,8 @@ local function picker_text(value)
   return value
 end
 
+---@param store Neoagent.SessionStore
+---@return true?, string?
 local function rebuild(store)
   local path, err = tree.indexed_path(store._by_id, store._leaf_id == nil and vim.NIL or store._leaf_id)
   if not path then return nil, err end
@@ -154,6 +270,9 @@ local function rebuild(store)
   return true
 end
 
+---@param store Neoagent.SessionStore
+---@param entry Neoagent.JournalEntry
+---@return Neoagent.ProjectionMessage[]
 local function project_append(store, entry)
   local messages = tree.entry_messages(entry)
   vim.list_extend(store._messages, messages)
@@ -161,12 +280,17 @@ local function project_append(store, entry)
   return messages
 end
 
+---@param store Neoagent.SessionStore
+---@param entry Neoagent.JournalEntry
+---@return true?, Neoagent.StoreProjection|string|nil
+---@return_overload true, Neoagent.StoreProjection
+---@return_overload nil, string?
 local function commit_entry(store, entry)
   local stored = util.copy(entry)
   store._entries[#store._entries + 1] = stored
   store._by_id[stored.id] = stored
   if stored.type == "leaf" then
-    store._leaf_id = is_null(stored.targetId) and nil or stored.targetId
+    store._leaf_id = stored.targetId ~= vim.NIL and stored.targetId or nil
     local rebuilt, err = rebuild(store)
     if not rebuilt then return nil, err end
     return true, { type = "replace", messages = util.copy(store._messages) }
@@ -176,28 +300,36 @@ local function commit_entry(store, entry)
   return true, { type = "append", messages = util.copy(messages) }
 end
 
+---@return Neoagent.ProjectionMessage[]
 function Store:load()
   return util.copy(self._messages)
 end
 
+---@return Neoagent.Message[]?, Neoagent.Error?
 function Store:context_messages()
   local path, err = self:path()
   if not path then return nil, storage_error("Failed to build session context", err) end
   return tree.to_llm(tree.messages(path, true))
 end
 
+---@return Neoagent.JournalEntry[]
 function Store:entries()
   return util.copy(self._entries)
 end
 
+---@param id string
+---@return Neoagent.JournalEntry?
 function Store:entry(id)
   return util.copy(self._by_id[id])
 end
 
+---@return string?
 function Store:leaf_id()
   return self._leaf_id
 end
 
+---@param ... string|nil
+---@return Neoagent.JournalEntry[]?, Neoagent.Error?
 function Store:path(...)
   local requested
   if select("#", ...) > 0 then
@@ -211,6 +343,7 @@ function Store:path(...)
   return path
 end
 
+---@return Neoagent.StoredSessionInfo
 function Store:info()
   local first_message
   local message_count = 0
@@ -253,8 +386,12 @@ function Store:info()
   }
 end
 
+---@param store Neoagent.SessionStore
+---@param projector? Neoagent.IndexProjector
+---@return Neoagent.SessionIndexEntry
 local function store_index_entry(store, projector)
   local info = store:info()
+  ---@type Neoagent.SessionIndexEntry
   local result = { text = picker_text(info.first_message) }
   if store._parent_session then result.parent_session = store._parent_session end
   local attributes = store._index_attributes
@@ -271,6 +408,7 @@ local function store_index_entry(store, projector)
   return result
 end
 
+---@param store Neoagent.SessionStore
 local function update_store_index(store)
   if not store._index_path then return end
   local filename = vim.fs.basename(store._path)
@@ -280,6 +418,7 @@ local function update_store_index(store)
   end)
 end
 
+---@return Neoagent.StoredSessionMetadata
 function Store:metadata()
   return {
     id = self._id,
@@ -292,10 +431,17 @@ function Store:metadata()
   }
 end
 
+---@return Neoagent.SelectionState
 function Store:state()
   return util.copy(self._state)
 end
 
+---@param self Neoagent.SessionStore
+---@param entry_type "message"|"compaction"|"leaf"
+---@param values? table<string, unknown>
+---@return Neoagent.JournalEntry?, string|Neoagent.Error
+---@return_overload Neoagent.JournalEntry, string
+---@return_overload nil, Neoagent.Error
 local function prepare_entry(self, entry_type, values)
   local entry, validation_err = tree.prepare_entry({
     type = entry_type,
@@ -313,7 +459,10 @@ local function prepare_entry(self, entry_type, values)
   return entry, encoded
 end
 
+---@param self Neoagent.SessionStore
+---@return Neoagent.StoredSessionHeader
 local function session_header(self)
+  ---@type Neoagent.StoredSessionHeader
   local header = {
     type = "session",
     version = 3,
@@ -326,6 +475,8 @@ local function session_header(self)
   return header
 end
 
+---@param encoded string[]
+---@return string
 local function append_contents(encoded)
   local contents = {}
   for _, value in ipairs(encoded) do
@@ -335,11 +486,13 @@ local function append_contents(encoded)
   return table.concat(contents)
 end
 
+---@param value unknown
+---@return string
 local function bounded_error(value)
   local err = util.normalize_error(value, "storage")
   local detail = ""
-  if err.detail ~= nil then
-    local ok, rendered = pcall(tostring, err.detail)
+  if rawget(err, "detail") ~= nil then
+    local ok, rendered = pcall(tostring, rawget(err, "detail"))
     detail = ": " .. (ok and rendered or "unprintable detail")
   end
   local text = util.text_from_bytes(err.message .. detail)
@@ -349,6 +502,10 @@ local function bounded_error(value)
   return text
 end
 
+---@param self Neoagent.SessionStore
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function poison(self, message, detail)
   if not self._unusable then
     self._unusable = storage_error(message, detail)
@@ -356,16 +513,29 @@ local function poison(self, message, detail)
   return util.copy(self._unusable)
 end
 
+---@generic T
+---@param ... T...
+---@return [T...] & {n: integer}
 local function packed(...)
-  return { n = select("#", ...), ... }
+  local values = { n = select("#", ...), ... }
+  ---@cast values [T...] & {n: integer}
+  return values
 end
 
+---@generic T, E, R, A
+---@param fn fun(...: A...): T, E, R...
+---@param ... A...
+---@return_overload T, E, R...
+---@return_overload nil, unknown
 local function safe_call(fn, ...)
   local result = packed(pcall(fn, ...))
   if not result[1] then return nil, result[2] end
   return unpack(result, 2, result.n)
 end
 
+---@param self Neoagent.SessionStore
+---@param contents string
+---@return true?, unknown?
 local function append_existing(self, contents)
   local lock = session_lock(self._path)
   local lease, acquire_err = safe_call(lock.acquire, lock)
@@ -458,6 +628,9 @@ local function append_existing(self, contents)
   return nil, append_err
 end
 
+---@param path string
+---@param identity? Neoagent.FileIdentity
+---@return Neoagent.FileIdentity?, string?
 local function inspect_session_file(path, identity)
   local file, open_err = fs.open_regular(path, {
     identity = identity,
@@ -472,10 +645,17 @@ local function inspect_session_file(path, identity)
   return confirmed_identity
 end
 
+---@param entry_type "message"|"compaction"|"leaf"
+---@param values? table<string, unknown>
+---@param persist boolean
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?, Neoagent.StoreProjection?
+---@return_overload true, nil, Neoagent.JournalEntry, Neoagent.StoreProjection
+---@return_overload nil, Neoagent.Error
 function Store:_append(entry_type, values, persist)
   if self._unusable then return nil, util.copy(self._unusable) end
   local entry, encoded_or_err = prepare_entry(self, entry_type, values)
   if not entry then return nil, encoded_or_err end
+  ---@cast encoded_or_err string
   local encoded = encoded_or_err
 
   if not self._persisted and not persist then
@@ -524,7 +704,7 @@ function Store:_append(entry_type, values, persist)
     if not ok then
       if self._unusable then return nil, util.copy(self._unusable) end
       if type(err) == "table" and err.kind == "file_lock" then
-        err = err.detail or err.message
+        err = rawget(err, "detail") or err.message
       end
       return nil, storage_error("Failed to append session entry", err)
     end
@@ -538,6 +718,9 @@ function Store:_append(entry_type, values, persist)
   return true, nil, util.copy(entry), projection
 end
 
+---@param message Neoagent.Message
+---@param state? Neoagent.RequestStateInput
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?, Neoagent.StoreProjection?
 function Store:append(message, state)
   assert(state == nil or type(state) == "table"
       and (next(state) == nil or not util.is_list(state)),
@@ -549,10 +732,14 @@ function Store:append(message, state)
   return self:_append("message", values, true)
 end
 
+---@param values Neoagent.CompactionPayload
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?, Neoagent.StoreProjection?
 function Store:append_compaction(values)
   return self:_append("compaction", values or {}, false)
 end
 
+---@param id? string
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?, Neoagent.StoreProjection?
 function Store:set_leaf(id)
   if self._unusable then return nil, util.copy(self._unusable) end
   if id ~= nil and not self._by_id[id] then
@@ -561,6 +748,8 @@ function Store:set_leaf(id)
   return self:_append("leaf", { targetId = id or vim.NIL }, self._persisted)
 end
 
+---@param opts Neoagent.StoreOptions
+---@return Neoagent.SessionStore
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
@@ -596,9 +785,15 @@ function M.new(opts)
   }, Store)
 end
 
+---@param path string
+---@return string?, Neoagent.FileIdentity|string|nil
+---@return_overload string, Neoagent.FileIdentity
+---@return_overload nil, string?
 local function read_session_file(path)
   local file, open_err = fs.open_regular(path, { mode = 384 })
   if not file then return nil, open_err end
+  ---@param err? string
+  ---@return nil, string?
   local function failure(err)
     local closed, close_err = file:close()
     return nil, closed and err or close_err
@@ -631,6 +826,10 @@ local function read_session_file(path)
   return data, identity
 end
 
+---@param path string
+---@return Neoagent.SessionStore?, Neoagent.Error?
+---@return_overload Neoagent.SessionStore
+---@return_overload nil, Neoagent.Error
 function M.open(path)
   path = fs.normalize(path)
   local data, identity_or_err = session_lock(path):with(function()
@@ -639,12 +838,13 @@ function M.open(path)
   if not data then
     local read_err = identity_or_err
     if type(read_err) == "table" and read_err.kind == "file_lock" then
-      read_err = read_err.detail or read_err.message
+      read_err = rawget(read_err, "detail") or read_err.message
     end
     return nil, storage_error("Failed to read session", read_err)
   end
   local lines = vim.tbl_filter(function(line) return util.trim(line) ~= "" end,
     vim.split(data, "\n", { plain = true }))
+  ---@type Neoagent.StoredSessionRecord[]
   local decoded = {}
   for line_number, line in ipairs(lines) do
     local ok, value = pcall(vim.json.decode, line)
@@ -680,12 +880,16 @@ function M.open(path)
     return nil, storage_error("Invalid session at line 1", "metadata must be an object")
   end
 
+  ---@cast header Neoagent.StoredSessionHeader
+  ---@type Neoagent.JournalEntryInput[]
   local entries = {}
   for index = 2, #decoded do entries[#entries + 1] = decoded[index] end
   local validated, validation_err, invalid_index = tree.validate_entries(entries)
   if not validated then
     return nil, storage_error("Invalid session at line " .. ((invalid_index or 1) + 1), validation_err)
   end
+  ---@cast entries Neoagent.JournalEntry[]
+  ---@type Neoagent.SessionStore
   local store = setmetatable({
     _cwd = header.cwd,
     _id = header.id,
@@ -709,6 +913,11 @@ function M.open(path)
   return store
 end
 
+---@param snapshot {entries: Neoagent.JournalEntry[], leaf_id?: string}
+---@param opts Neoagent.StoreOptions
+---@return Neoagent.SessionStore?, Neoagent.Error?
+---@return_overload Neoagent.SessionStore
+---@return_overload nil, Neoagent.Error
 function M.derive(snapshot, opts)
   opts = opts or {}
   if type(snapshot) ~= "table" or type(snapshot.entries) ~= "table"
@@ -772,6 +981,11 @@ function M.derive(snapshot, opts)
   return store
 end
 
+---@param source string|Neoagent.SessionStore
+---@param opts Neoagent.ForkOptions
+---@return Neoagent.SessionStore?, Neoagent.Error?
+---@return_overload Neoagent.SessionStore
+---@return_overload nil, Neoagent.Error
 function M.fork(source, opts)
   opts = opts or {}
   if type(source) == "string" then
@@ -791,12 +1005,14 @@ function M.fork(source, opts)
   if opts.entry_id then
     local target = source:entry(opts.entry_id)
     if not target then return nil, storage_error("Failed to fork session", "entry not found: " .. opts.entry_id) end
+    ---@type string?
     local leaf_id = target.id
     if (opts.position or "before") == "before" then
       if target.type ~= "message" or target.message.role ~= "user" then
         return nil, storage_error("Failed to fork session", "before position requires a user message")
       end
-      leaf_id = is_null(target.parentId) and nil or target.parentId
+      local parent_id = target.parentId
+      leaf_id = type(parent_id) == "string" and parent_id or nil
     elseif opts.position ~= "at" then
       return nil, storage_error("Failed to fork session", "position must be before or at")
     end
@@ -822,11 +1038,14 @@ function M.fork(source, opts)
   if not store then
     err = util.normalize_error(err, "storage")
     return nil, storage_error("Failed to fork session",
-      err.detail or err.message)
+      rawget(err, "detail") or err.message)
   end
   return store
 end
 
+---@param directory string
+---@param cwd string
+---@return string[]
 function M.list(directory, cwd)
   local namespace = require("neoagent.workspace_settings").new({
     directory = directory,
@@ -850,6 +1069,10 @@ function M.list(directory, cwd)
   return paths
 end
 
+---@param directory string
+---@param cwd string
+---@param opts? {index_attributes?: Neoagent.IndexProjector}
+---@return Neoagent.ListedSession[]
 function M.list_sessions(directory, cwd, opts)
   opts = opts or {}
   assert(opts.index_attributes == nil
@@ -861,8 +1084,11 @@ function M.list_sessions(directory, cwd, opts)
   })
   local index_path = workspace_index_path(workspace)
   local indexed = read_index(index_path)
+  ---@type Neoagent.ListedSession[]
   local sessions = {}
+  ---@type table<string, Neoagent.SessionIndexEntry>
   local repairs = {}
+  ---@type table<string, boolean>
   local present = {}
   for _, path in ipairs(M.list(directory, cwd)) do
     local filename = vim.fs.basename(path)

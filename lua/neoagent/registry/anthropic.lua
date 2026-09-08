@@ -3,7 +3,8 @@ local no_source_options = require("neoagent.model_catalog.source").no_options
 
 local CLOUD_TTL_MS = 14 * 24 * 60 * 60 * 1000
 
-return {
+---@type Neoagent.ProviderDefinition
+local provider = {
   api = "anthropic-messages",
   base_url = "https://api.anthropic.com/v1",
   api_key = function() return vim.env.ANTHROPIC_API_KEY end,
@@ -21,3 +22,5 @@ return {
   models = {},
   service = require("neoagent.providers.anthropic").new,
 }
+
+return provider

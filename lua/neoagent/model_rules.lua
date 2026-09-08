@@ -2,6 +2,19 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.ModelRuleContext {provider_id?: string, source_model?: Neoagent.DiscoveredModel}
+
+---@alias Neoagent.ModelTransform fun(model: Neoagent.ModelConfigInput, ctx?: Neoagent.ModelRuleContext): Neoagent.ModelConfigInput|false
+
+---@class Neoagent.ModelRule
+---@field match string|fun(model: Neoagent.ModelConfigInput, ctx?: Neoagent.ModelRuleContext): boolean
+---@field defaults? Neoagent.ModelConfigInput
+---@field set? Neoagent.ModelConfigInput
+---@field apply? Neoagent.ModelTransform
+
+---@param target table<unknown, unknown>
+---@param defaults? table<unknown, unknown>
+---@return table<unknown, unknown>
 local function merge_defaults(target, defaults)
   for key, value in pairs(defaults or {}) do
     if target[key] == nil then
@@ -14,6 +27,9 @@ local function merge_defaults(target, defaults)
   return target
 end
 
+---@param target table<unknown, unknown>
+---@param values? table<unknown, unknown>
+---@return table<unknown, unknown>
 local function merge_set(target, values)
   for key, value in pairs(values or {}) do
     if value == false then
@@ -28,13 +44,21 @@ local function merge_set(target, values)
   return target
 end
 
+---@param rule Neoagent.ModelRule
+---@param model Neoagent.ModelConfigInput
+---@param ctx? Neoagent.ModelRuleContext
+---@return boolean
 local function matches(rule, model, ctx)
   if type(rule.match) == "string" then
-    return model.id:match(rule.match) ~= nil
+    local id = model.id
+    assert(type(id) == "string", "model rule input must contain an id")
+    return id:match(rule.match) ~= nil
   end
   return rule.match(model, ctx) == true
 end
 
+---@param definitions Neoagent.ModelRule[]
+---@return Neoagent.ModelTransform
 function M.compile(definitions)
   assert(util.is_list(definitions), "model rules must be a list")
   local rules = util.copy(definitions)
@@ -52,19 +76,24 @@ function M.compile(definitions)
     assert(rule.apply == nil or type(rule.apply) == "function",
       "model rule " .. index .. " apply must be a function")
   end
+  ---@param model Neoagent.ModelConfigInput
+  ---@param ctx? Neoagent.ModelRuleContext
+  ---@return Neoagent.ModelConfigInput|false
   return function(model, ctx)
     assert(type(model) == "table" and type(model.id) == "string",
       "model rule input must contain an id")
+    ---@type Neoagent.ModelConfigInput
     local current = util.copy(model)
     for _, rule in ipairs(rules) do
       if matches(rule, current, ctx) then
         merge_defaults(current, rule.defaults)
         merge_set(current, rule.set)
         if rule.apply then
-          current = rule.apply(current, ctx)
-          if current == false then return false end
-          assert(type(current) == "table" and not util.is_list(current),
+          local transformed = rule.apply(current, ctx)
+          if transformed == false then return false end
+          assert(type(transformed) == "table" and not util.is_list(transformed),
             "model rule apply must return a model or false")
+          current = transformed
         end
       end
     end

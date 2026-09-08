@@ -1,10 +1,13 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local applet_input = require("applet.pane.input")
 local config = require("neoagent.config")
 local ProviderShellView = require("neoagent.ui.provider_shell")
 
 describe("neoagent Provider Shell UI", function()
+  ---@type Neoagent.ProviderShellView[]
   local views
+  ---@type integer
   local original_columns
 
   before_each(function()
@@ -17,6 +20,7 @@ describe("neoagent Provider Shell UI", function()
     vim.o.columns = original_columns
   end)
 
+  ---@param extra? Neoagent.UIConfigInput
   local function ui_config(extra)
     return config.resolve({
       default_registry = false,
@@ -32,6 +36,7 @@ describe("neoagent Provider Shell UI", function()
     }).ui
   end
 
+  ---@param opts? Partial<Neoagent.ProviderShellViewOptions>
   local function view(opts)
     opts = opts or {}
     local configured = ui_config(opts.config)
@@ -50,29 +55,50 @@ describe("neoagent Provider Shell UI", function()
     return value
   end
 
+  ---@param value Neoagent.ProviderShellView
+  ---@param key string
   local function native(value, key)
     return assert(value:pane(key)):native()
   end
 
+  ---@param value Neoagent.ProviderShellView
+  ---@param key string
   local function lines(value, key)
-    return vim.api.nvim_buf_get_lines(native(value, key).buffer, 0, -1, false)
+    return vim.api.nvim_buf_get_lines((assert(native(value, key).buffer)), 0, -1, false)
   end
 
+  ---@param value Neoagent.ProviderShellView
+  ---@param key string
   local function text(value, key)
     return table.concat(lines(value, key), "\n")
   end
 
+  ---@param keys string
   local function feed(keys)
     vim.api.nvim_feedkeys(
       vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
   end
 
+  ---@param value Neoagent.ProviderShellView
+  ---@param key string
+  ---@param pattern string
+  ---@return integer?, string?
   local function line(value, key, pattern)
     for index, candidate in ipairs(lines(value, key)) do
       if candidate:find(pattern, 1, true) then return index, candidate end
     end
   end
 
+  ---@param value Neoagent.ProviderShellView
+  ---@param key string
+  ---@param pattern string
+  ---@return integer, string
+  local function required_line(value, key, pattern)
+    local row, contents = line(value, key, pattern)
+    return (assert(row)), (assert(contents))
+  end
+
+  ---@param window integer
   local function title(window)
     local value = vim.api.nvim_win_get_config(window).title or ""
     if type(value) == "string" then return value end
@@ -81,12 +107,15 @@ describe("neoagent Provider Shell UI", function()
     end, value))
   end
 
+  ---@param pane Applet.Pane<unknown>
+  ---@param key string
   local function target_is_highlighted(pane, key)
     local target = assert(pane.layout.targets[key])
     local rectangle = assert(target.rectangles[1])
     local buffer = assert(pane:native().buffer)
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
         buffer, pane.focus_namespace, 0, -1, { details = true })) do
+      ---@cast mark [integer, integer, integer, {hl_group?: string|integer}]
       if mark[2] == rectangle.row
           and mark[4].hl_group == target.focus_style then
         return true
@@ -95,6 +124,10 @@ describe("neoagent Provider Shell UI", function()
     return false
   end
 
+  ---@param name string
+  ---@param state Neoagent.ProviderState|false
+  ---@param operations? Neoagent.ProviderShellOperation[]
+  ---@return Neoagent.ProviderPanelSnapshot
   local function snapshot(name, state, operations)
     return {
       id = name:lower():gsub("%s+", "-"),
@@ -131,20 +164,20 @@ describe("neoagent Provider Shell UI", function()
     assert(vim.wait(1000, function() return pane.layout ~= nil end, 5))
     local first = "provider:operations:item:refresh"
     assert.are.equal(first, assert(pane:focused_target()).key)
-    assert.are.equal("PmenuSel", pane.layout.targets[first].focus_style)
+    assert.are.equal("PmenuSel", assert(pane.layout).targets[first].focus_style)
     assert.is_true(target_is_highlighted(pane, first))
     feed("<CR>")
     assert.are.equal("refresh", selected)
     selected = nil
-    local target = assert(pane.layout.targets[
+    local target = assert(assert(pane.layout).targets[
       "provider:operations:item:refresh"])
     assert.is_true(applet_input.dispatch_action(
-      pane, target.action, target, 1, "n", 0, 0))
+      pane, (assert(target.action)), target, 1, "n", 0, 0))
     assert.are.equal("refresh", selected)
     assert.matches("Connected", text(value, "provider"))
     assert.matches("Refresh", text(value, "provider"))
     assert.are.equal(" Local provider shell ",
-      title(native(value, "provider").window))
+      title((assert(native(value, "provider").window))))
 
     assert(value:set(snapshot("Local", {
       blocks = { {
@@ -169,12 +202,12 @@ describe("neoagent Provider Shell UI", function()
     assert(value:open())
 
     local provider_window = native(value, "provider").window
-    vim.api.nvim_win_close(provider_window, true)
+    vim.api.nvim_win_close((assert(provider_window)), true)
     assert(vim.wait(1000, function() return not value:is_open() end, 5))
     assert(value:open())
     provider_window = native(value, "provider").window
     local foreign = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_win_set_buf(provider_window, foreign)
+    vim.api.nvim_win_set_buf((assert(provider_window)), foreign)
     assert(vim.wait(1000, function() return not value:is_open() end, 5))
     vim.api.nvim_buf_delete(foreign, { force = true })
   end)
@@ -185,7 +218,7 @@ describe("neoagent Provider Shell UI", function()
       on_close = function() closed = closed + 1 end,
     })
     assert(value:set(snapshot("Local", {
-      blocks = { { type = "status", text = "Outside the action menu" } },
+      blocks = { { type = "status", level = "info", text = "Outside the action menu" } },
     }, {
       { id = "first", label = "First action" },
       { id = "second", label = "Second action" },
@@ -201,7 +234,7 @@ describe("neoagent Provider Shell UI", function()
     assert(vim.wait(1000, function() return provider.layout ~= nil end, 5))
     local status_row = assert(select(1,
       line(value, "provider", "Outside the action menu")))
-    vim.api.nvim_win_set_cursor(provider_window, { status_row, 0 })
+    vim.api.nvim_win_set_cursor((assert(provider_window)), { status_row, 0 })
     assert(applet_input.dispatch(provider, "n", "J"))
     assert.are.equal("provider:operations:item:first",
       assert(provider:focused_target()).key)
@@ -211,7 +244,7 @@ describe("neoagent Provider Shell UI", function()
     assert(applet_input.dispatch(provider, "n", "K"))
     assert.are.equal("provider:operations:item:first",
       assert(provider:focused_target()).key)
-    vim.api.nvim_win_set_cursor(provider_window, { status_row, 0 })
+    vim.api.nvim_win_set_cursor((assert(provider_window)), { status_row, 0 })
     assert(applet_input.dispatch(provider, "n", "K"))
     assert.are.equal("provider:operations:item:first",
       assert(provider:focused_target()).key)
@@ -237,7 +270,7 @@ describe("neoagent Provider Shell UI", function()
       end,
     })
     local provider = snapshot("Alpha", {
-      blocks = { { type = "status", text = "Alpha ready" } },
+      blocks = { { type = "status", level = "info", text = "Alpha ready" } },
     }, {})
     assert(value:set(provider, {
       {
@@ -247,6 +280,7 @@ describe("neoagent Provider Shell UI", function()
         enabled = true,
         authentication = {
           connected = true,
+          error = false,
           source = "stored",
         },
       },
@@ -257,6 +291,7 @@ describe("neoagent Provider Shell UI", function()
         enabled = true,
         authentication = {
           connected = true,
+          error = false,
         },
       },
       {
@@ -276,6 +311,7 @@ describe("neoagent Provider Shell UI", function()
         enabled = true,
         authentication = {
           connected = true,
+          error = false,
           source = "environment",
         },
       },
@@ -286,6 +322,7 @@ describe("neoagent Provider Shell UI", function()
         enabled = true,
         authentication = {
           connected = true,
+          error = false,
           source = "configured",
         },
       },
@@ -301,22 +338,22 @@ describe("neoagent Provider Shell UI", function()
     assert.are.equal("alpha", selected)
     assert.matches("Alpha", text(value, "providers"))
     assert.matches("Beta", text(value, "providers"))
-    assert.is_nil(text(value, "providers"):find("Logged", 1, true))
-    local _, alpha = assert(line(value, "providers", "Alpha"))
-    local _, beta_line = assert(line(value, "providers", "Beta"))
-    local _, gamma = assert(line(value, "providers", "Gamma"))
-    local _, delta = assert(line(value, "providers", "Delta"))
-    local _, epsilon = assert(line(value, "providers", "Epsilon"))
-    assert.is_truthy(alpha:find("✅", 1, true))
-    assert.is_truthy(beta_line:find("✅", 1, true))
-    assert.is_truthy(gamma:find("⭕⚠️", 1, true))
-    assert.is_truthy(delta:find("✅📤", 1, true))
-    assert.is_truthy(epsilon:find("✅", 1, true))
-    assert.is_nil(text(value, "providers"):find("💾", 1, true))
-    assert.is_nil(text(value, "providers"):find("➖", 1, true))
-    assert.is_nil(text(value, "providers"):find("⚙️", 1, true))
+    assert.is_nil((text(value, "providers"):find("Logged", 1, true)))
+    local _, alpha = required_line(value, "providers", "Alpha")
+    local _, beta_line = required_line(value, "providers", "Beta")
+    local _, gamma = required_line(value, "providers", "Gamma")
+    local _, delta = required_line(value, "providers", "Delta")
+    local _, epsilon = required_line(value, "providers", "Epsilon")
+    assert.is_truthy((assert(alpha):find("✅", 1, true)))
+    assert.is_truthy((assert(beta_line):find("✅", 1, true)))
+    assert.is_truthy((assert(gamma):find("⭕⚠️", 1, true)))
+    assert.is_truthy((assert(delta):find("✅📤", 1, true)))
+    assert.is_truthy((assert(epsilon):find("✅", 1, true)))
+    assert.is_nil((text(value, "providers"):find("💾", 1, true)))
+    assert.is_nil((text(value, "providers"):find("➖", 1, true)))
+    assert.is_nil((text(value, "providers"):find("⚙️", 1, true)))
     local selector_width = vim.api.nvim_win_get_width(
-      native(value, "providers").window)
+      (assert(native(value, "providers").window)))
     assert.is_true(selector_width >= 20)
     assert.is_true(selector_width <= 22)
 
@@ -327,7 +364,7 @@ describe("neoagent Provider Shell UI", function()
     assert.are.equal("beta", selected)
 
     assert(value:set(snapshot("Beta", {
-      blocks = { { type = "status", text = "Beta ready" } },
+      blocks = { { type = "status", level = "info", text = "Beta ready" } },
     }, {}), {
       { id = "alpha", name = "Alpha", selected = false, enabled = true },
       { id = "beta", name = "Beta", selected = true, enabled = true },
@@ -337,7 +374,7 @@ describe("neoagent Provider Shell UI", function()
     end, 5))
 
     assert(value:set(snapshot("Beta", {
-      blocks = { { type = "status", text = "Only provider" } },
+      blocks = { { type = "status", level = "info", text = "Only provider" } },
     }, {}), {
       { id = "beta", name = "Beta", selected = true, enabled = true },
     }))
@@ -348,7 +385,9 @@ describe("neoagent Provider Shell UI", function()
   end)
 
   it("mounts provider prompts above its panes", function()
+    ---@type [string, string]?
     local resolved
+    ---@type string?
     local cancelled
     local value = view({
       on_presentation_resolve = function(id, answer)
@@ -359,7 +398,7 @@ describe("neoagent Provider Shell UI", function()
       end,
     })
     assert(value:set(snapshot("Codex", {
-      blocks = { { type = "status", text = "Waiting for login" } },
+      blocks = { { type = "status", level = "info", text = "Waiting for login" } },
     }, {}), {
       { id = "codex", name = "Codex", selected = true, enabled = false },
     }))
@@ -380,17 +419,17 @@ describe("neoagent Provider Shell UI", function()
     local prompt = assert(value:pane("presentation"))
     assert(vim.wait(1000, function() return prompt:is_mounted() end, 5))
     local provider_config = vim.api.nvim_win_get_config(
-      native(value, "provider").window)
+      (assert(native(value, "provider").window)))
     local prompt_config = vim.api.nvim_win_get_config(
-      native(value, "presentation").window)
+      (assert(native(value, "presentation").window)))
     assert.is_true(prompt_config.zindex > provider_config.zindex)
     assert.are.equal("presentation", value.applet:focused_pane())
     assert.are.equal("neoagent-prompt",
       vim.bo[native(value, "presentation").buffer].filetype)
 
-    assert(value.presentation_component:set_text("authorization"))
+    assert(assert(value.presentation_component):set_text("authorization"))
     assert(applet_input.dispatch(
-      value.presentation_component.pane, "i", "<CR>"))
+      assert(value.presentation_component).pane, "i", "<CR>"))
     assert.are.same({ "authorization-code", "authorization" }, resolved)
 
     assert(value:set_presentation({ active = nil, queue_count = 0 }))
@@ -407,15 +446,17 @@ describe("neoagent Provider Shell UI", function()
     local notice = assert(value:pane("presentation"))
     assert(vim.wait(1000, function() return notice:is_mounted() end, 5))
     local notice_config = vim.api.nvim_win_get_config(
-      native(value, "presentation").window)
+      (assert(native(value, "presentation").window)))
     assert.is_true(notice_config.zindex > provider_config.zindex)
     assert(applet_input.dispatch(
-      value.presentation_component.pane, "n", "<C-c>"))
+      assert(value.presentation_component).pane, "n", "<C-c>"))
     assert.are.equal("device-code", cancelled)
   end)
 
   it("filters and updates provider selections in a two-pane prompt", function()
+    ---@type [string, string]?
     local resolved
+    ---@type string?
     local cancelled
     local value = view({
       on_presentation_resolve = function(id, answer)
@@ -424,7 +465,7 @@ describe("neoagent Provider Shell UI", function()
       on_presentation_cancel = function(id) cancelled = id end,
     })
     assert(value:set(snapshot("Codex", {
-      blocks = { { type = "status", text = "Choose login" } },
+      blocks = { { type = "status", level = "info", text = "Choose login" } },
     }, {}), {
       { id = "codex", name = "Codex", selected = true, enabled = true },
     }))
@@ -467,8 +508,8 @@ describe("neoagent Provider Shell UI", function()
       return vim.deep_equal({ "● Subscription", "  Device code" },
         lines(value, "presentation-results"))
     end, 5))
-    assert(applet_input.dispatch(component.filter, "i", "<C-j>"))
-    assert(applet_input.dispatch(component.filter, "i", "<CR>"))
+    assert(applet_input.dispatch((assert(assert(component).filter)), "i", "<C-j>"))
+    assert(applet_input.dispatch((assert(assert(component).filter)), "i", "<CR>"))
     assert.are.same({ "login-method", "device" }, resolved)
 
     assert(value:set_presentation({
@@ -482,9 +523,9 @@ describe("neoagent Provider Shell UI", function()
     }))
     assert(vim.wait(1000, function()
       return value:pane("presentation-results")
-        and value:pane("presentation-results"):is_mounted()
+        and assert(value:pane("presentation-results")):is_mounted()
     end, 5))
-    vim.api.nvim_win_close(native(value, "presentation-results").window, true)
+    vim.api.nvim_win_close((assert(native(value, "presentation-results").window)), true)
     assert(vim.wait(1000, function()
       return cancelled == "cancel-method"
     end, 5))
@@ -493,7 +534,7 @@ describe("neoagent Provider Shell UI", function()
   it("restores the prior prompt when mounting its replacement fails", function()
     local value = view()
     assert(value:set(snapshot("Codex", {
-      blocks = { { type = "status", text = "Choose login" } },
+      blocks = { { type = "status", level = "info", text = "Choose login" } },
     }, {}), {
       { id = "codex", name = "Codex", selected = true, enabled = true },
     }))
@@ -509,32 +550,34 @@ describe("neoagent Provider Shell UI", function()
     }))
     local stable = value.presentation_component
     local flush = value.applet.flush
-    value.applet.flush = function()
-      return nil, "injected frame failure"
+    function value.applet:flush()
+      return nil, { applet = self.name, phase = "flush", generation = self.generation,
+        message = "injected frame failure" }
     end
     local presented, err = value:set_presentation({
       active = {
         id = "replacement",
         kind = "input",
         prompt = "Replacement",
-        default = "draft",
+        default = "draft", multiline = false, secret = false,
+        allow_empty = true, mask = "•",
       },
       queue_count = 0,
     })
     value.applet.flush = flush
 
     assert.is_nil(presented)
-    assert.are.equal("injected frame failure", err)
-    assert.are.equal("stable", value.presentation.active.id)
+    assert.are.equal("injected frame failure", assert(err).message)
+    assert.are.equal("stable", assert(assert(value.presentation).active).id)
     assert.are.equal(stable, value.presentation_component)
-    assert.is_false(stable:is_destroyed())
+    assert.is_false(assert(stable):is_destroyed())
     assert(value.applet:flush())
   end)
 
   it("rebuilds damaged prompts and restores input defaults after reopening", function()
     local value = view()
     assert(value:set(snapshot("Codex", {
-      blocks = { { type = "status", text = "Waiting" } },
+      blocks = { { type = "status", level = "info", text = "Waiting" } },
     }, {}), {
       { id = "codex", name = "Codex", selected = true, enabled = true },
     }))
@@ -548,9 +591,9 @@ describe("neoagent Provider Shell UI", function()
       queue_count = 0,
     }))
     local damaged = value.presentation_component
-    damaged.filter:destroy()
+    assert(assert(damaged).filter):destroy()
     assert(value:open())
-    assert.is_true(damaged:is_destroyed())
+    assert.is_true(assert(damaged):is_destroyed())
     assert.is_not.equal(damaged, value.presentation_component)
     assert(value:close())
 
@@ -560,23 +603,24 @@ describe("neoagent Provider Shell UI", function()
         id = "code",
         kind = "input",
         prompt = "Authorization code",
-        default = "seed",
+        default = "seed", multiline = false, secret = false,
+        allow_empty = true, mask = "•",
       },
       queue_count = 0,
     }))
-    assert.is_true(replaced:is_destroyed())
+    assert.is_true(assert(replaced):is_destroyed())
     assert(value:open())
-    assert.are.equal("seed", value.presentation_component:text())
-    assert(value.presentation_component:set_text("changed"))
+    assert.are.equal("seed", assert(value.presentation_component):text())
+    assert(assert(value.presentation_component):set_text("changed"))
     assert(value:close())
     assert(value:open())
-    assert.are.equal("seed", value.presentation_component:text())
+    assert.are.equal("seed", assert(value.presentation_component):text())
   end)
 
   it("masks provider secrets and wipes their transient buffer", function()
     local value = view()
     assert(value:set(snapshot("API", {
-      blocks = { { type = "status", text = "Authentication required" } },
+      blocks = { { type = "status", level = "info", text = "Authentication required" } },
     }, {}), {
       { id = "api", name = "API", selected = true, enabled = false },
     }))
@@ -601,12 +645,13 @@ describe("neoagent Provider Shell UI", function()
     assert.is_false(vim.bo[buffer].swapfile)
     assert.is_false(vim.bo[buffer].undofile)
 
-    assert(value.presentation_component:set_text("s3cr3t"))
-    local marks = vim.api.nvim_buf_get_extmarks(buffer,
-      value.presentation_component.pane.mask_namespace,
+    assert(assert(value.presentation_component):set_text("s3cr3t"))
+    local marks = vim.api.nvim_buf_get_extmarks((assert(buffer)),
+      assert(value.presentation_component).pane.mask_namespace,
       0, -1, { details = true })
     assert.are.equal(6, #marks)
     for _, mark in ipairs(marks) do
+      ---@cast mark [integer, integer, integer, {conceal?: string}]
       assert.are.equal("•", mark[4].conceal)
     end
 
@@ -624,20 +669,21 @@ describe("neoagent Provider Shell UI", function()
       queue_count = 0,
     }))
     assert(vim.wait(1000, function()
-      return not vim.api.nvim_buf_is_valid(buffer)
+      return not vim.api.nvim_buf_is_valid((assert(buffer)))
     end, 5))
     local ordinary = native(value, "presentation").buffer
     assert.are_not.equal(buffer, ordinary)
     assert.are.equal("neoagent-prompt", vim.bo[ordinary].filetype)
-    assert(value.presentation_component:set_text("ordinary"))
-    vim.api.nvim_buf_call(ordinary, function() vim.cmd("silent! undo") end)
-    assert.is_nil(table.concat(vim.api.nvim_buf_get_lines(
-      ordinary, 0, -1, false), "\n"):find("s3cr3t", 1, true))
+    assert(assert(value.presentation_component):set_text("ordinary"))
+    vim.api.nvim_buf_call((assert(ordinary)), function() vim.cmd("silent! undo") end)
+    assert.is_nil((table.concat(vim.api.nvim_buf_get_lines(
+      (assert(ordinary)), 0, -1, false), "\n"):find("s3cr3t", 1, true)))
     assert(value:set_presentation({ active = nil, queue_count = 0 }))
   end)
 
   it("changes the visible provider through real selector input", function()
     local selected
+    ---@type Neoagent.ProviderShellView?
     local value
     local providers = {
       { id = "alpha", name = "Alpha", selected = true, enabled = true },
@@ -648,31 +694,31 @@ describe("neoagent Provider Shell UI", function()
         selected = id
         providers[1].selected = id == "alpha"
         providers[2].selected = id == "beta"
-        return value:set(snapshot(id == "beta" and "Beta" or "Alpha", {
+        return assert(value):set(snapshot(id == "beta" and "Beta" or "Alpha", {
           blocks = { {
-            type = "status",
+            type = "status", level = "info",
             text = id == "beta" and "Beta ready" or "Alpha ready",
           } },
         }, {}), providers)
       end,
     })
     assert(value:set(snapshot("Alpha", {
-      blocks = { { type = "status", text = "Alpha ready" } },
+      blocks = { { type = "status", level = "info", text = "Alpha ready" } },
     }, {}), providers))
     assert(value:open())
 
     local selector = assert(value:pane("providers"))
-    vim.api.nvim_set_current_win(native(value, "providers").window)
+    vim.api.nvim_set_current_win((assert(native(value, "providers").window)))
     assert(vim.wait(1000, function()
       return value.applet:focused_pane() == "providers"
     end, 5))
     local beta_line = assert(select(1, line(value, "providers", "Beta")))
-    vim.api.nvim_win_set_cursor(native(value, "providers").window,
+    vim.api.nvim_win_set_cursor((assert(native(value, "providers").window)),
       { beta_line, 0 })
     assert.are.equal("beta",
-      assert(selector:focused_target()).action.payload.provider)
+      assert(assert(selector:focused_target()).action).payload.provider)
     local mapping = vim.api.nvim_buf_call(
-      native(value, "providers").buffer,
+      (assert(native(value, "providers").buffer)),
       function() return vim.fn.maparg("<CR>", "n", false, true) end)
     assert.is_true(next(mapping) ~= nil, vim.inspect(mapping))
     feed("<CR>")
@@ -695,9 +741,9 @@ describe("neoagent Provider Shell UI", function()
           value = "Shared across all Go models" },
         { type = "limit", label = "5-hour limit", remaining = 0,
           resets_at = os.time() + 3600, level = "error" },
-        { type = "limit", label = "Weekly limit", remaining = 0.36,
+        { type = "limit", level = "info", label = "Weekly limit", remaining = 0.36,
           resets_at = os.time() + 3 * 86400 },
-        { type = "limit", label = "Monthly limit", remaining = 0.68,
+        { type = "limit", level = "info", label = "Monthly limit", remaining = 0.68,
           resets_at = os.time() + 30 * 86400 },
         { type = "progress", label = "Catalog", detail = "Waiting" },
         { type = "progress", label = "Download", value = 0.42 },
@@ -743,32 +789,32 @@ describe("neoagent Provider Shell UI", function()
     end, 5))
 
     local window = native(value, "provider").window
-    assert.are.equal(" OpenCode Go provider shell ", title(window))
+    assert.are.equal(" OpenCode Go provider shell ", title((assert(window))))
     assert.is_false(vim.wo[window].wrap)
-    local status_row, status = assert(line(value, "provider",
-      "A Go usage window is exhausted"))
-    local _, endpoint = assert(line(value, "provider", "Endpoint"))
-    local _, five_hour = assert(line(value, "provider", "5-hour limit"))
-    local _, weekly = assert(line(value, "provider", "Weekly limit"))
-    local _, monthly = assert(line(value, "provider", "Monthly limit"))
+    local status_row, status = required_line(value, "provider",
+      "A Go usage window is exhausted")
+    local _, endpoint = required_line(value, "provider", "Endpoint")
+    local _, five_hour = required_line(value, "provider", "5-hour limit")
+    local _, weekly = required_line(value, "provider", "Weekly limit")
+    local _, monthly = required_line(value, "provider", "Monthly limit")
     local actions_row = assert(select(1, line(value, "provider", "Actions")))
     local activity_row = assert(select(1, line(value, "provider", "A success")))
     assert.is_true(actions_row > status_row)
     assert.is_true(actions_row > activity_row)
-    assert.is_nil(status:find("Actions", 1, true))
-    assert.matches("Endpoint.*×", endpoint)
-    local five_hour_bar = assert(five_hour:find("[█░]"))
-    local weekly_bar = assert(weekly:find("[█░]"))
-    local monthly_bar = assert(monthly:find("[█░]"))
+    assert.is_nil((assert(status):find("Actions", 1, true)))
+    assert.matches("Endpoint.*×", (assert(endpoint)))
+    local five_hour_bar = assert((assert(five_hour):find("[█░]")))
+    local weekly_bar = assert((assert(weekly):find("[█░]")))
+    local monthly_bar = assert((assert(monthly):find("[█░]")))
     assert.are.equal(five_hour_bar, weekly_bar)
     assert.are.equal(weekly_bar, monthly_bar)
     assert.matches("Waiting", text(value, "provider"))
     assert.matches("42%%", text(value, "provider"))
     assert.matches("Activity", text(value, "provider"))
     assert.matches("A warning", text(value, "provider"))
-    assert.is_nil(text(value, "provider"):find("Loading quotas", 1, true))
-    assert.is_nil(text(value, "provider"):find(
-      "Authoritative request", 1, true))
+    assert.is_nil((text(value, "provider"):find("Loading quotas", 1, true)))
+    assert.is_nil((text(value, "provider"):find(
+      "Authoritative request", 1, true)))
 
     vim.o.columns = 104
     vim.api.nvim_exec_autocmds("VimResized", {})
@@ -776,13 +822,13 @@ describe("neoagent Provider Shell UI", function()
       local actions = select(1, line(value, "provider", "Actions"))
       local status_row = select(1, line(value, "provider",
         "A Go usage window is exhausted"))
-      return provider.last_width == vim.api.nvim_win_get_width(window)
+      return provider.last_width == vim.api.nvim_win_get_width((assert(window)))
         and actions and status_row and actions > status_row
     end, 5))
 
     assert(value:set(snapshot("OpenCode Go", { blocks = {
-      { type = "limit", label = "Short", remaining = 0.5 },
-      { type = "limit",
+      { type = "limit", level = "info", label = "Short", remaining = 0.5 },
+      { type = "limit", level = "info",
         label = "An exceptionally long organization quota label",
         remaining = 0.25, resets_at = os.time() + 3 * 86400 },
     } }), {
@@ -799,8 +845,8 @@ describe("neoagent Provider Shell UI", function()
     vim.o.columns = 70
     vim.api.nvim_exec_autocmds("VimResized", {})
     assert(value:set(snapshot("OpenCode Go", { blocks = {
-      { type = "limit", label = "Hourly", remaining = 0.5 },
-      { type = "limit", label = "Daily", remaining = 0.25,
+      { type = "limit", level = "info", label = "Hourly", remaining = 0.5 },
+      { type = "limit", level = "info", label = "Daily", remaining = 0.25,
         resets_at = os.time() + 3600 },
     } }), {
       { id = "opencode-go", name = "OpenCode Go",
@@ -809,7 +855,7 @@ describe("neoagent Provider Shell UI", function()
     }))
     assert(vim.wait(3000, function()
       local contents = text(value, "provider")
-      return provider.last_width == vim.api.nvim_win_get_width(window)
+      return provider.last_width == vim.api.nvim_win_get_width((assert(window)))
         and contents:find("Hourly  50%% left")
         and contents:find("Daily  25%% left")
         and contents:find("resets", 1, true)
@@ -819,6 +865,9 @@ describe("neoagent Provider Shell UI", function()
   it("routes shell host effects and releases native surfaces", function()
     local notifications = {}
     local opened_uri
+    -- Only identity is observed; the native process is opaque to the View.
+    local process = {}
+    ---@cast process vim.SystemObj
     local value = view({
       notify = function(message, level)
         notifications[#notifications + 1] = { message, level }
@@ -826,7 +875,7 @@ describe("neoagent Provider Shell UI", function()
       end,
       open_uri = function(uri)
         opened_uri = uri
-        return true
+        return process
       end,
     })
     assert(value:set(snapshot("Effects", false, {}), {
@@ -834,15 +883,15 @@ describe("neoagent Provider Shell UI", function()
     }))
     assert(value:open())
     assert(value:notify("notice", vim.log.levels.WARN))
-    assert(value:open_uri("https://example.test/provider"))
+    assert.are.equal(process, value:open_uri("https://example.test/provider"))
     assert.are.same({ { "notice", vim.log.levels.WARN } }, notifications)
     assert.are.equal("https://example.test/provider", opened_uri)
     local buffer = native(value, "provider").buffer
     value:destroy()
     assert.is_false(value:is_open())
-    assert.is_false(vim.api.nvim_buf_is_valid(buffer))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(buffer))))
     local opened, err = value:open()
     assert.is_nil(opened)
-    assert.matches("destroyed", err.message)
+    assert.matches("destroyed", assert(err).message)
   end)
 end)

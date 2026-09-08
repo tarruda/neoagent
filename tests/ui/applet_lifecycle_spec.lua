@@ -1,19 +1,29 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local layout = Applet.layout
 local ui = Applet.Pane.nodes
 
 local sequence = 0
 
+---@generic T
+---@param ok T
+---@param err? Applet.Error
+---@return T
 local function succeeds(ok, err)
   assert(ok, err and err.message or tostring(err))
   return ok
 end
 
+---@param key string
+---@param mode? "managed"|"editable"
+---@param text? string
+---@return Applet.Pane<{text: string}>
 local function component(key, mode, text)
   sequence = sequence + 1
   local value = Applet.Pane.new({
     key = key,
     buffer_mode = mode or "managed",
+    ---@param state {text: string}
     render = function(state)
       return ui.text({ key = "content", text = state.text or "" })
     end,
@@ -22,6 +32,17 @@ local function component(key, mode, text)
   return value
 end
 
+---@class Applet.LifecycleTestMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field required? boolean
+---@field sensitive? boolean
+---@field border? Applet.WindowBorder
+---@field mode? "normal"|"insert"|"preserve"
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.LifecycleTestMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -41,8 +62,20 @@ local function pane(key, value, opts)
   })
 end
 
+---@class Applet.LifecycleTestTreeOptions
+---@field second_height? integer
+---@field third? Applet.Pane
+---@field revision? integer
+---@field layers? Applet.LayoutLayerNode[]
+---@field intent? {key: string, revision?: string|number}
+
+---@param first Applet.Pane
+---@param second Applet.Pane
+---@param opts? Applet.LifecycleTestTreeOptions
+---@return Applet.LayoutTree
 local function tree(first, second, opts)
   opts = opts or {}
+  ---@type Applet.LayoutSplitChild[]
   local children = {
     { key = "first", grow = 1, min = 2, child = pane("first", first) },
     { key = "second", basis = opts.second_height or 3, grow = 0,
@@ -70,7 +103,9 @@ local function tree(first, second, opts)
 end
 
 describe("Applet lifecycle", function()
+  ---@type Applet.Applet[]
   local applets = {}
+  ---@type Applet.Pane[]
   local panes = {}
 
   before_each(function()
@@ -90,12 +125,19 @@ describe("Applet lifecycle", function()
     vim.cmd("stopinsert")
   end)
 
+  ---@param key string
+  ---@param mode? "managed"|"editable"
+  ---@param text? string
+  ---@return Applet.Pane<{text: string}>
   local function new_pane(key, mode, text)
     local value = component(key, mode, text)
     panes[#panes + 1] = value
     return value
   end
 
+  ---@generic S
+  ---@param opts Applet.AppletOptions<S>
+  ---@return Applet.Applet<S>
   local function applet(opts)
     local value = Applet.new(opts)
     applets[#applets + 1] = value
@@ -164,7 +206,7 @@ describe("Applet lifecycle", function()
     assert.are.equal("Next epoch", value:host().label)
 
     local observed = value:observed()
-    observed.host.kind = "changed"
+    rawset(assert(observed.host), "kind", "changed")
     assert.are.equal("tab", value:observed().host.kind)
     local stats = value:_stats()
     stats.renders = -1
@@ -181,24 +223,24 @@ describe("Applet lifecycle", function()
     })
     value:update(tree(first, second))
     succeeds(value:open())
-    local first_pane = value:pane("first")
-    local second_pane = value:pane("second")
-    local first_native, second_native = first_pane:native(), second_pane:native()
-    local original_tab = vim.api.nvim_win_get_tabpage(first_native.window)
+    local first_pane = assert(value:pane("first"))
+    local second_pane = assert(value:pane("second"))
+    local first_native, second_native = assert(first_pane):native(), assert(second_pane):native()
+    local original_tab = vim.api.nvim_win_get_tabpage((assert(first_native.window)))
     local tabs = #vim.api.nvim_list_tabpages()
 
     value:update(tree(first, second, { second_height = 6 }))
     succeeds(value:flush())
-    assert.are.same(first_native, first_pane:native())
-    assert.are.same(second_native, second_pane:native())
+    assert.are.same(first_native, assert(first_pane):native())
+    assert.are.same(second_native, assert(second_pane):native())
 
     value:update(tree(first, second, { second_height = 6, third = third }))
     succeeds(value:flush())
     assert.are.equal(tabs, #vim.api.nvim_list_tabpages())
     assert.is_false(vim.api.nvim_tabpage_is_valid(original_tab))
-    assert.are.equal(first_native.buffer, first_pane:native().buffer)
-    assert.are.equal(second_native.buffer, second_pane:native().buffer)
-    assert.is_true(value:pane("third"):is_mounted())
+    assert.are.equal(first_native.buffer, assert(first_pane):native().buffer)
+    assert.are.equal(second_native.buffer, assert(second_pane):native().buffer)
+    assert.is_true(assert(value:pane("third")):is_mounted())
     assert.are.equal(first_pane, value:pane("first"))
   end)
 
@@ -213,7 +255,7 @@ describe("Applet lifecycle", function()
     local requested = tree(first, second)
     value:update(requested)
     succeeds(value:open())
-    local buffer = value:pane("first"):native().buffer
+    local buffer = assert(value:pane("first")):native().buffer
     vim.api.nvim_set_current_tabpage(origin_tab)
     assert.is_false(value:is_visible())
 
@@ -222,7 +264,7 @@ describe("Applet lifecycle", function()
     succeeds(value:flush())
     assert.are.equal(origin_tab, vim.api.nvim_get_current_tabpage())
     assert.are.same({ "after" },
-      vim.api.nvim_buf_get_lines(buffer, 0, -1, false))
+      vim.api.nvim_buf_get_lines((assert(buffer)), 0, -1, false))
     assert.is_false(value:is_visible())
   end)
 
@@ -237,8 +279,8 @@ describe("Applet lifecycle", function()
     local requested = tree(first, second)
     value:update(requested)
     succeeds(value:open())
-    local owned = value:pane("first"):native()
-    vim.api.nvim_set_current_win(owned.window)
+    local owned = assert(value:pane("first")):native()
+    vim.api.nvim_set_current_win((assert(owned.window)))
     vim.cmd("vsplit")
     local foreign = vim.api.nvim_get_current_win()
     assert.are.equal(owned.buffer, vim.api.nvim_win_get_buf(foreign))
@@ -254,7 +296,7 @@ describe("Applet lifecycle", function()
     value:update(tree(first, second, { third = third }))
     local committed, err = value:flush()
     assert.is_nil(committed)
-    assert.matches("foreign windows", err.message)
+    assert.matches("foreign windows", assert(err).message)
     assert.is_true(vim.api.nvim_win_is_valid(foreign))
     assert.are.equal(owned.buffer, vim.api.nvim_win_get_buf(foreign))
 
@@ -262,9 +304,9 @@ describe("Applet lifecycle", function()
     assert.is_true(vim.api.nvim_win_is_valid(foreign))
     value:destroy()
     assert.is_true(vim.api.nvim_win_is_valid(foreign))
-    assert.is_true(vim.api.nvim_buf_is_valid(owned.buffer))
+    assert.is_true(vim.api.nvim_buf_is_valid((assert(owned.buffer))))
     assert.are.same({ "shared update" },
-      vim.api.nvim_buf_get_lines(owned.buffer, 0, -1, false))
+      vim.api.nvim_buf_get_lines((assert(owned.buffer)), 0, -1, false))
   end)
 
   it("restores focus through nested Layers and releases a detached modal boundary", function()
@@ -302,9 +344,9 @@ describe("Applet lifecycle", function()
 
     value:update(tree(first, second, { layers = { dialog_layer } }))
     succeeds(value:flush())
-    vim.api.nvim_win_close(value:pane("dialog"):native().window, true)
+    vim.api.nvim_win_close(assert(assert(value:pane("dialog")):native().window), true)
     assert(vim.wait(1000, function()
-      return not value:pane("dialog"):is_mounted()
+      return not assert(value:pane("dialog")):is_mounted()
     end))
     assert.is_true(value:focus("second"))
   end)
@@ -356,7 +398,7 @@ describe("Applet lifecycle", function()
       succeeds(value:flush())
     end
     assert.are.equal("first\0" .. "302", value.applied_focus_intent)
-    assert.is_nil(value.applied_focus_intents)
+    assert.is_nil(rawget(value, "applied_focus_intents"))
   end)
 
   it("keeps Pane editing semantic while mounted and retained", function()
@@ -368,30 +410,30 @@ describe("Applet lifecycle", function()
     })
     value:update(tree(first, second))
     succeeds(value:open())
-    local editable = value:pane("second")
-    assert.is_true(editable:replace_text("one\ntwo\nthree", nil, 1))
-    assert.are.equal("one\ntwo\nthree", editable:text())
-    assert.is_true(editable:set_cursor({ line = 1, column = 0 }))
-    assert.is_true(editable:at_start())
-    assert.is_true(editable:move_cursor("end"))
-    assert.is_true(editable:at_end())
-    assert.is_true(editable:move_cursor("up", 2))
-    assert.are.same({ line = 1, column = 3 }, editable:cursor())
-    assert.is_true(editable:move_cursor("down"))
-    assert.is_true(editable:move_cursor("start"))
-    assert.is_true(editable:replace_text("changed", { line = 1, column = 7 }, 4))
-    assert.is_false(editable:replace_text("ignored", nil, 4))
-    assert.are.equal("changed", editable:text())
-    assert.are.equal("read only", value:pane("first"):text())
+    local editable = assert(value:pane("second"))
+    assert.is_true(assert(editable):replace_text("one\ntwo\nthree", nil, 1))
+    assert.are.equal("one\ntwo\nthree", assert(editable):text())
+    assert.is_true(assert(editable):set_cursor({ line = 1, column = 0 }))
+    assert.is_true(assert(editable):at_start())
+    assert.is_true(assert(editable):move_cursor("end"))
+    assert.is_true(assert(editable):at_end())
+    assert.is_true(assert(editable):move_cursor("up", 2))
+    assert.are.same({ line = 1, column = 3 }, assert(editable):cursor())
+    assert.is_true(assert(editable):move_cursor("down"))
+    assert.is_true(assert(editable):move_cursor("start"))
+    assert.is_true(assert(editable):replace_text("changed", { line = 1, column = 7 }, 4))
+    assert.is_false(assert(editable):replace_text("ignored", nil, 4))
+    assert.are.equal("changed", assert(editable):text())
+    assert.are.equal("read only", assert(value:pane("first")):text())
 
-    local geometry = editable:geometry()
+    local geometry = assert(editable):geometry()
     assert.are.equal("floating", geometry.host)
-    assert.is_nil(geometry.buffer)
-    assert.is_nil(geometry.window)
+    assert.is_nil(rawget(geometry, "buffer"))
+    assert.is_nil(rawget(geometry, "window"))
     value:close()
-    assert.is_false(editable:is_mounted())
-    assert.is_false(editable:scroll({ target = "end" }))
-    assert.are.equal("changed", editable:text())
+    assert.is_false(assert(editable):is_mounted())
+    assert.is_false(assert(editable):scroll({ target = "end" }))
+    assert.are.equal("changed", assert(editable):text())
   end)
 
   it("reports bounded render, Host, and compilation failures", function()
@@ -401,7 +443,7 @@ describe("Applet lifecycle", function()
       name = "failure-phases",
       host = function(state)
         if state.host_error then error("host resolver failed") end
-        if state.invalid_host then return { kind = "unknown" } end
+        if state.invalid_host then return { kind = "unknown" } --[[@as Applet.HostInput]] end
         return Applet.host.floating({ width = 60, height = 20 })
       end,
       render = function(state)
@@ -409,15 +451,15 @@ describe("Applet lifecycle", function()
         if state.semantic_error then
           error({ kind = "render", message = "semantic render failed" })
         end
-        if state.nil_tree then return nil end
-        if state.invalid_tree then return { root = {} } end
+        if state.nil_tree then return nil --[[@as Applet.LayoutTree]] end
+        if state.invalid_tree then return { root = {} } --[[@as Applet.LayoutTree]] end
         return tree(first, second)
       end,
       on_error = function(err) errors[#errors + 1] = err end,
     })
     value:set_state({})
     succeeds(value:open())
-    local native = value:pane("first"):native()
+    local native = assert(value:pane("first")):native()
 
     for _, case in ipairs({
       { state = { host_error = true }, phase = "host", text = "resolver failed" },
@@ -431,9 +473,9 @@ describe("Applet lifecycle", function()
       value:set_state(case.state)
       local committed, err = value:flush()
       assert.is_nil(committed)
-      assert.are.equal(case.phase, err.phase)
-      assert.matches(case.text, err.message)
-      assert.are.same(native, value:pane("first"):native())
+      assert.are.equal(case.phase, assert(err).phase)
+      assert.matches(case.text, assert(err).message)
+      assert.are.same(native, assert(value:pane("first")):native())
     end
     assert.are.equal(6, #errors)
     assert.is_true(#errors[#errors].message <= 512)
@@ -452,16 +494,19 @@ describe("Applet lifecycle", function()
       { name = "name", host = floating,
         handlers = { ["applet.reserved"] = function() end } },
     }) do
-      assert.has_error(function() Applet.new(opts) end)
+      assert.has_error(function() Applet.new(opts --[[@as Applet.AppletOptions<unknown>]]) end)
     end
     assert.has_error(function()
-      Applet.new({ name = "resolver", host = function() end })
+      Applet.new({ name = "resolver", host = function() return nil --[[@as Applet.HostInput]] end })
     end)
 
     local value = applet({ name = "destroyed", host = floating })
     value:destroy()
     value:destroy()
-    assert.has_error(function() value:update({}) end, "Applet is destroyed")
+    local invalid_tree = {}
+    assert.has_error(function()
+      value:update(invalid_tree --[[@as Applet.LayoutTree]])
+    end, "Applet is destroyed")
     assert.has_error(function() value:open() end, "Applet is destroyed")
     assert.has_error(function() value:notify("message") end,
       "Applet is destroyed")

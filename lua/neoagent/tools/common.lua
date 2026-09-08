@@ -2,17 +2,69 @@ local fs = require("neoagent.fs")
 local process = require("neoagent.process")
 local util = require("neoagent.util")
 
+---@alias Neoagent.ToolWorkspace {
+---  cwd: string,
+---  resolve: (fun(self: Neoagent.ToolWorkspace, path: string): string),
+---}
+
+---@alias Neoagent.ToolFilesystem {
+---  create_temp: (fun(prefix?: string, directory?: string): string?, string?),
+---  read: (fun(path: string): string?, string?),
+---  read_chunks?: (fun(path: string, on_chunk: fun(data: string, offset: integer), chunk_size?: integer): true?, unknown),
+---  mkdirp: (fun(path?: string): true?, unknown),
+---  write_all: (fun(path: string, data: string, flags?: string, mode?: integer): true?, string?),
+---  atomic_replace: (fun(path: string, data: string, policy: Neoagent.AtomicPolicy): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?),
+---}
+
+---@alias Neoagent.ToolCapabilities {
+---  context?: unknown,
+---  fs?: Neoagent.ToolFilesystem,
+---  process?: (fun(command: string[], opts?: Neoagent.ProcessOptions): Neoagent.ProcessResult),
+---}
+
+---@class Neoagent.LineCaptureOptions
+---@field offset? number
+---@field select_lines? number
+---@field max_lines? number
+---@field max_bytes? number
+---@field max_line_bytes? number
+---@field transform? fun(line: string, overflow: boolean, bytes: integer): string, boolean
+
+---@class Neoagent.LineCaptureResult: Neoagent.TruncationResult
+---@field firstLineBytes? integer
+---@field linesTruncated integer
+---@field selectionMore boolean
+
+---@class Neoagent.LineCapture
+---@field append fun(data: string)
+---@field finish fun(trailing_empty?: boolean): Neoagent.LineCaptureResult
+
+---@class Neoagent.CapturedProcessOptions: Neoagent.ProcessOptions
+---@field on_output? fun(data: string, is_stderr: boolean)
+
+---@class Neoagent.ProcessCaptureOptions
+---@field stdout Neoagent.LineCaptureOptions
+---@field stderr? Neoagent.LineCaptureOptions
+---@field process? Neoagent.CapturedProcessOptions
+
 local M = {}
 
+---@param ctx? Neoagent.ToolCapabilities
+---@return Neoagent.ToolWorkspace
 function M.workspace(ctx)
   local context = ctx and ctx.context
-  local workspace = context and context.workspace or context
+  local workspace = type(context) == "table" and rawget(context, "workspace") or context
   if type(workspace) ~= "table" or type(workspace.resolve) ~= "function" then
     error(util.error("workspace", "Tool requires a workspace in ctx.context.workspace"), 0)
   end
+  ---@cast workspace Neoagent.ToolWorkspace
   return workspace
 end
 
+---@param arguments Neoagent.JsonObject
+---@param key string
+---@param allow_empty? boolean
+---@return string
 function M.require_string(arguments, key, allow_empty)
   local value = arguments[key]
   if type(value) ~= "string" or not allow_empty and value == "" then
@@ -21,15 +73,24 @@ function M.require_string(arguments, key, allow_empty)
   return value
 end
 
+---@param ctx? Neoagent.ToolCapabilities
+---@return Neoagent.ToolFilesystem
 function M.fs(ctx)
   return ctx and ctx.fs or fs
 end
 
+---@async
+---@param ctx? Neoagent.ToolCapabilities
+---@param command string[]
+---@param opts? Neoagent.ProcessOptions
+---@return Neoagent.ProcessResult
 function M.process(ctx, command, opts)
   local run = ctx and ctx.process or process.run
   return run(command, opts)
 end
 
+---@param options? Neoagent.LineCaptureOptions
+---@return Neoagent.LineCapture
 function M.line_capture(options)
   options = options or {}
   local offset = options.offset or 1
@@ -48,24 +109,28 @@ function M.line_capture(options)
   local had_data = false
   local ended_with_newline = false
   local truncated = false
+  ---@type Neoagent.TruncationReason?
   local truncated_by
   local first_line_exceeds = false
+  ---@type integer?
   local first_line_bytes
   local lines_truncated = 0
   local selection_more = false
   local finished = false
 
+  ---@return boolean
   local function current_is_candidate()
     local relative = total_lines + 2 - offset
     return relative >= 1 and relative <= select_lines and relative <= max_lines
       and not truncated
   end
 
+  ---@param fragment string
   local function append_fragment(fragment)
     current_bytes = current_bytes + #fragment
     if not current_is_candidate() then return end
     local remaining = max_line_bytes - #current
-    if remaining > 0 then current = current .. fragment:sub(1, remaining) end
+    if remaining > 0 then current = current .. fragment:sub(1, math.floor(remaining)) end
     if #fragment > remaining then current_overflow = true end
   end
 
@@ -103,6 +168,7 @@ function M.line_capture(options)
 
   local capture = {}
 
+  ---@param data string
   function capture.append(data)
     assert(not finished, "line capture is finished")
     if data == "" then return end
@@ -122,6 +188,8 @@ function M.line_capture(options)
     end
   end
 
+  ---@param trailing_empty? boolean
+  ---@return Neoagent.LineCaptureResult
   function capture.finish(trailing_empty)
     assert(not finished, "line capture is finished")
     finished = true
@@ -150,6 +218,11 @@ function M.line_capture(options)
   return capture
 end
 
+---@async
+---@param ctx? Neoagent.ToolCapabilities
+---@param command string[]
+---@param options Neoagent.ProcessCaptureOptions
+---@return Neoagent.ProcessResult, Neoagent.LineCaptureResult, Neoagent.LineCaptureResult
 function M.capture_process(ctx, command, options)
   options = options or {}
   local stdout = M.line_capture(assert(options.stdout, "stdout capture options are required"))

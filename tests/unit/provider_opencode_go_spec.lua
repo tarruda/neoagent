@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local config = require("neoagent.config")
 local fake_transport = require("tests.helpers.fake_transport")
@@ -7,26 +8,23 @@ local provider_runtimes = require("neoagent.provider_runtimes")
 local provider_service = require("neoagent.provider_service")
 local util = require("neoagent.util")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
-local function block(snapshot, block_type, label)
-  for _, candidate in ipairs(snapshot.blocks or {}) do
-    if candidate.type == block_type
-        and (label == nil or candidate.label == label
-          or candidate.title == label) then
-      return candidate
-    end
-  end
-end
+local block = require("tests.helpers.provider_state").block
 
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 local function resolve_auth()
   return async.run(function()
     return {
       ok = true,
       configured = true,
+      method = "test",
       credential_type = "api_key",
       request_opts = { headers = {
         Authorization = "Bearer stored-key",
@@ -36,11 +34,15 @@ local function resolve_auth()
   end)
 end
 
+---@param service Neoagent.ProviderService
+---@param id string
+---@param interact? Neoagent.ProviderInteraction
+---@return Neoagent.ProviderOperationRun
 local function operation(service, id, interact)
-  return provider_service.run(service, id, {
+  return (assert(provider_service.run(service, id, {
     resolve_auth = resolve_auth,
     interact = interact,
-  })
+  })))
 end
 
 describe("OpenCode Go provider service", function()
@@ -79,16 +81,17 @@ describe("OpenCode Go provider service", function()
       message = "Loading OpenCode Go usage",
     }, progress)
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal("Shared across all Go models",
-      block(snapshot, "field", "Quota scope").value)
+      assert(block(snapshot, "field", "Quota scope")).value)
     assert.are.equal(0.5,
-      block(snapshot, "limit", "5-hour limit").remaining)
+      assert(block(snapshot, "limit", "5-hour limit")).remaining)
     assert.are.equal("≈ $6.00 of $12 allowance remaining",
-      block(snapshot, "limit", "5-hour limit").detail)
+      assert(block(snapshot, "limit", "5-hour limit")).detail)
     assert.are.equal(0.25,
-      block(snapshot, "limit", "Weekly limit").remaining)
+      assert(block(snapshot, "limit", "Weekly limit")).remaining)
     assert.are.equal(0.9,
-      block(snapshot, "limit", "Monthly limit").remaining)
+      assert(block(snapshot, "limit", "Monthly limit")).remaining)
     assert.are.equal(1, #transport.fetch_requests)
   end)
 
@@ -112,11 +115,12 @@ describe("OpenCode Go provider service", function()
     local result = wait(operation(service, "refresh"))
     assert.is_false(result.ok)
     local snapshot = service:state()
+    assert(snapshot)
     assert.are.equal(0.8,
-      block(snapshot, "limit", "5-hour limit").remaining)
-    assert.matches("refresh failed", block(snapshot, "status").text)
-    assert.is_nil(vim.inspect(snapshot):find("rate limited body", 1, true))
-    assert.is_nil(vim.inspect(snapshot):find("stored-key", 1, true))
+      assert(block(snapshot, "limit", "5-hour limit")).remaining)
+    assert.matches("refresh failed", assert(block(snapshot, "status")).text)
+    assert.is_nil((vim.inspect(snapshot):find("rate limited body", 1, true)))
+    assert.is_nil((vim.inspect(snapshot):find("stored-key", 1, true)))
   end)
 
   it("publishes exhausted windows and destroys its state", function()
@@ -133,15 +137,15 @@ describe("OpenCode Go provider service", function()
       base_url = "https://example.test/v1",
     }, { transport = transport })
     local published
-    local unsubscribe = service:subscribe(function(value) published = value end)
+    local unsubscribe = assert(service.subscribe)(service, function(value) published = value end)
     assert.is_true(wait(operation(service, "refresh")).ok)
     assert.are.equal("A Go usage window is exhausted",
-      block(service:state(), "status").text)
+      assert(block(service:state(), "status")).text)
     assert.are.equal("error",
-      block(service:state(), "limit", "5-hour limit").level)
+      assert(block(service:state(), "limit", "5-hour limit")).level)
     assert.is_table(published)
     unsubscribe()
-    service:destroy()
+    assert(service.destroy)(service)
     assert.are.same({}, service:state().blocks)
   end)
 
@@ -155,16 +159,21 @@ describe("OpenCode Go provider service", function()
   end)
 end)
 
+---@param value Neoagent.JsonObject
+---@return string
 local function event(value)
   return "data: " .. vim.json.encode(value) .. "\n\n"
 end
 
+---@param value Neoagent.JsonObject & { type: string }
+---@return string
 local function message_event(value)
   return "event: " .. value.type .. "\ndata: " .. vim.json.encode(value)
     .. "\n\n"
 end
 
 -- One complete stream per request API Go routes models through.
+---@type table<string, string[]>
 local streams = {
   ["openai-completions"] = {
     event({ choices = { { delta = { content = "ok" },
@@ -196,9 +205,13 @@ local streams = {
 }
 
 describe("OpenCode Go conversation attribution", function()
+  ---@type Neoagent.ProviderRuntimes?
   local runtimes
+  ---@type string?
   local original_key
+  ---@type Neoagent.Recorder?
   local recorder
+  ---@type string[]
   local directories = {}
 
   before_each(function()
@@ -222,6 +235,10 @@ describe("OpenCode Go conversation attribution", function()
 
   -- Resolves a seeded Go model through the real provider definition,
   -- Authentication, API adapter, and transport, then returns the sent request.
+  ---@param model_id string
+  ---@param api string
+  ---@param request_context? Neoagent.RequestIdentity
+  ---@return Neoagent.HttpRequest
   local function sent_request(model_id, api, request_context)
     local transport = fake_transport.new({
       { chunks = assert(streams[api], api) },
@@ -239,7 +256,7 @@ describe("OpenCode Go conversation attribution", function()
     } } } }))
     assert.is_true(result.ok)
     assert.are.equal(1, #transport.requests)
-    return transport.requests[1]
+    return (assert(transport.requests[1]))
   end
 
   it("attributes each Session conversation across Go request APIs", function()
@@ -254,17 +271,17 @@ describe("OpenCode Go conversation attribution", function()
       local request = sent_request(case.id, case.api,
         { session_id = "session-7" })
       assert.are.equal(case.path, request.url)
-      assert.are.equal("session-7", request.headers["x-opencode-session"])
+      assert.are.equal("session-7", rawget(assert(request.headers), "x-opencode-session"))
     end
   end)
 
   it("omits attribution when the composition has no Session", function()
     local request = sent_request("glm-5.3", "openai-completions")
-    assert.is_nil(request.headers["x-opencode-session"])
+    assert.is_nil(rawget(assert(request.headers), "x-opencode-session"))
     request = sent_request("glm-5.3", "openai-completions", {
       workspace = "/workspace", session_id = "unsafe\r\nvalue",
     })
-    assert.is_nil(request.headers["x-opencode-session"])
+    assert.is_nil(rawget(assert(request.headers), "x-opencode-session"))
   end)
 
   it("attributes standalone chat calls across Go request APIs", function()
@@ -293,7 +310,7 @@ describe("OpenCode Go conversation attribution", function()
           or chat[method](session, "hello", opts)
         assert.is_true(wait(run).ok)
         assert.are.equal(session:id(),
-          transport.requests[index].headers["x-opencode-session"])
+          rawget(assert(assert(transport.requests[index]).headers), "x-opencode-session"))
       end
     end
   end)
@@ -316,23 +333,24 @@ describe("OpenCode Go conversation attribution", function()
     runtimes = assert(provider_runtimes.compose(config.get(), {
       startup = false, transport = recorder:transport(transport),
     }))
-    local sessions = { assert(Session.new()), assert(Session.new()) }
+    ---@type Neoagent.Session[]
+    local sessions = { (assert(Session.new())), (assert(Session.new())) }
     local bound = model_api.resolve("opencode-go", "glm-5.3", config.get(),
-      nil, runtimes, { workspace = workspace, session_id = sessions[1]:id() })
+      nil, runtimes, { workspace = workspace, session_id = assert(sessions[1]):id() })
     local unbound = model_api.resolve("opencode-go", "glm-5.3", config.get(),
       nil, runtimes, { workspace = workspace })
     for index, selected in ipairs({ 1, 2, 1 }) do
-      assert.is_true(wait(chat.send(sessions[selected], "turn " .. index, {
+      assert.is_true(wait(chat.send((assert(sessions[selected])), "turn " .. index, {
         model = selected == 1 and bound or unbound,
       })).ok)
-      assert.are.equal(sessions[selected]:id(),
-        transport.requests[index].headers["x-opencode-session"])
+      assert.are.equal(assert(sessions[selected]):id(),
+        rawget(assert(assert(transport.requests[index]).headers), "x-opencode-session"))
     end
     local paths = vim.fn.globpath(directory, "**/*.jsonl", false, true)
     assert.are.equal(2, #paths)
     local recorded = {}
     for _, path in ipairs(paths) do
-      local exchange = vim.json.decode(vim.fn.readfile(path)[1])
+      local exchange = vim.json.decode((assert(vim.fn.readfile(path)[1])))
       local id = exchange.context.session_id
       assert.is_true(vim.fs.basename(vim.fs.dirname(path)):sub(-#id) == id)
       assert.are.equal("*", exchange.request.headers["x-opencode-session"])
@@ -340,8 +358,8 @@ describe("OpenCode Go conversation attribution", function()
       recorded[id] = body.messages[#body.messages].content
     end
     assert.are.same({
-      [sessions[1]:id()] = "turn 3",
-      [sessions[2]:id()] = "turn 2",
+      [assert(sessions[1]):id()] = "turn 3",
+      [assert(sessions[2]):id()] = "turn 2",
     }, recorded)
   end)
 
@@ -363,7 +381,7 @@ describe("OpenCode Go conversation attribution", function()
       }))
       assert.is_false(result.ok)
       assert.are.equal("request_context conflicts with Model identity",
-        result.error.message)
+        assert(result.error).message)
       assert.are.equal(0, #transport.requests)
     end
   end)

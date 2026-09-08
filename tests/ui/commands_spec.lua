@@ -1,9 +1,11 @@
+local assert = require("luassert")
 local fake_model = require("tests.helpers.fake_model")
 local switcher_ui = require("tests.helpers.switcher")
 local presentation = require("tests.helpers.presentation")
 
 describe("neoagent commands", function()
-  local neoagent
+  local neoagent = require("neoagent")
+  ---@type string[]
   local paths
 
   before_each(function()
@@ -21,8 +23,10 @@ describe("neoagent commands", function()
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
   end)
 
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
   local function setup(extra)
     local model = fake_model.new({})
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
     local opts = {
       workspace_trust = false,
       default_registry = false,
@@ -57,15 +61,15 @@ describe("neoagent commands", function()
     assert.are.equal(0, vim.fn.exists(":NeoagentAgents"))
     assert.are.equal(0, vim.fn.exists(":NeoagentLogin"))
     assert.are.equal(0, vim.fn.exists(":NeoagentLogout"))
-    assert.is_nil(neoagent.new_session)
-    assert.is_nil(neoagent.cycle_agent)
+    assert.is_nil(rawget(neoagent, "new_session"))
+    assert.is_nil(rawget(neoagent, "cycle_agent"))
     assert.are.equal("", vim.fn.maparg("<leader>a", "n"))
 
     local toggle = vim.fn.maparg("<Plug>(NeoagentToggle)", "n", false, true)
     local cycle = vim.fn.maparg(
       "<Plug>(NeoagentCycle)", "n", false, true)
-    assert.is_function(toggle.callback)
-    assert.is_function(cycle.callback)
+    assert(type(toggle.callback) == "function")
+    assert(type(cycle.callback) == "function")
     assert.is_true(toggle.silent == 1)
     assert.is_true(cycle.silent == 1)
 
@@ -93,24 +97,26 @@ describe("neoagent commands", function()
     }
     neoagent.show_sandbox_info = function()
       calls[#calls + 1] = { "sandbox" }
+      return neoagent.sandbox_info()
     end
     neoagent.compact = function(instructions)
       calls[#calls + 1] = { "compact", instructions }
+      return nil
     end
     neoagent.notify = function(message, level)
       calls[#calls + 1] = { "notify", message, level }
     end
     neoagent.resume = function()
-      return nil, { message = "resume failed", detail = "unavailable" }
+      return nil, { kind = "test", message = "resume failed", detail = "unavailable" }
     end
     neoagent.copy_session = function()
-      return nil, { message = "copy failed" }
+      return nil, { kind = "test", message = "copy failed" }
     end
     neoagent.fork = function()
-      return nil, { message = "fork failed" }
+      return nil, { kind = "test", message = "fork failed" }
     end
     neoagent.select_fork = function()
-      return nil, { message = "selection failed" }
+      return nil, { kind = "test", message = "selection failed" }
     end
 
     vim.cmd("NeoagentSandboxInfo")
@@ -151,13 +157,13 @@ describe("neoagent commands", function()
     assert.are.equal("Select window position:", request.prompt)
     presentation.choose(applet, "2")
     assert(vim.wait(1000, function()
-      return applet:view().position == "left"
+      return assert(applet:view()).position == "left"
     end, 5))
-    assert.are.equal("left", applet:view().position)
+    assert.are.equal("left", assert(applet:view()).position)
     assert.are.same({}, applet:agents())
 
     vim.cmd("NeoagentTranscriptStyle codex")
-    assert.are.equal("codex", applet:view().config.style)
+    assert.are.equal("codex", assert(applet:view()).config.style)
     assert.are.same({ "pi", "codex" },
       vim.fn.getcompletion("NeoagentTranscriptStyle ", "cmdline"))
 
@@ -165,7 +171,7 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentThinking high")
     assert.is_nil(neoagent.get_model())
     assert.are.equal("high", neoagent.get_thinking_level())
-    assert.are.equal("fake/test", applet:view().context.model)
+    assert.are.equal("fake/test", assert(applet:view()).context.model)
     assert.are.same({}, applet:agents())
 
     local notifications = {}
@@ -203,25 +209,25 @@ describe("neoagent commands", function()
     })
     assert.are.same({}, applet:agents())
 
-    vim.cmd("NeoagentResume " .. vim.fn.fnameescape(session:metadata().path))
+    vim.cmd("NeoagentResume " .. vim.fn.fnameescape((assert(assert(session:metadata()).path))))
 
     assert.are.equal(1, #applet:agents())
     assert.is_true(applet:is_open())
-    assert.are.equal("stored", neoagent.get_session():messages()[1].content)
-    local entry_id = neoagent.get_session():leaf_id()
-    local original_agent = neoagent.default()
-    assert.is_nil(original_agent.new_session)
-    assert.is_nil(original_agent.resume)
-    assert.is_nil(original_agent.fork)
-    assert.is_nil(original_agent.select_fork)
+    assert.are.equal("stored", assert(assert(neoagent.get_session()):messages()[1]).content)
+    local entry_id = assert(assert(neoagent.get_session()):leaf_id())
+    local original_agent = assert(neoagent.default())
+    assert.is_nil(rawget(original_agent, "new_session"))
+    assert.is_nil(rawget(original_agent, "resume"))
+    assert.is_nil(rawget(original_agent, "fork"))
+    assert.is_nil(rawget(original_agent, "select_fork"))
     vim.cmd("NeoagentBranch " .. entry_id)
-    assert.are.equal(entry_id, neoagent.get_session():leaf_id())
-    local parent_path = neoagent.get_session():metadata().path
+    assert.are.equal(entry_id, assert(neoagent.get_session()):leaf_id())
+    local parent_path = assert(assert(neoagent.get_session()):metadata()).path
     vim.cmd("NeoagentFork " .. entry_id)
     assert.are.equal(2, #applet:agents())
     assert.is_false(original_agent:is_destroyed())
     assert.are.equal(parent_path,
-      neoagent.get_session():metadata().parent_session)
+      assert(assert(neoagent.get_session()):metadata()).parent_session)
     assert.are.equal("stored", applet:get_input())
 
     vim.cmd("NeoagentCycle")
@@ -234,11 +240,12 @@ describe("neoagent commands", function()
     local calls = 0
     local cancelled = 0
     local operation_args
+    ---@type Neoagent.ProviderService
     local service = {
       id = "fake",
       name = "Fake provider",
       state = function()
-        return { blocks = { { type = "status", text = "Ready" } } }
+        return { blocks = { { type = "status", text = "Ready", level = "muted" } } }
       end,
       operations = {
         inspect = {
@@ -284,7 +291,7 @@ describe("neoagent commands", function()
     vim.cmd("NeoagentProvider inspect first second")
     assert(vim.wait(1000, function() return calls == 1 end, 5))
     assert.are.equal("first second", operation_args)
-    local shell = applet:provider_shell()
+    local shell = assert(applet:provider_shell())
     local function wait_enabled()
       for _, operation in ipairs(shell:operations()) do
         if operation.id == "wait" then return operation.enabled end

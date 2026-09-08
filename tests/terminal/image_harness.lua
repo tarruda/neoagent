@@ -15,6 +15,7 @@ local stop_path = assert(vim.env.NEOAGENT_IMAGE_HARNESS_STOP)
 local action_path = assert(vim.env.NEOAGENT_IMAGE_HARNESS_ACTION)
 local lifecycle_path = assert(vim.env.NEOAGENT_IMAGE_HARNESS_LIFECYCLE)
 
+---@param event string
 local function lifecycle(event)
   vim.fn.writefile({ vim.json.encode({
     event = event,
@@ -31,11 +32,17 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
   callback = function() lifecycle("VimLeavePre") end,
 })
 
-assert(loadfile("scripts/applet-image-harness.lua"))()
+local harness = assert(loadfile("scripts/applet-image-harness.lua"))
+assert(type(harness) == "function")
+harness()
+assert(backend == "kitty")
+assert(layout_mode == "native" or layout_mode == "pane")
 local active = applet_image_harness(backend, layout_mode)
 assert(active.fixture.palette_target == 256)
 assert(active.fixture.true_color == true)
 assert(vim.fn.mkdir(frame_dir, "p") == 1 or vim.fn.isdirectory(frame_dir) == 1)
+---@param path string
+---@param data string
 local function write_source(path, data)
   local descriptor = assert(vim.uv.fs_open(path, "w", 384))
   assert(vim.uv.fs_write(descriptor, data, 0))
@@ -47,21 +54,29 @@ for index, frame in ipairs(active.fixture.frames) do
 end
 
 local errors = active.errors or {}
+local kitty = active.images.backend --[[@as Applet.Kitty]]
+---@type Applet.HarnessLayerName[]
 local layer_order = { "main", "detail", "badge" }
 
+---@param path string
+---@param value unknown
 local function publish(path, value)
   local temporary = path .. ".tmp"
   assert(vim.fn.writefile({ vim.json.encode(value) }, temporary) == 0)
   assert(vim.uv.fs_rename(temporary, path))
 end
 
+---@param layer Applet.HarnessLayer
+---@return integer?
 local function layer_window(layer)
   return active.layer_window(layer)
 end
 
+---@param layer? Applet.HarnessLayer
+---@return Applet.KittyPlacement[]
 local function placements(layer)
   layer = layer or active.layers.main
-  local presentation = active.images.backend.owners[layer.pane]
+  local presentation = kitty.owners[assert(layer.pane)]
   local result = {}
   for _, placement in ipairs(presentation and presentation.placements or {}) do
     if placement.key == layer.image_key then
@@ -71,13 +86,15 @@ local function placements(layer)
   return result
 end
 
+---@param layer? Applet.HarnessLayer
+---@return boolean
 local function image_visible(layer)
   layer = layer or active.layers.main
   local window = layer_window(layer)
   if not window then return false end
   if vim.api.nvim_win_get_config(window).hide then return false end
-  local image = layer.pane.layout
-    and layer.pane.layout.images[layer.image_key]
+  local pane_layout = assert(layer.pane).layout
+  local image = pane_layout and pane_layout.images[layer.image_key]
   if not image then return false end
   local view = vim.api.nvim_win_call(window, vim.fn.winsaveview)
   local first_row = (view.topline or 1) - 1
@@ -106,8 +123,8 @@ local function settled()
   for _, name in ipairs(layer_order) do
     local layer = active.layers[name]
     local current = placements(layer)
-    local image = layer.pane.layout
-      and layer.pane.layout.images[layer.image_key]
+    local pane_layout = assert(layer.pane).layout
+    local image = pane_layout and pane_layout.images[layer.image_key]
     local presented = active.images:snapshot(layer.pane).presented[layer.image_key]
     if image and image.source_identity ~= active.source_identity then
       return false
@@ -120,13 +137,17 @@ local function settled()
       if not value.record or value.record.content_id == nil then return false end
     end
   end
-  return active.images.backend.output_operation == nil
-    and next(active.images.backend.pending) == nil
+  return kitty.output_operation == nil
+    and next(kitty.pending) == nil
 end
 
+---@type number
 local acknowledged_action = 0
+---@type number?
 local pending_action
+---@type number?
 local drained_action
+---@type string?
 local view_signature
 local view_changed = vim.uv.hrtime()
 
@@ -140,11 +161,14 @@ end, {
   silent = true,
 })
 
+---@param is_settled boolean
 local function snapshot(is_settled)
+  ---@param layer Applet.HarnessLayer
+  ---@return Applet.TerminalLayerSnapshot
   local function layer_snapshot(layer)
     local window = layer_window(layer)
-    local actual_image = layer.pane.layout
-      and layer.pane.layout.images[layer.image_key]
+    local pane_layout = assert(layer.pane).layout
+    local actual_image = pane_layout and pane_layout.images[layer.image_key]
     local image = active.snapshot_image(layer)
     local line = actual_image and layer.buffer and vim.api.nvim_buf_get_lines(
       layer.buffer, actual_image.row, actual_image.row + 1, false)[1] or ""
@@ -155,11 +179,12 @@ local function snapshot(is_settled)
     end
     local marks = layer.buffer and vim.api.nvim_buf_is_valid(layer.buffer)
       and vim.api.nvim_buf_get_extmarks(
-        layer.buffer, layer.pane.image_namespace, 0, -1, { details = true })
+        layer.buffer, assert(layer.pane).image_namespace, 0, -1, { details = true })
       or {}
-    local mark = marks[1]
+    local mark = marks[1] --[[@as {[1]: integer, [2]: integer, [3]: integer, [4]: vim.api.keyset.extmark_details}?]]
     local first = current[1]
-    return {
+    ---@class Applet.TerminalLayerSnapshot
+    local result = {
       open = layer.open == true and window ~= nil,
       image = image,
       source_identity = actual_image and actual_image.source_identity or nil,
@@ -185,17 +210,20 @@ local function snapshot(is_settled)
           position = mark[4].virt_text_pos,
           window_col = mark[4].virt_text_win_col,
           characters = mark[4].virt_text
-            and vim.fn.strchars(mark[4].virt_text[1][1]) or 0,
+            and vim.fn.strchars(assert(mark[4].virt_text[1])[1]) or 0,
         } or nil,
       },
     }
+    return result
   end
+  ---@type table<Applet.HarnessLayerName, Applet.TerminalLayerSnapshot>
   local layers = {}
   for _, name in ipairs(layer_order) do
     layers[name] = layer_snapshot(active.layers[name])
   end
   local main = layers.main
-  return vim.tbl_extend("force", main, {
+  ---@class Applet.TerminalHarnessSnapshot
+  local state = {
     backend = backend,
     layout_mode = layout_mode,
     layers = layers,
@@ -213,7 +241,8 @@ local function snapshot(is_settled)
       source_identity = active.source_identity,
     },
     image_stats = active.images:_stats(),
-  })
+  }
+  return vim.tbl_extend("force", main, state) --[[@as Applet.TerminalHarnessSnapshot]]
 end
 
 local function read_action()
@@ -233,8 +262,9 @@ local function read_action()
     action.keys, true, false, true) .. input_sentinel)
 end
 
-local timer = vim.uv.new_timer()
+local timer = assert(vim.uv.new_timer())
 local started = vim.uv.hrtime()
+---@type number
 local last_state = 0
 local ready = false
 timer:start(10, 10, vim.schedule_wrap(function()
@@ -249,6 +279,8 @@ timer:start(10, 10, vim.schedule_wrap(function()
     local window = layer_window(layer)
     local view = active.layer_view(layer) or {}
     local current = placements(layer)
+    local pane_layout = assert(layer.pane).layout
+    local image = pane_layout and pane_layout.images[layer.image_key]
     signature[#signature + 1] = table.concat({
       name,
       window or 0,
@@ -260,8 +292,7 @@ timer:start(10, 10, vim.schedule_wrap(function()
       image_visible(layer) and 1 or 0,
       #current,
       current[1] and current[1].record.content_id or 0,
-      layer.pane.layout and layer.pane.layout.images[layer.image_key]
-        and layer.pane.layout.images[layer.image_key].source_identity or "",
+      image and image.source_identity or "",
     }, ":")
   end
   local current_signature = table.concat(signature, "|")

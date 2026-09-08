@@ -5,17 +5,64 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ZaiClientOptions
+---@field management_url string
+---@field ambient_api_key? fun(): string?
+---@field transport? Neoagent.ByteBackend
+---@field timeout_ms? number
+---@field max_response_bytes? integer
+
+---@class Neoagent.ZaiBalance
+---@field total number
+---@field available number
+---@field currency? string
+
+---@class Neoagent.ZaiQuotaLimit
+---@field type "TIME_LIMIT"|"TOKENS_LIMIT"|"CREDIT_LIMIT"
+---@field remaining number
+---@field window string
+---@field resets_at? integer
+---@field current? number
+---@field maximum? number
+
+---@class Neoagent.ZaiOrderedLimit
+---@field order number
+---@field limit Neoagent.ZaiQuotaLimit
+
+---@class Neoagent.ZaiQuota
+---@field plan? string
+---@field limits Neoagent.ZaiQuotaLimit[]
+
+---@class Neoagent.ZaiModelsSuccess
+---@field ok true
+---@field models string[]
+
+---@class Neoagent.ZaiBalanceSuccess
+---@field ok true
+---@field balance Neoagent.ZaiBalance
+
+---@class Neoagent.ZaiQuotaSuccess
+---@field ok true
+---@field quota Neoagent.ZaiQuota
+
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
+---@param value unknown
+---@param maximum integer
+---@return TypeGuard<string>
 local function safe_text(value, maximum)
   return type(value) == "string" and value ~= "" and #value <= maximum
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param value Neoagent.JsonValue
+---@return string[]?
 local function parse_models(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.data) ~= "table" or not util.is_list(value.data)
@@ -33,6 +80,8 @@ local function parse_models(value)
   return result
 end
 
+---@param value unknown
+---@return integer?
 local function reset_time(value)
   if not finite(value) or value <= 0 then return nil end
   if value > 100000000000 then value = value / 1000 end
@@ -41,6 +90,8 @@ local function reset_time(value)
   return value
 end
 
+---@param value unknown
+---@return number?
 local function amount(value)
   if type(value) == "string" and value:match("^%d+%.?%d*$") then
     value = tonumber(value)
@@ -49,6 +100,8 @@ local function amount(value)
   return value
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.ZaiBalance?
 local function parse_balance(value)
   if type(value) ~= "table" or util.is_list(value) then return nil end
   local data = value.data
@@ -67,6 +120,11 @@ local function parse_balance(value)
   }
 end
 
+---@param source Neoagent.JsonObject|Neoagent.JsonArray
+---@param kind string
+---@return string?, number?
+---@return_overload string, number
+---@return_overload nil
 local function window(source, kind)
   local unit, count = source.unit, source.number
   if unit == nil and count == nil then
@@ -91,6 +149,8 @@ local function window(source, kind)
   return "Quota", math.huge
 end
 
+---@param source Neoagent.JsonValue
+---@return Neoagent.ZaiOrderedLimit|false|nil
 local function parse_limit(source)
   if type(source) ~= "table" or util.is_list(source) then return false end
   local kind = source.type
@@ -120,23 +180,29 @@ local function parse_limit(source)
         or remaining_count ~= nil and remaining_count > maximum then
       return false
     end
-    current = current or math.max(0, maximum - remaining_count)
+    if current == nil then
+      -- A validated count group includes current or remaining.
+      ---@cast remaining_count number
+      current = math.max(0, maximum - remaining_count)
+    end
   end
   if percentage == nil then
     if maximum == nil then return false end
     if remaining_count ~= nil then
       percentage = 100 * (1 - remaining_count / maximum)
     else
+      -- A validated maximum has a supplied or derived current count.
+      ---@cast current number
       percentage = 100 * current / maximum
     end
   end
   local window_name, order = window(source, kind)
   if not window_name then return false end
+  ---@type Neoagent.ZaiQuotaLimit
   local entry = {
     type = kind,
     remaining = (100 - percentage) / 100,
     window = window_name,
-    _order = order,
   }
   if source.nextResetTime ~= nil then
     entry.resets_at = reset_time(source.nextResetTime)
@@ -146,9 +212,11 @@ local function parse_limit(source)
     entry.current = current
     entry.maximum = maximum
   end
-  return entry
+  return { order = order, limit = entry }
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.ZaiQuota?
 local function parse_quota(value)
   local data = type(value) == "table" and not util.is_list(value)
     and value.data or nil
@@ -157,25 +225,31 @@ local function parse_quota(value)
       or #data.limits == 0 or #data.limits > 32 then
     return nil
   end
-  local plan = data.planName or data.plan_name or data.level
+  local plan_name, alternate_name, level = data.planName, data.plan_name, data.level
+  local plan = plan_name or alternate_name or level
   if plan ~= nil and not safe_text(plan, 128) then return nil end
-  local limits = {}
+  ---@type Neoagent.ZaiOrderedLimit[]
+  local ordered = {}
   for _, source in ipairs(data.limits) do
     local entry = parse_limit(source)
     if entry == false then return nil end
-    if entry then limits[#limits + 1] = entry end
+    if entry then ordered[#ordered + 1] = entry end
   end
-  if #limits == 0 then return nil end
-  table.sort(limits, function(left, right)
-    local left_time = left.type == "TIME_LIMIT"
-    local right_time = right.type == "TIME_LIMIT"
+  if #ordered == 0 then return nil end
+  table.sort(ordered, function(left, right)
+    local left_time = left.limit.type == "TIME_LIMIT"
+    local right_time = right.limit.type == "TIME_LIMIT"
     if left_time ~= right_time then return not left_time end
-    return left._order < right._order
+    return left.order < right.order
   end)
-  for _, entry in ipairs(limits) do entry._order = nil end
+  local limits = {}
+  for _, entry in ipairs(ordered) do limits[#limits + 1] = entry.limit end
   return { plan = plan, limits = limits }
 end
 
+---@param status number
+---@param resource string
+---@return string?
 local function status_message(status, resource)
   if status == 401 then
     return "Z.AI " .. resource .. " requires a valid API key"
@@ -188,6 +262,9 @@ local function status_message(status, resource)
   end
 end
 
+---@param headers table<string, unknown>
+---@param bearer boolean
+---@return table<string, unknown>?, Neoagent.Error?
 local function authorization(headers, bearer)
   local key
   local result = {}
@@ -213,6 +290,8 @@ local function authorization(headers, bearer)
   return result
 end
 
+---@param opts Neoagent.ZaiClientOptions
+---@return Neoagent.ZaiClient
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.management_url) == "string"
@@ -229,10 +308,15 @@ function M.new(opts)
     max_response_bytes = opts.max_response_bytes,
     status_message = status_message,
   })
+  ---@class Neoagent.ZaiClient
   local client = {}
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.ZaiModelsSuccess|Neoagent.AsyncFailure, nil>
   function client:models(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.ZaiModelsSuccess
+    function()
       local resolved = auth_headers.resolve(ctx, {
         name = "Z.AI",
         environment = "ZAI_API_KEY",
@@ -253,8 +337,12 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.ZaiBalanceSuccess|Neoagent.AsyncFailure, nil>
   function client:balance(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.ZaiBalanceSuccess
+    function()
       local resolved = auth_headers.resolve(ctx, {
         name = "Z.AI",
         environment = "ZAI_API_KEY",
@@ -275,8 +363,12 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.ZaiQuotaSuccess|Neoagent.AsyncFailure, nil>
   function client:quota(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.ZaiQuotaSuccess
+    function()
       local resolved = auth_headers.resolve(ctx, {
         name = "Z.AI Plan",
         environment = "ZAI_API_KEY",

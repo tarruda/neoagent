@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local thinking = require("neoagent.thinking")
 
 describe("neoagent thinking levels", function()
@@ -22,7 +23,9 @@ describe("neoagent thinking levels", function()
 
   it("returns independent request options and handles unsupported models", function()
     local request_opts = thinking.request_opts(model, "low")
-    request_opts.body.reasoning_effort = "changed"
+    assert(type(request_opts) == "table")
+    ---@cast request_opts Neoagent.RequestOverride
+    assert(request_opts.body).reasoning_effort = "changed"
     assert.are.equal("low", model.thinking.low.body.reasoning_effort)
     assert.is_function(thinking.request_opts(model, "high"))
     assert.is_nil(thinking.request_opts(model, "medium"))

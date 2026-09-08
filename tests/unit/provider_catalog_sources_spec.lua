@@ -1,18 +1,25 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fake_transport = require("tests.helpers.fake_transport")
 local model_catalog = require("neoagent.model_catalog")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param credential_type? "oauth"|"api_key"
+---@return fun(): Neoagent.Run<Neoagent.AuthResolution, nil>
 local function resolved_auth(credential_type)
   return function()
     return async.run(function()
       return {
         ok = true,
         configured = true,
+        method = "test",
         credential_type = credential_type or "api_key",
         request_opts = { headers = {
           Authorization = "Bearer stored-key",
@@ -23,12 +30,18 @@ local function resolved_auth(credential_type)
   end
 end
 
+---@param provider Neoagent.CatalogSourceProjection
+---@param transport Neoagent.ByteBackend
+---@param credential_type? "oauth"|"api_key"
+---@return Neoagent.CatalogDiscoveryContext<Neoagent.CatalogSourceProjection>
 local function context(provider, transport, credential_type)
   return {
     provider_id = "test",
     provider = provider,
     transport = transport,
     validator = nil,
+    now = function() return 0 end,
+    force = false,
     resolve_auth = resolved_auth(credential_type),
     resolve_api_key = function() return nil end,
   }
@@ -45,17 +58,18 @@ describe("bundled model catalog sources", function()
     local result = wait(source.discover_models(context({
       base_url = "https://example.test/v1",
     }, transport)))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       { id = "gpt-5.6-sol" },
       { id = "text-embedding-4" },
     }, result.models)
     local transform = require("neoagent.registry.openai").transform_openai
-    local model = transform(result.models[1], { provider_id = "openai" })
+    local model = transform(assert(assert(result.models)[1]), { provider_id = "openai", source_model = assert(assert(result.models)[1]) })
+    assert(model)
     assert.are.same({ "text", "image" }, model.input)
     assert.are.same({ "off", "low", "medium", "high", "xhigh", "max" },
       require("neoagent.thinking").levels(model))
-    assert.is_false(transform(result.models[2], { provider_id = "openai" }))
+    assert.is_false(transform(assert(assert(result.models)[2]), { provider_id = "openai", source_model = assert(assert(result.models)[2]) }))
 
   end)
 
@@ -90,7 +104,7 @@ describe("bundled model catalog sources", function()
       .discover_models(context({
         base_url = "https://example.test/v1",
       }, transport)))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({
       id = "claude-future",
       name = "Claude Future",
@@ -99,9 +113,9 @@ describe("bundled model catalog sources", function()
       max_output_tokens = 96000,
       thinking_type = "adaptive",
       reasoning_levels = { "low", "high", "xhigh" },
-    }, result.models[1])
+    }, assert(assert(result.models)[1]))
     local model = require("neoagent.registry.anthropic_common")
-      .transform(result.models[1])
+      .transform(assert(assert(result.models)[1]))
     assert.are.same({ "low", "high", "xhigh" },
       require("neoagent.thinking").levels(model))
     local enabled = require("neoagent.registry.anthropic_common").transform({
@@ -111,9 +125,9 @@ describe("bundled model catalog sources", function()
     })
     assert.are.same({ "low", "high" },
       require("neoagent.thinking").levels(enabled))
-    assert.are.equal("low", enabled.thinking.low.body.output_config.effort)
+    assert.are.equal("low", assert(assert(assert(enabled.thinking).low).body).output_config.effort)
     assert.are.equal("interleaved-thinking-2025-05-14",
-      enabled.request_opts.headers["anthropic-beta"])
+      rawget(assert(assert(enabled.request_opts).headers), "anthropic-beta"))
   end)
 
   it("discovers DeepSeek and OpenCode Go through their distinct auth rules", function()
@@ -126,17 +140,20 @@ describe("bundled model catalog sources", function()
       .discover_models(context({
         base_url = "https://example.test",
       }, deepseek_transport)))
-    assert.is_true(deepseek_result.ok)
+    assert(deepseek_result.ok)
     assert.are.equal("Bearer stored-key",
-      deepseek_transport.fetch_requests[1].headers.Authorization)
-    local deepseek_transform = require("neoagent.registry.deepseek")
-      .catalog.transform_model
-    local reported = deepseek_transform({
+      rawget(assert(assert(deepseek_transport.fetch_requests[1]).headers), "Authorization"))
+    local deepseek_transform = assert(require("neoagent.registry.deepseek")
+      .catalog.transform_model)
+    local reported_source = {
       id = "deepseek-v4-flash-vision-exp",
       input = { "text" },
       context_window = 123456,
       max_output_tokens = 23456,
-    })
+    }
+    local reported = assert(deepseek_transform(reported_source, {
+      provider_id = "deepseek", source_model = reported_source,
+    }))
     assert.are.same({ "text" }, reported.input)
     assert.are.equal(123456, reported.context_window)
     assert.are.equal(23456, reported.max_output_tokens)
@@ -149,12 +166,14 @@ describe("bundled model catalog sources", function()
       .discover_models(context({
         base_url = "https://example.test/zen/go/v1",
       }, go_transport)))
-    assert.is_true(go_result.ok)
-    assert.is_nil(go_transport.fetch_requests[1].headers.Authorization)
-    local transform = require("neoagent.registry.opencode_go")
-      .catalog.transform_model
+    assert(go_result.ok)
+    assert.is_nil(rawget(assert(assert(go_transport.fetch_requests[1]).headers), "Authorization"))
+    local transform = assert(require("neoagent.registry.opencode_go")
+      .catalog.transform_model)
     assert.are.equal("anthropic-messages",
-      transform(go_result.models[1]).api)
+      assert(transform(assert(assert(go_result.models)[1]), {
+        provider_id = "opencode-go", source_model = assert(assert(go_result.models)[1]),
+      })).api)
 
     local disconnected_transport = fake_transport.new()
     local disconnected = context({
@@ -168,7 +187,15 @@ describe("bundled model catalog sources", function()
     local disconnected_result = wait(require("neoagent.providers.opencode_go")
       .discover_models(disconnected))
     assert.is_false(disconnected_result.ok)
-    assert.are.equal("auth", disconnected_result.error.kind)
+    assert.are.equal("auth", assert(disconnected_result.error).kind)
+    assert.are.equal(0, #disconnected_transport.fetch_requests)
+
+    disconnected.resolve_api_key = function() error("key lookup unavailable") end
+    local failed = wait(require("neoagent.providers.opencode_go")
+      .discover_models(disconnected))
+    assert.is_false(failed.ok)
+    assert.are.equal("auth", assert(failed.error).kind)
+    assert.are.equal("Failed to resolve OPENCODE_API_KEY", assert(failed.error).message)
     assert.are.equal(0, #disconnected_transport.fetch_requests)
   end)
 
@@ -193,14 +220,14 @@ describe("bundled model catalog sources", function()
       ctx.provider_id = candidate.id
       local result = wait(source.discover_models(ctx))
 
-      assert.is_true(result.ok)
+      assert(result.ok)
       assert.are.same({
         { id = "glm-5.3" }, { id = "glm-5.3-flash" },
       }, result.models)
       assert.are.equal(candidate.base_url .. "/models",
-        transport.fetch_requests[1].url)
+        assert(transport.fetch_requests[1]).url)
       assert.are.equal("Bearer stored-key",
-        transport.fetch_requests[1].headers.Authorization)
+        rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
 
     end
   end)
@@ -233,10 +260,10 @@ describe("bundled model catalog sources", function()
       base_url = "https://chatgpt.com/backend-api",
     }, transport, "oauth")
     local result = wait(source.discover(ctx))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(
       "https://chatgpt.com/backend-api/codex/models?client_version=99.99.99",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
     assert.are.same({ etag = "catalog-one" }, result.validator)
     assert.are.same({
       id = "gpt-5.6-sol",
@@ -247,18 +274,18 @@ describe("bundled model catalog sources", function()
       text_verbosity = "medium",
       reasoning_levels = { "low", "high", "max", "ultra" },
       service_tiers = { "default", "priority" },
-    }, result.models[1])
+    }, assert(assert(result.models)[1]))
     local transformed = require("neoagent.registry.openai")
-      .transform_codex(result.models[1])
+      .transform_codex(assert(assert(result.models)[1]))
     assert.are.same({ "low", "high", "max", "ultra" },
       require("neoagent.thinking").levels(transformed))
     ctx.validator = result.validator
     result = wait(source.discover(ctx))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_true(result.unchanged)
     assert.are.same({ etag = "catalog-two" }, result.validator)
     assert.are.equal("catalog-one",
-      transport.fetch_requests[2].headers["If-None-Match"])
+      rawget(assert(assert(transport.fetch_requests[2]).headers), "If-None-Match"))
   end)
 
   it("rejects malformed account-scoped Codex inventories", function()
@@ -291,8 +318,8 @@ describe("bundled model catalog sources", function()
       base_url = "https://chatgpt.com/backend-api",
     }, fake_transport.new(), "api_key")))
     assert.is_false(unauthorized.ok)
-    assert.are.equal("auth", unauthorized.error.kind)
-    assert.matches("subscription login", unauthorized.error.message)
+    assert.are.equal("auth", assert(unauthorized.error).kind)
+    assert.matches("subscription login", assert(unauthorized.error).message)
 
     local cases = {
       {
@@ -300,7 +327,7 @@ describe("bundled model catalog sources", function()
         message = "HTTP 503",
       },
       {
-        response = { body = {} },
+        response = { body = {} --[[@as string]] },
         message = "body must be text",
       },
       {
@@ -315,7 +342,7 @@ describe("bundled model catalog sources", function()
         base_url = "https://chatgpt.com/backend-api",
       }, transport, "oauth")))
       assert.is_false(result.ok)
-      assert.matches(case.message, result.error.message)
+      assert.matches(case.message, assert(result.error).message)
     end
   end)
 
@@ -325,10 +352,12 @@ describe("bundled model catalog sources", function()
       base_url = "https://chatgpt.com/backend-api",
       auth = "openai-codex",
     }
-    local authentication = {
-      resolve = resolved_auth("oauth"),
-      cache_identity = function() return "safe-account-digest" end,
-    }
+    local authentication = require("tests.helpers.auth_manager").new({
+      ["openai-codex"] = require("neoagent.auth.openai_codex").new(),
+    })
+    function authentication:resolve() return resolved_auth("oauth")() end
+    function authentication:has_credentials() return true end
+    function authentication:cache_identity() return "safe-account-digest" end
     local definition = {
       source_id = "openai-codex-models",
       source_revision = 1,
@@ -370,8 +399,8 @@ describe("bundled model catalog sources", function()
 
     local result = wait(catalog:refresh({ force = true }))
     assert.is_false(result.ok)
-    assert.matches("empty", result.error.message)
-    assert.are.equal("gpt-5.5", catalog:snapshot().models["gpt-5.5"].id)
+    assert.matches("empty", assert(result.error).message)
+    assert.are.equal("gpt-5.5", assert(catalog:snapshot().models["gpt-5.5"]).id)
     assert.are.same({}, state.writes)
     assert.are.same(cached, state.value)
     catalog:destroy()
@@ -397,15 +426,18 @@ describe("bundled model catalog sources", function()
         return {
           ok = true,
           configured = true,
+          method = "llama",
+          credential_type = "api_key",
+          request_opts = {},
           metadata = { server_url = "http://router.test:9090/v1" },
         }
       end)
     end
     local result = wait(source.discover(ctx))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("http://router.test:9090/models",
-      transport.fetch_requests[1].url)
-    local model = source.transform(result.models[1])
+      assert(transport.fetch_requests[1]).url)
+    local model = source.transform(assert(assert(result.models)[1]))
     assert.are.equal("local-vision", model.id)
     assert.are.equal(65536, model.context_window)
     assert.are.same({ "text", "image" }, model.input)
@@ -430,7 +462,7 @@ describe("bundled model catalog sources", function()
       auth_optional = true,
     }, transport)))
     assert.is_false(result.ok)
-    assert.matches("invalid model catalog", result.error.message)
+    assert.matches("invalid model catalog", assert(result.error).message)
   end)
 
   it("reloads the llama.cpp router inventory for forced discovery", function()
@@ -450,16 +482,18 @@ describe("bundled model catalog sources", function()
     local result = wait(
       require("neoagent.providers.llama.catalog").discover(ctx))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "remaining-model" }, vim.tbl_map(function(model)
       return model.id
-    end, result.models))
+    end, (assert(result.models))))
     assert.are.equal("http://127.0.0.1:8080/models?reload=1",
-      transport.fetch_requests[1].url)
+      assert(transport.fetch_requests[1]).url)
   end)
 
   it("reports per-slot context for parallel llama.cpp router models", function()
     local source = require("neoagent.providers.llama.catalog")
+    ---@param args string[]
+    ---@return number?
     local function context(args)
       return source.transform({
         id = "qwen-3.6-35b",

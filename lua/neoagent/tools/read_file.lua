@@ -3,6 +3,18 @@ local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
 
+---@alias Neoagent.FileImageMime "image/png"|"image/jpeg"|"image/gif"|"image/webp"|"image/bmp"
+
+---@class Neoagent.ReadFileOptions
+---@field max_image_input_bytes? integer
+---@field max_image_pixels? integer
+---@field max_image_payload_bytes? integer
+
+---@class Neoagent.ReadFileSettings
+---@field max_image_input_bytes integer
+---@field max_image_pixels integer
+---@field max_image_payload_bytes integer
+
 local MIME = {
   png = "image/png",
   jpeg = "image/jpeg",
@@ -19,6 +31,8 @@ local MAGICK_FORMAT = {
   [MIME.bmp] = "bmp",
 }
 
+---@param data string
+---@return Neoagent.FileImageMime?
 local function detect(data)
   if data:sub(1, 8) == "\137PNG\r\n\26\n" then return MIME.png end
   if data:sub(1, 3) == "\255\216\255" then return MIME.jpeg end
@@ -34,10 +48,17 @@ local IMAGE_TIMEOUT_MS = 30000
 local MAGICK_CAPTURE_BYTES = 20 * 1024 * 1024
 local IDENTIFY_CAPTURE_BYTES = 64 * 1024
 
+---@param bytes integer
+---@return integer
 local function encoded_size(bytes)
   return math.floor((bytes + 2) / 3) * 4
 end
 
+---@param data string
+---@param mime Neoagent.FileImageMime
+---@param note string
+---@param max_payload_bytes integer
+---@return Neoagent.ToolResult
 local function image_result(data, mime, note, max_payload_bytes)
   if encoded_size(#data) > max_payload_bytes then
     error("image payload exceeds " .. max_payload_bytes .. " bytes")
@@ -50,6 +71,10 @@ local function image_result(data, mime, note, max_payload_bytes)
   }
 end
 
+---@param filesystem Neoagent.ToolFilesystem
+---@param path string
+---@param on_chunk fun(data: string)
+---@return true?, unknown
 local function stream(filesystem, path, on_chunk)
   if type(filesystem.read_chunks) == "function" then
     return filesystem.read_chunks(path, on_chunk)
@@ -60,6 +85,10 @@ local function stream(filesystem, path, on_chunk)
   return true
 end
 
+---@param settings Neoagent.ReadFileSettings
+---@param operation? string
+---@param arguments string[]
+---@return string[]
 local function magick_command(settings, operation, arguments)
   local command = { "magick" }
   if operation then command[#command + 1] = operation end
@@ -72,6 +101,14 @@ local function magick_command(settings, operation, arguments)
   return vim.list_extend(command, arguments)
 end
 
+---@async
+---@param data string
+---@param ctx Neoagent.ToolCapabilities
+---@param settings Neoagent.ReadFileSettings
+---@param operation? string
+---@param arguments string[]
+---@param max_capture_bytes integer
+---@return string
 local function process_magick(data, ctx, settings, operation, arguments,
     max_capture_bytes)
   local result = common.process(ctx,
@@ -90,6 +127,12 @@ local function process_magick(data, ctx, settings, operation, arguments,
   return result.stdout or ""
 end
 
+---@async
+---@param data string
+---@param mime Neoagent.FileImageMime
+---@param ctx Neoagent.ToolCapabilities
+---@param settings Neoagent.ReadFileSettings
+---@return Neoagent.ToolResult?, string?, boolean?
 local function run_magick(data, mime, ctx, settings)
   local input_format = assert(MAGICK_FORMAT[mime])
   local input = input_format .. ":-[0]"
@@ -100,8 +143,8 @@ local function run_magick(data, mime, ctx, settings)
   if not inspected then
     return nil, "could not inspect image dimensions: " .. tostring(dimensions), false
   end
-  local ow, oh = dimensions:match("(%d+)%s+(%d+)")
-  ow, oh = tonumber(ow), tonumber(oh)
+  local width, height = dimensions:match("(%d+)%s+(%d+)")
+  local ow, oh = tonumber(width), tonumber(height)
   if not ow or not oh then
     return nil, "could not inspect image dimensions: invalid output", false
   end
@@ -115,6 +158,7 @@ local function run_magick(data, mime, ctx, settings)
     local bytes = process_magick(data, ctx, settings, nil, {
       input, "-auto-orient", "-resize", "2000x2000>", output_format .. ":-",
     }, MAGICK_CAPTURE_BYTES)
+    ---@type Neoagent.FileImageMime
     local transmitted_mime = output_format == "jpeg" and MIME.jpeg or MIME.png
     if encoded_size(#bytes) > settings.max_image_payload_bytes then
       output_format = "jpeg"
@@ -147,14 +191,21 @@ local function run_magick(data, mime, ctx, settings)
   return result
 end
 
+---@param value unknown
+---@param name string
+---@return integer
 local function positive_integer(value, name)
   assert(type(value) == "number" and value > 0 and value % 1 == 0,
     name .. " must be a positive integer")
+  ---@cast value integer
   return value
 end
 
+---@param options? Neoagent.ReadFileOptions
+---@return Neoagent.Tool<unknown>
 local function new(options)
   options = options or {}
+  ---@type Neoagent.ReadFileSettings
   local settings = {
     max_image_input_bytes = positive_integer(
       options.max_image_input_bytes or DEFAULT_MAX_IMAGE_INPUT_BYTES,
@@ -180,6 +231,7 @@ local function new(options)
       required = { "path" },
       additionalProperties = false,
     },
+    ---@async
     execute = function(arguments, ctx)
       local path = common.require_string(arguments, "path")
       local offset = arguments.offset or 1
@@ -200,10 +252,13 @@ local function new(options)
         max_line_bytes = truncate.MAX_BYTES + 1,
       })
       local undecided = ""
+      ---@type "image"|"text"|nil
       local mode
+      ---@type Neoagent.FileImageMime?
       local mime
       local image_chunks = {}
       local image_bytes = 0
+      ---@param data string
       local function append_image(data)
         image_bytes = image_bytes + #data
         if image_bytes > settings.max_image_input_bytes then
@@ -212,6 +267,7 @@ local function new(options)
         end
         image_chunks[#image_chunks + 1] = data
       end
+      ---@param data string
       local function consume(data)
         if not mode then
           undecided = undecided .. data
@@ -261,7 +317,7 @@ local function new(options)
         or shortened.totalLines
       local text
       if shortened.firstLineExceedsLimit then
-        text = string.format("[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]", offset, truncate.format_size(shortened.firstLineBytes), truncate.format_size(truncate.MAX_BYTES))
+        text = string.format("[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]", offset, truncate.format_size(assert(shortened.firstLineBytes)), truncate.format_size(truncate.MAX_BYTES))
       elseif shortened.truncated then
         local ending = offset + shortened.outputLines - 1
         text = shortened.content .. string.format("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", offset, ending, shortened.totalLines, ending + 1)

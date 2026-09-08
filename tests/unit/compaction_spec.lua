@@ -1,6 +1,11 @@
+local assert = require("luassert")
 local compaction = require("neoagent.compaction")
 local fake_model = require("tests.helpers.fake_model")
 
+---@param id string
+---@param parent string?
+---@param message Neoagent.Message
+---@return Neoagent.MessageEntry
 local function entry(id, parent, message)
   return {
     type = "message",
@@ -26,14 +31,14 @@ describe("neoagent.compaction", function()
     assert.are.same({ auto = true, reserve_tokens = 8000, keep_recent_tokens = 12000 }, settings)
     assert.is_true(compaction.should_compact(24001, 32000, settings))
     assert.is_false(compaction.should_compact(24000, 32000, settings))
-    assert.are.equal(1200, compaction.estimate_tokens({ role = "user", content = { { type = "image" } } }))
+    assert.are.equal(1200, compaction.estimate_tokens({ role = "user", content = { { type = "image", data = "aW1hZ2U=", mimeType = "image/png" } } }))
     assert.are.equal(2, compaction.estimate_tokens({
       role = "assistant", content = { { type = "thinking", thinking = "12345678" } },
     }))
     assert.are.equal(2, compaction.estimate_tokens({
-      role = "compactionSummary", summary = "12345678",
+      role = "compactionSummary", summary = "12345678", tokensBefore = 0, timestamp = 1,
     }))
-    assert.are.equal(0, compaction.estimate_tokens({ role = "unknown" }))
+    assert.are.equal(0, compaction.estimate_tokens({ role = "unknown" } --[[@as Neoagent.ProjectionMessage]]))
   end)
 
   it("serializes assistant work and bounded tool output for a summary", function()
@@ -53,34 +58,36 @@ describe("neoagent.compaction", function()
   end)
 
   it("reports session histories that have no compactable prefix", function()
-    assert.is_nil(compaction.prepare({}, { keep_recent_tokens = 20 }))
+    assert.is_nil((compaction.prepare({}, compaction.settings({ keep_recent_tokens = 20 }))))
     assert.are.same({ first_kept_index = 1, split_turn = false },
-      compaction.find_cut_point({ { type = "selection" } }, 1, 1, 1))
+      compaction.find_cut_point({ { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" } }, 1, 1, 1))
     local compacted = {
-      type = "compaction", id = "c", parentId = vim.NIL, timestamp = "t",
+      type = "compaction", id = "c", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
       summary = "done", firstKeptEntryId = "u", tokensBefore = 10,
     }
-    assert.is_nil(compaction.prepare({ compacted }, { keep_recent_tokens = 20 }))
+    assert.is_nil((compaction.prepare({ compacted }, compaction.settings({ keep_recent_tokens = 20 }))))
 
+    ---@type Neoagent.JournalEntry[]
     local path = { entry("u", nil, { role = "user", content = "only recent context" }) }
-    local prepared, err = compaction.prepare(path, { keep_recent_tokens = 100 })
+    local prepared, err = compaction.prepare(path, compaction.settings({ keep_recent_tokens = 100 }))
     assert.is_nil(prepared)
-    assert.matches("Nothing can be compacted", err.message)
+    assert.matches("Nothing can be compacted", assert(err).message)
 
     path = {
       compacted,
       entry("u2", "c", { role = "user", content = string.rep("x", 80) }),
       entry("a2", "u2", { role = "assistant", content = { { type = "text", text = "recent" } } }),
     }
-    local repeated = assert(compaction.prepare(path, { keep_recent_tokens = 1 }))
+    local repeated = assert(compaction.prepare(path, compaction.settings({ keep_recent_tokens = 1 })))
     assert.are.equal("a2", repeated.first_kept_entry_id)
   end)
 
   it("retains non-message records adjacent to a selected cut point", function()
+    ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u", nil, { role = "user", content = "request" }),
-      { type = "selection" },
-      { type = "selection" },
+      { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" },
+      { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" },
       entry("a", "u", {
         role = "assistant",
         content = { { type = "text", text = "response" } },
@@ -102,6 +109,7 @@ describe("neoagent.compaction", function()
       model = { provider = "fake", model = "test" },
       thinkingLevel = "high",
     }
+    ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u1", nil, { role = "user", content = "old request" }),
       entry("a1", "u1", {
@@ -116,7 +124,7 @@ describe("neoagent.compaction", function()
       first_kept_index = 3,
       split_turn = false,
     }, compaction.find_cut_point(path, 1, #path, 10))
-    assert.are.same(retained.request, path[3].request)
+    assert.are.same(retained.request, assert(path[3]).request)
   end)
 
   it("estimates trailing text and images after live provider usage", function()
@@ -129,10 +137,11 @@ describe("neoagent.compaction", function()
       } } },
     }
     assert.are.equal(50 + 3 + 1200,
-      context.tokens({}, messages, { tokens = 50, message_count = 1 }))
+      context.tokens((assert(require("neoagent.session").new())), messages, { tokens = 50, message_count = 1 }))
   end)
 
   it("selects turn boundaries and carries previous summaries forward", function()
+    ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u1", nil, { role = "user", content = string.rep("a", 80) }),
       entry("a1", "u1", { role = "assistant", content = { { type = "text", text = string.rep("b", 80) } } }),
@@ -155,10 +164,11 @@ describe("neoagent.compaction", function()
     local repeated = assert(compaction.prepare(path, { auto = true, reserve_tokens = 10, keep_recent_tokens = 15 }))
     assert.are.equal("Earlier work", repeated.previous_summary)
     assert.are.equal("u3", repeated.first_kept_entry_id)
-    assert.are.equal("next", repeated.messages[1].content)
+    assert.are.equal("next", assert(repeated.messages[1]).content)
   end)
 
   it("splits oversized turns without separating a tool result from its call", function()
+    ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u", nil, { role = "user", content = "do work" }),
       entry("a1", "u", { role = "assistant", content = { {
@@ -181,6 +191,7 @@ describe("neoagent.compaction", function()
   end)
 
   it("retains a trailing tool result with its call when it exceeds the token budget", function()
+    ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u1", nil, { role = "user", content = "Earlier request" }),
       entry("a1", "u1", { role = "assistant", content = { { type = "text", text = "Earlier work" } } }),
@@ -193,37 +204,38 @@ describe("neoagent.compaction", function()
         content = { { type = "text", text = string.rep("output ", 100) } },
       }),
     }
-    local prepared, err = compaction.prepare(path, { keep_recent_tokens = 1 })
+    local prepared, err = compaction.prepare(path, compaction.settings({ keep_recent_tokens = 1 }))
     assert.is_nil(err)
-    assert.are.equal("a2", prepared.first_kept_entry_id)
-    assert.are.equal(2, #prepared.messages)
-    assert.are.same({ path[3].message }, prepared.turn_prefix)
+    assert.are.equal("a2", assert(prepared).first_kept_entry_id)
+    assert.are.equal(2, #assert(prepared).messages)
+    assert.are.same({ assert(path[3]).message }, assert(prepared).turn_prefix)
   end)
 
   it("generates cancellable structured summaries through an ordinary Model", function()
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "  ## Goal\nFinish it  " } }),
     } })
+    ---@type Neoagent.CompactionEvent[]
     local events = {}
     local run = compaction.run({
       preparation = {
         first_kept_entry_id = "keep",
         messages = { { role = "user", content = "Please finish" } },
         turn_prefix = {}, split_turn = false, tokens_before = 100,
-        settings = { reserve_tokens = 20 },
+        settings = compaction.settings({ reserve_tokens = 20 }),
       },
       model = model,
       instructions = "Preserve tests",
       on_event = function(event) events[#events + 1] = event end,
     })
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
-    assert.are.equal("## Goal\nFinish it", run:result().summary)
-    assert.are.equal("keep", run:result().first_kept_entry_id)
-    assert.matches("%[User%]: Please finish", model.requests[1].messages[1].content[1].text)
-    assert.matches("Additional focus: Preserve tests", model.requests[1].messages[1].content[1].text)
-    assert.matches("context summarization assistant", model.requests[1].system_prompt)
-    assert.are.same({}, model.requests[1].tools)
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("## Goal\nFinish it", assert(run:result()).summary)
+    assert.are.equal("keep", assert(run:result()).first_kept_entry_id)
+    assert.matches("%[User%]: Please finish", require("neoagent.util").text_content(assert(assert(model.requests[1]).messages[1]).content))
+    assert.matches("Additional focus: Preserve tests", require("neoagent.util").text_content(assert(assert(model.requests[1]).messages[1]).content))
+    assert.matches("context summarization assistant", (assert(assert(model.requests[1]).system_prompt)))
+    assert.are.same({}, assert(model.requests[1]).tools)
     assert.are.same({}, events)
   end)
 
@@ -236,56 +248,59 @@ describe("neoagent.compaction", function()
       },
       result = { ok = false, error = { kind = "http", message = "unavailable" } },
     } })
+    ---@type Neoagent.CompactionEvent[]
     local events = {}
     local run = compaction.run({
       preparation = {
         first_kept_entry_id = "keep", messages = { { role = "user", content = "old" } },
         turn_prefix = {}, split_turn = false, tokens_before = 50,
+        settings = compaction.settings(),
       },
       model = model,
       on_event = function(event) events[#events + 1] = event end,
     })
     assert(vim.wait(1000, function() return run:is_done() and #events == 3 end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("unavailable", run:result().error.message)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("unavailable", assert(assert(run:result()).error).message)
     assert.are.same({ "compaction_delta", "provider_status", "inference_stats" },
       vim.tbl_map(function(event) return event.type end, events))
 
-    model = fake_model.new({ { result = { ok = true, text = "  " } } })
+    model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "  " } }) } })
     run = compaction.run({
       preparation = {
         first_kept_entry_id = "keep", messages = { { role = "user", content = "old" } },
         turn_prefix = {}, split_turn = false, tokens_before = 50,
+        settings = compaction.settings(),
       },
       model = model,
     })
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.matches("no text", run:result().error.message)
+    assert.is_false(assert(run:result()).ok)
+    assert.matches("no text", assert(assert(run:result()).error).message)
   end)
 
   it("cancels the active summarization request", function()
     local cancelled = false
-    local model = {
-      stream = function()
-        return require("neoagent.async").run(function()
-          require("neoagent.async").await(function()
-            return function() cancelled = true end
-          end)
+    local model = fake_model.new()
+    function model:stream()
+      return require("neoagent.async").run(function()
+        return require("neoagent.async").await(function()
+          return function() cancelled = true end
         end)
-      end,
-    }
+      end)
+    end
     local run = compaction.run({
       preparation = {
         first_kept_entry_id = "keep", messages = { { role = "user", content = "old" } },
         turn_prefix = {}, split_turn = false, tokens_before = 50,
+        settings = compaction.settings(),
       },
       model = model,
     })
     run:cancel()
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.is_true(cancelled)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
   end)
 
   it("retains the previous summary when recompacting within one turn", function()
@@ -296,12 +311,12 @@ describe("neoagent.compaction", function()
     assert(session:append({ role = "assistant", content = { { type = "text", text = "Initial work" } } }))
     local previous = "Preserve the production database"
     assert(session:append_compaction({
-      summary = previous, firstKeptEntryId = retained.id, tokensBefore = 1000,
+      summary = previous, firstKeptEntryId = assert(retained).id, tokensBefore = 1000,
     }))
     assert(session:append({ role = "assistant", content = {
       { type = "text", text = string.rep("Recent work. ", 40) },
     } }))
-    local prepared = assert(compaction.prepare(assert(session:path()), { keep_recent_tokens = 1 }))
+    local prepared = assert(compaction.prepare(assert(session:path()), compaction.settings({ keep_recent_tokens = 1 })))
     assert.is_true(prepared.split_turn)
     assert.are.equal(0, #prepared.messages)
     local model = fake_model.new({ {
@@ -309,24 +324,51 @@ describe("neoagent.compaction", function()
     } })
     local run = compaction.run({ preparation = prepared, model = model })
     assert(vim.wait(1000, function() return run:is_done() end))
-    local result = run:result()
-    assert.is_true(result.ok)
-    assert.matches(previous, result.summary, 1, true)
+    local result = assert(run:result())
+    assert(result.ok)
+    assert.matches(previous, (assert(result.summary)), 1, true)
     assert.are.equal(1, #model.requests)
     assert(session:append_compaction({
-      summary = result.summary, firstKeptEntryId = result.first_kept_entry_id,
-      tokensBefore = result.tokens_before,
+      summary = assert(result.summary), firstKeptEntryId = assert(result.first_kept_entry_id),
+      tokensBefore = assert(result.tokens_before),
     }))
-    assert.matches(previous, session:context_messages()[1].content[1].text, 1, true)
+    assert.matches(previous, require("neoagent.util").text_content(assert(assert(session:context_messages())[1]).content), 1, true)
+  end)
+
+  it("persists compaction estimates from fractional provider usage", function()
+    for _, usage in ipairs({
+      { totalTokens = 42.5 },
+      { input = 40.25, output = 2.25 },
+    }) do
+      local session = assert(require("neoagent.session").new())
+      assert(session:append({ role = "user", content = "Earlier request" }))
+      assert(session:append({ role = "assistant", content = {}, usage = usage }))
+      assert(session:append({ role = "user", content = "next" }))
+      local preparation = assert(compaction.prepare((assert(session:path())),
+        compaction.settings({ keep_recent_tokens = 1 })))
+      local model = fake_model.new({ {
+        result = fake_model.assistant({ { type = "text", text = "Earlier work" } }),
+      } })
+      local run = compaction.run({ preparation = preparation, model = model })
+      assert(vim.wait(1000, function() return run:is_done() end))
+      local result = assert(run:result())
+      assert(result.ok)
+      local persisted, err = session:append_compaction({
+        summary = result.summary, firstKeptEntryId = result.first_kept_entry_id,
+        tokensBefore = result.tokens_before,
+      })
+      assert(persisted, vim.inspect(err))
+      assert.are.equal(44, result.tokens_before)
+    end
   end)
 
   it("combines history and turn-prefix summaries", function()
     local history = fake_model.assistant({ { type = "text", text = "history" } })
-    history.message.usage.cacheWrite1h = 2
-    history.message.usage.cost.total = 1.5
+    assert(history.message.usage).cacheWrite = 2
+    assert(assert(history.message.usage).cost).total = 1.5
     local prefix = fake_model.assistant({ { type = "text", text = "prefix" } })
-    prefix.message.usage.cacheWrite1h = 3
-    prefix.message.usage.cost.total = 2.5
+    assert(prefix.message.usage).cacheWrite = 3
+    assert(assert(prefix.message.usage).cost).total = 2.5
     local model = fake_model.new({ { result = history }, { result = prefix } })
     local run = compaction.run({
       preparation = {
@@ -336,15 +378,20 @@ describe("neoagent.compaction", function()
         split_turn = true,
         tokens_before = 100,
         previous_summary = "previous",
-        settings = { reserve_tokens = 20 },
+        settings = compaction.settings({ reserve_tokens = 20 }),
       },
       model = model,
     })
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.matches("history.-Turn Context %(split turn%):.-prefix", run:result().summary)
-    assert.are.equal(5, run:result().usage.cacheWrite1h)
-    assert.are.equal(4, run:result().usage.cost.total)
-    assert.matches("<previous%-summary>\nprevious", model.requests[1].messages[1].content[1].text)
-    assert.matches("PREFIX of a turn", model.requests[2].messages[1].content[1].text)
+    assert.matches("history.-Turn Context %(split turn%):.-prefix", (assert(assert(run:result()).summary)))
+    assert.are.equal(5, assert(assert(run:result()).usage).cacheWrite)
+    assert.are.equal(4, assert(assert(assert(run:result()).usage).cost).total)
+    local normalized, err = require("neoagent.semantic_message").normalize({
+      role = "assistant", content = {}, usage = assert(run:result()).usage,
+    })
+    assert.is_nil(err)
+    assert.are.same(assert(run:result()).usage, assert(normalized).usage)
+    assert.matches("<previous%-summary>\nprevious", require("neoagent.util").text_content(assert(assert(model.requests[1]).messages[1]).content))
+    assert.matches("PREFIX of a turn", require("neoagent.util").text_content(assert(assert(model.requests[2]).messages[1]).content))
   end)
 end)

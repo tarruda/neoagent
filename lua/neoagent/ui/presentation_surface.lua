@@ -1,13 +1,34 @@
 local Applet = require("applet")
 local util = require("neoagent.util")
 
+---@class Neoagent.PresentationSurfaceOptions
+---@field submit fun(): unknown
+---@field flush fun(): boolean?, Applet.Error?
+---@field is_open fun(): boolean
+---@field resolve fun(id: string, value: string): unknown
+---@field cancel fun(id: string): unknown
+
+---@class Neoagent.PresentationSurfaceView
+---@field _presentation_surface? Neoagent.PresentationSurfaceOptions
+---@field applet_theme? Applet.Theme
+---@field on_error? fun(error: Applet.PaneError)
+---@field presentation? Neoagent.PresentationSnapshot
+---@field presentation_component? Applet.Presentation
+---@field presentation_seed? string
+
 local M = {}
 
+---@param view Neoagent.PresentationSurfaceView
+---@return Neoagent.PresentationSurfaceOptions
 local function options(view)
-  return assert(view._presentation_surface,
-    "presentation surface is not configured")
+  return (assert(view._presentation_surface,
+    "presentation surface is not configured"))
 end
 
+---@generic V: Neoagent.PresentationSurfaceView
+---@param view V
+---@param opts Neoagent.PresentationSurfaceOptions
+---@return V
 function M.configure(view, opts)
   assert(type(view) == "table", "presentation View is required")
   assert(type(opts) == "table"
@@ -21,13 +42,16 @@ function M.configure(view, opts)
   return view
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@param active Neoagent.PublicPresentation
+---@return Applet.Presentation
 function M.new_component(view, active)
   local opts = options(view)
   return Applet.presentation.new({
     key = "presentation",
     filter_key = "presentation-filter",
     results_key = "presentation-results",
-    request = active,
+    request = active --[[@as Applet.PresentationRequest]],
     theme = view.applet_theme,
     on_choose = function(value) opts.resolve(active.id, value) end,
     on_cancel = function() opts.cancel(active.id) end,
@@ -35,6 +59,8 @@ function M.new_component(view, active)
   })
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@return boolean
 function M.ensure(view)
   local active = view.presentation and view.presentation.active
   if not active then return false end
@@ -51,6 +77,8 @@ function M.ensure(view)
   return true
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@return boolean
 function M.seed(view)
   local component = view.presentation_component
   local editable = component and component:editable_pane() or nil
@@ -60,10 +88,12 @@ function M.seed(view)
   end
   local value = view.presentation_seed
   view.presentation_seed = nil
-  component:set_text(value)
+  assert(component):set_text(value)
   return true
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@return boolean
 function M.retain_seed(view)
   local active = view.presentation and view.presentation.active
   if not active or active.kind ~= "input" then return false end
@@ -71,6 +101,9 @@ function M.retain_seed(view)
   return true
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@param snapshot Neoagent.PresentationSnapshot?
+---@return true?, Applet.Error?
 function M.set(view, snapshot)
   assert(snapshot == nil or type(snapshot) == "table",
     "presentation snapshot must be a table")
@@ -122,6 +155,9 @@ function M.set(view, snapshot)
   return true
 end
 
+---@param view Neoagent.PresentationSurfaceView
+---@param theme Applet.Theme
+---@return boolean
 function M.set_theme(view, theme)
   local component = view.presentation_component
   if not component then return false end
@@ -130,6 +166,7 @@ function M.set_theme(view, theme)
   return true
 end
 
+---@param view Neoagent.PresentationSurfaceView
 function M.destroy(view)
   if view.presentation_component then
     view.presentation_component:destroy()

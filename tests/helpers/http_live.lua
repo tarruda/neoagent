@@ -1,6 +1,9 @@
 local M = {}
+---@return {url: string, close: fun()}
 function M.start()
-  local output, port, exited = "", nil, false
+  local output, exited = "", false
+  ---@type integer?
+  local port
   local process = vim.system({ "python3", "tests/http_live/server.py" }, {
     stdout = function(err, data)
       assert(not err, err)

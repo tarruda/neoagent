@@ -1,13 +1,20 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local provider_service = require("neoagent.provider_service")
 local util = require("neoagent.util")
 
 describe("neoagent provider service", function()
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>?
+  ---@return Neoagent.RunResult<T>
   local function wait(run)
+    assert(run)
     assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
+    return (assert(run:result()))
   end
 
+  ---@param operations? table<string, Neoagent.ProviderOperation>
+  ---@return Neoagent.ProviderService
   local function service(operations)
     return {
       id = "fake",
@@ -22,30 +29,40 @@ describe("neoagent provider service", function()
     }
   end
 
+  ---@param operations? table<string, unknown>
+  ---@return {operations: table<string, unknown>, subscribe?: unknown}
+  local function invalid_service(operations)
+    local value = service()
+    rawset(value, "operations", operations or {})
+    return value
+  end
+
   it("validates Provider Service values and operation descriptors", function()
     local value = service({
       first = { label = "First", run = function() return async.run(function() return { ok = true } end) end },
-      second = { label = "Second", mutating = true, run = function() end },
+      second = { label = "Second", mutating = true, run = function() error("unexpected operation execution") end },
     })
     assert.are.equal(value, provider_service.validate(value))
     assert.are.same({}, provider_service.operations(service({})))
 
-    local invalid_method = service({})
+    local invalid_method = invalid_service({})
     invalid_method.subscribe = true
     local validated, err = provider_service.validate(nil)
     assert.is_nil(validated)
-    assert.are.equal("provider", err.kind)
+    assert.are.equal("provider", assert(err).kind)
 
-    for _, invalid in ipairs({
-      true, {}, service({ missing = { run = function() end } }),
-      service({ bad = { label = "", run = function() end } }),
-      service({ bad = { label = "x", run = true } }),
-      service({ bad = { label = "forged\nlabel", run = function() end } }),
+    ---@type unknown[]
+    local invalid_values = {
+      true, {}, invalid_service({ missing = { run = function() error("unexpected operation execution") end } }),
+      invalid_service({ bad = { label = "", run = function() error("unexpected operation execution") end } }),
+      invalid_service({ bad = { label = "x", run = true } }),
+      invalid_service({ bad = { label = "forged\nlabel", run = function() error("unexpected operation execution") end } }),
       invalid_method,
-    }) do
+    }
+    for _, invalid in ipairs(invalid_values) do
       validated, err = provider_service.validate(invalid)
       assert.is_nil(validated)
-      assert.are.equal("provider", err.kind)
+      assert.are.equal("provider", assert(err).kind)
     end
 
     assert.has_error(function() provider_service.assert({ id = "x" }) end)
@@ -53,21 +70,23 @@ describe("neoagent provider service", function()
 
   it("returns sorted operation metadata without functions", function()
     local operations = {
-      zeta = { label = "Zeta", run = function() end },
+      zeta = { label = "Zeta", run = function() error("unexpected operation execution") end },
       alpha = { label = "Alpha", description = "first", mutating = true,
-        auth_scope = "dashboard", run = function() end },
+        auth_scope = "dashboard", run = function() error("unexpected operation execution") end },
     }
     local metadata = provider_service.operations(service(operations))
     assert.are.same({ "alpha", "zeta" },
       vim.tbl_map(function(item) return item.id end, metadata))
-    assert.are.equal("first", metadata[1].description)
-    assert.is_true(metadata[1].mutating)
-    assert.are.equal("dashboard", metadata[1].auth_scope)
-    assert.is_nil(metadata[1].run)
+    assert.are.equal("first", assert(metadata[1]).description)
+    assert.is_true(assert(metadata[1]).mutating)
+    assert.are.equal("dashboard", assert(metadata[1]).auth_scope)
+    assert.is_nil((rawget(assert(metadata[1]), "run")))
   end)
 
   it("builds operation contexts and completes exactly once", function()
+    ---@type Neoagent.ProviderOperationContext?
     local seen
+    ---@type table<string, Neoagent.ProviderOperation>
     local operations = {
       run = {
         label = "Run",
@@ -93,15 +112,15 @@ describe("neoagent provider service", function()
       },
     })
     local result = wait(run)
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(7, result.value)
-    assert.are.equal("tail", seen.args)
-    assert.are.equal("http://localhost/v1", seen.provider.config.base_url)
-    assert.is_nil(seen.provider.config.api_key)
-    assert.are.same({ tenant = "local" }, seen.provider.config.service_opts)
-    assert.is_nil(seen.model)
-    assert.is_nil(seen.agent_running)
-    assert.is_function(seen.resolve_auth)
+    assert.are.equal("tail", assert(seen).args)
+    assert.are.equal("http://localhost/v1", assert(seen).provider.config.base_url)
+    assert.is_nil((rawget(assert(seen).provider.config, "api_key")))
+    assert.are.same({ tenant = "local" }, assert(seen).provider.config.service_opts)
+    assert.is_nil((rawget(assert(seen), "model")))
+    assert.is_nil((rawget(assert(seen), "agent_running")))
+    assert.is_function(assert(seen).resolve_auth)
   end)
 
   it("normalizes operation failures and invalid Run returns", function()
@@ -114,26 +133,28 @@ describe("neoagent provider service", function()
       },
       invalid = {
         label = "Invalid",
-        run = function() return {} end,
+        run = (function() return {} end) --[[@as fun(ctx: Neoagent.ProviderOperationContext): Neoagent.ProviderOperationRun]],
       },
     })
     local result = wait(provider_service.run(value, "fail"))
     assert.is_false(result.ok)
-    assert.are.equal("provider", result.error.kind)
-    assert.matches("boom", result.error.message)
+    assert.are.equal("provider", assert(result.error).kind)
+    assert.matches("boom", assert(result.error).message)
 
     result = wait(provider_service.run(value, "invalid"))
     assert.is_false(result.ok)
-    assert.matches("must return a Run", result.error.message)
+    assert.matches("must return a Run", assert(result.error).message)
   end)
 
   it("cancels an operation through the outer Run", function()
     local cancelled
+    local started = false
     local value = service({
       work = {
         label = "Work",
         run = function()
           return async.run(function(run)
+            started = true
             run:on_cancel(function() cancelled = true end)
             return async.await(function(done)
               run:on_cancel(function() done.reject(async.cancelled_error) end)
@@ -143,17 +164,18 @@ describe("neoagent provider service", function()
         end,
       },
     })
-    local run = provider_service.run(value, "work")
-    vim.wait(50)
+    local run = assert(provider_service.run(value, "work"))
+    assert(vim.wait(1000, function() return started end))
     run:cancel()
     assert(vim.wait(3000, function() return run:is_done() end))
-    local result = run:result()
+    local result = assert(run:result())
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.is_true(cancelled)
   end)
 
   it("serializes operations on a shared service and protects active model use", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
     local pending
     local value = service({
       inspect = {
@@ -179,21 +201,21 @@ describe("neoagent provider service", function()
     local first = assert(provider_service.run(value, "mutate"))
     local second, busy_err = provider_service.run(value, "inspect")
     assert.is_nil(second)
-    assert.matches("already active", busy_err.message)
+    assert.matches("already active", assert(busy_err).message)
     local unavailable, operation_err = provider_service.acquire(value)
     assert.is_nil(unavailable)
-    assert.matches("mutating provider operation", operation_err.message)
-    pending.resolve({ ok = true })
+    assert.matches("mutating provider operation", assert(operation_err).message)
+    assert(pending).resolve({ ok = true })
     assert.is_true(wait(first).ok)
     assert.is_true(wait(assert(provider_service.run(value, "inspect"))).ok)
 
-    local release = provider_service.acquire(value)
+    local release = assert(provider_service.acquire(value))
     local blocked, active_err = provider_service.run(value, "mutate")
     assert.is_nil(blocked)
-    assert.matches("active provider use", active_err.message)
+    assert.matches("active provider use", assert(active_err).message)
     assert.is_true(wait(assert(provider_service.run(value, "inspect"))).ok)
     release()
-    provider_service.acquire(value)()
+    assert(provider_service.acquire(value))()
   end)
 
   it("owns use and operation leases through idempotent values", function()
@@ -209,7 +231,7 @@ describe("neoagent provider service", function()
       mutating = true,
     })
     assert.is_nil(blocked)
-    assert.matches("active provider use", err.message)
+    assert.matches("active provider use", assert(err).message)
 
     assert.is_true(inspect:finish())
     assert.is_false(inspect:finish())
@@ -224,10 +246,10 @@ describe("neoagent provider service", function()
       mutating = true,
     })
     assert.is_nil(concurrent)
-    assert.matches("already active", concurrent_err.message)
+    assert.matches("already active", assert(concurrent_err).message)
     local unavailable, unavailable_err = provider_service.acquire_use(value)
     assert.is_nil(unavailable)
-    assert.matches("mutating provider operation", unavailable_err.message)
+    assert.matches("mutating provider operation", assert(unavailable_err).message)
     assert.is_true(exclusive:finish())
   end)
 
@@ -246,10 +268,10 @@ describe("neoagent provider service", function()
     local forged = {}
     for key, item in pairs(coordination) do forged[key] = item end
     local run, err = provider_service.run(value, "work", {
-      coordination = forged,
+      coordination = forged --[[@as Neoagent.ProviderOperationToken]],
     })
     assert.is_nil(run)
-    assert.matches("coordination token is invalid", err.message)
+    assert.matches("coordination token is invalid", assert(err).message)
     assert.is_true(coordination:finish())
 
     local original_run = async.run
@@ -257,14 +279,15 @@ describe("neoagent provider service", function()
     run, err = provider_service.run(value, "work")
     async.run = original_run
     assert.is_nil(run)
-    assert.matches("Failed to construct provider operation Run", err.message)
-    assert.matches("outer Run construction failed", err.message)
+    assert.matches("Failed to construct provider operation Run", assert(err).message)
+    assert.matches("outer Run construction failed", assert(err).message)
     assert.is_false(provider_service.busy(value))
   end)
 
   it("lets one Run consume an operation token", function()
     for _, mutating in ipairs({ false, true }) do
-      local pending
+      ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
+    local pending
       local calls = 0
       local value = service({
         work = {
@@ -291,16 +314,16 @@ describe("neoagent provider service", function()
         coordination = coordination,
       })
       assert.is_nil(second)
-      assert.matches("coordination token is invalid", err.message)
+      assert.matches("coordination token is invalid", assert(err).message)
       assert.are.equal(1, calls)
 
       if mutating then
-        assert.is_nil(provider_service.acquire_use(value))
-        assert.is_nil(provider_service.begin_operation(value, {
+        assert.is_nil((provider_service.acquire_use(value)))
+        assert.is_nil((provider_service.begin_operation(value, {
           mutating = false,
-        }))
+        })))
       end
-      pending.resolve({ ok = true })
+      assert(pending).resolve({ ok = true })
       assert.is_true(wait(first).ok)
       assert.is_false(coordination:finish())
       assert.is_false(provider_service.busy(value))
@@ -318,7 +341,7 @@ describe("neoagent provider service", function()
     assert.are.equal(0, destroyed)
     local unavailable, err = provider_service.acquire_use(value)
     assert.is_nil(unavailable)
-    assert.matches("retiring", err.message)
+    assert.matches("retiring", assert(err).message)
     assert.is_true(use:release())
     assert.are.equal(1, destroyed)
     assert.is_false(provider_service.retire(value, function() end))
@@ -332,6 +355,7 @@ describe("neoagent provider service", function()
     vim.notify = function(message, level)
       notifications[#notifications + 1] = { message, level }
     end
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ProviderOperationResult>?
     local pending
     local value = service({
       inspect = {
@@ -368,7 +392,7 @@ describe("neoagent provider service", function()
     assert.are.same({
       users = 0, operations = 1, busy = true, mutating = false,
     }, snapshots[3])
-    pending.resolve({ ok = true })
+    assert(pending).resolve({ ok = true })
     assert.is_true(wait(run).ok)
     assert.are.same({
       users = 0, operations = 0, busy = false, mutating = false,
@@ -389,9 +413,9 @@ describe("neoagent provider service", function()
   it("resolves provider auth through the supplied manager", function()
     local value = service({})
     local resolved_scope
-    local manager = {
-      resolve = function(_, method, opts)
-        resolved_scope = opts.scope
+    local manager = require("tests.helpers.auth_manager").new()
+    function manager:resolve(method, opts)
+        resolved_scope = assert(opts).scope
         return async.run(function()
           return {
             ok = true,
@@ -402,16 +426,18 @@ describe("neoagent provider service", function()
             metadata = { server_url = "http://localhost" },
           }
         end)
-      end,
-    }
+    end
+    ---@type Neoagent.AuthResolution?
     local seen
+    ---@type table<string, Neoagent.ProviderOperation>
     local operations = {
       auth = {
         label = "Auth",
         run = function(ctx)
-          local resolved = ctx.resolve_auth("dashboard"):await()
-          seen = resolved
-          return async.run(function() return { ok = true } end)
+          return async.run(function()
+            seen = ctx.resolve_auth("dashboard"):await()
+            return { ok = true }
+          end)
         end,
       },
     }
@@ -419,31 +445,31 @@ describe("neoagent provider service", function()
       auth = manager,
       auth_method = "fake",
     }))
-    assert.is_true(result.ok)
-    assert.is_true(seen.configured)
+    assert(result.ok)
+    assert(seen and seen.ok and seen.configured)
     assert.are.equal("fake", seen.method)
     assert.are.equal("dashboard", resolved_scope)
-    assert.are.equal("http://localhost", seen.metadata.server_url)
+    assert.are.equal("http://localhost", assert(seen.metadata).server_url)
   end)
 
   it("resolves absent auth methods without credentials", function()
     local run = provider_service.resolve_auth({})
     local result = wait(run)
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_false(result.configured)
   end)
 
   it("rejects interactions when no adapter is supplied", function()
     local selected = false
     local ok, err = pcall(function()
-      provider_service.no_interact().select({}, {
+      provider_service.no_interact().select({ items = {} }, {
         resolve = function() selected = true end,
         reject = function(value) error(value, 0) end,
       })
     end)
     assert.is_false(ok)
-    assert.are.equal("provider", err.kind)
-    assert.matches("unavailable", err.message)
+    assert.are.equal("provider", rawget(err, "kind"))
+    assert.matches("unavailable", rawget(err, "message"))
     assert.is_false(selected)
   end)
 
@@ -459,78 +485,84 @@ describe("neoagent provider service", function()
     }) do
       local validated, err = provider_service.validate(value)
       assert.is_nil(validated)
-      assert.are.equal("provider", err.kind)
+      assert.are.equal("provider", assert(err).kind)
     end
 
-    local value = service({})
+    local value = invalid_service({})
     value.operations = {
-      bad = { label = "", run = function() end },
+      bad = { label = "", run = function() error("unexpected operation execution") end },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
     value.operations = {
-      bad = { label = string.rep("x", 129), run = function() end },
+      bad = { label = string.rep("x", 129), run = function() error("unexpected operation execution") end },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
     value.operations = {
-      bad = { label = "x", description = string.rep("d", 513), run = function() end },
+      bad = { label = "x", description = string.rep("d", 513), run = function() error("unexpected operation execution") end },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
     value.operations = {
-      bad = { label = "x", mutating = "yes", run = function() end },
+      bad = { label = "x", mutating = "yes", run = function() error("unexpected operation execution") end },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
     for _, scope in ipairs({ "", "unsafe/scope", "bad\nscope",
       string.rep("s", 129) }) do
       value.operations = {
-        bad = { label = "x", auth_scope = scope, run = function() end },
+        bad = { label = "x", auth_scope = scope, run = function() error("unexpected operation execution") end },
       }
-      assert.is_nil(provider_service.validate(value))
+      assert.is_nil((provider_service.validate(value)))
     end
     value.operations = {
-      bad = { label = "x", complete = true, run = function() end },
+      bad = { label = "x", complete = true, run = function() error("unexpected operation execution") end },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
     value.operations = {
       bad = { label = "x" },
     }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
 
-    value = service({
-      bad = { label = "\255", run = function() end },
+    value = invalid_service({
+      bad = { label = "\255", run = function() error("unexpected operation execution") end },
     })
-    assert.is_nil(provider_service.validate(value))
-    value = service({})
+    assert.is_nil((provider_service.validate(value)))
+    value = invalid_service({})
     value.operations = { bad = true }
-    assert.is_nil(provider_service.validate(value))
+    assert.is_nil((provider_service.validate(value)))
   end)
 
   it("validates operation Run inputs and unknown operations", function()
+    ---@param value Neoagent.ProviderService
+    ---@param id string
+    ---@param options? table<string, unknown>
+    local function run(value, id, options)
+      return provider_service.run(value, id, options --[[@as Neoagent.ProviderOperationOptions?]])
+    end
     local value = service({
       work = { label = "Work", run = function() return async.run(function() return { ok = true } end) end },
     })
-    assert.is_nil(provider_service.run(value, "missing"))
-    assert.is_nil(provider_service.run(value, "work", { args = 1 }))
-    assert.is_nil(provider_service.run(value, "work", {
+    assert.is_nil((run(value, "missing")))
+    assert.is_nil((run(value, "work", { args = 1 })))
+    assert.is_nil((run(value, "work", {
       args = string.rep("x", 16385),
-    }))
-    assert.is_nil(provider_service.run(value, "work", { args = "bad\nargs" }))
-    assert.is_true(wait(assert(provider_service.run(value, "work"))).ok)
-    assert.is_nil(provider_service.run(value, "work", { interact = {} }))
-    assert.is_nil(provider_service.run(value, "work", { interact = "bad" }))
-    assert.is_nil(provider_service.run(value, "work", {
+    })))
+    assert.is_nil((run(value, "work", { args = "bad\nargs" })))
+    assert.is_true(wait(assert(run(value, "work"))).ok)
+    assert.is_nil((run(value, "work", { interact = {} })))
+    assert.is_nil((run(value, "work", { interact = "bad" })))
+    assert.is_nil((run(value, "work", {
       interact = { select = function() end },
-    }))
+    })))
     local other = service(value.operations)
     local coordination = assert(provider_service.begin_operation(value, {
       mutating = false,
     }))
-    assert.is_nil(provider_service.run(other, "work", {
+    assert.is_nil((run(other, "work", {
       coordination = coordination,
-    }))
+    })))
     assert.is_true(coordination:finish())
-    assert.is_nil(provider_service.run(value, "work", {
+    assert.is_nil((run(value, "work", {
       coordination = coordination,
-    }))
+    })))
     assert.are.same({}, provider_service.public_config(nil))
     assert.are.same({
       api = "fake",

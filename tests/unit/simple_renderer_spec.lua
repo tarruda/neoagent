@@ -1,10 +1,15 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local protocol = require("neoagent.ui.renderer")
 
+---@class Neoagent.TestSimpleRenderer: Neoagent.Renderer<nil>
 local simple_renderer = {
   name = "simple",
   theme = Applet.Theme.new(),
 
+  ---@param _ Neoagent.TestSimpleRenderer
+  ---@param block Neoagent.RenderBlock
+  ---@return Applet.TextNode
   render_block = function(_, block)
     return Applet.Pane.nodes.text({
       key = "simple:block",
@@ -13,11 +18,16 @@ local simple_renderer = {
     })
   end,
 
+  ---@param self Neoagent.TestSimpleRenderer
+  ---@param block Neoagent.RenderBlock
+  ---@return Applet.TextNode
   render_details = function(self, block)
     return self:render_block(block)
   end,
 }
 
+---@param node Applet.Node
+---@return string[]
 local function lines(node)
   return assert(Applet.Pane.compile({
     tree = node,

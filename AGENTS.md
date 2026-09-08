@@ -97,6 +97,26 @@ Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
 
+`make typecheck-deps` installs pinned EmmyLua checker/language-server binaries
+and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck`
+for static checking; it needs no network or running Neovim after setup. CI runs
+the same target. `EMMYLUA_CHECK` in `local.mk` can override the checker executable.
+Editors can use `.deps/emmylua/bin/emmylua_ls` with `.emmyrc.json`.
+
+Every repository Lua file is checked, including tests, helpers, platform code,
+and development scripts. New files are checked by default. All configured
+warning/error diagnostics fail the gate; the full report is written to
+`.test-data/typecheck/diagnostics.json`. Keep type contracts at their ownership
+boundary, preserve runtime validation, and fix inaccurate contracts rather
+than spreading `any`, casts, or diagnostic suppressions.
+Redundant-condition diagnostics remain hints because typed entrypoints still
+validate callers at runtime.
+
+Typed tests import their assertions with `local assert = require("luassert")`.
+The test declarations describe Plenary's Busted interface; production keeps
+Lua's standard `assert` contract. Type existing behavioral tests without adding
+tests of annotations or of the third-party checker itself.
+
 `NVIM` defaults to `nvim` and `PLENARY_DIR` to `.deps/plenary.nvim`.
 Copy `local.mk.example` to `local.mk` for machine-specific executable,
 dependency, and `PATH` overrides.
@@ -139,6 +159,7 @@ processes, timers, temporary directories, buffers, and windows.
 Before completion:
 
 - Run the relevant fast suites and `make test`; keep health behavior valid.
+- Run `make typecheck` when changing Lua code or type-check configuration.
 - Check documentation against the reader needs above; edit only where needed.
 - Preserve aggregate shipped Lua line coverage strictly above 99.60%.
   Every file under `lua/applet/`, `lua/neoagent/`, and `plugin/` must appear

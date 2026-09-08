@@ -2,6 +2,93 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.ProviderLevel "info"|"success"|"warn"|"error"|"muted"
+---@alias Neoagent.ProviderOperationState "queued"|"running"|"succeeded"|"failed"|"cancelled"
+
+---@class Neoagent.ProviderStatusBlock
+---@field type "status"
+---@field text string
+---@field level Neoagent.ProviderLevel
+
+---@class Neoagent.ProviderFieldBlock
+---@field type "field"
+---@field label string
+---@field value string
+---@field level? Neoagent.ProviderLevel
+
+---@class Neoagent.ProviderProgressBlock
+---@field type "progress"
+---@field label string
+---@field value? number
+---@field detail? string
+---@field level? Neoagent.ProviderLevel
+
+---@class Neoagent.ProviderLimitBlock
+---@field type "limit"
+---@field label string
+---@field remaining number
+---@field resets_at? number
+---@field detail? string
+---@field level Neoagent.ProviderLevel
+
+---@class Neoagent.ProviderListItem
+---@field label string
+---@field detail? string
+
+---@class Neoagent.ProviderListBlock
+---@field type "list"
+---@field title string
+---@field items Neoagent.ProviderListItem[]
+
+---@class Neoagent.ProviderActivityEntry
+---@field level Neoagent.ProviderLevel
+---@field message string
+---@field timestamp? number
+
+---@class Neoagent.ProviderActivityBlock
+---@field type "activity"
+---@field title string
+---@field entries Neoagent.ProviderActivityEntry[]
+
+---@alias Neoagent.ProviderBlock Neoagent.ProviderStatusBlock|Neoagent.ProviderFieldBlock|Neoagent.ProviderProgressBlock|Neoagent.ProviderLimitBlock|Neoagent.ProviderListBlock|Neoagent.ProviderActivityBlock
+
+---@class Neoagent.ProviderOperationStatus
+---@field id string
+---@field label string
+---@field state Neoagent.ProviderOperationState
+---@field message? string
+---@field ratio? number
+---@field detail? string
+
+---@class Neoagent.ProviderState
+---@field blocks Neoagent.ProviderBlock[]
+---@field operation? Neoagent.ProviderOperationStatus
+
+---@class Neoagent.ProviderDashboardOptions
+---@field report? fun(message: string, level: integer)
+
+---@class Neoagent.ProviderStateInput
+---@field [string] unknown
+---@field type? unknown
+---@field text? unknown
+---@field label? unknown
+---@field value? unknown
+---@field level? unknown
+---@field detail? unknown
+---@field remaining? unknown
+---@field resets_at? unknown
+---@field title? unknown
+---@field items? unknown
+---@field entries? unknown
+---@field message? unknown
+---@field timestamp? unknown
+---@field id? unknown
+---@field state? unknown
+---@field ratio? unknown
+---@field blocks? unknown
+---@field operation? unknown
+
+
 local operation_states = {
   queued = true,
   running = true,
@@ -18,6 +105,11 @@ local levels = {
   muted = true,
 }
 
+---@param value unknown
+---@param name string
+---@param maximum integer
+---@param optional boolean
+---@return string?, Neoagent.Error?
 local function text(value, name, maximum, optional)
   if value == nil and optional then return nil end
   if optional and value == "" then return nil end
@@ -41,14 +133,23 @@ local function text(value, name, maximum, optional)
   return value
 end
 
+---@param value unknown
+---@param name string
+---@return string?, Neoagent.Error?
 local function label(value, name)
   return text(value, name, 512, false)
 end
 
+---@param value unknown
+---@param name string
+---@return string?, Neoagent.Error?
 local function detail(value, name)
   return text(value, name, 512, true)
 end
 
+---@param value unknown
+---@param name string
+---@return unknown[]?, Neoagent.Error?
 local function list(value, name)
   if type(value) ~= "table" or not util.is_list(value) then
     return nil, util.error("provider", name .. " must be a list")
@@ -56,6 +157,9 @@ local function list(value, name)
   return value
 end
 
+---@param value unknown
+---@param name string
+---@return Neoagent.ProviderStateInput?, Neoagent.Error?
 local function object(value, name)
   if type(value) ~= "table"
       or (next(value) ~= nil and util.is_list(value)) then
@@ -64,6 +168,10 @@ local function object(value, name)
   return value
 end
 
+---@param value unknown
+---@param name string
+---@param fallback Neoagent.ProviderLevel
+---@return Neoagent.ProviderLevel?, Neoagent.Error?
 local function normalized_level(value, name, fallback)
   value = value == nil and fallback or value
   local result, err = text(value, name, 16, false)
@@ -71,9 +179,14 @@ local function normalized_level(value, name, fallback)
   if not levels[result] then
     return nil, util.error("provider", "unknown " .. name .. ": " .. result)
   end
+  ---@cast result Neoagent.ProviderLevel
   return result
 end
 
+---@param value unknown
+---@param name string
+---@param optional boolean
+---@return number?, Neoagent.Error?
 local function normalized_ratio(value, name, optional)
   if value == nil and optional then return nil end
   if type(value) ~= "number" or value ~= value
@@ -85,6 +198,8 @@ local function normalized_ratio(value, name, optional)
   return value
 end
 
+---@param value unknown
+---@return Neoagent.ProviderActivityEntry[]?, Neoagent.Error?
 local function normalized_activity(value)
   local entries, err = list(value, "provider activity entries")
   if not entries then return nil, err end
@@ -119,6 +234,8 @@ local function normalized_activity(value)
   return result
 end
 
+---@param value unknown
+---@return Neoagent.ProviderListItem[]?, Neoagent.Error?
 local function normalized_items(value)
   local items, err = list(value, "provider list items")
   if not items then return nil, err end
@@ -141,6 +258,8 @@ local function normalized_items(value)
   return result
 end
 
+---@param value unknown
+---@return Neoagent.ProviderBlock?, Neoagent.Error?
 local function normalized_block(value)
   local block, err = object(value, "provider block")
   if not block then return nil, err end
@@ -246,6 +365,8 @@ local function normalized_block(value)
     "unknown provider block type: " .. block_type)
 end
 
+---@param value unknown
+---@return Neoagent.ProviderOperationStatus?, Neoagent.Error?
 local function normalized_operation(value)
   if value == nil then return nil end
   local operation, err = object(value, "provider operation")
@@ -261,6 +382,7 @@ local function normalized_operation(value)
   if not operation_states[state] then
     return nil, util.error("provider", "unknown operation state: " .. state)
   end
+  ---@cast state Neoagent.ProviderOperationState
   local message, message_err = detail(
     operation.message, "operation message")
   if not message and message_err then return nil, message_err end
@@ -280,6 +402,8 @@ local function normalized_operation(value)
   }
 end
 
+---@param value unknown
+---@return Neoagent.ProviderState|false|nil, Neoagent.Error?
 function M.normalize(value)
   if value == false then return false end
   local source, err = object(value, "provider state")
@@ -313,10 +437,15 @@ function M.normalize(value)
   return result
 end
 
+---@param value unknown
+---@return Neoagent.ProviderOperationStatus?, Neoagent.Error?
 function M.normalize_operation(value)
   return normalized_operation(value)
 end
 
+---@param initial? Neoagent.ProviderState
+---@param opts? Neoagent.ProviderDashboardOptions
+---@return Neoagent.ProviderDashboard
 function M.new(initial, opts)
   opts = opts or {}
   assert(type(opts) == "table"
@@ -328,13 +457,18 @@ function M.new(initial, opts)
   local snapshot, err = M.normalize(initial or {})
   assert(snapshot and snapshot ~= false,
     err and err.message or "provider dashboard state must be an object")
+  ---@type (fun(state: Neoagent.ProviderState))[]
   local listeners = {}
+  ---@class Neoagent.ProviderDashboard
   local dashboard = {}
 
+  ---@return Neoagent.ProviderState
   function dashboard:state()
     return util.copy(snapshot)
   end
 
+  ---@param value unknown
+  ---@return true?, Neoagent.Error?
   function dashboard:push(value)
     local normalized, normalize_err = M.normalize(value)
     if not normalized or normalized == false then
@@ -360,6 +494,8 @@ function M.new(initial, opts)
     return true
   end
 
+  ---@param listener fun(state: Neoagent.ProviderState)
+  ---@return fun()
   function dashboard:subscribe(listener)
     assert(type(listener) == "function",
       "provider dashboard listener must be a function")

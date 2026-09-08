@@ -3,11 +3,31 @@ local util = require("neoagent.util")
 
 local layout = Applet.layout
 local M = {}
+---@class Neoagent.AgentSwitcherState
+---@field rows integer
+---@field revision integer
+
+---@class Neoagent.AgentSwitcherOptions
+---@field owner Neoagent.NeoagentApplet
+
+---@class Neoagent.AgentSwitcher
+---@field owner? Neoagent.NeoagentApplet
+---@field applet? Applet.Applet<Neoagent.AgentSwitcherState>
+---@field presentation? Applet.Presentation
+---@field timer? uv.uv_timer_t
+---@field frame integer
+---@field generation integer
+---@field rows integer
+---@field closing boolean
+---@field destroyed boolean
 local Switcher = {}
 Switcher.__index = Switcher
 
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
+---@param pane Applet.Pane
+---@param opts {border: Applet.WindowBorder, mode: 'normal'|'insert'}
+---@return Applet.MountNode
 local function mount(pane, opts)
   return layout.mount(pane, {
     lifecycle = "transient",
@@ -34,6 +54,8 @@ local function mount(pane, opts)
   })
 end
 
+---@param opts Neoagent.AgentSwitcherOptions
+---@return Neoagent.AgentSwitcher
 function Switcher.new(opts)
   opts = opts or {}
   assert(type(opts.owner) == "table" and opts.owner._neoagent_applet,
@@ -51,25 +73,28 @@ function Switcher.new(opts)
   }, Switcher)
 end
 
+---@return Applet.PresentationItem[]
 function Switcher:_items()
+  local owner = assert(self.owner)
+  ---@type Applet.PresentationItem[]
   local result = {}
-  for _, profile in ipairs(self.owner.profile_order) do
+  for _, profile in ipairs(owner.profile_order) do
     result[#result + 1] = {
       id = "new:" .. profile.id,
       label = "New session - " .. profile.label,
       detail = "Profile",
     }
   end
-  for _, agent in ipairs(self.owner:agents()) do
+  for _, agent in ipairs(owner:agents()) do
     local summary = agent:summary()
     local activity = summary.activity
     local marker = "  "
     if activity.state == "working" then
-      marker = spinner_frames[self.frame] .. " "
+      marker = assert(spinner_frames[self.frame]) .. " "
     elseif activity.state == "waiting" then
       marker = "● "
     end
-    local profile = self.owner:profile(summary.profile_id)
+    local profile = owner:profile(summary.profile_id)
     local details = {
       profile and profile.label or summary.profile_id or "Agent",
       summary.workspace,
@@ -93,8 +118,10 @@ function Switcher:_items()
   return result
 end
 
+---@return boolean
 function Switcher:_has_working()
-  for _, agent in ipairs(self.owner:agents()) do
+  local owner = assert(self.owner)
+  for _, agent in ipairs(owner:agents()) do
     if agent:activity().state == "working" then return true end
   end
   return false
@@ -114,8 +141,9 @@ function Switcher:_sync_timer()
     return
   end
   if self.timer then return end
-  local timer = vim.uv.new_timer()
+  local timer = assert(vim.uv.new_timer())
   self.timer = timer
+  ---@type fun()
   local arm
   arm = function()
     if self.destroyed or self.timer ~= timer then return end
@@ -131,6 +159,7 @@ function Switcher:_sync_timer()
   arm()
 end
 
+---@param count integer
 function Switcher:_resize(count)
   self.rows = math.max(0, count)
   if self.applet and not self.applet:is_destroyed() then
@@ -138,19 +167,22 @@ function Switcher:_resize(count)
   end
 end
 
+---@param id string
+---@param generation integer
 function Switcher:_choose(id, generation)
   vim.schedule(function()
     if self.destroyed or self.generation ~= generation then return end
     self:close()
+    local owner = assert(self.owner)
     local profile = id:match("^new:(.+)$")
     local ok, selected, err
     if profile then
-      ok, selected, err = pcall(self.owner.new, self.owner, profile)
+      ok, selected, err = pcall(owner.new, owner, profile)
     else
       local agent = id:match("^agent:(.+)$")
       if agent then
         ok, selected, err = pcall(
-          self.owner.select, self.owner, agent)
+          owner.select, owner, agent)
       else
         ok, err = true, util.error("ui",
           "Agent switcher returned an invalid selection")
@@ -164,6 +196,7 @@ function Switcher:_choose(id, generation)
   end)
 end
 
+---@param generation integer
 function Switcher:_cancel(generation)
   vim.schedule(function()
     if not self.destroyed and self.generation == generation then self:close() end
@@ -173,7 +206,7 @@ end
 function Switcher:_create()
   self.generation = self.generation + 1
   local generation = self.generation
-  local selected = self.owner.selected
+  local selected = assert(self.owner).selected
   local theme = selected and selected.renderer
       and selected.renderer.theme
     or require("neoagent.ui.renderers").codex.theme
@@ -223,7 +256,7 @@ function Switcher:_create()
                 key = "filter",
                 basis = 3,
                 grow = 0,
-                child = mount(presentation.filter, {
+                child = mount(assert(presentation.filter), {
                   border = border,
                   mode = "insert",
                 }),
@@ -231,7 +264,7 @@ function Switcher:_create()
               {
                 key = "results",
                 grow = 1,
-                child = mount(presentation.results, {
+                child = mount(assert(presentation.results), {
                   border = border,
                   mode = "normal",
                 }),
@@ -260,17 +293,18 @@ function Switcher:_create()
   self.applet:set_state({ rows = #items, revision = self.frame })
 end
 
+---@return true?, Neoagent.Error|Applet.Error?
 function Switcher:open()
   if self.destroyed then
     return nil, util.error("ui", "Agent switcher is destroyed")
   end
   if self:is_open() then
-    local pane_value = self.applet:pane("filter")
+    local pane_value = assert(self.applet):pane("filter")
     if pane_value then pane_value:focus() end
     return true
   end
   self:_create()
-  local opened, err = self.applet:open()
+  local opened, err = assert(self.applet):open()
   if not opened then
     self:close()
     return nil, err
@@ -279,6 +313,7 @@ function Switcher:open()
   return true
 end
 
+---@return boolean
 function Switcher:refresh()
   if not self.presentation then return false end
   self.presentation:set_items(self:_items())
@@ -286,6 +321,7 @@ function Switcher:refresh()
   return true
 end
 
+---@return boolean
 function Switcher:is_open()
   return self.applet ~= nil and self.applet:is_open()
 end
@@ -309,6 +345,8 @@ function Switcher:destroy()
   self.owner = nil
 end
 
+---@param opts Neoagent.AgentSwitcherOptions
+---@return Neoagent.AgentSwitcher
 function M.new(opts) return Switcher.new(opts) end
 M.Switcher = Switcher
 

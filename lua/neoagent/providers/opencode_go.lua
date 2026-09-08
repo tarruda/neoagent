@@ -1,35 +1,24 @@
 local async = require("neoagent.async")
 local client_module = require("neoagent.providers.opencode_go.client")
+local provider_http = require("neoagent.providers.http")
 local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
 local M = {}
 local DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 
+---@type {id: "rolling"|"weekly"|"monthly", label: string, dollars: number}[]
 local windows = {
   { id = "rolling", label = "5-hour limit", dollars = 12 },
   { id = "weekly", label = "Weekly limit", dollars = 30 },
   { id = "monthly", label = "Monthly limit", dollars = 60 },
 }
 
-local function validate_service_opts(value)
-  value = value or {}
-  assert(type(value) == "table"
-      and (next(value) == nil or not util.is_list(value)),
-    "opencode-go service_opts must be an object")
-  local allowed = { timeout_ms = true, max_response_bytes = true }
-  for name, setting in pairs(value) do
-    assert(allowed[name],
-      "unknown opencode-go service option: " .. tostring(name))
-    assert(type(setting) == "number" and setting > 0
-        and setting < math.huge and setting % 1 == 0,
-      "opencode-go service option " .. name .. " must be a positive integer")
-  end
-  return util.copy(value)
-end
-
+---@param provider Neoagent.ProviderServiceConfig
+---@param resources Neoagent.ProviderServiceResources
+---@return Neoagent.OpenCodeClient
 local function client(provider, resources)
-  local service_opts = validate_service_opts(provider.service_opts)
+  local service_opts = provider_http.service_options(provider.service_opts, "opencode-go")
   return client_module.new({
     base_url = (provider.base_url or DEFAULT_BASE_URL):gsub("/+$", ""),
     transport = resources.transport,
@@ -39,6 +28,8 @@ local function client(provider, resources)
   })
 end
 
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
+---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local selected = client(ctx.provider, {
     transport = ctx.transport,
@@ -66,22 +57,31 @@ function M.discover_models(ctx)
   end, { error_kind = "provider" })
 end
 
+---@param window Neoagent.OpenCodeQuotaWindow
+---@return Neoagent.ProviderLevel
 local function limit_level(window)
   if window.rate_limited or window.remaining <= 0 then return "error" end
   if window.remaining <= 0.2 then return "warn" end
   return "success"
 end
 
+---@param opts? Neoagent.ProviderServiceConfig
+---@param resources? Neoagent.ProviderServiceResources
+---@return Neoagent.ProviderService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
   local base_url = (opts.base_url or DEFAULT_BASE_URL):gsub("/+$", "")
   local selected = client(opts, resources)
+  ---@type Neoagent.ProviderStatusBlock?
   local status
+  ---@type Neoagent.OpenCodeUsage?
   local usage
   local destroyed = false
 
+  ---@return Neoagent.ProviderBlock[]
   local function blocks()
+    ---@type Neoagent.ProviderBlock[]
     local result = {}
     if status then result[#result + 1] = util.copy(status) end
     result[#result + 1] = {
@@ -118,6 +118,7 @@ function M.new(opts, resources)
         .. tostring(err and err.message or err), vim.log.levels.ERROR)
     end
   end
+  ---@class Neoagent.OpenCodeService: Neoagent.ProviderService
   local service = {
     id = resources.provider_id or "opencode-go",
     name = "OpenCode Go",

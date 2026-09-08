@@ -1,7 +1,9 @@
+local assert = require("luassert")
 local file_lock = require("neoagent.file_lock")
 local fs = require("neoagent.fs")
 
 describe("neoagent Windows file locks", function()
+  ---@type string[]
   local paths = {}
 
   after_each(function()

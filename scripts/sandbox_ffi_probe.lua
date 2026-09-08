@@ -1,9 +1,20 @@
 local ffi = require("ffi")
 local bit = require("bit")
+local exit = os.exit --[[@as fun(status?: integer): never]]
+
+---@class Neoagent.ProbeFilter
+---@field code integer
+---@field jt integer
+---@field jf integer
+---@field k integer
+
+---@class Neoagent.ProbeProgram
+---@field len integer
+---@field filter table<integer, Neoagent.ProbeFilter>
 
 if jit.os ~= "Linux" then
   io.stderr:write("sandbox-ffi-probe: Linux is required\n")
-  os.exit(2)
+  exit(2)
 end
 
 local platform = {
@@ -20,7 +31,7 @@ local platform = {
 local abi = platform[jit.arch]
 if not abi then
   io.stderr:write("sandbox-ffi-probe: unsupported architecture: ", jit.arch, "\n")
-  os.exit(2)
+  exit(2)
 end
 
 ffi.cdef([[
@@ -80,15 +91,17 @@ local BPF_LD_W_ABS = 0x20
 local BPF_JMP_JEQ_K = 0x15
 local BPF_RET_K = 0x06
 
+---@return integer?
 local function get_thread_count()
   local file = io.open("/proc/self/status", "r")
   if not file then return nil end
 
   for line in file:lines() do
+    ---@cast line string
     local count = line:match("^Threads:%s*(%d+)")
     if count then
       file:close()
-      return tonumber(count)
+      return tonumber(count) --[[@as integer]]
     end
   end
 
@@ -103,14 +116,15 @@ if threads ~= 1 then
       tostring(threads)
     )
   )
-  os.exit(78)
+  exit(78)
 end
 io.stdout:write("sandbox-ffi-probe: runtime_threads=1\n")
 io.stdout:flush()
 
+---@type string[]
 local command = {}
 for index = 1, #arg do
-  command[index] = arg[index]
+  command[index] = assert(arg[index])
 end
 if command[1] == "--" then table.remove(command, 1) end
 if #command == 0 then
@@ -118,17 +132,17 @@ if #command == 0 then
     "usage: nvim --headless -u NONE -i NONE -l scripts/sandbox_ffi_probe.lua",
     " -- command [arguments]\n"
   )
-  os.exit(2)
+  exit(2)
 end
 
 local command_storage = {}
-local command_argv = ffi.new("char *[?]", #command + 1)
+local command_argv = ffi.new("char *[?]", #command + 1) --[[@as table<integer, ffi.cdata*>]]
 for index, value in ipairs(command) do
   if (index == 1 and value == "") or value:find("\0", 1, true) then
     io.stderr:write(
       "sandbox-ffi-probe: program must be non-empty and argv must be NUL-free\n"
     )
-    os.exit(2)
+    exit(2)
   end
   local storage = ffi.new("char[?]", #value + 1)
   ffi.copy(storage, value)
@@ -137,7 +151,12 @@ for index, value in ipairs(command) do
 end
 command_argv[#command] = nil
 
-local filter = ffi.new("struct sock_filter[7]")
+local filter = ffi.new("struct sock_filter[7]") --[[@as table<integer, Neoagent.ProbeFilter>]]
+---@param index integer
+---@param code integer
+---@param value integer
+---@param yes integer?
+---@param no integer?
 local function instruction(index, code, value, yes, no)
   filter[index].code = code
   filter[index].jt = yes or 0
@@ -153,14 +172,18 @@ instruction(4, BPF_JMP_JEQ_K, abi.getppid, 0, 1)
 instruction(5, BPF_RET_K, bit.bor(SECCOMP_RET_ERRNO, EPERM))
 instruction(6, BPF_RET_K, SECCOMP_RET_ALLOW)
 
-local program = ffi.new("struct sock_fprog")
+local program = ffi.new("struct sock_fprog") --[[@as Neoagent.ProbeProgram]]
 program.len = 7
 program.filter = filter
 
+---@param fd integer
+---@param message string
 local function write_message(fd, message)
   C.write(fd, message, #message)
 end
 
+---@param stage string
+---@param errno integer?
 local function child_error(stage, errno)
   write_message(2, string.format(
     "sandbox-ffi-probe: %s failed: errno=%d\n",
@@ -170,8 +193,10 @@ local function child_error(stage, errno)
   C._exit(70)
 end
 
+---@param child integer
+---@return integer
 local function wait_for(child)
-  local status = ffi.new("int[1]")
+  local status = ffi.new("int[1]") --[[@as table<integer, integer>]]
   while true do
     local waited = C.waitpid(child, status, 0)
     if waited == child then break end
@@ -179,12 +204,13 @@ local function wait_for(child)
       error("waitpid failed: errno=" .. ffi.errno())
     end
   end
-  local value = tonumber(status[0])
+  local value = tonumber(status[0]) --[[@as integer]]
   local signal = bit.band(value, 0x7F)
   if signal == 0 then return bit.band(bit.rshift(value, 8), 0xFF) end
   return 128 + signal
 end
 
+---@return integer
 local function probe_user_namespace()
   local child = C.fork()
   if child < 0 then error("fork failed: errno=" .. ffi.errno()) end
@@ -206,6 +232,7 @@ local function probe_user_namespace()
   return wait_for(child)
 end
 
+---@return integer
 local function probe_seccomp_and_exec()
   local child = C.fork()
   if child < 0 then error("fork failed: errno=" .. ffi.errno()) end
@@ -224,7 +251,7 @@ local function probe_seccomp_and_exec()
     ) ~= 0 then
       child_error("PR_SET_SECCOMP")
     end
-    ffi.errno(0)
+    local _ = ffi.errno(0)
     local parent = C.syscall(abi.getppid)
     local denied_errno = ffi.errno()
     if parent ~= -1 or denied_errno ~= EPERM then
@@ -250,5 +277,5 @@ io.stdout:write(string.format(
   command_status
 ))
 
-if command_status ~= 0 then os.exit(command_status) end
-if namespace_status ~= 0 then os.exit(namespace_status) end
+if command_status ~= 0 then exit(command_status) end
+if namespace_status ~= 0 then exit(namespace_status) end

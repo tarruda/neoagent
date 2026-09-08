@@ -6,7 +6,8 @@ local ids = {
   "glm-5.3", "glm-5.3-flash", "glm-5v-turbo",
 }
 
-return {
+---@type Neoagent.ProviderDefinition
+local provider = {
   api = "openai-completions",
   base_url = "https://api.z.ai/api/coding/paas/v4",
   api_key = function() return vim.env.ZAI_API_KEY end,
@@ -25,3 +26,5 @@ return {
   models = {},
   service = require("neoagent.providers.zai").new,
 }
+
+return provider

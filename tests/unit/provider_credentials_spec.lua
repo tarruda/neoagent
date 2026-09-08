@@ -1,24 +1,31 @@
+local assert = require("luassert")
 local ProviderCredentials = require("neoagent.provider_credentials")
+local test_auth = require("tests.helpers.auth_manager")
 
 describe("neoagent provider credential ownership", function()
+  ---@param value boolean|{error?: string, throw?: string}
+  ---@return Neoagent.AuthManager
   local function authentication(value)
-    return {
-      has_credentials = function()
-        if type(value) == "table" and value.error then
-          return nil, { kind = "auth", message = value.error }
-        end
-        if type(value) == "table" and value.throw then error(value.throw) end
-        return value == true
-      end,
-    }
+    local manager = test_auth.new()
+    function manager:has_credentials()
+      if type(value) == "table" and value.error then
+        return nil, { kind = "auth", message = value.error }
+      end
+      if type(value) == "table" and value.throw then error(value.throw) end
+      return value == true
+    end
+    return manager
   end
 
+  ---@param provider Neoagent.ProviderCredentialConfig
+  ---@param stored boolean|{error?: string, throw?: string}
+  ---@return Neoagent.ProviderCredentials
   local function credentials(provider, stored)
     return ProviderCredentials.new({
       provider_id = "example",
       provider = provider,
       authentication = authentication(stored),
-      method = provider.auth and { name = "Example login" } or nil,
+      method = provider.auth and require("neoagent.auth.api_key").new({ name = "Example login" }) or nil,
     })
   end
 
@@ -66,14 +73,14 @@ describe("neoagent provider credential ownership", function()
     }):state()
     assert.is_false(failed.usable)
     assert.are.equal("error", failed.source)
-    assert.are.equal("credential store failed", failed.error.message)
+    assert.are.equal("credential store failed", assert(failed.error).message)
 
     failed = credentials({
       auth = "key",
       api_key = function() error("ambient-secret") end,
     }, false):state()
     assert.are.equal("error", failed.source)
-    assert.not_matches("ambient%-secret", failed.error.message)
+    assert.is_not_matches("ambient%-secret", assert(failed.error).message)
   end)
 
   it("fails ambient resolution closed and identifies shared methods", function()
@@ -85,10 +92,11 @@ describe("neoagent provider credential ownership", function()
     assert.is_false(value:uses_method("other"))
     local ok, err = pcall(value.ambient_api_key, value)
     assert.is_false(ok)
-    assert.matches("environment credential", err.message)
+    assert.matches("environment credential", rawget(err, "message"))
   end)
 
   it("resolves named authentication independently from inference", function()
+    ---@type string?
     local inspected
     local provider = {
       auth = "inference",
@@ -96,16 +104,16 @@ describe("neoagent provider credential ownership", function()
       auth_scopes = { dashboard = "dashboard" },
       api_key = "ambient-inference",
     }
+    local manager = test_auth.new()
+    function manager:has_credentials(method)
+      inspected = method
+      return method == "dashboard"
+    end
     local value = ProviderCredentials.new({
       provider_id = "example",
       provider = provider,
-      authentication = {
-        has_credentials = function(_, method)
-          inspected = method
-          return method == "dashboard"
-        end,
-      },
-      method = { name = "Dashboard authorization" },
+      authentication = manager,
+      method = require("neoagent.auth.api_key").new({ name = "Dashboard authorization" }),
       scope = "dashboard",
     })
 
@@ -120,7 +128,7 @@ describe("neoagent provider credential ownership", function()
     assert.is_true(value:uses_method("inference"))
     assert.is_true(value:uses_method("dashboard"))
 
-    value.authentication.has_credentials = function() return false end
+    function manager:has_credentials() return false end
     local state = value:state()
     assert.is_false(state.usable)
     assert.are.equal("logged_out", state.source)
@@ -132,49 +140,53 @@ describe("neoagent provider credential ownership", function()
       provider = { auth = "key" },
     }):state()
     assert.is_false(unavailable.usable)
-    assert.matches("Authentication is unavailable", unavailable.error.message)
+    assert.matches("Authentication is unavailable", assert(unavailable.error).message)
 
     local thrown = credentials({ auth = "key" }, {
       throw = "private credential failure",
     }):state()
     assert.is_false(thrown.usable)
-    assert.matches("Failed to inspect stored credentials", thrown.error.message)
-    assert.not_matches("private credential failure", thrown.error.message)
+    assert.matches("Failed to inspect stored credentials", assert(thrown.error).message)
+    assert.is_not_matches("private credential failure", assert(thrown.error).message)
   end)
 
   it("derives account cache identities from every effective source", function()
+    ---@param provider Neoagent.ProviderCredentialConfig
+    ---@param manager? table
+    ---@return Neoagent.ProviderCredentials
     local function value(provider, manager)
       return ProviderCredentials.new({
         provider_id = "example",
         provider = provider,
-        authentication = manager,
+        -- Deliberately incomplete managers exercise fail-closed validation.
+        authentication = manager --[[@as Neoagent.AuthManager?]],
       })
     end
     local identity, err = value({}, {}):cache_identity()
     assert.is_nil(identity)
-    assert.matches("identity is unavailable", err.message)
+    assert.matches("identity is unavailable", assert(err).message)
 
     identity, err = value({ auth = "key" }, nil):cache_identity()
     assert.is_nil(identity)
-    assert.matches("identity is unavailable", err.message)
+    assert.matches("identity is unavailable", assert(err).message)
 
     local stored = { has_credentials = function() return true end }
     identity, err = value({ auth = "key" }, stored):cache_identity()
     assert.is_nil(identity)
-    assert.matches("identity is unavailable", err.message)
+    assert.matches("identity is unavailable", assert(err).message)
 
     stored.cache_identity = function() error("private identity failure") end
     identity, err = value({ auth = "key" }, stored):cache_identity()
     assert.is_nil(identity)
-    assert.matches("identity failed", err.message)
-    assert.not_matches("private identity failure", err.message)
+    assert.matches("identity failed", assert(err).message)
+    assert.is_not_matches("private identity failure", assert(err).message)
 
     stored.cache_identity = function()
       return nil, { kind = "auth", message = "explicit identity failure" }
     end
     identity, err = value({ auth = "key" }, stored):cache_identity()
     assert.is_nil(identity)
-    assert.are.equal("explicit identity failure", err.message)
+    assert.are.equal("explicit identity failure", assert(err).message)
 
     local ambient = {
       has_credentials = function() return false end,
@@ -196,8 +208,8 @@ describe("neoagent provider credential ownership", function()
     identity, err = value({ auth = "key", api_key = "ambient" },
       ambient):cache_identity()
     assert.is_nil(identity)
-    assert.matches("identity failed", err.message)
-    assert.not_matches("private derivation failure", err.message)
+    assert.matches("identity failed", assert(err).message)
+    assert.is_not_matches("private derivation failure", assert(err).message)
 
     ambient.derive_cache_identity = function()
       return nil, { kind = "auth", message = "explicit derivation failure" }
@@ -205,6 +217,6 @@ describe("neoagent provider credential ownership", function()
     identity, err = value({ auth = "key", api_key = "ambient" },
       ambient):cache_identity()
     assert.is_nil(identity)
-    assert.are.equal("explicit derivation failure", err.message)
+    assert.are.equal("explicit derivation failure", assert(err).message)
   end)
 end)

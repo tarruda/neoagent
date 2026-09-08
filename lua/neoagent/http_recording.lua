@@ -2,7 +2,150 @@ local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local util = require("neoagent.util")
 
+---@class Neoagent.RecordedBody
+---@field body? Neoagent.JsonValue
+---@field body_encoding? string
+---@field body_format? string
+---@field redacted? boolean
+
+---@class Neoagent.RecordedRequest: Neoagent.RecordedBody
+---@field method string
+---@field url string
+---@field headers? table<string, string>
+---@field body_bytes? integer
+---@field timeout_ms? number|false
+---@field max_response_bytes? integer
+
+---@class Neoagent.RecordedExchange
+---@field type 'exchange'
+---@field schema string
+---@field version integer
+---@field id? string
+---@field sequence? integer
+---@field started_at? string
+---@field operation? Neoagent.RecordingOperation
+---@field workspace? {root: string}
+---@field request Neoagent.RecordedRequest
+---@field context? Neoagent.JsonValue
+---@field at_us? integer
+
+---@class Neoagent.RecordedChunk
+---@field type 'response_chunk'
+---@field at_us integer
+---@field index integer
+---@field bytes integer
+
+---@class Neoagent.RecordedResponseBody: Neoagent.RecordedBody
+---@field type 'response_body'
+---@field at_us integer
+---@field bytes integer
+
+---@class Neoagent.RecordedResponse: Neoagent.HttpMetadata
+---@field type 'response'
+---@field at_us integer
+
+---@class Neoagent.RecordedError: Neoagent.Error
+---@field detail? string
+---@field detail_encoding? string
+---@field code? string|number|boolean
+---@field exit_code? string|number|boolean
+---@field retry_after_ms? string|number|boolean
+---@field retryable? string|number|boolean
+---@field status? string|number|boolean
+
+---@class Neoagent.RecordedCompletion
+---@field type 'complete'
+---@field at_us integer
+---@field ok boolean
+---@field error? Neoagent.RecordedError
+
+---@alias Neoagent.RecordedEvent Neoagent.RecordedExchange|Neoagent.RecordedChunk|Neoagent.RecordedResponseBody|Neoagent.RecordedResponse|Neoagent.RecordedCompletion
+
 local M = {}
+---@alias Neoagent.RecordingOperation 'fetch'|'request'
+---@alias Neoagent.RecordingSecrets table<string, boolean>
+---@alias Neoagent.RecordingContext Neoagent.RequestIdentity|(fun(): Neoagent.RequestIdentity?)
+
+---@class Neoagent.RecordingContextData: table<string, unknown>
+---@field workspace? unknown
+---@field origin? unknown
+---@field credential_response_body? unknown
+
+---@class Neoagent.RecordingYq
+---@field available fun(): boolean?
+---@field convert fun(path: string, done: fun(output?: string, err?: unknown)): unknown
+
+---@class Neoagent.RecorderOptions
+---@field config? Neoagent.RecordingConfigInput
+---@field directory? string
+---@field context? Neoagent.RecordingContext
+---@field report? fun(message: string, level: integer): unknown
+---@field now? fun(): number
+---@field hrtime? fun(): number
+---@field yq? Neoagent.RecordingYq
+
+---@class Neoagent.RecordingParameter
+---@field raw string
+---@field key? string
+---@field value string
+
+---@class Neoagent.RecordingBodyState
+---@field absent? boolean
+---@field body? string
+---@field valid_utf8? boolean
+---@field content_type? string
+---@field form? Neoagent.RecordingParameter[]
+---@field json? unknown
+---@field opaque? boolean
+
+---@class Neoagent.RecordingPresentBody: Neoagent.RecordingBodyState
+---@field body string
+---@field valid_utf8 boolean
+
+---@class Neoagent.RecordingUrl
+---@field changed boolean
+---@field userinfo? string
+---@field base string
+---@field query? string
+---@field fragment? string
+---@field query_parameters Neoagent.RecordingParameter[]
+---@field fragment_parameters Neoagent.RecordingParameter[]
+
+---@class Neoagent.RecordingResponse
+---@field status? number
+---@field headers? table<string, unknown>
+---@field body? unknown
+---@field stdout? unknown
+
+---@class Neoagent.RecordingExchange
+---@field id string
+---@field sequence integer
+---@field started_ns number
+---@field stage_path string
+---@field final_path string
+---@field file Neoagent.RegularFile
+---@field offset integer
+---@field chunks string[]
+---@field secrets Neoagent.RecordingSecrets
+---@field authentication boolean
+---@field identity Neoagent.RecordingSecrets
+---@field credential_response_body boolean
+---@field failed boolean
+---@field closed boolean
+---@field finished boolean
+
+---@class Neoagent.Recorder
+---@field _format 'yaml'|'json'
+---@field _retention 'all'|'rolling'
+---@field _directory string
+---@field _context? Neoagent.RecordingContext
+---@field _report? fun(message: string, level: integer): unknown
+---@field _now fun(): number
+---@field _hrtime fun(): number
+---@field _yq Neoagent.RecordingYq
+---@field _exchanges table<Neoagent.RecordingExchange, boolean>
+---@field _pending_conversions integer
+---@field _destroyed boolean
 local Recorder = {}
 Recorder.__index = Recorder
 
@@ -44,6 +187,8 @@ for key in pairs(sensitive_keys) do
   sensitive_compact_keys[key:gsub("_", "")] = true
 end
 
+---@param value unknown
+---@return string
 local function safe_string(value)
   if type(value) ~= "string" then
     value = value == nil and "" or tostring(value)
@@ -52,6 +197,8 @@ local function safe_string(value)
   return "*"
 end
 
+---@param self Neoagent.Recorder
+---@param message unknown
 local function report(self, message)
   if not self._report then return end
   local selected = safe_string(message):gsub("%s+", " ")
@@ -62,10 +209,14 @@ local function report(self, message)
     vim.log.levels.ERROR)
 end
 
+---@param value string
+---@return string
 local function pattern_escape(value)
   return (value:gsub("([^%w])", "%%%1"))
 end
 
+---@param secrets Neoagent.RecordingSecrets
+---@param value unknown
 local function add_secret(secrets, value)
   if type(value) ~= "string" or value == "" or value == "*" then return end
   secrets[value] = true
@@ -74,6 +225,9 @@ local function add_secret(secrets, value)
   if bearer and bearer ~= "" then secrets[bearer] = true end
 end
 
+---@param secrets Neoagent.RecordingSecrets
+---@param value unknown
+---@param seen table<table, boolean>
 local function collect_strings(secrets, value, seen)
   if type(value) == "string" then add_secret(secrets, value) return end
   if type(value) == "number" or type(value) == "boolean" then
@@ -86,10 +240,18 @@ local function collect_strings(secrets, value, seen)
   seen[value] = nil
 end
 
+---@type fun(value: unknown, secrets: Neoagent.RecordingSecrets, authentication?: boolean)
 local collect_text_url_secrets
+---@type fun(value: unknown, secrets: Neoagent.RecordingSecrets, authentication?: boolean): string, boolean
 local sanitize_text_urls
 
+---@param value unknown
+---@param secrets? Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param skip_urls? boolean
+---@return string, boolean
 local function redact_text(value, secrets, authentication, skip_urls)
+  secrets = secrets or {}
   local text = safe_string(value)
   local changed = text ~= value
   local ordered = {}
@@ -100,6 +262,7 @@ local function redact_text(value, secrets, authentication, skip_urls)
     text, count = text:gsub(pattern_escape(secret), "*")
     if count > 0 then changed = true end
   end
+  ---@type [string, string][]
   local substitutions = {
     { "([Bb]earer%s+)[%w%._~%+/%-=]+", "%1*" },
     { "([Bb]asic%s+)[%w%+/%-=]+", "%1*" },
@@ -138,12 +301,17 @@ local function redact_text(value, secrets, authentication, skip_urls)
   return text, changed
 end
 
+---@param value unknown
+---@return string
 local function normalized_key(value)
   return type(value) == "string"
       and value:lower():gsub("[^a-z0-9]+", "_"):gsub("^_+", "")
         :gsub("_+$", "") or ""
 end
 
+---@generic K
+---@param value? table<K, unknown>
+---@return K[]
 local function sorted_keys(value)
   local keys = {}
   for key in pairs(value or {}) do keys[#keys + 1] = key end
@@ -156,11 +324,17 @@ local function sorted_keys(value)
   return keys
 end
 
+---@param value string
+---@return string
 local function uri_decode(value)
   local ok, decoded = pcall(vim.uri_decode, value)
-  return ok and decoded or value
+  if ok then return decoded end
+  return value
 end
 
+---@param key unknown
+---@param authentication? boolean
+---@return boolean?
 local function sensitive_key(key, authentication)
   local selected = normalized_key(key)
   if sensitive_keys[selected]
@@ -174,6 +348,11 @@ local function sensitive_key(key, authentication)
   return authentication and selected == "code"
 end
 
+---@param value unknown
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param key unknown
+---@param seen table<table, boolean>
 local function collect_json_secrets(
     value, secrets, authentication, key, seen)
   if value == vim.NIL then return end
@@ -196,6 +375,12 @@ local function collect_json_secrets(
   seen[value] = nil
 end
 
+---@param value unknown
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param key unknown
+---@param seen table<table, boolean>
+---@return unknown, boolean
 local function sanitize_json_value(value, secrets, authentication, key, seen)
   if value == vim.NIL then return vim.NIL, false end
   if sensitive_key(key, authentication) then
@@ -221,7 +406,10 @@ local function sanitize_json_value(value, secrets, authentication, key, seen)
   return result, changed
 end
 
+---@param headers? table<string, unknown>
+---@return string
 local function content_type(headers)
+  headers = headers or {}
   for _, name in ipairs(sorted_keys(headers)) do
     local value = headers[name]
     if type(name) == "string" and name:lower() == "content-type" then
@@ -231,15 +419,20 @@ local function content_type(headers)
   return ""
 end
 
-local function parse_form(body)
+---@param body string
+---@return Neoagent.RecordingParameter[]
+local function parse_parameters(body)
   local parsed = {}
   for part in (body .. "&"):gmatch("(.-)&") do
     local key, value = part:match("^([^=]*)=(.*)$")
-    parsed[#parsed + 1] = { raw = part, key = key, value = value }
+    parsed[#parsed + 1] = { raw = part, key = key, value = value or "" }
   end
   return parsed
 end
 
+---@param parsed Neoagent.RecordingParameter[]
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
 local function collect_form_secrets(parsed, secrets, authentication)
   for _, entry in ipairs(parsed) do
     if entry.key and sensitive_key(uri_decode(entry.key), authentication) then
@@ -252,6 +445,10 @@ local function collect_form_secrets(parsed, secrets, authentication)
   end
 end
 
+---@param parsed Neoagent.RecordingParameter[]
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@return string, boolean
 local function sanitize_form(parsed, secrets, authentication)
   local changed = false
   local parts = {}
@@ -279,6 +476,8 @@ local function sanitize_form(parsed, secrets, authentication)
   return table.concat(parts, "&"), changed
 end
 
+---@param body unknown
+---@return Neoagent.RecordingBodyState
 local function raw_body_state(body)
   if body == nil then return { absent = true } end
   if type(body) ~= "string" then body = tostring(body) end
@@ -288,14 +487,23 @@ local function raw_body_state(body)
   }
 end
 
+---@param body unknown
+---@param headers? table<string, unknown>
+---@return Neoagent.RecordingBodyState
 local function body_state(body, headers)
   local state = raw_body_state(body)
   if state.absent then return state end
+  ---@cast state Neoagent.RecordingPresentBody
   state.content_type = content_type(headers)
   if not state.valid_utf8 then return state end
+  if type(body) == "table" then
+    state.json = body
+    return state
+  end
+  body = state.body
   if state.content_type:find(
       "application/x%-www%-form%-urlencoded") then
-    state.form = parse_form(body)
+    state.form = parse_parameters(body)
     return state
   end
   local first = body:match("^%s*(.)")
@@ -315,6 +523,9 @@ local function body_state(body, headers)
   return state
 end
 
+---@param state Neoagent.RecordingBodyState
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
 local function collect_body_secrets(state, secrets, authentication)
   if state.form then
     collect_form_secrets(state.form, secrets, authentication)
@@ -326,6 +537,10 @@ local function collect_body_secrets(state, secrets, authentication)
   end
 end
 
+---@param state Neoagent.RecordingBodyState
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@return string?, boolean
 local function sanitize_body_state(state, secrets, authentication)
   if state.absent then return nil, false end
   if state.body == "" then return "", false end
@@ -341,12 +556,19 @@ local function sanitize_body_state(state, secrets, authentication)
   return redact_text(state.body, secrets, authentication)
 end
 
+---@param state Neoagent.RecordingBodyState
+---@return string?, "base64"?
 local function exact_body_state(state)
   if state.absent then return nil, nil end
+  ---@cast state Neoagent.RecordingPresentBody
   if state.valid_utf8 then return state.body, nil end
   return vim.base64.encode(state.body), "base64"
 end
 
+---@param body string?
+---@param headers? table<string, unknown>
+---@param encoding? string
+---@return Neoagent.JsonValue?, boolean
 local function json_body(body, headers, encoding)
   if encoding ~= nil or type(body) ~= "string" or body == ""
       or not util.is_valid_utf8(body) then
@@ -361,6 +583,9 @@ local function json_body(body, headers, encoding)
   return decoded, ok
 end
 
+---@param key unknown
+---@param authentication? boolean
+---@return boolean
 local function sensitive_url_key(key, authentication)
   local selected = normalized_key(key)
   if sensitive_key(selected, authentication)
@@ -377,15 +602,10 @@ local function sensitive_url_key(key, authentication)
   return false
 end
 
-local function parse_parameters(value)
-  local result = {}
-  for part in (value .. "&"):gmatch("(.-)&") do
-    local key, entry = part:match("^([^=]*)=(.*)$")
-    result[#result + 1] = { raw = part, key = key, value = entry }
-  end
-  return result
-end
-
+---@param parameters Neoagent.RecordingParameter[]
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param bare_is_sensitive boolean
 local function collect_parameter_secrets(
     parameters, secrets, authentication, bare_is_sensitive)
   for _, entry in ipairs(parameters) do
@@ -398,6 +618,11 @@ local function collect_parameter_secrets(
   end
 end
 
+---@param parameters Neoagent.RecordingParameter[]
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param bare_is_sensitive boolean
+---@return string, boolean
 local function sanitize_parameters(
     parameters, secrets, authentication, bare_is_sensitive)
   local result, changed = {}, false
@@ -433,6 +658,8 @@ local function sanitize_parameters(
   return table.concat(result, "&"), changed
 end
 
+---@param url unknown
+---@return Neoagent.RecordingUrl
 local function url_state(url)
   local value = safe_string(url)
   local state = { changed = value ~= url }
@@ -454,6 +681,9 @@ local function url_state(url)
   return state
 end
 
+---@param state Neoagent.RecordingUrl
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
 local function collect_url_secrets(state, secrets, authentication)
   if state.userinfo then
     add_secret(secrets, state.userinfo)
@@ -465,6 +695,10 @@ local function collect_url_secrets(state, secrets, authentication)
     state.fragment_parameters, secrets, authentication, true)
 end
 
+---@param state Neoagent.RecordingUrl
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@return string, boolean
 local function sanitize_url_state(state, secrets, authentication)
   local value = state.base
   local changed = state.changed
@@ -485,6 +719,10 @@ local function sanitize_url_state(state, secrets, authentication)
   return sanitized, changed or redacted
 end
 
+---@param url unknown
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@return string, boolean
 local function sanitize_url(url, secrets, authentication)
   local state = url_state(url)
   collect_url_secrets(state, secrets, authentication)
@@ -511,6 +749,8 @@ sanitize_text_urls = function(value, secrets, authentication)
   return sanitized, changed
 end
 
+---@param name unknown
+---@return boolean
 local function sensitive_header(name)
   local selected = normalized_key(name)
   if sensitive_keys[selected] then return true end
@@ -529,6 +769,9 @@ end
 -- and the Session directory name. A header that carries one of them, such as a
 -- provider conversation-attribution header, identifies the conversation instead
 -- of protecting a credential, so it never enters the redaction set.
+---@param context Neoagent.RequestIdentity
+---@param workspace? string
+---@return Neoagent.RecordingSecrets
 local function published_identity(context, workspace)
   local result = {}
   for _, key in ipairs({ "session_id", "agent_id" }) do
@@ -541,8 +784,13 @@ local function published_identity(context, workspace)
   return result
 end
 
+---@param headers? table<string, unknown>
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@param identity? Neoagent.RecordingSecrets
 local function collect_header_secrets(headers, secrets, authentication,
     identity)
+  headers = headers or {}
   local published = identity or {}
   local function register(value)
     if not published[value] then add_secret(secrets, value) end
@@ -570,7 +818,12 @@ local function collect_header_secrets(headers, secrets, authentication,
   end
 end
 
+---@param headers? table<string, unknown>
+---@param secrets Neoagent.RecordingSecrets
+---@param authentication? boolean
+---@return table<string, string>
 local function sanitize_headers(headers, secrets, authentication)
+  headers = headers or {}
   local result = vim.empty_dict()
   for _, name in ipairs(sorted_keys(headers)) do
     local value = headers[name]
@@ -593,6 +846,9 @@ local function sanitize_headers(headers, secrets, authentication)
   return result
 end
 
+---@param context Neoagent.RequestIdentity
+---@param secrets Neoagent.RecordingSecrets
+---@return table<string, string>
 local function sanitize_context(context, secrets)
   local result = vim.empty_dict()
   for _, key in ipairs({
@@ -605,18 +861,25 @@ local function sanitize_context(context, secrets)
   return result
 end
 
+---@param milliseconds integer
+---@return string
 local function iso_timestamp(milliseconds)
   local seconds = math.floor(milliseconds / 1000)
   return os.date("!%Y-%m-%dT%H:%M:%S", seconds)
     .. string.format(".%03dZ", milliseconds % 1000)
 end
 
+---@param milliseconds integer
+---@return string
 local function filename_timestamp(milliseconds)
   local seconds = math.floor(milliseconds / 1000)
   return os.date("!%Y%m%dT%H%M%S", seconds)
     .. string.format(".%03dZ", milliseconds % 1000)
 end
 
+---@param value unknown
+---@param fallback? string
+---@return string
 local function slug(value, fallback)
   local selected = safe_string(value):gsub("[^%w._-]+", "-")
     :gsub("^-+", ""):gsub("-+$", "")
@@ -625,17 +888,22 @@ local function slug(value, fallback)
   return selected
 end
 
+---@param path string
+---@return true?, string?
 local function ensure_directory(path)
   local ok, err = fs.ensure_private_directory(path, DIRECTORY_MODE)
   if not ok then return nil, err end
   return true
 end
 
+---@param name string
+---@return boolean
 local function final_recording_name(name)
   local extension = name:match("^%d%d%d%d%d%d%d%dT%d%d%d%d%d%d%.%d%d%dZ%-%d+%-%d+%-.+%.([^.]+)$")
   return extension == "yaml" or extension == "jsonl"
 end
 
+---@return Neoagent.RecordingYq
 local function default_yq()
   return {
     available = function()
@@ -664,6 +932,8 @@ local function default_yq()
   }
 end
 
+---@param value? Neoagent.RecordingContext
+---@return Neoagent.RequestIdentity
 local function context_value(value)
   if type(value) == "function" then
     local ok, selected = pcall(value)
@@ -672,12 +942,18 @@ local function context_value(value)
   return type(value) == "table" and value or {}
 end
 
+---@param left? Neoagent.RecordingContext
+---@param right? Neoagent.RecordingContext
+---@return Neoagent.RecordingContextData
 local function merge_context(left, right)
   local result = util.copy(context_value(left))
   for key, value in pairs(context_value(right)) do result[key] = value end
   return result
 end
 
+---@param exchange Neoagent.RecordingExchange
+---@param event Neoagent.RecordedEvent
+---@return boolean
 function Recorder:_append(exchange, event)
   if exchange.failed or exchange.closed then return false end
   local ok, encoded = pcall(util.json_encode, event)
@@ -698,10 +974,16 @@ function Recorder:_append(exchange, event)
   return true
 end
 
+---@param exchange Neoagent.RecordingExchange
+---@return integer
 function Recorder:_at(exchange)
   return math.max(0, math.floor((self._hrtime() - exchange.started_ns) / 1000))
 end
 
+---@param operation Neoagent.RecordingOperation
+---@param request Neoagent.HttpRequest
+---@param supplied_context? Neoagent.RecordingContext
+---@return Neoagent.RecordingExchange?
 function Recorder:_start(operation, request, supplied_context)
   if self._destroyed then return nil end
   local context = merge_context(self._context, supplied_context)
@@ -737,6 +1019,7 @@ function Recorder:_start(operation, request, supplied_context)
   end
   local decoded_request, request_is_json = json_body(
     recorded_body, request.headers, body_encoding)
+  ---@type Neoagent.JsonValue?
   local persisted_request_body = recorded_body
   if self._format == "yaml" and request_is_json then
     persisted_request_body = decoded_request
@@ -772,7 +1055,9 @@ function Recorder:_start(operation, request, supplied_context)
     .. slug(selected_context.session_id or "unscoped", "unscoped") or day
   local day_directory = fs.join(scope_directory, group)
   directories[#directories + 1] = day_directory
-  local ok, err = true
+  ---@type boolean?
+  local ok = true
+  local err
   for _, directory in ipairs(directories) do
     ok, err = ensure_directory(directory)
     if not ok then break end
@@ -798,6 +1083,7 @@ function Recorder:_start(operation, request, supplied_context)
   local extension = self._format == "yaml" and ".yaml" or ".jsonl"
   local final_path = fs.join(day_directory, base .. extension)
   local stage_path = fs.join(day_directory, base .. ".partial.ndjson")
+  ---@type Neoagent.RecordedExchange
   local first = {
     schema = "neoagent-http-recording",
     version = FORMAT_VERSION,
@@ -817,7 +1103,7 @@ function Recorder:_start(operation, request, supplied_context)
       body = persisted_request_body,
       body_encoding = body_encoding,
       body_format = request_is_json and "json" or nil,
-      body_bytes = request_body.absent and 0 or #request_body.body,
+      body_bytes = request_body.absent and 0 or #assert(request_body.body),
       redacted = body_redacted or nil,
       timeout_ms = request.timeout_ms,
       max_response_bytes = request.max_response_bytes,
@@ -840,8 +1126,9 @@ function Recorder:_start(operation, request, supplied_context)
     report(self, "failed to open a recording: " .. tostring(open_err))
     return nil
   end
+  ---@type Neoagent.RecordingExchange
   local exchange = {
-    id = first.id,
+    id = assert(first.id),
     sequence = sequence,
     started_ns = self._hrtime(),
     stage_path = stage_path,
@@ -861,6 +1148,9 @@ function Recorder:_start(operation, request, supplied_context)
   return exchange
 end
 
+---@param exchange Neoagent.RecordingExchange?
+---@param data unknown
+---@param at_us? integer
 function Recorder:_chunk(exchange, data, at_us)
   if not exchange or exchange.finished then return end
   local chunk = type(data) == "string" and data or tostring(data or "")
@@ -874,6 +1164,8 @@ function Recorder:_chunk(exchange, data, at_us)
   self:_append(exchange, event)
 end
 
+---@param exchange Neoagent.RecordingExchange
+---@param output string?
 function Recorder:_conversion_done(exchange, output)
   if output then
     local written, write_err = fs.atomic_replace(
@@ -891,6 +1183,7 @@ function Recorder:_conversion_done(exchange, output)
   self._pending_conversions = math.max(0, self._pending_conversions - 1)
 end
 
+---@param exchange Neoagent.RecordingExchange
 function Recorder:_retain(exchange)
   if self._retention == "all" then return end
   local directory = vim.fs.dirname(exchange.final_path)
@@ -915,6 +1208,7 @@ function Recorder:_retain(exchange)
   end
 end
 
+---@param exchange Neoagent.RecordingExchange
 function Recorder:_published(exchange)
   local retained, retain_err = pcall(self._retain, self, exchange)
   if not retained then
@@ -923,6 +1217,7 @@ function Recorder:_published(exchange)
   end
 end
 
+---@param exchange Neoagent.RecordingExchange
 function Recorder:_publish(exchange)
   if self._format == "json" then
     local moved, err = vim.uv.fs_rename(exchange.stage_path, exchange.final_path)
@@ -936,16 +1231,19 @@ function Recorder:_publish(exchange)
   end
   self._pending_conversions = self._pending_conversions + 1
   local settled = false
-  local function done(output, err)
+  ---@param output? string
+  local function done(output)
     if settled then return end
     settled = true
-    self:_conversion_done(exchange, output, err)
+    self:_conversion_done(exchange, output)
   end
-  local ok, conversion_err = pcall(
-    self._yq.convert, exchange.stage_path, done)
-  if not ok then done(nil, conversion_err) end
+  local ok = pcall(self._yq.convert, exchange.stage_path, done)
+  if not ok then done(nil) end
 end
 
+---@param result unknown
+---@param operation Neoagent.RecordingOperation
+---@return Neoagent.RecordingResponse?
 local function response_from(result, operation)
   if type(result) ~= "table" then return nil end
   if operation == "fetch" then
@@ -969,6 +1267,9 @@ local function response_from(result, operation)
   end
 end
 
+---@param exchange Neoagent.RecordingExchange?
+---@param result unknown
+---@param operation Neoagent.RecordingOperation
 function Recorder:_finish(exchange, result, operation)
   if not exchange or exchange.finished then return end
   local settled_at = self:_at(exchange)
@@ -985,11 +1286,12 @@ function Recorder:_finish(exchange, result, operation)
   for _, chunk in ipairs(exchange.chunks) do raw[#raw + 1] = chunk end
   local raw_body = table.concat(raw)
   local successful = type(result) == "table" and result.ok == true
+  ---@type Neoagent.HttpError?
   local normalized
   local detail_state
   if not successful then
     local source = type(result) == "table" and result.error or result
-    normalized = util.normalize_error(source, "transport")
+    normalized = util.normalize_error(source, "transport") --[[@as Neoagent.HttpError]]
     if normalized.detail then
       detail_state = exchange.credential_response_body
           and body_state(normalized.detail, {})
@@ -1026,6 +1328,7 @@ function Recorder:_finish(exchange, result, operation)
   end
   local decoded_response, response_is_json = json_body(
     body, response.headers, body_encoding)
+  ---@type Neoagent.JsonValue?
   local persisted_response_body = body
   if self._format == "yaml" and response_is_json then
     persisted_response_body = decoded_response
@@ -1045,18 +1348,20 @@ function Recorder:_finish(exchange, result, operation)
     status = response.status,
     headers = response_headers,
   })
+  ---@type Neoagent.RecordedCompletion
   local completion = {
     type = "complete",
     at_us = settled_at,
     ok = successful,
   }
   if not successful then
+    normalized = assert(normalized)
     local detail, detail_encoding
     if normalized.detail then
       if exchange.credential_response_body then
         detail = normalized.detail == "" and "" or "*"
       else
-        detail, detail_encoding = exact_body_state(detail_state)
+        detail, detail_encoding = exact_body_state((assert(detail_state)))
       end
     end
     completion.error = {
@@ -1091,17 +1396,27 @@ function Recorder:_finish(exchange, result, operation)
   self:_publish(exchange)
 end
 
+---@generic T: table
+---@param value T
+---@return T
 local function shallow_copy(value)
   local result = {}
   for key, entry in pairs(value or {}) do result[key] = entry end
-  return result
+  return result --[[@as T]]
 end
 
+---@param base Neoagent.ByteBackend
+---@param context? Neoagent.RecordingContext
+---@return Neoagent.ByteBackend
 function Recorder:transport(base, context)
   assert(type(base) == "table", "recording transport is required")
   local recorder = self
-  local function wrap(operation)
-    if type(base[operation]) ~= "function" then return nil end
+  ---@generic R
+  ---@param operation Neoagent.RecordingOperation
+  ---@param start? fun(opts: Neoagent.ByteCall<R>): Neoagent.Run<R, nil>
+  ---@return (fun(opts: Neoagent.ByteCall<R>): Neoagent.Run<R, nil>)?
+  local function wrap(operation, start)
+    if type(start) ~= "function" then return nil end
     return function(opts)
       opts = opts or {}
       local selected = shallow_copy(opts)
@@ -1117,11 +1432,11 @@ function Recorder:transport(base, context)
         selected.on_chunk = function(chunk)
           local ok = pcall(recorder._chunk, recorder, exchange, chunk)
           if not ok then report(recorder, "failed to record a response chunk") end
-          if on_chunk then return on_chunk(chunk) end
+          if on_chunk then on_chunk(chunk) end
         end
       end
       selected.on_done = nil
-      local started, child = pcall(base[operation], selected)
+      local started, child = pcall(function() return start(selected) end)
       if not started then
         local ok = pcall(recorder._finish, recorder, exchange, {
           ok = false,
@@ -1130,8 +1445,10 @@ function Recorder:transport(base, context)
         if not ok then report(recorder, "failed to finish an exchange") end
         error(child, 0)
       end
+      ---@cast child Neoagent.Run<R, nil>
       return async.run(function()
-        local settled, result = pcall(function() return child:await() end)
+        local settled, result = pcall(---@async
+        function() return child:await() end)
         if not settled then
           local failure = {
             ok = false,
@@ -1150,8 +1467,8 @@ function Recorder:transport(base, context)
     end
   end
   local wrapped = {
-    request = wrap("request"),
-    fetch = wrap("fetch"),
+    request = wrap("request", base.request),
+    fetch = wrap("fetch", base.fetch),
   }
   wrapped.with_context = function(extra)
     return recorder:transport(base, merge_context(context, extra))
@@ -1159,10 +1476,12 @@ function Recorder:transport(base, context)
   return wrapped
 end
 
+---@return "yaml"|"json"
 function Recorder:format()
   return self._format
 end
 
+---@return boolean
 function Recorder:destroy()
   if self._destroyed then return false end
   self._destroyed = true
@@ -1180,6 +1499,8 @@ function Recorder:destroy()
   return true
 end
 
+---@param opts? Neoagent.RecorderOptions
+---@return Neoagent.Recorder?, Neoagent.Error?
 function M.new(opts)
   opts = opts or {}
   local selected = opts.config

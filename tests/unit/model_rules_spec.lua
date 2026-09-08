@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local rules = require("neoagent.model_rules")
 local efforts = require("neoagent.model_efforts")
 
@@ -21,14 +22,14 @@ describe("neoagent model rules", function()
     assert.are.same({ "text", "image" }, model.input)
     assert.are.equal(1050000, model.context_window)
     assert.are.same({ source = true, broad = true, specific = true },
-      model.nested)
+      rawget(assert(model), "nested"))
   end)
 
   it("supports functional matches, field removal, and exclusion", function()
     local transform = rules.compile({
       {
         match = function(model, ctx)
-          return ctx.provider_id == "example" and model.id == "keep"
+          return assert(ctx).provider_id == "example" and model.id == "keep"
         end,
         set = { obsolete = false, input = { "text" } },
       },
@@ -40,7 +41,7 @@ describe("neoagent model rules", function()
     local kept = transform({ id = "keep", obsolete = true }, {
       provider_id = "example",
     })
-    assert.is_nil(kept.obsolete)
+    assert.is_nil(rawget(assert(kept), "obsolete"))
     assert.are.same({ "text" }, kept.input)
     assert.is_false(transform({ id = "drop" }, { provider_id = "example" }))
   end)
@@ -52,8 +53,10 @@ describe("neoagent model rules", function()
       defaults = defaults,
     } })
     local first = transform({ id = "one" }, {})
-    first.nested.value = false
-    assert.is_true(transform({ id = "two" }, {}).nested.value)
+    local nested = rawget(assert(first), "nested") --[[@as {value: boolean}]]
+    nested.value = false
+    local second = assert(transform({ id = "two" }, {}))
+    assert.is_true(rawget(second, "nested").value)
     assert.is_true(defaults.nested.value)
   end)
 
@@ -102,11 +105,11 @@ describe("neoagent model rules", function()
   it("keeps effort values independently owned", function()
     local first = efforts.openai_responses({ "high" })
     first.high.body.reasoning.effort = "changed"
-    first.high.body.include[1] = "changed"
+    assert(first.high.body.include)[1] = "changed"
     local second = efforts.openai_responses({ "high" })
     assert.are.equal("high", second.high.body.reasoning.effort)
     assert.are.equal("reasoning.encrypted_content",
-      second.high.body.include[1])
+      assert(second.high.body.include)[1])
     local copied = efforts.copy(second)
     copied.high.body.reasoning.summary = "changed"
     assert.are.equal("auto", second.high.body.reasoning.summary)

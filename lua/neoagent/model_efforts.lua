@@ -2,6 +2,33 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.OpenAIReasoningOptions
+---@field summary? string|false
+---@field encrypted? boolean
+
+---@class Neoagent.ResponseEffortBody: Neoagent.JsonObject
+---@field reasoning {effort: string, summary?: string}
+---@field include? string[]
+
+---@class Neoagent.ResponseEffort: Neoagent.RequestOverride
+---@field body Neoagent.ResponseEffortBody
+---@alias Neoagent.CompletionEffort { body: { reasoning_effort: string } }
+---@class Neoagent.ThinkingEffortBody: Neoagent.JsonObject
+---@field thinking {type: "enabled"|"disabled"}
+---@field reasoning_effort? string
+
+---@class Neoagent.ThinkingEffort: Neoagent.RequestOverride
+---@field body Neoagent.ThinkingEffortBody
+---@class Neoagent.AdaptiveEffortBody: Neoagent.JsonObject
+---@field thinking {type: "adaptive", display: "summarized"}
+---@field output_config {effort: Neoagent.ThinkingLevel}
+
+---@class Neoagent.AdaptiveEffort: Neoagent.RequestOverride
+---@field body Neoagent.AdaptiveEffortBody
+
+---@param effort string
+---@param opts? Neoagent.OpenAIReasoningOptions
+---@return Neoagent.ResponseEffort
 function M.openai_response(effort, opts)
   opts = opts or {}
   local reasoning = { effort = effort }
@@ -13,6 +40,9 @@ function M.openai_response(effort, opts)
   return { body = body }
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@param opts? Neoagent.OpenAIReasoningOptions
+---@return table<Neoagent.ThinkingLevel, Neoagent.ResponseEffort>
 function M.openai_responses(levels, opts)
   local result = {}
   for _, level in ipairs(levels) do
@@ -22,6 +52,9 @@ function M.openai_responses(levels, opts)
   return result
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@param mapping? table<Neoagent.ThinkingLevel, string>
+---@return table<Neoagent.ThinkingLevel, Neoagent.CompletionEffort>
 function M.openai_completions(levels, mapping)
   local result = {}
   mapping = mapping or {}
@@ -34,6 +67,9 @@ function M.openai_completions(levels, mapping)
   return result
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@param mapping? table<Neoagent.ThinkingLevel, string>
+---@return table<Neoagent.ThinkingLevel, Neoagent.ThinkingEffort>
 function M.thinking_completions(levels, mapping)
   local result = {}
   mapping = mapping or {}
@@ -51,6 +87,8 @@ function M.thinking_completions(levels, mapping)
   return result
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return table<Neoagent.ThinkingLevel, Neoagent.AdaptiveEffort>
 function M.anthropic_adaptive(levels)
   local result = {}
   for _, level in ipairs(levels) do
@@ -62,6 +100,9 @@ function M.anthropic_adaptive(levels)
   return result
 end
 
+---@generic T
+---@param value T
+---@return T
 function M.copy(value)
   return util.copy(value)
 end

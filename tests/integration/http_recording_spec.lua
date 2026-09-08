@@ -1,11 +1,17 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 local http_replay = require("tests.helpers.http_replay")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param path string
+---@return Neoagent.RecordedEvent[]
 local function records(path)
   local result = {}
   for line in assert(fs.read(path)):gmatch("[^\n]+") do
@@ -15,7 +21,9 @@ local function records(path)
 end
 
 describe("HTTP recording integration", function()
+  ---@type string[]
   local directories = {}
+  ---@type Neoagent.TestHttpReplay[]
   local scenarios = {}
 
   after_each(function()
@@ -68,7 +76,7 @@ describe("HTTP recording integration", function()
     local paths = vim.fn.globpath(directory, "**/*.jsonl", false, true)
     assert.are.equal(1, #paths)
     local content = assert(fs.read(paths[1]))
-    assert.is_nil(content:find("test-key", 1, true))
+    assert.is_nil((content:find("test-key", 1, true)))
     assert.matches('"session_id":"session%-integration"', content)
     assert.matches('"status":200', content)
     assert.matches('"type":"response_chunk"', content)
@@ -100,8 +108,9 @@ describe("HTTP recording integration", function()
       http = http,
       start_callback_server = function()
         return {
+          port = 1455,
           wait = function() return "integration-code" end,
-          close = function() end,
+          close = function() return true end,
         }
       end,
     })
@@ -115,23 +124,27 @@ describe("HTTP recording integration", function()
         assert.are.equal("auth_url", event.type)
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     recorder:destroy()
 
     local paths = vim.fn.globpath(directory, "**/*.jsonl", false, true)
     assert.are.equal(1, #paths)
     assert.matches("/provider/recordings/openai%-codex/", paths[1])
     local content = assert(fs.read(paths[1]))
-    assert.is_nil(content:find("integration-refresh", 1, true))
-    assert.is_nil(content:find("integration-code", 1, true))
+    assert.is_nil((content:find("integration-refresh", 1, true)))
+    assert.is_nil((content:find("integration-code", 1, true)))
     local parsed = records(paths[1])
-    assert.is_nil(parsed[1].workspace)
-    assert.are.equal("authentication", parsed[1].context.origin)
-    assert.are.equal("openai-codex", parsed[1].context.auth_method)
-    assert.matches("client_id=%*", parsed[1].request.body)
-    assert.matches("code=%*", parsed[1].request.body)
-    assert.matches("code_verifier=%*", parsed[1].request.body)
-    assert.are.equal("*", parsed[3].body)
-    assert.is_true(parsed[3].redacted)
+    local exchange = assert(parsed[1])
+    assert(exchange.type == "exchange")
+    local response = assert(parsed[3])
+    assert(response.type == "response_body")
+    assert.is_nil(exchange.workspace)
+    assert.are.equal("authentication", assert(exchange.context).origin)
+    assert.are.equal("openai-codex", assert(exchange.context).auth_method)
+    assert.matches("client_id=%*", tostring(exchange.request.body))
+    assert.matches("code=%*", tostring(exchange.request.body))
+    assert.matches("code_verifier=%*", tostring(exchange.request.body))
+    assert.are.equal("*", response.body)
+    assert.is_true(response.redacted)
   end)
 end)

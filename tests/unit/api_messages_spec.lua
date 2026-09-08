@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local messages = require("neoagent.api.messages")
 
 describe("neoagent.api.messages", function()
@@ -36,9 +37,9 @@ describe("neoagent.api.messages", function()
       { type = "text", text = "Visible thought" },
       { type = "text", text = "Answer" },
       original[2].content[5],
-    }, transformed[2].content)
+    }, assert(transformed[2]).content)
     assert.are.equal(original[3], transformed[3])
-    assert.are.same({ { type = "text", text = "Other model" } }, transformed[4].content)
+    assert.are.same({ { type = "text", text = "Other model" } }, assert(transformed[4]).content)
     assert.are.same(before, original)
   end)
 
@@ -63,11 +64,11 @@ describe("neoagent.api.messages", function()
       { type = "text", text = "before" },
       { type = "text", text = "(image omitted: model does not support images)" },
       { type = "text", text = "after" },
-    }, transformed[1].content)
+    }, assert(transformed[1]).content)
     assert.are.same({
       { type = "text", text = "(tool image omitted: model does not support images)" },
       { type = "text", text = "details" },
-    }, transformed[2].content)
+    }, assert(transformed[2]).content)
     assert.are.equal(original[3], transformed[3])
     assert.are.equal("image", original[1].content[2].type)
     assert.are.equal("image", original[2].content[1].type)

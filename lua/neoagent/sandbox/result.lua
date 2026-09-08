@@ -2,6 +2,8 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@param message string
+---@return string
 function M.denied(message)
   return message .. "\n" .. M.SANDBOX_FAILURE
 end
@@ -21,6 +23,9 @@ M.USER_DENIED = table.concat({
   "the user provides new instructions.",
 }, "\n")
 
+---@param message string
+---@param details? Neoagent.JsonValue
+---@return Neoagent.ToolResult
 function M.error(message, details)
   return {
     content = { { type = "text", text = message } },
@@ -29,10 +34,24 @@ function M.error(message, details)
   }
 end
 
+---@param message string
+---@param fields? Neoagent.JsonObject
+---@return Neoagent.ToolResult
 function M.sandbox(message, fields)
   return M.error(message, { sandbox = util.copy(fields or {}) })
 end
 
+---@param value unknown
+---@return TypeGuard<Neoagent.JsonObject>
+local function object(value)
+  return type(value) == "table"
+    and (next(value) == nil or not util.is_list(value))
+end
+
+---@param value Neoagent.ToolResult
+---@param text string
+---@param fields? Neoagent.JsonObject
+---@return Neoagent.ToolResult
 function M.append(value, text, fields)
   value = util.copy(value)
   local appended = false
@@ -47,8 +66,16 @@ function M.append(value, text, fields)
     value.content = value.content or {}
     table.insert(value.content, 1, { type = "text", text = text })
   end
-  value.details = value.details or {}
-  value.details.sandbox = util.deep_merge(value.details.sandbox or {}, fields)
+  -- Tool details may be any JSON value; preserve payloads we cannot merge.
+  if value.details == nil then value.details = {} end
+  local details = value.details
+  if object(details) then
+    local sandbox = details.sandbox
+    if sandbox == nil or object(sandbox) then
+      ---@cast sandbox Neoagent.JsonObject?
+      details.sandbox = util.deep_merge(sandbox or {}, fields)
+    end
+  end
   return value
 end
 

@@ -3,12 +3,25 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ApiKeyOptions
+---@field name string
+---@field prompt? string
+---@field request_opts? fun(credential: Neoagent.ApiKeyCredential, scope?: string): Neoagent.RequestOverride
+
+---@async
+---@param interaction Neoagent.LoginInteraction
+---@param prompt Neoagent.LoginPrompt
+---@return string?
 local function await_prompt(interaction, prompt)
-  return async.await(function(done)
+  return async.await(
+  ---@param done Neoagent.AwaitCallbacks<string?>
+  function(done)
     return interaction.prompt(prompt, done)
   end)
 end
 
+---@param opts Neoagent.ApiKeyOptions
+---@return Neoagent.AuthMethod<Neoagent.ApiKeyCredential>
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.name) == "string" and opts.name ~= "", "API key method name is required")
@@ -20,8 +33,11 @@ function M.new(opts)
   return {
     type = "api_key",
     name = opts.name,
+    ---@param interaction Neoagent.LoginInteraction
     login = function(interaction)
-      return async.run(function()
+      return async.run(
+      ---@return Neoagent.CredentialSuccess<Neoagent.ApiKeyCredential>
+      function()
         local key = await_prompt(interaction, {
           type = "secret",
           message = opts.prompt or ("Enter " .. opts.name .. ":"),

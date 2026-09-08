@@ -2,13 +2,128 @@ local async = require("neoagent.async")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.ProviderAuthContext
+---@field resolve_auth fun(scope?: string): Neoagent.Run<Neoagent.AuthResolution, nil>
+
+---@class Neoagent.ProviderServiceConfig
+---@field api? string
+---@field base_url? string
+---@field service_opts? table<string, unknown>
+---@field auth_optional? boolean
+
+---@class Neoagent.ProviderServiceResources
+---@field provider_id? string
+---@field transport? Neoagent.ByteBackend
+---@field ambient_api_key? fun(): string?
+---@field report? fun(message: string, level: integer)
+---@field now? fun(): number
+---@field new_id? fun(): string
+
+---@class Neoagent.ProviderDocument
+---@field kind "document"
+---@field name string
+---@field filetype string
+---@field content string
+
+---@class Neoagent.ProviderOperationSuccess
+---@field ok true
+---@field artifact? Neoagent.ProviderDocument
+---@field [string] unknown
+
+---@alias Neoagent.ProviderOperationResult Neoagent.ProviderOperationSuccess|Neoagent.AsyncFailure
+---@alias Neoagent.ProviderOperationRun Neoagent.Run<Neoagent.ProviderOperationResult, unknown>
+
+---@class Neoagent.ProviderInteraction
+---@field select fun(request: Neoagent.SelectRequest, done: Neoagent.AwaitCallbacks<unknown>): fun()?
+---@field input fun(request: Neoagent.InputRequest, done: Neoagent.AwaitCallbacks<string>): fun()?
+---@field confirm fun(request: Neoagent.ConfirmRequest, done: Neoagent.AwaitCallbacks<boolean>): fun()?
+---@field progress fun(status: Neoagent.ProviderOperationStatus)
+---@field notify fun(request: Neoagent.NotificationRequest|string, level?: integer)
+
+---@class Neoagent.ProviderOperationContext: Neoagent.ProviderAuthContext
+---@field provider {id: string, name: string, config: Neoagent.ProviderServiceConfig}
+---@field args string
+---@field interact Neoagent.ProviderInteraction
+
+---@class Neoagent.ProviderOperation
+---@field label string
+---@field description? string
+---@field mutating? boolean
+---@field auth_scope? string
+---@field complete? fun(arg_lead: string, args: string): string[]
+---@field run fun(ctx: Neoagent.ProviderOperationContext): Neoagent.ProviderOperationRun
+
+---@class Neoagent.ProviderOperationInfo
+---@field id string
+---@field label string
+---@field description? string
+---@field mutating boolean
+---@field auth_scope? string
+
+---@class Neoagent.ProviderService
+---@field id string
+---@field name string
+---@field operations table<string, Neoagent.ProviderOperation>
+---@field state fun(self: Neoagent.ProviderService): Neoagent.ProviderState|false
+---@field subscribe? fun(self: Neoagent.ProviderService, listener: fun(state: Neoagent.ProviderState)): fun()
+---@field on_event? fun(self: Neoagent.ProviderService, event: unknown)
+---@field wrap_model? fun(self: Neoagent.ProviderService, model: Neoagent.Model): Neoagent.Model
+---@field destroy? fun(self: Neoagent.ProviderService)
+
+---@class Neoagent.ProviderServiceSnapshot
+---@field users integer
+---@field operations integer
+---@field busy boolean
+---@field mutating boolean
+
+---@class Neoagent.ProviderServiceSubscription
+---@field listener fun(state: Neoagent.ProviderServiceSnapshot)
+---@field report? fun(message: string, level: integer)
+
+---@class Neoagent.ProviderServiceRuntime
+---@field users integer
+---@field operations table<integer, Neoagent.ProviderOperationToken>
+---@field operation_count integer
+---@field mutating? Neoagent.ProviderOperationToken
+---@field next_operation_id integer
+---@field listeners table<integer, Neoagent.ProviderServiceSubscription>
+---@field next_listener_id integer
+---@field retiring boolean
+---@field destroy? fun()
+---@field destroyed boolean
+
+---@class Neoagent.ProviderResolveAuthOptions
+---@field method? string
+---@field manager? Neoagent.AuthManager
+---@field optional? boolean
+---@field scope? string
+
+---@class Neoagent.ProviderOperationOptions
+---@field args? string
+---@field interact? Neoagent.ProviderInteraction
+---@field coordination? Neoagent.ProviderOperationToken
+---@field provider? Neoagent.ProviderServiceConfig
+---@field resolve_auth? fun(scope?: string): Neoagent.Run<Neoagent.AuthResolution, nil>
+---@field auth? Neoagent.AuthManager
+---@field auth_method? string
+---@field optional_auth? boolean
+---@field on_event? fun(event: unknown)
+---@field on_done? fun(result: Neoagent.ProviderOperationResult)
+
+---@type table<Neoagent.ProviderService, Neoagent.ProviderServiceRuntime>
 local default_runtimes = setmetatable({}, { __mode = "k" })
 local MAX_DIAGNOSTIC_CHARACTERS = 512
 
+---@param message string
+---@return nil, Neoagent.Error
 local function failure(message)
   return nil, util.error("provider", message)
 end
 
+---@param value unknown
+---@param name string
+---@param maximum integer
+---@return string?, Neoagent.Error?
 local function valid_text(value, name, maximum)
   if type(value) ~= "string" then
     return failure(name .. " must be a string")
@@ -28,6 +143,9 @@ local function valid_text(value, name, maximum)
   return value
 end
 
+---@param id unknown
+---@param value unknown
+---@return Neoagent.ProviderOperation?, Neoagent.Error?
 local function validate_operation(id, value)
   local ok, err = valid_text(id, "operation id", 128)
   if not ok then return nil, err end
@@ -61,6 +179,8 @@ local function validate_operation(id, value)
   return value
 end
 
+---@param value unknown
+---@return Neoagent.ProviderService?, Neoagent.Error?
 function M.validate(value)
   if type(value) ~= "table" or util.is_list(value) then
     return failure("Provider Service must be an object")
@@ -106,12 +226,16 @@ function M.validate(value)
   return value
 end
 
+---@param value unknown
+---@return Neoagent.ProviderService
 function M.assert(value)
   local service, err = M.validate(value)
   assert(service, err and err.message or "invalid Provider Service")
   return service
 end
 
+---@param service Neoagent.ProviderService
+---@return Neoagent.ProviderOperationInfo[]
 function M.operations(service)
   service = M.assert(service)
   local ids = {}
@@ -131,6 +255,7 @@ function M.operations(service)
   return result
 end
 
+---@return Neoagent.ProviderServiceRuntime
 local function new_runtime()
   return {
     users = 0,
@@ -146,6 +271,8 @@ local function new_runtime()
   }
 end
 
+---@param service Neoagent.ProviderService
+---@return Neoagent.ProviderServiceRuntime
 local function runtime(service)
   local value = default_runtimes[service]
   if not value then
@@ -155,6 +282,8 @@ local function runtime(service)
   return value
 end
 
+---@param err unknown
+---@return string
 local function subscriber_failure(err)
   local message = util.text_from_bytes(
     util.normalize_error(err, "provider").message)
@@ -165,6 +294,7 @@ local function subscriber_failure(err)
   return "neoagent: provider runtime subscriber failed: " .. message
 end
 
+---@param state Neoagent.ProviderServiceRuntime
 local function publish_runtime(state)
   local snapshot = {
     users = state.users,
@@ -183,6 +313,8 @@ local function publish_runtime(state)
   end
 end
 
+---@param state Neoagent.ProviderServiceRuntime
+---@return boolean
 local function finish_retirement(state)
   if not state.retiring or state.destroyed or state.users > 0
       or state.operation_count > 0 then return false end
@@ -193,6 +325,10 @@ local function finish_retirement(state)
   return true
 end
 
+---@param service Neoagent.ProviderService
+---@param listener fun(state: Neoagent.ProviderServiceSnapshot)
+---@param opts? {report?: fun(message: string, level: integer)}
+---@return fun(): boolean
 function M.subscribe(service, listener, opts)
   service = M.assert(service)
   assert(type(listener) == "function",
@@ -216,11 +352,16 @@ function M.subscribe(service, listener, opts)
   end
 end
 
+---@param service Neoagent.ProviderService
+---@return boolean
 function M.busy(service)
   service = M.assert(service)
   return runtime(service).operation_count > 0
 end
 
+---@param service Neoagent.ProviderService
+---@param operation {mutating?: boolean}
+---@return boolean
 function M.operation_enabled(service, operation)
   service = M.assert(service)
   local state = runtime(service)
@@ -231,6 +372,8 @@ function M.operation_enabled(service, operation)
   return state.mutating == nil
 end
 
+---@param service Neoagent.ProviderService
+---@return Neoagent.ProviderUseLease?, Neoagent.Error?
 function M.acquire_use(service)
   service = M.assert(service)
   local state = runtime(service)
@@ -243,7 +386,10 @@ function M.acquire_use(service)
   end
   state.users = state.users + 1
   publish_runtime(state)
+  ---@class Neoagent.ProviderUseLease
+  ---@field active boolean
   local lease = { active = true }
+  ---@return boolean
   function lease:release()
     if not self.active then return false end
     self.active = false
@@ -255,12 +401,17 @@ function M.acquire_use(service)
   return lease
 end
 
+---@param service Neoagent.ProviderService
+---@return (fun(): boolean)?, Neoagent.Error?
 function M.acquire(service)
   local lease, err = M.acquire_use(service)
   if not lease then return nil, err end
   return function() return lease:release() end
 end
 
+---@param service Neoagent.ProviderService
+---@param opts? {mutating?: boolean}
+---@return Neoagent.ProviderOperationToken?, Neoagent.Error?
 function M.begin_operation(service, opts)
   service = M.assert(service)
   opts = opts or {}
@@ -285,6 +436,13 @@ function M.begin_operation(service, opts)
   end
   state.next_operation_id = state.next_operation_id + 1
   local id = state.next_operation_id
+  ---@class Neoagent.ProviderOperationToken
+  ---@field active boolean
+  ---@field mutating boolean
+  ---@field _service Neoagent.ProviderService
+  ---@field _operation_id integer
+  ---@field _phase "available"|"claimed"|"finished"
+  ---@field _run? Neoagent.ProviderOperationRun
   local token = {
     active = true,
     mutating = mutating,
@@ -297,6 +455,7 @@ function M.begin_operation(service, opts)
   state.operation_count = state.operation_count + 1
   if mutating then state.mutating = token end
   publish_runtime(state)
+  ---@return boolean
   function token:finish()
     if not self.active then return false end
     if state.operations[id] ~= self then return false end
@@ -313,6 +472,10 @@ function M.begin_operation(service, opts)
   return token
 end
 
+---@param token Neoagent.ProviderOperationToken
+---@param service Neoagent.ProviderService
+---@param mutating boolean
+---@return Neoagent.ProviderOperationToken?, Neoagent.Error?
 local function claim_operation(token, service, mutating)
   if type(token) ~= "table"
       or type(token.finish) ~= "function"
@@ -330,6 +493,9 @@ local function claim_operation(token, service, mutating)
   return token
 end
 
+---@param service Neoagent.ProviderService
+---@param destroy fun()
+---@return boolean
 function M.retire(service, destroy)
   service = M.assert(service)
   assert(type(destroy) == "function",
@@ -342,6 +508,8 @@ function M.retire(service, destroy)
   return true
 end
 
+---@param provider unknown
+---@return Neoagent.ProviderServiceConfig
 function M.public_config(provider)
   local result = {}
   if type(provider) ~= "table" then return result end
@@ -358,9 +526,13 @@ function M.public_config(provider)
   return result
 end
 
+---@param opts? Neoagent.ProviderResolveAuthOptions
+---@return Neoagent.Run<Neoagent.AuthResolution, nil>
 function M.resolve_auth(opts)
   opts = opts or {}
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.AuthResolution
+  function()
     if opts.method == nil then
       return { ok = true, configured = false }
     end
@@ -374,7 +546,10 @@ function M.resolve_auth(opts)
   end, { error_kind = "auth" })
 end
 
+---@return Neoagent.ProviderInteraction
 function M.no_interact()
+  ---@param _ unknown
+  ---@param done Neoagent.AwaitCallbacks<unknown>
   local function unavailable(_, done)
     done.reject(util.error("provider",
       "Provider interaction is unavailable"))
@@ -388,6 +563,10 @@ function M.no_interact()
   }
 end
 
+---@param service Neoagent.ProviderService
+---@param operation_id string
+---@param opts? Neoagent.ProviderOperationOptions
+---@return Neoagent.ProviderOperationRun?, Neoagent.Error?
 function M.run(service, operation_id, opts)
   service = M.assert(service)
   opts = opts or {}
@@ -425,7 +604,10 @@ function M.run(service, operation_id, opts)
     token, service, descriptor.mutating == true)
   if not token then return nil, token_err end
 
-  local constructed, run = pcall(async.run, function()
+  local constructed, run = pcall(async.run,
+  ---@return Neoagent.ProviderOperationResult
+  function()
+    ---@type Neoagent.ProviderOperationContext
     local ctx = {
       provider = {
         id = service.id,

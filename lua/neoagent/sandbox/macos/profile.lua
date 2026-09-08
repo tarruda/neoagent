@@ -1,5 +1,10 @@
 local M = {}
 
+---@class Neoagent.MacosSandboxParameter
+---@field name string
+---@field value string
+
+
 local base = [[
 (version 1)
 (deny default)
@@ -48,12 +53,18 @@ local base = [[
 (allow user-preference-read)
 ]]
 
+---@param root string
+---@param path string
+---@return boolean
 local function contains(root, path)
   return root == "/" or path == root
     or path:sub(1, #root + 1) == root .. "/"
 end
 
+---@param profile Neoagent.SandboxAccessPolicy
+---@return Neoagent.SandboxFilesystemEntry[]
 local function effective_entries(profile)
+  ---@type Neoagent.SandboxFilesystemEntry[]
   local result = {
     { path = "/", access = profile.filesystem.default },
   }
@@ -67,13 +78,22 @@ local function effective_entries(profile)
   return result
 end
 
+---@param profile Neoagent.SandboxAccessPolicy
+---@param internal? Neoagent.SandboxFilesystemEntry[]
+---@return string, Neoagent.MacosSandboxParameter[]
 function M.compile(profile, internal)
-  local parameters, sections = {}, { base }
+  ---@type Neoagent.MacosSandboxParameter[]
+  local parameters = {}
+  local sections = { base }
+  ---@param path string
+  ---@return string
   local function parameter(path)
     local name = string.format("PATH_%03d", #parameters + 1)
     parameters[#parameters + 1] = { name = name, value = path }
     return name
   end
+  ---@param path string
+  ---@return string
   local function matcher(path)
     local name = parameter(path)
     return string.format(
@@ -81,6 +101,9 @@ function M.compile(profile, internal)
       name, name)
   end
   local entries = effective_entries(profile)
+  ---@param root string
+  ---@param predicate fun(access: Neoagent.SandboxAccess): boolean
+  ---@return string[]
   local function exclusions(root, predicate)
     local result = {}
     for _, entry in ipairs(entries) do
@@ -91,6 +114,9 @@ function M.compile(profile, internal)
     end
     return result
   end
+  ---@param operation string
+  ---@param path string
+  ---@param excluded? string[]
   local function grant(operation, path, excluded)
     local rules = { matcher(path) }
     for _, child in ipairs(excluded or {}) do
@@ -125,6 +151,10 @@ function M.compile(profile, internal)
   return table.concat(sections, "\n"), parameters
 end
 
+---@param sandbox_exec string
+---@param policy string
+---@param parameters Neoagent.MacosSandboxParameter[]
+---@return string[]
 function M.argv(sandbox_exec, policy, parameters)
   local argv = { sandbox_exec, "-p", policy }
   for _, parameter in ipairs(parameters) do

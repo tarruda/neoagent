@@ -1,12 +1,17 @@
+local assert = require("luassert")
 local replay = require("neoagent.http_replay")
 local http = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param body? string
 local function records(body)
   body = body or 'data: {"text":"héllo"}\r\n\r\ndata: [DONE]\n\n'
   return {
@@ -20,6 +25,7 @@ local function records(body)
   }
 end
 
+---@param body string
 local function buffered(body)
   local value = records(body)
   value[2].bytes, value[3].bytes = #body, 0
@@ -29,28 +35,39 @@ end
 local request = records()[1].request
 
 describe("HTTP recording replay", function()
-  local paths, players, system
+  ---@type string[]
+  local paths = {}
+  ---@type Neoagent.HttpReplay[]
+  local players = {}
+  local system = vim.system
   before_each(function() paths, players, system = {}, {}, vim.system end)
   after_each(function()
     for _, player in ipairs(players) do player.close() end
     for _, path in ipairs(paths) do vim.fn.delete(path) end
     vim.system = system
   end)
+  ---@param events unknown[]
+  ---@param suffix? string
+  ---@return string
   local function write(events, suffix)
     local path = vim.fn.tempname() .. (suffix or ".jsonl")
-    paths[#paths + 1] = path
+    assert(paths)[#paths + 1] = path
     local lines = {}
     for _, event in ipairs(events) do lines[#lines + 1] = type(event) == "string" and event or util.json_encode(event) end
     vim.fn.writefile(lines, path)
     return path
   end
+  ---@param events unknown[]
+  ---@param options? Neoagent.ReplayOptions
+  ---@param entry? Neoagent.ReplayEntryOptions
+  ---@return Neoagent.HttpReplay
   local function new(events, options, entry)
     options = options or {}
     entry = entry or {}
     entry.path = write(events)
     options.exchanges = { entry }
     local player = replay.new(options)
-    players[#players + 1] = player
+    assert(players)[#players + 1] = player
     return player
   end
 
@@ -58,11 +75,11 @@ describe("HTTP recording replay", function()
     local value = records()
     local path = write(value, ".partial.ndjson")
     local exchange = replay.read(path)
-    assert.are.equal(value[4].body, exchange.chunks[1].data .. exchange.chunks[2].data)
-    assert.are.equal(7, #exchange.chunks[1].data)
+    assert.are.equal(value[4].body, assert(exchange.chunks[1]).data .. assert(exchange.chunks[2]).data)
+    assert.are.equal(7, #assert(exchange.chunks[1]).data)
     assert.is_false(exchange.structural)
     local player = replay.new({ exchanges = { path } })
-    players[#players + 1] = player
+    assert(players)[#players + 1] = player
     local events, markers = {}, 0
     local run = http.new(player).stream({ request = request,
       on_event = function(event) events[#events + 1] = event end,
@@ -71,12 +88,12 @@ describe("HTTP recording replay", function()
     assert.are.same({}, events)
     assert.is_false(run:is_done())
     local result = wait(run)
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ { text = "héllo" } }, events)
     assert.are.equal(1, markers)
     assert.are.equal("v1", result.headers.etag)
     player.assert_consumed()
-    player.requests[1].headers.Authorization = "changed"
+    rawset(assert(assert(player.requests[1]).headers), "Authorization", "changed")
     assert.are.equal("synthetic", request.headers.Authorization)
   end)
 
@@ -88,24 +105,28 @@ describe("HTTP recording replay", function()
     assert.are.equal(body, wait(player.fetch({ request = request })).body)
     for _, scalar in ipairs({ false, true, 42, vim.NIL, vim.empty_dict(), {} }) do
       local yaml = buffered("original serialization")
-      yaml[4].body, yaml[4].body_format = scalar, "json"
-      yaml[1].request.body, yaml[1].request.body_format = scalar, "json"
+      rawset(yaml[4], "body", scalar)
+      yaml[4].body_format = "json"
+      rawset(yaml[1].request, "body", scalar)
+      yaml[1].request.body_format = "json"
       local path = write(yaml, ".yaml")
       vim.system = function(command, opts)
         assert.are.same({ "yq", "-o=json", "-I=0", ".", path }, command)
-        assert.is_true(opts.text)
+        assert.is_true(assert(opts).text)
         return { wait = function(_, timeout)
           assert.are.equal(10000, timeout)
-          return { code = 0, stdout = table.concat(vim.fn.readfile(path), "\n") }
-        end }
+          return { code = 0, signal = 0, stdout = table.concat(vim.fn.readfile(path), "\n") }
+        end } --[[@as vim.SystemObj]]
       end
       local imported = replay.read(path)
       assert.is_true(imported.structural)
       assert.are.same(scalar, vim.json.decode(imported.body))
-      assert.are.same(scalar, vim.json.decode(imported.request.body))
+      assert.are.same(scalar, vim.json.decode((assert(imported.request.body))))
       assert.are.equal(1, #imported.chunks)
     end
-    vim.system = function() return { wait = function() return { code = 1, stderr = "private" } end } end
+    vim.system = function()
+      return { wait = function() return { code = 1, signal = 0, stderr = "private" } end } --[[@as vim.SystemObj]]
+    end
     assert.has_error(function() replay.read(write({}, ".yaml")) end,
       "Cannot import YAML recording; check it with yq v4")
   end)
@@ -183,18 +204,18 @@ describe("HTTP recording replay", function()
       case[2](actual)
       local result = wait(player.fetch({ request = actual, on_done = function() completed = completed + 1 end }))
       assert.is_false(result.ok)
-      assert.are.equal("replay", result.error.kind)
-      assert.matches(case[1], result.error.message)
-      assert.is_nil(result.error.message:find("private", 1, true))
+      assert.are.equal("replay", assert(result.error).kind)
+      assert.matches(case[1], assert(result.error).message)
+      assert.is_nil((assert(result.error).message:find("private", 1, true)))
       assert(vim.wait(1000, function() return completed == 1 end))
-      assert.has_error(player.assert_consumed, result.error.message)
+      assert.has_error(player.assert_consumed, assert(result.error).message)
     end
     local player = new(records())
     assert.has_error(player.assert_consumed, "Unused HTTP exchange: 1")
     assert.is_true(wait(player.fetch({ request = request })).ok)
     local result = wait(player.fetch({ request = request }))
-    assert.matches("all exchanges consumed", result.error.message)
-    assert.has_error(player.assert_consumed, result.error.message)
+    assert.matches("all exchanges consumed", assert(result.error).message)
+    assert.has_error(player.assert_consumed, assert(result.error).message)
   end)
 
   it("requires explicit projections and supports byte-exact request bodies", function()
@@ -220,7 +241,7 @@ describe("HTTP recording replay", function()
       { id = "watch", path = write(records()), gates = { ["2"] = { "load:request" } }, finish_after = { "load:complete" } },
       { id = "load", path = write(value), after = { "watch:chunk:1" } },
     } })
-    players[#players + 1] = player
+    assert(players)[#players + 1] = player
     local chunks = {}
     local stream = player.request({ request = request, on_chunk = function(chunk) chunks[#chunks + 1] = chunk end })
     assert(vim.wait(1000, function() return #chunks == 1 end))
@@ -238,7 +259,7 @@ describe("HTTP recording replay", function()
       local player = new(records(), { timeout_ms = 5 }, options)
       local result = wait(player.request({ request = request }))
       assert.is_false(result.ok)
-      assert.matches("dependency timed out", result.error.message)
+      assert.matches("dependency timed out", assert(result.error).message)
       assert.has_error(player.assert_consumed, "Replay dependency timed out")
     end
     local value = records()
@@ -249,7 +270,7 @@ describe("HTTP recording replay", function()
       local run = player.request({ request = request, on_chunk = function() chunks = chunks + 1 end,
         on_done = function() completions = completions + 1 end })
       player.close()
-      assert.are.equal("cancelled", wait(run).error.kind)
+      assert.are.equal("cancelled", assert(wait(run).error).kind)
       player.release("never")
       assert(vim.wait(1000, function() return completions == 1 end))
       assert.are.equal(0, chunks)
@@ -266,36 +287,38 @@ describe("HTTP recording replay", function()
       value[6].ok, value[6].error = false, { kind = kind, exit_code = 22, message = "historical" }
       local player = new(value)
       local result = wait(http.new(player).fetch({ request = request }))
-      assert.is_true(result.ok)
+      assert(result.ok)
       assert.are.equal(401, result.status)
       assert.are.same({ error = "expired" }, result.body)
     end
     local player = new(records())
     local result = wait(player.request({ request = request, on_chunk = function() error(util.error("model", "rejected"), 0) end }))
-    assert.are.equal("model", result.error.kind)
-    assert.are.equal(200, result.error.response.status)
+    assert.are.equal("model", assert(result.error).kind)
+    local response = assert(rawget(assert(result.error), "response"))
+    assert.are.equal(200, rawget(response, "status"))
     local value = buffered("")
     value[6].ok, value[6].error = false, { kind = "transport", message = "connection lost" }
     player = new(value)
-    result = wait(player.fetch({ request = request }))
-    assert.are.equal("transport", result.error.kind)
-    assert.are.equal("connection lost", result.error.message)
+    local disconnected = wait(player.fetch({ request = request }))
+    assert.are.equal("transport", assert(disconnected.error).kind)
+    assert.are.equal("connection lost", assert(disconnected.error).message)
   end)
 
   it("requires the caller to cancel recordings of persistent subscriptions", function()
     local value = records()
-    value[6].ok, value[6].error = false, { kind = "cancelled" }
+    value[6].ok = false
+    rawset(value[6], "error", { kind = "cancelled", message = "cancelled" })
     local player = new(value)
     local result = wait(player.request({ request = request }))
-    assert.matches("explicit open stream", result.error.message)
-    assert.has_error(player.assert_consumed, result.error.message)
+    assert.matches("explicit open stream", assert(result.error).message)
+    assert.has_error(player.assert_consumed, assert(result.error).message)
     player = new(value, nil, { open = true })
     local chunks = 0
     local run = player.request({ request = request, on_chunk = function() chunks = chunks + 1 end })
     assert(vim.wait(1000, function() return chunks == 2 end))
     assert.is_false(run:is_done())
     run:cancel()
-    assert.are.equal("cancelled", wait(run).error.kind)
+    assert.are.equal("cancelled", assert(wait(run).error).kind)
     player.assert_consumed()
     assert.has_error(function() replay.new({ timeout_ms = 0, exchanges = {} }) end, "Replay timeout must be positive and finite")
     assert.has_error(function() replay.new({ exchanges = {

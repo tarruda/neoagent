@@ -2,6 +2,108 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.MessageRole 'user'|'assistant'|'toolResult'
+
+---@class Neoagent.TextBlock
+---@field type 'text'
+---@field text string
+---@field index? integer
+---@field textSignature? string
+---@field phase? string
+
+---@class Neoagent.ThinkingBlock
+---@field type 'thinking'
+---@field thinking string
+---@field index? integer
+---@field thinkingSignature? string
+---@field redacted? boolean
+
+---@class Neoagent.ToolCallData
+---@field type? 'toolCall'
+---@field id? string
+---@field name? string
+---@field arguments table<string, Neoagent.JsonValue>
+---@field argumentsError? string
+---@field index? integer
+
+---@class Neoagent.ToolCallBlock: Neoagent.ToolCallData
+---@field type 'toolCall'
+---@field id string
+---@field name string
+---@field arguments table<string, Neoagent.JsonValue>
+---@field argumentsError? string
+---@field index? integer
+
+---@class Neoagent.ImageBlock
+---@field type 'image'
+---@field data string
+---@field mimeType string
+---@field id? string
+---@field revision? string|number
+
+---@alias Neoagent.Block Neoagent.TextBlock|Neoagent.ThinkingBlock|Neoagent.ToolCallBlock|Neoagent.ImageBlock
+---@alias Neoagent.AssistantBlock Neoagent.TextBlock|Neoagent.ThinkingBlock|Neoagent.ToolCallBlock
+---@alias Neoagent.InputBlock Neoagent.TextBlock|Neoagent.ImageBlock
+
+---@class Neoagent.UsageCost
+---@field input? number
+---@field output? number
+---@field cacheRead? number
+---@field cacheWrite? number
+---@field total? number
+
+---@class Neoagent.Usage
+---@field input? number
+---@field output? number
+---@field cacheRead? number
+---@field cacheWrite? number
+---@field reasoning? number
+---@field totalTokens? number
+---@field cost? Neoagent.UsageCost
+
+---@class Neoagent.UserMessage
+---@field role 'user'
+---@field content string|Neoagent.InputBlock[]
+---@field timestamp? integer
+
+---@class Neoagent.AssistantMessage
+---@field role 'assistant'
+---@field content Neoagent.AssistantBlock[]
+---@field timestamp? integer
+---@field api? string
+---@field provider? string
+---@field model? string
+---@field usage? Neoagent.Usage
+---@field stopReason? string
+---@field responseId? string
+---@field errorMessage? string
+
+---@class Neoagent.ToolResultMessage
+---@field role 'toolResult'
+---@field content Neoagent.InputBlock[]
+---@field timestamp? integer
+---@field toolCallId string
+---@field toolName? string
+---@field isError? boolean
+---@field details? Neoagent.JsonValue
+---@field usage? Neoagent.Usage
+
+---@alias Neoagent.Message Neoagent.UserMessage|Neoagent.AssistantMessage|Neoagent.ToolResultMessage
+
+---@class Neoagent.ToolResult
+---@field content Neoagent.InputBlock[]
+---@field isError? boolean
+---@field is_error? boolean
+---@field details? Neoagent.JsonValue
+---@field usage? Neoagent.Usage
+
+---@class Neoagent.AssistantValidationError: Neoagent.Error
+---@field kind 'protocol'
+---@field code 'invalid_assistant_message'|'missing_tool_call'
+
+---@class Neoagent.ContentOptions
+---@field transient? boolean
+
 local MAX_ID_BYTES = 512
 local MAX_TYPE_BYTES = 128
 
@@ -54,15 +156,25 @@ local cost_fields = {
   total = true,
 }
 
+---@param message string
+---@return nil
+---@return string
 local function failure(message)
   return nil, message
 end
 
+---@param value unknown
+---@return TypeGuard<table>
 local function object(value)
   return type(value) == "table"
     and (next(value) == nil or not util.is_list(value))
 end
 
+---@param value unknown
+---@param accepted table<string, boolean>
+---@param label string
+---@return true? valid
+---@return string? error
 local function fields(value, accepted, label)
   if not object(value) then return failure(label .. " must be an object") end
   for key in pairs(value) do
@@ -73,12 +185,20 @@ local function fields(value, accepted, label)
   return true
 end
 
+---@param value unknown
+---@return TypeGuard<number>
 local function finite(value)
   return type(value) == "number" and value == value
     and value ~= math.huge and value ~= -math.huge
 end
 
-local function safe_string(value, label, maximum, allow_empty)
+---@param value unknown
+---@param label string
+---@param maximum integer
+---@param allow_empty? boolean
+---@return true? valid
+---@return string? error
+local function check_string(value, label, maximum, allow_empty)
   if type(value) ~= "string" or not allow_empty and value == "" then
     return failure(label .. (allow_empty
       and " must be a string" or " is required"))
@@ -92,14 +212,24 @@ local function safe_string(value, label, maximum, allow_empty)
   if value:find("[%z\1-\31\127]") then
     return failure(label .. " must not contain control characters")
   end
-  return value
+  return true
 end
 
-local function optional_string(value, label, maximum, allow_empty)
+---@param value unknown
+---@param label string
+---@param maximum integer
+---@param allow_empty? boolean
+---@return true? valid
+---@return string? error
+local function check_optional_string(value, label, maximum, allow_empty)
   if value == nil then return true end
-  return safe_string(value, label, maximum, allow_empty)
+  return check_string(value, label, maximum, allow_empty)
 end
 
+---@param value unknown
+---@param label string
+---@return true? valid
+---@return string? error
 local function index(value, label)
   if value == nil then return true end
   if not finite(value) or value < 0 or value % 1 ~= 0 then
@@ -108,6 +238,13 @@ local function index(value, label)
   return true
 end
 
+---@param value unknown
+---@param label string
+---@param stack table<table, boolean>
+---@param depth integer
+---@param count { value: integer }
+---@return true? valid
+---@return string? error
 local function json_value(value, label, stack, depth, count)
   if value == vim.NIL then return true end
   local kind = type(value)
@@ -149,10 +286,17 @@ local function json_value(value, label, stack, depth, count)
   return true
 end
 
+---@param value unknown
+---@param label string
+---@return true? valid
+---@return string? error
 local function json(value, label)
   return json_value(value, label, {}, 0, { value = 0 })
 end
 
+---@param value unknown
+---@return true? valid
+---@return string? error
 local function base64(value)
   if type(value) ~= "string" or value == "" then
     return failure("image data must be non-empty base64 text")
@@ -165,8 +309,11 @@ local function base64(value)
   return true
 end
 
+---@param value unknown
+---@return string? normalized
+---@return string? error
 local function mime_type(value)
-  local valid, err = safe_string(value, "image mimeType", MAX_TYPE_BYTES)
+  local valid, err = check_string(value, "image mimeType", MAX_TYPE_BYTES)
   if not valid then return nil, err end
   local normalized = value:lower()
   local media_type, subtype = normalized:match("^([^/]+)/([^/]+)$")
@@ -177,6 +324,9 @@ local function mime_type(value)
   return normalized
 end
 
+---@param value unknown
+---@return Neoagent.Usage? usage
+---@return string? error
 local function normalize_usage(value)
   if value == nil then return nil end
   local valid, err = fields(value, usage_fields, "message usage")
@@ -199,12 +349,19 @@ local function normalize_usage(value)
   return util.copy(value)
 end
 
+---@param value unknown
+---@param role Neoagent.MessageRole
+---@param transient? boolean
+---@return Neoagent.Block? block
+---@return string? error
 local function normalize_block(value, role, transient)
   if not object(value) then return failure("content block must be an object") end
   local block_type = value.type
   if type(block_type) ~= "string" or not role_blocks[role][block_type] then
     return failure("unsupported content block: " .. tostring(block_type))
   end
+  -- The role whitelist restricts the tag to these four block schemas.
+  ---@cast block_type 'text'|'thinking'|'toolCall'|'image'
   local valid, err = fields(value, block_fields[block_type], block_type)
   if not valid then return nil, err end
   local result = util.copy(value)
@@ -217,10 +374,10 @@ local function normalize_block(value, role, transient)
     end
     valid, err = index(result.index, "text block index")
     if not valid then return nil, err end
-    valid, err = optional_string(result.textSignature,
+    valid, err = check_optional_string(result.textSignature,
       "text block signature", 4096)
     if not valid then return nil, err end
-    valid, err = optional_string(result.phase, "text block phase", 128)
+    valid, err = check_optional_string(result.phase, "text block phase", 128)
     if not valid then return nil, err end
   elseif block_type == "thinking" then
     if type(result.thinking) ~= "string"
@@ -229,16 +386,16 @@ local function normalize_block(value, role, transient)
     end
     valid, err = index(result.index, "thinking block index")
     if not valid then return nil, err end
-    valid, err = optional_string(result.thinkingSignature,
+    valid, err = check_optional_string(result.thinkingSignature,
       "thinking block signature", 1024 * 1024, true)
     if not valid then return nil, err end
     if result.redacted ~= nil and type(result.redacted) ~= "boolean" then
       return failure("thinking block redacted must be a boolean")
     end
   elseif block_type == "toolCall" then
-    valid, err = safe_string(result.id, "toolCall id", MAX_ID_BYTES)
+    valid, err = check_string(result.id, "toolCall id", MAX_ID_BYTES)
     if not valid then return nil, err end
-    valid, err = safe_string(result.name, "toolCall name", MAX_ID_BYTES)
+    valid, err = check_string(result.name, "toolCall name", MAX_ID_BYTES)
     if not valid then return nil, err end
     if not object(result.arguments) then
       return failure("toolCall arguments must be an object")
@@ -248,7 +405,7 @@ local function normalize_block(value, role, transient)
     end
     valid, err = json(result.arguments, "toolCall arguments")
     if not valid then return nil, err end
-    valid, err = optional_string(result.argumentsError,
+    valid, err = check_optional_string(result.argumentsError,
       "toolCall argumentsError", 4096)
     if not valid then return nil, err end
     valid, err = index(result.index, "toolCall index")
@@ -258,7 +415,7 @@ local function normalize_block(value, role, transient)
     if not valid then return nil, err end
     result.mimeType, err = mime_type(result.mimeType)
     if not result.mimeType then return nil, err end
-    valid, err = optional_string(result.id, "image id", MAX_ID_BYTES)
+    valid, err = check_optional_string(result.id, "image id", MAX_ID_BYTES)
     if not valid then return nil, err end
     if transient and result.id == nil then
       return failure("transient image id is required")
@@ -266,7 +423,7 @@ local function normalize_block(value, role, transient)
     if result.revision ~= nil then
       local revision_type = type(result.revision)
       if revision_type == "string" then
-        valid, err = safe_string(result.revision,
+        valid, err = check_string(result.revision,
           "image revision", MAX_TYPE_BYTES)
         if not valid then return nil, err end
       elseif not finite(result.revision) then
@@ -276,9 +433,16 @@ local function normalize_block(value, role, transient)
       return failure("transient image revision is required")
     end
   end
+  -- All fields of the selected variant have now passed validation.
+  ---@cast result Neoagent.Block
   return result
 end
 
+---@param content unknown
+---@param role Neoagent.MessageRole
+---@param transient? boolean
+---@return string|Neoagent.Block[]|nil content
+---@return string? error
 local function normalize_content(content, role, transient)
   if role == "user" and type(content) == "string" then
     if not util.is_valid_utf8(content) then
@@ -313,13 +477,25 @@ local function normalize_content(content, role, transient)
   return result
 end
 
+---@param block unknown
+---@param opts? Neoagent.ContentOptions
+---@return Neoagent.ImageBlock? image
+---@return string? error
 function M.normalize_image(block, opts)
   if type(block) ~= "table" or block.type ~= "image" then
     return failure("image block is required")
   end
-  return normalize_block(block, "user", opts and opts.transient == true)
+  local normalized, err = normalize_block(block, "user", opts and opts.transient == true)
+  -- Normalization preserves the image tag checked above.
+  ---@cast normalized Neoagent.ImageBlock?
+  return normalized, err
 end
 
+---@param message unknown
+---@return Neoagent.Message? message
+---@return string? error
+---@return_overload Neoagent.Message
+---@return_overload nil, string
 function M.normalize(message)
   if not object(message) then return failure("message must be an object") end
   local role = message.role
@@ -339,7 +515,7 @@ function M.normalize(message)
   if role == "assistant" then
     for _, name in ipairs({ "api", "provider", "model", "stopReason",
       "responseId" }) do
-      valid, err = optional_string(result[name],
+      valid, err = check_optional_string(result[name],
         "assistant " .. name, name == "responseId" and 4096 or MAX_ID_BYTES)
       if not valid then return nil, err end
     end
@@ -352,10 +528,10 @@ function M.normalize(message)
     result.usage, err = normalize_usage(result.usage)
     if message.usage ~= nil and result.usage == nil then return nil, err end
   elseif role == "toolResult" then
-    valid, err = safe_string(result.toolCallId,
+    valid, err = check_string(result.toolCallId,
       "toolResult toolCallId", MAX_ID_BYTES)
     if not valid then return nil, err end
-    valid, err = optional_string(result.toolName,
+    valid, err = check_optional_string(result.toolName,
       "toolResult toolName", MAX_ID_BYTES)
     if not valid then return nil, err end
     if result.isError ~= nil and type(result.isError) ~= "boolean" then
@@ -369,9 +545,16 @@ function M.normalize(message)
     result.usage, err = normalize_usage(result.usage)
     if message.usage ~= nil and result.usage == nil then return nil, err end
   end
+  -- The role, permitted block variants and every retained field are validated.
+  ---@cast result Neoagent.Message
   return result
 end
 
+---@param message unknown
+---@return Neoagent.AssistantMessage? message
+---@return Neoagent.AssistantValidationError? error
+---@return_overload Neoagent.AssistantMessage
+---@return_overload nil, Neoagent.AssistantValidationError
 function M.normalize_model_response(message)
   local result, err = M.normalize(message)
   if not result then
@@ -392,6 +575,8 @@ function M.normalize_model_response(message)
   return result
 end
 
+---@param message unknown
+---@return Neoagent.AssistantMessage?
 function M.normalize_partial_assistant(message)
   if type(message) ~= "table" or message.role ~= "assistant"
       or type(message.content) ~= "table" then
@@ -417,9 +602,15 @@ function M.normalize_partial_assistant(message)
   end
   if #candidate.content == 0 then return nil end
   local normalized = M.normalize(candidate)
+  -- The candidate retains the assistant role checked at entry.
+  ---@cast normalized Neoagent.AssistantMessage?
   return normalized
 end
 
+---@param messages unknown
+---@param opts? { index_offset?: integer }
+---@return Neoagent.Message[]? messages
+---@return string? error
 function M.normalize_list(messages, opts)
   if type(messages) ~= "table" or not util.is_list(messages) then
     return failure("messages must be a list")
@@ -468,6 +659,12 @@ function M.normalize_list(messages, opts)
   return result
 end
 
+---@param result unknown
+---@param opts? Neoagent.ContentOptions
+---@return Neoagent.ToolResult? result
+---@return string? error
+---@return_overload Neoagent.ToolResult
+---@return_overload nil, string
 function M.normalize_tool_result(result, opts)
   if not object(result) then
     return failure("Tool must return a result with content blocks")
@@ -494,6 +691,8 @@ function M.normalize_tool_result(result, opts)
   end
   normalized.usage, err = normalize_usage(normalized.usage)
   if result.usage ~= nil and normalized.usage == nil then return nil, err end
+  -- Input blocks, error flags, details and usage have all passed validation.
+  ---@cast normalized Neoagent.ToolResult
   return normalized
 end
 

@@ -1,8 +1,11 @@
+local assert = require("luassert")
 local http_replay = require("tests.helpers.http_replay")
 local codex = require("neoagent.api.openai_codex_responses")
 local openai = require("neoagent.api.openai_completions")
 local responses = require("neoagent.api.openai_responses")
 
+---@param scenario Neoagent.TestHttpReplay
+---@param key? string
 local function model(scenario, key)
   return openai.new({
     provider = "mock",
@@ -13,6 +16,8 @@ local function model(scenario, key)
   })
 end
 
+---@param scenario Neoagent.TestHttpReplay
+---@param key? string
 local function responses_model(scenario, key)
   return responses.new({
     provider = "mock",
@@ -23,12 +28,16 @@ local function responses_model(scenario, key)
   })
 end
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("OpenAI-compatible HTTP integration", function()
+  ---@type Neoagent.TestHttpReplay[]
   local scenarios = {}
   after_each(function()
     for _, scenario in ipairs(scenarios) do http_replay.finish(scenario) end
@@ -45,7 +54,7 @@ describe("OpenAI-compatible HTTP integration", function()
       messages = { { role = "user", content = "Hello" } },
       on_event = function(event) if event.type == "text_delta" then deltas[#deltas + 1] = event.text end end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Hello", result.text)
     assert(vim.wait(1000, function() return #deltas == 2 end))
     assert.are.same({ "Hel", "lo" }, deltas)
@@ -67,6 +76,7 @@ describe("OpenAI-compatible HTTP integration", function()
       max_output_tokens = 384000,
       request_opts = { body = { stream_options = { include_usage = true } } },
     })
+    ---@type Neoagent.ToolDefinition[]
     local tools = { {
       name = "inspect",
       description = "Inspect a path",
@@ -82,11 +92,11 @@ describe("OpenAI-compatible HTTP integration", function()
       request_opts = request_opts,
     }))
 
-    assert.is_true(first.ok)
-    assert.are.equal("toolUse", first.message.stopReason)
-    assert.are.equal("reasoning_content", first.message.content[1].thinkingSignature)
-    assert.are.equal(4, first.message.usage.cacheRead)
-    assert.are.same({ path = "x.lua" }, first.message.content[2].arguments)
+    assert(first.ok)
+    assert.are.equal("toolUse", assert(first.message).stopReason)
+    assert.are.equal("reasoning_content", assert(assert(first.message).content[1]).thinkingSignature)
+    assert.are.equal(4, assert(assert(first.message).usage).cacheRead)
+    assert.are.same({ path = "x.lua" }, assert(assert(first.message).content[2]).arguments)
 
     local second = wait(deepseek:stream({
       messages = {
@@ -99,9 +109,9 @@ describe("OpenAI-compatible HTTP integration", function()
       tools = tools,
       request_opts = request_opts,
     }))
-    assert.is_true(second.ok)
+    assert(second.ok)
     assert.are.equal("Looks good.", second.text)
-    assert.are.equal("reasoning_content", second.message.content[2].thinkingSignature)
+    assert.are.equal("reasoning_content", assert(assert(second.message).content[2]).thinkingSignature)
   end)
 
   it("streams Z.AI reasoning and streamed tools through its API profile", function()
@@ -124,6 +134,7 @@ describe("OpenAI-compatible HTTP integration", function()
         end,
       },
     })
+    ---@type Neoagent.ToolDefinition[]
     local tools = { {
       name = "inspect",
       description = "Inspect a path",
@@ -140,11 +151,11 @@ describe("OpenAI-compatible HTTP integration", function()
       request_opts = request_opts,
     }))
 
-    assert.is_true(first.ok)
-    assert.are.equal("toolUse", first.message.stopReason)
-    assert.are.equal("reasoning_content", first.message.content[1].thinkingSignature)
-    assert.are.equal(4, first.message.usage.cacheRead)
-    assert.are.same({ path = "x.lua" }, first.message.content[2].arguments)
+    assert(first.ok)
+    assert.are.equal("toolUse", assert(first.message).stopReason)
+    assert.are.equal("reasoning_content", assert(assert(first.message).content[1]).thinkingSignature)
+    assert.are.equal(4, assert(assert(first.message).usage).cacheRead)
+    assert.are.same({ path = "x.lua" }, assert(assert(first.message).content[2]).arguments)
 
     local second = wait(zai:stream({
       messages = {
@@ -157,9 +168,9 @@ describe("OpenAI-compatible HTTP integration", function()
       tools = tools,
       request_opts = request_opts,
     }))
-    assert.is_true(second.ok)
+    assert(second.ok)
     assert.are.equal("Looks good.", second.text)
-    assert.are.equal("reasoning_content", second.message.content[2].thinkingSignature)
+    assert.are.equal("reasoning_content", assert(assert(second.message).content[2]).thinkingSignature)
   end)
 
   it("surfaces non-2xx bodies as transport errors", function()
@@ -169,12 +180,12 @@ describe("OpenAI-compatible HTTP integration", function()
     scenarios[#scenarios + 1] = scenario
     local result = wait(model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("transport", result.error.kind)
-    assert.are.equal("HTTP 400: bad request", result.error.message)
-    assert.matches("bad request", result.error.detail)
-    assert.are.equal(400, result.error.response.status)
-    assert.are.equal("req-error", result.error.response.headers["x-request-id"])
-    assert.are.equal("ray-error", result.error.response.headers["cf-ray"])
+    assert.are.equal("transport", assert(result.error).kind)
+    assert.are.equal("HTTP 400: bad request", assert(result.error).message)
+    assert.matches("bad request", tostring(assert(result.error).detail))
+    assert.are.equal(400, rawget(assert(result.error), "response").status)
+    assert.are.equal("req-error", rawget(assert(result.error), "response").headers["x-request-id"])
+    assert.are.equal("ray-error", rawget(assert(result.error), "response").headers["cf-ray"])
   end)
 
   it("surfaces provider errors from non-2xx SSE responses", function()
@@ -184,14 +195,14 @@ describe("OpenAI-compatible HTTP integration", function()
     scenarios[#scenarios + 1] = scenario
     local result = wait(model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("model", result.error.kind)
+    assert.are.equal("model", assert(result.error).kind)
     assert.are.equal(
       "HTTP 400: Download multimodal file timed out",
-      result.error.message)
-    assert.matches("invalid_parameter_error", result.error.detail)
-    assert.are.equal(400, result.error.response.status)
+      assert(result.error).message)
+    assert.matches("invalid_parameter_error", tostring(assert(result.error).detail))
+    assert.are.equal(400, rawget(assert(result.error), "response").status)
     assert.are.equal("req-sse-error",
-      result.error.response.headers["x-request-id"])
+      rawget(assert(result.error), "response").headers["x-request-id"])
   end)
 
   it("cancels playback and preserves partial assistant output", function()
@@ -200,22 +211,23 @@ describe("OpenAI-compatible HTTP integration", function()
     })
     scenarios[#scenarios + 1] = scenario
     local saw_partial = false
+    ---@type Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>?
     local run
     run = model(scenario):stream({
       messages = {},
       on_event = function(event)
         if event.type == "text_delta" then
           saw_partial = true
-          run:cancel()
+          assert(run):cancel()
         end
       end,
     })
     local result = wait(run)
     assert.is_true(saw_partial)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
-    assert.are.equal("partial", result.message.content[1].text)
-    assert.are.equal("aborted", result.message.stopReason)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal("partial", assert(assert(result.message).content[1]).text)
+    assert.are.equal("aborted", assert(result.message).stopReason)
   end)
 
   it("streams stateless Responses API requests through recorded HTTP", function()
@@ -228,11 +240,11 @@ describe("OpenAI-compatible HTTP integration", function()
       messages = { { role = "user", content = "Hello" } },
       on_event = function(event) if event.type == "text_delta" then deltas[#deltas + 1] = event.text end end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Hello", result.text)
     assert.are.same({ "Hel", "lo" }, deltas)
     assert(vim.wait(1000, function() return #scenario.requests >= 1 end))
-    assert.are.equal(scenario.url .. "/v1/responses", scenario.requests[1].url)
+    assert.are.equal(scenario.url .. "/v1/responses", assert(scenario.requests[1]).url)
   end)
 
   it("preserves stream protocol errors behind successful HTTP responses", function()
@@ -246,8 +258,8 @@ describe("OpenAI-compatible HTTP integration", function()
     scenarios[#scenarios + 1] = scenario
     local result = wait(responses_model(scenario):stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
-    assert.are.equal("Invalid JSON in SSE response", result.error.message)
+    assert.are.equal("protocol", assert(result.error).kind)
+    assert.are.equal("Invalid JSON in SSE response", assert(result.error).message)
   end)
 
   it("retries Codex HTTP 500 responses with request diagnostics", function()
@@ -275,7 +287,7 @@ describe("OpenAI-compatible HTTP integration", function()
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("recovered", result.text)
     assert(vim.wait(1000, function() return #scenario.requests >= 2 end))
     assert.are.equal(2, #scenario.requests)
@@ -292,15 +304,16 @@ describe("OpenAI-compatible HTTP integration", function()
       { path = "tests/recordings/openai/responses_cancel-01.yaml", body_subset = true, headers_subset = true },
     })
     scenarios[#scenarios + 1] = scenario
+    ---@type Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>?
     local run
     run = responses_model(scenario):stream({
       messages = {},
-      on_event = function(event) if event.type == "text_delta" then run:cancel() end end,
+      on_event = function(event) if event.type == "text_delta" then assert(run):cancel() end end,
     })
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
-    assert.are.equal("partial", result.message.content[1].text)
-    assert.are.equal("aborted", result.message.stopReason)
+    assert.are.equal("cancelled", assert(result.error).kind)
+    assert.are.equal("partial", assert(assert(result.message).content[1]).text)
+    assert.are.equal("aborted", assert(result.message).stopReason)
   end)
 end)

@@ -1,11 +1,12 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 
 describe("neoagent.fs", function()
-  local original
+  ---@type string[]
   local paths = {}
 
-  before_each(function()
-    original = {
+  local function originals()
+    return {
       stat = vim.uv.fs_stat,
       lstat = vim.uv.fs_lstat,
       open = vim.uv.fs_open,
@@ -18,12 +19,15 @@ describe("neoagent.fs", function()
       chmod = vim.uv.fs_chmod,
       rename = vim.uv.fs_rename,
       random = vim.uv.random,
+      tmpdir = vim.uv.os_tmpdir,
       mkstemp = vim.uv.fs_mkstemp,
       mkdtemp = vim.uv.fs_mkdtemp,
       unlink = vim.uv.fs_unlink,
       mkdir = vim.fn.mkdir,
     }
-  end)
+  end
+  local original = originals()
+  before_each(function() original = originals() end)
 
   it("recognizes host-specific absolute paths", function()
     assert.is_true(fs.is_absolute("/tmp/file", "Linux"))
@@ -47,6 +51,7 @@ describe("neoagent.fs", function()
     vim.uv.fs_chmod = original.chmod
     vim.uv.fs_rename = original.rename
     vim.uv.random = original.random
+    vim.uv.os_tmpdir = original.tmpdir
     vim.uv.fs_mkstemp = original.mkstemp
     vim.uv.fs_mkdtemp = original.mkdtemp
     vim.uv.fs_unlink = original.unlink
@@ -56,6 +61,7 @@ describe("neoagent.fs", function()
   end)
 
   it("reports temporary file creation and close failures", function()
+    ---@param template string
     vim.uv.fs_mkstemp = function(template)
       assert.are.equal(
         vim.fs.joinpath("custom", "neoagent-test-XXXXXX"),
@@ -70,6 +76,7 @@ describe("neoagent.fs", function()
     local removed
     vim.uv.fs_mkstemp = function() return 7, "/tmp/neoagent-test-file" end
     vim.uv.fs_close = function() return nil, "close failed" end
+    ---@param value string
     vim.uv.fs_unlink = function(value) removed = value return true end
     path, err = fs.create_temp()
     assert.is_nil(path)
@@ -77,10 +84,20 @@ describe("neoagent.fs", function()
     assert.are.equal("/tmp/neoagent-test-file", removed)
   end)
 
+  it("reports failures resolving the temporary directory", function()
+    vim.uv.os_tmpdir = function() return nil, "temporary directory unavailable" end
+    for _, create in ipairs({ fs.create_temp, fs.create_temp_directory }) do
+      local path, err = create()
+      assert.is_nil(path)
+      assert.are.equal("temporary directory unavailable", err)
+    end
+  end)
+
   it("creates temporary directories atomically", function()
+    ---@param template string
     vim.uv.fs_mkdtemp = function(template)
       assert.are.equal(
-        vim.fs.joinpath(vim.uv.os_tmpdir(), "neoagent-dir-XXXXXX"),
+        vim.fs.joinpath((assert(vim.uv.os_tmpdir())), "neoagent-dir-XXXXXX"),
         template
       )
       return "/tmp/neoagent-dir-owned"
@@ -88,6 +105,7 @@ describe("neoagent.fs", function()
     assert.are.equal("/tmp/neoagent-dir-owned",
       fs.create_temp_directory("neoagent-dir-"))
 
+    ---@param template string
     vim.uv.fs_mkdtemp = function(template)
       assert.are.equal("/runtime/neoagent-dir-XXXXXX", template)
       return "/runtime/neoagent-dir-owned"
@@ -111,6 +129,7 @@ describe("neoagent.fs", function()
     local closed = false
     vim.uv.fs_open = function() return 7 end
     vim.uv.fs_read = function() return nil, "read failed" end
+    ---@param fd integer
     vim.uv.fs_close = function(fd) closed = fd == 7 return true end
     data, err = fs.read("file")
     assert.is_nil(data)
@@ -122,11 +141,14 @@ describe("neoagent.fs", function()
     vim.uv.fs_stat = function() return { type = "file", size = 4 } end
     vim.uv.fs_open = function() return 7 end
     local offsets = {}
+    ---@param fd integer
+    ---@param size integer
+    ---@param offset? integer
     vim.uv.fs_read = function(fd, size, offset)
       assert.are.equal(7, fd)
       assert.are.equal(2, size)
       offsets[#offsets + 1] = offset
-      return ({ [0] = "ab", [2] = "cd", [4] = "" })[offset]
+      return ({ [0] = "ab", [2] = "cd", [4] = "" })[assert(offset)]
     end
     local closes = 0
     vim.uv.fs_close = function() closes = closes + 1 return true end
@@ -139,7 +161,7 @@ describe("neoagent.fs", function()
 
     local ok, err = fs.read_chunks("file", function() error("rejected chunk") end, 2)
     assert.is_nil(ok)
-    assert.matches("rejected chunk", err)
+    assert.matches("rejected chunk", tostring(err))
     assert.are.equal(2, closes)
     assert.has_error(function() fs.read_chunks("file", function() end, 0) end)
   end)
@@ -166,25 +188,29 @@ describe("neoagent.fs", function()
 
     local closes = 0
     vim.uv.fs_open = function() return 8 end
-    vim.uv.fs_write = function() return nil, "write failed" end
+    vim.uv.fs_write = function(_, data) return nil, "write failed" end
     vim.uv.fs_close = function() closes = closes + 1 return true end
     ok, err = fs.write_all("file", "data")
     assert.is_nil(ok)
     assert.are.equal("write failed", err)
     assert.are.equal(1, closes)
 
-    vim.uv.fs_write = function() return 0 end
+    vim.uv.fs_write = function(_, data) return 0 end
     ok, err = fs.write_all("file", "data")
     assert.is_nil(ok)
     assert.are.equal("invalid write length", err)
     assert.are.equal(2, closes)
 
+    ---@param _ integer
+    ---@param data uv.buffer
     vim.uv.fs_write = function(_, data) return #data + 1 end
     ok, err = fs.write_all("file", "data")
     assert.is_nil(ok)
     assert.are.equal("invalid write length", err)
     assert.are.equal(3, closes)
 
+    ---@param _ integer
+    ---@param data uv.buffer
     vim.uv.fs_write = function(_, data) return #data end
     vim.uv.fs_close = function() return nil, "close failed" end
     ok, err = fs.write_all("file", "data")
@@ -219,7 +245,7 @@ describe("neoagent.fs", function()
     assert(file:append(" failed", 6))
     local verified, verify_err, verify_code = file:verify_path()
     assert.is_nil(verified)
-    assert.matches("identity changed", verify_err)
+    assert.matches("identity changed", tostring(verify_err))
     assert.are.equal("ownership", verify_code)
     assert(file:truncate(6))
     assert(file:close())
@@ -231,7 +257,7 @@ describe("neoagent.fs", function()
       mode = 384,
     })
     assert.is_nil(reopened)
-    assert.matches("identity changed", reopen_err)
+    assert.matches("identity changed", tostring(reopen_err))
     assert.are.equal("ownership", reopen_code)
   end)
 
@@ -245,7 +271,10 @@ describe("neoagent.fs", function()
 
     local file = assert(fs.open_regular("session", { mode = 384 }))
     vim.uv.fs_fstat = function() return nil, "stat failed" end
-    local value, err, code = file:stat()
+    ---@type uv.fs_stat.result|string|boolean|Neoagent.RegularFile|nil
+    local value
+    local err, code
+    value, err, code = file:stat()
     assert.is_nil(value)
     assert.are.equal("stat failed", err)
     vim.uv.fs_fstat = function() return vim.deepcopy(observed) end
@@ -255,7 +284,7 @@ describe("neoagent.fs", function()
     end
     value, err, code = file:stat()
     assert.is_nil(value)
-    assert.matches("handle identity changed", err)
+    assert.matches("handle identity changed", tostring(err))
     assert.are.equal("ownership", code)
     vim.uv.fs_fstat = function() return vim.deepcopy(observed) end
 
@@ -264,7 +293,7 @@ describe("neoagent.fs", function()
     end
     value, err, code = file:verify_path()
     assert.is_nil(value)
-    assert.matches("identity changed", err)
+    assert.matches("identity changed", tostring(err))
     assert.are.equal("ownership", code)
     vim.uv.fs_lstat = function() return vim.deepcopy(observed) end
 
@@ -274,7 +303,7 @@ describe("neoagent.fs", function()
     assert.are.equal("read failed", err)
     assert.are.equal("read", code)
 
-    vim.uv.fs_write = function() return 0, "write failed" end
+    vim.uv.fs_write = function(_, data) return 0, "write failed" end
     value, err, code = file:append("x", 6)
     assert.is_nil(value)
     assert.are.equal("write failed", err)
@@ -292,7 +321,7 @@ describe("neoagent.fs", function()
     end
     value, err, code = file:truncate(6)
     assert.is_nil(value)
-    assert.matches("unexpected size", err)
+    assert.matches("unexpected size", tostring(err))
     assert.are.equal("truncate", code)
     assert(file:close())
     assert.is_nil(file:stat())
@@ -315,14 +344,14 @@ describe("neoagent.fs", function()
     end
     value, err, code = fs.open_regular("session", { mode = 384 })
     assert.is_nil(value)
-    assert.matches("identity changed during open", err)
+    assert.matches("identity changed during open", tostring(err))
     assert.are.equal("ownership", code)
     assert.are.equal(1, closes)
 
     vim.uv.fs_lstat = function() return { type = "link" } end
     value, err, code = fs.open_regular("session", { mode = 384 })
     assert.is_nil(value)
-    assert.matches("not a regular file", err)
+    assert.matches("not a regular file", tostring(err))
     assert.are.equal("ownership", code)
     assert.has_error(function()
       fs.open_regular("session", { unsupported = true })
@@ -331,20 +360,26 @@ describe("neoagent.fs", function()
 
   it("truncates and confirms a file through one descriptor", function()
     local closed = 0
+    ---@param path string
+    ---@param flags uv.fs_open.flags
     vim.uv.fs_open = function(path, flags)
       assert.are.equal("file", path)
       assert.are.equal("r+", flags)
       return 8
     end
+    ---@param fd integer
+    ---@param size integer
     vim.uv.fs_ftruncate = function(fd, size)
       assert.are.equal(8, fd)
       assert.are.equal(3, size)
       return true
     end
+    ---@param fd integer
     vim.uv.fs_fstat = function(fd)
       assert.are.equal(8, fd)
       return { size = 3 }
     end
+    ---@param fd integer
     vim.uv.fs_close = function(fd)
       assert.are.equal(8, fd)
       closed = closed + 1
@@ -369,7 +404,7 @@ describe("neoagent.fs", function()
     vim.uv.fs_fstat = function() return { size = 4 } end
     ok, err = fs.truncate("file", 3)
     assert.is_nil(ok)
-    assert.matches("unexpected size", err)
+    assert.matches("unexpected size", tostring(err))
 
     vim.uv.fs_fstat = function() return { size = 3 } end
     vim.uv.fs_close = function() return nil, "close failed" end
@@ -415,7 +450,7 @@ describe("neoagent.fs", function()
       require_existing = true,
     })
     assert.is_nil(ok)
-    assert.matches("must already exist", err)
+    assert.matches("must already exist", tostring(err))
   end)
 
   it("returns the identity of its atomic replacement candidate", function()
@@ -424,6 +459,8 @@ describe("neoagent.fs", function()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
     local target = vim.fs.joinpath(directory, "created.txt")
     local detached = target .. ".detached"
+    ---@param source string
+    ---@param destination string
     vim.uv.fs_rename = function(source, destination)
       assert(original.rename(source, destination))
       assert(original.rename(destination, detached))
@@ -436,7 +473,7 @@ describe("neoagent.fs", function()
 
     assert(ok)
     assert.is_table(identity)
-    local created = assert(fs.open_regular(detached, { identity = identity }))
+    local created = assert(fs.open_regular(detached, { identity = identity --[[@as Neoagent.FileIdentity]] }))
     assert.are.equal("created", assert(created:read_all()))
     assert(created:close())
     assert.are.equal("successor", assert(fs.read(target)))
@@ -447,10 +484,11 @@ describe("neoagent.fs", function()
     paths[#paths + 1] = directory
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
     local target = vim.fs.joinpath(directory, "created.txt")
+    ---@param pattern string
     local function rejected(pattern)
       local ok, err = fs.atomic_replace(target, "data", { mode = 384 })
       assert.is_nil(ok)
-      assert.matches(pattern, err)
+      assert.matches(pattern, tostring(err))
       assert.are.same({}, vim.fn.glob(target .. ".*.tmp", false, true))
     end
 
@@ -471,9 +509,12 @@ describe("neoagent.fs", function()
     rejected("unexpected mode")
 
     vim.uv.fs_fstat = original.fstat
+    ---@param _ integer
+    ---@param data uv.buffer
     vim.uv.fs_write = function(_, data) return #data + 1 end
     rejected("invalid write length")
     vim.uv.fs_write = original.write
+    ---@param fd integer
     vim.uv.fs_close = function(fd)
       assert(original.close(fd))
       return nil, "candidate close failed"
@@ -481,12 +522,14 @@ describe("neoagent.fs", function()
     rejected("candidate close failed")
 
     vim.uv.fs_close = original.close
+    ---@param fd integer
     vim.uv.fs_fstat = function(fd)
       local stat = assert(original.fstat(fd))
       stat.dev = stat.dev + 1
       return stat
     end
     local candidate_inspections = 0
+    ---@param path string
     vim.uv.fs_lstat = function(path)
       local stat, err, code = original.lstat(path)
       if path ~= target and stat then
@@ -512,10 +555,13 @@ describe("neoagent.fs", function()
       new_mode = 420,
     })
     assert.is_nil(ok)
-    assert.matches("symbolic link", err)
+    assert.matches("symbolic link", tostring(err))
     assert.are.equal("original", assert(fs.read(target)))
 
+    ---@type string?
     local temporary
+    ---@param source string
+    ---@param destination string
     vim.uv.fs_rename = function(source, destination)
       temporary = source
       assert.are.equal(target, destination)
@@ -526,9 +572,9 @@ describe("neoagent.fs", function()
       new_mode = 420,
     })
     assert.is_nil(ok)
-    assert.matches("rename failed", err)
+    assert.matches("rename failed", tostring(err))
     assert.is_not_nil(temporary)
-    assert.is_nil(original.lstat(temporary))
+    assert.is_nil(original.lstat((assert(temporary))))
     assert.are.equal("original", assert(fs.read(target)))
   end)
 
@@ -547,7 +593,7 @@ describe("neoagent.fs", function()
       { mode = 384, require_existing = "yes" },
     }) do
       assert.has_error(function()
-        fs.atomic_replace("file", "data", policy)
+        fs.atomic_replace("file", "data", policy --[[@as Neoagent.AtomicPolicy]])
       end)
     end
 
@@ -557,18 +603,18 @@ describe("neoagent.fs", function()
     local target = vim.fs.joinpath(directory, "target")
     local result, err = fs.atomic_replace(directory, "data", { mode = 384 })
     assert.is_nil(result)
-    assert.matches("not a regular file", err)
+    assert.matches("not a regular file", tostring(err))
 
     vim.uv.fs_lstat = function() return nil, "EACCES: denied", "EACCES" end
     result, err = fs.atomic_replace(target, "data", { mode = 384 })
     assert.is_nil(result)
-    assert.matches("denied", err)
+    assert.matches("denied", tostring(err))
     vim.uv.fs_lstat = original.lstat
 
     vim.uv.random = function() return nil, "entropy failed" end
     result, err = fs.atomic_replace(target, "data", { mode = 384 })
     assert.is_nil(result)
-    assert.matches("entropy failed", err)
+    assert.matches("entropy failed", tostring(err))
   end)
 
   it("cleans atomic candidates after write, mode, and target races", function()
@@ -578,7 +624,9 @@ describe("neoagent.fs", function()
     local target = vim.fs.joinpath(directory, "target.txt")
     assert(fs.write_all(target, "original", "w", 420))
 
+    ---@type string?
     local temporary
+    ---@param path string
     vim.uv.fs_open = function(path)
       temporary = path
       return nil, "open failed"
@@ -587,8 +635,8 @@ describe("neoagent.fs", function()
       preserve_mode = true, new_mode = 420,
     })
     assert.is_nil(result)
-    assert.matches("open failed", err)
-    assert.is_nil(original.lstat(temporary))
+    assert.matches("open failed", tostring(err))
+    assert.is_nil(original.lstat((assert(temporary))))
     vim.uv.fs_open = original.open
 
     vim.uv.fs_fchmod = function()
@@ -598,24 +646,30 @@ describe("neoagent.fs", function()
       preserve_mode = true, new_mode = 420,
     })
     assert.is_nil(result)
-    assert.matches("chmod failed", err)
-    assert.is_nil(original.lstat(temporary))
+    assert.matches("chmod failed", tostring(err))
+    assert.is_nil(original.lstat((assert(temporary))))
     vim.uv.fs_fchmod = original.fchmod
 
+    ---@param value? { type: string }
+    ---@param race_err? string
+    ---@param race_code? string
+    ---@param pattern string
+    ---@param policy? Neoagent.AtomicPolicy
     local function race(value, race_err, race_code, pattern, policy)
       local calls = 0
+      ---@param path string
       vim.uv.fs_lstat = function(path)
         if path ~= target then return original.lstat(path) end
         calls = calls + 1
         if calls == 1 then return original.lstat(path) end
-        return value, race_err, race_code
+        return value --[[@as uv.fs_stat.result?]], race_err, race_code
       end
       local ok, failure = fs.atomic_replace(target, "data", policy or {
         preserve_mode = true, new_mode = 420,
       })
       vim.uv.fs_lstat = original.lstat
       assert.is_nil(ok)
-      assert.matches(pattern, failure)
+      assert.matches(pattern, tostring(failure))
       assert.are.same({}, vim.fn.glob(target .. ".*.tmp", false, true))
       assert.are.equal("original", assert(fs.read(target)))
     end
@@ -634,8 +688,12 @@ describe("neoagent.fs", function()
     local target = vim.fs.joinpath(directory, "target.txt")
     assert(fs.write_all(target, "original", "w", 384))
 
+    ---@param mutator fun()
+    ---@param policy? Neoagent.AtomicPolicy
+    ---@return string
     local function race(mutator, policy)
       local inspections = 0
+      ---@param path string
       vim.uv.fs_lstat = function(path)
         if path == target then
           inspections = inspections + 1
@@ -649,11 +707,12 @@ describe("neoagent.fs", function()
       assert.is_nil(ok)
       assert.are.equal("target_changed", stage)
       assert.are.same({}, vim.fn.glob(target .. ".*.tmp", false, true))
-      return err
+      assert.is_string(err)
+      return err --[[@as string]]
     end
 
     local err = race(function() assert(original.chmod(target, 420)) end)
-    assert.matches("target changed", err)
+    assert.matches("target changed", tostring(err))
     assert.are.equal("original", assert(fs.read(target)))
     assert(original.chmod(target, 384))
 
@@ -663,7 +722,7 @@ describe("neoagent.fs", function()
       assert(fs.write_all(target, "successor", "wx", 384))
     end)
     assert(original.close(retained))
-    assert.matches("target changed", err)
+    assert.matches("target changed", tostring(err))
     assert.are.equal("successor", assert(fs.read(target)))
 
     assert(fs.write_all(target, "original", "w", 384))
@@ -674,7 +733,7 @@ describe("neoagent.fs", function()
       new_mode = 420,
       expected_content_fingerprint = fs.content_fingerprint("original"),
     })
-    assert.matches("content changed", err)
+    assert.matches("content changed", tostring(err))
     assert.are.equal("concurrent", assert(fs.read(target)))
   end)
 
@@ -686,26 +745,32 @@ describe("neoagent.fs", function()
     assert(fs.write_all(target, "original", "w", 384))
     local expected = fs.content_fingerprint("original")
 
+    ---@param stage string
     local function rejected(stage)
       local verification_fd
       local target_inspections = 0
       local verification_stats = 0
+      ---@param path string
+      ---@param flags uv.fs_open.flags
+      ---@param mode integer
       vim.uv.fs_open = function(path, flags, mode)
         local fd, err = original.open(path, flags, mode)
         if path == target and flags == "r" then verification_fd = fd end
         return fd, err
       end
+      ---@param fd integer
       vim.uv.fs_fstat = function(fd)
         local stat, err = original.fstat(fd)
         if fd == verification_fd then
           verification_stats = verification_stats + 1
           if stage == "initial identity" and verification_stats == 1
               or stage == "confirmed identity" and verification_stats == 2 then
-            stat.ino = stat.ino + 1
+            assert(stat).ino = assert(stat).ino + 1
           end
         end
         return stat, err
       end
+      ---@param path string
       vim.uv.fs_lstat = function(path)
         local stat, err, code = original.lstat(path)
         if path == target then
@@ -714,7 +779,7 @@ describe("neoagent.fs", function()
             if stage == "final inspection" then
               return nil, "final inspection denied", "EACCES"
             elseif stage == "final identity" then
-              stat.ino = stat.ino + 1
+              assert(stat).ino = assert(stat).ino + 1
             end
           end
         end
@@ -731,7 +796,7 @@ describe("neoagent.fs", function()
       assert.is_nil(ok)
       assert.are.equal("target_changed", code)
       assert.matches(stage == "final inspection" and "inspection denied"
-        or "content verification", err)
+        or "content verification", tostring(err))
       assert.are.same({}, vim.fn.glob(target .. ".*.tmp", false, true))
     end
 
@@ -749,7 +814,7 @@ describe("neoagent.fs", function()
     })
     assert.is_nil(ok)
     assert.are.equal("target_changed", code)
-    assert.matches("content is missing", err)
+    assert.matches("content is missing", tostring(err))
     assert.are.same({}, vim.fn.glob(missing .. ".*.tmp", false, true))
   end)
 
@@ -767,6 +832,7 @@ describe("neoagent.fs", function()
 
     local denied = vim.fn.tempname()
     paths[#paths + 1] = denied
+    ---@param candidate string
     vim.uv.fs_chmod = function(candidate)
       if candidate == denied then return nil, "chmod denied" end
       return original.chmod(candidate, 448)
@@ -774,14 +840,14 @@ describe("neoagent.fs", function()
     local prepared, err = fs.ensure_private_directory(denied, 448)
     vim.uv.fs_chmod = original.chmod
     assert.is_nil(prepared)
-    assert.matches("chmod denied", err)
+    assert.matches("chmod denied", tostring(err))
 
     vim.uv.fs_lstat = function()
       return nil, "inspection denied", "EACCES"
     end
     prepared, err = fs.ensure_private_directory("denied", 448)
     assert.is_nil(prepared)
-    assert.matches("inspection denied", err)
+    assert.matches("inspection denied", tostring(err))
 
     local inspections = 0
     vim.uv.fs_lstat = function()
@@ -792,7 +858,7 @@ describe("neoagent.fs", function()
     vim.fn.mkdir = function() return 1 end
     prepared, err = fs.ensure_private_directory("changed", 448)
     assert.is_nil(prepared)
-    assert.matches("not a directory", err)
+    assert.matches("not a directory", tostring(err))
 
     inspections = 0
     vim.uv.fs_lstat = function()
@@ -804,6 +870,6 @@ describe("neoagent.fs", function()
     vim.uv.fs_chmod = function() return true end
     prepared, err = fs.ensure_private_directory("wrong-mode", 448)
     assert.is_nil(prepared)
-    assert.matches("unexpected permission mode", err)
+    assert.matches("unexpected permission mode", tostring(err))
   end)
 end)

@@ -5,15 +5,70 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ProfileDerivation: Neoagent.JsonObject
+---@field kind "copy"
+---@field sourceSessionId string
+---@field sourceProfileId? string
+
+---@class Neoagent.ProfileBinding
+---@field profile_id string
+---@field derivation? Neoagent.ProfileDerivation
+
+---@class Neoagent.DisabledPersistence
+---@field enabled false
+---@field directory? string
+
+---@class Neoagent.EnabledPersistence
+---@field enabled true
+---@field directory string
+
+---@alias Neoagent.Persistence Neoagent.DisabledPersistence|Neoagent.EnabledPersistence|{enabled: boolean, directory: string}
+
+---@class Neoagent.ProfileSessionOptions
+---@field profile_id string
+---@field workspace string
+---@field persistence? Neoagent.Persistence
+---@field metadata? Neoagent.JsonObject
+
+---@class Neoagent.ProfileSessionDeriveOptions
+---@field kind "copy"|"fork"
+---@field target_profile_id string
+---@field source_profile_id? string
+---@field workspace? string
+---@field entry_id? string
+---@field position? "before"|"at"
+---@field persistence? Neoagent.Persistence
+
+---@class Neoagent.OpenedProfileSession
+---@field session Neoagent.Session
+---@field profile_id string
+---@field workspace string
+---@field path string
+
+---@class Neoagent.ListedProfileSession: Neoagent.ListedSession
+---@field profile_id? string
+---@field profile_error? string
+
+
+---@param message string
+---@param detail? unknown
+---@return Neoagent.Error
 local function profile_error(message, detail)
   return util.error("profile", message, detail)
 end
 
+---@param value unknown
+---@return TypeGuard<table<string, unknown>>
 local function object(value)
   return type(value) == "table"
     and (next(value) == nil or not util.is_list(value))
 end
 
+---@param value unknown
+---@param label? string
+---@return string?, Neoagent.Error?
+---@return_overload string
+---@return_overload nil, Neoagent.Error
 local function profile_id(value, label)
   if type(value) ~= "string" or value == "" then
     return nil, profile_error((label or "Profile id")
@@ -22,6 +77,10 @@ local function profile_id(value, label)
   return value
 end
 
+---@param metadata unknown
+---@return Neoagent.ProfileBinding?, Neoagent.Error?
+---@return_overload Neoagent.ProfileBinding
+---@return_overload nil, Neoagent.Error
 local function inspect_metadata(metadata)
   if metadata == nil or metadata == vim.NIL then
     return nil, profile_error("Session has no assigned Profile")
@@ -29,38 +88,38 @@ local function inspect_metadata(metadata)
   if not object(metadata) then
     return nil, profile_error("Session metadata must be an object")
   end
-  local namespace = metadata.neoagent
+  local namespace = rawget(metadata, "neoagent")
   if namespace == nil or namespace == vim.NIL then
     return nil, profile_error("Session has no assigned Profile")
   end
   if not object(namespace) then
     return nil, profile_error("Session metadata.neoagent must be an object")
   end
-  if namespace.profileId == nil or namespace.profileId == vim.NIL then
+  if rawget(namespace, "profileId") == nil or rawget(namespace, "profileId") == vim.NIL then
     return nil, profile_error("Session has no assigned Profile")
   end
-  local selected, err = profile_id(namespace.profileId,
+  local selected, err = profile_id(rawget(namespace, "profileId"),
     "Session metadata.neoagent.profileId")
   if not selected then return nil, err end
-  local derivation = namespace.derivation
+  local derivation = rawget(namespace, "derivation")
   if derivation ~= nil and derivation ~= vim.NIL then
     if not object(derivation) then
       return nil, profile_error(
         "Session metadata.neoagent.derivation must be an object")
     end
-    if derivation.kind ~= "copy" then
+    if rawget(derivation, "kind") ~= "copy" then
       return nil, profile_error(
         "Session metadata.neoagent.derivation.kind must be copy")
     end
-    if type(derivation.sourceSessionId) ~= "string"
-        or derivation.sourceSessionId == "" then
+    if type(rawget(derivation, "sourceSessionId")) ~= "string"
+        or rawget(derivation, "sourceSessionId") == "" then
       return nil, profile_error(
         "Session metadata.neoagent.derivation.sourceSessionId must be a non-empty string")
     end
-    if derivation.sourceProfileId ~= nil
-        and derivation.sourceProfileId ~= vim.NIL
-        and (type(derivation.sourceProfileId) ~= "string"
-          or derivation.sourceProfileId == "") then
+    if rawget(derivation, "sourceProfileId") ~= nil
+        and rawget(derivation, "sourceProfileId") ~= vim.NIL
+        and (type(rawget(derivation, "sourceProfileId")) ~= "string"
+          or rawget(derivation, "sourceProfileId") == "") then
       return nil, profile_error(
         "Session metadata.neoagent.derivation.sourceProfileId must be a non-empty string")
     end
@@ -72,6 +131,12 @@ local function inspect_metadata(metadata)
   }
 end
 
+---@param metadata? Neoagent.JsonObject
+---@param target_profile_id string
+---@param derivation? Neoagent.ProfileDerivation|false
+---@return Neoagent.JsonObject?, Neoagent.Error?
+---@return_overload Neoagent.JsonObject
+---@return_overload nil, Neoagent.Error
 local function bind_metadata(metadata, target_profile_id, derivation)
   local selected, id_err = profile_id(target_profile_id)
   if not selected then return nil, id_err end
@@ -79,30 +144,34 @@ local function bind_metadata(metadata, target_profile_id, derivation)
   if not object(metadata) then
     return nil, profile_error("Session metadata must be an object")
   end
-  local namespace = metadata.neoagent
+  local namespace = rawget(metadata, "neoagent")
   if namespace == nil or namespace == vim.NIL then namespace = {} end
   if not object(namespace) then
     return nil, profile_error("Session metadata.neoagent must be an object")
   end
   namespace = util.copy(namespace)
-  namespace.profileId = selected
+  rawset(namespace, "profileId", selected)
   if derivation == false then
-    namespace.derivation = nil
+    rawset(namespace, "derivation", nil)
   elseif derivation ~= nil then
-    namespace.derivation = util.copy(derivation)
+    rawset(namespace, "derivation", util.copy(derivation))
   end
-  metadata.neoagent = namespace
+  rawset(metadata, "neoagent", namespace)
   local _, inspect_err = inspect_metadata(metadata)
   if inspect_err then return nil, inspect_err end
   return metadata
 end
 
+---@param metadata? Neoagent.JsonObject
+---@return Neoagent.JsonObject
 local function index_attributes(metadata)
   local inspected, err = inspect_metadata(metadata)
   if not inspected then return { profileError = err.message } end
   return { profileId = inspected.profile_id }
 end
 
+---@param value? Neoagent.Persistence
+---@return Neoagent.Persistence
 local function persistence(value)
   value = value or { enabled = false }
   assert(type(value) == "table" and not util.is_list(value),
@@ -116,10 +185,14 @@ local function persistence(value)
   return value
 end
 
+---@param metadata unknown
+---@return Neoagent.ProfileBinding?, Neoagent.Error?
 function M.inspect(metadata)
   return inspect_metadata(util.copy(metadata))
 end
 
+---@param session Neoagent.Session
+---@return string?, Neoagent.Error?
 function M.binding(session)
   assert(type(session) == "table" and type(session.metadata) == "function",
     "Session is required")
@@ -129,6 +202,8 @@ function M.binding(session)
   return inspected.profile_id
 end
 
+---@param opts Neoagent.ProfileSessionOptions
+---@return Neoagent.Session?, Neoagent.Error?
 function M.new(opts)
   opts = opts or {}
   local selected, id_err = profile_id(opts.profile_id)
@@ -141,6 +216,7 @@ function M.new(opts)
     opts.metadata, selected, false)
   if not metadata then return nil, metadata_err end
   if configured.enabled then
+    ---@cast configured Neoagent.EnabledPersistence
     local store = storage.new({
       directory = configured.directory,
       cwd = root,
@@ -155,6 +231,8 @@ function M.new(opts)
   })
 end
 
+---@param path string
+---@return Neoagent.OpenedProfileSession?, Neoagent.Error?
 function M.open(path)
   local store, err = storage.open(path)
   if not store then return nil, err end
@@ -172,6 +250,13 @@ function M.open(path)
   }
 end
 
+---@param source Neoagent.Session
+---@param snapshot Neoagent.SessionSnapshot
+---@param entry_id? string
+---@param position? "before"|"at"
+---@return Neoagent.JournalEntry[]?, string|Neoagent.Error|nil
+---@return_overload Neoagent.JournalEntry[], string?
+---@return_overload nil, Neoagent.Error
 local function fork_entries(source, snapshot, entry_id, position)
   if not entry_id then return snapshot.entries, snapshot.leaf_id end
   local target = source:entry(entry_id)
@@ -179,10 +264,12 @@ local function fork_entries(source, snapshot, entry_id, position)
     return nil, profile_error("Cannot fork Session",
       "entry not found: " .. tostring(entry_id))
   end
+  ---@type string?
   local leaf_id = target.id
   position = position or "before"
   if position == "before" then
-    if target.type ~= "message" or target.message.role ~= "user" then
+    local message = target.type == "message" and target.message or nil
+    if not message or message.role ~= "user" then
       return nil, profile_error("Cannot fork Session",
         "before position requires a user message")
     end
@@ -205,6 +292,9 @@ local function fork_entries(source, snapshot, entry_id, position)
   return entries, validated.leaf_id
 end
 
+---@param source Neoagent.Session
+---@param opts Neoagent.ProfileSessionDeriveOptions
+---@return Neoagent.Session?, Neoagent.Error?
 function M.derive(source, opts)
   opts = opts or {}
   assert(type(source) == "table" and type(source.id) == "function"
@@ -239,6 +329,7 @@ function M.derive(source, opts)
   else
     entries, leaf_or_err = snapshot.entries, snapshot.leaf_id
   end
+  ---@type Neoagent.ProfileDerivation|false
   local derivation = false
   if opts.kind == "copy" then
     derivation = {
@@ -257,6 +348,7 @@ function M.derive(source, opts)
     parent_session = source_metadata and source_metadata.path or nil
   end
   if configured.enabled then
+    ---@cast configured Neoagent.EnabledPersistence
     local store, store_err = storage.derive({
       entries = entries,
       leaf_id = leaf_or_err,
@@ -279,16 +371,28 @@ function M.derive(source, opts)
   })
 end
 
+---@param configured? Neoagent.Persistence
+---@param workspace string
+---@return Neoagent.ListedProfileSession[]
 function M.list(configured, workspace)
   configured = persistence(configured)
   if not configured.enabled then return {} end
+  ---@cast configured Neoagent.EnabledPersistence
+  ---@type Neoagent.ListedProfileSession[]
   local sessions = storage.list_sessions(configured.directory, workspace, {
     index_attributes = index_attributes,
   })
   for _, info in ipairs(sessions) do
     local attributes = info.attributes or {}
-    info.profile_id = attributes.profileId
-    info.profile_error = attributes.profileError
+    local selected, error_text = attributes.profileId, attributes.profileError
+    if error_text ~= nil then
+      info.profile_error = type(error_text) == "string" and error_text ~= ""
+          and error_text or "Invalid cached Session Profile error"
+    elseif type(selected) == "string" and selected ~= "" then
+      info.profile_id = selected
+    else
+      info.profile_error = "Invalid cached Session Profile binding"
+    end
   end
   return sessions
 end

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local async = require("neoagent.async")
 local Agent = require("neoagent.agent")
@@ -7,6 +8,8 @@ local renderers = require("neoagent.ui.renderers")
 local util = require("neoagent.util")
 local view_handles = require("tests.helpers.view_handles")
 
+---@param name string
+---@return Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
 local function options(name)
   return {
     name = name,
@@ -24,7 +27,9 @@ local function options(name)
 end
 
 describe("neoagent Applet Presenter", function()
+  ---@type Neoagent.Agent[]
   local agents = {}
+  ---@type Neoagent.NeoagentApplet[]
   local windows = {}
 
   before_each(function()
@@ -40,9 +45,12 @@ describe("neoagent Applet Presenter", function()
     vim.cmd("silent! only")
   end)
 
+  ---@param name string
+  ---@param host Neoagent.ViewHostFactory?
   local function composition(name, host)
     local agent = Agent.new(options(name))
     agents[#agents + 1] = agent
+    ---@type (fun(opts: Neoagent.ViewOptions): Neoagent.View)?
     local view_factory
     if host then
       view_factory = function(opts)
@@ -52,18 +60,21 @@ describe("neoagent Applet Presenter", function()
     end
     local window = NeoagentApplet._from_agents({
       agents = { agent },
-      config = agent:config().ui,
+      ui = agent:config().ui,
       _view = view_factory,
     })
     windows[#windows + 1] = window
     return agent:presenter(), window
   end
 
+  ---@param keys string
   local function feed(keys)
     vim.api.nvim_feedkeys(
       vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
   end
 
+  ---@param presenter Neoagent.Presenter
+  ---@param window Neoagent.NeoagentApplet
   local function selection(presenter, window)
     local run = presenter:select({
       prompt = "Choose a value",
@@ -76,6 +87,8 @@ describe("neoagent Applet Presenter", function()
     return run, view, pane
   end
 
+  ---@param presenter Neoagent.Presenter
+  ---@param window Neoagent.NeoagentApplet
   local function choose_second(presenter, window)
     assert(window:open())
     local run = presenter:select({
@@ -88,12 +101,12 @@ describe("neoagent Applet Presenter", function()
     local view, _, pane = require("tests.helpers.presentation").active(window)
     assert.are.equal("presentation-filter", view.applet:focused_pane())
     assert.is_true(require("applet.pane.input").dispatch(
-      view.presentation_component.pane, "n", "j"))
+      assert(view.presentation_component).pane, "n", "j"))
     assert.is_true(require("applet.pane.input").dispatch(
-      view.presentation_component.pane, "n", "<CR>"))
+      assert(view.presentation_component).pane, "n", "<CR>"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
-    assert.are.equal("beta", run:result().value)
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("beta", assert(run:result()).value)
     assert.is_true(window:is_open())
     assert.is_false(pane:is_mounted())
   end
@@ -112,16 +125,16 @@ describe("neoagent Applet Presenter", function()
     local presenter, window = composition("Initial selection")
     assert(window:open())
     local run, view, pane = selection(presenter, window)
-    local request = view.presentation.active
+    local request = assert(view.presentation).active
 
-    local target = pane:focused_target()
+    local target = assert(pane:focused_target())
     assert.is_table(target)
-    assert.are.equal("presentation:" .. request.id .. ":item:alpha", target.key)
+    assert.are.equal("presentation:" .. assert(request).id .. ":item:alpha", target.key)
     feed("<CR>")
 
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
-    assert.are.equal("alpha", run:result().value)
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("alpha", assert(run:result()).value)
   end)
 
   it("retains the initial selection after a tall menu settles", function()
@@ -137,14 +150,14 @@ describe("neoagent Applet Presenter", function()
     local run = presenter:select({ prompt = "Choose a tall value", items = items })
     local view, request, pane = require("tests.helpers.presentation").active(window)
 
-    local target = pane:focused_target()
+    local target = assert(pane:focused_target())
     assert.is_table(target)
     assert.are.equal("presentation:" .. request.id .. ":item:item-1", target.key)
     feed("<CR>")
 
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
-    assert.are.equal("item-1", run:result().value)
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("item-1", assert(run:result()).value)
   end)
 
   it("filters a content-sized two-pane picker while its prompt stays editable", function()
@@ -161,46 +174,46 @@ describe("neoagent Applet Presenter", function()
     assert(vim.wait(1000, function()
       local view = window:view()
       return view and view:pane("presentation-filter")
-        and view:pane("presentation-filter"):is_mounted()
+        and assert(view:pane("presentation-filter")):is_mounted()
         and view:pane("presentation-results")
-        and view:pane("presentation-results"):is_mounted()
+        and assert(view:pane("presentation-results")):is_mounted()
     end))
     local view = window:view()
-    local filter = view:pane("presentation-filter")
-    local results = view:pane("presentation-results")
-    local filter_native = filter:native()
-    local result_native = results:native()
+    local filter = assert(view):pane("presentation-filter")
+    local results = assert(view):pane("presentation-results")
+    local filter_native = assert(filter):native()
+    local result_native = assert(results):native()
 
-    assert.are.equal("presentation-filter", view.applet:focused_pane())
-    assert.are.equal("insert", filter:mode())
+    assert.are.equal("presentation-filter", assert(view).applet:focused_pane())
+    assert.are.equal("insert", assert(filter):mode())
     assert.are.same({ "● Alpha", "  Beta · second value", "  Gamma" },
-      vim.api.nvim_buf_get_lines(result_native.buffer, 0, -1, false))
-    assert.are.equal(3, vim.api.nvim_win_get_height(result_native.window))
+      vim.api.nvim_buf_get_lines((assert(result_native.buffer)), 0, -1, false))
+    assert.are.equal(3, vim.api.nvim_win_get_height((assert(result_native.window))))
     assert.is_false(vim.api.nvim_get_option_value(
       "wrap", { win = result_native.window }))
 
-    vim.api.nvim_buf_set_text(filter_native.buffer, 0, 0, 0, 0, { "bt" })
+    vim.api.nvim_buf_set_text((assert(filter_native.buffer)), 0, 0, 0, 0, { "bt" })
     vim.api.nvim_exec_autocmds("TextChangedI", { buffer = filter_native.buffer })
     assert(vim.wait(1000, function()
       return vim.deep_equal({ "● Beta · second value" },
-        vim.api.nvim_buf_get_lines(result_native.buffer, 0, -1, false))
+        vim.api.nvim_buf_get_lines((assert(result_native.buffer)), 0, -1, false))
     end))
-    assert.are.equal(1, vim.api.nvim_win_get_height(result_native.window))
+    assert.are.equal(1, vim.api.nvim_win_get_height((assert(result_native.window))))
 
-    vim.api.nvim_buf_set_lines(filter_native.buffer, 0, -1, false, { "" })
+    vim.api.nvim_buf_set_lines((assert(filter_native.buffer)), 0, -1, false, { "" })
     vim.api.nvim_exec_autocmds("TextChangedI", { buffer = filter_native.buffer })
     assert(vim.wait(1000, function()
-      return #vim.api.nvim_buf_get_lines(result_native.buffer, 0, -1, false) == 3
+      return #vim.api.nvim_buf_get_lines((assert(result_native.buffer)), 0, -1, false) == 3
     end))
     assert(require("applet.pane.input").dispatch(
-      view.presentation_component.filter, "i", "<C-j>"))
+      (assert(assert(assert(view).presentation_component).filter)), "i", "<C-j>"))
     assert(require("applet.pane.input").dispatch(
-      view.presentation_component.filter, "i", "<CR>"))
+      (assert(assert(assert(view).presentation_component).filter)), "i", "<CR>"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
-    assert.are.equal("gamma", run:result().value)
-    assert.is_false(filter:is_mounted())
-    assert.is_false(results:is_mounted())
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("gamma", assert(run:result()).value)
+    assert.is_false(assert(filter):is_mounted())
+    assert.is_false(assert(results):is_mounted())
   end)
 
   it("updates picker items in place while preserving query, selection, and focus", function()
@@ -215,10 +228,10 @@ describe("neoagent Applet Presenter", function()
     })
     local view, request = require("tests.helpers.presentation").active(window)
     local component = view.presentation_component
-    assert(component:set_text("a"))
+    assert(assert(component):set_text("a"))
     assert(require("applet.pane.input").dispatch(
-      component.filter, "i", "<C-j>"))
-    assert.are.equal("beta", component.selected)
+      (assert(assert(component).filter)), "i", "<C-j>"))
+    assert.are.equal("beta", assert(component).selected)
     assert.are.equal("presentation-filter", view.applet:focused_pane())
 
     assert.is_true(update({
@@ -233,20 +246,20 @@ describe("neoagent Applet Presenter", function()
     }
     assert(vim.wait(1000, function()
       return view.presentation_component == component
-        and component:text() == "a"
-        and component.selected == "beta"
+        and assert(component):text() == "a"
+        and assert(component).selected == "beta"
         and vim.deep_equal(expected, vim.api.nvim_buf_get_lines(
-          component.results:native().buffer, 0, -1, false))
+          (assert(assert(assert(component).results):native().buffer)), 0, -1, false))
     end))
-    assert.are.equal(request.id, view.presentation.active.id)
+    assert.are.equal(request.id, assert(assert(view.presentation).active).id)
     assert.are.equal("presentation-filter", view.applet:focused_pane())
     assert.are.same(expected, vim.api.nvim_buf_get_lines(
-      component.results:native().buffer, 0, -1, false))
+      (assert(assert(assert(component).results):native().buffer)), 0, -1, false))
 
     assert(require("applet.pane.input").dispatch(
-      component.filter, "i", "<CR>"))
+      (assert(assert(component).filter)), "i", "<CR>"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.are.equal("beta", run:result().value)
+    assert.are.equal("beta", assert(run:result()).value)
   end)
 
   it("ranks fuzzy matches and rejects stale choices when no result matches", function()
@@ -264,24 +277,24 @@ describe("neoagent Applet Presenter", function()
     local view, request, pane = require("tests.helpers.presentation").active(window)
     local native = pane:native()
 
-    assert(view.presentation_component:set_text("a"))
+    assert(assert(view.presentation_component):set_text("a"))
     assert(vim.wait(1000, function()
       return vim.deep_equal({ "  Alpha", "  Alpha", "  Gamma", "● Beta" },
-        vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false))
+        vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
     end))
-    assert(view.presentation_component:set_text("al"))
+    assert(assert(view.presentation_component):set_text("al"))
     assert(vim.wait(1000, function()
       return vim.deep_equal({ "● Alpha", "  Alpha" },
-        vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false))
+        vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
     end))
-    assert(view.presentation_component:set_text("zzz"))
+    assert(assert(view.presentation_component):set_text("zzz"))
     assert(vim.wait(1000, function()
       return vim.deep_equal({ "  No matches" },
-        vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false))
+        vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
     end))
     assert.is_nil(pane:focused_target())
     assert.is_false(require("applet.pane.input").dispatch_action(
-      view.presentation_component.results,
+      (assert(assert(view.presentation_component).results)),
       Applet.Pane.nodes.action("presentation.choose_item", { id = "alpha-one" }),
       nil, 1, "n", 0, 0))
     assert.is_false(run:is_done())
@@ -299,13 +312,14 @@ describe("neoagent Applet Presenter", function()
     assert.is_false(vim.api.nvim_get_option_value(
       "wrap", { win = native.window }))
     for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(
-      native.buffer, view.presentation_component.pane.namespace,
+      (assert(native.buffer)), assert(view.presentation_component).pane.namespace,
       0, -1, { details = true })) do
+      ---@cast mark [integer, integer, integer, {line_hl_group?: string, hl_group?: string}]
       assert.are_not.equal("NeoagentDialogBackground",
         mark[4].line_hl_group or mark[4].hl_group)
     end
 
-    assert(presenter:cancel(view.presentation.active.id))
+    assert(presenter:cancel(assert(assert(view.presentation).active).id))
     assert(vim.wait(1000, function() return run:is_done() end))
   end)
 
@@ -313,16 +327,16 @@ describe("neoagent Applet Presenter", function()
     local presenter, window = composition("Selection theme")
     assert(window:open())
     local run, view = selection(presenter, window)
-    local filter_generation = view.presentation_component.filter.theme_generation
-    local results_generation = view.presentation_component.results.theme_generation
+    local filter_generation = assert(assert(view.presentation_component).filter).theme_generation
+    local results_generation = assert(assert(view.presentation_component).results).theme_generation
 
     assert.are.equal(renderers.codex, view:set_renderer(renderers.codex))
     assert.are.equal(filter_generation + 1,
-      view.presentation_component.filter.theme_generation)
+      assert(assert(view.presentation_component).filter).theme_generation)
     assert.are.equal(results_generation + 1,
-      view.presentation_component.results.theme_generation)
+      assert(assert(view.presentation_component).results).theme_generation)
 
-    assert(presenter:cancel(view.presentation.active.id))
+    assert(presenter:cancel(assert(assert(view.presentation).active).id))
     assert(vim.wait(1000, function() return run:is_done() end))
   end)
 
@@ -338,9 +352,9 @@ describe("neoagent Applet Presenter", function()
     local view, _, pane = require("tests.helpers.presentation").active(window)
     local native = pane:native()
     assert.is_true(vim.fn.strdisplaywidth(label)
-      > vim.api.nvim_win_get_width(native.window))
+      > vim.api.nvim_win_get_width((assert(native.window))))
 
-    local lines = vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false)
+    local lines = vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false)
     assert.are.equal(1, #vim.tbl_filter(function(line)
       return line:find(label, 1, true) ~= nil
     end, lines))
@@ -350,7 +364,7 @@ describe("neoagent Applet Presenter", function()
     assert.is_false(vim.api.nvim_get_option_value(
       "wrap", { win = native.window }))
 
-    assert(presenter:cancel(view.presentation.active.id))
+    assert(presenter:cancel(assert(assert(view.presentation).active).id))
     assert(vim.wait(1000, function() return run:is_done() end))
   end)
 
@@ -362,41 +376,41 @@ describe("neoagent Applet Presenter", function()
     feed("<C-c>")
 
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
   end)
 
   it("cancels a natively closed menu and restores transcript interaction", function()
     local presenter, window = composition("Native selection close")
     assert(window:open())
     local view = window:view()
-    view:set_messages({ {
+    assert(view):set_messages({ {
       role = "assistant",
       content = { { type = "text", text = "selectable answer" } },
     } })
-    view.transcript.pane:flush()
+    assert(view).transcript.pane:flush()
     local run, _, pane = selection(presenter, window)
 
-    vim.api.nvim_set_current_win(pane:native().window)
+    vim.api.nvim_set_current_win((assert(pane:native().window)))
     vim.cmd("q")
 
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.is_nil(presenter:snapshot().active)
-    assert.is_nil(view.presentation)
+    assert.is_nil(assert(view).presentation)
 
-    assert(view:focus_transcript())
+    assert(assert(view):focus_transcript())
     for row, line in ipairs(vim.api.nvim_buf_get_lines(
-      view_handles.buffer(view, "transcript"), 0, -1, false)) do
+      (assert(view_handles.buffer(view, "transcript"))), 0, -1, false)) do
       if line:find("selectable answer", 1, true) then
-        vim.api.nvim_win_set_cursor(view_handles.window(view, "transcript"), { row, 0 })
+        vim.api.nvim_win_set_cursor((assert(view_handles.window(view, "transcript"))), { row, 0 })
         break
       end
     end
     feed("<CR>")
     assert(vim.wait(1000, function()
-      return view_handles.window(view, "details") and vim.api.nvim_win_is_valid(view_handles.window(view, "details"))
+      return view_handles.window(view, "details") and vim.api.nvim_win_is_valid((assert(view_handles.window(view, "details"))))
     end))
   end)
 
@@ -428,16 +442,16 @@ describe("neoagent Applet Presenter", function()
       "",
       "Enter this code:",
       "ABCD-EFGH",
-    }, vim.api.nvim_buf_get_lines(native.buffer, 0, -1, false))
+    }, vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
     assert.matches("<C%-c> close",
-      vim.api.nvim_win_get_config(native.window).title[1][1])
+      vim.api.nvim_win_get_config((assert(native.window))).title[1][1])
     assert.is_false(run:is_done())
 
     require("tests.helpers.presentation").cancel(window)
 
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_false(run:result().ok)
-    assert.are.equal("cancelled", run:result().error.kind)
+    assert.is_false(assert(run:result()).ok)
+    assert.are.equal("cancelled", assert(assert(run:result()).error).kind)
     assert.is_nil(presenter:snapshot().active)
     assert.is_nil(view.presentation)
     assert.is_false(pane:is_mounted())
@@ -453,17 +467,17 @@ describe("neoagent Applet Presenter", function()
     local _, request, pane = require("tests.helpers.presentation").active(window)
     local native = pane:native()
     local body = table.concat(vim.api.nvim_buf_get_lines(
-      native.buffer, 0, -1, false), "\n")
+      (assert(native.buffer)), 0, -1, false), "\n")
     assert.are.equal("notice", request.kind)
     assert.are.equal("Neoagent mappings · <C-c>/q close", request.prompt)
     assert.matches("^Input window\n", body)
-    assert.is_not_nil(body:find("<CR>  Submit input", 1, true))
-    assert.is_not_nil(body:find("<C-g>?  Show mapping help", 1, true))
-    assert.is_not_nil(body:find(
-      "<A-n>  Create or select Agent", 1, true))
-    assert.is_not_nil(body:find("\n\nTranscript window\n", 1, true))
-    assert.is_not_nil(body:find("<CR>  Open card details", 1, true))
-    assert.is_not_nil(body:find("<C-w>j  Focus input", 1, true))
+    assert.is_not_nil((body:find("<CR>  Submit input", 1, true)))
+    assert.is_not_nil((body:find("<C-g>?  Show mapping help", 1, true)))
+    assert.is_not_nil((body:find(
+      "<A-n>  Create or select Agent", 1, true)))
+    assert.is_not_nil((body:find("\n\nTranscript window\n", 1, true)))
+    assert.is_not_nil((body:find("<CR>  Open card details", 1, true)))
+    assert.is_not_nil((body:find("<C-w>j  Focus input", 1, true)))
 
     feed("q")
 
@@ -484,41 +498,44 @@ describe("neoagent Applet Presenter", function()
     assert(vim.wait(1000, function()
       local view = window:view()
       return view and view:pane("presentation")
-        and view:pane("presentation"):is_mounted()
+        and assert(view:pane("presentation")):is_mounted()
     end))
     local view = window:view()
-    local pane = view:pane("presentation")
-    local native = pane:native()
+    local pane = assert(view):pane("presentation")
+    local native = assert(pane):native()
     assert.are.equal("neoagent-secret", vim.bo[native.buffer].filetype)
     assert.is_false(vim.bo[native.buffer].swapfile)
     assert.is_false(vim.bo[native.buffer].undofile)
-    pane:replace_text("s3cr3t", { line = 1, column = 6 }, 1)
+    assert(pane):replace_text("s3cr3t", { line = 1, column = 6 }, 1)
     local queued = presenter:input({
       prompt = "Ordinary prompt",
       default = "seed",
       allow_empty = true,
     })
-    local marks = vim.api.nvim_buf_get_extmarks(native.buffer,
-      view.presentation_component.pane.mask_namespace, 0, -1, { details = true })
+    local marks = vim.api.nvim_buf_get_extmarks((assert(native.buffer)),
+      assert(assert(view).presentation_component).pane.mask_namespace, 0, -1, { details = true })
     assert.are.equal(6, #marks)
-    for _, mark in ipairs(marks) do assert.are.equal("•", mark[4].conceal) end
+    for _, mark in ipairs(marks) do
+      ---@cast mark [integer, integer, integer, {conceal?: string}]
+      assert.are.equal("•", mark[4].conceal)
+    end
     assert.is_true(require("applet.pane.input").dispatch(
-      view.presentation_component.pane, "i", "<CR>"))
+      assert(assert(view).presentation_component).pane, "i", "<CR>"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.are.equal("s3cr3t", run:result().value)
+    assert.are.equal("s3cr3t", assert(run:result()).value)
     assert(vim.wait(1000, function()
-      return not vim.api.nvim_buf_is_valid(native.buffer)
+      return not vim.api.nvim_buf_is_valid((assert(native.buffer)))
     end))
-    local ordinary = assert(view:pane("presentation")):native()
+    local ordinary = assert(assert(view):pane("presentation")):native()
     assert.are_not.equal(native.buffer, ordinary.buffer)
     assert.are.equal("neoagent-prompt", vim.bo[ordinary.buffer].filetype)
-    assert(view.presentation_component:set_text("ordinary"))
-    vim.api.nvim_buf_call(ordinary.buffer, function()
+    assert(assert(assert(view).presentation_component):set_text("ordinary"))
+    vim.api.nvim_buf_call((assert(ordinary.buffer)), function()
       vim.cmd("silent! undo")
     end)
-    assert.is_nil(table.concat(vim.api.nvim_buf_get_lines(
-      ordinary.buffer, 0, -1, false), "\n"):find("s3cr3t", 1, true))
-    assert(presenter:cancel(presenter:snapshot().active.id))
+    assert.is_nil((table.concat(vim.api.nvim_buf_get_lines(
+      (assert(ordinary.buffer)), 0, -1, false), "\n"):find("s3cr3t", 1, true)))
+    assert(presenter:cancel(assert(presenter:snapshot().active).id))
     assert(vim.wait(1000, function() return queued:is_done() end))
   end)
 
@@ -540,8 +557,8 @@ describe("neoagent Applet Presenter", function()
     }
     local window = NeoagentApplet._from_agents({
       agents = { agent },
-      config = agent:config().ui,
-      _view = function() return view end,
+      ui = agent:config().ui,
+      _view = function() return view --[[@as Neoagent.View]] end,
     })
     windows[#windows + 1] = window
     assert(window:open())
@@ -549,50 +566,41 @@ describe("neoagent Applet Presenter", function()
     local pending = agent:presenter():select({ items = { "value" } })
 
     assert(vim.wait(1000, function() return pending:is_done() end, 5))
-    assert.is_false(pending:result().ok)
+    assert.is_false(assert(pending:result()).ok)
     assert.matches("does not support semantic presentations",
-      pending:result().error.message)
+      assert(assert(pending:result()).error).message)
     assert.is_nil(agent:presenter():snapshot().active)
     assert.are.equal("idle", agent:activity().state)
   end)
 
   it("validates the complete Agent host-effects boundary", function()
+    local invalid_effects = {}
     assert.has_error(function()
       Agent.new(options("Invalid host effects"), {
-        host_effects = {},
+        host_effects = invalid_effects --[[@as Applet.HostEffectsModule]],
       })
     end, "agent host effects are invalid")
   end)
 
   it("reports immediate model selection presentation failures", function()
     local notifications = {}
-    local presenter = {
-      select = function(_, request)
-        return async.run(function()
-          error(util.error("presentation", "selection surface failed"), 0)
-        end, { error_kind = "presentation" })
-      end,
-      input = function()
-        return async.run(function()
-          return { ok = true, value = "input" }
-        end, { error_kind = "presentation" })
-      end,
-      confirm = function()
-        return async.run(function()
-          return { ok = true, value = true }
-        end, { error_kind = "presentation" })
-      end,
-      notify = function(_, value)
-        notifications[#notifications + 1] = value.message
-      end,
-      open_uri = function() return true end,
-    }
+    local presenter = require("neoagent.presenter").new()
+    function presenter:select()
+      return async.run(function()
+        error(util.error("presentation", "selection surface failed"), 0)
+      end, { error_kind = "presentation" })
+    end
+    function presenter:notify(value)
+      notifications[#notifications + 1] = value.message
+    end
     local opts = options("Immediate presenter")
-    opts.providers.fake.models.alternate = {}
+    assert(assert(opts.providers).fake.models).alternate = {}
     local agent = Agent.new(opts, {
       presenter = presenter,
       host_effects = {
-        refresh_file = function() return {} end,
+        refresh_file = function()
+          return { refreshed = 0, modified = {}, failures = {} }
+        end,
         open_document = function() return true end,
         on_exit = function() return function() end end,
       },
@@ -600,21 +608,17 @@ describe("neoagent Applet Presenter", function()
     agents[#agents + 1] = agent
     assert(agent:prepare())
 
-    assert.is_true(agent:select_model())
+    assert.is_true((agent:select_model()))
     assert.are.same({ "neoagent: selection surface failed" }, notifications)
   end)
 
   it("contains file-refresh host failures after semantic tool results", function()
     local notifications = {}
-    local presenter = {
-      select = function() error("unused") end,
-      input = function() error("unused") end,
-      confirm = function() error("unused") end,
-      notify = function(_, value)
-        notifications[#notifications + 1] = value.message
-      end,
-      open_uri = function() return true end,
-    }
+    local presenter = require("neoagent.presenter").new()
+    function presenter:notify(value)
+      notifications[#notifications + 1] = value.message
+    end
+    ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>
     local tool = {
       name = "change_files",
       description = "Report changed files",
@@ -641,13 +645,14 @@ describe("neoagent Applet Presenter", function()
     })
     local opts = options("Refresh boundary")
     opts.tools = { tool }
-    opts._apis.fake = function() return model end
+    assert(opts._apis).fake = function() return model end
     local agent = Agent.new(opts, {
       presenter = presenter,
       host_effects = {
         refresh_file = function(path)
           if vim.endswith(path, "throw.txt") then error("refresh exploded") end
           return {
+            refreshed = 0,
             modified = { "modified.txt" },
             failures = { "reload exploded" },
           }
@@ -659,8 +664,9 @@ describe("neoagent Applet Presenter", function()
     agents[#agents + 1] = agent
 
     local run = assert(agent:send("change files"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().ok)
+    assert.is_true(assert(run:result()).ok)
     assert.matches("failed to refresh changed file: .*refresh exploded",
       notifications[1])
     assert.matches("did not reload modified buffer modified.txt",

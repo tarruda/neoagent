@@ -2,10 +2,27 @@ local Applet = require("applet")
 local compile = Applet.Pane.compile
 local ui = Applet.Pane.nodes
 
+---@class Applet.BenchmarkMeasurement
+---@field total_ms number
+---@field frame_ms number
+---@field retained_kb number
+---@field retained_kb_per_frame number
+---@field composed_cells? integer
+
+---@class Applet.BenchmarkProfileEntry
+---@field calls integer
+---@field elapsed number
+
+---@type table<string, Applet.BenchmarkProfileEntry>
 local profile = {}
+---@param module table<string, function>
+---@param name string
 local function instrument(module, name)
   local original = module[name]
-  profile[name] = { calls = 0, elapsed = 0 }
+  ---@type Applet.BenchmarkProfileEntry
+  local entry = { calls = 0, elapsed = 0 }
+  profile[name] = entry
+  ---@param ... unknown
   module[name] = function(...)
     local started = vim.uv.hrtime()
     local values = { original(...) }
@@ -34,6 +51,7 @@ end
 local iterations = tonumber(vim.env.APPLET_BENCH_ITERATIONS) or 100
 assert(iterations >= 1 and iterations % 1 == 0,
   "APPLET_BENCH_ITERATIONS must be a positive integer")
+---@cast iterations integer
 
 local budgets = {
   tree = { frame_ms = 0.05, retained_kb_per_frame = 8 },
@@ -55,6 +73,8 @@ local document_line = string.rep("document ", math.ceil(document_width / 9))
 local document = table.concat(
   vim.fn["repeat"]({ document_line }, document_height), "\n")
 
+---@param frame integer
+---@return Applet.ContainerNode
 local function scene(frame)
   return ui.container({
     key = "benchmark:stage",
@@ -99,6 +119,8 @@ local function scene(frame)
   })
 end
 
+---@param callback fun(frame: integer)
+---@return Applet.BenchmarkMeasurement
 local function measure(callback)
   collectgarbage("collect")
   local before_kb = collectgarbage("count")
@@ -117,7 +139,9 @@ end
 for frame = 1, 5 do scene(frame) end
 local tree = measure(function(frame) scene(frame) end)
 
+---@type Applet.PaneCompileCache
 local compile_cache = {}
+---@type Applet.PaneCompileStats
 local compile_stats = {
   region_compilations = 0,
   region_reuses = 0,

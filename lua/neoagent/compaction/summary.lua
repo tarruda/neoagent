@@ -4,6 +4,33 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.CompactionDelta
+---@field type "compaction_delta"
+---@field phase "history"|"turn_prefix"
+---@field text string
+
+---@alias Neoagent.CompactionEvent Neoagent.CompactionDelta|Neoagent.ModelProviderStatus|Neoagent.ModelInferenceStats
+
+---@class Neoagent.CompactionSuccess
+---@field ok true
+---@field summary string
+---@field first_kept_entry_id string
+---@field tokens_before integer
+---@field usage? Neoagent.Usage
+
+---@alias Neoagent.CompactionResult Neoagent.CompactionSuccess|Neoagent.AsyncFailure
+
+---@class Neoagent.CompactionRunOptions: Neoagent.RunOptions<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field preparation Neoagent.CompactionPreparation
+---@field model Neoagent.Model
+---@field model_options? Neoagent.StreamOverrides
+---@field instructions? string
+
+---@class Neoagent.GeneratedSummary
+---@field text string
+---@field usage? Neoagent.Usage
+
+
 M.system_prompt = [[You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.]]
@@ -68,20 +95,28 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.]]
 
+---@param content? string|(Neoagent.InputBlock|Neoagent.AssistantBlock)[]
+---@return string
 local function content_text(content)
+  if type(content) == "string" then return content end
   local parts = {}
-  for _, block in ipairs(type(content) == "string" and { { type = "text", text = content } } or content or {}) do
+  for _, block in ipairs(content or {}) do
     if block.type == "text" then parts[#parts + 1] = block.text or "" end
   end
   return table.concat(parts)
 end
 
+---@param text string
+---@param maximum integer
+---@return string
 local function truncate(text, maximum)
   if vim.fn.strchars(text) <= maximum then return text end
   local omitted = vim.fn.strchars(text) - maximum
   return vim.fn.strcharpart(text, 0, maximum) .. "\n\n[... " .. omitted .. " more characters truncated]"
 end
 
+---@param messages Neoagent.Message[]
+---@return string
 function M.serialize(messages)
   local parts = {}
   for _, message in ipairs(tree.to_llm(messages)) do
@@ -116,12 +151,16 @@ function M.serialize(messages)
   return table.concat(parts, "\n\n")
 end
 
+---@param first? Neoagent.Usage
+---@param second? Neoagent.Usage
+---@return Neoagent.Usage?
 local function add_usage(first, second)
   if not first then return util.copy(second) end
   if not second then return util.copy(first) end
+  ---@type Neoagent.Usage
   local result = {}
   for _, key in ipairs({
-    "input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens",
+    "input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens",
   }) do
     result[key] = (first[key] or 0) + (second[key] or 0)
   end
@@ -134,6 +173,11 @@ local function add_usage(first, second)
   return result
 end
 
+---@param messages Neoagent.Message[]
+---@param previous_summary? string
+---@param instructions? string
+---@param suffix string
+---@return string
 local function prompt(messages, previous_summary, instructions, suffix)
   local text = "<conversation>\n" .. M.serialize(messages) .. "\n</conversation>\n\n"
   if previous_summary then
@@ -144,8 +188,21 @@ local function prompt(messages, previous_summary, instructions, suffix)
   return text
 end
 
+---@async
+---@param run Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@param opts Neoagent.CompactionRunOptions
+---@param messages Neoagent.Message[]
+---@param previous? string
+---@param instructions? string
+---@param suffix string
+---@param phase "history"|"turn_prefix"
+---@param system_prompt? string
+---@return Neoagent.GeneratedSummary?, Neoagent.Error?
+---@return_overload Neoagent.GeneratedSummary
+---@return_overload nil, Neoagent.Error
 local function summarize(run, opts, messages, previous, instructions, suffix, phase, system_prompt)
   local model_options = util.copy(opts.model_options or {})
+  ---@cast model_options Neoagent.StreamOptions
   model_options.messages = { {
     role = "user",
     content = { { type = "text", text = prompt(messages, previous, instructions, suffix) } },
@@ -153,11 +210,16 @@ local function summarize(run, opts, messages, previous, instructions, suffix, ph
   } }
   model_options.system_prompt = system_prompt or M.system_prompt
   model_options.tools = {}
+  ---@param event Neoagent.ModelEvent
   model_options.on_event = function(event)
     if event.type == "text_delta" then
+      ---@cast event Neoagent.ModelTextDelta
       run:emit({ type = "compaction_delta", phase = phase, text = event.text })
-    elseif event.type == "provider_status"
-        or event.type == "inference_stats" then
+    elseif event.type == "provider_status" then
+      ---@cast event Neoagent.ModelProviderStatus
+      run:emit(event)
+    elseif event.type == "inference_stats" then
+      ---@cast event Neoagent.ModelInferenceStats
       run:emit(event)
     end
   end
@@ -169,12 +231,18 @@ local function summarize(run, opts, messages, previous, instructions, suffix, ph
   return { text = text, usage = result.message and result.message.usage }
 end
 
+---@param opts Neoagent.CompactionRunOptions
+---@param system_prompt? string
+---@return Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
 function M.run(opts, system_prompt)
   assert(type(opts) == "table" and type(opts.preparation) == "table", "preparation is required")
   assert(type(opts.model) == "table" and type(opts.model.stream) == "function", "model is required")
   assert(opts.report == nil or type(opts.report) == "function",
     "report must be a function")
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+  ---@return Neoagent.CompactionSuccess|Neoagent.AsyncFailure
+  function(run)
     local preparation = opts.preparation
     local summary
     local usage

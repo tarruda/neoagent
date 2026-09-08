@@ -1,8 +1,11 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local chat = require("neoagent.chat")
 local Session = require("neoagent.session")
 local fake_model = require("tests.helpers.fake_model")
 
+---@param value integer
+---@return string
 local function uint32(value)
   return string.char(
     math.floor(value / 16777216) % 256,
@@ -11,17 +14,22 @@ local function uint32(value)
     value % 256)
 end
 
+---@param size integer
+---@return string
 local function png(size)
   return "\137PNG\r\n\26\n\0\0\0\rIHDR"
     .. uint32(size) .. uint32(size)
 end
 
+---@param run Neoagent.ChatRun
+---@return Neoagent.ChatResult
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
 describe("neoagent.chat", function()
+  ---@type string[]
   local directories = {}
 
   after_each(function()
@@ -35,7 +43,7 @@ describe("neoagent.chat", function()
     local session = assert(Session.new())
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hi" } }) } })
     local result = wait(chat.send(session, "hello", { model = model }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(session, result.session)
     assert.are.equal(2, #session:messages())
   end)
@@ -45,6 +53,7 @@ describe("neoagent.chat", function()
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "hi" } }),
     } })
+    ---@type {entry?: Neoagent.JournalEntry, state?: Neoagent.SelectionState}?
     local accepted
     local result = wait(chat.send(session, "hello", {
       model = model,
@@ -57,11 +66,11 @@ describe("neoagent.chat", function()
       end,
     }))
 
-    assert.is_true(result.ok)
-    assert.are.equal("message", accepted.entry.type)
+    assert(result.ok)
+    assert.are.equal("message", assert(assert(accepted).entry).type)
     assert.are.same({ provider = "local", model = "coder" },
-      accepted.state.model)
-    assert.are.equal("high", accepted.state.thinking_level)
+      assert(assert(accepted).state).model)
+    assert.are.equal("high", assert(assert(accepted).state).thinking_level)
   end)
 
   it("rejects every reentrant Session mutation while accepting", function()
@@ -71,6 +80,7 @@ describe("neoagent.chat", function()
         { result = fake_model.assistant({ { type = "text", text = "inner" } }) },
         { result = fake_model.assistant({ { type = "text", text = "outer" } }) },
       })
+      ---@type boolean?, unknown
       local nested_ok, nested_err
       local result = wait(chat.run(session, "outer", {
         model = model,
@@ -84,15 +94,17 @@ describe("neoagent.chat", function()
         end,
       }))
 
-      assert.is_true(result.ok)
+      assert(result.ok)
       assert.is_false(nested_ok, method)
-      assert.are.equal("session", nested_err.kind)
+      assert(type(nested_err) == "table")
+      assert.are.equal("session", rawget(nested_err, "kind"))
       assert.are.equal(2, #session:messages())
     end
   end)
 
   it("reports acceptance callback failures and continues the turn", function()
     local session = assert(Session.new())
+    ---@type {message: string, level: integer}[]
     local reports = {}
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "hi" } }),
@@ -106,23 +118,23 @@ describe("neoagent.chat", function()
     })
     local result = wait(run)
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(2, #session:messages())
     assert.are.equal(1, #reports)
-    assert.matches("acceptance observer failed", reports[1].message)
-    assert.are.equal(vim.log.levels.ERROR, reports[1].level)
+    assert.matches("acceptance observer failed", assert(reports[1]).message)
+    assert.are.equal(vim.log.levels.ERROR, assert(reports[1]).level)
   end)
 
   it("reports callback diagnostics from an awaited Model Run", function()
     local session = assert(Session.new())
     local response = fake_model.assistant({ { type = "text", text = "hi" } })
-    local model = {
-      stream = function()
-        return async.run(function() return response end, {
-          on_done = function() error("nested callback exploded") end,
-        })
-      end,
-    }
+    local model = fake_model.new()
+    function model:stream()
+      return async.run(function() return response end, {
+        on_done = function() error("nested callback exploded") end,
+      })
+    end
+    ---@type {message: string, level: integer}[]
     local reports = {}
     local result = wait(chat.run(session, "hello", {
       model = model,
@@ -131,10 +143,10 @@ describe("neoagent.chat", function()
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert(vim.wait(1000, function() return #reports == 1 end))
-    assert.matches("nested callback exploded", reports[1].message)
-    assert.are.equal(vim.log.levels.ERROR, reports[1].level)
+    assert.matches("nested callback exploded", assert(reports[1]).message)
+    assert.are.equal(vim.log.levels.ERROR, assert(reports[1]).level)
   end)
 
   it("runs an agent and persists every generated message", function()
@@ -150,7 +162,7 @@ describe("neoagent.chat", function()
         execute = function() return { content = { { type = "text", text = "ok" } } } end,
       } },
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(4, #session:messages())
   end)
 
@@ -237,7 +249,7 @@ describe("neoagent.chat", function()
       } })
       local ok = pcall(chat.run, session, "must not be accepted", {
         model = model,
-        tools = tools,
+        tools = tools --[[@as Neoagent.Tool<unknown>[] ]],
       })
 
       assert.is_false(ok)
@@ -261,12 +273,12 @@ describe("neoagent.chat", function()
 
     for _, options in ipairs(invalid_options) do
       local session = assert(Session.new())
-      assert.is_false(pcall(chat.run, session, "must not be accepted", options))
+      assert.is_false(pcall(chat.run, session, "must not be accepted", options --[[@as Neoagent.ChatOptions<unknown>]]))
       assert.are.same({}, session:messages())
     end
 
     local session = assert(Session.new())
-    assert.is_false(pcall(chat.run, session, false, { model = model }))
+    assert.is_false(pcall(chat.run, session, false --[[@as string]], { model = model }))
     assert.are.same({}, session:messages())
   end)
 
@@ -286,6 +298,7 @@ describe("neoagent.chat", function()
       } }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
     })
+    ---@type string[]
     local frames = {}
     for revision = 1, 3 do
       frames[revision] = vim.base64.encode(png(8 + revision))
@@ -302,7 +315,7 @@ describe("neoagent.chat", function()
             ctx.on_update({ content = { {
               type = "image",
               mimeType = "image/png",
-              data = frames[revision],
+              data = assert(frames[revision]),
               id = "preview",
               revision = revision,
             } } })
@@ -310,7 +323,7 @@ describe("neoagent.chat", function()
           return { content = { {
             type = "image",
             mimeType = "image/png",
-            data = frames[3],
+            data = assert(frames[3]),
             id = "preview",
             revision = 3,
           } } }
@@ -318,28 +331,28 @@ describe("neoagent.chat", function()
       } },
       on_event = function(event)
         if event.type == "tool_update" then
-          updates[#updates + 1] = event.result.content[1].revision
+          updates[#updates + 1] = assert(assert(event.result).content[1]).revision
         end
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ 1, 2, 3 }, updates)
     local messages = session:messages()
     assert.are.equal(4, #messages)
-    assert.are.equal("toolResult", messages[3].role)
-    assert.are.equal(3, messages[3].content[1].revision)
-    assert.are.equal(frames[3], messages[3].content[1].data)
+    assert.are.equal("toolResult", assert(messages[3]).role)
+    assert.are.equal(3, assert(assert(assert(messages[3]).content)[1]).revision)
+    assert.are.equal(frames[3], assert(assert(assert(messages[3]).content)[1]).data)
     assert.are.equal(frames[3],
-      model.requests[2].messages[3].content[1].data)
+      assert(assert(assert(model.requests[2]).messages[3]).content[1]).data)
 
     local path = store:metadata().path
     local journal = table.concat(vim.fn.readfile(path), "\n")
-    assert.is_nil(journal:find(frames[1], 1, true))
-    assert.is_nil(journal:find(frames[2], 1, true))
-    assert.is_not_nil(journal:find(frames[3], 1, true))
+    assert.is_nil((journal:find((assert(frames[1])), 1, true)))
+    assert.is_nil((journal:find((assert(frames[2])), 1, true)))
+    assert.is_not_nil((journal:find((assert(frames[3])), 1, true)))
     local resumed = assert(storage.open(path)):load()
-    assert.are.equal(3, resumed[3].content[1].revision)
+    assert.are.equal(3, assert(assert(assert(resumed[3]).content)[1]).revision)
   end)
 
   it("publishes persisted message identities with agent events", function()
@@ -364,14 +377,14 @@ describe("neoagent.chat", function()
       } },
       on_event = function(event)
         if event.type == "message_end" then
-          identities[#identities + 1] = event.message._neoagent_entry_id
+          identities[#identities + 1] = assert(event.message)._neoagent_entry_id
         elseif event.type == "tool_end" then
-          tool_identity = event.message._neoagent_entry_id
+          tool_identity = assert(event.message)._neoagent_entry_id
         end
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(3, #identities)
     local seen = {}
     for _, identity in ipairs(identities) do
@@ -398,19 +411,19 @@ describe("neoagent.chat", function()
         return messages
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.same({ "user", "assistant", "user", "assistant" },
       vim.tbl_map(function(message) return message.role end, session:messages()))
-    assert.are.equal("steer", session:messages()[3].content)
+    assert.are.equal("steer", assert(session:messages()[3]).content)
   end)
 
   it("continues projected Session context without appending another user message", function()
     local session = assert(Session.new({ messages = { { role = "user", content = "existing" } } }))
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "continued" } }) } })
     local result = wait(chat.continue(session, { model = model }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal(2, #session:messages())
-    assert.are.equal("existing", model.requests[1].messages[1].content)
+    assert.are.equal("existing", assert(assert(model.requests[1]).messages[1]).content)
   end)
 
   it("accepts explicit context projections without exposing mutable input", function()
@@ -427,29 +440,32 @@ describe("neoagent.chat", function()
         return projected
       end,
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     projected[1].content = "changed"
-    assert.are.equal("projected", model.requests[1].messages[1].content)
+    assert.are.equal("projected", assert(assert(model.requests[1]).messages[1]).content)
 
     result = wait(chat.continue(session, {
       model = model,
       context_messages = { { role = "user", content = "fixed" } },
     }))
-    assert.is_true(result.ok)
-    assert.are.equal("fixed", model.requests[2].messages[1].content)
+    assert(result.ok)
+    assert.are.equal("fixed", assert(assert(model.requests[2]).messages[1]).content)
   end)
 
   it("clears active state after synchronous startup failures", function()
     local session = assert(Session.new())
-    local throwing = { stream = function() error("stream startup failed") end }
+    local throwing = fake_model.new()
+    function throwing:stream() error("stream startup failed") end
     local sent = chat.send(session, "first", { model = throwing })
     assert.is_true(sent:is_done())
-    assert.matches("stream startup failed", sent:result().error.message)
+    assert.matches("stream startup failed", assert(assert(sent:result()).error).message)
 
+    local invalid_options = { model = {} }
     local invalid_ok, invalid_err = pcall(
-      chat.run, session, "second", { model = {} })
+      chat.run, session, "second", invalid_options --[[@as Neoagent.ChatOptions<unknown>]])
     assert.is_false(invalid_ok)
-    assert.matches("model is required", invalid_err)
+    assert(not invalid_ok)
+    assert.matches("model is required", tostring(invalid_err))
     assert.are.equal(1, #session:messages())
 
     local recovered = fake_model.new({
@@ -470,105 +486,95 @@ describe("neoagent.chat", function()
     end
     local ok, err = pcall(chat.run, session, "not accepted", { model = model })
     assert.is_false(ok)
-    assert.matches("append crashed", err)
+    assert.matches("append crashed", tostring(err))
 
-    ok, err = pcall(chat.run, session, "not prepared", { model = false })
+    ok, err = pcall(chat.run, session, "not prepared", { model = false --[[@as Neoagent.Model]] })
     assert.is_false(ok)
-    assert.matches("model is required", err)
+    assert.matches("model is required", tostring(err))
     assert.are.same({}, session:messages())
 
     local recovered = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "recovered" } }),
     } })
     local result = wait(chat.run(session, "retry", { model = recovered }))
-    assert.is_true(result.ok)
+    assert(result.ok)
   end)
 
   it("rejects a second active mutation", function()
     local session = assert(Session.new())
-    local model = {
-      stream = function()
-        return require("neoagent.async").run(function()
-          require("neoagent.async").await(function() return function() end end)
-        end)
-      end,
-    }
+    local model = fake_model.new()
+    function model:stream()
+      return async.run(function()
+        return async.await(function() return function() end end)
+      end)
+    end
     local first = chat.send(session, "one", { model = model })
     local ok, err = pcall(chat.send, session, "two", { model = model })
     assert.is_false(ok)
-    assert.are.equal("session", err.kind)
+    assert(type(err) == "table")
+    assert.are.equal("session", rawget(err, "kind"))
     first:cancel()
     assert(vim.wait(1000, function() return first:is_done() end))
     local replacement = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "recovered" } }) } })
     local result = wait(chat.send(session, "three", { model = replacement }))
-    assert.is_true(result.ok)
+    assert(result.ok)
   end)
 
   it("surfaces user and assistant persistence failures", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
-    local rejecting = {
-      append = function() return nil, { kind = "storage", message = "read only" } end,
-      messages = function() return {} end,
-    }
+    local rejecting = assert(Session.new())
+    rejecting.append = function() return nil, { kind = "storage", message = "read only" } end
     local ok, err = pcall(chat.send, rejecting, "hello", { model = model })
     assert.is_false(ok)
-    assert.are.equal("storage", err.kind)
+    assert(type(err) == "table")
+    assert.are.equal("storage", rawget(err, "kind"))
 
-    local messages = {}
     local writes = 0
-    local flaky = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then return nil, { kind = "storage", message = "disk full" } end
-        messages[#messages + 1] = message
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local flaky = assert(Session.new())
+    local append = flaky.append
+    function flaky:append(message, state)
+      writes = writes + 1
+      if writes == 2 then return nil, { kind = "storage", message = "disk full" } end
+      return append(self, message, state)
+    end
     model = fake_model.new({
       { result = fake_model.assistant({ { type = "text", text = "lost" } }) },
       { result = fake_model.assistant({ { type = "text", text = "saved" } }) },
     })
     local result = wait(chat.send(flaky, "one", { model = model }))
     assert.is_false(result.ok)
-    assert.are.equal("disk full", result.error.message)
+    assert.are.equal("disk full", assert(result.error).message)
     result = wait(chat.send(flaky, "two", { model = model }))
-    assert.is_true(result.ok)
+    assert(result.ok)
   end)
 
   it("stops persisting an agent run after the first storage failure", function()
-    local messages = {}
     local writes = 0
-    local session = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then return nil, { kind = "storage", message = "unavailable" } end
-        messages[#messages + 1] = message
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local session = assert(Session.new())
+    local append = session.append
+    function session:append(message, state)
+      writes = writes + 1
+      if writes == 2 then return nil, { kind = "storage", message = "unavailable" } end
+      return append(self, message, state)
+    end
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "answer" } }) } })
     local result = wait(chat.run(session, "question", { model = model }))
     assert.is_false(result.ok)
-    assert.are.equal("unavailable", result.error.message)
+    assert.are.equal("unavailable", assert(result.error).message)
     assert.are.equal(2, writes)
   end)
 
   it("commits a tool call before allowing its effect", function()
-    local messages = {}
     local writes = 0
-    local session = {
-      append = function(_, message)
-        writes = writes + 1
-        if writes == 2 then
-          return nil, { kind = "storage", message = "journal unavailable" }
-        end
-        messages[#messages + 1] = vim.deepcopy(message)
-        return true
-      end,
-      messages = function() return vim.deepcopy(messages) end,
-    }
+    local session = assert(Session.new())
+    local append = session.append
+    function session:append(message, state)
+      writes = writes + 1
+      if writes == 2 then
+        return nil, { kind = "storage", message = "journal unavailable" }
+      end
+      return append(self, message, state)
+    end
     local model = fake_model.new({
       { result = fake_model.assistant({ {
         type = "toolCall", id = "effect", name = "mutate", arguments = {},
@@ -590,7 +596,7 @@ describe("neoagent.chat", function()
     }))
 
     assert.is_false(result.ok)
-    assert.are.equal("journal unavailable", result.error.message)
+    assert.are.equal("journal unavailable", assert(result.error).message)
     assert.is_false(executed)
     assert.are.equal(1, #model.requests)
     assert.are.equal(2, writes)

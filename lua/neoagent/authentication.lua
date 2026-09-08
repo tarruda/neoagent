@@ -2,9 +2,50 @@ local async = require("neoagent.async")
 local util = require("neoagent.util")
 
 local M = {}
+---@alias Neoagent.AuthenticationLoginRun Neoagent.Run<Neoagent.AuthChangeResult, Neoagent.AuthEvent>
+---@alias Neoagent.AuthenticationLogoutRun Neoagent.Run<Neoagent.AuthChangeResult, nil>
+---@alias Neoagent.AuthenticationRefreshResult {ok: true, method: string}|Neoagent.AsyncFailure
+---@alias Neoagent.AuthenticationRefreshRun Neoagent.Run<Neoagent.AuthenticationRefreshResult, nil>
+
+---@class Neoagent.AuthenticationConfig: Neoagent.ProviderRuntimeConfig
+---@field auth Neoagent.AuthConfig
+
+---@class Neoagent.AuthenticationPresenter
+---@field select fun(self: Neoagent.AuthenticationPresenter, request: Neoagent.SelectRequest): Neoagent.PresentationRun
+---@field input fun(self: Neoagent.AuthenticationPresenter, request: Neoagent.InputRequest): Neoagent.PresentationRun
+---@field notice? fun(self: Neoagent.AuthenticationPresenter, request: Neoagent.NoticeRequest): Neoagent.PresentationRun
+---@field notify fun(self: Neoagent.AuthenticationPresenter, request: Neoagent.NotificationRequest): unknown
+---@field open_uri fun(self: Neoagent.AuthenticationPresenter, request: {uri: string}): unknown
+
+---@class Neoagent.AuthenticationOptions
+---@field config Neoagent.AuthenticationConfig
+---@field auth Neoagent.AuthManager
+---@field presenter Neoagent.AuthenticationPresenter
+---@field runtimes? Neoagent.ProviderRuntimes
+---@field on_activity? fun(active: boolean)
+---@field report? fun(message: string, level?: integer): unknown
+---@field refresh_after_login? boolean
+---@field refresh_after_auth_change? boolean
+
+---@class Neoagent.Authentication
+---@field config Neoagent.AuthenticationConfig
+---@field auth Neoagent.AuthManager
+---@field presenter Neoagent.AuthenticationPresenter
+---@field runtimes Neoagent.ProviderRuntimes
+---@field on_activity? fun(active: boolean)
+---@field report? fun(message: string, level?: integer): unknown
+---@field refresh_after_auth_change boolean
+---@field login_operation? {run?: Neoagent.AuthenticationLoginRun}
+---@field logout_operation? {run?: Neoagent.AuthenticationLogoutRun}
+---@field login_notice? Neoagent.PresentationRun
+---@field catalog_runs table<table, Neoagent.AuthenticationRefreshRun>
+---@field presentation_runs table<table, Neoagent.PresentationRun>
+---@field destroyed boolean
 local Authentication = {}
 Authentication.__index = Authentication
 
+---@param value unknown
+---@return boolean
 local function valid_run(value)
   return type(value) == "table"
     and type(value.await) == "function"
@@ -13,6 +54,7 @@ local function valid_run(value)
     and type(value.result) == "function"
 end
 
+---@param value unknown
 local function assert_presenter(value)
   assert(type(value) == "table"
       and type(value.select) == "function"
@@ -22,6 +64,8 @@ local function assert_presenter(value)
     "authentication Presenter is invalid")
 end
 
+---@param opts Neoagent.AuthenticationOptions
+---@return Neoagent.Authentication
 function Authentication.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "authentication config is required")
@@ -64,6 +108,9 @@ function Authentication.new(opts)
   }, Authentication)
 end
 
+---@param message string
+---@param level? integer
+---@return unknown
 function Authentication:_notify(message, level)
   if self.report then return self.report(message, level) end
   return self.presenter:notify({
@@ -76,6 +123,9 @@ function Authentication:_publish()
   if self.on_activity then self.on_activity(self:is_active()) end
 end
 
+---@param run Neoagent.PresentationRun
+---@param callback fun(result: Neoagent.PresentationResult)
+---@return Neoagent.PresentationRun
 function Authentication:_track_presentation(run, callback)
   local token = {}
   local tracked = async.run(function() return run:await() end, {
@@ -94,63 +144,79 @@ function Authentication:_track_presentation(run, callback)
   return tracked
 end
 
-function Authentication:_present(kind, request, callback)
-  local run = self.presenter[kind](self.presenter, request)
+---@param request Neoagent.SelectRequest
+---@param callback fun(value: unknown)
+---@return Neoagent.PresentationRun
+function Authentication:_select(request, callback)
+  local run = self.presenter:select(request)
+  ---@param result Neoagent.PresentationResult
   local function completed(result)
     if self.destroyed then return end
     if result.ok then
       callback(result.value)
-    elseif result.error.kind ~= "cancelled" then
-      self:_notify(result.error.message, vim.log.levels.ERROR)
+    else
+      local err = (result --[[@as Neoagent.AsyncFailure]]).error
+      if err.kind ~= "cancelled" then
+        self:_notify(err.message, vim.log.levels.ERROR)
+      end
     end
   end
   if run:is_done() then
-    completed(run:result())
+    completed((assert(run:result())))
     return run
   end
   return self:_track_presentation(run, completed)
 end
 
-function Authentication:_bridge(kind, request, done)
-  local run = self.presenter[kind](self.presenter, request)
+---@param run Neoagent.PresentationRun
+---@param done Neoagent.AwaitCallbacks<string?>
+---@return fun()
+function Authentication:_bridge(run, done)
+  ---@param result Neoagent.PresentationResult
   local function completed(result)
-    if result.ok then done.resolve(result.value)
+    if result.ok then done.resolve(result.value --[[@as string?]])
     else done.reject(result.error) end
   end
   if run:is_done() then
-    completed(run:result())
+    completed((assert(run:result())))
     return function() end
   end
   local tracked = self:_track_presentation(run, completed)
   return function() tracked:cancel() end
 end
 
+---@param prompt Neoagent.LoginPrompt
+---@param done Neoagent.AwaitCallbacks<string?>
+---@return fun()?
 function Authentication:_prompt(prompt, done)
   self:_close_login_notice()
   if prompt.type == "select" then
-    return self:_bridge("select", {
+    ---@cast prompt Neoagent.LoginSelectPrompt
+    return self:_bridge(self.presenter:select({
       prompt = prompt.message,
-      items = prompt.options,
-    }, done)
+      -- Login choices carry only the same id/label selection fields.
+      items = prompt.options --[[@as Neoagent.SelectItem[] ]],
+    }), done)
   end
   if prompt.type == "secret" then
-    return self:_bridge("input", {
+    return self:_bridge(self.presenter:input({
       prompt = prompt.message,
       default = "",
       secret = true,
-    }, done)
+    }), done)
   end
   if prompt.type == "text" or prompt.type == "manual_code" then
-    return self:_bridge("input", {
+    return self:_bridge(self.presenter:input({
       prompt = prompt.message,
       default = "",
       allow_empty = true,
-    }, done)
+    }), done)
   end
   done.reject(util.error("auth",
     "Unsupported login prompt: " .. tostring(prompt.type)))
 end
 
+---@return boolean
 function Authentication:_close_login_notice()
   local run = self.login_notice
   self.login_notice = nil
@@ -162,6 +228,8 @@ function Authentication:_close_login_notice()
   return true
 end
 
+---@param request Neoagent.NoticeRequest
+---@return boolean
 function Authentication:_show_login_notice(request)
   self:_close_login_notice()
   if type(self.presenter.notice) == "function" then
@@ -181,6 +249,7 @@ function Authentication:_show_login_notice(request)
   return false
 end
 
+---@param event Neoagent.DeviceCodeEvent
 function Authentication:_show_device_code(event)
   local body = table.concat({
     "Open this page:",
@@ -199,6 +268,7 @@ function Authentication:_show_device_code(event)
     .. event.userCode)
 end
 
+---@param event Neoagent.AuthUrlEvent
 function Authentication:_show_auth_url(event)
   local instructions = event.instructions or "Open this URL to authenticate:"
   local body = table.concat({
@@ -216,22 +286,27 @@ function Authentication:_show_auth_url(event)
   pcall(self.presenter.open_uri, self.presenter, { uri = event.url })
 end
 
+---@param event Neoagent.AuthEvent
 function Authentication:_event(event)
   if event.type == "auth_url" then
-    self:_show_auth_url(event)
+    self:_show_auth_url(event --[[@as Neoagent.AuthUrlEvent]])
   elseif event.type == "device_code" then
-    self:_show_device_code(event)
+    self:_show_device_code(event --[[@as Neoagent.DeviceCodeEvent]])
   elseif event.message then
     self:_notify(event.message)
   end
 end
 
+---@param id string
+---@return string?
 function Authentication:_method_id(id)
   if self.config.auth.methods[id] then return id end
   local provider = self.config.providers[id]
   return type(provider) == "table" and provider.auth or id
 end
 
+---@param method_id string
+---@return Neoagent.AuthenticationRefreshRun
 function Authentication:refresh_catalogs(method_id)
   local ids = vim.tbl_keys(self.runtimes)
   table.sort(ids)
@@ -271,14 +346,13 @@ function Authentication:refresh_catalogs(method_id)
               .. " catalog after authentication change",
               vim.log.levels.ERROR)
           else
+            ---@cast run Neoagent.CatalogRefreshRun
             local result = run:await()
             if type(result) ~= "table" or type(result.ok) ~= "boolean" then
               self:_notify("failed to refresh " .. provider_id
                 .. " catalog: catalog returned an invalid result",
                 vim.log.levels.ERROR)
-              result = { ok = true }
-            end
-            if not result.ok then
+            elseif not result.ok then
               local failure = util.normalize_error(
                 result.error or "catalog refresh failed", "provider")
               if failure.kind == "cancelled" then error(failure, 0) end
@@ -307,11 +381,13 @@ function Authentication:refresh_catalogs(method_id)
   return owned
 end
 
+---@return boolean
 function Authentication:is_active()
   return self.login_operation ~= nil or self.logout_operation ~= nil
     or next(self.catalog_runs) ~= nil or next(self.presentation_runs) ~= nil
 end
 
+---@return "login"|"logout"|"catalog"|"presentation"?
 function Authentication:activity_kind()
   if self.login_operation then return "login" end
   if self.logout_operation then return "logout" end
@@ -319,6 +395,8 @@ function Authentication:activity_kind()
   if next(self.presentation_runs) ~= nil then return "presentation" end
 end
 
+---@param callback? fun(active: boolean)
+---@return (fun(active: boolean))?
 function Authentication:set_activity_callback(callback)
   assert(callback == nil or type(callback) == "function",
     "authentication activity callback must be a function")
@@ -326,6 +404,8 @@ function Authentication:set_activity_callback(callback)
   return callback
 end
 
+---@param method_id? string
+---@return Neoagent.AuthenticationLoginRun|true|nil, Neoagent.Error?
 function Authentication:login(method_id)
   if self.destroyed then
     return nil, util.error("auth", "Authentication is destroyed")
@@ -343,10 +423,10 @@ function Authentication:login(method_id)
     end
     table.sort(choices, function(a, b) return a.label < b.label end)
     if #choices == 0 then self:_notify("no login methods configured") return nil end
-    self:_present("select", {
+    self:_select({
       prompt = "Select login:",
       items = choices,
-    }, function(id) self:login(id) end)
+    }, function(id) self:login(id --[[@as string]]) end)
     return true
   end
   method_id = self:_method_id(method_id)
@@ -355,6 +435,7 @@ function Authentication:login(method_id)
       vim.log.levels.ERROR)
     return nil
   end
+  method_id = assert(method_id)
   local operation = {}
   self.login_operation = operation
   self:_publish()
@@ -374,8 +455,11 @@ function Authentication:login(method_id)
         end
         self:_notify("logged in with " .. methods[method_id].name
           .. "; credentials saved to " .. self.config.auth.path)
-      elseif result.error.kind ~= "cancelled" then
-        self:_notify(result.error.message, vim.log.levels.ERROR)
+      else
+        local err = (result --[[@as Neoagent.AsyncFailure]]).error
+        if err.kind ~= "cancelled" then
+          self:_notify(err.message, vim.log.levels.ERROR)
+        end
       end
     end,
   })
@@ -396,6 +480,7 @@ function Authentication:login(method_id)
   return run
 end
 
+---@return boolean
 function Authentication:cancel()
   local cancelled = false
   if self:_close_login_notice() then cancelled = true end
@@ -416,6 +501,8 @@ function Authentication:cancel()
   return cancelled
 end
 
+---@param method_id? string
+---@return Neoagent.AuthenticationLogoutRun|true|nil, Neoagent.Error?
 function Authentication:logout(method_id)
   if self.destroyed then
     return nil, util.error("auth", "Authentication is destroyed")
@@ -427,7 +514,7 @@ function Authentication:logout(method_id)
   end
   local credentials, err = self.auth:list_credentials()
   if not credentials then
-    self:_notify(err.message, vim.log.levels.ERROR)
+    self:_notify(assert(err).message, vim.log.levels.ERROR)
     return nil, err
   end
   if method_id == nil or method_id == "" then
@@ -445,10 +532,10 @@ function Authentication:logout(method_id)
         fallback = item,
       }
     end
-    self:_present("select", {
+    self:_select({
       prompt = "Select credential to remove:",
       items = choices,
-    }, function(id) self:logout(id) end)
+    }, function(id) self:logout(id --[[@as string]]) end)
     return true
   end
   method_id = self:_method_id(method_id)
@@ -461,6 +548,7 @@ function Authentication:logout(method_id)
       vim.log.levels.WARN)
     return nil
   end
+  method_id = selected.id
   local operation = {}
   self.logout_operation = operation
   self:_publish()
@@ -481,8 +569,11 @@ function Authentication:logout(method_id)
         else
           self:_notify("logged out of " .. selected.name)
         end
-      elseif result.error.kind ~= "cancelled" then
-        self:_notify(result.error.message, vim.log.levels.ERROR)
+      else
+        local err = (result --[[@as Neoagent.AsyncFailure]]).error
+        if err.kind ~= "cancelled" then
+          self:_notify(err.message, vim.log.levels.ERROR)
+        end
       end
     end,
   })

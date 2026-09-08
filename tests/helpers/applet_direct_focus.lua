@@ -6,6 +6,9 @@ local host_kind = assert(vim.env.APPLET_HOST, "Applet Host is required")
 assert(host_kind == "floating" or host_kind == "tab",
   "Applet Host must be floating or tab")
 
+---@param name string
+---@param mode 'managed'|'editable'
+---@return Applet.Pane
 local function component(name, mode)
   local value = Applet.Pane.new({
     key = name,
@@ -56,6 +59,8 @@ applet:update({
 })
 assert(applet:open())
 
+---@param ok boolean
+---@param err? unknown
 local function finish(ok, err)
   vim.cmd("stopinsert")
   applet:destroy()
@@ -69,6 +74,9 @@ local function finish(ok, err)
   end
 end
 
+---@async
+---@param predicate fun(): boolean
+---@param message string
 local function await(predicate, message)
   local deadline = vim.uv.hrtime() + 1000000000
   while not predicate() do
@@ -86,8 +94,8 @@ local task = coroutine.create(function()
     await(function() return vim.api.nvim_get_mode().mode == "n" end,
       "editable Pane did not retain user-selected Normal mode")
 
-    local first_window = applet:pane("first"):native().window
-    local second_window = applet:pane("second"):native().window
+    local first_window = assert(assert(applet:pane("first")):native().window)
+    local second_window = assert(assert(applet:pane("second")):native().window)
     vim.api.nvim_set_current_win(first_window)
     await(function()
       return vim.api.nvim_get_current_win() == first_window

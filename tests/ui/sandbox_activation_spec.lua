@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local config = require("neoagent.config")
 local Agent = require("neoagent.agent")
 local sandbox_composition = require("neoagent.sandbox.composition")
@@ -7,9 +8,12 @@ local fake_model = require("tests.helpers.fake_model")
 
 describe("neoagent sandbox activation warning", function()
   local original_notify
-  local notifications
-  local windows
-  local agents
+  ---@type { [1]: string, [2]: integer? }[]
+  local notifications = {}
+  ---@type Neoagent.NeoagentApplet[]
+  local windows = {}
+  ---@type Neoagent.Agent[]
+  local agents = {}
   local original_compose
 
   before_each(function()
@@ -33,6 +37,8 @@ describe("neoagent sandbox activation warning", function()
     vim.cmd("silent! only")
   end)
 
+  ---@param name string
+  ---@return Neoagent.Config
   local function agent_options(name)
     return config.resolve({
       name = name,
@@ -45,11 +51,15 @@ describe("neoagent sandbox activation warning", function()
     })
   end
 
+  ---@param active "Neo"|"Chat"
+  ---@param status? Neoagent.SandboxStatus
+  ---@return Neoagent.NeoagentApplet
   local function build(active, status)
     local neo_options = agent_options("Neo")
     neo_options.sandbox.enabled = true
     status = status or {
       ok = false,
+      platform = "test",
       stage = "probe",
       message = "native isolation unavailable",
     }
@@ -57,6 +67,7 @@ describe("neoagent sandbox activation warning", function()
       neo_options, {
         platform = {
           name = "test",
+          check = function() return (assert(status)) end,
           exec = function() error("must not execute") end,
           fs = function() error("must not access files") end,
         },
@@ -81,25 +92,25 @@ describe("neoagent sandbox activation warning", function()
   it("waits until the requesting Agent is first shown", function()
     local window = build("Chat")
     assert.are.equal(0, #notifications)
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(0, #notifications)
-    assert.are.equal("Neo", window:select(1):config().name)
+    assert.are.equal("Neo", assert(window:select(1)):config().name)
     assert.are.equal(1, #notifications)
     assert.matches("tools will run without a sandbox",
-      notifications[1][1])
-    assert.are.equal(vim.log.levels.WARN, notifications[1][2])
+      assert(notifications[1])[1])
+    assert.are.equal(vim.log.levels.WARN, assert(notifications[1])[2])
     window:toggle()
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(1, #notifications)
   end)
 
   it("warns on the first toggle when Neo is active", function()
     local window = build("Neo")
     assert.are.equal(0, #notifications)
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(1, #notifications)
     window:toggle()
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(1, #notifications)
   end)
 
@@ -115,10 +126,10 @@ describe("neoagent sandbox activation warning", function()
       },
     })
     assert.are.equal(0, #notifications)
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(0, #notifications)
     window:toggle()
-    assert.is_true(window:toggle())
+    assert.is_true((window:toggle()))
     assert.are.equal(0, #notifications)
   end)
 
@@ -146,7 +157,7 @@ describe("neoagent sandbox activation warning", function()
         directory = vim.fn.tempname(),
       },
     })
-    local window = neoagent.applet()
+    local window = assert(neoagent.applet())
     windows[#windows + 1] = window
 
     assert(window:open())
@@ -158,7 +169,7 @@ describe("neoagent sandbox activation warning", function()
     end, 5))
     agents = window:agents()
     assert.are.equal(1, #notifications)
-    assert.matches("tools will run without a sandbox", notifications[1][1])
+    assert.matches("tools will run without a sandbox", assert(notifications[1])[1])
     assert.are.equal(agents[1], window:default_agent())
   end)
 end)

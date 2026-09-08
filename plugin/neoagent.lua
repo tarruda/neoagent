@@ -3,6 +3,7 @@ vim.g.loaded_neoagent = true
 
 local function toggle() return require("neoagent").toggle() end
 local function cycle() return require("neoagent").show_agents() end
+---@param err unknown
 local function report_error(err)
   if not err then return end
   local message = type(err) == "table" and err.message or tostring(err)
@@ -14,6 +15,9 @@ local function report_error(err)
 end
 
 vim.api.nvim_create_user_command("Neoagent", toggle, {})
+---@param lhs string
+---@param callback fun(): unknown
+---@param desc string
 local function map(lhs, callback, desc)
   vim.keymap.set("n", lhs, callback, { silent = true, desc = desc })
 end
@@ -89,6 +93,10 @@ end, {
   nargs = 1,
   complete = function() return require("neoagent.ui.renderers").names() end,
 })
+---@param arg_lead string
+---@param command_line string
+---@param cursor_pos integer?
+---@return string[]
 local function provider_operation_completion(arg_lead, command_line, cursor_pos)
   local neoagent = require("neoagent")
   local shell = neoagent.applet():provider_shell()

@@ -10,6 +10,30 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.AnthropicUsage: Neoagent.Usage
+---@field input number
+---@field output number
+---@field cacheRead number
+---@field cacheWrite number
+---@field totalTokens number
+
+---@class Neoagent.AnthropicMessage: Neoagent.AssistantMessage
+---@field usage Neoagent.AnthropicUsage
+
+---@class Neoagent.AnthropicBlockState
+---@field block Neoagent.TextBlock|Neoagent.AnthropicThinkingBlock|Neoagent.ToolCallBlock
+---@field stopped boolean
+
+---@class Neoagent.AnthropicToolState: Neoagent.AnthropicBlockState
+---@field block Neoagent.ToolCallBlock
+---@field input Neoagent.JsonValue
+---@field raw string
+
+---@class Neoagent.AnthropicThinkingBlock: Neoagent.ThinkingBlock
+---@field thinkingSignature string
+
+
+---@return Neoagent.AnthropicUsage
 local function zero_usage()
   return {
     input = 0,
@@ -21,6 +45,8 @@ local function zero_usage()
   }
 end
 
+---@param usage Neoagent.AnthropicUsage
+---@param raw unknown
 local function update_usage(usage, raw)
   if type(raw) ~= "table" then return end
   if type(raw.input_tokens) == "number" then usage.input = raw.input_tokens end
@@ -34,6 +60,9 @@ local function update_usage(usage, raw)
   usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite
 end
 
+---@param reason unknown
+---@param details unknown
+---@return "stop"|"length"|"toolUse"
 local function stop_reason(reason, details)
   if reason == "end_turn" or reason == "stop_sequence" or reason == "pause_turn" then
     return "stop"
@@ -50,18 +79,37 @@ local function stop_reason(reason, details)
   error(util.error("model", "Provider stop_reason: " .. tostring(reason)), 0)
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function nonempty(value)
   return type(value) == "string" and value ~= ""
 end
 
+---@param value unknown
+---@param field string
+---@return string
+local function block_string(value, field)
+  if not value then return "" end
+  if type(value) ~= "string" then
+    error(util.error("protocol", "Invalid Anthropic " .. field .. ": expected a string"), 0)
+  end
+  return value
+end
+
+---@param message? Neoagent.AnthropicMessage
+---@param blocks? table<number, Neoagent.AnthropicBlockState>
+---@param err Neoagent.Error
+---@return Neoagent.AssistantMessage?
 local function partial_message(message, blocks, err)
   if type(message) ~= "table" then return nil end
+  ---@type table<Neoagent.AssistantBlock, Neoagent.AnthropicBlockState>
   local states = {}
   for _, state in pairs(blocks or {}) do states[state.block] = state end
   local candidate = util.copy(message)
   candidate.content = {}
   for _, block in ipairs(message.content or {}) do
     local state = states[block]
+    ---@type Neoagent.AssistantBlock?
     local retained
     if state and block.type == "text" and nonempty(block.text) then
       retained = util.copy(block)
@@ -79,19 +127,39 @@ local function partial_message(message, blocks, err)
   return semantic_message.normalize_partial_assistant(candidate)
 end
 
+---@class Neoagent.AnthropicModelOptions: Neoagent.ApiModelOptions
+---@field max_output_tokens? integer
+
+---@class Neoagent.AnthropicModel: Neoagent.Model
+---@field _base_url string
+---@field _api_key? string|fun(): string?
+---@field _max_output_tokens integer
+---@field _anthropic_version string
+---@field _request_opts Neoagent.RequestLayer[]
+---@field _request_context? Neoagent.RequestIdentity
+---@field _transport Neoagent.HttpClient
 local Model = {}
 Model.__index = Model
 
+---@param call_opts Neoagent.StreamOptions
+---@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
 function Model:_request(call_opts)
   return request.build(self, call_opts)
 end
 
+---@param opts Neoagent.StreamOptions
+---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
   opts = opts or {}
   assert(type(opts.messages) == "table", "messages are required")
+  ---@type Neoagent.AnthropicMessage?
   local message
+  ---@type table<number, Neoagent.AnthropicBlockState>?
   local blocks
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+  ---@return Neoagent.ModelResult
+  function(run)
     local ok, outcome = pcall(function()
       local outgoing, identity = self:_request(opts)
       local transport = request_context.bind_transport(self._transport, identity)
@@ -110,97 +178,131 @@ function Model:stream(opts)
       local message_stop_seen = false
       local stop_seen = false
 
+      ---@param raw unknown
       local function emit_usage(raw)
         update_usage(message.usage, raw)
         run:emit({ type = "usage", usage = util.copy(message.usage) })
       end
 
-      local function append_delta(state, field, value, event_type)
-        if not nonempty(value) then return end
+      ---@param value unknown
+      ---@return string?
+      local function valid_delta(value)
+        if not nonempty(value) then return nil end
         if not util.is_valid_utf8(value) then
           error(util.error("protocol", "Anthropic delta must contain valid UTF-8"), 0)
         end
-        state.block[field] = state.block[field] .. value
-        run:emit({ type = event_type, text = value })
+        return value
       end
 
+      ---@param block Neoagent.TextBlock
+      ---@param value unknown
+      local function append_text(block, value)
+        local delta = valid_delta(value)
+        if not delta then return end
+        block.text = block.text .. delta
+        run:emit({ type = "text_delta", text = delta })
+      end
+
+      ---@param block Neoagent.ThinkingBlock
+      ---@param value unknown
+      local function append_thinking(block, value)
+        local delta = valid_delta(value)
+        if not delta then return end
+        block.thinking = block.thinking .. delta
+        run:emit({ type = "thinking_delta", text = delta })
+      end
+
+      ---@param index number
+      ---@param state Neoagent.AnthropicBlockState
+      local function register_block(index, state)
+        blocks[index] = state
+        message.content[#message.content + 1] = state.block
+      end
+
+      ---@param event Neoagent.JsonObject|Neoagent.JsonArray
       local function start_block(event)
         local index = event.index
         local raw = event.content_block
-        if type(index) ~= "number" or type(raw) ~= "table" then
+        if type(index) ~= "number" or index < 0 or index % 1 ~= 0
+            or type(raw) ~= "table" then
           error(util.error("protocol", "Invalid Anthropic content_block_start"), 0)
         end
+        ---@cast index integer
         if blocks[index] then
           error(util.error("protocol", "Anthropic content block started twice"), 0)
         end
-        local block
-        local state = { stopped = false }
         if raw.type == "text" then
-          block = { type = "text", text = "" }
-          state.block = block
-          blocks[index] = state
-          message.content[#message.content + 1] = block
-          append_delta(state, "text", raw.text, "text_delta")
+          ---@type Neoagent.TextBlock
+          local block = { type = "text", text = "" }
+          register_block(index, { block = block, stopped = false })
+          append_text(block, raw.text)
         elseif raw.type == "thinking" then
-          block = { type = "thinking", thinking = "", thinkingSignature = "" }
-          state.block = block
-          blocks[index] = state
-          message.content[#message.content + 1] = block
-          append_delta(state, "thinking", raw.thinking, "thinking_delta")
+          ---@type Neoagent.AnthropicThinkingBlock
+          local block = { type = "thinking", thinking = "", thinkingSignature = "" }
+          register_block(index, { block = block, stopped = false })
+          append_thinking(block, raw.thinking)
         elseif raw.type == "redacted_thinking" then
-          block = {
+          ---@type Neoagent.AnthropicThinkingBlock
+          local block = {
             type = "thinking",
             thinking = "[Reasoning redacted]",
-            thinkingSignature = raw.data or "",
+            thinkingSignature = block_string(raw.data, "redacted thinking data"),
             redacted = true,
           }
-          state.block = block
-          blocks[index] = state
-          message.content[#message.content + 1] = block
+          register_block(index, { block = block, stopped = false })
           run:emit({ type = "thinking_delta", text = block.thinking })
         elseif raw.type == "tool_use" then
-          block = {
+          ---@type Neoagent.ToolCallBlock
+          local block = {
             type = "toolCall",
-            id = raw.id or "",
-            name = raw.name or "",
+            id = block_string(raw.id, "tool id"),
+            name = block_string(raw.name, "tool name"),
             arguments = vim.empty_dict(),
           }
-          state.block = block
-          state.input = raw.input == nil and vim.empty_dict() or util.copy(raw.input)
-          state.raw = ""
-          blocks[index] = state
-          message.content[#message.content + 1] = block
+          ---@type Neoagent.AnthropicToolState
+          local state = {
+            block = block, stopped = false, raw = "",
+            input = raw.input == nil and vim.empty_dict() or util.copy(raw.input),
+          }
+          register_block(index, state)
         else
           error(util.error("protocol", "Unsupported Anthropic content block: " .. tostring(raw.type)), 0)
         end
       end
 
+      ---@param event Neoagent.JsonObject|Neoagent.JsonArray
       local function delta_block(event)
-        local state = blocks[event.index]
+        local index = event.index
+        local state = type(index) == "number" and blocks[index] or nil
         local delta = event.delta
         if not state or state.stopped or type(delta) ~= "table" then
           error(util.error("protocol", "Anthropic delta has no active content block"), 0)
         end
-        if delta.type == "text_delta" and state.block.type == "text" then
-          append_delta(state, "text", delta.text, "text_delta")
-        elseif delta.type == "thinking_delta" and state.block.type == "thinking" then
-          append_delta(state, "thinking", delta.thinking, "thinking_delta")
-        elseif delta.type == "signature_delta" and state.block.type == "thinking" then
+        -- This state was registered under a validated integral block index.
+        ---@cast index integer
+        local block = state.block
+        if delta.type == "text_delta" and block.type == "text" then
+          ---@cast block Neoagent.TextBlock
+          append_text(block, delta.text)
+        elseif delta.type == "thinking_delta" and block.type == "thinking" then
+          append_thinking(block, delta.thinking)
+        elseif delta.type == "signature_delta" and block.type == "thinking" then
           if nonempty(delta.signature) then
             if not util.is_valid_utf8(delta.signature) then
               error(util.error("protocol",
                 "Anthropic thinking signature must contain valid UTF-8"), 0)
             end
-            state.block.thinkingSignature = state.block.thinkingSignature .. delta.signature
+            block.thinkingSignature = block.thinkingSignature .. delta.signature
           end
-        elseif delta.type == "input_json_delta" and state.block.type == "toolCall" then
+        elseif delta.type == "input_json_delta" and block.type == "toolCall" then
+          ---@cast state Neoagent.AnthropicToolState
           local value = type(delta.partial_json) == "string" and delta.partial_json or ""
           state.raw = state.raw .. value
           run:emit({
             type = "tool_call_delta",
-            index = event.index,
-            id = state.block.id ~= "" and state.block.id or nil,
-            name = state.block.name ~= "" and state.block.name or nil,
+            index = index,
+            id = block.id ~= "" and block.id or nil,
+            name = block.name ~= "" and block.name or nil,
             arguments_delta = value ~= "" and value or nil,
           })
         elseif delta.type ~= "citations_delta" then
@@ -208,13 +310,16 @@ function Model:stream(opts)
         end
       end
 
+      ---@param event Neoagent.JsonObject|Neoagent.JsonArray
       local function stop_block(event)
-        local state = blocks[event.index]
+        local index = event.index
+        local state = type(index) == "number" and blocks[index] or nil
         if not state or state.stopped then
           error(util.error("protocol", "Anthropic content block stopped without a start"), 0)
         end
         state.stopped = true
         if state.block.type ~= "toolCall" then return end
+        ---@cast state Neoagent.AnthropicToolState
         if not nonempty(state.block.id) then
           error(util.error("protocol", "Tool call is missing an id"), 0)
         end
@@ -228,10 +333,13 @@ function Model:stream(opts)
         else
           arguments, arguments_error = tool_arguments.normalize(state.input)
         end
+        -- The input came from JSON; normalization retains only an outer object.
+        ---@cast arguments Neoagent.JsonObject
         state.block.arguments = arguments
         state.block.argumentsError = arguments_error
       end
 
+      ---@param event Neoagent.JsonValue
       local function process_payload(event)
         if type(event) ~= "table" then
           error(util.error("protocol", "Expected an object in Anthropic SSE response"), 0)
@@ -239,8 +347,9 @@ function Model:stream(opts)
         if event.type == "ping" then
           return
         elseif event.type == "error" then
-          local provider_error = type(event.error) == "table" and event.error or {}
-          error(util.error("model", provider_error.message or "Provider returned an error", util.json_encode(event)), 0)
+          error(util.error("model",
+            http_response.error_message(event, "Provider returned an error"),
+            util.json_encode(event)), 0)
         elseif event.type == "message_start" then
           if message_start_seen or type(event.message) ~= "table" then
             error(util.error("protocol", "Invalid Anthropic message_start"), 0)
@@ -315,6 +424,8 @@ function Model:stream(opts)
   })
 end
 
+---@param opts Neoagent.AnthropicModelOptions
+---@return Neoagent.AnthropicModel
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
@@ -326,7 +437,7 @@ function M.new(opts)
   local layers = {}
   for _, layer in ipairs(opts.request_opts_layers or {}) do layers[#layers + 1] = layer end
   if opts.request_opts ~= nil then layers[#layers + 1] = opts.request_opts end
-  return model_contract.assert(setmetatable({
+  local result = model_contract.assert(setmetatable({
     api = "anthropic-messages",
     provider = opts.provider,
     id = opts.model,
@@ -341,6 +452,8 @@ function M.new(opts)
     _request_context = request_context.copy(opts.request_context),
     _transport = http.new(opts.transport),
   }, Model), "Anthropic Messages constructor")
+  ---@cast result Neoagent.AnthropicModel
+  return result
 end
 
 M._encode_messages = request.encode_messages

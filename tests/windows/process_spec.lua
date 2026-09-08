@@ -1,12 +1,20 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local process = require("neoagent.process")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@param timeout? integer
+---@return Neoagent.RunResult<T>
 local function wait(run, timeout)
   assert(vim.wait(timeout or 10000, function() return run:is_done() end, 10))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param command string[]
+---@param opts? Neoagent.ProcessOptions
+---@return Neoagent.RunResult<Neoagent.ProcessResult>
 local function run(command, opts)
   return wait(async.run(function() return process.run(command, opts) end))
 end
@@ -17,6 +25,7 @@ describe("neoagent Windows process runner", function()
     return
   end
 
+  ---@type string?
   local root
 
   after_each(function()
@@ -62,9 +71,9 @@ describe("neoagent Windows process runner", function()
     active:cancel()
     local cancelled = wait(active)
     assert.is_true(child_started)
-    assert.are.equal("cancelled", cancelled.error.kind)
-    assert.is_false(vim.wait(5000, function()
+    assert.are.equal("cancelled", assert(cancelled.error).kind)
+    assert.is_false((vim.wait(5000, function()
       return vim.uv.fs_stat(survived) ~= nil
-    end, 20))
+    end, 20)))
   end)
 end)

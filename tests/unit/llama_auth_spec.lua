@@ -1,16 +1,23 @@
+local assert = require("luassert")
 local auth = require("neoagent.providers.llama.auth")
 local fake_transport = require("tests.helpers.fake_transport")
 
 describe("neoagent llama.cpp auth", function()
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>
+  ---@return Neoagent.RunResult<T>
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
+    return (assert(run:result()))
   end
 
+  ---@param transport Neoagent.ByteBackend
+  ---@return { server_url: string, api_key?: string }[], fun()
   local function patch_client(transport)
     local client = require("neoagent.providers.llama.client")
     local original_new = client.new
     local seen = {}
+    ---@param opts Neoagent.LlamaClientOptions
     client.new = function(opts)
       opts.transport = transport
       seen[#seen + 1] = {
@@ -33,6 +40,7 @@ describe("neoagent llama.cpp auth", function()
       { type = "text", value = "" },
     }
     local result = wait(method.login({
+      notify = function() end,
       prompt = function(prompt, done)
         local next = table.remove(prompts, 1)
         assert(next, "unexpected prompt: " .. tostring(prompt.type))
@@ -44,13 +52,13 @@ describe("neoagent llama.cpp auth", function()
     restore()
     vim.env.LLAMA_BASE_URL = original_url
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("api_key", result.credential.type)
     assert.are.equal("anonymous", result.credential.key)
-    assert.are.equal("1", result.credential.env.LLAMA_ANONYMOUS)
-    assert.are.equal("http://127.0.0.1:8080", result.credential.env.LLAMA_BASE_URL)
-    assert.are.equal("http://127.0.0.1:8080", seen[1].server_url)
-    assert.is_nil(seen[1].api_key)
+    assert.are.equal("1", assert(result.credential.env).LLAMA_ANONYMOUS)
+    assert.are.equal("http://127.0.0.1:8080", assert(result.credential.env).LLAMA_BASE_URL)
+    assert.are.equal("http://127.0.0.1:8080", assert(seen[1]).server_url)
+    assert.is_nil(assert(seen[1]).api_key)
     assert.are.equal(1, #seen)
   end)
 
@@ -69,6 +77,7 @@ describe("neoagent llama.cpp auth", function()
       { type = "secret", value = "key" },
     }
     local result = wait(method.login({
+      notify = function() end,
       prompt = function(prompt, done)
         local next = table.remove(prompts, 1)
         assert(next, "unexpected prompt: " .. tostring(prompt.type))
@@ -80,10 +89,10 @@ describe("neoagent llama.cpp auth", function()
     restore()
     vim.env.LLAMA_BASE_URL = original_url
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("key", result.credential.key)
-    assert.is_nil(seen[1].api_key)
-    assert.are.equal("key", seen[2].api_key)
+    assert.is_nil(assert(seen[1]).api_key)
+    assert.are.equal("key", assert(seen[2]).api_key)
     assert.are.equal(2, #seen)
   end)
 
@@ -97,6 +106,7 @@ describe("neoagent llama.cpp auth", function()
     local seen, restore = patch_client(transport)
     local method = auth.new()
     local result = wait(method.login({
+      notify = function() end,
       prompt = function(prompt, done)
         done.resolve("http://127.0.0.1:8080")
         return function() end
@@ -104,7 +114,7 @@ describe("neoagent llama.cpp auth", function()
     }))
     restore()
     assert.is_false(result.ok)
-    assert.matches("router mode", result.error.message)
+    assert.matches("router mode", assert(result.error).message)
 
     transport = fake_transport.new()
     transport.fetches = {
@@ -112,6 +122,7 @@ describe("neoagent llama.cpp auth", function()
     }
     seen, restore = patch_client(transport)
     result = wait(method.login({
+      notify = function() end,
       prompt = function(prompt, done)
         if prompt.type == "secret" then
           done.resolve("")
@@ -124,21 +135,22 @@ describe("neoagent llama.cpp auth", function()
     restore()
     vim.env.LLAMA_BASE_URL = original_url
     assert.is_false(result.ok)
-    assert.matches("API key is required", result.error.message)
+    assert.matches("API key is required", assert(result.error).message)
 
     local llama_client = require("neoagent.providers.llama.client")
     local original_new = llama_client.new
-    llama_client.new = function()
-      return {
-        list = function()
-          return require("neoagent.async").run(function()
-            return { ok = false }
-          end)
-        end,
-      }
+    llama_client.new = function(opts)
+      local client = original_new(opts)
+      client.list = function()
+        return require("neoagent.async").run(function()
+          return { ok = false } --[[@as Neoagent.AsyncFailure]]
+        end)
+      end
+      return client
     end
     local ok, fallback = pcall(function()
       return wait(method.login({
+        notify = function() end,
         prompt = function(_, done)
           done.resolve("http://127.0.0.1:8080")
           return function() end
@@ -146,9 +158,9 @@ describe("neoagent llama.cpp auth", function()
       }))
     end)
     llama_client.new = original_new
-    assert(ok, fallback)
+    assert(ok, tostring(fallback))
     assert.is_false(fallback.ok)
-    assert.matches("server check failed", fallback.error.message)
+    assert.matches("server check failed", assert(fallback.error).message)
   end)
 
   it("derives request options and public metadata", function()
@@ -159,7 +171,7 @@ describe("neoagent llama.cpp auth", function()
       env = { LLAMA_BASE_URL = "http://127.0.0.1:8080" },
     })
     assert.are.equal("http://127.0.0.1:8080/v1/chat/completions", request_opts.url)
-    assert.are.equal("Bearer key", request_opts.headers.Authorization)
+    assert.are.equal("Bearer key", rawget(assert(request_opts.headers), "Authorization"))
     local anonymous = method.request_opts({
       type = "api_key",
       key = "anonymous",
@@ -171,11 +183,11 @@ describe("neoagent llama.cpp auth", function()
     assert.are.equal("http://127.0.0.1:8080/v1/chat/completions", anonymous.url)
     assert.is_nil(anonymous.headers)
     assert.are.same({ server_url = "http://127.0.0.1:8080" },
-      method.public_metadata({
+      assert(method.public_metadata)({
         type = "api_key",
         key = "key",
         env = { LLAMA_BASE_URL = "http://127.0.0.1:8080" },
       }))
-    assert.is_nil(method.public_metadata({ type = "api_key", key = "key" }))
+    assert.is_nil(assert(method.public_metadata)({ type = "api_key", key = "key" }))
   end)
 end)

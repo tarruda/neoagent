@@ -2,16 +2,24 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.ThinkingLevel 'off'|'minimal'|'low'|'medium'|'high'|'xhigh'|'max'|'ultra'
+---@alias Neoagent.ThinkingOptions table<Neoagent.ThinkingLevel, Neoagent.RequestLayer|false>
+
+---@type Neoagent.ThinkingLevel[]
 local order = {
   "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 }
 local known = {}
 for _, level in ipairs(order) do known[level] = true end
 
+---@param level unknown
+---@return TypeGuard<Neoagent.ThinkingLevel>
 function M.is_level(level)
   return type(level) == "string" and known[level] == true
 end
 
+---@param model? { thinking?: Neoagent.ThinkingOptions|false }
+---@return Neoagent.ThinkingLevel[]
 function M.levels(model)
   local configured = model and model.thinking
   if type(configured) ~= "table" then return {} end
@@ -25,6 +33,9 @@ function M.levels(model)
   return result
 end
 
+---@param model? { thinking?: Neoagent.ThinkingOptions|false }
+---@param level unknown
+---@return Neoagent.ThinkingLevel?
 function M.clamp(model, level)
   local available = M.levels(model)
   if #available == 0 then return nil end
@@ -42,6 +53,9 @@ function M.clamp(model, level)
   end
 end
 
+---@param model? { thinking?: Neoagent.ThinkingOptions|false }
+---@param level unknown
+---@return Neoagent.ThinkingLevel?
 function M.next(model, level)
   local available = M.levels(model)
   if #available == 0 then return nil end
@@ -51,6 +65,9 @@ function M.next(model, level)
   end
 end
 
+---@param model? { thinking?: Neoagent.ThinkingOptions|false }
+---@param level? Neoagent.ThinkingLevel
+---@return Neoagent.RequestLayer?
 function M.request_opts(model, level)
   if level == nil then return nil end
   local value = model and type(model.thinking) == "table" and model.thinking[level] or nil

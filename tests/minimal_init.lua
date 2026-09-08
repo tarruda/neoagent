@@ -1,4 +1,4 @@
-local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+local root = vim.fn.fnamemodify(assert(debug.getinfo(1, "S")).source:sub(2), ":p:h:h")
 vim.opt.runtimepath:prepend(root)
 package.path = root .. "/.deps/luacov/src/?.lua;" .. root .. "/.deps/luacov/src/?/init.lua;" .. package.path
 
@@ -27,18 +27,23 @@ for _, name in ipairs({
   vim.env[name] = nil
 end
 
+---@type table<string, [string[], string]>
 local clipboard_contents = {
   ["+"] = { {}, "v" },
   ["*"] = { {}, "v" },
 }
+---@param register string
+---@return fun(lines: string[], regtype: string)
 local function clipboard_copy(register)
   return function(lines, regtype)
     clipboard_contents[register] = { vim.deepcopy(lines), regtype }
   end
 end
+---@param register string
+---@return fun(): [string[], string]
 local function clipboard_paste(register)
   return function()
-    return vim.deepcopy(clipboard_contents[register])
+    return vim.deepcopy(assert(clipboard_contents[register]))
   end
 end
 vim.g.clipboard = {
@@ -57,7 +62,7 @@ vim.g.clipboard = {
 if vim.env.NEOAGENT_COVERAGE == "1" then
   vim.fn.mkdir(root .. "/.coverage", "p")
   local runner = require("luacov.runner")
-  runner((vim.env.LUACOV_CONFIG or (root .. "/.luacov")))
+  runner((vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
   vim.api.nvim_create_autocmd("VimLeavePre", {
     once = true,
     callback = function() runner.shutdown() end,

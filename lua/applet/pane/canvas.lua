@@ -2,8 +2,70 @@ local util = require("applet.util")
 
 local M = {}
 
+---@alias Applet.CanvasOwner integer|string
+
+---@class Applet.CellInterval
+---@field first integer
+---@field last integer
+
+---@alias Applet.CellCoverage table<integer, Applet.CellInterval[]>
+---@alias Applet.OwnerCoverage table<Applet.CanvasOwner, Applet.CellCoverage>
+
+---@class Applet.CanvasLayer
+---@field id Applet.CanvasOwner
+---@field row integer
+---@field col integer
+---@field zindex number
+---@field order integer
+---@field lines string[]
+---@field coverage? Applet.CellCoverage
+---@field clip? Applet.Rectangle
+
+---@class Applet.CanvasSpan: Applet.CellInterval
+---@field owner Applet.CanvasOwner
+---@field layer Applet.CanvasLayer
+---@field source_row integer
+---@field source_first integer
+
+---@alias Applet.CellMap table<integer, Applet.CanvasSpan[]>
+
+---@class Applet.CanvasOptions
+---@field width integer
+---@field height integer
+---@field layers? Applet.CanvasLayer[]
+
+---@class Applet.CanvasResult
+---@field lines string[]
+---@field coverage Applet.CellCoverage
+---@field cell_map? Applet.CellMap
+---@field visible table<Applet.CanvasOwner, Applet.Rectangle[]>
+---@field layers Applet.CanvasLayer[]
+
+---@class Applet.Glyph
+---@field text string
+---@field col integer
+---@field width integer
+
+---@class Applet.LineRaster
+---@field [integer] Applet.Glyph
+---@field line string
+---@field offsets integer[]
+---@field single_cell boolean
+---@field cell_width integer
+
+---@class Applet.CanvasRow
+---@field text (string|false)[]
+---@field first integer[]
+---@field width integer[]
+---@field owner Applet.CanvasOwner[]
+
+---@type table<string[], table<integer, Applet.LineRaster>>
 local rasters = setmetatable({}, { __mode = "k" })
 
+---@param intervals? Applet.CellInterval[]
+---@param first integer
+---@param last integer
+---@return boolean
 local function covered(intervals, first, last)
   local cursor = first
   for _, interval in ipairs(intervals or {}) do
@@ -17,6 +79,9 @@ local function covered(intervals, first, last)
   return cursor >= last
 end
 
+---@param lines string[]
+---@param row integer
+---@return Applet.LineRaster
 local function line_raster(lines, row)
   local raster = rasters[lines]
   if not raster then
@@ -26,11 +91,14 @@ local function line_raster(lines, row)
   local cached = raster[row + 1]
   if cached then return cached end
 
-  local result, col, byte_col = {
+  ---@type Applet.LineRaster
+  local result = {
     line = lines[row + 1] or "",
     offsets = { 0 },
     single_cell = true,
-  }, 0, 0
+    cell_width = 0,
+  }
+  local col, byte_col = 0, 0
   local line = result.line
   util.characters(line, "container line")
   for index = 0, vim.fn.strchars(line, 1) - 1 do
@@ -53,6 +121,9 @@ local function line_raster(lines, row)
   return result
 end
 
+---@param row Applet.CanvasRow
+---@param col integer
+---@param owner Applet.CanvasOwner
 local function clear_glyph(row, col, owner)
   local first = row.first[col + 1]
   if first == nil then return end
@@ -66,6 +137,9 @@ local function clear_glyph(row, col, owner)
   end
 end
 
+---@param row Applet.CanvasRow
+---@param col integer
+---@param owner Applet.CanvasOwner
 local function paint_blank(row, col, owner)
   clear_glyph(row, col, owner)
   local offset = col + 1
@@ -75,6 +149,11 @@ local function paint_blank(row, col, owner)
   row.owner[offset] = owner
 end
 
+---@param row Applet.CanvasRow
+---@param col integer
+---@param text string
+---@param width integer
+---@param owner Applet.CanvasOwner
 local function paint_glyph(row, col, text, width, owner)
   for index = col, col + width - 1 do clear_glyph(row, index, owner) end
   local offset = col + 1
@@ -91,6 +170,10 @@ local function paint_glyph(row, col, text, width, owner)
   end
 end
 
+---@param grid Applet.CanvasRow[]
+---@param width integer
+---@param height integer
+---@param layer Applet.CanvasLayer
 local function paint_layer(grid, width, height, layer)
   local clip = layer.clip or { row = 0, col = 0, width = width, height = height }
   local clip_top = math.max(0, clip.row)
@@ -101,6 +184,8 @@ local function paint_layer(grid, width, height, layer)
     local target_row = layer.row + source_row
     if target_row >= clip_top and target_row < clip_bottom then
       local row = grid[target_row + 1]
+      -- The grid contains every row within the clipped canvas bounds.
+      ---@cast row Applet.CanvasRow
       for _, interval in ipairs(intervals) do
         local first = math.max(clip_left, layer.col + interval.first)
         local last = math.min(clip_right, layer.col + interval.last)
@@ -119,6 +204,11 @@ local function paint_layer(grid, width, height, layer)
   end
 end
 
+---@param target Applet.OwnerCoverage
+---@param owner Applet.CanvasOwner
+---@param row integer
+---@param first integer
+---@param last integer
 local function append_interval(target, owner, row, first, last)
   target[owner] = target[owner] or {}
   target[owner][row] = target[owner][row] or {}
@@ -126,9 +216,18 @@ local function append_interval(target, owner, row, first, last)
   intervals[#intervals + 1] = { first = first, last = last }
 end
 
+---@param row Applet.CanvasRow
+---@param width integer
+---@param index integer
+---@param visible Applet.OwnerCoverage
+---@return string, Applet.CellInterval[]
 local function collect_row(row, width, index, visible)
   local parts, coverage = {}, {}
-  local coverage_first, owner, owner_first = nil, nil, nil
+  ---@type integer?
+  local coverage_first
+  ---@type Applet.CanvasOwner?
+  local owner
+  local owner_first = 0
   local col = 0
   while col < width do
     local offset = col + 1
@@ -137,7 +236,7 @@ local function collect_row(row, width, index, visible)
       if owner ~= nil then
         append_interval(visible, owner, index, owner_first, col)
       end
-      owner, owner_first = current_owner, current_owner and col or nil
+      owner, owner_first = current_owner, col
     end
     if current_owner ~= nil and coverage_first == nil then
       coverage_first = col
@@ -153,8 +252,12 @@ local function collect_row(row, width, index, visible)
     else
       assert(row.first[offset] == col,
         "container canvas contains a partial glyph")
+      -- A glyph start owns its text and width, including a painted blank.
+      ---@cast text string
+      local glyph_width = row.width[offset]
+      ---@cast glyph_width integer
       parts[#parts + 1] = text
-      col = col + row.width[offset]
+      col = col + glyph_width
     end
   end
   if owner ~= nil then append_interval(visible, owner, index, owner_first, col) end
@@ -164,6 +267,9 @@ local function collect_row(row, width, index, visible)
   return table.concat(parts), coverage
 end
 
+---@param rows? Applet.CellCoverage
+---@param height integer
+---@return Applet.Rectangle[]
 local function rectangles_for_rows(rows, height)
   local result, active = {}, {}
   for row = 0, height - 1 do
@@ -189,6 +295,10 @@ local function rectangles_for_rows(rows, height)
   return result
 end
 
+---@param layers Applet.CanvasLayer[]
+---@param width integer
+---@param height integer
+---@return boolean
 local function single_cell_layers(layers, width, height)
   for _, layer in ipairs(layers) do
     local clip = layer.clip or { row = 0, col = 0, width = width, height = height }
@@ -205,6 +315,11 @@ local function single_cell_layers(layers, width, height)
   return true
 end
 
+---@param lines string[]
+---@param row integer
+---@param first integer
+---@param last integer
+---@return string
 local function single_cell_slice(lines, row, first, last)
   local width = last - first
   local raster = line_raster(lines, row)
@@ -218,6 +333,11 @@ local function single_cell_slice(lines, row, first, last)
   return value
 end
 
+---@param lines string[]
+---@param row integer
+---@param first integer
+---@param last integer
+---@return string
 function M.slice(lines, row, first, last)
   assert(type(first) == "number" and type(last) == "number"
       and first >= 0 and first <= last,
@@ -245,6 +365,9 @@ function M.slice(lines, row, first, last)
   return table.concat(parts)
 end
 
+---@param span Applet.CanvasSpan
+---@param cells integer
+---@return integer
 local function span_bytes(span, cells)
   local raster = line_raster(span.layer.lines, span.source_row)
   local first = math.min(span.source_first, raster.cell_width)
@@ -254,6 +377,10 @@ local function span_bytes(span, cells)
   return byte_last - byte_first + math.max(0, cells - (last - first))
 end
 
+---@param span Applet.CanvasSpan
+---@param first integer
+---@param last integer
+---@return Applet.CanvasSpan
 local function clipped_span(span, first, last)
   return {
     first = first,
@@ -265,6 +392,13 @@ local function clipped_span(span, first, last)
   }
 end
 
+---@param spans Applet.CanvasSpan[]
+---@param first integer
+---@param last integer
+---@param layer Applet.CanvasLayer
+---@param source_row integer
+---@param source_first integer
+---@return Applet.CanvasSpan[]
 local function overlay_span(
     spans, first, last, layer, source_row, source_first)
   local result = { {
@@ -291,7 +425,12 @@ local function overlay_span(
   return result
 end
 
+---@param width integer
+---@param height integer
+---@param layers Applet.CanvasLayer[]
+---@return Applet.CellMap, table<Applet.CanvasOwner, Applet.Rectangle[]>
 local function visible_spans(width, height, layers)
+  ---@type Applet.CellMap
   local spans = {}
   for row = 1, height do spans[row] = {} end
   for _, layer in ipairs(layers) do
@@ -331,6 +470,10 @@ local function visible_spans(width, height, layers)
   return spans, visible
 end
 
+---@param width integer
+---@param height integer
+---@param layers Applet.CanvasLayer[]
+---@return Applet.CanvasResult
 local function compose_single_cell(width, height, layers)
   local lines = {}
   local spans, visible = visible_spans(width, height, layers)
@@ -370,6 +513,8 @@ local function compose_single_cell(width, height, layers)
   }
 end
 
+---@param values? Applet.CanvasLayer[]
+---@return Applet.CanvasLayer[]
 local function ordered_layers(values)
   local layers = vim.list_slice(values or {})
   table.sort(layers, function(left, right)
@@ -379,9 +524,15 @@ local function ordered_layers(values)
   return layers
 end
 
+---@param cell_map? Applet.CellMap
+---@param row integer
+---@param col integer
+---@return integer
 function M.byte_col(cell_map, row, col)
   local display, bytes = 0, 0
-  for _, span in ipairs(cell_map and cell_map[row + 1] or {}) do
+  ---@type Applet.CanvasSpan[]
+  local spans = cell_map and cell_map[row + 1] or {}
+  for _, span in ipairs(spans) do
     if display < span.first then
       local gap = span.first - display
       if col <= span.first then return bytes + math.max(0, col - display) end
@@ -396,6 +547,8 @@ function M.byte_col(cell_map, row, col)
   return bytes + math.max(0, col - display)
 end
 
+---@param opts Applet.CanvasOptions
+---@return Applet.CanvasResult
 function M.compose(opts)
   local width, height = assert(opts.width), assert(opts.height)
   local layers = ordered_layers(opts.layers)
@@ -404,6 +557,7 @@ function M.compose(opts)
     return compose_single_cell(width, height, layers)
   end
 
+  ---@type Applet.CanvasRow[]
   local grid = {}
   for row = 1, height do
     grid[row] = { text = {}, first = {}, width = {}, owner = {} }
@@ -411,9 +565,9 @@ function M.compose(opts)
   for _, layer in ipairs(layers) do paint_layer(grid, width, height, layer) end
 
   local lines, coverage, owner_rows = {}, {}, {}
-  for row = 0, height - 1 do
-    lines[row + 1], coverage[row] = collect_row(
-      grid[row + 1], width, row, owner_rows)
+  for index, row in ipairs(grid) do
+    lines[index], coverage[index - 1] = collect_row(
+      row, width, index - 1, owner_rows)
   end
 
   local visible = {}

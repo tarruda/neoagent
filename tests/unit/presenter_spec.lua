@@ -1,9 +1,13 @@
+local assert = require("luassert")
 local Presenter = require("neoagent.presenter")
 
+---@param overrides? Partial<Neoagent.PresenterHost>
+---@return Neoagent.PresenterHost
 local function host(overrides)
+  ---@type Neoagent.PresenterHost
   local value = {
-    select = function(request, done) done.resolve(request.items[1].id) end,
-    input = function(request, done) done.resolve(request.default) end,
+    select = function(request, done) done.resolve(assert(request.items[1]).id) end,
+    input = function(request, done) done.resolve(request.default or "") end,
     notice = function(_, done) done.resolve(true) end,
     notify = function() end,
     open_uri = function() end,
@@ -13,6 +17,7 @@ local function host(overrides)
 end
 
 describe("neoagent semantic Presenter", function()
+  ---@type Neoagent.Presenter[]
   local presenters = {}
   local original_select
 
@@ -24,6 +29,8 @@ describe("neoagent semantic Presenter", function()
     presenters = {}
   end)
 
+  ---@param opts? {host?: Neoagent.PresenterHost}
+  ---@return Neoagent.Presenter
   local function presenter(opts)
     local value = Presenter.new(opts)
     presenters[#presenters + 1] = value
@@ -42,8 +49,8 @@ describe("neoagent semantic Presenter", function()
     })
     local run = value:select({ items = { "alpha", "beta" } })
     assert.is_true(run:is_done())
-    assert.is_true(run:result().ok)
-    assert.are.equal("beta", run:result().value)
+    assert.is_true(assert(run:result()).ok)
+    assert.are.equal("beta", assert(run:result()).value)
     assert.are.equal("beta", selected)
   end)
 
@@ -63,10 +70,11 @@ describe("neoagent semantic Presenter", function()
     })
     assert.is_true(run:is_done())
     assert.is_false(fallback)
-    assert.is_false(run:result().value)
+    assert.is_false(assert(run:result()).value)
   end)
 
   it("publishes FIFO semantic requests and resolves private values", function()
+    ---@type Neoagent.PresentationSnapshot[]
     local publications = {}
     local value = presenter({ host = host() })
     local detach = value:attach({
@@ -83,20 +91,23 @@ describe("neoagent semantic Presenter", function()
       prompt = "Name", default = "draft", allow_empty = true,
     })
     local snapshot = value:snapshot()
-    assert.are.equal("select", snapshot.active.kind)
+    local active = assert(snapshot.active)
+    assert(active.kind == "select")
+    local item = assert(active.items[1])
     assert.are.equal(1, snapshot.queue_count)
-    assert.is_nil(snapshot.active.items[1].value)
-    assert.is_nil(snapshot.active.items[1].fallback)
-    assert.is_nil(value:resolve(snapshot.active.id, "b"))
-    assert(value:resolve(snapshot.active.id, "a"))
+    assert.is_nil(item.value)
+    assert.is_nil(item.fallback)
+    assert.is_nil((value:resolve(active.id, "b")))
+    assert(value:resolve(active.id, "a"))
     assert(vim.wait(1000, function() return first:is_done() end))
-    assert.are.same({ answer = 1 }, first:result().value)
+    assert.are.same({ answer = 1 }, assert(first:result()).value)
     snapshot = value:snapshot()
-    assert.are.equal("input", snapshot.active.kind)
-    assert.are.equal("draft", snapshot.active.default)
-    assert(value:resolve(snapshot.active.id, ""))
+    active = assert(snapshot.active)
+    assert(active.kind == "input")
+    assert.are.equal("draft", active.default)
+    assert(value:resolve(active.id, ""))
     assert(vim.wait(1000, function() return second:is_done() end))
-    assert.are.equal("", second:result().value)
+    assert.are.equal("", assert(second:result()).value)
     assert.is_nil(value:snapshot().active)
     assert.is_true(#publications >= 4)
     detach()
@@ -109,12 +120,13 @@ describe("neoagent semantic Presenter", function()
       prompt = "Live models",
       items = { { id = "one", label = "One", value = "old" } },
     })
-    local id = value:snapshot().active.id
+    local id = assert(value:snapshot().active).id
     assert.is_true(update({
       { id = "one", label = "One updated", value = "new" },
       { id = "two", label = "Two", value = "second" },
     }))
-    local active = value:snapshot().active
+    local active = assert(value:snapshot().active)
+    assert(active.kind == "select")
     assert.are.equal(id, active.id)
     assert.are.same({ "One updated", "Two" },
       vim.tbl_map(function(item) return item.label end, active.items))
@@ -130,12 +142,13 @@ describe("neoagent semantic Presenter", function()
     }))
     assert(value:resolve(id, "one"))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.are.equal("new", run:result().value)
-    active = value:snapshot().active
-    assert.are.equal("Queued updated", active.items[1].label)
+    assert.are.equal("new", assert(run:result()).value)
+    active = assert(value:snapshot().active)
+    assert(active.kind == "select")
+    assert.are.equal("Queued updated", assert(active.items[1]).label)
     assert(value:resolve(active.id, "queued"))
     assert(vim.wait(1000, function() return queued:is_done() end))
-    assert.are.equal("new queued", queued:result().value)
+    assert.are.equal("new queued", assert(queued:result()).value)
     assert.is_false(update({}))
     value:destroy()
     assert.is_false(update({ { id = "one", label = "Destroyed" } }))
@@ -162,12 +175,13 @@ describe("neoagent semantic Presenter", function()
 
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.are.equal("Resume on host", hosted)
-    assert.are.equal("one", run:result().value)
+    assert.are.equal("one", assert(run:result()).value)
   end)
 
   it("retires each fallback exactly once when an Applet takes over", function()
     for _, kind in ipairs({ "select", "input", "notice" }) do
       local cancelled = 0
+      ---@type Applet.PresentationCallbacks<unknown>?
       local fallback_done
       local value = presenter({
         host = host({
@@ -186,13 +200,14 @@ describe("neoagent semantic Presenter", function()
         run = value:notice({ body = "notice" })
       end
       assert.is_false(run:is_done())
+      ---@type Neoagent.PresentationSnapshot?
       local presented
       local detach = value:attach({
         present = function(snapshot) presented = snapshot end,
       })
       assert.are.equal(1, cancelled)
-      local active = assert(presented.active)
-      local response = kind == "select" and active.items[1].id
+      local active = assert(assert(presented).active)
+      local response = active.kind == "select" and assert(active.items[1]).id
         or kind == "input" and "answer" or nil
       assert(value:resolve(active.id, response))
       assert(vim.wait(1000, function() return run:is_done() end))
@@ -206,13 +221,13 @@ describe("neoagent semantic Presenter", function()
     local value = presenter({ host = host() })
     local detach = value:attach({ present = function() end })
     local run = value:notice({ prompt = "Device login", body = "Code 1234" })
-    local active = value:snapshot().active
+    local active = assert(value:snapshot().active)
     assert.are.equal("notice", active.kind)
     assert.are.equal("Device login", active.prompt)
     assert.are.equal("Code 1234", active.body)
     assert(value:resolve(active.id))
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert.is_true(run:result().value)
+    assert.is_true(assert(run:result()).value)
     detach()
   end)
 
@@ -220,19 +235,19 @@ describe("neoagent semantic Presenter", function()
     local value = presenter({ host = host() })
     local detach = value:attach({ present = function() end })
     local rejected = value:confirm({ prompt = "Continue?" })
-    local active = value:snapshot().active
+    local active = assert(value:snapshot().active)
     assert(value:resolve(active.id, "no"))
     assert(vim.wait(1000, function() return rejected:is_done() end))
-    assert.is_false(rejected:result().value)
+    assert.is_false(assert(rejected:result()).value)
 
     local input = value:input({ prompt = "One line" })
-    active = value:snapshot().active
-    assert.is_nil(value:resolve(active.id, "two\nlines"))
-    assert.is_nil(value:resolve(active.id, ""))
+    active = assert(value:snapshot().active)
+    assert.is_nil((value:resolve(active.id, "two\nlines")))
+    assert.is_nil((value:resolve(active.id, "")))
     assert(value:cancel(active.id, "dismissed"))
     assert(vim.wait(1000, function() return input:is_done() end))
-    assert.is_false(input:result().ok)
-    assert.are.equal("cancelled", input:result().error.kind)
+    assert.is_false(assert(input:result()).ok)
+    assert.are.equal("cancelled", assert(assert(input:result()).error).kind)
     detach()
   end)
 
@@ -246,8 +261,8 @@ describe("neoagent semantic Presenter", function()
     assert.are.equal(0, value:snapshot().queue_count)
     detach("surface closed")
     assert(vim.wait(1000, function() return active:is_done() end))
-    assert.is_false(active:result().ok)
-    assert.matches("surface closed", active:result().error.message)
+    assert.is_false(assert(active:result()).ok)
+    assert.matches("surface closed", assert(assert(active:result()).error).message)
   end)
 
   it("routes effects through the attached Applet boundary", function()
@@ -293,21 +308,21 @@ describe("neoagent semantic Presenter", function()
     assert.is_false(selection:is_done())
     local resolved, stale_error = value:resolve("stale", "1")
     assert.is_nil(resolved)
-    assert.matches("is not active", stale_error.message)
+    assert.matches("is not active", assert(stale_error).message)
     selection:cancel()
     assert(vim.wait(1000, function() return selection:is_done() end))
     assert.are.equal(1, cancelled)
 
     local failed = value:input({ prompt = "Broken" })
     assert(vim.wait(1000, function() return failed:is_done() end))
-    assert.is_false(failed:result().ok)
-    assert.matches("input host failed", failed:result().error.message)
+    assert.is_false(assert(failed:result()).ok)
+    assert.matches("input host failed", assert(assert(failed:result()).error).message)
 
     local pending = value:select({ items = { "two" } })
     value:destroy()
     assert(vim.wait(1000, function() return pending:is_done() end))
     assert.are.equal(2, cancelled)
-    assert.matches("Presenter was destroyed", pending:result().error.message)
+    assert.matches("Presenter was destroyed", assert(assert(pending:result()).error).message)
 
     local surface = presenter({ host = host() })
     local attached, attach_error = pcall(function()
@@ -316,7 +331,7 @@ describe("neoagent semantic Presenter", function()
       })
     end)
     assert.is_false(attached)
-    assert.matches("surface failed", attach_error)
+    assert.matches("surface failed", tostring(attach_error))
     assert.is_nil(surface.attachment)
   end)
 end)

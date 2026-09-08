@@ -1,5 +1,8 @@
+local assert = require("luassert")
 local markdown = require("neoagent.markdown")
 
+---@param result Neoagent.MarkdownContent
+---@return table<string, boolean>
 local function groups(result)
   local found = {}
   for _, span in ipairs(result.highlights) do found[span.group] = true end
@@ -7,6 +10,18 @@ local function groups(result)
 end
 
 describe("neoagent markdown", function()
+  it("renders underscore emphasis at the beginning of headings", function()
+    local result = markdown.render("# _first_\n## _second_ ##\n### _third_", { width = 80 })
+    assert.are.same({ "first", "second", "### third" }, result.lines)
+    local emphasis = {}
+    for _, span in ipairs(result.highlights) do
+      if span.group == "NeoagentMarkdownItalic" then
+        emphasis[#emphasis + 1] = { span.row, span.col, span.end_col }
+      end
+    end
+    assert.are.same({ { 0, 0, 5 }, { 1, 0, 6 }, { 2, 4, 9 } }, emphasis)
+  end)
+
   it("renders common block and inline Markdown", function()
     local result = markdown.render(table.concat({
       "# Heading",
@@ -48,7 +63,7 @@ describe("neoagent markdown", function()
   it("renders fitting tables and falls back safely in narrow windows", function()
     local source = "| Name | Value |\n| --- | --- |\n| **one** | two |"
     local wide = markdown.render(source, { width = 40 })
-    assert.matches("^┌", wide.lines[1])
+    assert.matches("^┌", (assert(wide.lines[1])))
     assert.matches("one", table.concat(wide.lines, "\n"))
     assert.is_true(groups(wide).NeoagentMarkdownTableBorder)
     local narrow = markdown.render(source, { width = 5 })
@@ -181,19 +196,18 @@ describe("neoagent markdown", function()
     assert.are.same({ 2, 5, 2, 2 }, vim.tbl_map(function(region)
       return region.last - region.first + 1
     end, regions))
-    assert.are.same(document:snapshot().lines,
-      vim.iter(regions):fold({}, function(lines, region)
-        return vim.list_extend(lines, vim.tbl_map(function(row)
-          return row.text
-        end, region.rows))
-      end))
+    local lines = {}
+    for _, region in ipairs(regions) do
+      for _, row in ipairs(region.rows) do lines[#lines + 1] = row.text end
+    end
+    assert.are.same(document:snapshot().lines, lines)
 
     local exact = markdown.new():update("first\nsecond", { width = 40 })
     local exact_regions = exact:regions(2)
     assert.are.equal(1, #exact_regions)
     assert.are.same({ "first", "second" }, vim.tbl_map(function(row)
       return row.text
-    end, exact_regions[1].rows))
+    end, assert(exact_regions[1]).rows))
   end)
 
   it("matches clean parses across streamed Markdown transitions", function()

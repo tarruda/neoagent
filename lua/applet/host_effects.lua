@@ -1,21 +1,40 @@
 local util = require("applet.util")
 
+---@class Applet.HostEffectsModule
 local M = {}
+
+---@class Applet.FileRefreshResult
+---@field refreshed integer
+---@field modified string[]
+---@field failures string[]
+
+---@class Applet.HostDocument
+---@field name string
+---@field filetype string
+---@field content string
+
 
 local sequence = 0
 
+---@param path string
+---@return string
 local function canonical(path)
   return vim.uv.fs_realpath(path) or vim.fs.normalize(path)
 end
 
+---@param value unknown
+---@return boolean
 local function safe_document_name(value)
   if type(value) ~= "string" or value == "" or #value > 256
       or value:find("[/\\]") or value:find("[%z\1-\31\127]") then
     return false
   end
-  return pcall(util.validate_text, value, "host document name")
+  local ok = pcall(util.validate_text, value, "host document name")
+  return ok
 end
 
+---@param path string
+---@return Applet.FileRefreshResult
 function M.refresh_file(path)
   assert(type(path) == "string" and path ~= "",
     "host file path must be a non-empty string")
@@ -43,6 +62,9 @@ function M.refresh_file(path)
   return result
 end
 
+---@param document Applet.HostDocument
+---@return true
+---@return_overload nil, unknown
 function M.open_document(document)
   assert(type(document) == "table", "host document must be a table")
   assert(safe_document_name(document.name),
@@ -52,7 +74,9 @@ function M.open_document(document)
   assert(type(document.content) == "string",
     "host document content must be a string")
   local original_tab = vim.api.nvim_get_current_tabpage()
+  ---@type integer?
   local candidate_tab
+  ---@type integer?
   local candidate_buffer
   local ok, err = pcall(function()
     vim.cmd("tabnew")
@@ -90,6 +114,8 @@ function M.open_document(document)
   return true
 end
 
+---@param callback fun(): boolean?
+---@return fun()
 function M.on_exit(callback)
   assert(type(callback) == "function", "host exit callback must be a function")
   sequence = sequence + 1

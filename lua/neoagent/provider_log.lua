@@ -12,11 +12,15 @@ local fields = {
   "authorization_error", "exit_code",
 }
 
+---@param value unknown
+---@return TypeGuard<string|number|boolean>
 local function scalar(value)
   local kind = type(value)
   return kind == "string" or kind == "number" or kind == "boolean"
 end
 
+---@param event table<string, unknown>
+---@return table<string, string|number|boolean>
 local function sanitized(event)
   local result = {}
   for _, name in ipairs(fields) do
@@ -31,11 +35,16 @@ local function sanitized(event)
   return result
 end
 
+---@param path string
+---@return true?, boolean|string|nil
 local function prepare_directory(path)
   local directory = vim.fs.dirname(path)
-  return fs.ensure_private_directory(directory, 448)
+  return fs.ensure_private_directory(assert(directory), 448)
 end
 
+---@param path string
+---@param encoded string
+---@return true?, string?
 local function append(path, encoded)
   local stat = vim.uv.fs_stat(path)
   if stat then pcall(vim.uv.fs_chmod, path, 384) end
@@ -51,6 +60,9 @@ local function append(path, encoded)
   return true
 end
 
+---@param path string
+---@param event table<string, unknown>
+---@return true?, unknown
 function M.append(path, event)
   assert(type(path) == "string" and path ~= "", "diagnostic log path is required")
   assert(type(event) == "table", "diagnostic event is required")
@@ -65,11 +77,14 @@ function M.append(path, event)
     timeout_ms = LOCK_TIMEOUT_MS,
   }):with(function() return append(path, encoded) end)
   if not appended and type(append_err) == "table" and append_err.kind == "file_lock" then
-    return nil, append_err.detail or append_err.message
+    return nil, rawget(append_err, "detail") or append_err.message
   end
   return appended, append_err
 end
 
+---@param path string
+---@param opts? {report?: fun(message: string, level: integer)}
+---@return fun(event: table<string, unknown>)
 function M.callback(path, opts)
   opts = opts or {}
   assert(type(opts) == "table", "diagnostic callback options must be a table")
@@ -89,6 +104,7 @@ function M.callback(path, opts)
   end
 end
 
+---@return string
 function M.codex_path()
   return vim.fn.stdpath("state") .. "/neoagent/codex.log"
 end

@@ -1,19 +1,30 @@
+local assert = require("luassert")
 local recovery = require("neoagent.providers.opencode_go.model")
 local fake = require("tests.helpers.fake_model")
 local util = require("neoagent.util")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
+---@class Neoagent.TestMissingToolResult: Neoagent.ModelFailure
+---@field message Neoagent.AssistantMessage
+---@field error Neoagent.Error
+
+---@param text? string
+---@return Neoagent.TestMissingToolResult
 local function missing(text)
-  local result = fake.assistant({ { type = "thinking", thinking = text or "First thought." } }, "error")
-  result.ok = false
-  result.error = { kind = "protocol", code = "missing_tool_call", message = "A changed diagnostic." }
-  result.message.errorMessage = result.error.message
-  result.message.usage = { input = 3, output = 2, totalTokens = 5, cost = { input = 1, total = 1 } }
-  return result
+  local message = fake.assistant({ { type = "thinking", thinking = text or "First thought." } }, "error").message
+  message.errorMessage = "A changed diagnostic."
+  message.usage = { input = 3, output = 2, totalTokens = 5, cost = { input = 1, total = 1 } }
+  return { ok = false, message = message,
+    error = { kind = "protocol", code = "missing_tool_call", message = message.errorMessage } }
 end
+---@param responses Neoagent.TestModelResponse[]
+---@return Neoagent.TestModel
 local function model(responses)
   local value = fake.new(responses)
   value.id, value.provider, value.api = "qwen3.8-flash", "opencode-go", "anthropic-messages"
@@ -23,7 +34,9 @@ end
 describe("OpenCode Go Model recovery policy", function()
   it("leaves other models and APIs untouched", function()
     for _, fields in ipairs({ { id = "qwen3.8-max" }, { api = "openai-completions" } }) do
-      local value = vim.tbl_extend("force", model({ { result = missing() } }), fields)
+      local value = model({ { result = missing() } })
+      if fields.id then value.id = fields.id end
+      if fields.api then value.api = fields.api end
       local wrapped = recovery.wrap(value)
       assert.are.equal(value, wrapped)
       assert.is_false(wait(wrapped:stream({ messages = {} })).ok)
@@ -32,8 +45,9 @@ describe("OpenCode Go Model recovery policy", function()
   end)
 
   it("does not continue successful responses or unrelated failures", function()
+    ---@type Neoagent.ModelFailure
     local absent = missing(); absent.message = nil
-    local unrelated = missing(); unrelated.error.code = "invalid_assistant_message"
+    local unrelated = missing(); rawset(unrelated.error, "code", "invalid_assistant_message")
     local provider_error = missing(); provider_error.error.kind = "model"
     for _, result in ipairs({ fake.assistant({}), unrelated, provider_error, absent }) do
       local value = model({ { result = result } })
@@ -50,19 +64,20 @@ describe("OpenCode Go Model recovery policy", function()
     local value = model({ { result = first }, { result = second, events = {
       { type = "text_delta", text = "After." }, { type = "usage", usage = second.message.usage },
     } } })
+    ---@type Neoagent.ModelEvent[]
     local events = {}
     local result = wait(recovery.wrap(value):stream({ messages = {}, on_event = function(event)
       events[#events + 1] = event
     end }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Before.After.", result.text)
-    assert.are.equal("stop", result.message.stopReason)
+    assert.are.equal("stop", assert(result.message).stopReason)
     assert.is_nil(result.message.errorMessage)
-    assert.are.same({ input = 1, output = 2, total = 3 }, result.message.usage.cost)
-    assert.are.equal(12, result.message.usage.totalTokens)
-    assert.are.equal("warning", events[1].type)
-    assert.are.equal(1, events[2].index)
-    assert.are.same(result.message.usage, events[3].usage)
+    assert.are.same({ input = 1, output = 2, total = 3 }, assert(assert(result.message).usage).cost)
+    assert.are.equal(12, assert(assert(result.message).usage).totalTokens)
+    assert.are.equal("warning", assert(events[1]).type)
+    assert.are.equal(1, rawget(assert(events[2]), "index"))
+    assert.are.same(result.message.usage, rawget(assert(events[3]), "usage"))
     assert.are.same({ { type = "text", text = "After." } }, second.message.content)
   end)
 
@@ -80,10 +95,10 @@ describe("OpenCode Go Model recovery policy", function()
       end
       local result = wait(recovery.wrap(value):stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal("Credentials unavailable", result.error.message)
-      assert.are.equal("First thought.", result.message.content[1].thinking)
-      assert.are.equal("error", result.message.stopReason)
-      assert.are.equal(5, result.message.usage.totalTokens)
+      assert.are.equal("Credentials unavailable", assert(result.error).message)
+      assert.are.equal("First thought.", assert(assert(result.message).content[1]).thinking)
+      assert.are.equal("error", assert(result.message).stopReason)
+      assert.are.equal(5, assert(assert(result.message).usage).totalTokens)
     end
   end)
 
@@ -95,9 +110,9 @@ describe("OpenCode Go Model recovery policy", function()
     local wrapped = recovery.wrap(value)
     local a = wrapped:stream({ messages = { { role = "user", content = "A" } } })
     local b = wrapped:stream({ messages = { { role = "user", content = "B" } } })
-    assert.are.equal("A", wait(a).message.content[1].thinking)
-    assert.are.equal("B", wait(b).message.content[1].thinking)
-    assert.are.equal("A", value.requests[3].messages[1].content)
-    assert.are.equal("B", value.requests[4].messages[1].content)
+    assert.are.equal("A", assert(assert(wait(a).message).content[1]).thinking)
+    assert.are.equal("B", assert(assert(wait(b).message).content[1]).thinking)
+    assert.are.equal("A", assert(assert(value.requests[3]).messages[1]).content)
+    assert.are.equal("B", assert(assert(value.requests[4]).messages[1]).content)
   end)
 end)

@@ -1,6 +1,7 @@
 local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.activity_presentation")
 
+---@return Neoagent.Tool<unknown>
 local function new()
   return {
     name = "write_file",

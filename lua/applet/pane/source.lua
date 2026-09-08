@@ -1,9 +1,28 @@
 local M = {}
 
+---@class Applet.SourceRange
+---@field first integer
+---@field last integer
+---@field language? string
+---@field path? string
+---@field linewise? boolean
+---@field rectangles? Applet.Rectangle[]
+
+---@class Applet.SourceRegion
+---@field range Applet.SourceRange
+---@field filetype string
+---@field rectangles? Applet.Rectangle[]
+
+
+---@param value unknown
+---@return TypeGuard<integer>
 local function integer(value)
   return type(value) == "number" and value % 1 == 0
 end
 
+---@param range Applet.SourceRange
+---@param lines string[]
+---@return Applet.Rectangle[]|false|nil
 local function rectangles_for(range, lines)
   if range.rectangles == nil then return nil end
   if type(range.rectangles) ~= "table" or not vim.islist(range.rectangles) then
@@ -25,6 +44,9 @@ local function rectangles_for(range, lines)
   return result
 end
 
+---@param range Applet.SourceRange
+---@param lines string[]
+---@return string?
 local function filetype_for(range, lines)
   if range.language and range.language:match("^[%w_.-]+$") then return range.language end
   if not range.path or range.path == "" then return nil end
@@ -45,11 +67,16 @@ local function clear_current_buffer()
   vim.b.applet_source_regions = 0
 end
 
+---@param buffer integer
 function M.clear(buffer)
   if not vim.api.nvim_buf_is_valid(buffer) then return end
   vim.api.nvim_buf_call(buffer, clear_current_buffer)
 end
 
+---@param buffer integer
+---@param ranges? Applet.SourceRange[]
+---@param lines string[]
+---@return boolean
 function M.apply(buffer, ranges, lines)
   local valid, requested = {}, {}
   for _, range in ipairs(ranges or {}) do
@@ -79,8 +106,10 @@ function M.apply(buffer, ranges, lines)
       if not indexes[filetype] then
         local index = #loaded + 1
         vim.b.current_syntax = nil
-        if pcall(vim.cmd, "syntax include @AppletSource" .. index
-            .. " syntax/" .. filetype .. ".vim") then
+        if pcall(function()
+          vim.cmd("syntax include @AppletSource" .. index
+            .. " syntax/" .. filetype .. ".vim")
+        end) then
           loaded[index], indexes[filetype] = filetype, index
         end
       end
@@ -89,19 +118,25 @@ function M.apply(buffer, ranges, lines)
     vim.b.applet_source_filetypes = loaded
     vim.cmd("syntax sync clear")
     local count = 0
+    ---@param item Applet.SourceRegion
+    ---@param syntax_index integer
     local function linewise_region(item, syntax_index)
       count = count + 1
       local first = "\\%" .. tostring(item.range.first + 1) .. "l"
       local following = item.range.last + 1
       local last = following <= #lines
           and "\\%" .. tostring(following) .. "l" or "\\%$"
-      pcall(vim.cmd, "syntax region AppletSourceContent" .. count
-        .. " start=/" .. first .. "/ end=/" .. last
-        .. "/ keepend contains=@AppletSource" .. syntax_index)
+      pcall(function()
+        vim.cmd("syntax region AppletSourceContent" .. count
+          .. " start=/" .. first .. "/ end=/" .. last
+          .. "/ keepend contains=@AppletSource" .. syntax_index)
+      end)
     end
 
-    local function rectangular_regions(item, syntax_index)
-      for _, rectangle in ipairs(item.rectangles) do
+    ---@param rectangles Applet.Rectangle[]
+    ---@param syntax_index integer
+    local function rectangular_regions(rectangles, syntax_index)
+      for _, rectangle in ipairs(rectangles) do
         for row = rectangle.row,
             rectangle.row + rectangle.height - 1 do
           count = count + 1
@@ -109,9 +144,11 @@ function M.apply(buffer, ranges, lines)
             row + 1, rectangle.col + 1)
           local last = ("\\%%%dl\\%%%dv"):format(
             row + 1, rectangle.col + rectangle.width + 1)
-          pcall(vim.cmd, "syntax region AppletSourceContent" .. count
-            .. " start=/" .. first .. "/ end=/" .. last
-            .. "/ oneline keepend contains=@AppletSource" .. syntax_index)
+          pcall(function()
+            vim.cmd("syntax region AppletSourceContent" .. count
+              .. " start=/" .. first .. "/ end=/" .. last
+              .. "/ oneline keepend contains=@AppletSource" .. syntax_index)
+          end)
         end
       end
     end
@@ -122,7 +159,7 @@ function M.apply(buffer, ranges, lines)
         if item.range.linewise ~= false or item.rectangles == nil then
           linewise_region(item, syntax_index)
         else
-          rectangular_regions(item, syntax_index)
+          rectangular_regions(item.rectangles, syntax_index)
         end
       end
     end

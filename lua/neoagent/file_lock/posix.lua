@@ -1,10 +1,30 @@
 local bit = require("bit")
 
 local M = {}
+---@class Neoagent.PosixLockApi
+---@field flock fun(fd: integer, operation: integer): integer
+
+---@class Neoagent.PosixLockOptions
+---@field ffi? ffilib
+---@field C? Neoagent.PosixLockApi
+---@field uv? uv
+
+---@class Neoagent.PosixLockBackend: Neoagent.LockBackend
+---@field ffi ffilib
+---@field C Neoagent.PosixLockApi
+---@field uv uv
 local Backend = {}
 Backend.__index = Backend
+---@class Neoagent.PosixLockHandle: Neoagent.LockHandle
+---@field path string
+---@field fd? integer
+---@field uv uv
+---@field ffi ffilib
+---@field C Neoagent.PosixLockApi
+---@field locked boolean
 local Handle = {}
 Handle.__index = Handle
+---@type table<ffilib, boolean>
 local declared = {}
 
 local LOCK_EX = 2
@@ -13,22 +33,38 @@ local LOCK_UN = 8
 local EAGAIN = 11
 local EWOULDBLOCK_DARWIN = 35
 
+---@param code string
+---@param message string
+---@param detail? unknown
+---@return Neoagent.LockBackendError
 local function backend_error(code, message, detail)
   return { code = code, message = message, detail = detail }
 end
 
+---@param err? string
+---@param code? string
+---@return boolean
 local function missing(err, code)
   return code == "ENOENT"
     or type(err) == "string" and err:find("ENOENT", 1, true) ~= nil
 end
 
+---@param left? uv.fs_stat.result
+---@param right? uv.fs_stat.result
+---@return boolean?
 local function same_identity(left, right)
   return left and right and left.type == "file" and right.type == "file"
     and left.dev == right.dev and left.ino == right.ino
 end
 
+---@return integer
+function Handle:_descriptor()
+  return (assert(self.fd, "file lock handle is closed"))
+end
+
+---@return uv.fs_stat.result?, Neoagent.LockBackendError?
 function Handle:_verify_identity()
-  local held, held_err = self.uv.fs_fstat(self.fd)
+  local held, held_err = self.uv.fs_fstat(self:_descriptor())
   if not held then
     return nil, backend_error("ownership",
       "Failed to inspect held file lock", held_err)
@@ -48,8 +84,9 @@ function Handle:_verify_identity()
   return held
 end
 
+---@return boolean?, Neoagent.LockBackendError?
 function Handle:try_acquire()
-  local result = self.C.flock(self.fd, bit.bor(LOCK_EX, LOCK_NB))
+  local result = self.C.flock(self:_descriptor(), bit.bor(LOCK_EX, LOCK_NB))
   if result == 0 then
     self.locked = true
     return true
@@ -60,10 +97,12 @@ function Handle:try_acquire()
     "flock error " .. tostring(errno))
 end
 
+---@param mode integer
+---@return true?, Neoagent.LockBackendError?
 function Handle:prepare(mode)
   local identity, identity_err = self:_verify_identity()
   if not identity then return nil, identity_err end
-  local secured, secure_err = self.uv.fs_fchmod(self.fd, mode)
+  local secured, secure_err = self.uv.fs_fchmod(self:_descriptor(), mode)
   if not secured then
     return nil, backend_error("mode", "Failed to secure file lock", secure_err)
   end
@@ -76,28 +115,33 @@ function Handle:prepare(mode)
   return true
 end
 
+---@param token string
+---@return true?, Neoagent.LockBackendError?
 function Handle:write_token(token)
-  local truncated, truncate_err = self.uv.fs_ftruncate(self.fd, 0)
+  local descriptor = self:_descriptor()
+  local truncated, truncate_err = self.uv.fs_ftruncate(descriptor, 0)
   if not truncated then
     return nil, backend_error("write",
       "Failed to truncate held file lock", truncate_err)
   end
-  local written, write_err = self.uv.fs_write(self.fd, token, 0)
+  local written, write_err = self.uv.fs_write(descriptor, token, 0)
   if written ~= #token then
     return nil, backend_error("write", "Failed to write file lock token",
       write_err or "short write")
   end
-  local synced, sync_err = self.uv.fs_fsync(self.fd)
+  local synced, sync_err = self.uv.fs_fsync(descriptor)
   if not synced then
     return nil, backend_error("write", "Failed to sync file lock token", sync_err)
   end
   return true
 end
 
+---@param token string
+---@return true?, Neoagent.LockBackendError?
 function Handle:verify_token(token)
   local identity, identity_err = self:_verify_identity()
   if not identity then return nil, identity_err end
-  local contents, read_err = self.uv.fs_read(self.fd, #token + 1, 0)
+  local contents, read_err = self.uv.fs_read(self:_descriptor(), #token + 1, 0)
   if contents == nil then
     return nil, backend_error("release",
       "Failed to read held file lock", read_err)
@@ -108,9 +152,10 @@ function Handle:verify_token(token)
   return true
 end
 
+---@return true?, Neoagent.LockBackendError?
 function Handle:release()
   if not self.locked then return true end
-  if self.C.flock(self.fd, LOCK_UN) ~= 0 then
+  if self.C.flock(self:_descriptor(), LOCK_UN) ~= 0 then
     return nil, backend_error("release", "Failed to unlock file lock",
       "flock error " .. tostring(self.ffi.errno()))
   end
@@ -118,17 +163,20 @@ function Handle:release()
   return true
 end
 
+---@return true?, Neoagent.LockBackendError?
 function Handle:close()
-  if self.closed then return true end
+  if not self.fd then return true end
   local closed, close_err = self.uv.fs_close(self.fd)
   if not closed then
     return nil, backend_error("release", "Failed to close file lock", close_err)
   end
-  self.closed = true
   self.fd = nil
   return true
 end
 
+---@param path string
+---@param mode integer
+---@return Neoagent.PosixLockHandle?, Neoagent.LockBackendError?
 function Backend:open(path, mode)
   local before, before_err, before_code = self.uv.fs_lstat(path)
   if before and before.type == "link" then
@@ -152,7 +200,6 @@ function Backend:open(path, mode)
     ffi = self.ffi,
     C = self.C,
     locked = false,
-    closed = false,
   }, Handle)
   local held, held_err = handle:_verify_identity()
   if not held then
@@ -162,6 +209,8 @@ function Backend:open(path, mode)
   return handle
 end
 
+---@param opts? Neoagent.PosixLockOptions
+---@return Neoagent.PosixLockBackend
 function M.new(opts)
   opts = opts or {}
   local ffi = opts.ffi or require("ffi")
@@ -169,9 +218,11 @@ function M.new(opts)
     ffi.cdef([[int flock(int fd, int operation);]])
     declared[ffi] = true
   end
+  local C = opts.C or ffi.C
+  ---@cast C Neoagent.PosixLockApi
   return setmetatable({
     ffi = ffi,
-    C = opts.C or ffi.C,
+    C = C,
     uv = opts.uv or vim.uv,
   }, Backend)
 end

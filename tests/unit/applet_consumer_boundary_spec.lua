@@ -1,6 +1,7 @@
+local assert = require("luassert")
 local Applet = require("applet")
 
-local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
+local root = vim.fn.fnamemodify(assert(debug.getinfo(1, "S")).source:sub(2), ":p:h:h:h")
 
 local function neoagent_sources()
   return vim.fn.glob(root .. "/lua/neoagent/**/*.lua", false, true)
@@ -8,11 +9,7 @@ end
 
 describe("Applet consumer boundary", function()
   it("keeps headless Agent construction outside rendering modules", function()
-    local auth = {
-      resolve = function() end,
-      login = function() end,
-      logout = function() end,
-    }
+    local auth = require("tests.helpers.auth_manager").new()
     local agent = require("neoagent").new({
       workspace_trust = false,
       default_registry = false,

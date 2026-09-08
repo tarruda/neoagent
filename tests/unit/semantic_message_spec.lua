@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
 
 describe("neoagent semantic messages", function()
@@ -9,9 +10,9 @@ describe("neoagent semantic messages", function()
       } },
     }))
     assert.is_false(require("neoagent.util").is_list(
-      message.content[1].arguments))
+      assert(message.content[1]).arguments))
     assert.are.equal("{}",
-      require("neoagent.util").json_encode(message.content[1].arguments))
+      require("neoagent.util").json_encode(assert(message.content[1]).arguments))
   end)
 
   it("requires tool-use completions to contain a Tool call", function()
@@ -24,9 +25,9 @@ describe("neoagent semantic messages", function()
     local normalized, err = semantic_message.normalize_model_response(message)
 
     assert.is_nil(normalized)
-    assert.are.equal("protocol", err.kind)
-    assert.are.equal("missing_tool_call", err.code)
-    assert.matches("declared tool use without supplying a tool call", err.message)
+    assert.are.equal("protocol", assert(err).kind)
+    assert.are.equal("missing_tool_call", rawget(assert(err), "code"))
+    assert.matches("declared tool use without supplying a tool call", assert(err).message)
   end)
 
   it("normalizes one complete linked conversation without mutating input", function()
@@ -51,10 +52,10 @@ describe("neoagent semantic messages", function()
 
     local normalized = assert(semantic_message.normalize_list(messages))
 
-    assert.are.equal("image/png", normalized[1].content[1].mimeType)
-    assert.are.equal("image/png", normalized[3].content[1].mimeType)
+    assert.are.equal("image/png", assert(assert(normalized[1]).content[1]).mimeType)
+    assert.are.equal("image/png", assert(assert(normalized[3]).content[1]).mimeType)
     assert.are.equal("IMAGE/PNG", messages[1].content[1].mimeType)
-    normalized[2].content[3].arguments.path = "changed"
+    assert(assert(assert(normalized[2]).content[3]).arguments).path = "changed"
     assert.are.equal("README.md", messages[2].content[3].arguments.path)
   end)
 
@@ -108,7 +109,7 @@ describe("neoagent semantic messages", function()
     for _, case in ipairs(cases) do
       local normalized, err = semantic_message.normalize_list(case.messages)
       assert.is_nil(normalized)
-      assert.matches(case.pattern, err)
+      assert.matches(case.pattern, (assert(err)))
     end
   end)
 
@@ -143,15 +144,15 @@ describe("neoagent semantic messages", function()
     for _, case in ipairs(cases) do
       local normalized, err = semantic_message.normalize(case.value)
       assert.is_nil(normalized)
-      assert.matches(case.pattern, err)
+      assert.matches(case.pattern, (assert(err)))
     end
 
     local normalized, err = semantic_message.normalize_image(false)
     assert.is_nil(normalized)
-    assert.matches("image block is required", err)
-    normalized, err = semantic_message.normalize_list(vim.empty_dict())
-    assert.is_nil(normalized)
-    assert.matches("messages must be a list", err)
+    assert.matches("image block is required", (assert(err)))
+    local invalid_list, list_err = semantic_message.normalize_list(vim.empty_dict())
+    assert.is_nil(invalid_list)
+    assert.matches("messages must be a list", (assert(list_err)))
   end)
 
   it("retains meaningful partial assistant output with empty signatures", function()
@@ -162,8 +163,8 @@ describe("neoagent semantic messages", function()
         { type = "text", text = "answer", textSignature = "" },
       },
     }))
-    assert.is_nil(normalized.content[1].thinkingSignature)
-    assert.is_nil(normalized.content[2].textSignature)
+    assert.is_nil(assert(normalized.content[1]).thinkingSignature)
+    assert.is_nil(assert(normalized.content[2]).textSignature)
     assert.is_nil(semantic_message.normalize_partial_assistant(false))
   end)
 
@@ -176,7 +177,7 @@ describe("neoagent semantic messages", function()
     }) do
       local normalized, err = semantic_message.normalize_tool_result(case.result)
       assert.is_nil(normalized)
-      assert.matches(case.pattern, err)
+      assert.matches(case.pattern, (assert(err)))
     end
   end)
 
@@ -191,7 +192,7 @@ describe("neoagent semantic messages", function()
         type = "image", data = "ZmluYWw=", mimeType = "IMAGE/PNG",
       } },
     }))
-    assert.are.equal("image/png", final.content[1].mimeType)
+    assert.are.equal("image/png", assert(final.content[1]).mimeType)
 
     local transient, err = semantic_message.normalize_tool_result({
       content = { {
@@ -199,7 +200,7 @@ describe("neoagent semantic messages", function()
       } },
     }, { transient = true })
     assert.is_nil(transient)
-    assert.matches("transient image id", err)
+    assert.matches("transient image id", (assert(err)))
 
     transient = assert(semantic_message.normalize_tool_result({
       content = { {
@@ -207,6 +208,6 @@ describe("neoagent semantic messages", function()
         id = "preview", revision = "frame-1",
       } },
     }, { transient = true }))
-    assert.are.equal("image/png", transient.content[1].mimeType)
+    assert.are.equal("image/png", assert(transient.content[1]).mimeType)
   end)
 end)

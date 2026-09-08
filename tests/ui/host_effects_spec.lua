@@ -1,8 +1,10 @@
+local assert = require("luassert")
 local effects = require("applet").host_effects
 
 describe("Applet host effects", function()
+  ---@type string[]
   local paths = {}
-  local origin_tab
+  local origin_tab = vim.api.nvim_get_current_tabpage()
 
   before_each(function()
     origin_tab = vim.api.nvim_get_current_tabpage()
@@ -43,11 +45,13 @@ describe("Applet host effects", function()
     vim.bo[buffer].modified = false
 
     local original_cmd = vim.cmd
-    vim.cmd = function() error("reload unavailable") end
+    vim.cmd = setmetatable({}, {
+      __call = function() error("reload unavailable") end,
+    })
     result = effects.refresh_file(path)
     vim.cmd = original_cmd
     assert.are.equal(1, #result.failures)
-    assert.matches("reload unavailable", result.failures[1])
+    assert.matches("reload unavailable", (assert(result.failures[1])))
     assert.has_error(function() effects.refresh_file("") end)
   end)
 
@@ -67,15 +71,15 @@ describe("Applet host effects", function()
     assert.are.equal("\nheading\nbody\n", table.concat(
       vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"))
 
-    assert.has_error(function() effects.open_document(false) end)
+    assert.has_error(function() effects.open_document(false --[[@as Applet.HostDocument]]) end)
     assert.has_error(function()
       effects.open_document({ name = "", filetype = "text", content = "" })
     end)
     assert.has_error(function()
-      effects.open_document({ name = "name", filetype = false, content = "" })
+      effects.open_document({ name = "name", filetype = false --[[@as string]], content = "" })
     end)
     assert.has_error(function()
-      effects.open_document({ name = "name", filetype = "text", content = false })
+      effects.open_document({ name = "name", filetype = "text", content = false --[[@as string]] })
     end)
     for _, name in ipairs({ "../report", "dir/report", "dir\\report",
       "bad\nname" }) do
@@ -85,13 +89,15 @@ describe("Applet host effects", function()
     end
 
     local original_cmd = vim.cmd
-    vim.cmd = function() error("tab creation failed") end
+    vim.cmd = setmetatable({}, {
+      __call = function() error("tab creation failed") end,
+    })
     local opened, err = effects.open_document({
       name = "failure", filetype = "text", content = "value",
     })
     vim.cmd = original_cmd
     assert.is_nil(opened)
-    assert.matches("tab creation failed", err)
+    assert.matches("tab creation failed", tostring(err))
 
     local tabs = #vim.api.nvim_list_tabpages()
     local buffers = vim.api.nvim_list_bufs()
@@ -102,7 +108,7 @@ describe("Applet host effects", function()
     })
     vim.api.nvim_buf_set_lines = original_set_lines
     assert.is_nil(opened)
-    assert.matches("content failed", err)
+    assert.matches("content failed", tostring(err))
     assert.are.equal(tabs, #vim.api.nvim_list_tabpages())
     for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
       if not vim.tbl_contains(buffers, buffer) then
@@ -110,6 +116,7 @@ describe("Applet host effects", function()
       end
     end
 
+    ---@type integer?
     local orphan
     vim.api.nvim_buf_set_lines = function(buffer)
       orphan = buffer
@@ -121,22 +128,23 @@ describe("Applet host effects", function()
     })
     vim.api.nvim_buf_set_lines = original_set_lines
     assert.is_nil(opened)
-    assert.matches("detached content failed", err)
+    assert.matches("detached content failed", tostring(err))
     assert.is_not_nil(orphan)
-    assert.is_false(vim.api.nvim_buf_is_valid(orphan))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(orphan))))
 
     local release = effects.on_exit(function() end)
     local autocmds = vim.api.nvim_get_autocmds({ event = "VimLeavePre" })
     local found = false
     for _, autocmd in ipairs(autocmds) do
-      if autocmd.group_name and autocmd.group_name:match("^AppletHostEffects") then
+      local group_name = autocmd.group_name
+      if type(group_name) == "string" and group_name:match("^AppletHostEffects") then
         found = true
       end
     end
     assert.is_true(found)
     release()
     release()
-    assert.has_error(function() effects.on_exit(false) end)
+    assert.has_error(function() effects.on_exit(false --[[@as fun()]]) end)
     local document_tab = vim.api.nvim_get_current_tabpage()
     if vim.api.nvim_tabpage_is_valid(original_tab) then
       vim.api.nvim_set_current_tabpage(original_tab)

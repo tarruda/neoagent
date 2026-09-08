@@ -1,10 +1,69 @@
 local canvas = require("applet.pane.canvas")
 local util = require("applet.util")
+local applet_expect = util.expect
 
 local M = {}
 
+---@class Applet.Decoration
+---@field row integer
+---@field col integer
+---@field group string
+---@field end_col? integer
+---@field whole_line? boolean
+---@field priority? integer
+
+---@class Applet.DecoratedLines
+---@field lines string[]
+---@field decorations Applet.Decoration[]
+
+---@class Applet.SceneLayer: Applet.CanvasLayer
+---@field fragment Applet.DecoratedLines
+---@field coverage Applet.CellCoverage
+---@field key? string
+---@field width integer
+---@field position_offset? integer
+
+---@class Applet.Scene
+---@field key string
+---@field width integer
+---@field height integer
+---@field layers Applet.SceneLayer[]
+---@field positions table<string, integer>
+---@field retained boolean
+---@field spatial? boolean
+---@field revision? integer
+
+---@class Applet.SceneSurface
+---@field buffer integer
+---@field window? fun(): integer?
+
+---@class Applet.SceneBinding
+---@field scene Applet.Scene
+---@field surface Applet.SceneSurface
+---@field layers Applet.SceneLayer[]
+
+---@class Applet.SceneProvider
+---@field namespace integer
+---@field binding? Applet.SceneBinding
+
+---@class Applet.ScenePosition
+---@field mode? "absolute"
+---@field row? integer
+---@field col? integer
+---@field zindex? integer
+
+---@class Applet.CellDecoration
+---@field first integer
+---@field last number
+---@field group string
+---@field priority integer
+---@field order integer
+
+---@type table<Applet.DecoratedLines, table<integer, Applet.CellDecoration[]>>
 local prepared = setmetatable({}, { __mode = "k" })
 
+---@param scene Applet.Scene
+---@return Applet.SceneLayer[]
 local function sorted_layers(scene)
   local layers = vim.list_slice(scene.layers)
   table.sort(layers, function(left, right)
@@ -14,6 +73,9 @@ local function sorted_layers(scene)
   return layers
 end
 
+---@param fragment Applet.DecoratedLines
+---@param row integer
+---@return Applet.CellDecoration[]
 local function decoration_cells(fragment, row)
   local cached = prepared[fragment]
   if not cached then
@@ -45,6 +107,9 @@ local function decoration_cells(fragment, row)
   return values
 end
 
+---@param decorations Applet.CellDecoration[]
+---@param col integer
+---@return string
 local function group_at(decorations, col)
   local group, priority, order = "Normal", -1, -1
   for _, decoration in ipairs(decorations) do
@@ -58,6 +123,11 @@ local function group_at(decorations, col)
   return group
 end
 
+---@param fragment Applet.DecoratedLines
+---@param row integer
+---@param first integer
+---@param last integer
+---@return [string, string][]
 local function chunks(fragment, row, first, last)
   local decorations = decoration_cells(fragment, row)
   local result, cursor = {}, first
@@ -76,25 +146,30 @@ local function chunks(fragment, row, first, last)
   return result
 end
 
-local function draw_layer(provider, layer, row, priority)
+---@param binding Applet.SceneBinding
+---@param namespace integer
+---@param layer Applet.SceneLayer
+---@param row integer
+---@param priority integer
+local function draw_layer(binding, namespace, layer, row, priority)
   local source_row = row - layer.row
   local intervals = layer.coverage[source_row]
   if not intervals then return end
   local clip = layer.clip or {
     row = 0,
     col = 0,
-    width = provider.scene.width,
-    height = provider.scene.height,
+    width = binding.scene.width,
+    height = binding.scene.height,
   }
   if row < clip.row or row >= clip.row + clip.height then return end
   local clip_first = math.max(0, clip.col)
-  local clip_last = math.min(provider.scene.width, clip.col + clip.width)
+  local clip_last = math.min(binding.scene.width, clip.col + clip.width)
   for _, interval in ipairs(intervals) do
     local first = math.max(clip_first, layer.col + interval.first)
     local last = math.min(clip_last, layer.col + interval.last)
     if first < last then
-      vim.api.nvim_buf_set_extmark(provider.surface.buffer,
-        provider.namespace, row, 0, {
+      vim.api.nvim_buf_set_extmark(binding.surface.buffer,
+        namespace, row, 0, {
           ephemeral = true,
           virt_text = chunks(layer.fragment, source_row,
             first - layer.col, last - layer.col),
@@ -107,33 +182,40 @@ local function draw_layer(provider, layer, row, priority)
   end
 end
 
+---@param namespace integer
+---@return Applet.SceneProvider
 function M.attach(namespace)
+  ---@type Applet.SceneProvider
   local provider = { namespace = namespace }
   vim.api.nvim_set_decoration_provider(namespace, {
     on_win = function(_, window, buffer)
-      local surface = provider.surface
-      local target = surface and surface.window and surface.window()
-      return provider.scene ~= nil and target == window
-        and surface.buffer == buffer
+      local binding = provider.binding
+      if not binding then return false end
+      local surface = binding.surface
+      local target = surface.window and surface.window()
+      return target == window and surface.buffer == buffer
     end,
     on_line = function(_, _, buffer, row)
-      if not provider.scene or provider.surface.buffer ~= buffer
-          or row < 0 or row >= provider.scene.height then return end
-      for index, layer in ipairs(provider.layers) do
-        draw_layer(provider, layer, row, 1000 + index)
+      local binding = provider.binding
+      if not binding or binding.surface.buffer ~= buffer
+          or row < 0 or row >= binding.scene.height then return end
+      for index, layer in ipairs(binding.layers) do
+        draw_layer(binding, namespace, layer, row, 1000 + index)
       end
     end,
   })
   return provider
 end
 
-function M.update(provider, surface, value)
-  local retained = value and (value.scene or value)
+---@param provider Applet.SceneProvider
+---@param surface Applet.SceneSurface
+---@param retained Applet.Scene
+function M.update(provider, surface, retained)
   assert(provider and surface and retained and retained.retained,
     "retained scene update requires a provider, surface, and scene")
-  provider.surface = surface
-  provider.scene = retained
-  provider.layers = sorted_layers(retained)
+  provider.binding = {
+    surface = surface, scene = retained, layers = sorted_layers(retained),
+  }
   local window = surface.window and surface.window()
   if window and vim.api.nvim_win_is_valid(window) then
     vim.api.nvim__redraw({
@@ -144,53 +226,62 @@ function M.update(provider, surface, value)
   end
 end
 
+---@generic S: Applet.Scene
+---@param current S
+---@param key string
+---@param position Applet.ScenePosition
+---@return S
 function M.reposition(current, key, position)
-  util.expect(type(current) == "table" and current.retained == true,
+  applet_expect(type(current) == "table" and current.retained == true,
     "scene", "must be retained placement state", 3)
-  util.expect(util.nonempty_string(key), "scene.position.key",
+  applet_expect(util.nonempty_string(key), "scene.position.key",
     "must be a non-empty string", 3)
-  util.expect(type(position) == "table", "scene.position",
+  applet_expect(type(position) == "table", "scene.position",
     "must be a table", 3)
   if position.mode ~= nil then
-    util.expect(position.mode == "absolute", "scene.position.mode",
+    applet_expect(position.mode == "absolute", "scene.position.mode",
       "must be absolute", 3)
   end
   for field in pairs(position) do
-    util.expect(field == "mode" or field == "row" or field == "col"
+    applet_expect(field == "mode" or field == "row" or field == "col"
         or field == "zindex", "scene.position." .. tostring(field),
       "is unknown", 3)
   end
   local index = current.positions and current.positions[key]
-  util.expect(type(index) == "number", "scene.position.key",
+  applet_expect(type(index) == "number", "scene.position.key",
     ("does not identify a positioned container: %q"):format(key), 3)
   for _, field in ipairs({ "row", "col", "zindex" }) do
     local value = position[field]
     if value ~= nil then
-      util.expect(type(value) == "number" and value % 1 == 0,
+      applet_expect(type(value) == "number" and value % 1 == 0,
         "scene.position." .. field, "must be an integer", 3)
     end
   end
 
   local result = util.copy(current)
   result.layers = vim.list_slice(current.layers)
-  local layer = util.copy(result.layers[index])
+  -- Compiled position indices refer to entries in this scene's layer array.
+  local original = result.layers[index]
+  ---@cast original Applet.SceneLayer
+  local layer = util.copy(original)
   local offset = layer.position_offset or 0
   if position.row ~= nil then layer.row = offset + position.row end
   if position.col ~= nil then layer.col = offset + position.col end
   if position.zindex ~= nil then layer.zindex = position.zindex end
   result.layers[index] = layer
   result.revision = (current.revision or 0) + 1
-  return result
+  return result --[[@as S]]
 end
 
+---@param provider? Applet.SceneProvider
 function M.clear(provider)
   if not provider then return end
-  provider.surface = nil
-  provider.scene = nil
-  provider.layers = nil
+  provider.binding = nil
   vim.api.nvim_set_decoration_provider(provider.namespace, {})
 end
 
+---@param scene Applet.Scene
+---@return string[]
 function M.lines(scene)
   local line = string.rep(" ", scene.width)
   local result = {}

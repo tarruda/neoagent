@@ -1,11 +1,23 @@
+local assert = require("luassert")
 local trust = require("neoagent.workspace_trust")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end, 5))
-  return run:result()
+  return (assert(run:result()))
+end
+
+---@return Neoagent.Dialogs
+local function unexpected_dialogs()
+  local dialogs = require("neoagent.dialog").new()
+  function dialogs:show() error("must not prompt") end
+  return dialogs
 end
 
 describe("neoagent workspace trust", function()
+  ---@type string[]
   local paths = {}
 
   after_each(function()
@@ -25,7 +37,7 @@ describe("neoagent workspace trust", function()
     assert.are.equal(vim.uv.fs_realpath(repo), trust.target(repo .. "/nested/deep"))
 
     local alias = vim.fn.tempname()
-    local linked = vim.uv.fs_symlink(repo, alias, { dir = true })
+    local linked = vim.uv.fs_symlink(repo, alias, { dir = true, junction = false })
     if linked then
       paths[#paths + 1] = alias
       assert.are.equal(vim.uv.fs_realpath(repo), trust.target(alias .. "/nested"))
@@ -42,7 +54,7 @@ describe("neoagent workspace trust", function()
     vim.fn.mkdir(second, "p")
     local store = trust.new_store(path)
 
-    assert.is_false(store:is_trusted(first))
+    assert.is_false((store:is_trusted(first)))
     assert.are.same({}, assert(store:list()))
     assert.is_nil(vim.uv.fs_stat(directory))
 
@@ -59,11 +71,11 @@ describe("neoagent workspace trust", function()
     assert.are.equal(1, decoded.version)
     assert.are.same(expected, decoded.trusted)
     local bit = require("bit")
-    assert.are.equal(448, bit.band(vim.uv.fs_stat(directory).mode, 511))
-    assert.are.equal(384, bit.band(vim.uv.fs_stat(path).mode, 511))
+    assert.are.equal(448, bit.band(assert(vim.uv.fs_stat(directory)).mode, 511))
+    assert.are.equal(384, bit.band(assert(vim.uv.fs_stat(path)).mode, 511))
 
     assert.is_true(wait(store:remove(first)).ok)
-    assert.is_false(store:is_trusted(first))
+    assert.is_false((store:is_trusted(first)))
     assert.are.same({ trust.target(second) }, assert(store:list()))
   end)
 
@@ -90,26 +102,26 @@ describe("neoagent workspace trust", function()
       assert(require("neoagent.fs").write_all(path, content .. "\n"))
       local value, err = store:list()
       assert.is_nil(value)
-      assert.are.equal("workspace_trust", err.kind)
-      assert.matches("trust", err.message:lower())
+      assert.are.equal("workspace_trust", assert(err).kind)
+      assert.matches("trust", assert(err).message:lower())
     end
 
     local target = directory .. "/target"
     local alias = directory .. "/alias"
     vim.fn.mkdir(target, "p")
-    if vim.uv.fs_symlink(target, alias, { dir = true }) then
+    if vim.uv.fs_symlink(target, alias, { dir = true, junction = false }) then
       assert(require("neoagent.fs").write_all(path,
         vim.json.encode({ version = 1, trusted = { alias } }) .. "\n"))
       local value, err = store:list()
       assert.is_nil(value)
-      assert.are.equal("workspace_trust", err.kind)
+      assert.are.equal("workspace_trust", assert(err).kind)
     end
 
     vim.fn.delete(path)
     vim.fn.mkdir(path, "p")
     local value, err = store:list()
     assert.is_nil(value)
-    assert.are.equal("workspace_trust", err.kind)
+    assert.are.equal("workspace_trust", assert(err).kind)
 
     vim.fn.delete(path, "rf")
     assert(require("neoagent.fs").write_all(path,
@@ -120,17 +132,17 @@ describe("neoagent workspace trust", function()
     value, err = store:list()
     fs.read = read
     assert.is_nil(value)
-    assert.are.equal("workspace_trust", err.kind)
+    assert.are.equal("workspace_trust", assert(err).kind)
 
     local stat = vim.uv.fs_stat
-    vim.uv.fs_stat = function(candidate, ...)
+    vim.uv.fs_stat = function(candidate)
       if candidate == path then return nil, "EACCES" end
-      return stat(candidate, ...)
+      return stat(candidate)
     end
     value, err = store:list()
     vim.uv.fs_stat = stat
     assert.is_nil(value)
-    assert.are.equal("workspace_trust", err.kind)
+    assert.are.equal("workspace_trust", assert(err).kind)
   end)
 
   it("fails closed for local storage and lock failures", function()
@@ -139,15 +151,23 @@ describe("neoagent workspace trust", function()
     vim.fn.mkdir(root, "p")
     paths = { root }
 
+    ---@generic T
+    ---@param owner table
+    ---@param key string
+    ---@param replacement unknown
+    ---@param fn fun(): T
+    ---@return T
     local function patch(owner, key, replacement, fn)
-      local original = owner[key]
-      owner[key] = replacement
+      local original = rawget(owner, key)
+      rawset(owner, key, replacement)
       local ok, value = pcall(fn)
-      owner[key] = original
+      rawset(owner, key, original)
       assert(ok, value)
       return value
     end
 
+    ---@param name string
+    ---@return string
     local function directory(name)
       local value = vim.fn.tempname() .. "-" .. name
       paths[#paths + 1] = value
@@ -165,7 +185,7 @@ describe("neoagent workspace trust", function()
       return wait(trust.new_store(denied):trust(root))
     end)
     assert.is_false(result.ok)
-    assert.are.equal("workspace_trust", result.error.kind)
+    assert.are.equal("workspace_trust", assert(result.error).kind)
 
     local insecure_dir = directory("chmod")
     result = patch(vim.uv, "fs_chmod", function()
@@ -236,8 +256,8 @@ describe("neoagent workspace trust", function()
     result = patch(posix, "new", function(...)
       local backend = original_backend_new(...)
       local open = backend.open
-      backend.open = function(owner, ...)
-        local handle, open_err = open(owner, ...)
+      function backend:open(path, mode)
+        local handle, open_err = open(self, path, mode)
         if handle then
           handle.release = function()
             return nil, { code = "release", message = "unlock failed" }
@@ -250,7 +270,7 @@ describe("neoagent workspace trust", function()
       return wait(trust.new_store(release_dir .. "/trust.json"):trust(root))
     end)
     assert.is_false(result.ok)
-    assert.matches("release", result.error.message:lower())
+    assert.matches("release", assert(result.error).message:lower())
 
     local lock_dir = directory("timeout")
     vim.fn.mkdir(lock_dir, "p")
@@ -260,15 +280,14 @@ describe("neoagent workspace trust", function()
     }):acquire())
     local blocked = trust.new_store(lock_dir .. "/trust.json"):trust(root)
     assert(vim.wait(4000, function() return blocked:is_done() end, 10))
-    assert.is_false(blocked:result().ok)
-    assert.matches("Timed out", blocked:result().error.message)
+    assert.is_false(assert(blocked:result()).ok)
+    assert.matches("Timed out", assert(assert(blocked:result()).error).message)
 
     local cancelled = trust.new_store(lock_dir .. "/trust.json"):trust(root)
-    vim.wait(100)
     assert.is_false(cancelled:is_done())
     cancelled:cancel()
     assert(vim.wait(1000, function() return cancelled:is_done() end, 5))
-    assert.are.equal("cancelled", cancelled:result().error.kind)
+    assert.are.equal("cancelled", assert(assert(cancelled:result()).error).kind)
     assert(holder:release())
   end)
 
@@ -280,14 +299,19 @@ describe("neoagent workspace trust", function()
     vim.fn.mkdir(second, "p")
     paths = { root, second, directory }
 
+    ---@param status Neoagent.TrustSandboxStatus
+    ---@param target string
+    ---@return Neoagent.Dialog
     local function prompt(status, target)
       local dialogs = require("neoagent.dialog").new()
-      local captured, chosen
+      ---@type Neoagent.Dialog?
+      local captured
+      local chosen
       local unsubscribe = dialogs:subscribe(function(snapshot)
         if snapshot.active and not chosen then
           captured, chosen = snapshot.active, true
           vim.schedule(function()
-            dialogs:choose(snapshot.active.id, "session")
+            dialogs:choose(assert(snapshot.active).id, "session")
           end)
         end
       end)
@@ -302,41 +326,42 @@ describe("neoagent workspace trust", function()
         return captured ~= nil and policy:is_trusted(target)
       end, 5))
       unsubscribe()
-      return captured
+      return (assert(captured))
     end
 
     local active = prompt({ enabled = true, active = true, platform = "linux" }, root)
-    assert.is_not_nil(active.body:find("native linux sandbox", 1, true))
+    assert.is_not_nil((active.body:find("native linux sandbox", 1, true)))
     local failed = prompt({
       enabled = true,
       active = false,
       message = "native probe failed",
     }, second)
-    assert.is_not_nil(failed.body:find(
-      "sandbox activation failed: native probe failed", 1, true))
+    assert.is_not_nil((failed.body:find(
+      "sandbox activation failed: native probe failed", 1, true)))
 
     local invalid_path = directory .. "/invalid.json"
     vim.fn.mkdir(directory, "p")
     assert(require("neoagent.fs").write_all(invalid_path, "{\n"))
+    ---@type Neoagent.Error[]
     local notices = {}
     local unavailable = trust.new({
       path = invalid_path,
-      dialogs = { show = function() error("must not prompt") end },
+      dialogs = unexpected_dialogs(),
       notify = function(err) notices[#notices + 1] = err end,
       session = {},
     })
     local requested, request_err = unavailable:request(root)
     assert.is_nil(requested)
-    assert.are.equal("workspace_trust", request_err.kind)
+    assert.are.equal("workspace_trust", assert(request_err).kind)
     assert.are.equal(1, #notices)
     local checked, check_err = unavailable:check(root)
     assert.is_nil(checked)
-    assert.are.equal("workspace_trust", check_err.kind)
+    assert.are.equal("workspace_trust", assert(check_err).kind)
 
     local default_notice
     local default_notifier = trust.new({
       path = invalid_path,
-      dialogs = { show = function() error("must not prompt") end },
+      dialogs = unexpected_dialogs(),
       session = {},
     })
     local default_requested = default_notifier:request(root)
@@ -346,10 +371,11 @@ describe("neoagent workspace trust", function()
     local activation_path = directory .. "/activation.json"
     local activation = trust.new({
       path = activation_path,
-      dialogs = { show = function() error("must not prompt") end },
+      dialogs = unexpected_dialogs(),
       notify = function(err) notices[#notices + 1] = err end,
       session = {},
     })
+    ---@type Neoagent.WorkspaceTrustResult?
     local activation_result
     activation:attach({
       activate = function() error("View unavailable") end,
@@ -359,13 +385,13 @@ describe("neoagent workspace trust", function()
     assert(vim.wait(1000, function()
       return #notices == 2 and activation_result ~= nil
     end, 5))
-    assert.matches("activate", notices[2].message:lower())
-    assert.is_false(activation_result.ok)
+    assert.matches("activate", assert(notices[2]).message:lower())
+    assert.is_false(assert(activation_result).ok)
 
     local changed_path = directory .. "/changed.json"
     local changed = trust.new({
       path = changed_path,
-      dialogs = { show = function() error("must not prompt") end },
+      dialogs = unexpected_dialogs(),
       notify = function(err) notices[#notices + 1] = err end,
       session = {},
     })
@@ -379,27 +405,25 @@ describe("neoagent workspace trust", function()
       if snapshot.active and not selected then
         selected = true
         vim.schedule(function()
-          dialogs:choose(snapshot.active.id, "trust")
+          dialogs:choose(assert(snapshot.active).id, "trust")
         end)
       end
     end)
+    local failing_store = trust.new_store(directory .. "/unused.json")
+    function failing_store:is_trusted() return false end
+    function failing_store:trust()
+      return require("neoagent.async").run(function()
+        return { ok = false, error = { kind = "workspace_trust", message = "write failed" } }
+      end)
+    end
     local persistence = trust.new({
       path = directory .. "/unused.json",
       dialogs = dialogs,
       notify = function(err) notices[#notices + 1] = err end,
       session = {},
-      store = {
-        is_trusted = function() return false end,
-        trust = function()
-          return require("neoagent.async").run(function()
-            return {
-              ok = false,
-              error = { kind = "workspace_trust", message = "write failed" },
-            }
-          end)
-        end,
-      },
+      store = failing_store,
     })
+    ---@type Neoagent.WorkspaceTrustResult?
     local persistence_result
     persistence:attach({
       on_result = function(result) persistence_result = result end,
@@ -410,15 +434,15 @@ describe("neoagent workspace trust", function()
     end, 5))
     unsubscribe()
     assert.is_false(persistence:is_trusted(root))
-    assert.are.equal("write failed", notices[4].message)
-    assert.are.equal("write failed", persistence_result.error.message)
+    assert.are.equal("write failed", assert(notices[4]).message)
+    assert.are.equal("write failed", assert(assert(persistence_result).error).message)
 
     local dismissals = require("neoagent.dialog").new()
     local cancellation_settled = false
     local detach = dismissals:subscribe(function(snapshot)
       if snapshot.active then
         vim.schedule(function()
-          dismissals:cancel(snapshot.active.id, "dialog dismissed by user")
+          dismissals:cancel(assert(snapshot.active).id, "dialog dismissed by user")
           vim.schedule(function() cancellation_settled = true end)
         end)
       end
@@ -443,9 +467,7 @@ describe("neoagent workspace trust", function()
     local directory = vim.fn.tempname()
     paths = { root, directory }
     vim.fn.mkdir(root, "p")
-    local dialogs = {
-      show = function() error("trusted workspaces must not prompt") end,
-    }
+    local dialogs = unexpected_dialogs()
     local first = trust.new({
       path = directory .. "/one.json",
       dialogs = dialogs,

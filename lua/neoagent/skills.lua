@@ -3,37 +3,65 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.Skill
+---@field name string
+---@field description string
+---@field path string
+---@field directory string
+---@field source "global"|"project"
+
+---@class Neoagent.SkillOptions
+---@field global_dirs? string[]
+---@field project_dirs? string[]
+
+---@class Neoagent.SkillDiscoveryOptions: Neoagent.SkillOptions
+---@field cwd string
+
+
+---@param value string
+---@return string
 local function escape_xml(value)
-  return value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    :gsub('"', "&quot;"):gsub("'", "&apos;")
+  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    :gsub('"', "&quot;"):gsub("'", "&apos;"))
 end
 
+---@param value string
+---@return string
 local function scalar(value)
   value = util.trim(value)
   if value:sub(1, 1) == '"' and value:sub(-1) == '"' then
     local ok, decoded = pcall(vim.json.decode, value)
     if ok and type(decoded) == "string" then return decoded end
   elseif value:sub(1, 1) == "'" and value:sub(-1) == "'" then
-    return value:sub(2, -2):gsub("''", "'")
+    return (value:sub(2, -2):gsub("''", "'"))
   end
   return value
 end
 
+---@param content string
+---@return table<string, string>?, string?
+---@return_overload table<string, string>
+---@return_overload nil, string
 local function frontmatter(content)
   content = content:gsub("\r\n", "\n")
   local header = content:match("^%-%-%-\n(.-)\n%-%-%-\n")
   if not header then return nil, "missing YAML frontmatter" end
   local lines = vim.split(header, "\n", { plain = true })
+  ---@type table<string, string>
   local values = {}
   local index = 1
-  while index <= #lines do
-    local key, value = lines[index]:match("^([%w_-]+):%s*(.*)$")
+  while lines[index] do
+    local line = lines[index]
+    local key, value = line:match("^([%w_-]+):%s*(.*)$")
     if key then
+      ---@cast value string
       if value == "|" or value == ">" then
         local block = {}
         index = index + 1
-        while index <= #lines and (lines[index]:match("^%s+") or lines[index] == "") do
-          block[#block + 1] = lines[index]:gsub("^%s+", "")
+        while lines[index] do
+          local continuation = lines[index]
+          if not (continuation:match("^%s+") or continuation == "") then break end
+          block[#block + 1] = continuation:gsub("^%s+", "")
           index = index + 1
         end
         values[key] = value == ">" and util.trim(table.concat(block, " "):gsub("%s+", " "))
@@ -49,6 +77,11 @@ local function frontmatter(content)
   return values
 end
 
+---@param path string
+---@param source "global"|"project"
+---@return Neoagent.Skill?, string?
+---@return_overload Neoagent.Skill
+---@return_overload nil, string
 local function load_skill(path, source)
   local content, err = fs.read(path)
   if not content then return nil, "failed to read skill: " .. tostring(err) end
@@ -70,13 +103,20 @@ local function load_skill(path, source)
     name = name,
     description = util.trim(description),
     path = canonical,
-    directory = vim.fs.dirname(canonical),
+    directory = assert(vim.fs.dirname(canonical)),
     source = source,
   }
 end
 
+---@param root string
+---@param source "global"|"project"
+---@param add fun(skill: Neoagent.Skill)
+---@param diagnostics Neoagent.ResourceDiagnostic[]
+---@param visited table<string, boolean>
 local function scan(root, source, add, diagnostics, visited)
-  root = fs.normalize(vim.fn.expand(root))
+  local expanded = vim.fn.expand(root)
+  ---@cast expanded string
+  root = fs.normalize(expanded)
   local stat = vim.uv.fs_stat(root)
   if not stat then return end
   if stat.type ~= "directory" then
@@ -115,10 +155,14 @@ local function scan(root, source, add, diagnostics, visited)
   for _, child in ipairs(children) do scan(child, source, add, diagnostics, visited) end
 end
 
+---@param opts Neoagent.SkillDiscoveryOptions
+---@return {skills: Neoagent.Skill[], diagnostics: Neoagent.ResourceDiagnostic[]}
 function M.discover(opts)
   opts = opts or {}
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
+  ---@type table<string, Neoagent.Skill>, Neoagent.ResourceDiagnostic[], table<string, boolean>, table<string, boolean>
   local by_name, diagnostics, visited, paths = {}, {}, {}, {}
+  ---@param skill Neoagent.Skill
   local function add(skill)
     if paths[skill.path] then return end
     paths[skill.path] = true
@@ -137,8 +181,11 @@ function M.discover(opts)
   return { skills = skills, diagnostics = diagnostics }
 end
 
+---@param skills? Neoagent.Skill[]
+---@return string
 function M.format(skills)
-  if #(skills or {}) == 0 then return "" end
+  skills = skills or {}
+  if #skills == 0 then return "" end
   local lines = {
     "The following skills provide specialized instructions for specific tasks.",
     "Use read_file to load a skill's SKILL.md when the task matches its description.",

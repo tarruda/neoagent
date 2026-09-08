@@ -1,10 +1,13 @@
+local assert = require("luassert")
 local AgentApplet = require("neoagent.agent_applet")
 local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local util = require("neoagent.util")
 
 describe("Agent Applet boundaries", function()
+  ---@type Neoagent.AgentApplet[]
   local applets
+  ---@type Neoagent.Agent[]
   local agents
 
   before_each(function()
@@ -21,9 +24,39 @@ describe("Agent Applet boundaries", function()
     end
   end)
 
+  ---@class Neoagent.TestBoundaryViewRecord
+  ---@field view? Neoagent.TestBoundaryView
+  ---@field notification? [string, integer?]
+
+  ---@class Neoagent.TestBoundaryViewFeatures
+  ---@field omit_presentation? boolean
+  ---@field omit_dialog? boolean
+  ---@field presentation_error? boolean
+  ---@field dialog_error? boolean
+  ---@field notify? fun(self: Neoagent.TestBoundaryView, message: string, level?: integer): unknown
+  ---@field open_uri? fun(self: Neoagent.TestBoundaryView, uri: string): unknown
+
+  ---@param record Neoagent.TestBoundaryViewRecord
+  ---@param features? Neoagent.TestBoundaryViewFeatures
+  ---@return fun(opts: Neoagent.ViewOptions): Neoagent.View
   local function view_factory(record, features)
     features = features or {}
     return function(opts)
+      ---@class Neoagent.TestBoundaryView
+      ---@field callbacks Neoagent.ViewOptions
+      ---@field input string
+      ---@field messages Neoagent.TranscriptMessage[]
+      ---@field context Neoagent.AgentContext
+      ---@field events Neoagent.AgentEvent[]
+      ---@field opened boolean
+      ---@field destroyed? boolean
+      ---@field focused? integer
+      ---@field position? Neoagent.UiPosition
+      ---@field presentation? Neoagent.PresentationSnapshot
+      ---@field dialog? Neoagent.DialogSnapshot
+      ---@field result? Neoagent.ActivityOutcome
+      ---@field notify? fun(self: Neoagent.TestBoundaryView, message: string, level?: integer): unknown
+      ---@field open_uri? fun(self: Neoagent.TestBoundaryView, uri: string): unknown
       local view = {
         callbacks = opts,
         input = "",
@@ -45,20 +78,27 @@ describe("Agent Applet boundaries", function()
         self.destroyed = true
       end
       function view:get_input() return self.input end
+      ---@param value string
       function view:set_input(value)
         self.input = value
         return value
       end
+      ---@param value Neoagent.TranscriptMessage[]
       function view:set_messages(value) self.messages = value end
+      ---@param value Neoagent.AgentContext
       function view:set_context(value) self.context = value end
+      ---@param value Neoagent.AgentEvent
       function view:apply(value) self.events[#self.events + 1] = value end
+      ---@param value Neoagent.ActivityOutcome
       function view:finish(value) self.result = value end
       function view:focus_input()
         self.focused = (self.focused or 0) + 1
         return self.opened
       end
+      ---@param value Neoagent.UiPosition
       function view:set_position(value) self.position = value end
       if not features.omit_presentation then
+        ---@param value Neoagent.PresentationSnapshot
         function view:set_presentation(value)
           if features.presentation_error then
             return nil, util.error("ui", "presentation rejected")
@@ -68,6 +108,7 @@ describe("Agent Applet boundaries", function()
         end
       end
       if not features.omit_dialog then
+        ---@param value Neoagent.DialogSnapshot
         function view:set_dialog(value)
           if features.dialog_error then
             return nil, util.error("ui", "dialog rejected")
@@ -77,27 +118,31 @@ describe("Agent Applet boundaries", function()
         end
       end
       record.view = view
-      return view
+      return view --[[@as Neoagent.View]]
     end
   end
 
+  ---@class Neoagent.TestAgentAppletOptions: Partial<Neoagent.AgentAppletOptions>
+  ---@field owner? table
+  ---@field callbacks? Neoagent.AgentAppletCallbacks
+
+  ---@param opts? Neoagent.TestAgentAppletOptions
   local function applet(opts)
-    opts = vim.tbl_extend("force", {
-      config = { style = "codex", position = "center" },
-      persistence = { enabled = false },
-      profile_id = "neo",
-      label = "Draft",
-    }, opts or {})
-    local owner = opts.owner
-    local callbacks = opts.callbacks
-    opts.owner = nil
-    opts.callbacks = nil
-    local value = AgentApplet.new(opts)
-    if callbacks then value:claim(owner or {}, callbacks) end
+    opts = opts or {}
+    local defaults = require("neoagent.config").resolve({ ui = { position = "center" }, persistence = { enabled = false } })
+    local value = AgentApplet.new({
+      config = opts.config or defaults.ui,
+      persistence = opts.persistence or defaults.persistence,
+      context = opts.context, presenter = opts.presenter, dialogs = opts.dialogs,
+      profile_id = opts.profile_id or "neo", label = opts.label or "Draft",
+      view = opts.view, host = opts.host, agent = opts.agent,
+    })
+    if opts.callbacks then value:claim(opts.owner or {}, opts.callbacks) end
     applets[#applets + 1] = value
     return value
   end
 
+  ---@param runtime? Neoagent.AgentRuntimeOptions
   local function agent(runtime)
     local value = require("neoagent").new({
       name = "boundary",
@@ -119,6 +164,7 @@ describe("Agent Applet boundaries", function()
   end
 
   it("routes draft View actions and URI effects through one owner", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local opened_uri
     local effects = {
@@ -145,37 +191,39 @@ describe("Agent Applet boundaries", function()
 
     local run, bind_err = value:send("unbound")
     assert.is_nil(run)
-    assert.matches("No Agent is bound", bind_err.message)
+    assert.matches("No Agent is bound", assert(bind_err).message)
     assert(value:open())
-    assert.is_true(value:focus_input())
-    assert.are.equal("thought", record.view.callbacks.on_cycle_thinking())
-    assert.are.equal("agents", record.view.callbacks.on_agents())
-    assert.are.equal("model", record.view.callbacks.on_select_model())
-    assert.are.equal("session", record.view.callbacks.on_resume_session())
+    assert.is_true((value:focus_input()))
+    assert.are.equal("thought", assert(assert(record.view).callbacks.on_cycle_thinking)())
+    assert.are.equal("agents", assert(assert(record.view).callbacks.on_agents)())
+    assert.are.equal("model", assert(assert(record.view).callbacks.on_select_model)())
+    assert.are.equal("session", assert(assert(record.view).callbacks.on_resume_session)())
     assert(value:presenter():notify({ message = "notice" }))
     assert.are.same({ "notice", nil }, record.notification)
     assert(value:presenter():open_uri("https://example.test/view"))
     assert.are.equal("https://example.test/view", opened_uri)
-    assert.is_false(value:toggle())
+    assert.is_false((value:toggle()))
     assert(value:toggle())
-    assert.is_nil(value:set_position("diagonal"))
+    assert.is_nil((value:set_position("diagonal" --[[@as Neoagent.UiPosition]])))
     assert.are.equal("provider-shell",
-      record.view.callbacks.on_provider_shell())
-    assert.is_nil(value.ensure_agent)
-    assert.is_nil(value:select_input_history())
+      assert(assert(record.view).callbacks.on_provider_shell)())
+    assert.is_nil(rawget(value, "ensure_agent"))
+    assert.is_nil((value:select_input_history()))
 
     local unbound = applet({
       view = view_factory({}),
-      callbacks = { on_bind = function() return {} end },
+      callbacks = { on_bind = function() return agent() end },
     })
     local missing, missing_err = unbound:send("not attached")
     assert.is_nil(missing)
-    assert.matches("did not bind", missing_err.message)
+    assert.matches("did not bind", assert(missing_err).message)
 
     local original_open = vim.ui.open
+    local process = {}
+    ---@cast process vim.SystemObj
     vim.ui.open = function(uri)
       opened_uri = uri
-      return true
+      return process
     end
     local fallback = applet({})
     local ok, err = pcall(function()
@@ -186,54 +234,47 @@ describe("Agent Applet boundaries", function()
     assert.are.equal("https://example.test/fallback", opened_uri)
 
     value:destroy()
-    assert.is_nil(value:open())
+    assert.is_nil((value:open()))
   end)
 
   it("contains history storage failures and restores a selected entry", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
-    local fake_destroyed = false
-    local fake_agent = {
-      is_destroyed = function() return fake_destroyed end,
-      destroy = function() fake_destroyed = true end,
-      set_attention = function() end,
-      prepare = function() return true end,
-      send = function() return { id = "run" }, nil, 1, "turn" end,
-      snapshot = function()
-        return {
-          revision = 0,
-          messages = {},
-          context = { workspace = "root" },
-          events = {},
-          result = nil,
-        }
-      end,
-    }
+    local fake_agent = agent()
+    function fake_agent:set_attention() end
+    function fake_agent:prepare() return true end
+    function fake_agent:send() return async.run(function() error(async.cancelled_error, 0) end), nil, 1, "turn" end
+    function fake_agent:snapshot()
+      return {
+        revision = 0,
+        messages = {},
+        context = { workspace = "root" },
+        events = {},
+        result = nil,
+      }
+    end
+    ---@type Neoagent.AgentApplet?
     local value
     value = applet({
       context = { workspace = "root" },
-      persistence = { enabled = true, directory = "unused" },
+      persistence = { enabled = true, directory = "unused", workspace_settings = false },
       view = view_factory(record),
       callbacks = {
         on_bind = function()
-          value.agent_value = fake_agent
+          assert(value).agent_value = fake_agent
           return fake_agent
         end,
       },
     })
-    local store = {
-      load = function()
-        return nil, util.error("history", "load failed", "corrupt")
-      end,
-      add = function()
-        return nil, util.error("history", "save failed")
-      end,
-    }
+    local store = require("neoagent.input_history").new({ root = "root", directory = "unused" })
+    function store:load() return nil, util.error("history", "load failed", "corrupt") end
+    function store:add() return nil, util.error("history", "save failed") end
     value.history_stores.root = store
 
     assert.are.same({}, value:input_history())
     local recorded, record_err = value:_record_history("unsaved entry")
     assert.is_nil(recorded)
-    assert.matches("save failed", record_err.message)
+    assert.matches("save failed", assert(record_err).message)
     assert(value:send("remember this"))
     store.load = function() return { "first", "second" } end
     assert(value:open())
@@ -241,8 +282,8 @@ describe("Agent Applet boundaries", function()
     local request = assert(value:presenter():snapshot().active)
     assert(value:presenter():resolve(request.id, "history-2"))
     assert(vim.wait(1000, function()
-      return record.view:get_input() == "second"
-        and (record.view.focused or 0) > 0
+      return assert(record.view):get_input() == "second"
+        and (assert(record.view).focused or 0) > 0
     end, 5))
   end)
 
@@ -252,8 +293,8 @@ describe("Agent Applet boundaries", function()
     owned_agent.subscribe = function() error("initial binding failed") end
     local ok, err = pcall(function()
       AgentApplet.new({
-        config = { style = "codex", position = "center" },
-        persistence = { enabled = false },
+        config = require("neoagent.config").resolve({ ui = { style = "codex", position = "center" } }).ui,
+        persistence = require("neoagent.config").resolve({ persistence = { enabled = false } }).persistence,
         label = "Failed",
         presenter = owned_agent:presenter(),
         dialogs = owned_agent:dialogs(),
@@ -263,11 +304,12 @@ describe("Agent Applet boundaries", function()
     owned_agent.subscribe = subscribe
 
     assert.is_false(ok)
-    assert.matches("initial binding failed", err)
-    assert.is_nil(owned_agent:applet())
+    assert.matches("initial binding failed", tostring(err))
+    assert.is_nil((owned_agent:applet()))
   end)
 
   it("contains unsupported semantic surfaces and hydration failures", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local rejected_record = {}
     local rejected = applet({
       view = view_factory(rejected_record, { presentation_error = true }),
@@ -275,16 +317,17 @@ describe("Agent Applet boundaries", function()
     local selection = rejected:presenter():select({ items = { "choice" } })
     local opened, open_err = rejected:open()
     assert.is_nil(opened)
-    assert.matches("presentation rejected", open_err.message)
-    assert.is_true(rejected_record.view.destroyed)
-    assert.is_nil(rejected:view())
-    assert.is_false(selection:is_done())
+    assert.matches("presentation rejected", assert(open_err).message)
+    assert.is_true(assert(rejected_record.view).destroyed)
+    assert.is_nil((rejected:view()))
+    assert.is_false((selection:is_done()))
     rejected.view_factory = view_factory(rejected_record)
     assert(rejected:open())
     local active = assert(rejected:presenter():snapshot().active)
     assert(rejected:presenter():cancel(active.id, "test complete"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
 
+    ---@type Neoagent.TestBoundaryViewRecord
     local dialog_record = {}
     local unsupported = applet({
       view = view_factory(dialog_record, { omit_dialog = true }),
@@ -297,7 +340,7 @@ describe("Agent Applet boundaries", function()
       actions = { { id = "close", label = "Close", key = "<CR>" } },
     })
     assert(vim.wait(1000, function() return dialog:is_done() end, 5))
-    assert.is_false(dialog:result().ok)
+    assert.is_false((assert(dialog:result())).ok)
 
     local rejected_dialog_record = {}
     local rejected_dialog = applet({
@@ -311,21 +354,19 @@ describe("Agent Applet boundaries", function()
       actions = { { id = "close", label = "Close", key = "<CR>" } },
     })
     assert(vim.wait(1000, function() return rejected_run:is_done() end, 5))
-    assert.is_false(rejected_run:result().ok)
+    assert.is_false((assert(rejected_run:result())).ok)
 
+    ---@type Neoagent.TestBoundaryViewRecord
     local hydration_record = {}
     local hydration = applet({ view = view_factory(hydration_record) })
-    hydration.agent_value = {
-      is_destroyed = function() return false end,
-      destroy = function() end,
-      set_attention = function() end,
-      prepare = function() return true end,
-      snapshot = function() error("snapshot failed") end,
-    }
+    hydration.agent_value = agent()
+    function hydration.agent_value:set_attention() end
+    function hydration.agent_value:prepare() return true end
+    function hydration.agent_value:snapshot() error("snapshot failed") end
     local opened, open_err = hydration:open()
     assert.is_nil(opened)
-    assert.matches("snapshot failed", open_err.message)
-    assert.is_true(hydration_record.view.destroyed)
+    assert.matches("snapshot failed", assert(open_err).message)
+    assert.is_true(assert(hydration_record.view).destroyed)
   end)
 
   it("reports Dialog subscriber failures through the default Presenter", function()
@@ -359,6 +400,7 @@ describe("Agent Applet boundaries", function()
 
   it("rolls back attachment failure and preserves retry semantics", function()
     local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local value = applet({
       presenter = owned_agent:presenter(),
@@ -371,15 +413,15 @@ describe("Agent Applet boundaries", function()
     end
     assert.has_error(function() value:bind(owned_agent) end,
       "attachment failed")
-    assert.is_nil(value:agent())
+    assert.is_nil((value:agent()))
 
     owned_agent.attach_applet = attach
     assert.are.equal(owned_agent, value:bind(owned_agent))
     local context, context_err = value:set_draft_context({ model = "other" })
     assert.is_nil(context)
-    assert.matches("bound Agent", context_err.message)
+    assert.matches("bound Agent", assert(context_err).message)
     assert(value:open())
-    assert.is_false(record.view.callbacks.on_resume_session())
+    assert.is_false(assert(assert(record.view).callbacks.on_resume_session)())
 
     local original_prepare = owned_agent.prepare
     local original_send = owned_agent.send
@@ -390,24 +432,24 @@ describe("Agent Applet boundaries", function()
     end
     local failed, failed_err = value:retry_submission()
     assert.is_nil(failed)
-    assert.matches("retry failed", failed_err.message)
-    assert.is_nil(value:pending_message())
+    assert.matches("retry failed", assert(failed_err).message)
+    assert.is_nil((value:pending_message()))
 
     value.pending_submission = "retry"
-    record.view:set_input("retry")
+    assert(record.view):set_input("retry")
     owned_agent.send = function()
       return { id = "retry-run" }, nil, 1, "turn"
     end
     assert(value:retry_submission())
-    assert.are.equal("retry", record.view:get_input())
+    assert.are.equal("retry", assert(record.view):get_input())
     value:_apply({
-      revision = value.agent_snapshot.revision + 1,
+      revision = assert(value.agent_snapshot).revision + 1,
       type = "submission_accepted",
       submission_id = 1,
       prompt = "retry",
       entry_id = "entry",
     })
-    assert.are.equal("", record.view:get_input())
+    assert.are.equal("", assert(record.view):get_input())
 
     local notifications = {}
     local original_notify = vim.notify
@@ -420,7 +462,7 @@ describe("Agent Applet boundaries", function()
     local positioned, position_err = value:set_position("left")
     vim.notify = original_notify
     assert.are.equal("left", positioned)
-    assert.matches("save failed", position_err.message)
+    assert.matches("save failed", assert(position_err).message)
     assert.matches("settings were not saved", notifications[#notifications][1])
     owned_agent.prepare = original_prepare
     owned_agent.send = original_send
@@ -433,13 +475,16 @@ describe("Agent Applet boundaries", function()
       dialogs = owned_agent:dialogs(),
     })
     assert.are.equal(owned_agent, value:bind(owned_agent))
-    assert.are.equal(owned_agent, value:unbind(owned_agent))
+    local detached, detach_err = value:unbind(owned_agent)
+    assert.are.equal(owned_agent, detached)
+    assert.is_nil(detach_err)
 
     value:destroy()
 
-    assert.is_false(owned_agent:is_destroyed())
-    assert.is_nil(owned_agent:applet())
+    assert.is_false((owned_agent:is_destroyed()))
+    assert.is_nil((owned_agent:applet()))
     assert.is_false(owned_agent:presenter().destroyed)
+    ---@type Neoagent.PresentationSnapshot?
     local presented
     local detach_presenter = owned_agent:presenter():attach({
       present = function(snapshot)
@@ -451,12 +496,13 @@ describe("Agent Applet boundaries", function()
       prompt = "Borrowed Presenter",
       body = "ready",
     })
-    assert.is_table(presented.active)
-    assert(owned_agent:presenter():resolve(presented.active.id))
+    assert.is_table(assert(presented).active)
+    assert(owned_agent:presenter():resolve(assert(assert(presented).active).id))
     assert(vim.wait(1000, function() return presentation:is_done() end, 5))
-    assert.is_true(presentation:result().ok)
+    assert.is_true((assert(presentation:result())).ok)
     detach_presenter()
 
+    ---@type Neoagent.DialogSnapshot?
     local dialog_snapshot
     local detach_dialog = owned_agent:dialogs():subscribe(function(snapshot)
       dialog_snapshot = snapshot
@@ -467,10 +513,10 @@ describe("Agent Applet boundaries", function()
       body = "ready",
       actions = { { id = "done", label = "Done", key = "<CR>" } },
     })
-    assert.is_table(dialog_snapshot.active)
-    assert(owned_agent:dialogs():choose(dialog_snapshot.active.id, "done"))
+    assert.is_table(assert(dialog_snapshot).active)
+    assert(owned_agent:dialogs():choose(assert(assert(dialog_snapshot).active).id, "done"))
     assert(vim.wait(1000, function() return dialog:is_done() end, 5))
-    assert.is_true(dialog:result().ok)
+    assert.is_true((assert(dialog:result())).ok)
     detach_dialog()
   end)
 
@@ -480,6 +526,7 @@ describe("Agent Applet boundaries", function()
     }) do
       for _, returned in ipairs({ false, true }) do
         local owned_agent = agent()
+        ---@type Neoagent.TestBoundaryViewRecord
         local record = {}
         local value = applet({
           presenter = owned_agent:presenter(),
@@ -489,7 +536,7 @@ describe("Agent Applet boundaries", function()
         assert(value:open())
         assert.are.equal("retained draft", value:set_input("retained draft"))
         local failed_view = record.view
-        failed_view[method] = function()
+        assert(failed_view)[method] = function()
           if returned then
             return nil, util.error("ui", method .. " rejected")
           end
@@ -500,7 +547,7 @@ describe("Agent Applet boundaries", function()
             revision = 1,
             messages = { { role = "user", content = "message" } },
             context = {
-              workspace = owned_agent:get_workspace().root,
+              workspace = assert(owned_agent:get_workspace()).root,
               model = "fake/test",
               position = "left",
             },
@@ -511,9 +558,9 @@ describe("Agent Applet boundaries", function()
 
         local expected = method .. (returned and " rejected" or " exploded")
         assert.has_error(function() value:bind(owned_agent) end, expected)
-        assert.is_nil(value:agent())
-        assert.is_nil(value:view())
-        assert.is_true(failed_view.destroyed)
+        assert.is_nil((value:agent()))
+        assert.is_nil((value:view()))
+        assert.is_true(assert(failed_view).destroyed)
         assert.are.equal("retained draft", value:get_input())
 
         assert.are.equal(owned_agent, value:bind(owned_agent))
@@ -528,6 +575,7 @@ describe("Agent Applet boundaries", function()
       "set_input", "set_context", "set_dialog", "set_presentation",
     }) do
       for _, returned in ipairs({ false, true }) do
+        ---@type Neoagent.TestBoundaryViewRecord
         local record = {}
         local created = 0
         local base = view_factory(record)
@@ -563,9 +611,9 @@ describe("Agent Applet boundaries", function()
 
         local opened, err = value:open()
         assert.is_nil(opened)
-        assert.matches(method, err.message)
-        assert.is_true(record.view.destroyed)
-        assert.is_nil(value:view())
+        assert.matches(method, assert(err).message)
+        assert.is_true(assert(record.view).destroyed)
+        assert.is_nil((value:view()))
         assert.are.equal("retained candidate input", value:get_input())
 
         assert(value:open())
@@ -586,6 +634,7 @@ describe("Agent Applet boundaries", function()
 
   it("rolls back subscription and returned attachment failures", function()
     local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local value = applet({
       presenter = owned_agent:presenter(),
@@ -598,20 +647,21 @@ describe("Agent Applet boundaries", function()
     owned_agent.subscribe = function() error("subscription exploded") end
     assert.has_error(function() value:bind(owned_agent) end,
       "subscription exploded")
-    assert.is_nil(value:agent())
+    assert.is_nil((value:agent()))
     assert.are.equal(first_view, value:view())
-    assert.is_false(first_view.destroyed == true)
+    assert.is_false(assert(first_view).destroyed == true)
 
     owned_agent.subscribe = subscribe
     local attach = owned_agent.attach_applet
-    owned_agent.attach_applet = function()
+    local rejected_attachment = function()
       return nil, util.error("agent", "attachment rejected")
     end
+    owned_agent.attach_applet = rejected_attachment --[[@as fun(applet: Neoagent.AgentApplet): Neoagent.AgentApplet]]
     assert.has_error(function() value:bind(owned_agent) end,
       "attachment rejected")
-    assert.is_nil(value:agent())
-    assert.is_nil(value:view())
-    assert.is_true(first_view.destroyed)
+    assert.is_nil((value:agent()))
+    assert.is_nil((value:view()))
+    assert.is_true(assert(first_view).destroyed)
 
     owned_agent.attach_applet = attach
     assert.are.equal(owned_agent, value:bind(owned_agent))
@@ -620,7 +670,7 @@ describe("Agent Applet boundaries", function()
 
   it("validates Agent Applets and contains activity listeners", function()
     assert.has_error(function()
-      agent({ applet = {} })
+      agent({ applet = false --[[@as Neoagent.AgentApplet]] })
     end, "agent Applet is invalid")
     local workspace = vim.fn.tempname()
     local session = assert(require("neoagent.session").new({
@@ -655,18 +705,18 @@ describe("Agent Applet boundaries", function()
     assert(ok, err)
 
     local requests = 0
-    local unavailable = agent({ workspace_trust = {
-      is_trusted = function()
-        return nil, util.error("workspace_trust", "trust store unreadable")
-      end,
-      check = function()
-        return nil, util.error("workspace_trust", "trust store unreadable")
-      end,
-      request = function() requests = requests + 1 end,
-    } })
+    local trust = require("neoagent.workspace_trust").new({ path = vim.fn.tempname(), dialogs = applet({}):dialogs() })
+    function trust:is_trusted() return nil, util.error("workspace_trust", "trust store unreadable") end
+    function trust:check() return nil, util.error("workspace_trust", "trust store unreadable") end
+    function trust:request()
+      requests = requests + 1
+      error("unexpected trust request")
+    end
+    local unavailable = agent({ workspace_trust = trust })
+
     local prepared, prepare_err = unavailable:prepare()
     assert.is_nil(prepared)
-    assert.matches("trust store unreadable", prepare_err.message)
+    assert.matches("trust store unreadable", assert(prepare_err).message)
     assert.are.equal(0, requests)
   end)
 
@@ -694,6 +744,7 @@ describe("Agent Applet boundaries", function()
   end)
 
   it("rejects stale Agent publications and hydration snapshots", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local owned_agent = agent()
     local value = applet({
@@ -708,47 +759,45 @@ describe("Agent Applet boundaries", function()
     value:_apply({
       revision = revision,
       type = "context",
-      context = { workspace = owned_agent:get_workspace(), model = "new" },
+      context = { workspace = assert(owned_agent:get_workspace()).root, model = "new" },
     })
     value:_apply({
       revision = revision - 1,
       type = "context",
-      context = { workspace = owned_agent:get_workspace(), model = "stale" },
+      context = { workspace = assert(owned_agent:get_workspace()).root, model = "stale" },
     })
-    assert.are.equal("new", record.view.context.model)
+    assert.are.equal("new", assert(record.view).context.model)
 
     value:_apply({
       revision = revision + 1,
       type = "context",
       context = {
-        workspace = owned_agent:get_workspace(),
+        workspace = assert(owned_agent:get_workspace()).root,
         model = "new",
         position = "left",
       },
     })
     assert.are.equal("left", value.position)
-    assert.are.equal("left", record.view.position)
+    assert.are.equal("left", assert(record.view).position)
 
     assert(value:_hydrate({
       revision = 0,
       messages = {},
-      context = { workspace = owned_agent:get_workspace(), model = "old" },
+      context = { workspace = assert(owned_agent:get_workspace()).root, model = "old" },
       events = {},
       result = nil,
     }))
-    assert.are.equal("new", record.view.context.model)
+    assert.are.equal("new", assert(record.view).context.model)
   end)
 
   it("hydrates a retained headless Agent snapshot safely", function()
     local value = applet({})
-    local broken = {
-      is_destroyed = function() return false end,
-      snapshot = function() error("headless snapshot failed") end,
-    }
+    local broken = agent()
+    function broken:snapshot() error("headless snapshot failed") end
     value.agent_value = broken
     local hydrated, err = value:_hydrate()
     assert.is_nil(hydrated)
-    assert.matches("headless snapshot failed", err.message)
+    assert.matches("headless snapshot failed", assert(err).message)
 
     broken.snapshot = function()
       return {
@@ -760,7 +809,7 @@ describe("Agent Applet boundaries", function()
       }
     end
     assert(value:_hydrate())
-    assert.are.equal(3, value.agent_snapshot.revision)
+    assert.are.equal(3, assert(value.agent_snapshot).revision)
     assert.are.equal("headless", value.workspace_root)
     assert.are.equal("right", value.position)
     value.agent_value = nil
@@ -782,69 +831,70 @@ describe("Agent Applet boundaries", function()
 
     local called, err = pcall(value.send, value, "retry binding")
     assert.is_false(called)
-    assert.matches("binding interrupted", err)
+    assert.matches("binding interrupted", tostring(err))
     fail = false
 
     local run = assert(value:send("retry binding"))
+    assert(type(run) == "table")
     assert(vim.wait(1000, function() return run:is_done() end))
     assert.are.equal("retry binding",
-      owned_agent:get_session():messages()[1].content)
+      assert(owned_agent:get_session():messages()[1]).content)
   end)
 
   it("contains submission restoration and steering dequeue failures", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local running = false
-    local fake_agent = {
-      is_destroyed = function() return false end,
-      set_attention = function() end,
-      prepare = function() return true end,
-      snapshot = function()
-        return {
-          revision = 0,
-          messages = {},
-          context = { workspace = "root" },
-          events = {},
-          result = nil,
-        }
-      end,
-      is_running = function() return running end,
-      send = function()
-        return { id = "run" }, nil, 7, "steering"
-      end,
-      resubmit_steering = function()
-        return nil, util.error("model", "resubmission rejected")
-      end,
-      dequeue_steering = function()
-        return { "queued" }, { 7 }
-      end,
-    }
+    local fake_agent = agent()
+    function fake_agent:set_attention() end
+    function fake_agent:prepare() return true end
+    function fake_agent:snapshot()
+      return {
+        revision = 0,
+        messages = {},
+        context = { workspace = "root" },
+        events = {},
+        result = nil,
+      }
+    end
+    function fake_agent:is_running() return running end
+    function fake_agent:send()
+      return async.run(function() error(async.cancelled_error, 0) end), nil, 7, "steering"
+    end
+    function fake_agent:resubmit_steering()
+      return nil, util.error("model", "resubmission rejected")
+    end
+    function fake_agent:dequeue_steering()
+      return { "queued" }, { 7 }
+    end
     local value = applet({ view = view_factory(record) })
     value.agent_value = fake_agent
     assert(value:open())
-    record.view.input = "queued"
+    assert(record.view).input = "queued"
     value.input_value = "queued"
-    record.view.set_input = function()
+    local retained_view = assert(record.view)
+    function retained_view:set_input(_)
       return nil, util.error("ui", "input clear rejected")
     end
     local run, err = value:send("queued")
     assert(run, err and err.message)
     assert.are.equal(7, value.input_submission_id)
 
-    record.view.set_input = function(view, text)
-      view.input = text
-      return true
+    function retained_view:set_input(text)
+      self.input = text
+      return text
     end
     local resumed, resume_err = value:send("queued")
     assert.is_nil(resumed)
-    assert.matches("resubmission rejected", resume_err.message)
+    assert.matches("resubmission rejected", assert(resume_err).message)
 
     value:_queue_submission(fake_agent, "queued", false, 7, "steering")
     value.input_value = "queued"
-    record.view.input = "queued"
+    assert(record.view).input = "queued"
     assert.are.same({ "queued" },
-      record.view.callbacks.on_dequeue_steering())
+      assert(assert(record.view).callbacks.on_dequeue_steering)())
     assert.are.equal("", value.input_value)
-    assert.are.equal("", record.view.input)
+    assert.are.equal("", assert(record.view).input)
 
     value.pending_submission = "pending trust"
     local trusted, trust_err = value:trust_submission_result({
@@ -852,32 +902,27 @@ describe("Agent Applet boundaries", function()
       error = util.error("workspace_trust", "trust rejected"),
     })
     assert.is_nil(trusted)
-    assert.matches("trust rejected", trust_err.message)
+    assert.matches("trust rejected", assert(trust_err).message)
   end)
 
   it("contains presentation and submission boundary failures", function()
     local value = applet({})
-    value.presentation = { active = { kind = "select", prompt = "Choose" } }
-    local shown, shown_err = value:_set_view_presentation({
-      set_presentation = function()
-        return nil, util.error("ui", "presentation failed")
-      end,
-    })
+    value.presentation = { active = { id = "choice", kind = "select", prompt = "Choose", items = {} }, queue_count = 0 }
+    local failed_view = view_factory({}, { presentation_error = true })({ config = value.config })
+    local shown, shown_err = value:_set_view_presentation(failed_view)
     assert.is_nil(shown)
-    assert.matches("presentation failed", shown_err.message)
+    assert.matches("presentation rejected", assert(shown_err).message)
 
     local prepare_error = util.error("model", "preparation rejected")
-    local fake_agent = {
-      is_destroyed = function() return false end,
-      prepare = function() return nil, prepare_error end,
-      is_running = function() return false end,
-      resubmit_steering = function()
-        return nil, util.error("steering", "submission expired")
-      end,
-      send = function()
-        return { id = "run" }, nil, 8, "turn"
-      end,
-    }
+    local fake_agent = agent()
+    function fake_agent:prepare() return nil, prepare_error end
+    function fake_agent:is_running() return false end
+    function fake_agent:resubmit_steering()
+      return nil, util.error("steering", "submission expired")
+    end
+    function fake_agent:send()
+      return async.run(function() error(async.cancelled_error, 0) end), nil, 8, "turn"
+    end
     value.presentation = nil
     value.agent_value = fake_agent
     local run, err = value:send("prepare this")
@@ -888,10 +933,11 @@ describe("Agent Applet boundaries", function()
     value:_queue_submission(fake_agent, "queued", false, 7, "steering")
     run, err = value:send("queued")
     assert(run, err and err.message)
-    assert.is_nil(value:_submission(7))
+    assert.is_nil((value:_submission(7)))
 
     local trust_error = util.error(
       "workspace_trust", "trust is pending")
+    ---@cast trust_error Neoagent.WorkspaceTrustError
     trust_error.pending = true
     fake_agent.send = function() return nil, trust_error end
     run, err = value:send("await trust")
@@ -902,41 +948,47 @@ describe("Agent Applet boundaries", function()
   end)
 
   it("rejects unsupported semantic surfaces during View construction", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local dialog_record = {}
     local dialog_value = applet({
       view = view_factory(dialog_record, { omit_dialog = true }),
     })
     dialog_value.dialog = {
-      active = { id = 1, kind = "dialog", title = "Question" },
+      active = { id = "question", title = "Question", body = "", placement = "float", actions = {} },
+      queue_count = 0,
     }
     local opened, err = dialog_value:open()
     assert.is_nil(opened)
-    assert.matches("does not support dialogs", err.message)
-    assert.is_true(dialog_record.view.destroyed)
+    assert.matches("does not support dialogs", assert(err).message)
+    assert.is_true(assert(dialog_record.view).destroyed)
 
+    ---@type Neoagent.TestBoundaryViewRecord
     local presentation_record = {}
     local presentation_value = applet({
       view = view_factory(presentation_record, { omit_presentation = true }),
     })
     presentation_value.presentation = {
-      active = { id = 1, kind = "select", prompt = "Choose" },
+      active = { id = "choice", kind = "select", prompt = "Choose", items = {} },
+      queue_count = 0,
     }
     opened, err = presentation_value:open()
     assert.is_nil(opened)
-    assert.matches("does not support semantic presentations", err.message)
-    assert.is_true(presentation_record.view.destroyed)
+    assert.matches("does not support semantic presentations", assert(err).message)
+    assert.is_true(assert(presentation_record.view).destroyed)
   end)
 
   it("rehydrates a newer publication that arrives during View construction", function()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
+    ---@type Neoagent.AgentApplet?
     local value
     local base_factory = view_factory(record)
     local factory = function(options)
       local view = base_factory(options)
-      local set_context = view.set_context
-      view.set_context = function(self, context)
+      local set_context = view.set_context --[[@as fun(self: Neoagent.View, context: Neoagent.AgentContext?)]]
+      function view:set_context(context)
         set_context(self, context)
-        value.agent_snapshot = {
+        assert(value).agent_snapshot = {
           revision = 2,
           messages = {},
           context = { workspace = "new", model = "new" },
@@ -948,12 +1000,10 @@ describe("Agent Applet boundaries", function()
       return view
     end
     value = applet({ view = factory })
-    value.agent_value = {
-      is_destroyed = function() return false end,
-      label = function() return "Agent" end,
-      set_attention = function() return true end,
-      prepare = function() return true end,
-    }
+    value.agent_value = agent()
+    function value.agent_value:label() return "Agent" end
+    function value.agent_value:set_attention() return true end
+    function value.agent_value:prepare() return true end
     value.agent_snapshot = {
       revision = 1,
       messages = {},
@@ -964,7 +1014,7 @@ describe("Agent Applet boundaries", function()
 
     assert(value:open())
     assert.are.equal(2, value.agent_snapshot.revision)
-    assert.are.equal("new", record.view.context.model)
+    assert.are.equal("new", assert(record.view).context.model)
     value.agent_value = nil
   end)
 
@@ -977,33 +1027,30 @@ describe("Agent Applet boundaries", function()
       events = {},
       result = nil,
     }
-    local fake_agent = {
-      _neoagent_agent = true,
-      is_destroyed = function() return false end,
-      presenter = function() return value:presenter() end,
-      dialogs = function() return value:dialogs() end,
-      subscribe = function(_, callback)
-        callback({
-          type = "context",
-          revision = 6,
-          context = { workspace = "queued", model = "queued" },
-        })
-        return function() end
-      end,
-      snapshot = function()
-        return {
-          revision = 3,
-          messages = {},
-          context = { workspace = "stale", model = "stale" },
-          events = {},
-          result = nil,
-        }
-      end,
-      attach_applet = function(_, selected) return selected end,
-      detach_applet = function() return true end,
-      set_attention = function() return true end,
-      label = function() return "Agent" end,
-    }
+    local fake_agent = agent()
+    function fake_agent:presenter() return value:presenter() end
+    function fake_agent:dialogs() return value:dialogs() end
+    function fake_agent:subscribe(callback)
+      callback({
+        type = "context",
+        revision = 6,
+        context = { workspace = "queued", model = "queued" },
+      })
+      return function() end
+    end
+    function fake_agent:snapshot()
+      return {
+        revision = 3,
+        messages = {},
+        context = { workspace = "stale", model = "stale" },
+        events = {},
+        result = nil,
+      }
+    end
+    function fake_agent:attach_applet(selected) return selected end
+    function fake_agent:detach_applet() return true end
+    function fake_agent:set_attention() return true end
+    function fake_agent:label() return "Agent" end
 
     assert.are.equal(fake_agent, value:bind(fake_agent))
     assert.are.equal(6, value.agent_snapshot.revision)
@@ -1013,6 +1060,7 @@ describe("Agent Applet boundaries", function()
 
   it("destroys an invalidated View and reports Agent detach failure", function()
     local owned_agent = agent()
+    ---@type Neoagent.TestBoundaryViewRecord
     local record = {}
     local value = applet({
       presenter = owned_agent:presenter(),
@@ -1021,7 +1069,8 @@ describe("Agent Applet boundaries", function()
     })
     assert(value:bind(owned_agent))
     assert(value:open())
-    record.view.set_messages = function()
+    local retained_view = assert(record.view)
+    function retained_view:set_messages(_)
       return nil, util.error("ui", "message clearing failed")
     end
     local detach_applet = owned_agent.detach_applet
@@ -1032,10 +1081,10 @@ describe("Agent Applet boundaries", function()
     local detached, err = value:unbind(owned_agent)
 
     assert.are.equal(owned_agent, detached)
-    assert.matches("detach exploded", err.message)
-    assert.is_true(record.view.destroyed)
-    assert.is_nil(value:view())
-    assert.is_nil(value:agent())
+    assert.matches("detach exploded", assert(err).message)
+    assert.is_true(assert(record.view).destroyed)
+    assert.is_nil((value:view()))
+    assert.is_nil((value:agent()))
     owned_agent.detach_applet = detach_applet
     assert(owned_agent:detach_applet(value))
   end)
@@ -1044,22 +1093,21 @@ describe("Agent Applet boundaries", function()
     local selected = agent()
     local presenter = selected:presenter()
     local detach = presenter:attach({ present = function() return true end })
+    ---@type Neoagent.Model?
     local callback_model
-    assert.is_true(selected:select_model(function(model)
+    assert.is_true((selected:select_model(function(model)
       callback_model = model
-    end))
+    end)))
     local request = assert(presenter:snapshot().active)
-    assert(presenter:resolve(request.id, request.items[1].id))
+    assert(presenter:resolve(request.id, assert(assert(request.items)[1]).id))
     assert(vim.wait(1000, function() return callback_model ~= nil end, 5))
     assert.are.equal(callback_model, selected:get_model())
     detach()
 
-    local trust = {
-      is_trusted = function() return false end,
-      check = function()
-        return nil, util.error("workspace_trust", "workspace rejected")
-      end,
-    }
+    local trust = require("neoagent.workspace_trust").new({ path = vim.fn.tempname(), dialogs = applet({}):dialogs() })
+    function trust:is_trusted() return false end
+    function trust:check() return nil, util.error("workspace_trust", "workspace rejected") end
+
     local rejected = agent({ workspace_trust = trust })
     local notifications = {}
     local original_notify = vim.notify
@@ -1069,10 +1117,11 @@ describe("Agent Applet boundaries", function()
     local ok, err = pcall(function()
       local model, select_err = rejected:select_model()
       assert.is_nil(model)
-      assert.matches("workspace rejected", select_err.message)
-      model, select_err = rejected:set_model("fake", "test")
-      assert.is_nil(model)
-      assert.matches("workspace rejected", select_err.message)
+      assert.matches("workspace rejected", assert(select_err).message)
+      local selected_model
+      selected_model, select_err = rejected:set_model("fake", "test")
+      assert.is_nil(selected_model)
+      assert.matches("workspace rejected", assert(select_err).message)
       assert.matches("workspace rejected", notifications[#notifications][1])
     end)
     vim.notify = original_notify
@@ -1085,7 +1134,7 @@ describe("Agent Applet boundaries", function()
     local detach_original = original:attach({
       present = function() return true end,
     })
-    assert.is_true(value:select_model())
+    assert.is_true((value:select_model()))
     assert(original:snapshot().active)
 
     local presentation = assert(original:snapshot().active)
@@ -1105,83 +1154,77 @@ describe("Agent Applet boundaries", function()
     local dialog_id = assert(value:dialogs():snapshot().active).id
     assert(value:dialogs():cancel(dialog_id, "test cancellation"))
     assert(vim.wait(1000, function() return dialog:is_done() end, 5))
-    assert.is_false(dialog:result().ok)
+    assert.is_false((assert(dialog:result())).ok)
     detach_dialogs()
     detach_original()
   end)
 
   it("contains immediately rejected branch presentations", function()
     local notifications = {}
-    local presenter = {
-      select = function()
-        return async.run(function()
-          error(util.error("presentation", "branch selector failed"), 0)
-        end)
-      end,
-      input = function() end,
-      confirm = function() end,
-      notify = function(_, request)
-        notifications[#notifications + 1] = request
-        return true
-      end,
-      open_uri = function() return true end,
-    }
+    local presenter = require("neoagent.presenter").new()
+    function presenter:select()
+      return async.run(function()
+        error(util.error("presentation", "branch selector failed"), 0)
+      end)
+    end
+    function presenter:notify(request)
+      notifications[#notifications + 1] = request
+      return true
+    end
     local value = agent({ presenter = presenter })
     assert(value:prepare())
     assert(value:get_session():append({ role = "user", content = "question" }))
 
-    assert.is_true(value:select_branch())
+    assert.is_true((value:select_branch()))
     assert.matches("branch selector failed", notifications[#notifications].message)
   end)
 
   it("contains every live model-selector update failure", function()
     local notifications = {}
+    ---@type Neoagent.AwaitCallbacks<Neoagent.PresentationResult>?
     local pending
     local update_mode = "ok"
-    local presenter = {
-      select = function()
-        local run = async.run(function()
-          return async.await(function(done) pending = done end)
-        end)
-        local function update()
-          if update_mode == "throw" then error("update exploded") end
-          if update_mode == "reject" then
-            return nil, util.error("presentation", "update rejected")
-          end
-          return true
+    local presenter = require("neoagent.presenter").new()
+    function presenter:select()
+      local run = async.run(function()
+        return async.await(function(done) pending = done end)
+      end)
+      local function update()
+        if update_mode == "throw" then error("update exploded") end
+        if update_mode == "reject" then
+          return nil, util.error("presentation", "update rejected")
         end
-        return run, update
-      end,
-      input = function() end,
-      confirm = function() end,
-      notify = function(_, request)
-        notifications[#notifications + 1] = request
         return true
-      end,
-      open_uri = function() return true end,
-    }
+      end
+      return run, update
+    end
+    function presenter:notify(request)
+      notifications[#notifications + 1] = request
+      return true
+    end
     local models = require("neoagent.models")
     local subscribe_available = models.subscribe_available
+    ---@type (fun(choices?: string[], err?: Neoagent.Error))?
     local subscriber
     models.subscribe_available = function(_, _, _, callback)
       subscriber = callback
-      return function() end
+      return function() return true end
     end
     local ok, err = pcall(function()
       local value = agent({ presenter = presenter })
       assert(value:prepare())
-      assert.is_true(value:select_model())
+      assert.is_true((value:select_model()))
       assert.is_function(subscriber)
 
-      subscriber(nil, util.error("model", "catalog update failed"))
+      assert(subscriber)(nil, util.error("model", "catalog update failed"))
       update_mode = "throw"
-      subscriber({ "fake/test" })
+      assert(subscriber)({ "fake/test" })
       update_mode = "reject"
-      subscriber({ "fake/test" })
+      assert(subscriber)({ "fake/test" })
       assert.matches("catalog update failed", notifications[1].message)
       assert.matches("update exploded", notifications[2].message)
       assert.matches("update rejected", notifications[3].message)
-      pending.reject(async.cancelled_error)
+      assert(pending).reject(async.cancelled_error)
     end)
     models.subscribe_available = subscribe_available
     assert(ok, err)

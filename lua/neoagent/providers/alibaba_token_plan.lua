@@ -4,9 +4,16 @@ local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
 local M = {}
+
+---@class Neoagent.AlibabaServiceResources: Neoagent.ProviderServiceResources
+---@field client? Neoagent.AlibabaTokenPlanClient
+
 local DEFAULT_BASE_URL =
   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 
+---@param opts? Neoagent.ProviderServiceConfig
+---@param resources? Neoagent.AlibabaServiceResources
+---@return Neoagent.ProviderService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
@@ -19,16 +26,24 @@ function M.new(opts, resources)
   })
   assert(type(client) == "table" and type(client.usage) == "function",
     "Alibaba Token Plan client requires usage")
+  ---@type Neoagent.ProviderStatusBlock?
   local status
+  ---@type Neoagent.AlibabaQuotaUsage?
   local usage
   local destroyed = false
 
+  ---@param remaining number
+  ---@return Neoagent.ProviderLevel
   local function level(remaining)
     if remaining <= 0 then return "error" end
     if remaining <= 0.2 then return "warn" end
     return "success"
   end
 
+  ---@param id "five_hour"|"seven_day"
+  ---@param label string
+  ---@param absent string
+  ---@return Neoagent.ProviderFieldBlock|Neoagent.ProviderLimitBlock
   local function quota_block(id, label, absent)
     local value = usage and usage[id] or nil
     if not value or value.used == nil then
@@ -44,7 +59,9 @@ function M.new(opts, resources)
     }
   end
 
+  ---@return Neoagent.ProviderBlock[]
   local function blocks()
+    ---@type Neoagent.ProviderBlock[]
     local result = {}
     if status then result[#result + 1] = util.copy(status) end
     result[#result + 1] = {
@@ -70,6 +87,7 @@ function M.new(opts, resources)
     assert(dashboard:push({ blocks = blocks() }))
   end
 
+  ---@class Neoagent.AlibabaService: Neoagent.ProviderService
   local service = {
     id = resources.provider_id or "alibaba-token-plan",
     name = "Alibaba Cloud Token Plan Personal",
@@ -90,8 +108,9 @@ function M.new(opts, resources)
             local refreshed = client:usage(ctx):await()
             if refreshed.ok == false then
               local err = refreshed.error
-              if err and (err.kind == "auth" or err.status == 401
-                  or err.status == 403) then
+              local status_code = err and rawget(err, "status")
+              if err and (err.kind == "auth" or status_code == 401
+                  or status_code == 403) then
                 status = {
                   type = "status",
                   text = "Alibaba Cloud quota reporting requires current "

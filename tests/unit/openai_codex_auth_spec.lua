@@ -1,11 +1,18 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local codex = require("neoagent.auth.openai_codex")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param account string
+---@param claims? { email?: string, profile_email?: string, plan?: string }
+---@return string
 local function token(account, claims)
   claims = claims or {}
   local payload = vim.base64.encode(vim.json.encode({
@@ -21,20 +28,33 @@ local function token(account, claims)
   return "header." .. payload .. ".signature"
 end
 
+---@param responses Neoagent.ByteFetchResult[]
+---@return Neoagent.TestCodexAuthHttp
 local function fake_http(responses)
+  ---@class Neoagent.TestCodexAuthHttp: Neoagent.ByteBackend
+  ---@field requests Neoagent.HttpRequest[]
+  ---@field responses Neoagent.ByteFetchResult[]
   local value = { requests = {}, responses = responses }
+  ---@param opts Neoagent.ByteFetchOptions
+  ---@return Neoagent.Run<Neoagent.ByteFetchResult, nil>
   function value.fetch(opts)
     value.requests[#value.requests + 1] = opts.request
-    local response = table.remove(value.responses, 1)
+    local response = assert(table.remove(value.responses, 1))
     return async.run(function() return response end)
   end
   return value
 end
 
+---@param status integer
+---@param value Neoagent.JsonValue
+---@return Neoagent.ByteFetchSuccess
 local function json(status, value)
-  return { ok = true, status = status, body = vim.json.encode(value) }
+  return { ok = true, headers = {}, status = status, body = vim.json.encode(value) }
 end
 
+---@param answers (string|fun(prompt: Neoagent.LoginPrompt): string)[]
+---@param events Neoagent.AuthEvent[]
+---@return Neoagent.LoginInteraction
 local function interaction(answers, events)
   return {
     prompt = function(prompt, done)
@@ -63,57 +83,61 @@ describe("OpenAI Codex subscription authentication", function()
       start_callback_server = function(state, host)
         assert.is_truthy(state)
         assert.are.equal("127.0.0.1", host)
-        return { wait = function() return "browser-code" end, close = function() closed = true end }
+        return { port = 1455, wait = function() return "browser-code" end, close = function() closed = true return true end }
       end,
     })
+    ---@type Neoagent.AuthEvent[]
     local events = {}
     local result = wait(method.login(interaction({ "browser" }, events)))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_true(closed)
     assert.are.equal("acct", result.credential.accountId)
     assert.are.equal(61000, result.credential.expires)
-    assert.matches("originator=neoagent", events[1].url)
-    assert.matches("code_challenge_method=S256", events[1].url)
-    assert.are.equal("https://auth.test/oauth/token", http.requests[1].url)
-    assert.matches("code=browser%-code", http.requests[1].body)
-    local headers = method.request_opts(result.credential).headers
-    assert.are.equal("Bearer " .. result.credential.access, headers.Authorization)
-    assert.are.equal("acct", headers["chatgpt-account-id"])
-    assert.are.equal("responses=experimental", headers["OpenAI-Beta"])
+    assert.matches("originator=neoagent", assert(assert(events[1]).url))
+    assert.matches("code_challenge_method=S256", assert(assert(events[1]).url))
+    assert.are.equal("https://auth.test/oauth/token", assert(http.requests[1]).url)
+    assert.matches("code=browser%-code", assert(assert(http.requests[1]).body))
+    local headers = assert(method.request_opts(result.credential).headers)
+    assert.are.equal("Bearer " .. result.credential.access, rawget(headers, "Authorization"))
+    assert.are.equal("acct", rawget(headers, "chatgpt-account-id"))
+    assert.are.equal("responses=experimental", rawget(headers, "OpenAI-Beta"))
     assert.are.same({
       email = "account@example.com",
       plan = "Business",
-    }, method.public_metadata(result.credential))
-    assert.is_nil(method.public_metadata(result.credential).accountId)
+    }, assert(method.public_metadata)(result.credential))
+    assert.is_nil(rawget(assert(assert(method.public_metadata)(result.credential)), "accountId"))
   end)
 
   it("bounds safe public account metadata and normalizes plan labels", function()
     local method = codex.new()
-    assert.are.same({ plan = "Enterprise" }, method.public_metadata({
+    -- Exercise defensive metadata extraction from incomplete credentials.
+    local metadata = assert(method.public_metadata) --[[@as fun(credential: table<string, unknown>): table<string, string>]]
+    local cache_identity = assert(method.cache_identity) --[[@as fun(credential: table<string, unknown>): string?]]
+    assert.are.same({ plan = "Enterprise" }, metadata({
       plan = "enterprise_cbp_usage_based",
       email = "bad\nemail@example.com",
     }))
     assert.are.same({ email = "member@example.com", plan = "Pro Lite" },
-      method.public_metadata({
+      metadata({
         email = "member@example.com",
         plan = "prolite",
       }))
-    assert.are.same({ account = "ChatGPT" }, method.public_metadata({
+    assert.are.same({ account = "ChatGPT" }, metadata({
       email = string.rep("a", 255),
       plan = string.rep("p", 65),
     }))
     assert.are.same({ email = "token@example.com", plan = "Pro" },
-      method.public_metadata({ access = token("acct", {
+      metadata({ access = token("acct", {
         profile_email = "token@example.com",
         plan = "pro",
       }) }))
-    assert.are.equal("explicit", method.cache_identity({
+    assert.are.equal("explicit", cache_identity({
       accountId = "explicit", access = token("fallback"),
     }))
-    assert.are.equal("fallback", method.cache_identity({
+    assert.are.equal("fallback", cache_identity({
       access = token("fallback"),
     }))
-    assert.is_nil(method.cache_identity({}))
+    assert.is_nil(cache_identity({}))
   end)
 
   it("extracts account display metadata from the OAuth ID token", function()
@@ -130,18 +154,18 @@ describe("OpenAI Codex subscription authentication", function()
       http = http,
       auth_base_url = "https://auth.test",
       start_callback_server = function()
-        return { wait = function() return "browser-code" end, close = function() end }
+        return { port = 1455, wait = function() return "browser-code" end, close = function() return true end }
       end,
     })
     local result = wait(method.login(interaction({ "browser" }, {})))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("profile@example.com", result.credential.email)
     assert.are.equal("plus", result.credential.plan)
     assert.are.same({
       email = "profile@example.com",
       plan = "Plus",
-    }, method.public_metadata(result.credential))
+    }, assert(method.public_metadata)(result.credential))
   end)
 
   it("falls back to a pasted redirect URL and refreshes tokens", function()
@@ -157,7 +181,9 @@ describe("OpenAI Codex subscription authentication", function()
       }),
       json(200, { access_token = token("second"), refresh_token = "r2", expires_in = 2 }),
     })
+    ---@type string?
     local state
+    ---@type Neoagent.AuthEvent[]
     local events = {}
     local method = codex.new({
       http = http,
@@ -169,19 +195,19 @@ describe("OpenAI Codex subscription authentication", function()
       "browser",
       function(prompt)
         assert.are.equal("manual_code", prompt.type)
-        state = events[1].url:match("[?&]state=([^&]+)")
-        return "http://localhost:1455/auth/callback?code=pasted&state=" .. state
+        state = assert(assert(events[1]).url):match("[?&]state=([^&]+)")
+        return "http://localhost:1455/auth/callback?code=pasted&state=" .. assert(state)
       end,
     }, events)))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("first", result.credential.accountId)
-    result = wait(method.refresh(result.credential))
-    assert.is_true(result.ok)
+    result = wait(assert(method.refresh)(result.credential))
+    assert(result.ok)
     assert.are.equal("second", result.credential.accountId)
     assert.are.equal("account@example.com", result.credential.email)
     assert.are.equal("plus", result.credential.plan)
-    assert.matches("grant_type=refresh_token", http.requests[2].body)
-    assert.matches("refresh_token=r1", http.requests[2].body)
+    assert.matches("grant_type=refresh_token", assert(assert(http.requests[2]).body))
+    assert.matches("refresh_token=r1", assert(assert(http.requests[2]).body))
   end)
 
   it("supports headless device-code authorization with pending polls", function()
@@ -193,7 +219,9 @@ describe("OpenAI Codex subscription authentication", function()
       json(200, { authorization_code = "authorization", code_verifier = "verifier" }),
       json(200, { access_token = token("device-account"), refresh_token = "refresh", expires_in = 5 }),
     })
+    ---@type Neoagent.AuthEvent[]
     local events = {}
+    ---@type number[]
     local sleeps = {}
     local method = codex.new({
       http = http,
@@ -202,14 +230,14 @@ describe("OpenAI Codex subscription authentication", function()
       sleep = function(milliseconds) sleeps[#sleeps + 1] = milliseconds end,
     })
     local result = wait(method.login(interaction({ "device_code" }, events)))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("device-account", result.credential.accountId)
-    assert.are.equal("device_code", events[1].type)
-    assert.are.equal("ABCD", events[1].userCode)
+    assert.are.equal("device_code", assert(events[1]).type)
+    assert.are.equal("ABCD", assert(events[1]).userCode)
     assert.are.equal(6, #http.requests)
     assert.are.same({ 0, 0, 0, 5000 }, sleeps)
-    assert.is_truthy(http.requests[6].body:find(
-      "redirect_uri=https%3a%2f%2fauth.openai.com%2fdeviceauth%2fcallback", 1, true))
+    assert.is_truthy((assert(assert(http.requests[6]).body):find(
+      "redirect_uri=https%3a%2f%2fauth.openai.com%2fdeviceauth%2fcallback", 1, true)))
   end)
 
   it("uses a cancellable timer while polling device authorization", function()
@@ -222,7 +250,7 @@ describe("OpenAI Codex subscription authentication", function()
       http = http, now = function() return 0 end, auth_base_url = "https://auth.test",
     })
     local result = wait(method.login(interaction({ "device_code" }, {})))
-    assert.is_true(result.ok)
+    assert(result.ok)
 
     local pending_http = fake_http({
       json(200, {
@@ -240,28 +268,34 @@ describe("OpenAI Codex subscription authentication", function()
     run:cancel()
     result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
   end)
 
   it("reports provider, selection, token, and credential failures", function()
+    ---@param responses Neoagent.ByteFetchResult[]
+    ---@param choice string
+    ---@return Neoagent.AuthMethod<Neoagent.CodexCredential>, Neoagent.CredentialResult<Neoagent.CodexCredential>
     local function login_with(responses, choice)
       local method = codex.new({
         http = fake_http(responses), auth_base_url = "https://auth.test",
-        start_callback_server = function() return { wait = function() return "code" end, close = function() end } end,
+        start_callback_server = function() return { port = 1455, wait = function() return "code" end, close = function() return true end } end,
       })
       return method, wait(method.login(interaction({ choice }, {})))
     end
     local _, result = login_with({}, "unknown")
-    assert.matches("Unknown", result.error.message)
+    assert.matches("Unknown", assert(result.error).message)
     _, result = login_with({ json(401, { error = { message = "denied" } }) }, "browser")
-    assert.matches("HTTP 401", result.error.message)
+    assert.matches("HTTP 401", assert(result.error).message)
     _, result = login_with({ json(200, { access_token = "bad", refresh_token = "r", expires_in = 1 }) }, "browser")
-    assert.matches("accountId", result.error.message)
-    _, result = login_with({ { ok = true, status = 200, body = "not-json" } }, "browser")
-    assert.matches("invalid JSON", result.error.message)
+    assert.matches("accountId", assert(result.error).message)
+    _, result = login_with({ { ok = true, headers = {}, status = 200, body = "not-json" } }, "browser")
+    assert.matches("invalid JSON", assert(result.error).message)
     _, result = login_with({ json(200, { access_token = token("account") }) }, "browser")
-    assert.matches("missing fields", result.error.message)
+    assert.matches("missing fields", assert(result.error).message)
 
+    ---@param responses Neoagent.ByteFetchResult[]
+    ---@param now? fun(): number
+    ---@return Neoagent.CredentialResult<Neoagent.CodexCredential>
     local function device_failure(responses, now)
       local selected = codex.new({
         http = fake_http(responses),
@@ -272,26 +306,28 @@ describe("OpenAI Codex subscription authentication", function()
       return wait(selected.login(interaction({ "device_code" }, {})))
     end
     result = device_failure({ json(200, {}) })
-    assert.matches("device code", result.error.message)
+    assert.matches("device code", assert(result.error).message)
     result = device_failure({
       json(200, { device_auth_id = "device", user_code = "CODE", interval = 0 }),
       json(200, {}),
     })
-    assert.matches("authorization response", result.error.message)
+    assert.matches("authorization response", assert(result.error).message)
     result = device_failure({
       json(200, { device_auth_id = "device", user_code = "CODE", interval = 0 }),
       json(500, { error = "failed" }),
     })
-    assert.matches("HTTP 500", result.error.message)
+    assert.matches("HTTP 500", assert(result.error).message)
     local times = { 0, 1000000 }
     result = device_failure({
       json(200, { device_auth_id = "device", user_code = "CODE", interval = 0 }),
-    }, function() return table.remove(times, 1) end)
-    assert.matches("timed out", result.error.message)
+    }, function() return (assert(table.remove(times, 1))) end)
+    assert.matches("timed out", assert(result.error).message)
 
     local method = codex.new()
-    local ok, err = pcall(method.request_opts, { access = "token" })
+    local incomplete = { access = "token" }
+    local ok, err = pcall(method.request_opts,
+      incomplete --[[@as Neoagent.CodexCredential]])
     assert.is_false(ok)
-    assert.are.equal("auth", err.kind)
+    assert.are.equal("auth", (err --[[@as Neoagent.Error]]).kind)
   end)
 end)

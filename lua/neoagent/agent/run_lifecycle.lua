@@ -1,8 +1,92 @@
+---@class Neoagent.AgentActivity
+---@field id integer
+---@field kind string
+---@field phase string
+---@field accepted boolean
+---@field finalized boolean
+---@field provider_lease? fun(): boolean?, Neoagent.Error?
+---@field run? Neoagent.AgentRun
+---@field steering_claim? Neoagent.SteeringClaim
+---@field submission_id? integer
+---@field base? Neoagent.AgentInteractionOptions
+
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
 local context_metrics = require("neoagent.agent.context")
 local semantic_message = require("neoagent.semantic_message")
 local util = require("neoagent.util")
+
+---@alias Neoagent.AgentRunResult Neoagent.ChatResult|Neoagent.CompactionResult
+---@alias Neoagent.AgentRun Neoagent.Run<Neoagent.AgentRunResult, nil>
+---@alias Neoagent.ProviderRelease fun(): boolean?, Neoagent.Error?
+
+---@class Neoagent.AgentToolEnvironment
+---@field workspace? Neoagent.Workspace
+---@field agent? string
+---@field session_id table
+
+---@class Neoagent.AgentToolset<C = Neoagent.AgentToolEnvironment>: Neoagent.SandboxToolset<C>
+---@field system_prompt? string
+
+---@class Neoagent.AgentInteractionOptions: Neoagent.ChatOptions<Neoagent.AgentToolEnvironment>
+---@field session Neoagent.Session
+---@field prompt string
+---@field workspace? Neoagent.Workspace
+---@field thinking_level? Neoagent.ThinkingLevel
+---@field activity? Neoagent.AgentActivity
+---@field model_options Neoagent.StreamOverrides
+
+---@class Neoagent.AgentCompactionOptions: Neoagent.CompactionRunOptions
+---@field reason string
+---@field session Neoagent.Session
+
+---@class Neoagent.AgentCompactionSuccess: Neoagent.CompactionSuccess
+---@field estimated_tokens_after? number
+
+---@class Neoagent.AgentSubmissionAccepted
+---@field type 'submission_accepted'
+---@field submission_id integer
+---@field prompt string
+---@field entry_id? string
+
+---@class Neoagent.AgentEventPublication
+---@field type 'event'
+---@field event Neoagent.AgentEvent
+
+---@class Neoagent.AgentFinishPublication
+---@field type 'finish'
+---@field result Neoagent.AgentCompletion
+
+---@alias Neoagent.AgentRunPublication Neoagent.AgentSubmissionAccepted|Neoagent.AgentEventPublication|Neoagent.AgentFinishPublication
+
+---@class Neoagent.RunLifecycleOptions
+---@field state Neoagent.AgentState
+---@field config Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@field notify fun(message: string, level?: integer)
+---@field publish fun(publication: Neoagent.AgentRunPublication)
+---@field publish_messages fun(messages: Neoagent.TranscriptMessage[])
+---@field update_context fun()
+---@field sync_tools fun()
+---@field transcript_messages fun(session: Neoagent.Session): Neoagent.TranscriptMessage[]
+---@field require_workspace_trust fun()
+---@field ensure_session fun()
+---@field ensure_model fun(): unknown
+---@field commit_model_preference fun(): boolean?, Neoagent.Error?
+---@field copy_toolset fun(value: Neoagent.AgentToolset): Neoagent.AgentToolset
+---@field system_prompt fun(prompt: string, tools: Neoagent.Tool<Neoagent.AgentToolEnvironment>[]): string
+---@field refresh_buffer fun(path: string)
+---@field provider_event? fun(event: Neoagent.AgentEvent)
+---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
+---@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field acquire_provider fun(): Neoagent.ProviderRelease
+
+---@class Neoagent.RunLifecycle
+---@field send fun(text: string): Neoagent.AgentRun|true|nil, Neoagent.Error?, integer?, ('turn'|'steering')?
+---@field steer fun(text: string): true?, Neoagent.Error?, integer?, 'steering'?
+---@field resubmit_steering fun(submission_id: integer): Neoagent.AgentRun?, Neoagent.Error?, integer?, 'turn'?
+---@field dequeue_steering fun(): string[], integer[]
+---@field compact fun(instructions?: string): Neoagent.AgentRun?, Neoagent.Error?
+---@field stop fun(): boolean
 
 local M = {}
 
@@ -36,6 +120,9 @@ local PROMPT_STATS_DELAY_MS = 2000
 local COMPLETION_ERROR_CHARACTERS = 512
 local COMPLETION_DETAIL_CHARACTERS = 1024
 
+---@param value unknown
+---@param maximum integer
+---@return string
 local function bounded_text(value, maximum)
   if type(value) ~= "string" then
     local ok, rendered = pcall(tostring, value)
@@ -46,6 +133,8 @@ local function bounded_text(value, maximum)
   return vim.fn.strcharpart(value, 0, maximum) .. "…"
 end
 
+---@param value unknown
+---@return Neoagent.Error?
 local function completion_error(value)
   if value == nil then return nil end
   local source = util.normalize_error(value, "agent")
@@ -53,13 +142,13 @@ local function completion_error(value)
     kind = bounded_text(source.kind, 64),
     message = bounded_text(source.message, COMPLETION_ERROR_CHARACTERS),
   }
-  local detail = source.detail
+  local detail = source["detail"]
   if type(detail) == "table" and type(detail.message) == "string" then
     detail = detail.message
   end
   if type(detail) == "string" or type(detail) == "number"
       or type(detail) == "boolean" then
-    result.detail = bounded_text(detail, COMPLETION_DETAIL_CHARACTERS)
+    result["detail"] = bounded_text(detail, COMPLETION_DETAIL_CHARACTERS)
   end
   for _, field in ipairs({ "code", "status", "retry_after_ms" }) do
     local selected = source[field]
@@ -70,12 +159,13 @@ local function completion_error(value)
       result[field] = bounded_text(selected, 128)
     end
   end
-  if type(source.retryable) == "boolean" then
-    result.retryable = source.retryable
-  end
+  local retryable = rawget(source, "retryable")
+  if type(retryable) == "boolean" then result.retryable = retryable end
   return result
 end
 
+---@param value unknown
+---@return Neoagent.Usage?
 local function completion_usage(value)
   if type(value) ~= "table" then return nil end
   local result = {}
@@ -92,6 +182,8 @@ local function completion_usage(value)
   return next(result) and result or nil
 end
 
+---@param done unknown
+---@return Neoagent.AgentCompletion
 local function completion_value(done)
   if type(done) ~= "table" then
     done = {
@@ -119,6 +211,8 @@ local function completion_value(done)
   return result
 end
 
+---@param value unknown
+---@return number?
 local function inference_rate(value)
   if type(value) ~= "number" or value <= 0 or value ~= value
       or value == math.huge then
@@ -127,6 +221,9 @@ local function inference_rate(value)
   return value
 end
 
+---@param state Neoagent.AgentState
+---@param event Neoagent.ModelInferenceStats
+---@return {prompt_tokens_per_second?: number, generation_tokens_per_second?: number}?
 local function apply_inference_stats(state, event)
   local prompt = inference_rate(event.prompt_tokens_per_second)
   local generation = inference_rate(event.generation_tokens_per_second)
@@ -143,11 +240,15 @@ local function apply_inference_stats(state, event)
   return state.inference_stats
 end
 
+---@param state Neoagent.AgentState
+---@param event Neoagent.ModelInferenceStats
+---@param update fun()
 local function publish_inference_stats(state, event, update)
   local stats = apply_inference_stats(state, event)
   if stats then update() end
 end
 
+---@param state Neoagent.AgentState
 local function retain_completed_inference_stats(state)
   local stats = state.inference_stats
   if type(stats) == "table"
@@ -156,15 +257,20 @@ local function retain_completed_inference_stats(state)
   end
 end
 
+---@param err Neoagent.Error
+---@return string
 local function error_text(err)
   local parts = { type(err.message) == "string" and err.message or "" }
-  if err.detail ~= nil then
-    local ok, encoded = pcall(vim.json.encode, err.detail)
-    parts[#parts + 1] = ok and encoded or tostring(err.detail)
+  if err["detail"] ~= nil then
+    local ok, encoded = pcall(vim.json.encode, err["detail"])
+    parts[#parts + 1] = ok and encoded or tostring(err["detail"])
   end
   return table.concat(parts, " "):lower()
 end
 
+---@param text string
+---@param patterns string[]
+---@return boolean
 local function has_pattern(text, patterns)
   for _, pattern in ipairs(patterns) do
     if text:find(pattern, 1, true) then return true end
@@ -172,20 +278,27 @@ local function has_pattern(text, patterns)
   return false
 end
 
+---@param err Neoagent.Error?
+---@return boolean
 local function is_retryable_error(err)
   if type(err) ~= "table" or err.kind == "cancelled" then return false end
-  if type(err.retryable) == "boolean" then return err.retryable end
+  local retryable = rawget(err, "retryable")
+  if type(retryable) == "boolean" then return retryable end
   local text = error_text(err)
   if has_pattern(text, non_retryable_error_patterns) then return false end
   if has_pattern(text, retryable_error_patterns) then return true end
-  local response = type(err.response) == "table" and err.response or {}
-  local status = tonumber(err.status) or tonumber(response.status)
+  local response = rawget(err, "response")
+  response = type(response) == "table" and response or {}
+  local status = tonumber(rawget(err, "status")) or tonumber(response.status)
     or tonumber(text:match("http%s+(%d%d%d)"))
   if status and status >= 400 then return retryable_status[status] == true end
   if err.kind == "transport" then return true end
   return false
 end
 
+---@async
+---@param milliseconds number
+---@return boolean
 local function retry_delay(milliseconds)
   return async.await(function(done)
     local timer = vim.uv.new_timer()
@@ -193,7 +306,7 @@ local function retry_delay(milliseconds)
       done.reject(util.error("agent", "Failed to create retry timer"))
       return
     end
-    timer:start(math.max(1, milliseconds), 0, function()
+    timer:start(math.max(1, math.floor(milliseconds)), 0, function()
       timer:stop()
       if not timer:is_closing() then timer:close() end
       done.resolve(true)
@@ -205,12 +318,14 @@ local function retry_delay(milliseconds)
   end)
 end
 
+---@param result Neoagent.AgentRunResult?
+---@return boolean
 local function is_context_overflow(result)
   if not result or result.ok or not result.error then return false end
   local parts = { result.error.message or "" }
-  if result.error.detail ~= nil then
-    local ok, encoded = pcall(vim.json.encode, result.error.detail)
-    parts[#parts + 1] = ok and encoded or tostring(result.error.detail)
+  if result.error["detail"] ~= nil then
+    local ok, encoded = pcall(vim.json.encode, result.error["detail"])
+    parts[#parts + 1] = ok and encoded or tostring(result.error["detail"])
   end
   local text = table.concat(parts, " "):lower()
   for _, pattern in ipairs({ "rate limit", "too many requests" }) do
@@ -234,19 +349,27 @@ local function is_context_overflow(result)
   return false
 end
 
+---@param result Neoagent.AgentRunResult?
+---@return boolean?
 local function is_length_limited(result)
   return result and result.ok and result.message
     and result.message.stopReason == "length"
 end
 
+---@return Neoagent.AsyncFailure
 local function cancelled_result()
   return { ok = false, error = util.copy(async.cancelled_error) }
 end
 
+---@param err unknown
+---@param kind string?
+---@return Neoagent.AsyncFailure
 local function failed_result(err, kind)
   return { ok = false, error = util.normalize_error(err, kind or "agent") }
 end
 
+---@param err unknown
+---@return Neoagent.AsyncFailure
 local function completion_failure(err)
   local cause = util.normalize_error(err, "agent")
   return {
@@ -255,6 +378,10 @@ local function completion_failure(err)
   }
 end
 
+---@generic R
+---@param value Neoagent.RunResult<R>
+---@param label string
+---@return Neoagent.RunResult<R>
 local function operation_result(value, label)
   if type(value) ~= "table" or type(value.ok) ~= "boolean" then
     return failed_result(
@@ -263,6 +390,10 @@ local function operation_result(value, label)
   return value
 end
 
+---@generic R, E
+---@param run Neoagent.Run<R, E>
+---@param label string
+---@return {run: Neoagent.Run<R, E>, completed: boolean, result?: Neoagent.RunResult<R>}?, Neoagent.Error?
 local function inspect_run(run, label)
   if type(run) ~= "table" or type(run.cancel) ~= "function"
       or type(run.is_done) ~= "function"
@@ -277,17 +408,20 @@ local function inspect_run(run, label)
     end
     return { run = run, completed = false }
   end
-  local read, result = pcall(run.result, run)
+  local read, result = pcall(function() return run:result() end)
   if not read then return nil, util.normalize_error(result, "agent") end
   return {
     run = run,
     completed = true,
-    result = operation_result(result, label),
+    result = operation_result(result --[[@as Neoagent.RunResult<R>]], label),
   }
 end
 
+---@param options Neoagent.AgentInteractionOptions
+---@return Neoagent.ChatRun
 local function default_interaction(options)
-  return require("neoagent.chat").run(options.session, options.prompt, {
+  ---@type Neoagent.ChatOptions<Neoagent.AgentToolEnvironment>
+  local call = {
     model = options.model,
     system_prompt = options.system_prompt,
     tools = options.tools,
@@ -300,11 +434,15 @@ local function default_interaction(options)
     model_options = options.model_options,
     on_event = options.on_event,
     on_done = options.on_done,
-  })
+  }
+  return require("neoagent.chat").run(options.session, options.prompt, call)
 end
 
+---@param options Neoagent.AgentInteractionOptions
+---@return Neoagent.ChatRun
 local function default_continuation(options)
-  return require("neoagent.chat").continue(options.session, {
+  ---@type Neoagent.ChatOptions<Neoagent.AgentToolEnvironment>
+  local call = {
     model = options.model,
     system_prompt = options.system_prompt,
     tools = options.tools,
@@ -315,31 +453,43 @@ local function default_continuation(options)
     report = options.report,
     on_event = options.on_event,
     on_done = options.on_done,
-  })
+  }
+  return require("neoagent.chat").continue(options.session, call)
 end
 
+---@param opts Neoagent.RunLifecycleOptions
+---@return Neoagent.RunLifecycle
 function M.new(opts)
   local state = opts.state
   local config = opts.config
   local selection = state.request_selection
   local lifecycle = {}
+  ---@type fun(prompt: string, claim?: Neoagent.SteeringClaim, id?: integer): Neoagent.AgentRun?, Neoagent.Error?
   local submit
+  ---@type fun()
   local schedule_steering
 
+  ---@return integer
   local function next_submission_id()
     state.next_submission_id = state.next_submission_id + 1
     return state.next_submission_id
   end
 
+  ---@param diagnostic Neoagent.AsyncDiagnostic
   local function report_callback(diagnostic)
     opts.notify("callback failed during " .. diagnostic.phase .. ": "
       .. diagnostic.message, vim.log.levels.ERROR)
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@return boolean
   local function current(activity)
     return state.activity == activity and not activity.finalized
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param phase string
+  ---@return boolean
   local function set_phase(activity, phase)
     if not current(activity) then return false end
     activity.phase = phase
@@ -347,6 +497,8 @@ function M.new(opts)
     return true
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@return boolean
   local function release_provider(activity)
     local release = activity.provider_lease
     activity.provider_lease = nil
@@ -361,6 +513,7 @@ function M.new(opts)
     return true
   end
 
+  ---@return boolean
   local function destroy_runtimes_if_ready()
     if not state.destroyed or state.activity ~= nil then return false end
     local destroy = state.destroy_runtimes
@@ -369,6 +522,7 @@ function M.new(opts)
     return destroy ~= nil
   end
 
+  ---@return true?, Neoagent.Error?
   local function close_unmatched_calls()
     if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     local messages = state.session:messages()
@@ -404,6 +558,7 @@ function M.new(opts)
     return true
   end
 
+  ---@return Neoagent.CompactionSettings?
   local function compaction_settings()
     local selected = config.compaction
     local model = selection:model()
@@ -412,6 +567,7 @@ function M.new(opts)
       selected, model.context_window)
   end
 
+  ---@return boolean
   local function needs_compaction()
     local settings = compaction_settings()
     if not settings or not settings.auto or not state.session then return false end
@@ -419,9 +575,10 @@ function M.new(opts)
     if not messages then return false end
     local estimate = require("neoagent.compaction").estimate_context(messages)
     return require("neoagent.compaction").should_compact(
-      estimate.tokens, selection:model().context_window or 0, settings)
+      estimate.tokens, assert(selection:model()).context_window or 0, settings)
   end
 
+  ---@return Neoagent.CompactionPreparation?, Neoagent.Error?
   local function prepare_compaction()
     local settings = compaction_settings()
     if not settings or not state.session then return nil end
@@ -432,6 +589,11 @@ function M.new(opts)
     return require("neoagent.compaction").prepare(path, settings)
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param submission_id integer?
+  ---@param prompt string
+  ---@param entry_id string?
+  ---@return boolean
   local function publish_submission(
       activity, submission_id, prompt, entry_id)
     if not current(activity) or state.destroyed then return false end
@@ -443,7 +605,9 @@ function M.new(opts)
       role = "user",
       content = prompt,
     })
-    if not message or util.trim(message.content) == "" then return false end
+    if not message then return false end
+    ---@cast message Neoagent.UserMessage & {content: string}
+    if util.trim(message.content) == "" then return false end
     if type(entry_id) ~= "string" or entry_id == "" or #entry_id > 512
         or not util.is_valid_utf8(entry_id)
         or entry_id:find("[%z\1-\31\127]") then
@@ -459,6 +623,9 @@ function M.new(opts)
     return true
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param event Neoagent.AgentEvent
+  ---@return boolean
   local function handle_event(activity, event)
     if not current(activity) or state.destroyed then return false end
     if event.type == "usage" then
@@ -471,7 +638,7 @@ function M.new(opts)
       state.provider_status = type(event.text) == "string" and event.text or nil
       opts.update_context()
     elseif event.type == "inference_stats" then
-      publish_inference_stats(state, event, opts.update_context)
+      publish_inference_stats(state, event --[[@as Neoagent.ModelInferenceStats]], opts.update_context)
     elseif event.type == "message_end" then
       opts.sync_tools()
       opts.update_context()
@@ -486,7 +653,9 @@ function M.new(opts)
       opts.provider_event(event)
     end
     opts.publish({ type = "event", event = event })
-    if event.type == "tool_end" and not event.message.isError then
+    if event.type == "tool_end" then
+      ---@cast event Neoagent.ToolEndEvent
+      if event.message.isError then return true end
       local details = type(event.message.details) == "table"
           and event.message.details or {}
       local changed_paths = details.changed_paths
@@ -501,6 +670,15 @@ function M.new(opts)
     return true
   end
 
+  ---@async
+  ---@generic R, E, O: table
+  ---@param outer Neoagent.AgentRun
+  ---@param activity Neoagent.AgentActivity
+  ---@param factory fun(call: O): Neoagent.Run<R, E>
+  ---@param call O
+  ---@param label string
+  ---@param installed? fun(run: Neoagent.Run<R, E>)
+  ---@return Neoagent.RunResult<R>
   local function await_operation(
       outer, activity, factory, call, label, installed)
     local buffered = {}
@@ -516,11 +694,12 @@ function M.new(opts)
     end
     call.on_done = function() end
 
-    local started, child = pcall(factory, call)
+    local started, child = pcall(function() return factory(call) end)
     if not started then
       finished = true
       return failed_result(child, "agent")
     end
+    ---@cast child Neoagent.Run<R, E>
     local inspected, inspect_err = inspect_run(child, label)
     if not inspected then
       finished = true
@@ -550,7 +729,8 @@ function M.new(opts)
       return inspected.result
     end
 
-    local awaited, result = pcall(child.await, child)
+    local awaited, result = pcall(---@async
+    function() return child:await() end)
     finished = true
     if outer:is_cancelled() then return cancelled_result() end
     if not awaited then return failed_result(result, "agent") end
@@ -560,6 +740,9 @@ function M.new(opts)
     return operation_result(result, label)
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param reason string
+  ---@param result Neoagent.CompactionResult
   local function publish_compaction(activity, reason, result)
     if not current(activity) or state.destroyed then return end
     opts.publish({ type = "event", event = {
@@ -569,6 +752,14 @@ function M.new(opts)
     } })
   end
 
+  ---@async
+  ---@param outer Neoagent.AgentRun
+  ---@param activity Neoagent.AgentActivity
+  ---@param reason string
+  ---@param instructions string?
+  ---@param preparation Neoagent.CompactionPreparation?
+  ---@return_overload Neoagent.CompactionResult, nil, true
+  ---@return_overload nil, Neoagent.Error?, false
   local function run_compaction(
       outer, activity, reason, instructions, preparation)
     local prepare_err
@@ -584,9 +775,10 @@ function M.new(opts)
       opts.update_context()
     end
     local selected = opts.compaction_run or require("neoagent.compaction").run
-    local result = await_operation(outer, activity, selected, {
+    ---@type Neoagent.AgentCompactionOptions
+    local call = {
       preparation = preparation,
-      model = selection:model(),
+      model = assert(selection:model()),
       model_options = {
         request_opts = require("neoagent.thinking").request_opts(
           selection:model(), selection:thinking_level()),
@@ -595,7 +787,8 @@ function M.new(opts)
       reason = reason,
       session = state.session,
       report = report_callback,
-    }, "compaction Run")
+    }
+    local result = await_operation(outer, activity, selected, call, "compaction Run")
 
     if result.ok then
       local appended, append_err = state.session:append_compaction({
@@ -623,24 +816,33 @@ function M.new(opts)
     return result, nil, true
   end
 
+  ---@param result Neoagent.AgentRunResult
   local function provider_result_event(result)
-    if type(opts.provider_event) ~= "function"
-        or type(result.error) ~= "table"
-        or (type(result.error.provider_status) ~= "string"
-          and type(result.error.provider_status_details) ~= "table") then
+    if type(opts.provider_event) ~= "function" or type(result.error) ~= "table" then
       return
     end
+    local status = rawget(result.error, "provider_status")
+    local details = rawget(result.error, "provider_status_details")
+    if type(status) ~= "string" and type(details) ~= "table" then return end
     opts.provider_event({
       type = "provider_status",
-      text = result.error.provider_status,
-      details = util.copy(result.error.provider_status_details),
+      text = status,
+      details = util.copy(details),
     })
   end
 
+  ---@async
+  ---@param outer Neoagent.AgentRun
+  ---@param activity Neoagent.AgentActivity
+  ---@param base Neoagent.AgentInteractionOptions
+  ---@param continuing boolean
+  ---@param retry_attempt integer
+  ---@return Neoagent.ChatResult
   local function run_interaction(
       outer, activity, base, continuing, retry_attempt)
     set_phase(activity, "running")
     state.inference_stats = nil
+    ---@type Neoagent.AgentInteractionOptions
     local call = vim.tbl_extend("force", {}, base)
     call.model_options = util.copy(base.model_options)
     call.model_options.retry_attempt = retry_attempt
@@ -659,13 +861,17 @@ function M.new(opts)
     return result
   end
 
+  ---@return true?, Neoagent.Error?
   local function abandon_failed_message()
     local path, path_err = state.session:path()
     if not path then return nil, path_err end
     local last = path[#path]
-    if last and last.type == "message" and last.message.role == "assistant"
+    if not last or last.type ~= "message" then return true end
+    ---@cast last Neoagent.MessageEntry
+    if last.message.role == "assistant"
         and last.message.stopReason == "error" then
-      local parent = last.parentId == vim.NIL and nil or last.parentId
+      local parent = last.parentId
+      if parent == vim.NIL then parent = nil end
       local moved, move_err = state.session:move_to(parent)
       if not moved then return nil, move_err end
       if not state.destroyed then
@@ -675,6 +881,10 @@ function M.new(opts)
     return true
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param prompt string
+  ---@param entry Neoagent.JournalEntry?
+  ---@return boolean?, Neoagent.Error?
   local function accepted(activity, prompt, entry)
     if activity.accepted then return true end
     activity.accepted = true
@@ -700,6 +910,11 @@ function M.new(opts)
     return committed, commit_err
   end
 
+  ---@async
+  ---@param outer Neoagent.AgentRun
+  ---@param activity Neoagent.AgentActivity
+  ---@param base Neoagent.AgentInteractionOptions
+  ---@return Neoagent.AgentRunResult
   local function interaction_pipeline(outer, activity, base)
     local overflow_retried = false
     local length_continued = false
@@ -745,9 +960,10 @@ function M.new(opts)
           outer, activity, base, true, stream_retries)
       else
         local retry_settings = config.retry
+        ---@type number
         local retry_limit = retry_settings.enabled and retry_settings.max_retries or 0
         local provider_limit = done.error and tonumber(
-          done.error.stream_max_retries)
+          rawget(done.error, "stream_max_retries"))
         if provider_limit then
           retry_limit = math.min(retry_limit, provider_limit)
         end
@@ -759,7 +975,7 @@ function M.new(opts)
           state.pending_events = {}
           state.live_usage = nil
           state.inference_stats = nil
-          local wait = tonumber(done.error.retry_after_ms)
+          local wait = tonumber(rawget(done.error, "retry_after_ms"))
             or retry_settings.base_delay_ms * (2 ^ (stream_retries - 1))
           wait = math.max(0, math.min(60000, wait))
           state.provider_status = string.format(
@@ -791,7 +1007,7 @@ function M.new(opts)
         or state.steering:count() == 0 then
       return
     end
-    local message = state.steering:first()
+    local message = assert(state.steering:first())
     vim.schedule(function()
       local head = state.steering:first()
       if state.destroyed or state.activity ~= nil
@@ -803,6 +1019,9 @@ function M.new(opts)
     end)
   end
 
+  ---@param activity Neoagent.AgentActivity
+  ---@param result Neoagent.AgentRunResult
+  ---@return boolean
   local function finalize(activity, result)
     if activity.finalized then return false end
     activity.finalized = true
@@ -843,8 +1062,14 @@ function M.new(opts)
     return true
   end
 
+  ---@param kind string
+  ---@param release Neoagent.ProviderRelease
+  ---@param pipeline async fun(run: Neoagent.AgentRun, activity: Neoagent.AgentActivity): Neoagent.AgentRunResult
+  ---@param activity_values? {steering_claim?: Neoagent.SteeringClaim, submission_id?: integer, base?: Neoagent.AgentInteractionOptions}
+  ---@return Neoagent.AgentRun
   local function install_activity(kind, release, pipeline, activity_values)
     state.run_id = state.run_id + 1
+    ---@type Neoagent.AgentActivity
     local activity = {
       id = state.run_id,
       kind = kind,
@@ -890,6 +1115,8 @@ function M.new(opts)
     return outer
   end
 
+  ---@param prompt string
+  ---@return Neoagent.AgentInteractionOptions, Neoagent.ProviderRelease
   local function prepare_submission(prompt)
     opts.require_workspace_trust()
     opts.ensure_session()
@@ -900,10 +1127,12 @@ function M.new(opts)
     local prepared, value = pcall(function()
       local toolset = opts.copy_toolset(state.toolset)
       local tools = toolset.tools
-      local model = selection:model()
+      ---@type Neoagent.Model
+      local model = assert(selection:model())
       local thinking_level = selection:thinking_level()
       local request_opts = require("neoagent.thinking").request_opts(
         model, thinking_level)
+      ---@type Neoagent.AgentInteractionOptions
       local base = {
         session = state.session,
         prompt = prompt,
@@ -927,7 +1156,7 @@ function M.new(opts)
         if not message then return {} end
         local owner = base.activity
         local function acknowledge(committed, observation)
-          local selected = settle(committed == true)
+          local selected = assert(settle)(committed == true)
           if not selected then return false end
           opts.update_context()
           if committed and owner then
@@ -942,7 +1171,8 @@ function M.new(opts)
         end
         return { util.copy(message.message) }, acknowledge
       end
-      agent_loop.prepare({
+      ---@type Neoagent.AgentLoopOptions<Neoagent.AgentToolEnvironment>
+      local prepared = {
         model = base.model,
         messages = {},
         system_prompt = base.system_prompt,
@@ -952,7 +1182,8 @@ function M.new(opts)
         execute_tool = base.execute_tool,
         get_steering_messages = base.get_steering_messages,
         commit_message = function() return true end,
-      })
+      }
+      agent_loop.prepare(prepared)
       local closed, close_err = close_unmatched_calls()
       if not closed then error(close_err, 0) end
       return base
@@ -964,6 +1195,10 @@ function M.new(opts)
     return value, release
   end
 
+  ---@param prompt string
+  ---@param steering_claim Neoagent.SteeringClaim?
+  ---@param submission_id integer?
+  ---@return Neoagent.AgentRun?, Neoagent.Error?
   submit = function(prompt, steering_claim, submission_id)
     local owned_claim = steering_claim
     local function rollback_claim()
@@ -996,7 +1231,7 @@ function M.new(opts)
     local installed, outer = pcall(install_activity,
       "interaction", release, function(run, activity)
         base.on_accept = function(entry)
-          return accepted(activity, prompt, entry)
+          accepted(activity, prompt, entry)
         end
         return interaction_pipeline(run, activity, base)
       end, {
@@ -1021,6 +1256,8 @@ function M.new(opts)
     return outer
   end
 
+  ---@param text string
+  ---@return Neoagent.AgentRun|true|nil, Neoagent.Error?, integer?, ("turn"|"steering")?
   function lifecycle.send(text)
     if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then return lifecycle.steer(text) end
@@ -1029,6 +1266,8 @@ function M.new(opts)
     return run, err, run and submission_id or nil, "turn"
   end
 
+  ---@param text string
+  ---@return true?, Neoagent.Error?, integer?, "steering"?
   function lifecycle.steer(text)
     if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if not state.activity then
@@ -1044,6 +1283,8 @@ function M.new(opts)
     return true, nil, submission_id, "steering"
   end
 
+  ---@param submission_id integer
+  ---@return Neoagent.AgentRun?, Neoagent.Error?, integer?, "turn"?
   function lifecycle.resubmit_steering(submission_id)
     if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
@@ -1057,6 +1298,7 @@ function M.new(opts)
     return run, submit_err, run and claim.record.id or nil, "turn"
   end
 
+  ---@return string[], integer[]
   function lifecycle.dequeue_steering()
     local records = state.steering:dequeue_all()
     local messages, ids = {}, {}
@@ -1068,6 +1310,8 @@ function M.new(opts)
     return messages, ids
   end
 
+  ---@param instructions string?
+  ---@return Neoagent.AgentRun?, Neoagent.Error?
   function lifecycle.compact(instructions)
     if state.destroyed then return nil, util.error("agent", "Agent is destroyed") end
     if state.activity then
@@ -1103,7 +1347,7 @@ function M.new(opts)
       "manual_compaction", release, function(run, activity)
         local result = run_compaction(
           run, activity, "manual", instructions, preparation)
-        return result
+        return assert(result)
       end)
     if not installed then
       pcall(release)
@@ -1114,12 +1358,13 @@ function M.new(opts)
     return outer
   end
 
+  ---@return boolean
   function lifecycle.stop()
     local activity = state.activity
     if not activity or activity.finalized then return false end
     activity.phase = "stopping"
     if not state.destroyed then opts.update_context() end
-    activity.run:cancel()
+    assert(activity.run):cancel()
     return true
   end
 

@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local Workspace = require("neoagent.workspace")
 
 describe("neoagent.workspace", function()

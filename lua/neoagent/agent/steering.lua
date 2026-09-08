@@ -2,19 +2,43 @@ local semantic_message = require("neoagent.semantic_message")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.SteeringMessage: Neoagent.UserMessage
+---@field content string
+
+---@class Neoagent.SteeringRecord
+---@field id integer
+---@field message Neoagent.SteeringMessage
+
+---@class Neoagent.SteeringClaim
+---@field record Neoagent.SteeringRecord
+---@field commit fun(self: Neoagent.SteeringClaim): boolean
+---@field rollback fun(self: Neoagent.SteeringClaim): boolean
+
+---@class Neoagent.Steering
+---@field _records Neoagent.SteeringRecord[]
+---@field _offered? Neoagent.SteeringRecord
 local Steering = {}
 Steering.__index = Steering
 
+---@overload fun(record: Neoagent.SteeringRecord): Neoagent.SteeringRecord
+---@param record? Neoagent.SteeringRecord
+---@return Neoagent.SteeringRecord?
 local function copy_record(record)
   return record and util.copy(record) or nil
 end
 
+---@param self Neoagent.Steering
+---@param id integer
+---@return integer?, Neoagent.SteeringRecord?
+---@return_overload integer, Neoagent.SteeringRecord
+---@return_overload nil, nil
 local function index_of(self, id)
   for index, record in ipairs(self._records) do
     if record.id == id then return index, record end
   end
 end
 
+---@return Neoagent.Steering
 function Steering.new()
   return setmetatable({
     _records = {},
@@ -22,6 +46,10 @@ function Steering.new()
   }, Steering)
 end
 
+---@param id integer
+---@param text string
+---@param timestamp integer
+---@return Neoagent.SteeringRecord?, Neoagent.Error?
 function Steering:enqueue(id, text, timestamp)
   if type(id) ~= "number" or id < 1 or id % 1 ~= 0 then
     return nil, util.error("steering", "steering id must be a positive integer")
@@ -45,21 +73,25 @@ function Steering:enqueue(id, text, timestamp)
   if not message then
     return nil, util.error("steering", "invalid steering message", message_err)
   end
+  ---@cast message Neoagent.SteeringMessage
   local record = { id = id, message = message }
   self._records[#self._records + 1] = record
   return copy_record(record)
 end
 
+---@return Neoagent.SteeringRecord?
 function Steering:first()
   return copy_record(self._records[1])
 end
 
+---@return string[]
 function Steering:texts()
   return vim.tbl_map(function(record)
     return record.message.content
   end, self._records)
 end
 
+---@return Neoagent.SteeringRecord?, (fun(committed: boolean): Neoagent.SteeringRecord|false)?
 function Steering:offer()
   assert(self._offered == nil,
     "a steering record is already awaiting acknowledgement")
@@ -67,6 +99,8 @@ function Steering:offer()
   if not record then return nil end
   self._offered = record
   local active = true
+  ---@param committed boolean
+  ---@return Neoagent.SteeringRecord|false
   local function acknowledge(committed)
     if not active then return false end
     active = false
@@ -80,6 +114,8 @@ function Steering:offer()
   return copy_record(record), acknowledge
 end
 
+---@param id integer
+---@return Neoagent.SteeringClaim?, Neoagent.Error?
 function Steering:claim(id)
   assert(type(id) == "number" and id >= 1 and id % 1 == 0,
     "steering id must be a positive integer")
@@ -93,6 +129,7 @@ function Steering:claim(id)
   end
   table.remove(self._records, index)
   local active = true
+  local owner = self
   local claim = { record = copy_record(record) }
   function claim:commit()
     if not active then return false end
@@ -102,14 +139,14 @@ function Steering:claim(id)
   function claim:rollback()
     if not active then return false end
     active = false
-    table.insert(self._owner._records,
-      math.min(index, #self._owner._records + 1), record)
+    table.insert(owner._records,
+      math.min(index, #owner._records + 1), record)
     return true
   end
-  claim._owner = self
   return claim
 end
 
+---@return Neoagent.SteeringRecord[]
 function Steering:dequeue_all()
   assert(self._offered == nil,
     "cannot dequeue steering while acknowledgement is pending")
@@ -118,6 +155,7 @@ function Steering:dequeue_all()
   return records
 end
 
+---@return boolean
 function Steering:clear()
   assert(self._offered == nil,
     "cannot clear steering while acknowledgement is pending")
@@ -126,6 +164,7 @@ function Steering:clear()
   return changed
 end
 
+---@return integer
 function Steering:count()
   return #self._records
 end

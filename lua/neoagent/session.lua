@@ -3,20 +3,91 @@ local tree = require("neoagent.session_tree")
 local semantic_message = require("neoagent.semantic_message")
 
 local M = {}
+---@class Neoagent.SessionMetadata
+---@field path? string
+---@field id string
+---@field cwd? string
+---@field timestamp? string
+---@field persisted? boolean
+---@field parent_session? string
+---@field data? Neoagent.JsonObject
+
+---@class Neoagent.SessionSnapshot
+---@field id string
+---@field workspace? string
+---@field timestamp? string
+---@field parent_session? string
+---@field metadata? Neoagent.JsonObject
+---@field entries Neoagent.JournalEntry[]
+---@field leaf_id? string
+
+---@class Neoagent.SessionStorage
+---@field load fun(self: Neoagent.SessionStorage): unknown, unknown?
+---@field append fun(self: Neoagent.SessionStorage, message: Neoagent.Message, state?: Neoagent.RequestStateInput): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
+---@field context_messages? fun(self: Neoagent.SessionStorage): unknown, unknown?
+---@field entries? fun(self: Neoagent.SessionStorage): Neoagent.JournalEntry[]
+---@field entry? fun(self: Neoagent.SessionStorage, id: string): Neoagent.JournalEntry?
+---@field leaf_id? fun(self: Neoagent.SessionStorage): string?
+---@field path? fun(self: Neoagent.SessionStorage, ...: string|nil): Neoagent.JournalEntry[]?, Neoagent.Error?
+---@field state? fun(self: Neoagent.SessionStorage): Neoagent.SelectionState?, Neoagent.Error?
+---@field append_compaction? fun(self: Neoagent.SessionStorage, values: Neoagent.CompactionPayload): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
+---@field set_leaf? fun(self: Neoagent.SessionStorage, id?: string): boolean?, unknown?, Neoagent.JournalEntry?, unknown?
+---@field metadata? fun(self: Neoagent.SessionStorage): Neoagent.SessionMetadata?
+
+---@class Neoagent.CompactionPayload
+---@field summary string
+---@field firstKeptEntryId string
+---@field tokensBefore integer
+
+---@class Neoagent.SessionOptions
+---@field id? string
+---@field messages? Neoagent.Message[]
+---@field entries? Neoagent.JournalEntry[]
+---@field leaf_id? string
+---@field store? Neoagent.SessionStorage
+---@field workspace? string
+---@field timestamp? string
+---@field parent_session? string
+---@field metadata? Neoagent.JsonObject
+
+---@class Neoagent.SessionHeader
+---@field cwd? string
+---@field timestamp string
+---@field parent_session? string
+---@field data? Neoagent.JsonObject
+
+---@class Neoagent.Session
+---@field _id string
+---@field _identity table
+---@field _header? Neoagent.SessionHeader
+---@field _messages Neoagent.ProjectionMessage[]
+---@field _store? Neoagent.SessionStorage
+---@field _entries Neoagent.JournalEntry[]
+---@field _by_id Neoagent.JournalIndex
+---@field _leaf_id? string
 local Session = {}
 Session.__index = Session
 
+---@param bytes? integer
+---@return string
 local function random_id(bytes)
-  return (vim.uv.random(bytes or 8):gsub(".", function(char)
+  return (assert(vim.uv.random(bytes or 8)):gsub(".", function(char)
     return string.format("%02x", char:byte())
   end))
 end
 
+---@return string
 local function iso_time()
   local ms = util.now_ms()
   return os.date("!%Y-%m-%dT%H:%M:%S", math.floor(ms / 1000)) .. string.format(".%03dZ", ms % 1000)
 end
 
+---@param self Neoagent.Session
+---@param entry_type "message"|"compaction"|"leaf"
+---@param values? table<string, unknown>
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?
+---@return_overload true, nil, Neoagent.JournalEntry
+---@return_overload nil, Neoagent.Error
 local function memory_append(self, entry_type, values)
   local entry, err = tree.prepare_entry({
     type = entry_type,
@@ -32,7 +103,7 @@ local function memory_append(self, entry_type, values)
   self._entries[#self._entries + 1] = entry
   self._by_id[entry.id] = entry
   if entry.type == "leaf" then
-    self._leaf_id = (entry.targetId == nil or entry.targetId == vim.NIL) and nil or entry.targetId
+    self._leaf_id = entry.targetId ~= vim.NIL and entry.targetId or nil
     local path = assert(tree.indexed_path(self._by_id,
       self._leaf_id == nil and vim.NIL or self._leaf_id))
     self._messages = tree.messages(path, false)
@@ -43,12 +114,16 @@ local function memory_append(self, entry_type, values)
   return true, nil, util.copy(entry)
 end
 
+---@param self Neoagent.Session
+---@param projection unknown
+---@return true?, Neoagent.Error?
 local function apply_store_projection(self, projection)
   if type(projection) ~= "table" or type(projection.messages) ~= "table"
       or not util.is_list(projection.messages) then
     return nil, util.error("storage", "Store returned an invalid projection")
   end
   if projection.type == "append" then
+    ---@type Neoagent.ProjectionMessage[]
     local normalized = {}
     local linked = false
     for index, message in ipairs(projection.messages) do
@@ -61,6 +136,7 @@ local function apply_store_projection(self, projection)
       if value.role == "toolResult" then
         linked = true
       elseif value.role == "assistant" then
+        ---@cast value Neoagent.AssistantMessage
         for _, block in ipairs(value.content) do
           if block.type == "toolCall" then linked = true break end
         end
@@ -91,15 +167,21 @@ local function apply_store_projection(self, projection)
   return nil, util.error("storage", "Store returned an unknown projection")
 end
 
+---@param message Neoagent.Message
+---@return boolean
 local function requires_linkage_check(message)
   if message.role == "toolResult" then return true end
   if message.role ~= "assistant" then return false end
+  ---@cast message Neoagent.AssistantMessage
   for _, block in ipairs(message.content) do
     if block.type == "toolCall" then return true end
   end
   return false
 end
 
+---@param self Neoagent.Session
+---@param message Neoagent.Message
+---@return true?, Neoagent.Error?
 local function validate_append_linkage(self, message)
   if not requires_linkage_check(message) then return true end
   local messages = util.copy(self._messages)
@@ -111,6 +193,10 @@ local function validate_append_linkage(self, message)
   return true
 end
 
+---@param self Neoagent.Session
+---@param message Neoagent.Message
+---@param state? Neoagent.RequestStateInput
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?
 local function memory_append_message(self, message, state)
   local request, request_err = tree.normalize_request_state(state)
   if request_err then
@@ -121,6 +207,11 @@ local function memory_append_message(self, message, state)
   return memory_append(self, "message", values)
 end
 
+---@param message unknown
+---@param state? Neoagent.RequestStateInput
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?
+---@return_overload true, nil, Neoagent.JournalEntry?
+---@return_overload nil, Neoagent.Error
 function Session:append(message, state)
   assert(type(message) == "table", "message must be a table")
   assert(state == nil or type(state) == "table"
@@ -145,10 +236,12 @@ function Session:append(message, state)
   return memory_append_message(self, copy, state)
 end
 
+---@return Neoagent.ProjectionMessage[]
 function Session:messages()
   return util.copy(self._messages)
 end
 
+---@return Neoagent.Message[]?, Neoagent.Error?
 function Session:context_messages()
   if self._store and type(self._store.context_messages) == "function" then
     local messages, err = self._store:context_messages()
@@ -168,21 +261,27 @@ function Session:context_messages()
   return tree.to_llm(self._messages)
 end
 
+---@return Neoagent.JournalEntry[]
 function Session:entries()
   if self._store and type(self._store.entries) == "function" then return self._store:entries() end
   return util.copy(self._entries)
 end
 
+---@param id string
+---@return Neoagent.JournalEntry?
 function Session:entry(id)
   if self._store and type(self._store.entry) == "function" then return self._store:entry(id) end
   return util.copy(self._by_id[id])
 end
 
+---@return string?
 function Session:leaf_id()
   if self._store and type(self._store.leaf_id) == "function" then return self._store:leaf_id() end
   return self._leaf_id
 end
 
+---@param ... string|nil
+---@return Neoagent.JournalEntry[]?, Neoagent.Error?
 function Session:path(...)
   if self._store and type(self._store.path) == "function" then return self._store:path(...) end
   local requested
@@ -197,6 +296,7 @@ function Session:path(...)
   return path
 end
 
+---@return Neoagent.SelectionState?, Neoagent.Error?
 function Session:state()
   if self._store and type(self._store.state) == "function" then return self._store:state() end
   local path, err = self:path()
@@ -204,6 +304,8 @@ function Session:state()
   return tree.state(path)
 end
 
+---@param values Neoagent.CompactionPayload
+---@return true?, Neoagent.Error?, Neoagent.JournalEntry?
 function Session:append_compaction(values)
   if self._store then
     if type(self._store.append_compaction) ~= "function" then
@@ -218,6 +320,8 @@ function Session:append_compaction(values)
   return memory_append(self, "compaction", values)
 end
 
+---@param entry_id? string
+---@return true?, Neoagent.Error?
 function Session:move_to(entry_id)
   if entry_id ~= nil and not self:entry(entry_id) then
     return nil, util.error("session", "Entry not found: " .. tostring(entry_id))
@@ -237,8 +341,11 @@ function Session:move_to(entry_id)
   return true
 end
 
+---@return Neoagent.SessionMetadata?
 function Session:metadata()
-  if self._store then return util.copy(self._store:metadata()) end
+  if self._store and type(self._store.metadata) == "function" then
+    return util.copy(self._store:metadata())
+  end
   if not self._header then return nil end
   return {
     id = self._id,
@@ -250,18 +357,22 @@ function Session:metadata()
   }
 end
 
+---@return string
 function Session:id()
   return self._id
 end
 
+---@return table
 function Session:identity()
   return self._identity
 end
 
+---@return Neoagent.SessionStorage?
 function Session:store()
   return self._store
 end
 
+---@return Neoagent.SessionSnapshot?, Neoagent.Error?
 function Session:snapshot()
   local entries = self:entries()
   local validated, err = tree.validate_entries(entries)
@@ -285,6 +396,10 @@ function Session:snapshot()
   }
 end
 
+---@param opts? Neoagent.SessionOptions
+---@return Neoagent.Session?, Neoagent.Error?
+---@return_overload Neoagent.Session
+---@return_overload nil, Neoagent.Error
 function M.new(opts)
   opts = opts or {}
   local sources = 0
@@ -295,10 +410,15 @@ function M.new(opts)
     return nil, util.error("session",
       "messages, entries, and store are mutually exclusive")
   end
+  ---@type Neoagent.ProjectionMessage[]?
   local messages = {}
+  ---@type Neoagent.JournalEntry[]
   local entries = {}
+  ---@type Neoagent.JournalIndex
   local by_id = {}
+  ---@type string?
   local leaf_id
+  ---@type Neoagent.SessionMetadata?
   local store_metadata
   if opts.store ~= nil then
     if type(opts.store) ~= "table"
@@ -356,6 +476,7 @@ function M.new(opts)
       return nil, util.error("session", "Invalid Session messages", message_err)
     end
     for _, message in ipairs(messages) do
+      ---@type Neoagent.MessageEntry
       local entry = {
         type = "message", id = random_id(), parentId = leaf_id or vim.NIL,
         timestamp = iso_time(), message = util.copy(message),
@@ -374,6 +495,7 @@ function M.new(opts)
   end
   local explicit_header = opts.workspace ~= nil or opts.metadata ~= nil
     or opts.timestamp ~= nil or opts.parent_session ~= nil or opts.id ~= nil
+  ---@type Neoagent.SessionHeader?
   local header
   if explicit_header and not opts.store then
     header = {

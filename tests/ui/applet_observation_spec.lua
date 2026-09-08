@@ -1,14 +1,23 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local layout = Applet.layout
 local ui = Applet.Pane.nodes
 
+---@class Applet.TestObservationState
+---@field text? string
+
 local sequence = 0
 
+---@param key string
+---@param mode? "managed"|"editable"
+---@param text? string
+---@return Applet.Pane<Applet.TestObservationState>
 local function component(key, mode, text)
   sequence = sequence + 1
   local value = Applet.Pane.new({
     key = key,
     buffer_mode = mode or "managed",
+    ---@param state Applet.TestObservationState
     render = function(state)
       return ui.text({ key = "content", text = state.text or "" })
     end,
@@ -17,6 +26,16 @@ local function component(key, mode, text)
   return value
 end
 
+---@class Applet.TestObservationMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field owns_pane? boolean
+---@field border? Applet.WindowBorder
+---@field mode? "normal"|"insert"|"preserve"
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.TestObservationMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -37,7 +56,11 @@ local function pane(key, value, opts)
   })
 end
 
+---@param first Applet.Pane
+---@param second? Applet.Pane
+---@return Applet.LayoutTree
 local function tree(first, second)
+  ---@type Applet.LayoutNode
   local child = pane("first", first, { mode = "normal" })
   if second then
     child = layout.split({
@@ -57,19 +80,28 @@ local function tree(first, second)
   }
 end
 
+---@generic T
+---@param ok T
+---@param err? Applet.Error
+---@return T
 local function succeeds(ok, err)
   assert(ok, err and err.message or tostring(err))
   return ok
 end
 
+---@param predicate fun(): boolean
 local function wait_for(predicate)
   assert(vim.wait(1500, predicate, 5), "timed out waiting for Applet observation")
 end
 
 describe("Applet observation", function()
+  ---@type Applet.Applet[]
   local applets = {}
+  ---@type Applet.Pane[]
   local panes = {}
+  ---@type integer[]
   local foreign_windows = {}
+  ---@type integer[]
   local foreign_buffers = {}
 
   before_each(function()
@@ -100,12 +132,19 @@ describe("Applet observation", function()
     vim.cmd("stopinsert")
   end)
 
+  ---@param key string
+  ---@param mode? "managed"|"editable"
+  ---@param text? string
+  ---@return Applet.Pane<Applet.TestObservationState>
   local function new_pane(key, mode, text)
     local value = component(key, mode, text)
     panes[#panes + 1] = value
     return value
   end
 
+  ---@generic S
+  ---@param opts Applet.AppletOptions<S>
+  ---@return Applet.Applet<S>
   local function applet(opts)
     local value = Applet.new(opts)
     applets[#applets + 1] = value
@@ -115,20 +154,24 @@ describe("Applet observation", function()
   it("publishes one ordered callback batch before applying callback mutations", function()
     local first, second = new_pane("first", "managed", "first"),
       new_pane("second", "editable")
+    ---@type string[], (fun(): boolean)?
     local events, expired_default = {}, nil
+    ---@type Applet.Applet<unknown>
     local value
+    ---@param event Applet.ExternalEvent
+    ---@param default fun(): boolean
     local function observe(event, default)
       events[#events + 1] = event.kind
-      assert.are.equal(event.revision, value:observed().revision)
+      assert.are.equal(event.revision, assert(value):observed().revision)
       assert.are.equal(event.request_generation,
-        value:observed().request_generation)
+        assert(value):observed().request_generation)
       local native = event.native()
       native.events[1] = "changed"
       assert.are_not.equal("changed", event.native().events[1])
       assert.is_true(default())
       assert.is_false(default())
       expired_default = default
-      if event.kind == "pane_close" then value:close() end
+      if event.kind == "pane_close" then assert(value):close() end
     end
     value = applet({
       name = "ordered-observation",
@@ -140,26 +183,27 @@ describe("Applet observation", function()
     succeeds(value:open())
     local batches = value:_stats().observation_batches
 
-    vim.api.nvim_win_close(value:pane("first"):native().window, true)
+    vim.api.nvim_win_close((assert(assert(value:pane("first")):native().window)), true)
     wait_for(function() return not value:is_open() end)
     assert.are.same({ "pane_close", "resize" }, events)
-    assert.is_false(expired_default())
+    assert.is_false(assert(expired_default)())
     assert.are.equal(batches + 1, value:_stats().observation_batches)
   end)
 
   it("finishes destruction requested from an observation callback", function()
     local first = new_pane("first", "managed", "destroy from callback")
     local second = new_pane("second", "editable", "")
+    ---@type Applet.Applet<unknown>
     local value
     value = applet({
       name = "destroy-during-observation",
       host = Applet.host.tab({ label = "Destroy observation" }),
-      on_pane_close = function() value:destroy() end,
+      on_pane_close = function() assert(value):destroy() end,
     })
     value:update(tree(first, second))
     succeeds(value:open())
 
-    vim.api.nvim_win_close(value:pane("first"):native().window, true)
+    vim.api.nvim_win_close((assert(assert(value:pane("first")):native().window)), true)
     wait_for(function() return value:is_destroyed() end)
     assert.is_false(value:is_open())
   end)
@@ -199,8 +243,8 @@ describe("Applet observation", function()
     local requested = tree(first, second)
     value:update(requested)
     succeeds(value:open())
-    local native = value:pane("first"):native()
-    vim.api.nvim_win_call(native.window, function()
+    local native = assert(value:pane("first")):native()
+    vim.api.nvim_win_call((assert(native.window)), function()
       vim.cmd("setlocal nowrap")
       vim.api.nvim_exec_autocmds("OptionSet", { pattern = "wrap" })
     end)
@@ -216,18 +260,18 @@ describe("Applet observation", function()
     local replacement = vim.api.nvim_create_buf(false, true)
     foreign_buffers[#foreign_buffers + 1] = replacement
     foreign_windows[#foreign_windows + 1] = native.window
-    vim.api.nvim_win_set_buf(native.window, replacement)
+    vim.api.nvim_win_set_buf((assert(native.window)), replacement)
     local replacement_wrap = vim.api.nvim_get_option_value(
       "wrap", { win = native.window })
     wait_for(function() return detached == 1 end)
-    assert.is_true(vim.api.nvim_win_is_valid(native.window))
-    assert.are.equal(replacement, vim.api.nvim_win_get_buf(native.window))
+    assert.is_true(vim.api.nvim_win_is_valid((assert(native.window))))
+    assert.are.equal(replacement, vim.api.nvim_win_get_buf((assert(native.window))))
     assert.are.equal(replacement_wrap,
       vim.api.nvim_get_option_value("wrap", { win = native.window }))
 
     value:destroy()
-    assert.is_true(vim.api.nvim_win_is_valid(native.window))
-    assert.are.equal(replacement, vim.api.nvim_win_get_buf(native.window))
+    assert.is_true(vim.api.nvim_win_is_valid((assert(native.window))))
+    assert.are.equal(replacement, vim.api.nvim_win_get_buf((assert(native.window))))
   end)
 
   it("observes retained buffer lifetime while closed and remounts explicitly", function()
@@ -237,6 +281,7 @@ describe("Applet observation", function()
       { command = "bwipeout!", reason = "buffer_wiped" },
     }) do
       local content = new_pane("first", "managed", case.reason)
+      ---@type string?
       local observed
       local value = applet({
         name = "closed-" .. case.reason,
@@ -248,7 +293,7 @@ describe("Applet observation", function()
       })
       value:update(tree(content))
       succeeds(value:open())
-      local old_buffer = value:pane("first"):native().buffer
+      local old_buffer = assert(value:pane("first")):native().buffer
       if case.reason == "buffer_deleted" then
         vim.api.nvim_set_option_value("buflisted", true, { buf = old_buffer })
       end
@@ -256,14 +301,14 @@ describe("Applet observation", function()
       vim.cmd(case.command .. " " .. old_buffer)
       wait_for(function() return observed ~= nil end)
       assert.are.equal(case.reason, observed)
-      assert.is_nil(value:pane("first"):native().buffer)
+      assert.is_nil(assert(value:pane("first")):native().buffer)
 
       value:remount("first")
       succeeds(value:open())
-      local replacement = value:pane("first"):native().buffer
+      local replacement = assert(value:pane("first")):native().buffer
       assert.are_not.equal(old_buffer, replacement)
-      assert.is_true(vim.api.nvim_buf_is_loaded(replacement))
-      if vim.api.nvim_buf_is_valid(old_buffer) then
+      assert.is_true(vim.api.nvim_buf_is_loaded((assert(replacement))))
+      if vim.api.nvim_buf_is_valid((assert(old_buffer))) then
         foreign_buffers[#foreign_buffers + 1] = old_buffer
       end
       value:destroy()
@@ -272,32 +317,33 @@ describe("Applet observation", function()
 
   it("discovers direct floating-window moves at an explicit refresh boundary", function()
     local content = new_pane("first", "managed", "move")
+    ---@type Applet.Rectangle?
     local observed
     local value = applet({
       name = "explicit-position-observation",
       host = Applet.host.floating({ width = 40, height = 10 }),
       on_resize = function(event)
-        observed = event.after.panes.first.geometry
+        observed = assert(event.after.panes).first.geometry
       end,
     })
     local requested = tree(content)
     value:update(requested)
     succeeds(value:open())
-    local window = value:pane("first"):native().window
-    local config = vim.api.nvim_win_get_config(window)
-    config.row = config.row + 2
-    vim.api.nvim_win_set_config(window, config)
+    local window = assert(value:pane("first")):native().window
+    local config = vim.api.nvim_win_get_config((assert(window)))
+    config.row = assert(config.row) + 2
+    vim.api.nvim_win_set_config((assert(window)), config)
     assert.is_nil(observed)
 
     value:invalidate({ host = true })
     succeeds(value:flush())
-    assert.are.equal(config.row, observed.row)
-    assert.are.equal(config.col, observed.col)
+    assert.are.equal(config.row, assert(observed).row)
+    assert.are.equal(config.col, assert(observed).col)
 
     value:update(requested)
     succeeds(value:flush())
     assert.are_not.equal(config.row,
-      vim.api.nvim_win_get_config(window).row)
+      vim.api.nvim_win_get_config((assert(window))).row)
   end)
 
   it("observes an explicit resize event in the active Host tab", function()
@@ -324,10 +370,10 @@ describe("Applet observation", function()
     local requested = tree(content)
     value:update(requested)
     succeeds(value:open())
-    local window = value:pane("first"):native().window
-    local config = vim.api.nvim_win_get_config(window)
-    config.row = config.row + 2
-    vim.api.nvim_win_set_config(window, config)
+    local window = assert(value:pane("first")):native().window
+    local config = vim.api.nvim_win_get_config((assert(window)))
+    config.row = assert(config.row) + 2
+    vim.api.nvim_win_set_config((assert(window)), config)
     value:invalidate({ host = true })
     succeeds(value:flush())
     wait_for(function()
@@ -336,27 +382,28 @@ describe("Applet observation", function()
 
     value:update(requested)
     succeeds(value:flush())
-    assert.are.equal(config.row, vim.api.nvim_win_get_config(window).row)
+    assert.are.equal(config.row, vim.api.nvim_win_get_config((assert(window))).row)
   end)
 
   it("reopens after a callback closes the current epoch", function()
     local first = new_pane("first", "managed", "first")
     local second = new_pane("second", "editable", "draft")
+    ---@type Applet.Applet<unknown>
     local value
     value = applet({
       name = "callback-reopen",
       host = Applet.host.floating({ width = 60, height = 20 }),
       on_pane_close = function()
-        value:close({ restore_origin = false })
-        value:open()
-        value:focus("second")
+        assert(value):close({ restore_origin = false })
+        assert(value):open()
+        assert(value):focus("second")
       end,
     })
     value:update(tree(first, second))
     succeeds(value:open())
-    vim.api.nvim_win_close(value:pane("first"):native().window, true)
+    vim.api.nvim_win_close((assert(assert(value:pane("first")):native().window)), true)
     wait_for(function()
-      return value:is_open() and value:pane("first"):is_mounted()
+      return value:is_open() and assert(value:pane("first")):is_mounted()
     end)
     assert.are.equal("second", value:focused_pane())
   end)
@@ -386,10 +433,10 @@ describe("Applet observation", function()
       focus = { initial = "main" },
     })
     succeeds(value:open())
-    local main_window = value:pane("main"):native().window
-    local dialog_window = value:pane("dialog"):native().window
+    local main_window = assert(value:pane("main")):native().window
+    local dialog_window = assert(value:pane("dialog")):native().window
     assert.are.equal(dialog_window, vim.api.nvim_get_current_win())
-    vim.api.nvim_set_current_win(main_window)
+    vim.api.nvim_set_current_win((assert(main_window)))
     wait_for(function() return vim.api.nvim_get_current_win() == dialog_window end)
     assert.are.equal("dialog", value:focused_pane())
   end)
@@ -407,13 +454,13 @@ describe("Applet observation", function()
       end,
     })
     local requested = tree(transient, stable)
-    requested.root.child.children[1].child.lifecycle = "transient"
+    assert(assert(requested.root.child.children)[1]).child.lifecycle = "transient"
     value:update(requested)
     succeeds(value:open())
-    local buffer = value:pane("first"):native().buffer
+    local buffer = assert(value:pane("first")):native().buffer
     vim.cmd("bunload! " .. buffer)
     wait_for(function() return reason == "buffer_unloaded" end)
-    assert.is_false(vim.api.nvim_buf_is_valid(buffer))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(buffer))))
     assert.is_true(value:is_open())
   end)
 
@@ -435,8 +482,8 @@ describe("Applet observation", function()
     })
     value:update(tree(first, second))
     succeeds(value:open())
-    local native = value:pane("first"):native()
-    vim.api.nvim_win_close(native.window, true)
+    local native = assert(value:pane("first")):native()
+    vim.api.nvim_win_close((assert(native.window)), true)
     wait_for(function() return reasons[1] == "window_closed" end)
     vim.cmd("bunload! " .. native.buffer)
     wait_for(function() return reasons[2] == "buffer_unloaded" end)
@@ -453,7 +500,7 @@ describe("Applet observation", function()
     requested.root.child.owns_pane = true
     value:update(requested)
     succeeds(value:open())
-    vim.api.nvim_win_close(value:pane("first"):native().window, true)
+    vim.api.nvim_win_close((assert(assert(value:pane("first")):native().window)), true)
     wait_for(function() return not value:is_open() end)
     assert.is_false(value:is_open())
     assert.is_true(content.destroyed)

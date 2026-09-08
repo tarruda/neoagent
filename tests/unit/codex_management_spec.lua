@@ -1,23 +1,39 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local management = require("neoagent.providers.codex_management")
 local fake_transport = require("tests.helpers.fake_transport")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(3000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@class Neoagent.TestCodexAuthOverride
+---@field configured? boolean
+---@field credential_type? "oauth"|"api_key"
+
+---@param overrides? Neoagent.TestCodexAuthOverride
+---@return Neoagent.ProviderAuthContext
 local function context(overrides)
-  local resolved = vim.tbl_deep_extend("force", {
+  overrides = overrides or {}
+  ---@type Neoagent.AuthResolution
+  local resolved = {
     ok = true,
     configured = true,
-    credential_type = "oauth",
+    method = "test",
+    credential_type = overrides.credential_type or "oauth",
     request_opts = { headers = {
       Authorization = "Bearer secret-token",
       ["chatgpt-account-id"] = "secret-account",
     } },
     metadata = { email = "account@example.com", plan = "Plus" },
-  }, overrides or {})
+  }
+  if overrides.configured == false then
+    resolved = { ok = true, configured = false }
+  end
   return {
     resolve_auth = function()
       return async.run(function() return resolved end)
@@ -58,21 +74,24 @@ describe("neoagent Codex management client", function()
       return request.url:match("(/wham/.*)$")
     end, transport.fetch_requests))
     for _, request in ipairs(transport.fetch_requests) do
-      assert.are.equal("Bearer secret-token", request.headers.Authorization)
+      assert.are.equal("Bearer secret-token", rawget(assert(request.headers), "Authorization"))
       assert.are.equal("secret-account",
-        request.headers["chatgpt-account-id"])
+        rawget(assert(request.headers), "chatgpt-account-id"))
       assert.are.equal(3210, request.timeout_ms)
       assert.are.equal(1024, request.max_response_bytes)
     end
-    assert.are.equal("GET", transport.fetch_requests[1].method)
-    assert.are.equal("POST", transport.fetch_requests[5].method)
+    assert.are.equal("GET", assert(transport.fetch_requests[1]).method)
+    assert.are.equal("POST", assert(transport.fetch_requests[5]).method)
     assert.are.same({
       redeem_request_id = "stable-request",
       credit_id = "credit-1",
-    }, vim.json.decode(transport.fetch_requests[5].body))
+    }, vim.json.decode((assert(assert(transport.fetch_requests[5]).body))))
   end)
 
   it("reports authentication and HTTP failures without secret or body data", function()
+    ---@param resolved Neoagent.TestCodexAuthOverride
+    ---@param response? Neoagent.TestByteResponse
+    ---@return Neoagent.RunResult<Neoagent.CodexManagementResult>, Neoagent.TestByteBackend
     local function request(resolved, response)
       local transport = fake_transport.new()
       transport.fetches = { response or { body = "{}" } }
@@ -85,12 +104,12 @@ describe("neoagent Codex management client", function()
 
     local result, transport = request({ configured = false })
     assert.is_false(result.ok)
-    assert.matches("Sign in with ChatGPT", result.error.message)
+    assert.matches("Sign in with ChatGPT", assert(result.error).message)
     assert.are.equal(0, #transport.fetch_requests)
 
     result = request({ credential_type = "api_key" })
     assert.is_false(result.ok)
-    assert.matches("API key authentication", result.error.message)
+    assert.matches("API key authentication", assert(result.error).message)
 
     for _, status in ipairs({ 401, 403, 500 }) do
       result = request({}, {
@@ -98,15 +117,15 @@ describe("neoagent Codex management client", function()
         body = [[{"error":"secret response contents"}]],
       })
       assert.is_false(result.ok)
-      assert.are.equal(status, result.error.status)
-      assert.is_nil(result.error.message:find("secret", 1, true))
-      assert.is_nil(result.error.detail)
+      assert.are.equal(status, rawget(assert(result.error), "status"))
+      assert.is_nil((assert(result.error).message:find("secret", 1, true)))
+      assert.is_nil(assert(result.error).detail)
     end
 
     local missing_status = {
       fetch = function()
         return async.run(function()
-          return { ok = true, body = "{}" }
+          return { ok = true, headers = {}, body = "{}" }
         end)
       end,
     }
@@ -115,19 +134,19 @@ describe("neoagent Codex management client", function()
       transport = missing_status,
     }):usage(context()))
     assert.is_false(result.ok)
-    assert.matches("HTTP status", result.error.message)
+    assert.matches("HTTP status", assert(result.error).message)
 
     result = request({}, { body = "not-json" })
     assert.is_false(result.ok)
-    assert.matches("invalid JSON", result.error.message)
+    assert.matches("invalid JSON", assert(result.error).message)
 
     result = request({}, { body = "[]" })
     assert.is_false(result.ok)
-    assert.matches("invalid JSON", result.error.message)
+    assert.matches("invalid JSON", assert(result.error).message)
 
-    result = request({}, { body = {} })
+    result = request({}, { body = {} --[[@as string]] })
     assert.is_false(result.ok)
-    assert.matches("body must be text", result.error.message)
+    assert.matches("body must be text", assert(result.error).message)
 
     local oversized_transport = fake_transport.new()
     oversized_transport.fetches = { { body = string.rep("x", 1025) } }
@@ -137,8 +156,8 @@ describe("neoagent Codex management client", function()
       max_response_bytes = 1024,
     }):usage(context()))
     assert.is_false(result.ok)
-    assert.matches("exceeds 1024 bytes", result.error.message)
-    assert.is_nil(result.error.detail)
+    assert.matches("exceeds 1024 bytes", assert(result.error).message)
+    assert.is_nil(assert(result.error).detail)
   end)
 
   it("normalizes transport errors and cancels pending fetches", function()
@@ -152,11 +171,12 @@ describe("neoagent Codex management client", function()
     })
     local result = wait(client:usage(context()))
     assert.is_false(result.ok)
-    assert.matches("network unavailable", result.error.message)
+    assert.matches("network unavailable", assert(result.error).message)
 
     local cancelled = false
     local started = false
-    transport = {
+    ---@type Neoagent.ByteBackend
+    local pending_transport = {
       fetch = function()
         started = true
         return async.run(function(run)
@@ -172,19 +192,19 @@ describe("neoagent Codex management client", function()
     }
     client = management.new({
       base_url = "https://example.test/backend-api",
-      transport = transport,
+      transport = pending_transport,
     })
     local run = client:usage(context())
     assert(vim.wait(1000, function() return started end))
     run:cancel()
     result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert.is_true(cancelled)
   end)
 
   it("validates construction and redemption identifiers", function()
-    assert.has_error(function() management.new() end)
+    assert.has_error(function() management.new(nil --[[@as Neoagent.CodexManagementOptions]]) end)
     assert.has_error(function()
       management.new({ base_url = "x", transport = {} })
     end)

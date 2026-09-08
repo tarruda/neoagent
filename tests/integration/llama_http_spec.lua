@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local llama = require("neoagent.providers.llama")
 local llama_catalog = require("neoagent.providers.llama.catalog")
 local llama_client = require("neoagent.providers.llama.client")
@@ -6,28 +7,32 @@ local model_catalog = require("neoagent.model_catalog")
 local models = require("neoagent.models")
 local registry = require("neoagent.registry")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@param timeout? integer
+---@return Neoagent.RunResult<T>
 local function wait(run, timeout)
   assert(vim.wait(timeout or 5000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param entries Neoagent.LlamaModelInfo[]
+---@return string[]
 local function ids(entries)
   return vim.tbl_map(function(entry) return entry.id end, entries)
 end
 
-local function block(snapshot, block_type, label)
-  for _, candidate in ipairs(snapshot.blocks or {}) do
-    if candidate.type == block_type
-        and (label == nil or candidate.label == label) then
-      return candidate
-    end
-  end
-end
+local block = require("tests.helpers.provider_state").block
 
+---@param scenario Neoagent.TestHttpReplay
+---@param method string
+---@param path string
+---@return { headers: table<string, string>, body?: Neoagent.JsonValue }?
 local function find_request(scenario, method, path)
   for _, value in ipairs(scenario.requests) do
     if (value.method or "POST") == method and value.url == scenario.url .. path then
-      local request = vim.deepcopy(value)
+      ---@type { headers: table<string, string>, body?: Neoagent.JsonValue }
+      local request = { headers = {} }
       request.headers = {}
       for key, item in pairs(value.headers or {}) do request.headers[key:lower()] = item end
       if value.body then request.body = vim.json.decode(value.body) end
@@ -36,6 +41,10 @@ local function find_request(scenario, method, path)
   end
 end
 
+---@param scenario Neoagent.TestHttpReplay
+---@param method string
+---@param path string
+---@return integer
 local function count_requests(scenario, method, path)
   local count = 0
   for _, value in ipairs(scenario.requests) do
@@ -45,12 +54,14 @@ local function count_requests(scenario, method, path)
 end
 
 describe("llama.cpp router HTTP integration", function()
+  ---@type Neoagent.TestHttpReplay[]
   local scenarios = {}
+  ---@type Neoagent.ProviderRuntime[]
   local runtimes = {}
 
   after_each(function()
     for _, runtime in ipairs(runtimes) do
-      runtime.service:destroy()
+      assert(runtime.service.destroy)(runtime.service)
       runtime.catalog:destroy()
     end
     for _, scenario in ipairs(scenarios) do http_replay.finish(scenario) end
@@ -58,12 +69,16 @@ describe("llama.cpp router HTTP integration", function()
     runtimes = {}
   end)
 
+  ---@param exchanges (string|Neoagent.ReplayEntryOptions)[]
+  ---@return Neoagent.TestHttpReplay
   local function start(exchanges)
     local scenario = http_replay.open(exchanges)
     scenarios[#scenarios + 1] = scenario
     return scenario
   end
 
+  ---@param scenario Neoagent.TestHttpReplay
+  ---@return Neoagent.LlamaClient
   local function client(scenario)
     return llama_client.new({
       server_url = scenario.url,
@@ -75,12 +90,15 @@ describe("llama.cpp router HTTP integration", function()
     })
   end
 
+  ---@param scenario Neoagent.TestHttpReplay
+  ---@return Neoagent.ProviderRuntime
   local function runtime(scenario)
+    ---@type Neoagent.ProviderDefinition
     local definition = {
       api = "openai-completions",
       base_url = scenario.url .. "/v1",
       auth_optional = true,
-      request_opts = registry.defaults()["llama.cpp"].request_opts,
+      request_opts = assert(registry.defaults()["llama.cpp"]).request_opts,
       catalog = {
         ttl_ms = 5 * 60 * 1000,
         source_options = require("neoagent.model_catalog.source").no_options,
@@ -103,10 +121,18 @@ describe("llama.cpp router HTTP integration", function()
     })
     local value = {
       id = "llama.cpp",
+      auth_services = {},
+      credentials = require("neoagent.provider_credentials").new({
+        provider_id = "llama.cpp", provider = definition,
+      }),
       transport = scenario,
       definition = definition,
       catalog = catalog,
-      service = llama.new(definition, {
+      service = llama.new({
+        api = definition.api, base_url = definition.base_url,
+        auth_optional = definition.auth_optional,
+        service_opts = definition.service_opts,
+      }, {
         catalog = catalog,
         provider_id = "llama.cpp",
         transport = scenario,
@@ -142,19 +168,20 @@ describe("llama.cpp router HTTP integration", function()
     local value = client(scenario)
 
     local initial = wait(value:list())
-    assert.is_true(initial.ok)
+    assert(initial.ok)
     assert.are.same({ "fake/loaded", "fake/unloaded", "fake/failing" },
       ids(initial.value))
-    assert.are.equal("loaded", initial.value[1].status.value)
+    assert.are.equal("loaded", assert(initial.value[1]).status.value)
     assert.are.same({ "text", "image" },
-      initial.value[1].architecture.input_modalities)
-    assert.are.equal("unloaded", initial.value[2].status.value)
+      assert(assert(initial.value[1]).architecture).input_modalities)
+    assert.are.equal("unloaded", assert(initial.value[2]).status.value)
 
+    ---@type Neoagent.LlamaProgress[]
     local progress = {}
     local loaded = wait(value:load_and_wait("fake/unloaded", function(update)
       progress[#progress + 1] = update
     end))
-    assert.is_true(loaded.ok)
+    assert(loaded.ok)
     assert.are.equal("loaded", loaded.value.status.value)
     assert(vim.wait(1000, function()
       return vim.tbl_contains(vim.tbl_map(function(update)
@@ -163,17 +190,18 @@ describe("llama.cpp router HTTP integration", function()
     end))
 
     local unloaded = wait(value:unload_and_wait("fake/unloaded"))
-    assert.is_true(unloaded.ok)
+    assert(unloaded.ok)
     local final = wait(value:list())
-    assert.are.equal("unloaded", final.value[2].status.value)
+    assert(final.ok)
+    assert.are.equal("unloaded", assert(assert(final.value)[2]).status.value)
 
     assert(vim.wait(1000, function()
       return count_requests(scenario, "POST", "/models/load") == 1
         and count_requests(scenario, "POST", "/models/unload") == 1
     end))
     local load_request = find_request(scenario, "POST", "/models/load")
-    assert.are.equal("Bearer router-key", load_request.headers.authorization)
-    assert.are.same({ model = "fake/unloaded" }, load_request.body)
+    assert.are.equal("Bearer router-key", rawget(assert(load_request).headers, "authorization"))
+    assert.are.same({ model = "fake/unloaded" }, assert(load_request).body)
   end)
 
   it("preserves router HTTP errors and failed child process status", function()
@@ -199,13 +227,13 @@ describe("llama.cpp router HTTP integration", function()
 
     local missing = wait(value:load("fake/missing"))
     assert.is_false(missing.ok)
-    assert.are.equal("model is not found", missing.error.message)
-    assert.are.equal(404, missing.error.status)
+    assert.are.equal("model is not found", assert(missing.error).message)
+    assert.are.equal(404, rawget(assert(missing.error), "status"))
 
     local failed = wait(value:load_and_wait("fake/failing", function() end))
     assert.is_false(failed.ok)
-    assert.are.equal("provider", failed.error.kind)
-    assert.are.equal("Model exited with code 42", failed.error.message)
+    assert.are.equal("provider", assert(failed.error).kind)
+    assert.are.equal("Model exited with code 42", assert(failed.error).message)
   end)
 
   it("cancels loading through replayed HTTP and SSE", function()
@@ -223,14 +251,15 @@ describe("llama.cpp router HTTP integration", function()
       { id = "cleanup", path = "tests/recordings/llama/scenario-3-cleanup.yaml", headers_subset = true },
     })
     local value = client(scenario)
+    ---@type Neoagent.Run<Neoagent.LlamaLoadSuccess|Neoagent.AsyncFailure, nil>?
     local run
     run = value:load_and_wait("fake/unloaded", function(update)
-      if update.ratio then run:cancel() end
+      if update.ratio then assert(run):cancel() end
     end)
 
     local result = wait(run)
     assert.is_false(result.ok)
-    assert.are.equal("cancelled", result.error.kind)
+    assert.are.equal("cancelled", assert(result.error).kind)
     assert(vim.wait(1000, function()
       return count_requests(scenario, "POST", "/models/unload") == 1
     end))
@@ -277,12 +306,15 @@ describe("llama.cpp router HTTP integration", function()
       { id = "51", path = "tests/recordings/llama/scenario-4-51.yaml", headers_subset = true },
     })
     local value = client(scenario)
+    ---@type Neoagent.LlamaProgress[]
     local progress = {}
     local selected = runtime(scenario)
     local service = selected.service
     assert.is_true(wait(selected.catalog:refresh({ force = true })).ok)
-    local dashboard_progress, dashboard_updates = nil, 0
-    local unsubscribe = service:subscribe(function(snapshot)
+    ---@type Neoagent.ProviderProgressBlock?
+    local dashboard_progress
+    local dashboard_updates = 0
+    local unsubscribe = assert(service.subscribe)(service, function(snapshot)
       dashboard_updates = dashboard_updates + 1
       for _, candidate in ipairs(snapshot.blocks or {}) do
         if candidate.type == "progress"
@@ -309,26 +341,27 @@ describe("llama.cpp router HTTP integration", function()
       return false
     end))
     local downloading = wait(value:list())
+    assert(downloading.ok)
     local active = vim.tbl_filter(function(entry)
       return entry.id == "fake/downloaded:Q4_K_M"
     end, downloading.value)[1]
-    assert.are.equal("downloading", active.status.value)
-    assert.is_nil(active.status.progress)
+    assert.are.equal("downloading", assert(active).status.value)
+    assert.is_nil(assert(active).status.progress)
     scenario.release("inspected-download")
 
     local result = wait(run)
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.is_true(vim.tbl_contains(ids(result.value), "fake/downloaded:Q4_K_M"))
-    assert.are.equal("Download complete", progress[#progress].message)
-    assert.are.equal(1, progress[#progress].ratio)
+    assert.are.equal("Download complete", assert(progress[#progress]).message)
+    assert.are.equal(1, assert(progress[#progress]).ratio)
     assert.is_not_nil(dashboard_progress)
-    assert.are.equal("512 B / 1.00 KiB", dashboard_progress.detail)
+    assert.are.equal("512 B / 1.00 KiB", assert(dashboard_progress).detail)
     assert(vim.wait(1000, function()
       return block(service:state(), "progress",
         "Downloading fake/downloaded:Q4_K_M") == nil
     end))
     assert.are.equal("success",
-      block(service:state(), "field", "Endpoint").level)
+      assert(block(service:state(), "field", "Endpoint")).level)
     assert.is_nil(block(service:state(), "activity"))
     assert(vim.wait(1000, function()
       return count_requests(scenario, "POST", "/models") == 1
@@ -353,13 +386,14 @@ describe("llama.cpp router HTTP integration", function()
     local service = selected.service
 
     local refreshed = wait(selected.catalog:refresh({ force = true }))
-    assert.is_true(refreshed.ok)
+    assert(refreshed.ok)
     local discovered = vim.tbl_keys(selected.catalog:snapshot().models)
     table.sort(discovered)
     assert.are.same({ "fake/failing", "fake/loaded", "fake/unloaded" },
       discovered)
 
     local configured = {
+      auth = { path = "unused-credentials.json", methods = {} },
       _apis = {},
       providers = {
         ["llama.cpp"] = {
@@ -388,7 +422,7 @@ describe("llama.cpp router HTTP integration", function()
         end
       end,
     }))
-    assert.is_true(streamed.ok)
+    assert(streamed.ok)
     assert.are.equal("image accepted", streamed.text)
     assert.are.same({
       type = "thinking",
@@ -397,16 +431,16 @@ describe("llama.cpp router HTTP integration", function()
     }, streamed.message.content[1])
     assert.are.same({ type = "text", text = "image accepted" },
       streamed.message.content[2])
-    assert.are.equal(7, streamed.message.usage.totalTokens)
+    assert.are.equal(7, assert(streamed.message.usage).totalTokens)
     assert(vim.wait(1000, function()
       return count_requests(scenario, "POST", "/v1/chat/completions") == 1
     end))
     local request = find_request(scenario, "POST", "/v1/chat/completions")
-    assert.are.equal("fake/loaded", request.body.model)
-    assert.is_true(request.body.stream)
-    assert.is_true(request.body.timings_per_token)
-    assert.is_true(request.body.return_progress)
-    assert.are.same({ include_usage = true }, request.body.stream_options)
+    assert.are.equal("fake/loaded", assert(assert(request).body).model)
+    assert.is_true(assert(assert(request).body).stream)
+    assert.is_true(assert(assert(request).body).timings_per_token)
+    assert.is_true(assert(assert(request).body).return_progress)
+    assert.are.same({ include_usage = true }, assert(assert(request).body).stream_options)
     assert.are.same({
       type = "inference_stats",
       generation_tokens_per_second = 50,
@@ -414,7 +448,7 @@ describe("llama.cpp router HTTP integration", function()
     assert.are.same({
       type = "image_url",
       image_url = { url = "data:image/png;base64," .. png },
-    }, request.body.messages[1].content[2])
+    }, assert(assert(assert(assert(assert(request).body).messages)[1]).content)[2])
   end)
 
   it("pushes implicitly loaded model progress from router SSE", function()
@@ -464,8 +498,11 @@ describe("llama.cpp router HTTP integration", function()
     local service = selected.service
     assert.is_true(wait(selected.catalog:refresh({ force = true })).ok)
 
-    local visible_progress, failed_progress
-    local unsubscribe = service:subscribe(function(snapshot)
+    ---@type Neoagent.ProviderProgressBlock?
+    local visible_progress
+    ---@type Neoagent.ProviderProgressBlock?
+    local failed_progress
+    local unsubscribe = assert(service.subscribe)(service, function(snapshot)
       for _, block in ipairs(snapshot.blocks or {}) do
         if block.type == "progress" and block.value == 0.25 then
           if block.label == "Loading fake/failing" then
@@ -481,6 +518,7 @@ describe("llama.cpp router HTTP integration", function()
     end))
 
     local configured = {
+      auth = { path = "unused-credentials.json", methods = {} },
       _apis = {},
       providers = {
         ["llama.cpp"] = {
@@ -496,20 +534,20 @@ describe("llama.cpp router HTTP integration", function()
     local result = wait(model:stream({
       messages = { { role = "user", content = "hello" } },
     }))
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("fake reply", result.text)
     assert(vim.wait(1000, function() return visible_progress ~= nil end))
-    assert.are.equal("Loading fake/unloaded", visible_progress.label)
-    assert.are.equal(0.25, visible_progress.value)
+    assert.are.equal("Loading fake/unloaded", assert(visible_progress).label)
+    assert.are.equal(0.25, assert(visible_progress).value)
     local settled = vim.wait(1000, function()
       return block(service:state(), "progress", "Loading fake/unloaded") == nil
         and block(service:state(), "field", "Last response") ~= nil
     end)
     assert(settled, vim.inspect(service:state()))
     assert.are.equal("3 in · 4 out",
-      block(service:state(), "field", "Last response").value)
+      assert(block(service:state(), "field", "Last response")).value)
     assert.are.equal("success",
-      block(service:state(), "field", "Endpoint").level)
+      assert(block(service:state(), "field", "Endpoint")).level)
     assert.is_nil(block(service:state(), "activity"))
     assert.are.equal(0,
       count_requests(scenario, "POST", "/models/load"))

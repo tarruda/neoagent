@@ -5,10 +5,39 @@ local ui = Applet.Pane.nodes
 local widgets = Applet.Pane.widgets
 local display = Applet.Pane.text
 
+---@alias Neoagent.ProviderPaneEvent Applet.ActionEvent<Applet.Pane<Neoagent.ProviderPaneState>>
+
+---@class Neoagent.ProviderPaneState
+---@field snapshot Neoagent.ProviderPanelSnapshot
+---@field config Neoagent.UIConfigInput
+
+---@class Neoagent.ProviderPaneCallbacks
+---@field run? fun(operation: string): unknown
+---@field previous? fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field next? fun(event: Neoagent.ProviderPaneEvent): unknown
+---@field close? fun(event: Neoagent.ProviderPaneEvent): unknown
+
+---@class Neoagent.ProviderPaneOptions
+---@field config? Neoagent.UIConfigInput
+---@field callbacks? Neoagent.ProviderPaneCallbacks
+---@field theme? Applet.Theme
+---@field on_error? fun(error: Applet.PaneError)
+
+---@class Neoagent.ProviderPane
+---@field config Neoagent.UIConfigInput
+---@field callbacks Neoagent.ProviderPaneCallbacks
+---@field theme? Applet.Theme
+---@field on_error? fun(error: Applet.PaneError)
+---@field state Neoagent.ProviderPaneState
+---@field pane Applet.Pane<Neoagent.ProviderPaneState>
 local Provider = {}
 Provider.__index = Provider
 
+---@param state Neoagent.ProviderPaneState
+---@param key string
+---@return Applet.MenuNode, Applet.MenuEntry?
 local function menu(state, key)
+  ---@type Applet.MenuItem[]
   local items = {}
   for _, operation in ipairs(state.snapshot.operations or {}) do
     local style = operation.enabled == false and "muted" or nil
@@ -26,7 +55,7 @@ local function menu(state, key)
       label = label,
       disabled = operation.enabled == false,
       focus_style = "menu_selected",
-      action = operation.enabled == false and nil or ui.action("provider.run", {
+      action = ui.action("provider.run", {
         operation = operation.id,
       }),
     }
@@ -72,10 +101,18 @@ local field_symbols = {
   muted = "○",
 }
 
+---@param key string
+---@param runs Applet.TextRun[]
+---@param wrap Applet.TextWrap?
+---@return Applet.TextNode
 local function text(key, runs, wrap)
   return ui.text({ key = key, runs = runs, wrap = wrap or "word" })
 end
 
+---@param key string
+---@param block Neoagent.ProviderProgressBlock
+---@param width integer
+---@return Applet.ColumnNode
 local function progress(key, block, width)
   local heading = {
     { text = tostring(block.label or "Progress"), style = "strong" },
@@ -107,6 +144,8 @@ local function progress(key, block, width)
   })
 end
 
+---@param timestamp number
+---@return string
 local function reset_time(timestamp)
   if os.date("%Y-%m-%d", timestamp) == os.date("%Y-%m-%d") then
     return os.date("%H:%M", timestamp)
@@ -115,6 +154,11 @@ local function reset_time(timestamp)
   return os.date("%H:%M on ", timestamp) .. day .. os.date(" %b", timestamp)
 end
 
+---@param key string
+---@param block Neoagent.ProviderLimitBlock
+---@param width integer
+---@param label_width integer?
+---@return Applet.Node
 local function limit(key, block, width, label_width)
   local remaining = math.max(0, math.min(1, block.remaining or 0))
   local percent = math.floor(remaining * 100 + 0.5) .. "% left"
@@ -171,6 +215,11 @@ local function limit(key, block, width, label_width)
   })
 end
 
+---@param block Neoagent.ProviderBlock
+---@param key string
+---@param width integer
+---@param limit_label_width integer
+---@return Applet.Node?
 local function information_block(block, key, width, limit_label_width)
   if block.type == "status" then
     local level = block.level or "info"
@@ -202,9 +251,11 @@ local function information_block(block, key, width, limit_label_width)
       },
     })
   end
-  if block.type == "progress" then return progress(key, block, width) end
+  if block.type == "progress" then
+    return progress(key, block --[[@as Neoagent.ProviderProgressBlock]], width)
+  end
   if block.type == "limit" then
-    return limit(key, block, width, limit_label_width)
+    return limit(key, block --[[@as Neoagent.ProviderLimitBlock]], width, limit_label_width)
   end
   if block.type == "list" then
     local children = {
@@ -235,10 +286,17 @@ local function information_block(block, key, width, limit_label_width)
   end
 end
 
+---@param state Neoagent.ProviderPaneState
+---@param key string
+---@param width integer
+---@return Applet.ColumnNode?
 local function information(state, key, width)
   local snapshot = state.snapshot or {}
   local provider_state = snapshot.state
-  local children, fields = {}, {}
+  ---@type Applet.Node[]
+  local children = {}
+  ---@type Applet.Node[]
+  local fields = {}
   local function flush_fields()
     if #fields == 0 then return end
     children[#children + 1] = ui.column({
@@ -284,6 +342,10 @@ local function information(state, key, width)
   return ui.column({ key = key, gap = 1, children = children })
 end
 
+---@param result Applet.Binding[]
+---@param value Neoagent.UIMapping?
+---@param action string
+---@param desc string
 local function binding(result, value, action, desc)
   local values = type(value) == "table" and value or { value }
   for _, lhs in ipairs(values) do
@@ -295,6 +357,9 @@ local function binding(result, value, action, desc)
   end
 end
 
+---@param value Neoagent.UIMapping?
+---@param lhs string
+---@return boolean
 local function mapped(value, lhs)
   local values = type(value) == "table" and value or { value }
   for _, candidate in ipairs(values) do
@@ -303,7 +368,11 @@ local function mapped(value, lhs)
   return false
 end
 
+---@param state Neoagent.ProviderPaneState
+---@param env Applet.PaneRenderEnvironment
+---@return Applet.Tree
 local function render(state, env)
+  ---@type Applet.Node[]
   local children = {}
   local dashboard = information(state, "provider:information", env.width)
   local has_actions = #(state.snapshot.operations or {}) > 0
@@ -319,6 +388,7 @@ local function render(state, env)
     })
   end
   local mappings = state.config.mappings or {}
+  ---@type Applet.Binding[]
   local bindings = {}
   if operation_menu then
     vim.list_extend(bindings, operation_menu.bindings)
@@ -383,6 +453,8 @@ local function render(state, env)
   }
 end
 
+---@param self Neoagent.ProviderPane
+---@return Applet.Pane<Neoagent.ProviderPaneState>
 local function new_pane(self)
   local callbacks = self.callbacks
   return Applet.Pane.new({
@@ -392,7 +464,7 @@ local function new_pane(self)
     render = render,
     handlers = {
       ["provider.run"] = function(event)
-        callbacks.run(event.payload.operation)
+        assert(callbacks.run)((event.payload --[[@as {operation: string}]]).operation)
       end,
       ["provider.previous"] = callbacks.previous or function() end,
       ["provider.next"] = callbacks.next or function() end,
@@ -403,6 +475,8 @@ local function new_pane(self)
   })
 end
 
+---@param opts Neoagent.ProviderPaneOptions?
+---@return Neoagent.ProviderPane
 function Provider.new(opts)
   opts = opts or {}
   opts.config = opts.config or {}
@@ -424,6 +498,7 @@ function Provider.new(opts)
   return self
 end
 
+---@param snapshot Neoagent.ProviderPanelSnapshot?
 function Provider:set(snapshot)
   self.state = {
     snapshot = snapshot and util.copy(snapshot) or { operations = {} },
@@ -432,10 +507,12 @@ function Provider:set(snapshot)
   self.pane:set_state(self.state)
 end
 
+---@return boolean
 function Provider:focus_initial()
   return self.pane:focus_target_intent()
 end
 
+---@param config Neoagent.UIConfigInput?
 function Provider:set_config(config)
   self.config = config or {}
   self.state = {
@@ -445,6 +522,7 @@ function Provider:set_config(config)
   self.pane:set_state(self.state)
 end
 
+---@param theme Applet.Theme
 function Provider:set_theme(theme)
   self.theme = theme
   self.pane:set_theme(theme)

@@ -3,9 +3,19 @@ local efforts = require("neoagent.model_efforts")
 
 local M = {}
 
+---@class Neoagent.AnthropicWireMessage: Neoagent.JsonObject
+---@field role string
+---@field content string|Neoagent.JsonObject[]
+
+---@class Neoagent.AnthropicCacheBody: Neoagent.JsonObject
+---@field messages Neoagent.AnthropicWireMessage[]
+---@field tools? Neoagent.JsonObject[]
+
 local CACHE_CONTROL = { type = "ephemeral" }
 local INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function effort_levels(levels)
   local result = {}
   for _, level in ipairs(levels) do
@@ -14,7 +24,10 @@ local function effort_levels(levels)
   return result
 end
 
+---@param model Neoagent.AnthropicCatalogModel
+---@return Neoagent.ModelConfig
 function M.transform(model)
+  ---@type Neoagent.ModelConfig
   local result = {
     id = model.id,
     name = model.name,
@@ -36,6 +49,8 @@ function M.transform(model)
   return result
 end
 
+---@param system_prompt? string
+---@return Neoagent.JsonObject[]
 local function cache_system(system_prompt)
   local result = {}
   if type(system_prompt) == "string" and system_prompt ~= "" then
@@ -48,6 +63,8 @@ local function cache_system(system_prompt)
   return result
 end
 
+---@param messages Neoagent.AnthropicWireMessage[]
+---@return Neoagent.AnthropicWireMessage[]
 local function cache_messages(messages)
   local result = util.copy(messages)
   local last = result[#result]
@@ -67,6 +84,8 @@ local function cache_messages(messages)
   return result
 end
 
+---@param tools Neoagent.JsonObject[]
+---@return Neoagent.JsonObject[]
 local function cache_tools(tools)
   local result = util.copy(tools)
   for _, tool in ipairs(result) do tool.eager_input_streaming = true end
@@ -74,9 +93,13 @@ local function cache_tools(tools)
   return result
 end
 
+---@return fun(context: Neoagent.RequestOptionsContext): Neoagent.RequestOverride
 function M.request_opts()
   return function(context)
+    -- The Anthropic adapter supplies this wire body before request layers.
     local body = context.request.body
+    ---@cast body Neoagent.AnthropicCacheBody
+    ---@type Neoagent.JsonObject
     local override = { messages = cache_messages(body.messages) }
     if body.tools then override.tools = cache_tools(body.tools) end
     local system = cache_system(context.system_prompt)

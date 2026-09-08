@@ -1,8 +1,24 @@
 local M = {}
 
+---@class Neoagent.SseOptions
+---@field on_event fun(payload: string)
+---@field max_buffer? integer
+---@field max_event_bytes? integer
+
+---@class Neoagent.SseParser
+---@field on_event fun(payload: string)
+---@field max_buffer integer
+---@field max_event_bytes integer
+---@field pending string
+---@field data string[]
+---@field data_bytes integer
+---@field closed boolean
+---@field error? string
 local Parser = {}
 Parser.__index = Parser
 
+---@param self Neoagent.SseParser
+---@return true
 local function dispatch(self)
   if #self.data == 0 then
     return true
@@ -14,6 +30,12 @@ local function dispatch(self)
   return true
 end
 
+---@param self Neoagent.SseParser
+---@param line string
+---@return true? ok
+---@return string? error
+---@return_overload true
+---@return_overload nil, string
 local function consume_line(self, line)
   if line == "" then
     return dispatch(self)
@@ -23,6 +45,8 @@ local function consume_line(self, line)
   end
   local field, value = line:match("^([^:]+):?(.*)$")
   if field == "data" then
+    -- Both captures exist when the field matches; the second may be empty.
+    ---@cast value string
     if value:sub(1, 1) == " " then
       value = value:sub(2)
     end
@@ -38,6 +62,11 @@ local function consume_line(self, line)
   return true
 end
 
+---@param chunk? string
+---@return true? ok
+---@return string? error
+---@return_overload true
+---@return_overload nil, string
 function Parser:feed(chunk)
   if self.closed then
     return nil, "SSE parser is closed"
@@ -53,6 +82,8 @@ function Parser:feed(chunk)
     if not start_pos then
       break
     end
+    -- string.find returns both positions on success.
+    ---@cast end_pos integer
     local line = self.pending:sub(1, start_pos - 1)
     self.pending = self.pending:sub(end_pos + 1)
     local consumed, err = consume_line(self, line)
@@ -61,6 +92,10 @@ function Parser:feed(chunk)
   return true
 end
 
+---@return true? ok
+---@return string? error
+---@return_overload true
+---@return_overload nil, string
 function Parser:finish()
   if self.closed then
     if self.error then return nil, self.error end
@@ -76,6 +111,8 @@ function Parser:finish()
   return dispatch(self)
 end
 
+---@param opts Neoagent.SseOptions
+---@return Neoagent.SseParser
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.on_event) == "function", "SSE parser requires on_event")

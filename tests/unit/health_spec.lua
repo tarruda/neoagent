@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 
 describe("neoagent health", function()
@@ -5,9 +6,14 @@ describe("neoagent health", function()
   local original_path
   local original_tmux
   local original_term
+  ---@type string[]
   local roots = {}
-  local messages
+  ---@type table<"ok"|"error"|"warn"|"start", string[]>
+  local messages = { ok = {}, error = {}, warn = {}, start = {} }
 
+  ---@param values string[]
+  ---@param pattern string
+  ---@return boolean
   local function contains(values, pattern)
     for _, value in ipairs(values) do
       if value:match(pattern) then return true end
@@ -163,7 +169,7 @@ describe("neoagent health", function()
             id = resolved.model_id,
             input = resolved.model.input or { "text" },
             context_window = resolved.model.context_window,
-            stream = function() end,
+            stream = function() error("unexpected model request") end,
           }
         end,
       },
@@ -190,7 +196,7 @@ describe("neoagent health", function()
       },
       _apis = {
         fake = function()
-          return { stream = function() end }
+          return require("tests.helpers.fake_model").new()
         end,
       },
     })
@@ -221,7 +227,7 @@ describe("neoagent health", function()
       auth = { methods = { custom = {
         name = "Custom",
         type = "api_key",
-        login = function() end,
+        login = function() error("unexpected login") end,
         request_opts = function() return {} end,
       } } },
     })
@@ -245,7 +251,7 @@ describe("neoagent health", function()
         },
       },
       _apis = {
-        fake = function() return { stream = function() end } end,
+        fake = function() return require("tests.helpers.fake_model").new() end,
       },
     })
 

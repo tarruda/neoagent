@@ -1,9 +1,42 @@
 local M = {}
 
+---@class Applet.Rectangle
+---@field row integer
+---@field col integer
+---@field width integer
+---@field height integer
+
+---@alias Applet.ImageFit 'contain'|'cover'|'fill'
+
+---@class Applet.ImagePlacement
+---@field width integer
+---@field height integer
+---@field resource {width?: integer, height?: integer}
+---@field fit? Applet.ImageFit
+---@field viewport? Applet.Rectangle
+---@field screen_row? integer
+---@field screen_col? integer
+
+---@class Applet.ImageGeometry
+---@field columns integer
+---@field rows integer
+---@field screen_row integer
+---@field screen_col integer
+---@field source_x? integer
+---@field source_y? integer
+---@field source_width? integer
+---@field source_height? integer
+
+---@param value number
+---@return integer
 local function rounded(value)
   return math.max(1, math.floor(value + 0.5))
 end
 
+---@param image Applet.ImagePlacement
+---@param cell_width number
+---@param cell_height number
+---@return Applet.ImageGeometry?
 function M.calculate(image, cell_width, cell_height)
   local target_columns, target_rows = image.width, image.height
   local source_width = image.resource.width
@@ -60,6 +93,9 @@ function M.calculate(image, cell_width, cell_height)
     screen_col = (image.screen_col or 1) + first_col,
   }
   if source_width and source_height then
+    -- Crop dimensions start from the source size and remain defined when it is known.
+    ---@cast source_columns integer
+    ---@cast source_rows integer
     local x = source_x + math.floor(
       col_in_image * source_columns / columns)
     local y = source_y + math.floor(

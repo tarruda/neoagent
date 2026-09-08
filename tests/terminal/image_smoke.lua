@@ -13,10 +13,11 @@ local stop_path = assert(vim.env.NEOAGENT_IMAGE_SMOKE_STOP)
 local state_path = assert(vim.env.NEOAGENT_IMAGE_SMOKE_STATE)
 assert(backend == "kitty", "invalid image smoke backend")
 
-local images = require("applet.image").new({
+local images = Applet.ImageSystem.new({
   backend = backend,
 })
-local kitty = images.backend
+local kitty = images.backend --[[@as Applet.Kitty]]
+---@type Applet.PngFile
 local source = {
   kind = "png_file",
   path = source_path,
@@ -48,6 +49,7 @@ pane:_connect({
   buffer_options = { buftype = "nofile" },
   window_options = { wrap = false },
 })
+---@param lines integer
 local function move(lines)
   if not vim.api.nvim_win_is_valid(window) then return end
   vim.api.nvim_win_call(window, function()
@@ -102,7 +104,7 @@ local rendered = vim.wait(5000, function()
 end, 10)
 assert(rendered, backend .. " image did not become ready")
 
-local image = assert(pane.layout.images.image)
+local image = assert(assert(pane.layout).images.image)
 local function placement()
   local owner = kitty.owners[pane]
   for _, value in ipairs(owner and owner.placements or {}) do
@@ -120,6 +122,8 @@ local function placement_state()
   } or nil
 end
 
+---@param line integer
+---@param visible boolean
 local function scroll(line, visible)
   vim.api.nvim_win_call(window, function()
     vim.api.nvim_win_set_cursor(0, {
@@ -134,7 +138,7 @@ local function scroll(line, visible)
     return (placement() ~= nil) == visible
   end, 10), ("image placement did not follow transcript scrolling "
     .. "at line %d (topline %d, visible %s, window %dx%d, image %d:%d %dx%d)")
-    :format(line, vim.fn.getwininfo(window)[1].topline, tostring(visible),
+    :format(line, assert(vim.fn.getwininfo(window)[1]).topline, tostring(visible),
       vim.api.nvim_win_get_width(window), vim.api.nvim_win_get_height(window),
       image.row, image.col, image.width, image.height))
   vim.cmd("redraw")
@@ -173,8 +177,9 @@ local function ready_state()
   }
 end
 
-local timer = vim.uv.new_timer()
+local timer = assert(vim.uv.new_timer())
 local started = vim.uv.hrtime()
+---@type number
 local last_state = 0
 local repaint_started = false
 local ready_written = false
@@ -191,6 +196,7 @@ local function write_state()
     errors = errors,
   }) }, state_path)
 end
+---@param command string
 local function finish(command)
   timer:stop()
   timer:close()

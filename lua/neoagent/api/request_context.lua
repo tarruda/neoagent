@@ -2,7 +2,11 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@alias Neoagent.RequestIdentity table<string, unknown>
+
 -- Adapters treat composition-supplied identity as opaque metadata.
+---@param value unknown
+---@return Neoagent.RequestIdentity?
 function M.copy(value)
   if value == nil then return nil end
   if type(value) ~= "table"
@@ -12,6 +16,9 @@ function M.copy(value)
   return util.copy(value)
 end
 
+---@param bound? Neoagent.RequestIdentity
+---@param supplied? Neoagent.RequestIdentity
+---@return Neoagent.RequestIdentity?
 function M.resolve(bound, supplied)
   local result = M.copy(supplied)
   if bound == nil then return result end
@@ -26,10 +33,15 @@ function M.resolve(bound, supplied)
   return result
 end
 
+---@overload fun(transport: nil, context?: Neoagent.RequestIdentity): nil
+---@generic T: { with_context?: fun(context?: Neoagent.RequestIdentity): T }
+---@param transport T
+---@param context? Neoagent.RequestIdentity
+---@return T
 function M.bind_transport(transport, context)
-  if type(transport) == "table"
-      and type(transport.with_context) == "function" then
-    return transport.with_context(context)
+  local with_context = type(transport) == "table" and transport.with_context
+  if type(with_context) == "function" then
+    return with_context(context)
   end
   return transport
 end

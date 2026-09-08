@@ -1,14 +1,27 @@
+local assert = require("luassert")
 local Applet = require("applet")
 local layout = Applet.layout
 local ui = Applet.Pane.nodes
 
+---@class Applet.TestHostState
+---@field text? string
+---@field bindings? Applet.Binding[]
+---@field edit? Applet.EditOptions
+---@field chrome? Applet.ChromeOptions
+
 local sequence = 0
+---@param key string
+---@param mode? "managed"|"editable"
+---@param text? string
+---@param handlers? table<string, fun(event: Applet.ActionEvent<Applet.Pane<Applet.TestHostState>>): unknown>
+---@return Applet.Pane<Applet.TestHostState>
 local function component(key, mode, text, handlers)
   sequence = sequence + 1
   local value = Applet.Pane.new({
     key = key,
     buffer_mode = mode or "managed",
     handlers = handlers,
+    ---@param state Applet.TestHostState
     render = function(state)
       return {
         root = ui.scope({
@@ -25,6 +38,23 @@ local function component(key, mode, text, handlers)
   return value
 end
 
+---@class Applet.TestHostMountOptions
+---@field lifecycle? Applet.MountLifecycle
+---@field owns_pane? boolean
+---@field required? boolean
+---@field uri? string
+---@field filetype? string
+---@field sensitive? boolean
+---@field buffer_options? Applet.Options
+---@field border? Applet.WindowBorder
+---@field mode? "normal"|"insert"|"preserve"
+---@field cursor? "preserve"|"start"|"end"
+---@field bindings? Applet.Binding[]
+
+---@param key string
+---@param value Applet.Pane
+---@param opts? Applet.TestHostMountOptions
+---@return Applet.MountNode
 local function pane(key, value, opts)
   opts = opts or {}
   assert.are.equal(key, value:key())
@@ -48,6 +78,10 @@ local function pane(key, value, opts)
   })
 end
 
+---@param transcript Applet.Pane
+---@param input Applet.Pane
+---@param layers? Applet.LayoutLayerNode[]
+---@return Applet.LayoutTree
 local function tree(transcript, input, layers)
   return {
     root = layout.frame({
@@ -75,12 +109,16 @@ local function tree(transcript, input, layers)
   }
 end
 
+---@param buffer integer
+---@return string[]
 local function lines(buffer)
   return vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
 end
 
 describe("Applet Hosts", function()
+  ---@type Applet.Applet[]
   local applets = {}
+  ---@type Applet.Pane[]
   local panes = {}
 
   before_each(function()
@@ -100,12 +138,20 @@ describe("Applet Hosts", function()
     vim.cmd("stopinsert")
   end)
 
+  ---@param key string
+  ---@param mode? "managed"|"editable"
+  ---@param text? string
+  ---@param handlers? table<string, fun(event: Applet.ActionEvent<Applet.Pane<Applet.TestHostState>>): unknown>
+  ---@return Applet.Pane<Applet.TestHostState>
   local function new_pane(key, mode, text, handlers)
     local value = component(key, mode, text, handlers)
     panes[#panes + 1] = value
     return value
   end
 
+  ---@generic S
+  ---@param opts Applet.AppletOptions<S>
+  ---@return Applet.Applet<S>
   local function applet(opts)
     local value = Applet.new(opts)
     applets[#applets + 1] = value
@@ -126,13 +172,13 @@ describe("Applet Hosts", function()
     local opened, open_error = value:open()
     assert(opened, open_error and open_error.message)
 
-    local transcript_pane = assert(value:pane("transcript"))
-    local input_pane = assert(value:pane("input"))
+    local transcript_pane = assert(assert(value:pane("transcript")))
+    local input_pane = assert(assert(value:pane("input")))
     assert.is_true(value:is_open())
     assert.is_true(value:is_visible())
     assert.is_true(transcript_pane:is_mounted())
     assert.is_true(input_pane:is_mounted())
-    assert.are.same({ "hello" }, lines(transcript_pane:native().buffer))
+    assert.are.same({ "hello" }, lines((assert(transcript_pane:native().buffer))))
     assert.are.equal("input", value:focused_pane())
     assert.is_true(input_pane:is_focused())
     assert.are.equal("insert", input_pane:mode())
@@ -144,7 +190,7 @@ describe("Applet Hosts", function()
     local input_buffer = input_pane:native().buffer
     value:close()
     assert.is_false(value:is_open())
-    assert.is_true(vim.api.nvim_buf_is_valid(input_buffer))
+    assert.is_true(vim.api.nvim_buf_is_valid((assert(input_buffer))))
     assert.are.equal("draft", input_pane:text())
     assert.is_true(input_pane:replace_text(
       "closed draft", { line = 1, column = 6 }, 2))
@@ -159,7 +205,7 @@ describe("Applet Hosts", function()
     local observed = value:observed()
     assert.is_true(observed.host.open)
     assert.is_true(observed.panes.input.mounted)
-    assert.is_nil(observed.panes.input.window)
+    assert.is_nil(rawget(observed.panes.input, "window"))
   end)
 
   it("keeps a mounted Pane's live viewport when focus changes", function()
@@ -178,25 +224,26 @@ describe("Applet Hosts", function()
 
     local transcript_window = assert(value:pane("transcript")):native().window
     assert(value:focus("transcript"))
-    vim.api.nvim_win_call(transcript_window, function()
+    vim.api.nvim_win_call((assert(transcript_window)), function()
       vim.fn.winrestview({ lnum = 1, col = 0, topline = 1, leftcol = 0 })
     end)
     assert(value:focus("input"))
-    vim.api.nvim_win_call(transcript_window, function()
+    vim.api.nvim_win_call((assert(transcript_window)), function()
       vim.fn.winrestview({ lnum = 40, col = 0, topline = 30, leftcol = 0 })
     end)
     local before = vim.api.nvim_win_call(
-      transcript_window, function() return vim.fn.winsaveview() end)
+      (assert(transcript_window)), function() return vim.fn.winsaveview() end)
     assert.are.equal(30, before.topline)
 
     assert(value:focus("transcript"))
     local after = vim.api.nvim_win_call(
-      transcript_window, function() return vim.fn.winsaveview() end)
+      (assert(transcript_window)), function() return vim.fn.winsaveview() end)
     assert.are.equal(before.lnum, after.lnum)
     assert.are.equal(before.topline, after.topline)
   end)
 
   it("routes Applet actions through the Applet mapping owner", function()
+    ---@type integer, Applet.Error?
     local invoked, reported = 0, nil
     local transcript = new_pane("transcript", "managed", "mapped")
     local input = new_pane("input", "editable", "")
@@ -230,7 +277,7 @@ describe("Applet Hosts", function()
       { mode = "n", lhs = "r", action = ui.action(
         "applet.focus.restore") },
     }) do
-      value_tree.bindings[#value_tree.bindings + 1] = binding
+      assert(value_tree.bindings)[#value_tree.bindings + 1] = binding
     end
     value:update(value_tree)
     assert(value:open())
@@ -240,7 +287,7 @@ describe("Applet Hosts", function()
     assert.are.equal(1, invoked)
     assert.is_false(input_dispatch(transcript, "n", "r"))
     assert.is_false(input_dispatch(transcript, "n", "e"))
-    assert.matches("action failed", reported.message)
+    assert.matches("action failed", assert(reported).message)
     assert.is_true(input_dispatch(transcript, "n", "f"))
     assert.are.equal("input", value:focused_pane())
     assert.is_true(input_dispatch(input, "n", "k"))
@@ -268,10 +315,10 @@ describe("Applet Hosts", function()
     assert.are.equal("transcript", value:focused_pane())
 
     local mappings = vim.api.nvim_buf_get_keymap(
-      value:pane("transcript"):native().buffer, "n")
+      (assert(assert(value:pane("transcript")):native().buffer)), "n")
     local owned = 0
     for _, mapping in ipairs(mappings) do
-      if mapping.lhs == "x" then owned = owned + 1 end
+      if rawget(mapping, "lhs") == "x" then owned = owned + 1 end
     end
     assert.are.equal(1, owned)
     assert.is_true(input_dispatch(transcript, "n", "q"))
@@ -298,17 +345,17 @@ describe("Applet Hosts", function()
       }),
     }))
     assert(value:open())
-    local transcript_native = value:pane("transcript"):native()
-    local input_native = value:pane("input"):native()
-    local details_native = value:pane("details"):native()
-    assert.are.equal("", vim.api.nvim_win_get_config(transcript_native.window).relative)
-    assert.are.equal("", vim.api.nvim_win_get_config(input_native.window).relative)
-    assert.are_not.equal("", vim.api.nvim_win_get_config(details_native.window).relative)
-    assert.are.equal(vim.api.nvim_win_get_tabpage(transcript_native.window),
-      vim.api.nvim_win_get_tabpage(input_native.window))
+    local transcript_native = assert(value:pane("transcript")):native()
+    local input_native = assert(value:pane("input")):native()
+    local details_native = assert(value:pane("details")):native()
+    assert.are.equal("", vim.api.nvim_win_get_config((assert(transcript_native.window))).relative)
+    assert.are.equal("", vim.api.nvim_win_get_config((assert(input_native.window))).relative)
+    assert.are_not.equal("", vim.api.nvim_win_get_config((assert(details_native.window))).relative)
+    assert.are.equal(vim.api.nvim_win_get_tabpage((assert(transcript_native.window))),
+      vim.api.nvim_win_get_tabpage((assert(input_native.window))))
     assert.are.equal("details", value:focused_pane())
     assert.are.equal(1, vim.api.nvim_tabpage_get_var(
-      vim.api.nvim_win_get_tabpage(input_native.window),
+      vim.api.nvim_win_get_tabpage((assert(input_native.window))),
       "applet_label") == "Applet test" and 1 or 0)
     assert.are.equal("col", vim.fn.winlayout()[1])
   end)
@@ -322,14 +369,14 @@ describe("Applet Hosts", function()
       host = Applet.host.floating({ width = 60, height = 20 }),
       on_pane_close = function(event, default)
         closed = closed + 1
-        assert.are.equal("transcript", event.pane:key())
+        assert.are.equal("transcript", assert(event.pane):key())
         default()
       end,
     })
     value:update(tree(transcript, input))
     assert(value:open())
-    local pane_value = value:pane("transcript")
-    vim.api.nvim_win_close(pane_value:native().window, true)
+    local pane_value = assert(value:pane("transcript"))
+    vim.api.nvim_win_close((assert(pane_value:native().window)), true)
     local waited = vim.wait(1000, function() return closed == 1 end)
     assert(waited)
     assert.is_false(pane_value:is_mounted())
@@ -350,15 +397,15 @@ describe("Applet Hosts", function()
       host = Applet.host.floating({ width = 60, height = 20 }),
       on_pane_close = function(event)
         detached = detached + 1
-        assert.are.equal("transcript", event.pane:key())
+        assert.are.equal("transcript", assert(event.pane):key())
       end,
     })
     local requested = tree(transcript, input)
     value:update(requested)
     assert(value:open())
-    local transcript_pane = value:pane("transcript")
+    local transcript_pane = assert(value:pane("transcript"))
     local original_buffer = transcript_pane:native().buffer
-    vim.api.nvim_win_close(transcript_pane:native().window, true)
+    vim.api.nvim_win_close((assert(transcript_pane:native().window)), true)
     assert(vim.wait(1000, function() return detached == 1 end))
     assert.is_false(transcript_pane:is_mounted())
 
@@ -377,12 +424,15 @@ describe("Applet Hosts", function()
       host = Applet.host.floating({ width = 60, height = 20 }),
     })
     local requested = tree(transcript, input)
-    requested.root.child.children[1].child.buffer.options = { buflisted = true }
+    local children = assert(requested.root.child.children)
+    local mount = assert(children[1]).child
+    assert(mount.type == "mount")
+    assert(mount.buffer).options = { buflisted = true }
     value:update(requested)
     assert(value:open())
-    local pane_value = value:pane("transcript")
+    local pane_value = assert(value:pane("transcript"))
     local window = pane_value:native().window
-    vim.api.nvim_win_call(window, function()
+    vim.api.nvim_win_call((assert(window)), function()
       vim.cmd("setlocal nowrap")
       vim.api.nvim_exec_autocmds("OptionSet", { pattern = "wrap" })
     end)
@@ -413,9 +463,9 @@ describe("Applet Hosts", function()
     })
     value:update(tree(transcript, input))
     assert(value:open())
-    local transcript_pane = value:pane("transcript")
+    local transcript_pane = assert(value:pane("transcript"))
     local transcript_buffer = transcript_pane:native().buffer
-    vim.api.nvim_win_close(transcript_pane:native().window, true)
+    vim.api.nvim_win_close((assert(transcript_pane:native().window)), true)
     assert(vim.wait(1000, function() return not transcript_pane:is_mounted() end))
 
     assert(value:remount("transcript"))
@@ -423,7 +473,7 @@ describe("Applet Hosts", function()
     assert.is_true(transcript_pane:is_mounted())
     assert.are.equal(transcript_buffer, transcript_pane:native().buffer)
     assert.are.equal("", vim.api.nvim_win_get_config(
-      transcript_pane:native().window).relative)
+      (assert(transcript_pane:native().window))).relative)
   end)
 
   it("retains external modes only for Panes with preserve policy", function()
@@ -454,7 +504,7 @@ describe("Applet Hosts", function()
     end
     value:update(modes("insert"))
     assert(value:open())
-    assert.are.equal("insert", value:pane("preserved"):mode())
+    assert.are.equal("insert", assert(value:pane("preserved")):mode())
 
     -- Changing to preserve keeps the mode already owned by the Pane. Moving
     -- focus away, observing a Neovim mode change, and moving back must restore
@@ -465,7 +515,9 @@ describe("Applet Hosts", function()
     local original_cmd = vim.cmd
     local commands = {}
     vim.api.nvim_get_mode = function() return { mode = "i" } end
-    vim.cmd = function(command) commands[#commands + 1] = command end
+    vim.cmd = setmetatable({}, {
+      __call = function(_, command) commands[#commands + 1] = command end,
+    })
     local called, focused = pcall(value.focus, value, "fixed")
     vim.api.nvim_get_mode = original_get_mode
     vim.cmd = original_cmd
@@ -473,20 +525,20 @@ describe("Applet Hosts", function()
     assert.is_true(focused)
     assert.is_true(vim.tbl_contains(commands, "stopinsert"))
     value:_event("mode_change", "preserved", { mode = "normal" },
-      { mode = "insert" }, { mode = "insert" }, "mode_changed")
-    assert.are.equal("insert", value:pane("preserved"):mode())
+      { mode = "insert" }, { mode = "insert", events = {} }, "mode_changed")
+    assert.are.equal("insert", assert(value:pane("preserved")):mode())
     assert(value:focus("preserved"))
-    assert.are.equal("insert", value:pane("preserved"):mode())
+    assert.are.equal("insert", assert(value:pane("preserved")):mode())
 
     -- A fixed policy is authoritative even if Neovim reports a different
     -- external mode. Its default handler must leave the Pane policy intact.
     assert(value:focus("fixed"))
     value:_event("mode_change", "fixed", { mode = "normal" },
-      { mode = "insert" }, { mode = "insert" }, "mode_changed")
+      { mode = "insert" }, { mode = "insert", events = {} }, "mode_changed")
     assert(value:focus("preserved"))
-    assert.are.equal("normal", value:pane("fixed"):mode())
+    assert.are.equal("normal", assert(value:pane("fixed")):mode())
     assert(value:focus("fixed"))
-    assert.are.equal("normal", value:pane("fixed"):mode())
+    assert.are.equal("normal", assert(value:pane("fixed")):mode())
   end)
 
   it("owns dynamic chrome across Host changes", function()
@@ -499,7 +551,7 @@ describe("Applet Hosts", function()
     local requested = tree(transcript, input)
     value:update(requested)
     assert(value:open())
-    local window = value:pane("transcript"):native().window
+    local window = assert(value:pane("transcript")):native().window
     local original_cursorline = vim.api.nvim_get_option_value(
       "cursorline", { win = window })
     transcript:set_state({
@@ -511,7 +563,7 @@ describe("Applet Hosts", function()
       },
     })
     assert(transcript:flush())
-    local config = vim.api.nvim_win_get_config(window)
+    local config = vim.api.nvim_win_get_config((assert(window)))
     assert.are.equal(" Dynamic ", config.title[1][1])
     assert.are.equal(" Footer ", config.footer[1][1])
     assert.are.equal(not original_cursorline,
@@ -520,7 +572,7 @@ describe("Applet Hosts", function()
 
     transcript:set_state({ text = "plain" })
     assert(transcript:flush())
-    config = vim.api.nvim_win_get_config(window)
+    config = vim.api.nvim_win_get_config((assert(window)))
     assert.is_true(config.title == nil or config.title == "")
     assert.is_true(config.footer == nil or config.footer == "")
     assert.are.equal(original_cursorline,
@@ -531,7 +583,7 @@ describe("Applet Hosts", function()
     assert(value:open())
     assert.are.equal("tab", value:host().kind)
     assert.are.equal("", vim.api.nvim_win_get_config(
-      value:pane("transcript"):native().window).relative)
+      (assert(assert(value:pane("transcript")):native().window))).relative)
   end)
 
   it("supports semantic cursor, scrolling, completion, and effect boundaries", function()
@@ -562,25 +614,25 @@ describe("Applet Hosts", function()
     value:update(requested)
     assert(value:open())
     local first_pane, second_pane = value:pane("first"), value:pane("second")
-    first_pane:replace_text("one\ntwo\nthree")
-    second_pane:replace_text("alpha\nomega")
+    assert(first_pane):replace_text("one\ntwo\nthree")
+    assert(second_pane):replace_text("alpha\nomega")
     assert(value:focus("first"))
-    assert.are.same({ line = 1, column = 0 }, first_pane:cursor())
-    assert.is_true(first_pane:at_start())
-    first_pane:move_cursor("end")
-    assert.is_true(first_pane:at_end())
-    first_pane:move_cursor("up", 2)
-    assert.are.equal(1, first_pane:cursor().line)
-    first_pane:move_cursor("down", 1)
-    assert.are.equal(2, first_pane:cursor().line)
-    first_pane:move_cursor("start")
-    assert(first_pane:scroll({ target = "start", align = "top" }))
-    assert(first_pane:scroll({ align = "center" }))
-    assert.has_error(function() first_pane:move_cursor("sideways") end,
+    assert.are.same({ line = 1, column = 0 }, assert(first_pane):cursor())
+    assert.is_true(assert(first_pane):at_start())
+    assert(first_pane):move_cursor("end")
+    assert.is_true(assert(first_pane):at_end())
+    assert(first_pane):move_cursor("up", 2)
+    assert.are.equal(1, assert(first_pane):cursor().line)
+    assert(first_pane):move_cursor("down", 1)
+    assert.are.equal(2, assert(first_pane):cursor().line)
+    assert(first_pane):move_cursor("start")
+    assert(assert(first_pane):scroll({ target = "start", align = "top" }))
+    assert(assert(first_pane):scroll({ align = "center" }))
+    assert.has_error(function() assert(first_pane):move_cursor("sideways" --[[@as "up"]]) end,
       "cursor direction must be up, down, previous, next, start, or end")
     assert(value:focus("second"))
-    assert.are.same({ line = 2, column = 4 }, second_pane:cursor())
-    assert.is_true(second_pane:at_end())
+    assert.are.same({ line = 2, column = 4 }, assert(second_pane):cursor())
+    assert.is_true(assert(second_pane):at_end())
 
     local previous_open = vim.ui.open
     vim.ui.open = nil
@@ -614,17 +666,17 @@ describe("Applet Hosts", function()
     value:update(tree(transcript, input))
     assert(value:open())
 
-    local transcript_pane = value:pane("transcript")
+    local transcript_pane = assert(value:pane("transcript"))
     local window = transcript_pane:native().window
     assert(transcript_pane:scroll({ target = "end", align = "bottom" }))
     local scrolled_top = vim.api.nvim_win_call(
-      window, function() return vim.fn.line("w0") end)
+      (assert(window)), function() return vim.fn.line("w0") end)
     assert.is_true(scrolled_top > 1)
     assert(value:focus("transcript"))
 
     assert.are.same({ line = 30, column = 0 }, transcript_pane:cursor())
     local restored_top = vim.api.nvim_win_call(
-      window, function() return vim.fn.line("w0") end)
+      (assert(window)), function() return vim.fn.line("w0") end)
     assert.are.equal(scrolled_top, restored_top)
   end)
 
@@ -649,17 +701,17 @@ describe("Applet Hosts", function()
     })
     assert(value:open())
     local secret_pane = value:pane("secret")
-    secret_pane:replace_text("private value")
-    local buffer = secret_pane:native().buffer
+    assert(secret_pane):replace_text("private value")
+    local buffer = assert(secret_pane):native().buffer
     vim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
     vim.api.nvim_set_current_win(origin)
     vim.cmd("belowright split")
     local foreign = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_buf(foreign, buffer)
-    assert.are.equal("private value", table.concat(lines(buffer), "\n"))
+    vim.api.nvim_win_set_buf(foreign, (assert(buffer)))
+    assert.are.equal("private value", table.concat(lines((assert(buffer))), "\n"))
 
     value:close({ restore_origin = false })
-    assert.is_false(vim.api.nvim_buf_is_valid(buffer))
+    assert.is_false(vim.api.nvim_buf_is_valid((assert(buffer))))
     assert.are_not.equal(buffer, vim.api.nvim_win_get_buf(foreign))
     assert.is_true(secret.destroyed)
   end)
@@ -717,12 +769,13 @@ describe("Applet Hosts", function()
     it("publishes " .. host_kind .. " Hosts after staged content commits", function()
       local origin_tab = vim.api.nvim_get_current_tabpage()
       local during_render = {}
+      ---@type Applet.Applet<unknown>
       local value
       local staged = Applet.Pane.new({
         key = "staged",
         render = function()
           during_render[#during_render + 1] = {
-            visible = value:is_visible(),
+            visible = assert(value):is_visible(),
             tab = vim.api.nvim_get_current_tabpage(),
           }
           return ui.text({ key = "content", text = "staged" })
@@ -746,7 +799,7 @@ describe("Applet Hosts", function()
       assert.is_false(during_render[1].visible)
       assert.are.equal(origin_tab, during_render[1].tab)
       assert.is_true(value:is_visible())
-      assert.is_true(value:pane("staged"):is_visible())
+      assert.is_true(assert(value:pane("staged")):is_visible())
     end)
 
     it("rolls back failed " .. host_kind .. " Host opens", function()
@@ -772,8 +825,8 @@ describe("Applet Hosts", function()
 
       local opened, err = value:open()
       assert.is_nil(opened)
-      assert.are.equal("commit", err.phase)
-      assert.matches("injected Pane failure", err.message)
+      assert.are.equal("commit", assert(err).phase)
+      assert.matches("injected Pane failure", assert(err).message)
       assert.is_false(value:is_open())
       assert.is_false(value:is_visible())
       local stats = value:_stats()
@@ -807,13 +860,13 @@ describe("Applet Hosts", function()
       local initial = tree(transcript, input)
       value:update(initial)
       assert(value:open())
-      value:pane("input"):replace_text("draft", { line = 1, column = 5 }, 1)
-      local transcript_native = value:pane("transcript"):native()
-      local input_native = value:pane("input"):native()
+      assert(value:pane("input")):replace_text("draft", { line = 1, column = 5 }, 1)
+      local transcript_native = assert(value:pane("transcript")):native()
+      local input_native = assert(value:pane("input")):native()
       local tabs_before = #vim.api.nvim_list_tabpages()
 
       local failed = tree(transcript, input)
-      failed.root.child.children[#failed.root.child.children + 1] = {
+      assert(failed.root.child.children)[#failed.root.child.children + 1] = {
         key = "broken-slot",
         basis = 3,
         grow = 0,
@@ -822,22 +875,23 @@ describe("Applet Hosts", function()
       value:update(failed)
       local committed, err = value:flush()
       assert.is_nil(committed)
-      assert.are.equal("commit", err.phase)
-      assert.matches("injected update failure", err.message)
+      assert.are.equal("commit", assert(err).phase)
+      assert.matches("injected update failure", assert(err).message)
       assert.is_true(value:is_open())
       assert.are.equal(tabs_before, #vim.api.nvim_list_tabpages())
       assert.are.equal(transcript_native.buffer,
-        value:pane("transcript"):native().buffer)
-      assert.are.equal(input_native.buffer, value:pane("input"):native().buffer)
+        assert(value:pane("transcript")):native().buffer)
+      assert.are.equal(input_native.buffer, assert(value:pane("input")):native().buffer)
       assert.are.equal(transcript_native.window,
-        value:pane("transcript"):native().window)
-      assert.are.equal(input_native.window, value:pane("input"):native().window)
-      assert.are.same({ "stable" }, lines(transcript_native.buffer))
-      assert.are.same({ "draft" }, lines(input_native.buffer))
+        assert(value:pane("transcript")):native().window)
+      assert.are.equal(input_native.window, assert(value:pane("input")):native().window)
+      assert.are.same({ "stable" }, lines((assert(transcript_native.buffer))))
+      assert.are.same({ "draft" }, lines((assert(input_native.buffer))))
       assert.is_nil(broken.surface)
     end)
 
     it("retains committed Pane content after a " .. host_kind .. " render failure", function()
+      ---@type Applet.Error?
       local reported
       local transcript = Applet.Pane.new({
         key = "transcript",
@@ -859,18 +913,18 @@ describe("Applet Hosts", function()
       local requested = tree(transcript, input)
       value:update(requested)
       assert(value:open())
-      local native = value:pane("transcript"):native()
+      local native = assert(value:pane("transcript")):native()
 
       transcript:set_state({ text = "uncommitted", fail = true })
       value:update(requested)
       local committed, err = value:flush()
       assert.is_true(committed)
       assert.is_nil(err)
-      assert.matches("injected retained failure", reported.message)
+      assert.matches("injected retained failure", assert(reported).message)
       assert.is_true(value:is_open())
-      assert.are.equal(native.window, value:pane("transcript"):native().window)
-      assert.are.equal(native.buffer, value:pane("transcript"):native().buffer)
-      assert.are.same({ "committed" }, lines(native.buffer))
+      assert.are.equal(native.window, assert(value:pane("transcript")):native().window)
+      assert.are.equal(native.buffer, assert(value:pane("transcript")):native().buffer)
+      assert.are.same({ "committed" }, lines((assert(native.buffer))))
       assert.is_not_nil(transcript.surface)
     end)
 
@@ -891,15 +945,15 @@ describe("Applet Hosts", function()
       })
       value:update(tree(committed_pane, input))
       assert(value:open())
-      local native = value:pane("transcript"):native()
+      local native = assert(value:pane("transcript")):native()
 
       value:update(tree(replacement, input))
       local committed, err = value:flush()
       assert.is_nil(committed)
-      assert.matches("injected replacement failure", err.message)
+      assert.matches("injected replacement failure", assert(err).message)
       assert.is_true(value:is_open())
-      assert.are.same(native, value:pane("transcript"):native())
-      assert.are.same({ "original Pane" }, lines(native.buffer))
+      assert.are.same(native, assert(value:pane("transcript")):native())
+      assert.are.same({ "original Pane" }, lines((assert(native.buffer))))
       assert.is_not_nil(committed_pane.surface)
       assert.is_nil(replacement.surface)
     end)
@@ -920,23 +974,23 @@ describe("Applet Hosts", function()
           or Applet.host.tab({ label = "Reopen rollback" }),
       })
       local initial = tree(committed_pane, input)
-      initial.root.child.children[1].child.owns_pane = true
+      assert(assert(initial.root.child.children)[1]).child.owns_pane = true
       value:update(initial)
       assert(value:open())
-      local native = value:pane("transcript"):native()
+      local native = assert(value:pane("transcript")):native()
       value:close()
 
       value:update(tree(broken, input))
       local opened, err = value:open()
       assert.is_nil(opened)
-      assert.matches("injected reopen failure", err.message)
+      assert.matches("injected reopen failure", assert(err).message)
       assert.is_false(committed_pane.destroyed)
-      assert.is_true(vim.api.nvim_buf_is_valid(native.buffer))
+      assert.is_true(vim.api.nvim_buf_is_valid((assert(native.buffer))))
 
       value:update(initial)
       assert(value:open())
-      assert.are.equal(native.buffer, value:pane("transcript"):native().buffer)
-      assert.are.same({ "retained composition" }, lines(native.buffer))
+      assert.are.equal(native.buffer, assert(value:pane("transcript")):native().buffer)
+      assert.are.same({ "retained composition" }, lines((assert(native.buffer))))
     end)
 
     it("publishes a replacement " .. host_kind .. " Applet on the retained Pane", function()
@@ -950,15 +1004,15 @@ describe("Applet Hosts", function()
           or Applet.host.tab({ label = "Applet replacement" }),
       })
       local initial = tree(original, input)
-      initial.root.child.children[1].child.owns_pane = true
+      assert(assert(initial.root.child.children)[1]).child.owns_pane = true
       value:update(initial)
       assert(value:open())
-      local native = value:pane("transcript"):native()
+      local native = assert(value:pane("transcript")):native()
 
       value:update(tree(replacement, input))
       assert(value:flush())
-      assert.are.same(native, value:pane("transcript"):native())
-      assert.are.same({ "replacement content" }, lines(native.buffer))
+      assert.are.same(native, assert(value:pane("transcript")):native())
+      assert.are.same({ "replacement content" }, lines((assert(native.buffer))))
       assert.is_true(original.destroyed)
       assert.is_not_nil(replacement.surface)
     end)

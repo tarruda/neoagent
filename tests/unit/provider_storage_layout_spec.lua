@@ -1,10 +1,15 @@
+local assert = require("luassert")
 local fs = require("neoagent.fs")
 
 describe("neoagent provider storage layout", function()
+  ---@type string[]
   local directories = {}
+  ---@type { destroy: fun(self: unknown) }[]
   local resources = {}
+  ---@type string?
   local original_state_home
 
+  ---@return string
   local function state_root()
     local directory = vim.fn.tempname()
     assert.are.equal(1, vim.fn.mkdir(directory, "p"))
@@ -14,6 +19,7 @@ describe("neoagent provider storage layout", function()
     return fs.join(directory, "nvim", "neoagent")
   end
 
+  ---@param root string
   local function assert_provider_state(root)
     local path = fs.join(root, "provider", "state")
     assert.are.equal(448, require("bit").band(

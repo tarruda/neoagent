@@ -1,17 +1,56 @@
 local Applet = require("applet")
-local util = require("neoagent.util")
 
 local ui = Applet.Pane.nodes
 
+---@alias Neoagent.InputPaneEvent Applet.ActionEvent<Applet.Pane<Neoagent.InputPaneState>>
+
+---@class Neoagent.InputPaneState
+---@field config Neoagent.UIConfigInput
+---@field completion boolean
+---@field footer? string
+---@field virtual_lines Applet.TextRun[][]
+
+---@class Neoagent.InputPaneCallbacks
+---@field pane? fun(): Applet.Pane?
+---@field submit fun(text: string): unknown
+---@field close fun(event?: Neoagent.InputPaneEvent): unknown
+---@field previous_card? fun(event: Neoagent.InputPaneEvent): unknown
+---@field history fun(): string[]
+
+---@class Neoagent.InputPaneOptions
+---@field config? Neoagent.UIConfigInput
+---@field callbacks Neoagent.InputPaneCallbacks
+---@field theme? Applet.Theme
+---@field on_error? fun(error: Applet.PaneError)
+
+---@class Neoagent.InputPane
+---@field config Neoagent.UIConfigInput
+---@field callbacks Neoagent.InputPaneCallbacks
+---@field theme? Applet.Theme
+---@field on_error? fun(error: Applet.PaneError)
+---@field history_index integer
+---@field history_draft? {text: string, cursor?: Applet.Cursor}
+---@field revision integer
+---@field state Neoagent.InputPaneState
+---@field pane Applet.Pane<Neoagent.InputPaneState>
+---@field pending_text? string
+---@field pending_cursor? Applet.Cursor|[integer, integer]
 local Input = {}
 Input.__index = Input
 
+---@param value Neoagent.UIMapping?
+---@return string[]
 local function values(value)
   if type(value) == "string" then return { value } end
   if type(value) == "table" then return value end
   return {}
 end
 
+---@param result Applet.Binding[]
+---@param modes string|string[]
+---@param lhs Neoagent.UIMapping?
+---@param action Applet.Action
+---@param opts? {count?: boolean, desc?: string}
 local function bind(result, modes, lhs, action, opts)
   modes = type(modes) == "table" and modes or { modes }
   for _, mode in ipairs(modes) do
@@ -27,8 +66,11 @@ local function bind(result, modes, lhs, action, opts)
   end
 end
 
+---@param state Neoagent.InputPaneState
+---@return Applet.Binding[]
 local function bindings(state)
   local mappings = state.config.mappings or {}
+  ---@type Applet.Binding[]
   local result = {}
   if state.completion then
     bind(result, "i", mappings.complete,
@@ -53,6 +95,8 @@ local function bindings(state)
   return result
 end
 
+---@param state Neoagent.InputPaneState
+---@return Applet.Tree
 local function render(state)
   return {
     root = ui.scope({
@@ -73,6 +117,8 @@ local function render(state)
   }
 end
 
+---@param self Neoagent.InputPane
+---@return Applet.Pane<Neoagent.InputPaneState>
 local function new_pane(self)
   local callbacks = self.callbacks
   return Applet.Pane.new({
@@ -89,13 +135,15 @@ local function new_pane(self)
       ["input.close_empty"] = function(event) return self:_close_empty(event) end,
       ["input.previous_card"] = callbacks.previous_card or function() end,
       ["input.history"] = function(event)
-        return self:_move_history(event.payload.direction, event)
+        return self:_move_history((event.payload --[[@as {direction: integer}]]).direction, event)
       end,
     },
     on_error = self.on_error,
   })
 end
 
+---@param opts Neoagent.InputPaneOptions
+---@return Neoagent.InputPane
 function Input.new(opts)
   opts = opts or {}
   opts.config = opts.config or {}
@@ -125,11 +173,13 @@ function Input:_changed()
   self.history_draft = nil
 end
 
+---@param theme Applet.Theme
 function Input:set_theme(theme)
   self.theme = theme
   self.pane:set_theme(theme)
 end
 
+---@return boolean
 function Input:_complete()
   local pane = self.callbacks.pane and self.callbacks.pane()
   if not pane then return false end
@@ -140,6 +190,7 @@ function Input:_complete()
   return pane:complete()
 end
 
+---@return unknown
 function Input:_submit()
   local pane = self.callbacks.pane and self.callbacks.pane()
   if pane and pane:completion_visible() then
@@ -148,21 +199,30 @@ function Input:_submit()
   return self.callbacks.submit(self:text())
 end
 
+---@param event Neoagent.InputPaneEvent
+---@return unknown
 function Input:_close_empty(event)
   if self:text() == "" then return self.callbacks.close() end
   return event:pass()
 end
 
+---@return string
 function Input:text()
   if not self.pane:is_connected() then return self.pending_text or "" end
   return self.pane:text()
 end
 
+---@param text string
+---@param cursor? Applet.Cursor|[integer, integer]
+---@return boolean
 function Input:set_text(text, cursor)
   self:_changed()
   return self:_replace_text(text, cursor)
 end
 
+---@param text string
+---@param cursor? Applet.Cursor|[integer, integer]
+---@return boolean
 function Input:_replace_text(text, cursor)
   self.revision = self.revision + 1
   if not self.pane:is_connected() then
@@ -181,15 +241,20 @@ function Input:_replace_text(text, cursor)
   return self.pane:replace_text(text, cursor, self.revision)
 end
 
+---@param text string
+---@param cursor? Applet.Cursor|[integer, integer]
+---@return boolean
 function Input:replace_text(text, cursor)
   return self:set_text(text, cursor)
 end
 
+---@param state Neoagent.InputPaneState?
 function Input:set_state(state)
   self.state = state or self.state
   self.pane:set_state(self.state)
 end
 
+---@param config Neoagent.UIConfigInput?
 function Input:set_config(config)
   self.config = config or {}
   self.state = vim.tbl_extend("force", {}, self.state, {
@@ -199,6 +264,7 @@ function Input:set_config(config)
   self.pane:set_state(self.state)
 end
 
+---@param lines Applet.TextRun[][]?
 function Input:set_virtual_lines(lines)
   self.state = vim.tbl_extend("force", {}, self.state, {
     virtual_lines = lines or {},
@@ -206,6 +272,8 @@ function Input:set_virtual_lines(lines)
   self.pane:set_state(self.state)
 end
 
+---@param value string?
+---@return boolean
 function Input:set_footer(value)
   if self.state.footer == value then return false end
   self.state = vim.tbl_extend("force", {}, self.state, { footer = value })
@@ -213,10 +281,14 @@ function Input:set_footer(value)
   return true
 end
 
+---@return Applet.Binding[]
 function Input:mapping_bindings()
   return bindings(self.state)
 end
 
+---@param text string
+---@param placement "start"|"end"
+---@param cursor Applet.Cursor?
 function Input:_history_text(text, placement, cursor)
   local lines = Applet.Pane.text.lines(text or "")
   local target = cursor or (placement == "start"
@@ -225,6 +297,8 @@ function Input:_history_text(text, placement, cursor)
   self:_replace_text(text, target)
 end
 
+---@param direction integer
+---@return boolean
 function Input:_browse_history(direction)
   local history = self.callbacks.history()
   if type(history) ~= "table" or #history == 0 then return false end
@@ -243,12 +317,15 @@ function Input:_browse_history(direction)
     self:_history_text(draft.text, "end", draft.cursor)
     self.history_draft = nil
   else
-    self:_history_text(history[next_index],
+    self:_history_text(assert(history[next_index]),
       direction < 0 and "start" or "end")
   end
   return true
 end
 
+---@param direction integer
+---@param event Neoagent.InputPaneEvent?
+---@return boolean|Neoagent.InputPaneEvent
 function Input:_move_history(direction, event)
   local pane = self.callbacks.pane and self.callbacks.pane()
   if not pane or not pane:is_mounted() then return false end

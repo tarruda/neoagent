@@ -1,16 +1,24 @@
+local assert = require("luassert")
 local anthropic = require("neoagent.api.anthropic_messages")
 local fake_transport = require("tests.helpers.fake_transport")
 local util = require("neoagent.util")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@return Neoagent.RunResult<T>
 local function wait(run)
   assert(vim.wait(1000, function() return run:is_done() end))
-  return run:result()
+  return (assert(run:result()))
 end
 
+---@param value Neoagent.JsonObject
+---@return string
 local function event(value)
   return "event: " .. value.type .. "\ndata: " .. vim.json.encode(value) .. "\n\n"
 end
 
+---@param usage? Neoagent.JsonObject
+---@return string
 local function message_start(usage)
   return event({
     type = "message_start",
@@ -85,6 +93,7 @@ describe("neoagent.api.anthropic_messages", function()
       }),
       event({ type = "message_stop" }),
     } } })
+    ---@type Neoagent.ModelEvent[]
     local events = {}
     local model = anthropic.new({
       provider = "local",
@@ -97,19 +106,19 @@ describe("neoagent.api.anthropic_messages", function()
       on_event = function(value) events[#events + 1] = value end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("Checking.", result.text)
-    assert.are.equal("toolUse", result.message.stopReason)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
     assert.are.equal("msg_1", result.message.responseId)
-    assert.are.equal("consider", result.message.content[1].thinking)
-    assert.are.equal("sig_1", result.message.content[1].thinkingSignature)
-    assert.are.equal("inspect", result.message.content[3].name)
-    assert.are.same({ path = "x.lua" }, result.message.content[3].arguments)
-    assert.are.equal(10, result.message.usage.input)
-    assert.are.equal(3, result.message.usage.output)
-    assert.are.equal(2, result.message.usage.cacheRead)
-    assert.are.equal(1, result.message.usage.cacheWrite)
-    assert.are.equal(16, result.message.usage.totalTokens)
+    assert.are.equal("consider", assert(assert(result.message).content[1]).thinking)
+    assert.are.equal("sig_1", assert(assert(result.message).content[1]).thinkingSignature)
+    assert.are.equal("inspect", assert(assert(result.message).content[3]).name)
+    assert.are.same({ path = "x.lua" }, assert(assert(result.message).content[3]).arguments)
+    assert.are.equal(10, assert(assert(result.message).usage).input)
+    assert.are.equal(3, assert(assert(result.message).usage).output)
+    assert.are.equal(2, assert(assert(result.message).usage).cacheRead)
+    assert.are.equal(1, assert(assert(result.message).usage).cacheWrite)
+    assert.are.equal(16, assert(assert(result.message).usage).totalTokens)
     assert.are.equal(6, #events)
   end)
 
@@ -162,7 +171,7 @@ describe("neoagent.api.anthropic_messages", function()
         input_schema = { type = "object", properties = {} },
       } },
       request_opts = function(context)
-        assert.is_true(context.request.body.metadata.provider)
+        assert.is_true(assert(context.request.body).metadata.provider)
         return {
           headers = { ["x-test"] = "call" },
           body = { metadata = { call = true } },
@@ -172,27 +181,28 @@ describe("neoagent.api.anthropic_messages", function()
 
     assert.are.equal(1, key_calls)
     assert.are.equal("http://localhost/v1/messages", request.url)
-    assert.are.equal("secret", request.headers["x-api-key"])
-    assert.are.equal("2023-06-01", request.headers["anthropic-version"])
-    assert.are.equal("call", request.headers["X-Test"])
-    assert.are.equal("Be precise", request.body.system)
-    assert.are.equal(256, request.body.max_tokens)
-    assert.are.same({ provider = true, call = true }, request.body.metadata)
-    assert.are.equal("base64", request.body.messages[1].content[2].source.type)
-    assert.are.equal("image/png", request.body.messages[1].content[2].source.media_type)
-    assert.are.equal("thinking", request.body.messages[2].content[1].type)
-    assert.are.equal("redacted_thinking", request.body.messages[2].content[2].type)
-    assert.are.equal("call_1", request.body.messages[2].content[4].id)
-    assert.are.equal(3, #request.body.messages[3].content)
-    assert.are.equal("call_1", request.body.messages[3].content[1].tool_use_id)
-    assert.is_true(request.body.messages[3].content[1].is_error)
-    assert.are.equal("image", request.body.messages[3].content[1].content[2].type)
-    assert.are.equal("(no tool output)", request.body.messages[3].content[2].content)
-    assert.are.equal("(see attached image)", request.body.messages[3].content[3].content[1].text)
-    assert.are.equal("text", request.body.messages[5].content[1].type)
-    assert.are.equal("unsigned", request.body.messages[5].content[1].text)
-    assert.are.equal("inspect", request.body.tools[1].name)
-    assert.are.equal("object", request.body.tools[1].input_schema.type)
+    assert.are.equal("secret", rawget(assert(request.headers), "x-api-key"))
+    assert.are.equal("2023-06-01", rawget(assert(request.headers), "anthropic-version"))
+    assert.are.equal("call", rawget(assert(request.headers), "X-Test"))
+    local body = assert(request.body)
+    assert.are.equal("Be precise", body.system)
+    assert.are.equal(256, body.max_tokens)
+    assert.are.same({ provider = true, call = true }, body.metadata)
+    assert.are.equal("base64", assert(assert(assert(body.messages[1].content)[2]).source).type)
+    assert.are.equal("image/png", assert(assert(assert(body.messages[1].content)[2]).source).media_type)
+    assert.are.equal("thinking", assert(assert(body.messages[2].content)[1]).type)
+    assert.are.equal("redacted_thinking", assert(assert(body.messages[2].content)[2]).type)
+    assert.are.equal("call_1", assert(assert(body.messages[2].content)[4]).id)
+    assert.are.equal(3, #body.messages[3].content)
+    assert.are.equal("call_1", assert(assert(body.messages[3].content)[1]).tool_use_id)
+    assert.is_true(assert(assert(body.messages[3].content)[1]).is_error)
+    assert.are.equal("image", assert(assert(assert(assert(body.messages[3].content)[1]).content)[2]).type)
+    assert.are.equal("(no tool output)", assert(assert(body.messages[3].content)[2]).content)
+    assert.are.equal("(see attached image)", assert(assert(assert(assert(body.messages[3].content)[3]).content)[1]).text)
+    assert.are.equal("text", assert(assert(body.messages[5].content)[1]).type)
+    assert.are.equal("unsigned", assert(assert(body.messages[5].content)[1]).text)
+    assert.are.equal("inspect", body.tools[1].name)
+    assert.are.equal("object", assert(body.tools[1].input_schema).type)
     assert.are.same({ provider = true }, provider_opts.body.metadata)
 
   end)
@@ -219,10 +229,11 @@ describe("neoagent.api.anthropic_messages", function()
       tools = {},
     })
 
+    local body = assert(request.body)
     assert.are.equal("(image omitted: model does not support images)",
-      request.body.messages[1].content)
+      body.messages[1].content)
     assert.are.equal("(tool image omitted: model does not support images)",
-      request.body.messages[3].content[1].content)
+      assert(assert(body.messages[3].content)[1]).content)
   end)
 
   it("normalizes malformed tool input for Agent Loop recovery", function()
@@ -253,11 +264,11 @@ describe("neoagent.api.anthropic_messages", function()
       transport = fake,
     })
     local result = wait(model:stream({ messages = {} }))
-    assert.is_true(result.ok)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.same({}, result.message.content[1].arguments)
+    assert(result.ok)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.same({}, assert(assert(result.message).content[1]).arguments)
     assert.are.equal("Tool arguments are not valid JSON",
-      result.message.content[1].argumentsError)
+      assert(assert(result.message).content[1]).argumentsError)
   end)
 
   it("normalizes non-object tool input for Agent Loop recovery", function()
@@ -286,11 +297,11 @@ describe("neoagent.api.anthropic_messages", function()
     })
     local result = wait(model:stream({ messages = {} }))
 
-    assert.is_true(result.ok)
-    assert.are.equal("toolUse", result.message.stopReason)
-    assert.are.same({}, result.message.content[1].arguments)
+    assert(result.ok)
+    assert.are.equal("toolUse", assert(result.message).stopReason)
+    assert.are.same({}, assert(assert(result.message).content[1]).arguments)
     assert.are.equal("Tool arguments are not a JSON object",
-      result.message.content[1].argumentsError)
+      assert(assert(result.message).content[1]).argumentsError)
   end)
 
   it("reports provider, stop-reason, transport, and stream protocol failures", function()
@@ -344,9 +355,9 @@ describe("neoagent.api.anthropic_messages", function()
       })
       local result = wait(model:stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal(case.kind, result.error.kind)
-      assert.matches(case.message, result.error.message)
-      if case.partial then assert.are.equal(case.partial, result.message.content[1].text) end
+      assert.are.equal(case.kind, assert(result.error).kind)
+      assert.matches(case.message, assert(result.error).message)
+      if case.partial then assert.are.equal(case.partial, assert(assert(result.message).content[1]).text) end
     end
 
     local fake = fake_transport.new({ {
@@ -368,8 +379,8 @@ describe("neoagent.api.anthropic_messages", function()
     })
     local result = wait(model:stream({ messages = {} }))
     assert.is_false(result.ok)
-    assert.are.equal("transport", result.error.kind)
-    assert.are.equal("cut off", result.message.content[1].text)
+    assert.are.equal("transport", assert(result.error).kind)
+    assert.are.equal("cut off", assert(assert(result.message).content[1]).text)
   end)
 
   it("retains meaningful thinking and omits an open Tool call on failure", function()
@@ -401,10 +412,10 @@ describe("neoagent.api.anthropic_messages", function()
     }):stream({ messages = {} }))
 
     assert.is_false(result.ok)
-    assert.are.equal(1, #result.message.content)
-    assert.are.equal("thinking", result.message.content[1].type)
-    assert.are.equal("working", result.message.content[1].thinking)
-    assert.is_nil(result.message.content[1].thinkingSignature)
+    assert.are.equal(1, #assert(result.message).content)
+    assert.are.equal("thinking", assert(assert(result.message).content[1]).type)
+    assert.are.equal("working", assert(assert(result.message).content[1]).thinking)
+    assert.is_nil(assert(assert(result.message).content[1]).thinkingSignature)
   end)
 
   it("accepts redacted thinking, pings, and citation deltas", function()
@@ -449,10 +460,10 @@ describe("neoagent.api.anthropic_messages", function()
       end,
     }))
 
-    assert.is_true(result.ok)
+    assert(result.ok)
     assert.are.equal("answer", result.text)
-    assert.is_true(result.message.content[1].redacted)
-    assert.are.equal("cipher", result.message.content[1].thinkingSignature)
+    assert.is_true(assert(assert(result.message).content[1]).redacted)
+    assert.are.equal("cipher", assert(assert(result.message).content[1]).thinkingSignature)
     assert.are.same({ "[Reasoning redacted]" }, deltas)
   end)
 
@@ -477,8 +488,8 @@ describe("neoagent.api.anthropic_messages", function()
       })
       local result = wait(model:stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal("model", result.error.kind)
-      assert.matches(case.message, result.error.message)
+      assert.are.equal("model", assert(result.error).kind)
+      assert.matches(case.message, assert(result.error).message)
     end
   end)
 
@@ -590,8 +601,8 @@ describe("neoagent.api.anthropic_messages", function()
       })
       local result = wait(model:stream({ messages = {} }))
       assert.is_false(result.ok)
-      assert.are.equal("protocol", result.error.kind)
-      assert.matches(case.message, result.error.message)
+      assert.are.equal("protocol", assert(result.error).kind)
+      assert.matches(case.message, assert(result.error).message)
     end
   end)
 
@@ -626,11 +637,11 @@ describe("neoagent.api.anthropic_messages", function()
     }):stream({ messages = {} }))
 
     assert.is_false(result.ok)
-    assert.are.equal("protocol", result.error.kind)
+    assert.are.equal("protocol", assert(result.error).kind)
     assert.matches("declared tool use without supplying a tool call",
-      result.error.message)
-    assert.are.equal("error", result.message.stopReason)
-    assert.are.equal("I should inspect.", result.message.content[1].thinking)
+      assert(result.error).message)
+    assert.are.equal("error", assert(result.message).stopReason)
+    assert.are.equal("I should inspect.", assert(assert(result.message).content[1]).thinking)
   end)
 
   it("retains completed Tool calls when a later stream event fails", function()
@@ -657,8 +668,50 @@ describe("neoagent.api.anthropic_messages", function()
     }):stream({ messages = {} }))
 
     assert.is_false(result.ok)
-    assert.are.equal("inspect", result.message.content[1].name)
-    assert.are.same({ path = "x.lua" }, result.message.content[1].arguments)
+    assert.are.equal("inspect", assert(assert(result.message).content[1]).name)
+    assert.are.same({ path = "x.lua" }, assert(assert(result.message).content[1]).arguments)
+  end)
+
+  it("rejects malformed block metadata before publishing it and keeps prior text", function()
+    local cases = {
+      { index = 1, block = { type = "tool_use", id = 42, name = "inspect", input = {} } },
+      { index = 1, block = { type = "tool_use", id = "call_1", name = { "inspect" }, input = {} } },
+      { index = 1, block = { type = "redacted_thinking", data = { signature = "invalid" } } },
+      { index = -1, block = { type = "tool_use", id = "call_1", name = "inspect", input = {} } },
+      { index = 0.5, block = { type = "tool_use", id = "call_1", name = "inspect", input = {} } },
+    }
+    for _, case in ipairs(cases) do
+      local block, index = case.block, case.index
+      local chunks = {
+        message_start(),
+        event({ type = "content_block_start", index = 0,
+          content_block = { type = "text", text = "Checking." } }),
+        event({ type = "content_block_stop", index = 0 }),
+        event({ type = "content_block_start", index = index, content_block = block }),
+      }
+      if block.type == "tool_use" then
+        chunks[#chunks + 1] = event({ type = "content_block_delta", index = index,
+          delta = { type = "input_json_delta", partial_json = "{}" } })
+      end
+      chunks[#chunks + 1] = event({ type = "content_block_stop", index = index })
+      chunks[#chunks + 1] = event({ type = "message_delta",
+        delta = { stop_reason = "end_turn" } })
+      chunks[#chunks + 1] = event({ type = "message_stop" })
+      local published = {}
+      local result = wait(anthropic.new({
+        provider = "p", model = "m", base_url = "http://x",
+        transport = fake_transport.new({ { chunks = chunks } }),
+      }):stream({
+        messages = {},
+        on_event = function(value)
+          if value.type ~= "usage" then published[#published + 1] = value end
+        end,
+      }))
+      assert.are.same({ { type = "text_delta", text = "Checking." } }, published)
+      assert.is_false(result.ok)
+      assert.are.equal("protocol", assert(result.error).kind)
+      assert.are.same({ { type = "text", text = "Checking." } }, assert(result.message).content)
+    end
   end)
 
   it("rejects non-UTF-8 Anthropic deltas and thinking signatures", function()
@@ -705,10 +758,11 @@ describe("neoagent.api.anthropic_messages", function()
       end, cases)
     end)
     util.is_valid_utf8 = original
-    assert.is_true(ok, results)
+    assert(ok, tostring(results))
+    assert(type(results) == "table")
     for _, result in ipairs(results) do
       assert.is_false(result.ok)
-      assert.matches("valid UTF%-8", result.error.message)
+      assert.matches("valid UTF%-8", assert(result.error).message)
     end
   end)
 
@@ -738,8 +792,8 @@ describe("neoagent.api.anthropic_messages", function()
     semantic.normalize = normalize
 
     assert.is_false(result.ok)
-    assert.matches("semantic rejection", result.error.message)
-    assert.matches("semantic rejection", result.error.detail)
+    assert.matches("semantic rejection", assert(result.error).message)
+    assert.matches("semantic rejection", tostring(assert(result.error).detail))
   end)
 
   it("maps Anthropic completion stop reasons", function()
@@ -765,8 +819,8 @@ describe("neoagent.api.anthropic_messages", function()
         transport = fake,
       })
       local result = wait(model:stream({ messages = {} }))
-      assert.is_true(result.ok)
-      assert.are.equal(expected, result.message.stopReason)
+      assert(result.ok)
+      assert.are.equal(expected, assert(result.message).stopReason)
     end
   end)
 
@@ -795,11 +849,12 @@ describe("neoagent.api.anthropic_messages", function()
         base_url = "http://x",
         transport = fake,
       })
+      ---@type table<string, unknown>
       local opts = case.opts
-      opts.messages = opts.messages or {}
-      local result = wait(model:stream(opts))
+      rawset(opts, "messages", rawget(opts, "messages") or {})
+      local result = wait(model:stream(opts --[[@as Neoagent.StreamOptions]]))
       assert.is_false(result.ok)
-      assert.matches(case.message, result.error.message)
+      assert.matches(case.message, assert(result.error).message)
       assert.are.equal(0, #fake.requests)
     end
 
@@ -812,7 +867,7 @@ describe("neoagent.api.anthropic_messages", function()
         arguments = { "array" },
       } } } },
     }) do
-      local encoded = pcall(anthropic._encode_messages, messages)
+      local encoded = pcall(anthropic._encode_messages, messages --[[@as Neoagent.Message[] ]])
       assert.is_false(encoded)
     end
   end)

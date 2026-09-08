@@ -3,18 +3,42 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.ResourceDiagnostic
+---@field path string
+---@field message string
+
+---@class Neoagent.InstructionFile
+---@field path string
+---@field content string
+
+---@class Neoagent.InstructionOptions
+---@field global_files? string[]
+---@field project_filenames? string[]
+
+---@class Neoagent.InstructionDiscoveryOptions: Neoagent.InstructionOptions
+---@field cwd string
+
+
+---@param value string
+---@return string
 local function escape_xml(value)
-  return value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    :gsub('"', "&quot;"):gsub("'", "&apos;")
+  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    :gsub('"', "&quot;"):gsub("'", "&apos;"))
 end
 
+---@param opts Neoagent.InstructionDiscoveryOptions
+---@return {files: Neoagent.InstructionFile[], diagnostics: Neoagent.ResourceDiagnostic[]}
 function M.discover(opts)
   opts = opts or {}
   assert(type(opts.cwd) == "string" and opts.cwd ~= "", "cwd is required")
+  ---@type Neoagent.InstructionFile[], Neoagent.ResourceDiagnostic[], table<string, boolean>
   local files, diagnostics, seen = {}, {}, {}
 
+  ---@param path string
   local function add(path)
-    path = fs.normalize(vim.fn.expand(path))
+    local expanded = vim.fn.expand(path)
+    ---@cast expanded string
+    path = fs.normalize(expanded)
     local stat = vim.uv.fs_stat(path)
     if not stat then return end
     if stat.type ~= "file" then
@@ -41,8 +65,11 @@ function M.discover(opts)
   return { files = files, diagnostics = diagnostics }
 end
 
+---@param files? Neoagent.InstructionFile[]
+---@return string
 function M.format(files)
-  if #(files or {}) == 0 then return "" end
+  files = files or {}
+  if #files == 0 then return "" end
   local lines = {
     "<project_context>",
     "Contextual instructions, ordered from broadest to most specific:",

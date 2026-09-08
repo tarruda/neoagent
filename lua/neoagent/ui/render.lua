@@ -2,11 +2,88 @@ local Applet = require("applet")
 local markdown = require("neoagent.markdown")
 local util = require("neoagent.util")
 
+---@alias Neoagent.RenderSeparator "before_current"|"after_previous"
+---@alias Neoagent.RenderSurface 'transcript'|'details'
+
+---@class Neoagent.AnsiStyle
+---@field fg? string|number
+---@field bg? string|number
+---@field bold? boolean
+---@field italic? boolean
+---@field underline? boolean
+---@field strikethrough? boolean
+---@field reverse? boolean
+
+---@class Neoagent.AnsiSpan
+---@field row integer
+---@field col integer
+---@field end_col integer
+---@field key string
+---@field style Neoagent.AnsiStyle
+
+---@class Neoagent.RenderPolicy
+---@field name string
+---@field user_background fun(): string?
+---@field compaction_background fun(): string?
+---@field tool_background fun(state?: string): string?
+---@field plain_output_group fun(error?: boolean): string?
+---@field write_output_group fun(): string?
+---@field tool_title fun(parts: Neoagent.ToolStyledText[], status?: string): Neoagent.ToolStyledText[]
+---@field separator fun(previous?: Neoagent.RenderBlock, current?: Neoagent.RenderBlock): Neoagent.RenderSeparator?
+---@field present_tool fun(value: unknown, opts: Neoagent.ToolViewOptions): Neoagent.ToolViewPresentation?
+---@field read_source_syntax boolean
+---@field write_source_syntax boolean
+---@field write_preview_lines? integer
+---@field inline_single_line_tool_hint boolean
+---@field inline_multiline_tool_outline boolean
+
+---@class Neoagent.RenderContext
+---@field policy Neoagent.RenderPolicy
+---@field theme Applet.Theme
+---@field config { mappings?: {card_details?: string|string[]|false}, wrap_cards?: boolean }
+---@field resolve_tool fun(name?: string): Neoagent.RenderTool?
+---@field spinner_frames string[]
+---@field spinner_frame integer
+---@field _content_width fun(self: Neoagent.RenderContext): integer
+---@field render_markdown fun(self: Neoagent.RenderContext, key: string, source: string, opts: Neoagent.MarkdownOptions): Neoagent.MarkdownDocument
+
+---@class Neoagent.RenderNeighbors
+---@field previous? Neoagent.RenderBlock
+---@field next? Neoagent.RenderBlock
+
+---@class Neoagent.RenderContentOptions
+---@field presentation_surface? Neoagent.RenderSurface
+---@field width? integer
+
+---@class Neoagent.RenderOutput: Neoagent.RenderContent
+---@field output_line_count integer
+
+---@class Neoagent.RenderedTitle
+---@field text string
+---@field spans Neoagent.TextSpan[]
+
+---@class Neoagent.CommandPresentation
+---@field kind 'command'
+---@field command string
+---@field title Neoagent.RenderedTitle
+
+---@class Neoagent.BodyPresentation
+---@field kind 'body'
+---@field default? boolean
+---@field status? string
+---@field title? Neoagent.RenderedTitle
+---@field body? Neoagent.RenderContent
+---@field animated? boolean
+
+---@alias Neoagent.ValidToolPresentation Neoagent.CommandPresentation|Neoagent.BodyPresentation
+
 local M = {}
 local display = Applet.Pane.text
 local MAX_ANSI_SPANS = 512
 local MAX_ANSI_HIGHLIGHTS = 256
 
+---@param style Neoagent.AnsiStyle
+---@return string
 local function style_key(style)
   return table.concat({
     tostring(style.fg or ""), tostring(style.bg or ""),
@@ -43,7 +120,10 @@ local highlight_links = {
   NeoagentDiffContext = "Comment",
 }
 
+---@param palette Applet.Palette
+---@return Applet.HighlightDefinitions
 local function highlight_definitions(palette)
+  ---@type Applet.HighlightDefinitions
   local result = {}
   for name, link in pairs(highlight_links) do
     result[name] = { link = link, default = true }
@@ -106,7 +186,7 @@ local function highlight_definitions(palette)
   if luminance then
     local top, alpha = luminance > 128 and 0 or 0xffffff,
       luminance > 128 and 0.04 or 0.12
-    codex_background = palette:blend(normal.bg, top, alpha)
+    codex_background = palette:blend(assert(normal.bg), top, alpha)
   end
   result.NeoagentCodexUserBackground = {
     bg = codex_background,
@@ -115,16 +195,23 @@ local function highlight_definitions(palette)
   return result
 end
 
+---@param theme Applet.Theme
+---@param style Neoagent.AnsiStyle
+---@param base? string
+---@return string?
 local function ansi_highlight(theme, style, base)
   local palette = theme:colors()
+  ---@type Applet.Highlight
   local definition = { base = base }
   if type(style.fg) == "number" then
-    definition.fg, definition.ctermfg = palette:terminal(style.fg), style.fg
+    local index = math.floor(style.fg)
+    definition.fg, definition.ctermfg = palette:terminal(index), index
   elseif type(style.fg) == "string" then
     definition.fg = style.fg
   end
   if type(style.bg) == "number" then
-    definition.bg, definition.ctermbg = palette:terminal(style.bg), style.bg
+    local index = math.floor(style.bg)
+    definition.bg, definition.ctermbg = palette:terminal(index), index
   elseif type(style.bg) == "string" then
     definition.bg = style.bg
   end
@@ -145,10 +232,14 @@ local function define_highlights()
   }):define()
 end
 
+---@param text? string
+---@return string[]
 local function split_text(text)
   return vim.split(text or "", "\n", { plain = true })
 end
 
+---@param content? Neoagent.InputBlock[]
+---@return string
 local function content_text(content)
   local parts = {}
   for _, block in ipairs(content or {}) do
@@ -157,10 +248,22 @@ local function content_text(content)
   return table.concat(parts, "\n")
 end
 
+---@return Neoagent.RenderContent
 local function rendered()
   return { lines = {}, highlights = {}, line_groups = {} }
 end
 
+---@param content Neoagent.MarkdownContent
+---@return Neoagent.RenderContent
+local function markdown_content(content)
+  return { lines = content.lines, highlights = content.highlights,
+    markdown_blocks = content.markdown_blocks, line_groups = {} }
+end
+
+---@param result Neoagent.RenderContent
+---@param text string
+---@param spans? Neoagent.TextSpan[]
+---@param line_group? string
 local function add_line(result, text, spans, line_group)
   local row = #result.lines
   result.lines[#result.lines + 1] = text
@@ -178,6 +281,9 @@ local function add_line(result, text, spans, line_group)
   end
 end
 
+---@param target Neoagent.RenderContent
+---@param source Neoagent.RenderContent
+---@param gap? boolean
 local function append_rendered(target, source, gap)
   if #source.lines == 0 then return end
   if gap and #target.lines > 0 then add_line(target, "") end
@@ -202,10 +308,15 @@ local function append_rendered(target, source, gap)
   end
 end
 
+---@param target Neoagent.RenderContent
+---@param body Neoagent.RenderContent
 local function append_tool_body(target, body)
   append_rendered(target, body, true)
 end
 
+---@param target Neoagent.RenderContent
+---@param source Neoagent.RenderContent
+---@param row integer
 local function append_rendered_row(target, source, row)
   local spans = {}
   for _, span in ipairs(source.highlights or {}) do
@@ -218,10 +329,13 @@ local function append_rendered_row(target, source, row)
       }
     end
   end
-  add_line(target, source.lines[row + 1], spans,
+  add_line(target, assert(source.lines[row + 1]), spans,
     source.line_groups and source.line_groups[row])
 end
 
+---@param text? string
+---@param group? string
+---@return Neoagent.RenderContent
 local function plain(text, group)
   local result = rendered()
   if text == nil or text == "" then return result end
@@ -232,6 +346,8 @@ local function plain(text, group)
   return result
 end
 
+---@param parts Neoagent.ToolStyledText[]
+---@return string, Neoagent.TextSpan[]
 local function segments(parts)
   local text, spans = "", {}
   for _, part in ipairs(parts) do
@@ -244,6 +360,9 @@ local function segments(parts)
   return text, spans
 end
 
+---@param text string
+---@param width integer
+---@return string, integer?
 local function fit_card_line(text, width)
   local available = width + 2
   if display.width(" " .. text .. " ") <= available then return text end
@@ -253,6 +372,8 @@ local function fit_card_line(text, width)
   return prefix .. ellipsis, #prefix
 end
 
+---@param content Neoagent.RenderContent
+---@param width integer
 local function truncate_card_lines(content, width)
   width = math.max(1, width)
   local truncated = {}
@@ -296,6 +417,10 @@ local function truncate_card_lines(content, width)
   content.highlights = highlights
 end
 
+---@param content Neoagent.RenderContent
+---@param background? string
+---@param width? integer
+---@return Neoagent.RenderContent
 local function card(content, background, width)
   if width then truncate_card_lines(content, width) end
   local result = rendered()
@@ -333,13 +458,15 @@ local function card(content, background, width)
   return result
 end
 
+---@param content Neoagent.RenderContent
+---@return Neoagent.RenderContent
 local function prose(content)
   local result = rendered()
   local finish = #content.lines
-  while finish > 0 and not content.lines[finish]:find("%S") do finish = finish - 1 end
+  while finish > 0 and not assert(content.lines[finish]):find("%S") do finish = finish - 1 end
   if finish == 0 then return result end
   for row = 1, finish do
-    local line = content.lines[row]
+    local line = assert(content.lines[row])
     local spans = {}
     for _, span in ipairs(content.highlights) do
       if span.row == row - 1 then
@@ -357,6 +484,9 @@ local function prose(content)
   return result
 end
 
+---@param raw? string
+---@param key string
+---@return string?
 local function partial_string(raw, key)
   if not raw or raw == "" then return nil end
   local key_start = raw:find('"' .. key .. '"', 1, true)
@@ -386,6 +516,9 @@ local function partial_string(raw, key)
   return encoded
 end
 
+---@param raw? string
+---@param key string
+---@return number?
 local function partial_number(raw, key)
   if not raw then return nil end
   local key_start = raw:find('"' .. key .. '"', 1, true)
@@ -395,6 +528,8 @@ end
 
 local partial_keys = { "path", "file_path", "command", "pattern", "glob", "offset", "limit", "content" }
 
+---@param raw? string
+---@return Neoagent.JsonObject
 local function partial_arguments(raw)
   if not raw or raw == "" then return {} end
   local ok, decoded = pcall(vim.json.decode, raw)
@@ -420,6 +555,9 @@ local presentation_styles = {
   strike = "NeoagentMarkdownStrike",
 }
 
+---@param segments_value unknown
+---@return_overload string, Neoagent.TextSpan[]
+---@return_overload nil, nil
 local function presentation_line(segments_value)
   if type(segments_value) ~= "table"
       or not util.is_list(segments_value) then return nil end
@@ -456,6 +594,8 @@ local function presentation_line(segments_value)
   return line, spans
 end
 
+---@param lines unknown
+---@return Neoagent.RenderContent?
 local function presentation_content(lines)
   if type(lines) ~= "table" or not util.is_list(lines) then return nil end
   local content = rendered()
@@ -467,48 +607,6 @@ local function presentation_content(lines)
   return content
 end
 
-local function custom_tool_presentation(self, block, args, options)
-  if type(self.resolve_tool) ~= "function" then return nil end
-  local name = block.name or (block.call and block.call.name)
-    or (block.message and block.message.toolName)
-  local resolved, tool = pcall(self.resolve_tool, name)
-  if not resolved or type(tool) ~= "table"
-      or type(tool.render) ~= "function" then return nil end
-  local ok, semantic = pcall(tool.render, {
-    arguments = util.copy(args),
-    result = util.copy(block.message or block.update),
-    state = block.state,
-  })
-  if not ok or type(semantic) ~= "table" then return nil end
-  local presented, presentation = pcall(self.policy.present_tool,
-    util.copy(semantic), {
-      state = block.state,
-      width = options.width or self:_content_width(),
-      presentation_surface = options.presentation_surface,
-      spinner = self.spinner_frames[self.spinner_frame],
-    })
-  if not presented or type(presentation) ~= "table" then return nil end
-  if presentation.default ~= nil and type(presentation.default) ~= "boolean"
-      or presentation.command ~= nil
-        and type(presentation.command) ~= "string"
-      or presentation.status ~= nil
-        and type(presentation.status) ~= "boolean"
-      or presentation.animated ~= nil
-        and type(presentation.animated) ~= "boolean" then
-    return nil
-  end
-  if presentation.default == true and presentation.lines ~= nil then return nil end
-  if presentation.title ~= nil and presentation.title ~= true
-      and not presentation_line(presentation.title) then return nil end
-  if presentation.lines ~= nil
-      and not presentation_content(presentation.lines) then return nil end
-  if presentation.command ~= nil and (presentation.default == true
-      or presentation.lines ~= nil or presentation.title == nil
-      or presentation.title == true) then return nil end
-  if presentation.default ~= true and presentation.title == nil
-      and presentation.lines == nil and presentation.command == nil then return nil end
-  return presentation
-end
 
 local tool_labels = {
   read = "read",
@@ -520,6 +618,9 @@ local tool_labels = {
   read_agent_documentation = "neoagent docs",
 }
 
+---@param value unknown
+---@param surface? Neoagent.RenderSurface
+---@return string
 local function summary_value(value, surface)
   if value == vim.NIL then return "null" end
   if type(value) == "string" then
@@ -532,16 +633,25 @@ local function summary_value(value, surface)
   return "{…}"
 end
 
+---@param value unknown
+---@param fallback string
+---@param surface? Neoagent.RenderSurface
+---@return string
 local function argument_text(value, fallback, surface)
   if value == nil then return fallback end
   return summary_value(value, surface)
 end
 
+---@param value unknown
+---@return number?
 local function numeric_argument(value)
   if type(value) == "number" then return value end
   if type(value) == "string" then return tonumber(value) end
 end
 
+---@param args Neoagent.JsonObject
+---@param surface? Neoagent.RenderSurface
+---@return string
 local function read_range(args, surface)
   local offset = numeric_argument(args.offset)
   local limit = numeric_argument(args.limit)
@@ -562,6 +672,10 @@ local function read_range(args, surface)
   return " (" .. table.concat(fields, " ") .. ")"
 end
 
+---@param name? string
+---@param args Neoagent.JsonObject
+---@param surface? Neoagent.RenderSurface
+---@return Neoagent.ToolStyledText[]
 local function tool_title(name, args, surface)
   name = type(name) == "string" and name or "<tool>"
   local label = tool_labels[name] or name
@@ -610,6 +724,10 @@ local function tool_title(name, args, surface)
   return parts
 end
 
+---@param text? string
+---@param maximum? integer
+---@param tail? boolean
+---@return string[], integer, integer
 local function limited(text, maximum, tail)
   local lines = split_text(text)
   while #lines > 0 and lines[#lines] == "" do table.remove(lines) end
@@ -619,6 +737,8 @@ local function limited(text, maximum, tail)
   return vim.list_slice(lines, 1, maximum), omitted, 0
 end
 
+---@param value string
+---@return number[]
 local function sgr_params(value)
   if value == "" then return { 0 } end
   local result = {}
@@ -628,10 +748,13 @@ local function sgr_params(value)
   return result
 end
 
+---@param style Neoagent.AnsiStyle
 local function reset_style(style)
   for key in pairs(style) do style[key] = nil end
 end
 
+---@param style Neoagent.AnsiStyle
+---@param params number[]
 local function apply_sgr(style, params)
   local index = 1
   while index <= #params do
@@ -692,6 +815,10 @@ local function apply_sgr(style, params)
   end
 end
 
+---@param value string
+---@param start integer
+---@return_overload integer, string
+---@return_overload nil, nil
 local function ansi_sequence(value, start)
   if value:sub(start + 1, start + 1) ~= "[" then return nil end
   local finish = start + 2
@@ -707,12 +834,17 @@ local function ansi_sequence(value, start)
   end
 end
 
+---@param value string
+---@return string, Neoagent.AnsiSpan[]
 local function parse_ansi(value)
   local output = {}
+  ---@type Neoagent.AnsiSpan[]
   local spans = {}
+  ---@type Neoagent.AnsiStyle
   local style = {}
   local row, col = 0, 0
 
+  ---@param value_part string
   local function append(value_part)
     if value_part == "" then return end
     local safe = util.text_from_bytes(value_part)
@@ -767,10 +899,19 @@ local function parse_ansi(value)
   return table.concat(output), spans
 end
 
+---@param self Neoagent.RenderContext
+---@param text? string
+---@param maximum? integer
+---@param tail? boolean
+---@param group? string
+---@param ansi? unknown
+---@return Neoagent.RenderOutput
 local function output_lines(self, text, maximum, tail, group, ansi)
   local result = rendered()
   result.output_line_count = 0
+  ---@cast result Neoagent.RenderOutput
   if text == nil or text == "" then return result end
+  ---@type Neoagent.AnsiSpan[]
   local ansi_spans = {}
   if type(ansi) == "string" then text, ansi_spans = parse_ansi(ansi) end
   local lines, omitted, first_row = limited(text, maximum, tail)
@@ -780,6 +921,7 @@ local function output_lines(self, text, maximum, tail, group, ansi)
       line_group = line:sub(1, 1) == "+" and "NeoagentDiffAdded"
         or line:sub(1, 1) == "-" and "NeoagentDiffRemoved" or "NeoagentDiffContext"
     end
+    ---@type Neoagent.TextSpan[]
     local line_spans = #line > 0 and line_group
         and { { col = 0, end_col = #line, group = line_group } } or {}
     local source_row = first_row + index - 1
@@ -803,6 +945,9 @@ local function output_lines(self, text, maximum, tail, group, ansi)
   return result
 end
 
+---@param result Neoagent.RenderOutput
+---@param path unknown
+---@param line_count? unknown
 local function source_output(result, path, line_count)
   if line_count == nil then line_count = result.output_line_count end
   if type(path) == "string" and path ~= "" and type(line_count) == "number"
@@ -819,6 +964,19 @@ local function source_output(result, path, line_count)
   return result
 end
 
+---@param result? Neoagent.ToolResult|Neoagent.ToolResultMessage
+---@param key string
+---@return Neoagent.JsonValue?
+local function result_detail(result, key)
+  if not result or type(result.details) ~= "table" then return nil end
+  return rawget(result.details, key)
+end
+
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param args Neoagent.JsonObject
+---@param surface? Neoagent.RenderSurface
+---@return Neoagent.RenderContent
 local function tool_output(self, block, args, surface)
   local name = block.name or (block.call and block.call.name) or (block.message and block.message.toolName)
   local message = block.message
@@ -830,6 +988,10 @@ local function tool_output(self, block, args, surface)
   end
 
   if name == "write" or name == "write_file" then
+    if message and message.isError then
+      return output_lines(self, value, maximum, false, "NeoagentError")
+    end
+    if type(args.content) ~= "string" then return rendered() end
     if surface == "transcript" and self.policy.write_preview_lines then
       maximum = self.policy.write_preview_lines
     end
@@ -839,8 +1001,8 @@ local function tool_output(self, block, args, surface)
     if self.policy.write_source_syntax then source_output(result, path) end
     return result
   elseif name == "edit" or name == "edit_file" then
-    local patch = message and message.details and message.details.patch
-    if patch and patch ~= "" then
+    local patch = result_detail(message, "patch")
+    if type(patch) == "string" and patch ~= "" then
       return output_lines(self, patch, maximum, false, "diff")
     end
     if message and message.isError then
@@ -856,15 +1018,14 @@ local function tool_output(self, block, args, surface)
     end
     local result = output_lines(self, value, maximum, false, group)
     local path = args.path or args.file_path
-    local truncation = message and message.details
-      and message.details.truncation
+    local truncation = result_detail(message, "truncation")
     local source_lines = type(truncation) == "table"
       and truncation.outputLines or nil
     if syntax then source_output(result, path, source_lines) end
     return result
   elseif name == "shell" then
     local active = message or update
-    local ansi = active and active.details and active.details.ansi
+    local ansi = result_detail(active, "ansi")
     return output_lines(self, value, maximum, true,
       self.policy.plain_output_group(message and message.isError), ansi)
   elseif name == "grep" or name == "find" then
@@ -876,6 +1037,8 @@ local function tool_output(self, block, args, surface)
   return output_lines(self, value, maximum, false, "NeoagentToolOutput")
 end
 
+---@param value unknown
+---@return string
 local function format_token_count(value)
   if type(value) ~= "number" then return "unknown token count" end
   local digits = tostring(math.max(0, math.floor(value + 0.5)))
@@ -883,6 +1046,8 @@ local function format_token_count(value)
   return digits .. " tokens"
 end
 
+---@param self Neoagent.RenderContext
+---@return string?
 local function expand_hint(self)
   local key = (self.config.mappings or {}).card_details
   if type(key) == "string" then return key end
@@ -892,6 +1057,9 @@ end
 local COMPACTION_CARD_MAX_LINES = 20
 local COMPACTION_CONTENT_MAX_LINES = COMPACTION_CARD_MAX_LINES - 2
 
+---@param content Neoagent.RenderContent
+---@param maximum integer
+---@return integer
 local function clip_head(content, maximum)
   if #content.lines <= maximum then return 0 end
   local kept = maximum - 1
@@ -910,6 +1078,11 @@ local function clip_head(content, maximum)
   return omitted
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param surface? Neoagent.RenderSurface
+---@param width integer
+---@return Neoagent.RenderContent
 local function compaction_content(self, block, surface, width)
   local content = rendered()
   local label, label_spans = segments({ { text = "[compaction]", group = "NeoagentMarkdownBold" } })
@@ -919,7 +1092,7 @@ local function compaction_content(self, block, surface, width)
     add_line(content, "")
     local body = "**Compacted from " .. token_count .. "**"
     if block.summary ~= "" then body = body .. "\n\n" .. block.summary end
-    append_rendered(content, markdown.render(body, { width = width }))
+    append_rendered(content, markdown_content(markdown.render(body, { width = width })))
   else
     local message = "Compacted from " .. token_count
     local title, spans = segments({
@@ -928,7 +1101,7 @@ local function compaction_content(self, block, surface, width)
     })
     add_line(content, title, spans)
     if block.summary ~= "" then
-      append_rendered(content, markdown.render(block.summary, { width = width }))
+      append_rendered(content, markdown_content(markdown.render(block.summary, { width = width })))
     end
     clip_head(content, COMPACTION_CONTENT_MAX_LINES)
   end
@@ -937,6 +1110,11 @@ end
 
 local THINKING_MAX_LINES = 10
 
+---@param self Neoagent.RenderContext
+---@param source Neoagent.MarkdownDocument
+---@param omitted integer
+---@param expandable boolean
+---@return string
 local function thinking_header(self, source, omitted, expandable)
   local words = source:word_count()
   local message = string.format("[thinking: %d word%s",
@@ -950,6 +1128,11 @@ local function thinking_header(self, source, omitted, expandable)
   return message .. "]"
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param surface? Neoagent.RenderSurface
+---@param width integer
+---@return Neoagent.RenderContent|Neoagent.MarkdownView
 local function assistant_content(self, block, surface, width)
   local document = self:render_markdown(
     "assistant", block.text or "", { width = width })
@@ -961,9 +1144,14 @@ local function assistant_content(self, block, surface, width)
       markdown_last = finish,
     }
   end
-  return document:slice(1, finish)
+  return markdown_content(document:slice(1, finish))
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param surface? Neoagent.RenderSurface
+---@param width integer
+---@return Neoagent.RenderContent|Neoagent.MarkdownView
 local function thinking_content(self, block, surface, width)
   local source = self:render_markdown(
     "thinking", block.text or "", { width = width })
@@ -978,7 +1166,8 @@ local function thinking_content(self, block, surface, width)
       },
     }
   end
-  local content, omitted = source:tail(THINKING_MAX_LINES)
+  local parsed, omitted = source:tail(THINKING_MAX_LINES)
+  local content = markdown_content(parsed)
   for row = 1, #content.lines do
     local length = #content.lines[row]
     if length > 0 then
@@ -995,14 +1184,91 @@ local function thinking_content(self, block, surface, width)
   return content
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param args Neoagent.JsonObject
+---@param surface? Neoagent.RenderSurface
+---@param status? string
+---@return string, Neoagent.TextSpan[]
 local function ordinary_tool_title(self, block, args, surface, status)
   return segments(self.policy.tool_title(tool_title(
     block.name or (block.call and block.call.name), args, surface), status))
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param args Neoagent.JsonObject
+---@param options Neoagent.RenderContentOptions
+---@return Neoagent.ValidToolPresentation?
+local function custom_tool_presentation(self, block, args, options)
+  if type(self.resolve_tool) ~= "function" then return nil end
+  local name = block.name or (block.call and block.call.name)
+    or (block.message and block.message.toolName)
+  local resolved, tool = pcall(self.resolve_tool, name)
+  if not resolved or type(tool) ~= "table"
+      or type(tool.render) ~= "function" then return nil end
+  local ok, semantic = pcall(tool.render, {
+    arguments = util.copy(args),
+    result = util.copy(block.message or block.update),
+    state = block.state,
+  })
+  if not ok or type(semantic) ~= "table" then return nil end
+  local presented, presentation = pcall(self.policy.present_tool,
+    util.copy(semantic), {
+      state = block.state,
+      width = options.width or self:_content_width(),
+      presentation_surface = options.presentation_surface,
+      spinner = self.spinner_frames[self.spinner_frame],
+    })
+  if not presented or type(presentation) ~= "table" then return nil end
+  if presentation.default ~= nil and type(presentation.default) ~= "boolean"
+      or presentation.command ~= nil
+        and type(presentation.command) ~= "string"
+      or presentation.status ~= nil
+        and type(presentation.status) ~= "boolean"
+      or presentation.animated ~= nil
+        and type(presentation.animated) ~= "boolean" then
+    return nil
+  end
+  if presentation.default == true and presentation.lines ~= nil then return nil end
+  if presentation.title ~= nil and presentation.title ~= true
+      and not presentation_line(presentation.title) then return nil end
+  local body = presentation.lines ~= nil and presentation_content(presentation.lines) or nil
+  if presentation.lines ~= nil and not body then return nil end
+  if presentation.command ~= nil and (presentation.default == true
+      or presentation.lines ~= nil or presentation.title == nil
+      or presentation.title == true) then return nil end
+  if presentation.default ~= true and presentation.title == nil
+      and presentation.lines == nil and presentation.command == nil then return nil end
+  local status = presentation.status and block.state or nil
+  ---@type Neoagent.RenderedTitle?
+  local title
+  if presentation.title == true then
+    local title_text, spans = ordinary_tool_title(
+      self, block, args, options.presentation_surface, status)
+    title = { text = title_text, spans = spans }
+  elseif presentation.title then
+    local title_text, spans = presentation_line(
+      self.policy.tool_title(presentation.title, status))
+    if not title_text then return nil end
+    title = { text = title_text, spans = assert(spans) }
+  end
+  if presentation.command then
+    return { kind = "command", command = presentation.command, title = assert(title) }
+  end
+  return {
+    kind = "body", default = presentation.default, status = status,
+    title = title, animated = presentation.animated,
+    body = body,
+  }
+end
+
 local COMMAND_CONTINUATION_MAX_LINES = 2
 local COMMAND_OUTPUT_MAX_LINES = 5
 
+---@param source Neoagent.RenderContent
+---@param maximum integer
+---@return Neoagent.RenderContent
 local function middle_rendered(source, maximum)
   if #source.lines <= maximum then return source end
   local result = rendered()
@@ -1021,6 +1287,10 @@ local function middle_rendered(source, maximum)
   return result
 end
 
+---@param source Neoagent.RenderContent
+---@param first_prefix string
+---@param prefix string
+---@return Neoagent.RenderContent
 local function prefix_rendered(source, first_prefix, prefix)
   local result = rendered()
   for row, line in ipairs(source.lines) do
@@ -1044,11 +1314,15 @@ local function prefix_rendered(source, first_prefix, prefix)
   return result
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param surface? Neoagent.RenderSurface
+---@return Neoagent.RenderContent
 local function command_output_content(self, block, surface)
   local active = block.message or block.update
   if not active then return rendered() end
   local value = content_text(active.content)
-  local ansi = active.details and active.details.ansi
+  local ansi = result_detail(active, "ansi")
   local content = output_lines(self, value, nil, false,
     self.policy.plain_output_group(active.isError), ansi)
   if surface == "details" then return content end
@@ -1061,11 +1335,14 @@ local function command_output_content(self, block, surface)
     middle_rendered(content, COMMAND_OUTPUT_MAX_LINES), "  └ ", "    ")
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param presentation Neoagent.CommandPresentation
+---@param surface? Neoagent.RenderSurface
+---@return Neoagent.RenderContent
 local function command_tool_content(self, block, presentation, surface)
   local content = rendered()
-  local title, title_spans = presentation_line(self.policy.tool_title(
-    presentation.title,
-    presentation.status and block.state or nil))
+  local title, title_spans = presentation.title.text, presentation.title.spans
   local command = presentation.command:gsub("\r\n", "\n"):gsub("\r", "\n")
   local source = vim.split(command, "\n", { plain = true })
   local first_command = source[1] or ""
@@ -1097,57 +1374,61 @@ local function command_tool_content(self, block, presentation, surface)
   return content
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param args Neoagent.JsonObject
+---@param surface? Neoagent.RenderSurface
+---@param title_override? Neoagent.RenderedTitle
+---@param status? string
+---@return Neoagent.RenderContent
 local function ordinary_tool_content(
     self, block, args, surface, title_override, status)
   local content = rendered()
   local title, spans = ordinary_tool_title(
     self, block, args, surface, status)
-  if title_override and title_override ~= true then
-    title, spans = presentation_line(
-      self.policy.tool_title(title_override, status))
-  end
+  if title_override then title, spans = title_override.text, title_override.spans end
   add_line(content, title, spans)
   append_tool_body(content, tool_output(self, block, args, surface))
   return content
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param args Neoagent.JsonObject
+---@param options Neoagent.RenderContentOptions
+---@param presentation? Neoagent.ValidToolPresentation
+---@return Neoagent.RenderContent
 local function presented_tool_content(self, block, args, options, presentation)
   if not presentation then
     return ordinary_tool_content(
       self, block, args, options.presentation_surface)
   end
-  if presentation.command then
+  if presentation.kind == "command" then
+    ---@cast presentation Neoagent.CommandPresentation
     return command_tool_content(
       self, block, presentation, options.presentation_surface)
   end
+  ---@cast presentation Neoagent.BodyPresentation
   local content
   if presentation.default == true then
     content = ordinary_tool_content(
       self, block, args, options.presentation_surface, presentation.title,
-      presentation.status and block.state or nil)
+      presentation.status)
   else
     content = rendered()
     if presentation.title then
-      local title, spans
-      if presentation.title == true then
-        title, spans = ordinary_tool_title(
-          self, block, args, options.presentation_surface,
-          presentation.status and block.state or nil)
-      else
-        title, spans = presentation_line(
-          self.policy.tool_title(presentation.title,
-            presentation.status and block.state or nil))
-      end
-      add_line(content, title, spans)
+      add_line(content, presentation.title.text, presentation.title.spans)
     end
-    if presentation.lines then
-      append_tool_body(content, presentation_content(presentation.lines))
-    end
+    if presentation.body then append_tool_body(content, presentation.body) end
   end
   if presentation.animated == true then content.animated = true end
   return content
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param options? Neoagent.RenderContentOptions
+---@return Neoagent.RenderContent|Neoagent.MarkdownView|nil, string?
 local function card_content(self, block, options)
   options = options or {}
   local surface = options.presentation_surface
@@ -1155,10 +1436,10 @@ local function card_content(self, block, options)
     "render surface must be transcript or details")
   local width = options.width or self:_content_width()
   if block.kind == "user" then
-    return markdown.render(block.text, {
+    return markdown_content(markdown.render(block.text, {
       width = width,
       preserve_markers = true,
-    }), self.policy.user_background()
+    })), self.policy.user_background()
   elseif block.kind == "compaction" then
     return compaction_content(self, block, surface, width),
       self.policy.compaction_background()
@@ -1179,6 +1460,11 @@ local function card_content(self, block, options)
   return content, background
 end
 
+---@param content Neoagent.RenderContent
+---@param width integer
+---@param index integer
+---@param side "before"|"after"
+---@return Neoagent.RenderContent
 local function insert_group_separator(content, width, index, side)
   if #content.lines == 0 then return content end
   local row = index - 1
@@ -1213,14 +1499,25 @@ local function insert_group_separator(content, width, index, side)
   return content
 end
 
+---@param content Neoagent.RenderContent
+---@param width integer
+---@return Neoagent.RenderContent
 local function prepend_group_separator(content, width)
   return insert_group_separator(content, width, 1, "before")
 end
 
+---@param content Neoagent.RenderContent
+---@param width integer
+---@return Neoagent.RenderContent
 local function append_group_separator(content, width)
   return insert_group_separator(content, width, #content.lines, "after")
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param content Neoagent.RenderContent
+---@param neighbors? Neoagent.RenderNeighbors
+---@return Neoagent.RenderContent
 local function decorate_block(self, block, content, neighbors)
   local previous = neighbors and neighbors.previous or nil
   local following = neighbors and neighbors.next or nil
@@ -1233,11 +1530,17 @@ local function decorate_block(self, block, content, neighbors)
   return content
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param neighbors? Neoagent.RenderNeighbors
+---@return Neoagent.RenderContent
 function M.block(self, block, neighbors)
   local options = vim.tbl_extend(
     "force", neighbors or {}, { presentation_surface = "transcript" })
   local content, background = card_content(self, block, options)
   if content then
+    -- Transcript rendering materializes Markdown; only details retain documents.
+    ---@cast content Neoagent.RenderContent
     local width
     if content.wrap ~= true and (block.kind == "compaction" or (
         self.config.wrap_cards ~= true and block.kind ~= "assistant"
@@ -1256,6 +1559,10 @@ function M.block(self, block, neighbors)
         or block.warning and "NeoagentWarning" or "NeoagentMuted")), neighbors)
 end
 
+---@param self Neoagent.RenderContext
+---@param block Neoagent.RenderBlock
+---@param options? Neoagent.RenderContentOptions
+---@return Neoagent.RenderContent|Neoagent.MarkdownView|nil, string?
 function M.details(self, block, options)
   options = vim.tbl_extend(
     "force", options or {}, { presentation_surface = "details" })

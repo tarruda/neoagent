@@ -4,8 +4,14 @@ local provider_state = require("neoagent.provider_state")
 local util = require("neoagent.util")
 
 local M = {}
+
+---@class Neoagent.ZaiServiceOptions: Neoagent.ProviderHttpServiceOptions
+---@field management_url? string
+
 local DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 
+---@param value unknown
+---@return Neoagent.ZaiServiceOptions
 local function validate_service_opts(value)
   value = value or {}
   assert(type(value) == "table"
@@ -28,19 +34,26 @@ local function validate_service_opts(value)
         "zai service option management_url must be a non-empty string")
     end
   end
+  ---@cast value Neoagent.ZaiServiceOptions
   return util.copy(value)
 end
 
+---@param url string
+---@return string
 local function origin(url)
   return url:match("^(https?://[^/]+)") or url
 end
 
+---@param remaining number
+---@return Neoagent.ProviderLevel
 local function level(remaining)
   if remaining <= 0 then return "error" end
   if remaining <= 0.2 then return "warn" end
   return "success"
 end
 
+---@param value number
+---@return string
 local function grouped(value)
   local digits = tostring(math.floor(value))
   while true do
@@ -50,17 +63,25 @@ local function grouped(value)
   end
 end
 
+---@param value number
+---@param currency? string
+---@return string
 local function money(value, currency)
   if currency == "USD" then return string.format("$%.2f", value) end
   if currency then return string.format("%s %.2f", currency, value) end
   return string.format("%.2f", value)
 end
 
+---@param resource string
+---@param err Neoagent.Error
+---@return string
 local function unavailable(resource, err)
   return "Z.AI " .. resource .. " reporting is unavailable for this API key: "
     .. tostring(err.message or "permission denied")
 end
 
+---@param ctx Neoagent.CatalogDiscoveryContext<Neoagent.ProviderServiceConfig>
+---@return Neoagent.Run<Neoagent.CatalogDiscoveryResult<Neoagent.DiscoveredModel>, nil>
 function M.discover_models(ctx)
   local service_opts = validate_service_opts(ctx.provider.service_opts)
   local selected = client_module.new({
@@ -80,6 +101,9 @@ function M.discover_models(ctx)
   end, { error_kind = "provider" })
 end
 
+---@param opts? Neoagent.ProviderServiceConfig
+---@param resources? Neoagent.ProviderServiceResources
+---@return Neoagent.ProviderService
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
@@ -97,12 +121,17 @@ function M.new(opts, resources)
     max_response_bytes = service_opts.max_response_bytes,
     ambient_api_key = resources.ambient_api_key,
   })
+  ---@type Neoagent.ProviderStatusBlock?
   local status
+  ---@type Neoagent.ZaiQuota?
   local quota
+  ---@type Neoagent.ZaiBalance?
   local balance
   local destroyed = false
 
+  ---@return Neoagent.ProviderBlock[]
   local function blocks()
+    ---@type Neoagent.ProviderBlock[]
     local result = {}
     if status then result[#result + 1] = util.copy(status) end
     result[#result + 1] = {
@@ -152,6 +181,7 @@ function M.new(opts, resources)
     assert(dashboard:push({ blocks = blocks() }))
   end
 
+  ---@class Neoagent.ZaiService: Neoagent.ProviderService
   local service = {
     id = provider_id,
     name = name,
@@ -180,7 +210,8 @@ function M.new(opts, resources)
           local refreshed = client:quota(ctx):await()
           if refreshed.ok == false then
             local err = refreshed.error
-            if err and (err.status == 401 or err.status == 403) then
+            local status_code = err and rawget(err, "status")
+            if status_code == 401 or status_code == 403 then
               status = {
                 type = "status",
                 text = unavailable("quota", err),
@@ -219,8 +250,9 @@ function M.new(opts, resources)
           local refreshed = client:balance(ctx):await()
           if refreshed.ok == false then
             local err = refreshed.error
-            if err and (err.status == 401 or err.status == 403
-                or err.status == 404) then
+            local status_code = err and rawget(err, "status")
+            if status_code == 401 or status_code == 403
+                or status_code == 404 then
               status = {
                 type = "status",
                 text = unavailable("balance", err),

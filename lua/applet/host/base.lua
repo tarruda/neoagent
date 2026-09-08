@@ -2,6 +2,193 @@ local chrome = require("applet.chrome")
 local Mode = require("applet.mode")
 local util = require("applet.util")
 
+---@class Applet.Cursor
+---@field line integer
+---@field column integer
+
+---@class Applet.CursorRecord
+---@field window? integer
+---@field buffer? integer
+---@field cursor? [integer, integer]
+---@field view? vim.fn.winsaveview.ret
+---@field mode? Applet.Mode
+
+---@class Applet.FocusRecord: Applet.CursorRecord
+---@field descriptor {focus: {mode: 'normal'|'insert'|'preserve', cursor?: 'preserve'|'start'|'end'}}
+
+---@class Applet.BufferRecord: Applet.CursorRecord
+---@field owns_buffer? boolean
+---@field buffer_name? string
+---@field buffer_name_generation? string|number
+---@field buffer_option_states? table<string, Applet.WrittenOption>
+---@field requested_buffer_options? Applet.Options
+---@field reproject_buffer_options? boolean
+---@field relinquished_buffer? integer
+---@field descriptor? {buffer: {sensitive?: boolean}}
+
+---@class Applet.HostRecord: Applet.BufferRecord, Applet.FocusRecord, Applet.ChromeRecord
+---@field key string
+---@field edit_revision? string|number
+---@field applet? Applet.Applet
+---@field buffer_token? string
+---@field mount_token? string
+---@field declared? boolean
+---@field view_policy_revision? integer
+---@field measurement_generation? integer
+---@field measurement_updates? integer
+---@field requested_window_descriptor? {options: Applet.Options, host_options: {floating: Applet.Options, tab: Applet.Options}}
+---@field adopted_buffer_options? Applet.Options
+---@field descriptor Applet.MountDescriptor
+---@field adopted_window_options? Applet.Options
+---@field chrome? Applet.WindowChrome
+---@field chrome_kind? 'floating'|'split'
+---@field surface? Applet.HostSurface
+---@field detach_reason? string
+---@field active? boolean
+---@field suppressed? string
+---@field requested_float_config? vim.api.keyset.win_config
+---@field adopted_float_config? vim.api.keyset.win_config
+
+---@class Applet.PaneCommit
+---@field generation integer
+---@field content boolean
+---@field chrome boolean
+---@field view boolean
+
+---@class Applet.HostInteraction: Applet.PaneInteraction<Applet.Pane>
+---@field revision integer
+---@field scopes Applet.LayoutScope[]
+
+---@class Applet.HostSurface: Applet.PaneSurface<Applet.Pane>
+---@field interaction Applet.HostInteraction
+---@field owns_buffer boolean
+---@field domain Applet.InteractionDomain
+---@field buffer_options Applet.Options
+---@field window_options Applet.Options
+---@field visible fun(): boolean
+---@field on_commit fun(info: Applet.PaneCommit)
+---@field chrome Applet.WindowChrome
+
+---@class Applet.HostWindowState
+---@field record Applet.HostRecord
+---@field window integer
+---@field config vim.api.keyset.win_config
+
+---@class Applet.HostTransaction<W>
+---@field windows table<string, W>
+
+---@class Applet.HostDriver
+---@field kind 'floating'|'tab'
+---@field tab? integer
+---@field applet Applet.Applet
+---@field is_open fun(self: Applet.HostDriver): boolean
+---@field is_visible fun(self: Applet.HostDriver): boolean
+---@field pane_visible fun(self: Applet.HostDriver, record: Applet.HostRecord): boolean
+---@field owns_window fun(self: Applet.HostDriver, window: integer?, record?: Applet.HostRecord): boolean
+---@field foreign_windows? fun(self: Applet.HostDriver): integer
+---@field begin? fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>): boolean
+---@field publish fun(self: Applet.HostDriver, frame: Applet.CompiledLayout?, records: table<string, Applet.HostRecord>): boolean
+---@field rollback? fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>): boolean
+---@field reconcile fun(self: Applet.HostDriver, previous: Applet.CompiledLayout?, frame: Applet.CompiledLayout, records: table<string, Applet.HostRecord>): boolean
+---@field adopt_detach? fun(self: Applet.HostDriver, frame: Applet.CompiledLayout?, records: table<string, Applet.HostRecord>)
+---@field focus fun(self: Applet.HostDriver, record?: Applet.HostRecord): boolean
+---@field detach fun(self: Applet.HostDriver, record: Applet.HostRecord)
+---@field release fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>)
+---@field destroy fun(self: Applet.HostDriver, records: table<string, Applet.HostRecord>)
+
+---@class Applet.HostDriverModule
+---@field new fun(applet: Applet.Applet, origin?: Applet.NativeOrigin): Applet.HostDriver
+
+---@class Applet.NativeOrigin
+---@field window integer
+---@field tab integer
+---@field mode string
+---@field cursor? [integer, integer]
+---@field view? vim.fn.winsaveview.ret
+
+---@class Applet.WindowView
+---@field cursor [integer, integer]
+---@field topline integer
+---@field leftcol integer
+---@field skipcol integer
+
+---@class Applet.HostEnvironment
+---@field editor Applet.Rectangle
+---@field container Applet.ContainerGeometry
+---@field origin Applet.ContainerGeometry
+---@field reopening boolean
+
+---@class Applet.ScrollOptions
+---@field target? 'start'|'end'
+---@field align? 'bottom'|'center'|'top'
+
+---@class Applet.NativeAutocmd
+---@field event string
+---@field buf integer
+---@field match string
+
+---@class Applet.NativeObservation
+---@field event string
+---@field buffer? integer
+---@field match? string
+---@field window? integer
+---@field tab? integer
+
+---@class Applet.ObservedLayout
+---@field kind 'pane'|'foreign'|'floating'|'closed'|'split'
+---@field key? string
+---@field container? Applet.Rectangle
+---@field axis? Applet.LayoutAxis
+---@field children? Applet.ObservedLayout[]
+
+---@class Applet.NativeLayoutBranch
+---@field [1] 'row'|'col'
+---@field [2] Applet.NativeWinLayout[]
+
+---@alias Applet.NativeWinLayout ['leaf', integer]|Applet.NativeLayoutBranch
+
+---@class Applet.PaneObservation
+---@field mounted? boolean
+---@field visible? boolean
+---@field buffer? {ownership: 'owned'|'none', loaded: boolean, displayed: boolean}
+---@field buffer_options? Applet.Options
+---@field window_options? Applet.Options
+---@field detach_reason? string
+---@field geometry? Applet.Rectangle
+---@field view? Applet.WindowView
+---@field mode? Applet.Mode
+
+---@class Applet.PaneSnapshot: Applet.PaneObservation
+---@field mounted boolean
+---@field visible boolean
+---@field buffer {ownership: 'owned'|'none', loaded: boolean, displayed: boolean}
+---@field buffer_options Applet.Options
+---@field window_options Applet.Options
+---@field detach_reason? string
+---@field geometry? Applet.Rectangle
+---@field view? Applet.WindowView
+---@field mode? Applet.Mode
+
+---@class Applet.HostState
+---@field kind? 'floating'|'tab'
+---@field open boolean
+---@field visible boolean
+
+---@class Applet.HostSnapshot
+---@field revision integer
+---@field request_generation integer
+---@field host Applet.HostState
+---@field layout Applet.ObservedLayout
+---@field panes table<string, Applet.PaneSnapshot>
+---@field focused_pane? string
+---@field foreign_windows integer
+
+---@class Applet.OptionalTabAPI
+---@field nvim_tabpage_call? fun(tab: integer, callback: function): unknown...
+---@field nvim_tabpage_close? fun(tab: integer, force: boolean)
+
+local tab_api = vim.api --[[@as Applet.OptionalTabAPI]]
+
 local M = {}
 
 local sequence = 0
@@ -23,10 +210,11 @@ local float_config_fields = {
   "zindex", "border", "focusable", "hide",
 }
 
-local function copy_value(value)
-  return type(value) == "table" and util.copy(value) or value
-end
+local copy_value = util.copy_value
 
+---@generic K: string|number
+---@param value? table<K, unknown>
+---@return K[]
 local function sorted_keys(value)
   local result = {}
   for key in pairs(value or {}) do result[#result + 1] = key end
@@ -34,38 +222,54 @@ local function sorted_keys(value)
   return result
 end
 
+---@param buffer? integer
+---@return TypeGuard<integer>
 function M.valid_buffer(buffer)
   return buffer ~= nil and vim.api.nvim_buf_is_valid(buffer) == true
 end
 
+---@param buffer? integer
+---@return TypeGuard<integer>
 function M.loaded_buffer(buffer)
   return M.valid_buffer(buffer) and vim.api.nvim_buf_is_loaded(buffer) == true
 end
 
+---@param window? integer
+---@return TypeGuard<integer>
 function M.valid_window(window)
   return window ~= nil and vim.api.nvim_win_is_valid(window) == true
 end
 
+---@param tab? integer
+---@return TypeGuard<integer>
 function M.valid_tab(tab)
   return tab ~= nil and vim.api.nvim_tabpage_is_valid(tab) == true
 end
 
+---@param window? integer
+---@param buffer? integer
+---@return TypeGuard<integer>
 function M.window_displays(window, buffer)
   return M.valid_window(window) and M.valid_buffer(buffer)
     and vim.api.nvim_win_get_buf(window) == buffer
 end
 
+---@param border? Applet.WindowBorder
+---@return Applet.WindowBorder?
 local function resolved_border(border)
   if border == nil or border == "" or border == "none" then return nil end
   return type(border) == "string" and named_borders[border] or border
 end
 
+---@param window integer
+---@param desired vim.api.keyset.win_config
+---@return boolean
 function M.same_float_config(window, desired)
   local current = vim.api.nvim_win_get_config(window)
   for _, key in ipairs(float_config_fields) do
     local left, right = current[key], desired[key]
     if key == "border" then
-      left, right = resolved_border(left), resolved_border(right)
+      left, right = resolved_border(current.border), resolved_border(desired.border)
     end
     if type(left) == "table" or type(right) == "table" then
       if not util.equal(left or {}, right or {}) then return false end
@@ -76,6 +280,8 @@ function M.same_float_config(window, desired)
   return true
 end
 
+---@param buffer? integer
+---@return integer[]
 function M.buffer_windows(buffer)
   local result = {}
   if not M.valid_buffer(buffer) then return result end
@@ -87,6 +293,10 @@ function M.buffer_windows(buffer)
   return result
 end
 
+---@param applet Applet.Applet
+---@param record Applet.BufferRecord
+---@param descriptor Applet.MountDescriptor
+---@return string
 local function qualified_name(applet, record, descriptor)
   local result = descriptor.buffer.uri
   if not result then
@@ -100,16 +310,24 @@ local function qualified_name(applet, record, descriptor)
   return result
 end
 
+---@param option string
+---@param scope vim.api.keyset.option
+---@return Applet.OptionValue?
 local function get_option(option, scope)
   local ok, value = pcall(vim.api.nvim_get_option_value, option, scope)
   if ok then return value end
 end
 
+---@param option string
+---@param value Applet.OptionValue
+---@param scope vim.api.keyset.option
 local function set_option(option, value, scope)
   local ok, err = pcall(vim.api.nvim_set_option_value, option, value, scope)
   if not ok then error(err, 0) end
 end
 
+---@param states? table<string, Applet.WrittenOption>
+---@param scope vim.api.keyset.option
 local function restore_options(states, scope)
   for option, state in pairs(states or {}) do
     local current = get_option(option, scope)
@@ -119,7 +337,10 @@ local function restore_options(states, scope)
   end
 end
 
+---@param descriptor Applet.MountDescriptor
+---@return Applet.Options
 local function desired_buffer_options(descriptor)
+  ---@type Applet.Options
   local result = {
     buftype = "nofile",
     bufhidden = "hide",
@@ -133,6 +354,9 @@ local function desired_buffer_options(descriptor)
   return result
 end
 
+---@param record Applet.BufferRecord
+---@param descriptor Applet.MountDescriptor
+---@return boolean
 function M.configure_buffer(record, descriptor)
   if not M.loaded_buffer(record.buffer) then return false end
   local desired = desired_buffer_options(descriptor)
@@ -167,6 +391,7 @@ function M.configure_buffer(record, descriptor)
   return true
 end
 
+---@param record Applet.BufferRecord
 function M.restore_buffer_options(record)
   if M.loaded_buffer(record.buffer) then
     restore_options(record.buffer_option_states, { buf = record.buffer })
@@ -175,6 +400,10 @@ function M.restore_buffer_options(record)
   record.requested_buffer_options = nil
 end
 
+---@param applet Applet.Applet
+---@param record Applet.BufferRecord
+---@param descriptor Applet.MountDescriptor
+---@return integer, boolean
 function M.ensure_buffer(applet, record, descriptor)
   if record.owns_buffer and M.loaded_buffer(record.buffer) then
     M.configure_buffer(record, descriptor)
@@ -196,6 +425,7 @@ function M.ensure_buffer(applet, record, descriptor)
   return buffer, true
 end
 
+---@param buffer? integer
 local function overwrite_sensitive(buffer)
   if not M.loaded_buffer(buffer) then return end
   local modifiable = get_option("modifiable", { buf = buffer })
@@ -205,6 +435,8 @@ local function overwrite_sensitive(buffer)
   pcall(vim.api.nvim_buf_set_lines, buffer, 0, -1, false, { "" })
 end
 
+---@param record Applet.BufferRecord
+---@return boolean
 function M.delete_buffer(record)
   local buffer = record.buffer
   if not record.owns_buffer or not M.valid_buffer(buffer) then
@@ -239,6 +471,8 @@ function M.delete_buffer(record)
   return true
 end
 
+---@param window? integer
+---@return Applet.NativeOrigin
 function M.capture_origin(window)
   window = M.valid_window(window) and window or vim.api.nvim_get_current_win()
   local tab = M.valid_window(window)
@@ -246,12 +480,14 @@ function M.capture_origin(window)
     or vim.api.nvim_get_current_tabpage()
   local result = { window = window, tab = tab, mode = vim.api.nvim_get_mode().mode }
   if M.valid_window(window) then
-    result.cursor = vim.api.nvim_win_get_cursor(window)
+    result.cursor = vim.api.nvim_win_get_cursor(window) --[[@as [integer, integer] ]]
     result.view = vim.api.nvim_win_call(window, function() return vim.fn.winsaveview() end)
   end
   return result
 end
 
+---@param applet? Applet.Applet
+---@return integer?, integer?
 local function first_external_window(applet)
   for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
     for _, window in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
@@ -260,9 +496,14 @@ local function first_external_window(applet)
   end
 end
 
+---@param origin? Applet.NativeOrigin
+---@param applet? Applet.Applet
+---@return boolean
 function M.restore_origin(origin, applet)
   if not origin then return false end
+  ---@type integer?
   local tab = M.valid_tab(origin.tab) and origin.tab or nil
+  ---@type integer?
   local window = M.valid_window(origin.window) and origin.window or nil
   if applet and window and applet._windows[window] then window = nil end
   if not window then tab, window = first_external_window(applet) end
@@ -279,10 +520,12 @@ function M.restore_origin(origin, applet)
   return true
 end
 
+---@param record Applet.FocusRecord
+---@return boolean
 function M.save_view(record)
   local window = record.window
   if not M.window_displays(window, record.buffer) then return false end
-  record.cursor = vim.api.nvim_win_get_cursor(window)
+  record.cursor = vim.api.nvim_win_get_cursor(window) --[[@as [integer, integer] ]]
   record.view = vim.api.nvim_win_call(window, function() return vim.fn.winsaveview() end)
   if record.descriptor.focus.mode == "preserve"
       and vim.api.nvim_get_current_win() == window then
@@ -292,6 +535,8 @@ function M.save_view(record)
   return true
 end
 
+---@param record Applet.CursorRecord
+---@return boolean
 function M.restore_view(record)
   local window = record.window
   if not M.window_displays(window, record.buffer) then return false end
@@ -302,9 +547,11 @@ function M.restore_view(record)
   return true
 end
 
+---@param window? integer
+---@return Applet.Rectangle?
 function M.window_geometry(window)
   if not M.valid_window(window) then return nil end
-  local position = vim.api.nvim_win_get_position(window)
+  local position = vim.api.nvim_win_get_position(window) --[[@as [integer, integer] ]]
   return {
     row = position[1],
     col = position[2],
@@ -313,23 +560,30 @@ function M.window_geometry(window)
   }
 end
 
+---@param window? integer
+---@return Applet.WindowView?
 function M.window_view(window)
   if not M.valid_window(window) then return nil end
   local ok, value = pcall(vim.api.nvim_win_call, window, function()
     local view = vim.fn.winsaveview()
     return {
-      cursor = vim.api.nvim_win_get_cursor(0),
+      cursor = vim.api.nvim_win_get_cursor(0) --[[@as [integer, integer] ]],
       topline = view.topline,
       leftcol = view.leftcol,
       skipcol = view.skipcol,
     }
   end)
-  return ok and value or nil
+  if not ok then return nil end
+  return value --[[@as Applet.WindowView]]
 end
 
+---@generic T
+---@param tab? integer
+---@param callback fun(): T...
+---@return T...
 function M.with_tab(tab, callback)
-  if M.valid_tab(tab) and type(vim.api.nvim_tabpage_call) == "function" then
-    return vim.api.nvim_tabpage_call(tab, callback)
+  if M.valid_tab(tab) and type(tab_api.nvim_tabpage_call) == "function" then
+    return tab_api.nvim_tabpage_call(tab, callback)
   end
   local current = vim.api.nvim_get_current_tabpage()
   if M.valid_tab(tab) and current ~= tab then vim.api.nvim_set_current_tabpage(tab) end
@@ -341,19 +595,23 @@ function M.with_tab(tab, callback)
   return unpack(results, 2)
 end
 
+---@param tab? integer
+---@param force? boolean
+---@return boolean
 function M.close_tab(tab, force)
   if not M.valid_tab(tab) then return true end
-  if type(vim.api.nvim_tabpage_close) == "function" then
-    local ok = pcall(vim.api.nvim_tabpage_close, tab, force == true)
+  if type(tab_api.nvim_tabpage_close) == "function" then
+    local ok = pcall(tab_api.nvim_tabpage_close, tab, force == true)
     return ok and not M.valid_tab(tab)
   end
   if #vim.api.nvim_list_tabpages() == 1 then return false end
   local number = vim.api.nvim_tabpage_get_number(tab)
   local command = force and "tabclose! " or "tabclose "
-  local ok = pcall(vim.cmd, command .. number)
+  local ok = pcall(function() vim.cmd(command .. number) end)
   return ok and not M.valid_tab(tab)
 end
 
+---@return Applet.Rectangle
 function M.editor_geometry()
   return {
     row = 0,
@@ -363,6 +621,8 @@ function M.editor_geometry()
   }
 end
 
+---@param excluded? table<integer, string>
+---@return Applet.ContainerGeometry
 function M.largest_window(excluded)
   local selected, area
   for _, window in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -371,18 +631,23 @@ function M.largest_window(excluded)
       local buffer = vim.api.nvim_win_get_buf(window)
       if config.relative == ""
           and get_option("buftype", { buf = buffer }) == "" then
-        local geometry = M.window_geometry(window)
+        local geometry = assert(M.window_geometry(window))
         local current = geometry.width * geometry.height
         if not area or current > area then selected, area = window, current end
       end
     end
   end
   if not selected then return { available = false } end
-  local result = M.window_geometry(selected)
+  local result = assert(M.window_geometry(selected)) --[[@as Applet.LayoutContainer]]
   result.available = true
   return result
 end
 
+---@param host Applet.Host
+---@param origin? Applet.NativeOrigin
+---@param applet? Applet.Applet
+---@param reopening? boolean
+---@return Applet.HostEnvironment
 function M.environment(host, origin, applet, reopening)
   local editor = M.editor_geometry()
   local container = host.kind == "floating" and host.container ~= "editor"
@@ -404,6 +669,10 @@ function M.environment(host, origin, applet, reopening)
   }
 end
 
+---@param record Applet.HostRecord
+---@param descriptor Applet.MountDescriptor
+---@param kind 'tab'|'floating'
+---@return Applet.Options
 local function merged_window_options(record, descriptor, kind)
   local result = util.copy(descriptor.window.options)
   for option, value in pairs(descriptor.window.host_options[kind] or {}) do
@@ -415,12 +684,17 @@ local function merged_window_options(record, descriptor, kind)
   return result
 end
 
+---@param applet Applet.Applet
+---@param driver Applet.HostDriver
+---@param record Applet.HostRecord
+---@return Applet.HostSurface
 function M.surface(applet, driver, record)
   local kind = record.descriptor.projection.kind == "split" and "split" or "floating"
   record.chrome = chrome.new(record, kind)
   record.chrome_kind = kind
+  ---@type Applet.HostSurface
   local surface = {
-    buffer = record.buffer,
+    buffer = assert(record.buffer),
     owns_buffer = false,
     domain = applet.domain,
     buffer_options = {},
@@ -432,12 +706,16 @@ function M.surface(applet, driver, record)
     visible = function() return driver:pane_visible(record) end,
     on_commit = function(info) applet:_content_committed(record, info) end,
     chrome = record.chrome,
+    interaction = applet:_surface_interaction(record),
   }
-  surface.interaction = applet:_surface_interaction(record)
   record.surface = surface
   return surface
 end
 
+---@param applet Applet.Applet
+---@param driver Applet.HostDriver
+---@param record Applet.HostRecord
+---@return Applet.HostSurface
 function M.update_surface(applet, driver, record)
   local surface = record.surface
   if not surface then return M.surface(applet, driver, record) end
@@ -458,12 +736,17 @@ function M.update_surface(applet, driver, record)
   return surface
 end
 
+---@param record Applet.FocusRecord
+---@return Applet.Mode
 local function resolved_mode(record)
   local mode = record.descriptor.focus.mode
   if mode == "preserve" then mode = record.mode or "normal" end
   return mode
 end
 
+---@param record Applet.FocusRecord
+---@param confirm? boolean
+---@return boolean
 function M.apply_mode(record, confirm)
   local window = record.window
   if not M.window_displays(window, record.buffer)
@@ -482,26 +765,35 @@ function M.apply_mode(record, confirm)
   return true
 end
 
+---@param record Applet.FocusRecord
+---@return boolean
 function M.focus_mode(record)
   local descriptor = record.descriptor
   local window = record.window
   if not M.window_displays(window, record.buffer) then return false end
   vim.api.nvim_set_current_win(window)
+  local buffer = assert(record.buffer)
   if descriptor.focus.cursor == "start" then
     pcall(vim.api.nvim_win_set_cursor, window, { 1, 0 })
   elseif descriptor.focus.cursor == "end" then
-    local count = vim.api.nvim_buf_line_count(record.buffer)
-    local line = vim.api.nvim_buf_get_lines(record.buffer, count - 1, count, false)[1] or ""
+    local count = vim.api.nvim_buf_line_count((assert(record.buffer)))
+    local line = vim.api.nvim_buf_get_lines(buffer, count - 1, count, false)[1] or ""
     pcall(vim.api.nvim_win_set_cursor, window, { count, #line })
   end
   return M.apply_mode(record)
 end
 
+---@param record Applet.CursorRecord
+---@return string
 function M.buffer_text(record)
   if not M.loaded_buffer(record.buffer) then return "" end
   return table.concat(vim.api.nvim_buf_get_lines(record.buffer, 0, -1, false), "\n")
 end
 
+---@param record Applet.CursorRecord
+---@param text? string
+---@param cursor? Applet.Cursor
+---@return boolean
 function M.replace_text(record, text, cursor)
   assert(M.loaded_buffer(record.buffer), "Pane buffer is unavailable")
   local modifiable = get_option("modifiable", { buf = record.buffer })
@@ -513,15 +805,20 @@ function M.replace_text(record, text, cursor)
   return true
 end
 
+---@param record Applet.CursorRecord
+---@return Applet.Cursor
 function M.cursor(record)
   if M.window_displays(record.window, record.buffer) then
-    local value = vim.api.nvim_win_get_cursor(record.window)
+    local value = vim.api.nvim_win_get_cursor(record.window) --[[@as [integer, integer] ]]
     return { line = value[1], column = value[2] }
   end
   if record.cursor then return { line = record.cursor[1], column = record.cursor[2] } end
   return { line = 1, column = 0 }
 end
 
+---@param record Applet.CursorRecord
+---@param cursor Applet.Cursor
+---@return boolean
 function M.set_cursor(record, cursor)
   assert(type(cursor) == "table" and type(cursor.line) == "number"
       and type(cursor.column) == "number", "cursor must contain line and column")
@@ -532,6 +829,10 @@ function M.set_cursor(record, cursor)
   return true
 end
 
+---@param record Applet.CursorRecord
+---@param direction 'up'|'previous'|'down'|'next'|'start'|'end'
+---@param count? number|string
+---@return boolean
 function M.move_cursor(record, direction, count)
   local cursor = M.cursor(record)
   count = math.max(1, math.floor(tonumber(count) or 1))
@@ -556,12 +857,15 @@ function M.move_cursor(record, direction, count)
   return M.set_cursor(record, cursor)
 end
 
+---@param record Applet.FocusRecord
+---@param opts? Applet.ScrollOptions
+---@return boolean
 function M.scroll(record, opts)
   if not M.window_displays(record.window, record.buffer) then return false end
   opts = opts or {}
   local scrolled = vim.api.nvim_win_call(record.window, function()
     if opts.target == "end" then
-      vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(record.buffer), 0 })
+      vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count((assert(record.buffer))), 0 })
     elseif opts.target == "start" then
       vim.api.nvim_win_set_cursor(0, { 1, 0 })
     end
@@ -574,10 +878,14 @@ function M.scroll(record, opts)
   return scrolled
 end
 
+---@return boolean
 function M.completion_visible()
   return vim.fn.pumvisible() == 1
 end
 
+---@param record Applet.CursorRecord
+---@param keys string
+---@return boolean
 local function feed(record, keys)
   if not M.window_displays(record.window, record.buffer) then return false end
   vim.api.nvim_set_current_win(record.window)
@@ -585,18 +893,28 @@ local function feed(record, keys)
   return true
 end
 
+---@param record Applet.CursorRecord
+---@return boolean
 function M.complete(record)
   return feed(record, "<C-x><C-f>")
 end
 
+---@param record Applet.CursorRecord
+---@param direction 'previous'|'next'
+---@return boolean
 function M.completion_move(record, direction)
   return feed(record, direction == "previous" and "<C-p>" or "<C-n>")
 end
 
+---@param record Applet.CursorRecord
+---@return boolean
 function M.completion_accept(record)
   return feed(record, "<C-y>")
 end
 
+---@param record Applet.CursorRecord
+---@param event Applet.ActionEvent<Applet.Pane>
+---@return boolean
 function M.pass(record, event)
   local binding = event.binding
   if not binding or not M.window_displays(record.window, record.buffer) then return false end
@@ -606,9 +924,11 @@ function M.pass(record, event)
   return true
 end
 
+---@param record Applet.HostRecord
+---@return Applet.LayoutMeasurement?
 function M.measure(record)
   if not M.window_displays(record.window, record.buffer) then return nil end
-  local count = vim.api.nvim_buf_line_count(record.buffer)
+  local count = vim.api.nvim_buf_line_count((assert(record.buffer)))
   local screen_lines = count
   if type(vim.api.nvim_win_text_height) == "function" then
     local ok, measured = pcall(vim.api.nvim_win_text_height, record.window, {})
@@ -623,15 +943,21 @@ function M.measure(record)
   }
 end
 
+---@param message string
+---@param level? integer
 function M.default_notify(message, level)
   return vim.notify(message, level)
 end
 
+---@param uri string
+---@return vim.SystemObj?, string?
 function M.default_open_uri(uri)
   if vim.ui and type(vim.ui.open) == "function" then return vim.ui.open(uri) end
   error("URI opening is unavailable", 2)
 end
 
+---@param name string
+---@return integer
 function M.new_augroup(name)
   sequence = sequence + 1
   return vim.api.nvim_create_augroup(
@@ -647,6 +973,9 @@ local buffer_events = {
   BufWipeout = true,
 }
 
+---@param applet Applet.Applet
+---@param buffer? integer
+---@return boolean
 local function tracked_buffer(applet, buffer)
   if not buffer or buffer == 0 then return false end
   for _, record in pairs(applet.records) do
@@ -657,6 +986,10 @@ local function tracked_buffer(applet, buffer)
   return false
 end
 
+---@param applet Applet.Applet
+---@param event Applet.NativeAutocmd
+---@param native Applet.NativeObservation
+---@return boolean?
 local function observer_relevant(applet, event, native)
   if applet.lifecycle == "destroyed" or applet.mutating then return false end
   local open = applet.lifecycle ~= "closed"
@@ -674,10 +1007,14 @@ local function observer_relevant(applet, event, native)
       or native.window and applet._windows[native.window] ~= nil
   end
   local driver = applet.driver
+  ---@param window? integer
+  ---@return boolean?
   local function host_window(window)
     return driver and M.valid_window(window) and M.valid_tab(driver.tab)
       and vim.api.nvim_win_get_tabpage(window) == driver.tab
   end
+  ---@param window? integer
+  ---@return boolean?
   local function relevant_window(window)
     return window ~= nil and (applet._windows[window] ~= nil
       or host_window(window))
@@ -694,13 +1031,16 @@ local function observer_relevant(applet, event, native)
     return driver ~= nil and M.valid_tab(driver.tab)
       and vim.api.nvim_get_current_tabpage() == driver.tab
   end
-  local matched_window = tonumber(event.match)
+  local matched_window = tonumber(event.match) --[[@as integer?]]
   if relevant_window(matched_window) or relevant_window(native.window) then
     return true
   end
   return false
 end
 
+---@param applet Applet.Applet
+---@param window integer
+---@return Applet.ObservedLayout
 local function layout_leaf(applet, window)
   local key = applet._windows[window]
   local record = key and applet.records[key]
@@ -710,17 +1050,27 @@ local function layout_leaf(applet, window)
   return { kind = "foreign" }
 end
 
+---@param applet Applet.Applet
+---@param driver Applet.HostDriver
+---@param frame? Applet.CompiledLayout
+---@return Applet.ObservedLayout
 local function semantic_layout(applet, driver, frame)
   if driver.kind == "floating" then
-    return { kind = "floating", container = util.copy(frame.plan.container) }
+    return { kind = "floating", container = util.copy(assert(frame).plan.container) }
   end
   if not M.valid_tab(driver.tab) then return { kind = "closed" } end
   local tab_number = vim.api.nvim_tabpage_get_number(driver.tab)
   local native = vim.fn.winlayout(tab_number)
+  ---@param value Applet.NativeWinLayout
+  ---@return Applet.ObservedLayout
   local function convert(value)
-    if value[1] == "leaf" then return layout_leaf(applet, value[2]) end
+    if value[1] == "leaf" then
+      return layout_leaf(applet, value[2] --[[@as integer]])
+    end
+    local branches = value[2] --[[@as Applet.NativeWinLayout[] ]]
+    ---@type Applet.ObservedLayout[]
     local children = {}
-    for _, child in ipairs(value[2] or {}) do children[#children + 1] = convert(child) end
+    for _, child in ipairs(branches or {}) do children[#children + 1] = convert(child) end
     return {
       kind = "split",
       axis = value[1] == "col" and "vertical" or "horizontal",
@@ -730,6 +1080,9 @@ local function semantic_layout(applet, driver, frame)
   return convert(native)
 end
 
+---@param record Applet.HostRecord
+---@param mounted boolean
+---@return Applet.Options, Applet.Options
 local function snapshot_options(record, mounted)
   local buffer_options, window_options = {}, {}
   if M.loaded_buffer(record.buffer) then
@@ -746,10 +1099,17 @@ local function snapshot_options(record, mounted)
   return buffer_options, window_options
 end
 
+---@param driver Applet.HostDriver
+---@param records table<string, Applet.HostRecord>
+---@param frame? Applet.CompiledLayout
+---@param revision? integer
+---@param request_generation? integer
+---@return Applet.HostSnapshot
 function M.snapshot(driver, records, frame, revision, request_generation)
   local current_tab = vim.api.nvim_get_current_tabpage()
   local current_window = vim.api.nvim_get_current_win()
   local applet = driver.applet
+  ---@type Applet.HostSnapshot
   local result = {
     revision = revision or 0,
     request_generation = request_generation or 0,
@@ -773,6 +1133,7 @@ function M.snapshot(driver, records, frame, revision, request_generation)
       and driver:owns_window(record.window, record) or false
     local displayed = #M.buffer_windows(buffer) > 0
     local buffer_options, window_options = snapshot_options(record, mounted)
+    ---@type Applet.PaneSnapshot
     local pane = {
       mounted = mounted == true,
       visible = mounted == true and driver:pane_visible(record) or false,
@@ -788,7 +1149,7 @@ function M.snapshot(driver, records, frame, revision, request_generation)
     if mounted then
       pane.geometry = M.window_geometry(record.window)
       pane.view = M.window_view(record.window)
-      pane.mode = current_tab == vim.api.nvim_win_get_tabpage(record.window)
+      pane.mode = current_tab == vim.api.nvim_win_get_tabpage((assert(record.window)))
           and current_window == record.window
           and Mode.semantic()
         or record.mode or "normal"
@@ -801,6 +1162,9 @@ function M.snapshot(driver, records, frame, revision, request_generation)
   return result
 end
 
+---@param applet Applet.Applet
+---@param scope 'live'|'retained'
+---@return integer
 function M.install_observers(applet, scope)
   assert(scope == "live" or scope == "retained",
     "Applet observer scope must be live or retained")
@@ -813,8 +1177,10 @@ function M.install_observers(applet, scope)
     "TabEnter", "TabLeave", "TabClosed", "WinEnter", "WinLeave",
     "ModeChanged", "OptionSet",
   } or { "BufUnload", "BufDelete", "BufWipeout" }
+  ---@param event Applet.NativeAutocmd
   local function observe(event)
     applet.counters.observer_callbacks = applet.counters.observer_callbacks + 1
+    ---@type Applet.NativeObservation
     local native = { event = event.event, buffer = event.buf, match = event.match }
     if M.valid_window(vim.api.nvim_get_current_win()) then
       native.window = vim.api.nvim_get_current_win()
@@ -850,6 +1216,7 @@ function M.install_observers(applet, scope)
   return group
 end
 
+---@param applet Applet.Applet
 function M.clear_observers(applet)
   if applet.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, applet.augroup)

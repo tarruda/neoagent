@@ -6,10 +6,14 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@param id? string
+---@return string
 local function normalize_tool_id(id)
   return tostring(id or ""):gsub("[^%w_-]", "_"):sub(1, 64)
 end
 
+---@param value? Neoagent.JsonObject
+---@return Neoagent.JsonObject
 local function object(value)
   value = value or {}
   if type(value) ~= "table" or (next(value) ~= nil and util.is_list(value)) then
@@ -20,15 +24,23 @@ local function object(value)
   return result
 end
 
+---@param content? string|(Neoagent.TextBlock|Neoagent.ImageBlock)[]
+---@param empty_text? string
+---@return string|Neoagent.JsonObject[]
 local function content_blocks(content, empty_text)
   if type(content) == "string" then return content end
+  ---@type Neoagent.JsonObject[]
   local result = {}
   local has_text = false
+  ---@type string[]
+  local text = {}
   local has_image = false
   for _, block in ipairs(content or {}) do
     if block.type == "text" then
       has_text = true
-      result[#result + 1] = { type = "text", text = block.text or "" }
+      local value = block.text or ""
+      text[#text + 1] = value
+      result[#result + 1] = { type = "text", text = value }
     elseif block.type == "image" then
       has_image = true
       result[#result + 1] = {
@@ -45,15 +57,14 @@ local function content_blocks(content, empty_text)
     table.insert(result, 1, { type = "text", text = "(see attached image)" })
   end
   if #result == 0 then return empty_text or "" end
-  if not has_image then
-    local text = {}
-    for _, block in ipairs(result) do text[#text + 1] = block.text end
-    return table.concat(text, "\n")
-  end
+  if not has_image then return table.concat(text, "\n") end
   return result
 end
 
+---@param message Neoagent.AssistantMessage
+---@return Neoagent.JsonObject[]
 local function assistant_blocks(message)
+  ---@type Neoagent.JsonObject[]
   local result = {}
   for _, block in ipairs(message.content or {}) do
     if block.type == "text" and type(block.text) == "string" and block.text ~= "" then
@@ -80,6 +91,8 @@ local function assistant_blocks(message)
   return result
 end
 
+---@param block Neoagent.ToolResultMessage
+---@return Neoagent.JsonObject
 local function tool_result(block)
   local result = {
     type = "tool_result",
@@ -90,36 +103,43 @@ local function tool_result(block)
   return result
 end
 
+---@param messages Neoagent.Message[]
+---@return Neoagent.JsonObject[]
 local function encode_messages(messages)
+  ---@type Neoagent.JsonObject[]
   local result = {}
-  local index = 1
-  while index <= #messages do
-    local message = messages[index]
-    if message.role == "user" then
-      result[#result + 1] = {
-        role = "user",
-        content = content_blocks(message.content),
-      }
-    elseif message.role == "assistant" then
-      local blocks = assistant_blocks(message)
-      if #blocks > 0 then result[#result + 1] = { role = "assistant", content = blocks } end
-    elseif message.role == "toolResult" then
-      local blocks = {}
-      while index <= #messages and messages[index].role == "toolResult" do
-        blocks[#blocks + 1] = tool_result(messages[index])
-        index = index + 1
+  ---@type Neoagent.JsonObject[]?
+  local tool_results
+  for _, message in ipairs(messages) do
+    if message.role == "toolResult" then
+      if not tool_results then
+        tool_results = {}
+        result[#result + 1] = { role = "user", content = tool_results }
       end
-      result[#result + 1] = { role = "user", content = blocks }
-      index = index - 1
+      tool_results[#tool_results + 1] = tool_result(message)
     else
-      error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
+      tool_results = nil
+      if message.role == "user" then
+        result[#result + 1] = {
+          role = "user", content = content_blocks(message.content),
+        }
+      elseif message.role == "assistant" then
+        local blocks = assistant_blocks(message)
+        if #blocks > 0 then
+          result[#result + 1] = { role = "assistant", content = blocks }
+        end
+      else
+        error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
+      end
     end
-    index = index + 1
   end
   return result
 end
 
+---@param tools? Neoagent.ToolDefinition[]
+---@return Neoagent.JsonObject[]
 local function encode_tools(tools)
+  ---@type Neoagent.JsonObject[]
   local result = {}
   for _, tool in ipairs(tools or {}) do
     result[#result + 1] = {
@@ -131,6 +151,9 @@ local function encode_tools(tools)
   return result
 end
 
+---@param model Neoagent.AnthropicModel
+---@param call_opts Neoagent.StreamOptions
+---@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
 function M.build(model, call_opts)
   local headers = {
     ["Content-Type"] = "application/json",
@@ -142,6 +165,7 @@ function M.build(model, call_opts)
     headers["x-api-key"] = api_key
   end
 
+  ---@type Neoagent.JsonObject
   local body = {
     model = model.id,
     messages = encode_messages(messages.for_model(call_opts.messages, model)),
@@ -154,11 +178,13 @@ function M.build(model, call_opts)
   local tools = encode_tools(call_opts.tools)
   if #tools > 0 then body.tools = tools end
 
+  ---@type Neoagent.ApiRequest
   local request = {
     url = model._base_url .. "/messages",
     headers = headers,
     body = body,
   }
+  ---@type Neoagent.RequestOptionsInput
   local context = {
     model = model,
     messages = util.copy(call_opts.messages),

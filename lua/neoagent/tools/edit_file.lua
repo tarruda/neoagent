@@ -1,10 +1,29 @@
 local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.edit_presentation")
 
+---@class Neoagent.NormalizedFileText
+---@field text string
+---@field starts integer[]
+---@field finishes integer[]
+
+---@class Neoagent.FileReplacement
+---@field index integer
+---@field start integer
+---@field length integer
+---@field newText string
+
+---@class Neoagent.FileEditDetails
+---@field patch string
+---@field changed_paths string[]
+
+---@param text string
+---@return string
 local function normalize_lf(text)
-  return text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
 end
 
+---@param text string
+---@return string, integer[], integer[]
 local function fuzzy(text)
   local replacements = {
     ["\226\128\152"] = "'", ["\226\128\153"] = "'", ["\226\128\154"] = "'", ["\226\128\155"] = "'",
@@ -13,7 +32,10 @@ local function fuzzy(text)
     ["\226\128\148"] = "-", ["\226\128\149"] = "-", ["\226\136\146"] = "-",
     ["\194\160"] = " ", ["\226\128\175"] = " ", ["\226\129\159"] = " ", ["\227\128\128"] = " ",
   }
-  local bytes, starts, finishes = {}, {}, {}
+  ---@type string[]
+  local bytes = {}
+  ---@type integer[]
+  local starts, finishes = {}, {}
   local function trim_line()
     while #bytes > 0 and bytes[#bytes] ~= "\n" and bytes[#bytes]:match("%s") do
       bytes[#bytes], starts[#starts], finishes[#finishes] = nil, nil, nil
@@ -37,6 +59,9 @@ local function fuzzy(text)
   return table.concat(bytes), starts, finishes
 end
 
+---@param content string
+---@param needle string
+---@return integer, integer?
 local function occurrences(content, needle)
   local count, from, first = 0, 1, nil
   if needle == "" then return count end
@@ -50,6 +75,9 @@ local function occurrences(content, needle)
   return count, first
 end
 
+---@param content string
+---@param replacements Neoagent.FileReplacement[]
+---@return string
 local function apply_group(content, replacements)
   for index = #replacements, 1, -1 do
     local replacement = replacements[index]
@@ -59,8 +87,14 @@ local function apply_group(content, replacements)
   return content
 end
 
+---@param content string
+---@param edits Neoagent.JsonValue[]
+---@param path string
+---@return string
 local function apply(content, edits, path)
-  local normalized, starts, finishes
+  ---@type Neoagent.NormalizedFileText?
+  local normalized
+  ---@type Neoagent.FileReplacement[]
   local replacements = {}
   for index, edit in ipairs(edits) do
     if type(edit) ~= "table" or type(edit.oldText) ~= "string" or type(edit.newText) ~= "string" then
@@ -71,15 +105,20 @@ local function apply(content, edits, path)
     local count, start = occurrences(content, needle)
     local length = #needle
     if count == 0 then
-      if not normalized then normalized, starts, finishes = fuzzy(content) end
+      if not normalized then
+        local text, starts, finishes = fuzzy(content)
+        normalized = { text = text, starts = starts, finishes = finishes }
+      end
       needle = fuzzy(needle)
-      count, start = occurrences(normalized, needle)
+      count, start = occurrences(normalized.text, needle)
       if start then
-        length = finishes[start + #needle - 1] - starts[start] + 1
-        start = starts[start]
+        local original_start = assert(normalized.starts[start])
+        local original_finish = assert(normalized.finishes[start + #needle - 1])
+        length = original_finish - original_start + 1
+        start = original_start
       end
     end
-    if count == 0 then
+    if not start then
       error("Could not find edits[" .. index .. "] in " .. path .. ". The oldText must match exactly including all whitespace and newlines.")
     elseif count > 1 then
       error("Found " .. count .. " occurrences of edits[" .. index .. "] in " .. path .. ". Each oldText must be unique.")
@@ -89,26 +128,33 @@ local function apply(content, edits, path)
     }
   end
   table.sort(replacements, function(a, b) return a.start < b.start end)
-  for index = 2, #replacements do
-    local previous, current = replacements[index - 1], replacements[index]
-    if previous.start + previous.length > current.start then
+  ---@type Neoagent.FileReplacement?
+  local previous
+  for _, current in ipairs(replacements) do
+    if previous and previous.start + previous.length > current.start then
       error(string.format("edits[%d] and edits[%d] overlap in %s", previous.index, current.index, path))
     end
+    previous = current
   end
   local changed = apply_group(content, replacements)
   if changed == content then error("No changes made to " .. path .. ". The replacements produced identical content.") end
   return changed
 end
 
+---@param path string
+---@param old string
+---@param new string
+---@return Neoagent.FileEditDetails
 local function diff_details(path, old, new)
   local ok, patch = pcall(vim.diff, old, new, { result_type = "unified", ctxlen = 4 })
-  if not ok then patch = "--- " .. path .. "\n+++ " .. path end
+  if not ok or type(patch) ~= "string" then patch = "--- " .. path .. "\n+++ " .. path end
   return {
     patch = patch,
     changed_paths = { path },
   }
 end
 
+---@return Neoagent.Tool<unknown>
 local function new()
   return {
     name = "edit_file",
@@ -147,14 +193,13 @@ local function new()
       local content = normalize_lf(raw)
       local changed = apply(content, arguments.edits, path)
       local restored = ending == "\r\n" and changed:gsub("\n", "\r\n") or changed
-      local ok
-      ok, err = fs.atomic_replace(absolute, bom .. restored, {
+      local ok, replace_err = fs.atomic_replace(absolute, bom .. restored, {
         preserve_mode = true,
         new_mode = 420,
         require_existing = true,
         expected_content_fingerprint = original_fingerprint,
       })
-      if not ok then error("Could not edit file " .. path .. ": " .. tostring(err)) end
+      if not ok then error("Could not edit file " .. path .. ": " .. tostring(replace_err)) end
       return {
         content = { { type = "text", text = string.format("Successfully replaced %d block(s) in %s.", #arguments.edits, path) } },
         details = diff_details(path, content, changed),

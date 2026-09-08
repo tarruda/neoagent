@@ -2,11 +2,24 @@ local compaction = require("neoagent.compaction")
 
 local M = {}
 
+---@class Neoagent.LiveContextUsage
+---@field tokens number
+---@field message_count integer
+
+---@class Neoagent.ContextDisplay
+---@field used number
+---@field total number
+---@field percent number
+
+
+---@param usage? Neoagent.Usage
+---@return number?
 function M.usage_tokens(usage)
   if type(usage) ~= "table" then return nil end
   if type(usage.totalTokens) == "number" and usage.totalTokens >= 0 then
     return usage.totalTokens
   end
+  ---@type number
   local total = 0
   for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
     if type(usage[key]) == "number" then total = total + usage[key] end
@@ -14,6 +27,9 @@ function M.usage_tokens(usage)
   return total
 end
 
+---@param messages Neoagent.Message[]
+---@param first integer
+---@return integer
 local function estimate_messages(messages, first)
   local tokens = 0
   for index = first, #messages do
@@ -22,6 +38,8 @@ local function estimate_messages(messages, first)
   return tokens
 end
 
+---@param message? Neoagent.Message
+---@return number?
 local function valid_assistant_usage(message)
   if not message or message.role ~= "assistant"
       or message.stopReason == "aborted" or message.stopReason == "error" then
@@ -32,6 +50,8 @@ local function valid_assistant_usage(message)
   return nil
 end
 
+---@param session Neoagent.Session
+---@return boolean
 local function historical_usage_is_current(session)
   local path = session:path()
   if not path then return true end
@@ -41,16 +61,22 @@ local function historical_usage_is_current(session)
   end
   if not compaction_index then return true end
   for index = compaction_index + 1, #path do
-    local entry = path[index]
+    local entry = assert(path[index])
     if entry.type == "message" and valid_assistant_usage(entry.message) ~= nil then return true end
   end
   return false
 end
 
+---@param messages Neoagent.Message[]
+---@return integer
 local function estimate_projected(messages)
   return estimate_messages(messages, 1)
 end
 
+---@param session Neoagent.Session
+---@param messages Neoagent.Message[]
+---@param live_usage? Neoagent.LiveContextUsage
+---@return number
 function M.tokens(session, messages, live_usage)
   if live_usage then
     return live_usage.tokens + estimate_messages(messages, live_usage.message_count + 1)
@@ -64,6 +90,10 @@ function M.tokens(session, messages, live_usage)
   return estimate_projected(messages)
 end
 
+---@param session? Neoagent.Session
+---@param model? Neoagent.Model
+---@param live_usage? Neoagent.LiveContextUsage
+---@return Neoagent.ContextDisplay|false
 function M.display(session, model, live_usage)
   local total = model and model.context_window
   if type(total) ~= "number" or total <= 0 or not session then return false end

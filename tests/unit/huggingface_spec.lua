@@ -1,10 +1,14 @@
+local assert = require("luassert")
 local huggingface = require("neoagent.providers.llama.huggingface")
 local fake_transport = require("tests.helpers.fake_transport")
 
 describe("neoagent Hugging Face client", function()
+  ---@generic T, E
+  ---@param run Neoagent.Run<T, E>
+  ---@return Neoagent.RunResult<T>
   local function wait(run)
     assert(vim.wait(3000, function() return run:is_done() end))
-    return run:result()
+    return (assert(run:result()))
   end
 
   it("discovers HF_TOKEN from environment and token files", function()
@@ -32,7 +36,7 @@ describe("neoagent Hugging Face client", function()
     local value = huggingface.new({ transport = transport })
     local result = wait(value:search("a b"))
     assert.are.same({ { id = "owner/repo", downloads = 42 } }, result)
-    assert.matches("search=a%%20b", transport.fetch_requests[1].url)
+    assert.matches("search=a%%20b", assert(transport.fetch_requests[1]).url)
   end)
 
   it("parses model details and quantization sizes", function()
@@ -62,7 +66,7 @@ describe("neoagent Hugging Face client", function()
     local value = huggingface.new({ transport = transport })
     local result = wait(value:search("missing"))
     assert.is_false(result.ok)
-    assert.matches("missing model", result.error.message)
+    assert.matches("missing model", assert(result.error).message)
   end)
 
   it("reports invalid search and details payloads", function()
@@ -73,12 +77,12 @@ describe("neoagent Hugging Face client", function()
     local value = huggingface.new({ transport = transport })
     local result = wait(value:search("bad"))
     assert.is_false(result.ok)
-    assert.matches("invalid search results", result.error.message)
+    assert.matches("invalid search results", assert(result.error).message)
 
     transport.fetches = { { body = vim.json.encode("bad") } }
-    result = wait(value:details("owner/repo"))
-    assert.is_false(result.ok)
-    assert.matches("invalid model details", result.error.message)
+    local details = wait(value:details("owner/repo"))
+    assert.is_false(details.ok)
+    assert.matches("invalid model details", assert(details.error).message)
   end)
 
   it("sorts quantizations with recommended and incomplete sizes", function()

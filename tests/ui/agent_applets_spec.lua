@@ -1,3 +1,4 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fake_model = require("tests.helpers.fake_model")
 local presentation = require("tests.helpers.presentation")
@@ -5,8 +6,10 @@ local switcher_ui = require("tests.helpers.switcher")
 local view_handles = require("tests.helpers.view_handles")
 
 describe("neoagent Agent-owned Applets", function()
-  local neoagent
+  local neoagent = require("neoagent")
+  ---@type Neoagent.NeoagentApplet
   local applet
+  ---@type string[]
   local paths
 
   before_each(function()
@@ -22,7 +25,10 @@ describe("neoagent Agent-owned Applets", function()
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
   end)
 
+  ---@param model Neoagent.Model
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
   local function configuration(model, extra)
+    ---@type Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>
     local options = {
       workspace_trust = false,
       default_registry = false,
@@ -43,24 +49,40 @@ describe("neoagent Agent-owned Applets", function()
       skills = false,
       ui = { position = "center" },
     }
-    return vim.tbl_deep_extend("force", options, extra or {})
+    return vim.tbl_deep_extend("force", options, extra or {}) --[[@as Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>]]
   end
 
+  ---@param model Neoagent.Model
+  ---@param extra Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
   local function setup(model, extra)
     applet = neoagent.setup(configuration(model, extra))
     return applet
   end
 
+  ---@param keys Neoagent.UIMapping
   local function feed(keys)
+    keys = type(keys) == "table" and keys[1] or keys
+    assert(type(keys) == "string")
     vim.api.nvim_feedkeys(
       vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
   end
 
+  ---@param value string
   local function submit(value)
     local view = assert(applet:view())
     view:set_input(value)
     view:focus_input()
     feed(view.config.mappings.submit)
+  end
+
+  ---@generic T
+  ---@param values T[]
+  ---@param predicate fun(value: T): unknown
+  ---@return T?
+  local function find(values, predicate)
+    for _, value in ipairs(values) do
+      if predicate(value) then return value end
+    end
   end
 
   it("keeps setup and the initial toggle Agent-free until submission", function()
@@ -86,15 +108,15 @@ describe("neoagent Agent-owned Applets", function()
     submit("first message")
     assert(vim.wait(1000, function()
       return #applet:agents() == 1
-        and applet:agents()[1]:get_session() ~= nil
+        and assert(applet:agents()[1]):get_session() ~= nil
     end, 5))
     local agent = applet:agents()[1]
     assert.are.equal(agent, applet:active_agent())
-    assert.are.equal(draft, agent:applet())
-    assert.are.equal("neo", agent:profile_id())
-    assert.are.equal("Neo", agent:label())
+    assert.are.equal(draft, assert(agent):applet())
+    assert.are.equal("neo", assert(agent):profile_id())
+    assert.are.equal("Neo", assert(agent):label())
     assert(vim.wait(1000, function()
-      return not agent:is_running()
+      return not assert(agent):is_running()
     end, 5))
   end)
 
@@ -104,14 +126,14 @@ describe("neoagent Agent-owned Applets", function()
     } })
     setup(model)
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
-    local profile = applet:profile("neo")
+    local draft = assert(applet:foreground_applet())
+    local profile = assert(applet:profile("neo"))
     local create_agent = profile.create_agent
     local constructions = 0
     profile.create_agent = function(context)
       constructions = constructions + 1
       if constructions == 1 then
-        draft:view():_submit(draft:get_input())
+        assert(draft:view()):_submit(draft:get_input())
       end
       return create_agent(context)
     end
@@ -125,10 +147,11 @@ describe("neoagent Agent-owned Applets", function()
 
     assert.are.equal(1, #applet:agents())
     assert.are.equal(1, #model.requests)
-    assert.are.equal("first prompt", draft:agent():get_session():messages()[1].content)
+    assert.are.equal("first prompt", assert(assert(draft:agent()):get_session():messages()[1]).content)
   end)
 
   it("submits an unchanged first prompt once while acceptance is pending", function()
+    ---@type Neoagent.AwaitCallbacks<boolean>?
     local pending
     local model = fake_model.new({ {
       result = fake_model.assistant({ { type = "text", text = "created" } }),
@@ -143,21 +166,21 @@ describe("neoagent Agent-owned Applets", function()
       end,
     })
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
     submit("first prompt")
     assert(vim.wait(1000, function() return pending ~= nil end))
     local agent = assert(draft:agent())
     local view = draft:view()
-    assert.are.equal("first prompt", view:get_input())
+    assert.are.equal("first prompt", assert(view):get_input())
     assert.are.same({}, agent:get_session():messages())
 
-    for _ = 1, 3 do view:_submit(view:get_input()) end
+    for _ = 1, 3 do assert(view):_submit(assert(view):get_input()) end
 
     assert.are.same({}, agent:snapshot().context.steering)
-    assert.are.equal("first prompt", view:get_input())
-    pending.resolve(true)
+    assert.are.equal("first prompt", assert(view):get_input())
+    assert(pending).resolve(true)
     assert(vim.wait(1000, function() return not agent:is_running() end))
-    assert.are.equal("", view:get_input())
+    assert.are.equal("", assert(view):get_input())
     assert.are.equal(1, #model.requests)
     assert.are.same({ "user", "assistant" }, vim.tbl_map(function(message)
       return message.role
@@ -174,22 +197,23 @@ describe("neoagent Agent-owned Applets", function()
       enabled = true, directory = directory, workspace_settings = false,
     } })
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
     local view = draft:view()
     draft:input_history()
     local history = assert(draft.history_stores[draft.workspace_root])
-    local add = history.add
+    local add = assert(history).add
+    ---@type {input: string, messages: Neoagent.TranscriptMessage[], committed: Neoagent.ProjectionMessage[], steering?: string[]}?
     local observed
-    history.add = function(self, text)
+    assert(history).add = function(self, text)
       if not observed then
         local agent = assert(draft:agent())
         observed = {
-          input = view:get_input(),
-          messages = vim.deepcopy(view.messages),
+          input = assert(view):get_input(),
+          messages = vim.deepcopy(assert(view).messages),
           committed = agent:get_session():messages(),
         }
         -- A storage lock can process another Enter while saving history.
-        for _ = 1, 3 do view:_submit(view:get_input()) end
+        for _ = 1, 3 do assert(view):_submit(assert(view):get_input()) end
         observed.steering = agent:snapshot().context.steering
       end
       return add(self, text)
@@ -201,11 +225,11 @@ describe("neoagent Agent-owned Applets", function()
       return observed ~= nil and agent and not agent:is_running()
     end))
 
-    assert.are.equal("first prompt", observed.committed[1].content)
-    assert.are.equal("", observed.input)
-    assert.are.equal(1, #observed.messages)
-    assert.are.equal("first prompt", observed.messages[1].content)
-    assert.are.same({}, observed.steering)
+    assert.are.equal("first prompt", assert(assert(observed).committed[1]).content)
+    assert.are.equal("", assert(observed).input)
+    assert.are.equal(1, #assert(observed).messages)
+    assert.are.equal("first prompt", assert(assert(observed).messages[1]).content)
+    assert.are.same({}, assert(observed).steering)
     assert.are.equal(1, #model.requests)
   end)
 
@@ -239,14 +263,14 @@ describe("neoagent Agent-owned Applets", function()
 
     assert.are.same({}, applet:agents())
     assert.is_nil(draft:agent())
-    assert.is_nil(draft.ensure_agent)
+    assert.is_nil(rawget(draft, "ensure_agent"))
     assert(vim.wait(1000, function()
       return applet:provider_shell_open()
     end, 5))
     local shell = assert(applet:provider_shell())
     local provider = assert(shell:view():pane("provider")):native()
     assert.matches("Provider ready", table.concat(
-      vim.api.nvim_buf_get_lines(provider.buffer, 0, -1, false), "\n"))
+      vim.api.nvim_buf_get_lines((assert(provider.buffer)), 0, -1, false), "\n"))
     assert(applet:set_provider_shell(false))
 
     submit("bind provider controls")
@@ -271,8 +295,8 @@ describe("neoagent Agent-owned Applets", function()
       result = fake_model.assistant({ { type = "text", text = "created" } }),
     } }))
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
-    local profile = applet:profile("neo")
+    local draft = assert(applet:foreground_applet())
+    local profile = assert(applet:profile("neo"))
     local create_agent = profile.create_agent
     profile.create_agent = function() error("construction failed") end
 
@@ -286,8 +310,8 @@ describe("neoagent Agent-owned Applets", function()
     assert(vim.wait(1000, function()
       return #applet:agents() == 1
     end, 5))
-    assert.are.equal("Neo", applet:agents()[1]:label())
-    assert.are.equal(draft, applet:agents()[1]:applet())
+    assert.are.equal("Neo", assert(applet:agents()[1]):label())
+    assert.are.equal(draft, assert(applet:agents()[1]):applet())
   end)
 
   it("rolls back a provisional Agent when work fails before acceptance", function()
@@ -295,7 +319,7 @@ describe("neoagent Agent-owned Applets", function()
       interaction = function() error("interaction failed before acceptance") end,
     })
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
 
     submit("retained until durable acceptance")
 
@@ -311,12 +335,13 @@ describe("neoagent Agent-owned Applets", function()
       result = fake_model.assistant({ { type = "text", text = "created" } }),
     } }))
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
     local view = draft:view()
     local presenter = draft:presenter()
     local dialogs = draft:dialogs()
-    local profile = applet:profile("neo")
+    local profile = assert(applet:profile("neo"))
     local create_agent = profile.create_agent
+    ---@type Neoagent.Agent?
     local rejected
     profile.create_agent = function(context)
       rejected = create_agent(context)
@@ -329,7 +354,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(vim.wait(1000, function()
       return rejected ~= nil and rejected:is_destroyed()
     end))
-    assert.is_true(rejected:is_destroyed())
+    assert.is_true(assert(rejected):is_destroyed())
     assert.is_false(draft:is_destroyed())
     assert.is_nil(draft:agent())
     assert.are.equal(view, draft:view())
@@ -341,26 +366,27 @@ describe("neoagent Agent-owned Applets", function()
     profile.create_agent = create_agent
     submit("retained through bind")
     assert(vim.wait(1000, function()
-      local accepted = applet:agents()[1]
+      local accepted = assert(applet:agents()[1])
       local record = accepted and applet:record(accepted)
       return #applet:agents() == 1
         and record and record.draft_rollback == nil
     end, 5))
-    local accepted = applet:agents()[1]
-    assert.are.equal(draft, accepted:applet())
-    assert.is_nil(applet:record(accepted).draft_rollback)
+    local accepted = assert(applet:agents()[1])
+    assert.are.equal(draft, assert(accepted):applet())
+    assert.is_nil(assert(applet:record(accepted)).draft_rollback)
     assert.is_nil(draft.binding_restore)
   end)
 
   it("retains draft ownership when activity registration rejects construction", function()
     setup(fake_model.new({}))
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
     local view = draft:view()
     local presenter = draft:presenter()
     local dialogs = draft:dialogs()
-    local profile = applet:profile("neo")
+    local profile = assert(applet:profile("neo"))
     local create_agent = profile.create_agent
+    ---@type Neoagent.Agent?
     local rejected
     profile.create_agent = function(context)
       rejected = create_agent(context)
@@ -374,8 +400,8 @@ describe("neoagent Agent-owned Applets", function()
     local run, err = draft:send("retained registration draft")
 
     assert.is_nil(run)
-    assert.matches("activity registration failed", err.message)
-    assert.is_true(rejected:is_destroyed())
+    assert.matches("activity registration failed", assert(err).message)
+    assert.is_true(assert(rejected):is_destroyed())
     assert.is_false(draft:is_destroyed())
     assert.is_nil(draft:agent())
     assert.are.equal(view, draft:view())
@@ -386,18 +412,16 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("restores the exact draft when initial Agent preparation fails", function()
-    setup(setmetatable({ api = "fake", provider = "fake", id = "test" }, {
-      __index = {
-        stream = function() error("model construction failed") end,
-      },
-    }))
-    local profile = applet:profile("neo")
+    local model = fake_model.new({})
+    function model:stream() error("model construction failed") end
+    setup(model)
+    local profile = assert(applet:profile("neo"))
     local factory = profile.config._apis["fake-api"]
     profile.config._apis["fake-api"] = function()
       error("model construction failed")
     end
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
 
     submit("retry me")
     assert(vim.wait(1000, function()
@@ -412,7 +436,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(vim.wait(1000, function()
       return #applet:agents() == 1
     end, 5))
-    assert.are.equal(draft, applet:agents()[1]:applet())
+    assert.are.equal(draft, assert(applet:agents()[1]):applet())
   end)
 
   it("commits an unbound window position into the constructed Agent", function()
@@ -420,7 +444,7 @@ describe("neoagent Agent-owned Applets", function()
       result = fake_model.assistant({ { type = "text", text = "created" } }),
     } }))
     assert(applet:toggle())
-    local draft = applet:foreground_applet()
+    local draft = assert(applet:foreground_applet())
     assert.are.equal("left", applet:set_position("left"))
     assert.are.equal("left", draft.position)
 
@@ -429,9 +453,9 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
     assert.are.equal("left", draft.position)
-    assert.are.equal("left", draft:view().position)
+    assert.are.equal("left", assert(draft:view()).position)
     assert.are.equal("left", agent:snapshot().context.position)
   end)
 
@@ -513,7 +537,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same({ provider = "fake", model = "other" },
       applet:set_model("fake", "other"))
     assert.are.same({ provider = "fake", model = "test" },
-      assert(settings:load()).agents.neo.default_model)
+      assert(assert(settings:load()).agents.neo).default_model)
     assert.are.same({}, applet:agents())
 
     submit("remember this model")
@@ -524,9 +548,9 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
     local agent = assert(applet:active_agent())
     assert.are.same({ provider = "fake", model = "other" },
-      assert(settings:load()).agents.neo.default_model)
+      assert(assert(settings:load()).agents.neo).default_model)
     assert.are.same({ provider = "fake", model = "other" },
-      agent:get_session():state().model)
+      assert(agent:get_session():state()).model)
   end)
 
   it("persists an explicit draft thinking level on first acceptance", function()
@@ -558,7 +582,7 @@ describe("neoagent Agent-owned Applets", function()
 
     assert.are.equal("xhigh", applet:set_thinking_level("xhigh"))
     assert.are.equal("medium",
-      assert(settings:load()).agents.neo.default_thinking_level)
+      assert(assert(settings:load()).agents.neo).default_thinking_level)
 
     submit("remember this thinking level")
 
@@ -567,13 +591,13 @@ describe("neoagent Agent-owned Applets", function()
       return agent and not agent:is_running()
     end, 5))
     local agent = assert(applet:active_agent())
-    assert.are.equal("xhigh", agent:get_session():state().thinking_level)
+    assert.are.equal("xhigh", assert(agent:get_session():state()).thinking_level)
     local stored = assert(require("neoagent.storage").open(
-      agent:get_session():metadata().path))
+      (assert(assert(agent:get_session():metadata()).path))))
     assert.are.equal("xhigh", stored:state().thinking_level)
-    assert.are.equal("xhigh", stored:entries()[1].request.thinkingLevel)
+    assert.are.equal("xhigh", assert(assert(stored:entries()[1]).request).thinkingLevel)
     assert.are.equal("xhigh",
-      assert(settings:load()).agents.neo.default_thinking_level)
+      assert(assert(settings:load()).agents.neo).default_thinking_level)
   end)
 
   it("restores workspace preferences into the first lazy Profile draft", function()
@@ -611,8 +635,8 @@ describe("neoagent Agent-owned Applets", function()
     local draft = assert(applet:foreground_applet())
     assert.are.same({}, applet:agents())
     assert.are.equal("fake/remembered", assert(applet:view()).context.model)
-    assert.are.equal("high", applet:view().context.thinking)
-    assert.are.equal("left", applet:view().position)
+    assert.are.equal("high", assert(applet:view()).context.thinking)
+    assert.are.equal("left", assert(applet:view()).position)
     assert.are.same({
       default_model = { provider = "fake", model = "remembered" },
       default_thinking_level = "high",
@@ -642,6 +666,7 @@ describe("neoagent Agent-owned Applets", function()
         default_model = { provider = "", model = "bad\nmodel" },
       } },
     }))
+    ---@type [string, integer?][]
     local notifications = {}
     local original_notify = vim.notify
     vim.notify = function(message, level)
@@ -661,7 +686,7 @@ describe("neoagent Agent-owned Applets", function()
 
     assert(ok, err)
     assert.are.equal("fake/test", assert(applet:view()).context.model)
-    local warning = assert(vim.iter(notifications):find(function(entry)
+    local warning = assert(find(notifications, function(entry)
       return entry[1]:find("workspace default_model is invalid", 1, true)
     end))
     assert.are.equal(vim.log.levels.WARN, warning[2])
@@ -677,6 +702,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(settings:write({ controllers = { Neo = {
       default_model = { provider = "fake", model = "obsolete" },
     } } }))
+    ---@type [string, integer?][]
     local notifications = {}
     local original_notify = vim.notify
     vim.notify = function(message, level)
@@ -697,7 +723,7 @@ describe("neoagent Agent-owned Applets", function()
 
     assert(ok, err)
     assert.are.equal("fake/test", assert(applet:view()).context.model)
-    local warning = assert(vim.iter(notifications):find(function(entry)
+    local warning = assert(find(notifications, function(entry)
       return entry[1]:find(settings.settings_path, 1, true) ~= nil
     end))
     assert.matches("unsupported workspace setting", warning[1])
@@ -715,6 +741,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(settings:write({}))
     assert(require("neoagent.fs").write_all(
       settings.settings_path, "{]", "w", 384))
+    ---@type [string, integer?][]
     local notifications = {}
     local original_notify = vim.notify
     vim.notify = function(message, level)
@@ -735,7 +762,7 @@ describe("neoagent Agent-owned Applets", function()
 
     assert(ok, err)
     assert.are.equal("fake/test", assert(applet:view()).context.model)
-    local warning = assert(vim.iter(notifications):find(function(entry)
+    local warning = assert(find(notifications, function(entry)
       return entry[1]:find(settings.settings_path, 1, true) ~= nil
     end))
     assert.matches("Invalid workspace settings", warning[1])
@@ -766,10 +793,10 @@ describe("neoagent Agent-owned Applets", function()
       applet:available_thinking_levels())
     local missing, missing_err = applet:set_model("fake", "missing")
     assert.is_nil(missing)
-    assert.matches("Unknown model: fake/missing", missing_err.message)
+    assert.matches("Unknown model: fake/missing", assert(missing_err).message)
     local unsupported, unsupported_err = applet:set_thinking_level("low")
     assert.is_nil(unsupported)
-    assert.matches("is not supported by fake/other", unsupported_err.message)
+    assert.matches("is not supported by fake/other", assert(unsupported_err).message)
     assert.are.equal("high", applet:cycle_thinking_level())
 
     local draft = assert(applet:retained_draft("neo"))
@@ -778,8 +805,8 @@ describe("neoagent Agent-owned Applets", function()
       default_thinking_level = "high",
       ui = { position = "left" },
     }, assert(applet:get_draft_options(draft)))
-    assert.are.equal("fake/other", draft:view().context.model)
-    assert.are.equal("high", draft:view().context.thinking)
+    assert.are.equal("fake/other", assert(draft:view()).context.model)
+    assert.are.equal("high", assert(draft:view()).context.thinking)
     assert.are.same({}, applet:agents())
   end)
 
@@ -789,12 +816,13 @@ describe("neoagent Agent-owned Applets", function()
     } }))
 
     local run = assert(applet:send("direct first message"))
+    assert(type(run) == "table")
 
     assert(vim.wait(1000, function()
       return run:is_done() and #applet:agents() == 1
     end, 5))
     assert.are.equal("direct first message",
-      applet:agents()[1]:get_session():messages()[1].content)
+      assert(assert(applet:agents()[1]):get_session():messages()[1]).content)
   end)
 
   it("selects a model into an unbound Profile draft", function()
@@ -807,8 +835,10 @@ describe("neoagent Agent-owned Applets", function()
     assert(applet:select_model())
     assert(applet:open())
     local _, request = presentation.active(applet)
+    ---@type string?
     local selected
-    for _, item in ipairs(request.items) do
+    assert(request.kind == "select")
+    for _, item in ipairs(assert(request.items)) do
       if item.label == "fake/other" then selected = item.id break end
     end
     assert(selected)
@@ -820,7 +850,7 @@ describe("neoagent Agent-owned Applets", function()
       return options and options.default_model
         and options.default_model.model == "other"
     end, 5))
-    assert.are.equal("fake/other", draft:view().context.model)
+    assert.are.equal("fake/other", assert(draft:view()).context.model)
     assert.are.same({}, applet:agents())
   end)
 
@@ -853,18 +883,18 @@ describe("neoagent Agent-owned Applets", function()
 
     assert(draft:select_input_history())
     local _, history_request = presentation.active(applet)
-    presentation.choose(applet, history_request.items[1].id)
+    presentation.choose(applet, assert(assert(history_request.items)[1]).id)
     assert(vim.wait(1000, function()
       return draft:get_input() == "earlier prompt"
     end, 5))
 
     assert(applet:resume())
     local _, resume_request = presentation.active(applet)
-    presentation.choose(applet, resume_request.items[1].id)
+    presentation.choose(applet, assert(assert(resume_request.items)[1]).id)
     assert(vim.wait(1000, function()
       local agent = applet:active_agent()
       return agent and agent:get_session()
-        and agent:get_session():messages()[1].content == "stored"
+        and assert(agent:get_session():messages()[1]).content == "stored"
     end, 5))
     assert.is_true(applet:is_open())
   end)
@@ -884,24 +914,26 @@ describe("neoagent Agent-owned Applets", function()
       persistence = { enabled = true, directory = directory },
     })
     assert(applet:new("chat"))
-    applet:profile("neo").label = "Renamed Neo"
+    assert(applet:profile("neo")).label = "Renamed Neo"
 
-    local first = assert(applet:resume(session:metadata().path))
+    local first = assert(applet:resume(assert(session:metadata()).path))
+    assert(type(first) == "table")
 
     assert.are.equal("neo", first:profile_id())
     assert.are.equal("Renamed Neo", first:label())
     assert.are.equal(session:id(), first:get_session():id())
     assert.are.equal(1, #applet:agents())
-    first:applet():close()
+    assert(first:applet()):close()
 
-    local duplicate = assert(applet:resume(session:metadata().path))
+    local duplicate = assert(applet:resume(assert(session:metadata()).path))
 
     assert.are.equal(first, duplicate)
     assert.are.equal(1, #applet:agents())
     assert.are.equal(first, applet:active_agent())
 
     assert.is_true(applet:destroy_agent(first))
-    local resumed = assert(applet:resume(session:metadata().path))
+    local resumed = assert(applet:resume(assert(session:metadata()).path))
+    assert(type(resumed) == "table")
     assert.are_not.equal(first, resumed)
     assert.are.equal(session:id(), resumed:get_session():id())
     assert.are.equal(1, #applet:agents())
@@ -934,14 +966,14 @@ describe("neoagent Agent-owned Applets", function()
 
     local direct, direct_err = applet:resume(unassigned:metadata().path)
     assert.is_nil(direct)
-    assert.are.equal("profile", direct_err.kind)
-    direct, direct_err = applet:resume(unavailable:metadata().path)
+    assert.are.equal("profile", assert(direct_err).kind)
+    direct, direct_err = applet:resume(assert(unavailable:metadata()).path)
     assert.is_nil(direct)
-    assert.are.equal("profile", direct_err.kind)
-    assert.matches("removed%-profile", direct_err.message)
+    assert.are.equal("profile", assert(direct_err).kind)
+    assert.matches("removed%-profile", assert(direct_err).message)
     assert.are.same({}, applet:agents())
 
-    assert.is_nil(applet:resume())
+    assert.is_nil((applet:resume()))
     assert.are.same({}, applet:agents())
     assert.are.equal(unassigned_before,
       assert(require("neoagent.fs").read(unassigned:metadata().path)))
@@ -978,35 +1010,35 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local source = applet:active_agent()
-    local source_snapshot = assert(source:get_session():snapshot())
+    local source = assert(applet:active_agent())
+    local source_snapshot = assert(assert(source):get_session():snapshot())
 
     assert(applet:copy_session())
     local _, request = presentation.active(applet)
-    assert.are.equal("profile:neo", request.items[1].id)
+    assert.are.equal("profile:neo", assert(assert(request.items)[1]).id)
     presentation.choose(applet, "profile:neo")
     assert(vim.wait(1000, function() return #applet:agents() == 2 end, 5))
-    local duplicate = applet:active_agent()
+    local duplicate = assert(applet:active_agent())
     assert.are.equal("neo", duplicate:profile_id())
     assert.are.equal(models.selected, duplicate:get_model())
-    assert.are_not.equal(source:get_session():id(), duplicate:get_session():id())
+    assert.are_not.equal(assert(source):get_session():id(), duplicate:get_session():id())
     assert.are.same(source_snapshot.entries, duplicate:get_session():entries())
     assert.are.equal(source_snapshot.leaf_id, duplicate:get_session():leaf_id())
-    assert.are.same(source_snapshot, source:get_session():snapshot())
-    assert.are.equal(source:get_session():id(),
-      duplicate:get_session():metadata().data.neoagent.derivation.sourceSessionId)
+    assert.are.same(source_snapshot, assert(source):get_session():snapshot())
+    assert.are.equal(assert(source):get_session():id(),
+      assert(assert(assert(duplicate:get_session():metadata()).data).neoagent.derivation).sourceSessionId)
 
     assert(applet:select(source))
     assert(applet:copy_session())
     _, request = presentation.active(applet)
     presentation.choose(applet, "profile:chat")
     assert(vim.wait(1000, function() return #applet:agents() == 3 end, 5))
-    local chat = applet:active_agent()
+    local chat = assert(applet:active_agent())
     assert.are.equal("chat", chat:profile_id())
     assert.are.equal(models.default, chat:get_model())
-    assert.are.equal("selected", chat:get_session():state().model.model)
+    assert.are.equal("selected", assert(assert(chat:get_session():state()).model).model)
     assert.are.same(source_snapshot.entries, chat:get_session():entries())
-    assert.are.same(source_snapshot, source:get_session():snapshot())
+    assert.are.same(source_snapshot, assert(source):get_session():snapshot())
   end)
 
   it("enforces copy visibility, content, activity, and cancellation boundaries", function()
@@ -1025,8 +1057,10 @@ describe("neoagent Agent-owned Applets", function()
         workspace = vim.fn.getcwd(),
         persistence = { enabled = true, directory = directory },
       }))
+    ---@type Neoagent.AwaitCallbacks<string>?
     local pending
-    local model = { api = "fake", provider = "fake", id = "test" }
+    local model = fake_model.new({})
+    model.id = "test"
     function model:stream(opts)
       return async.run(function()
         local text = async.await(function(done)
@@ -1047,20 +1081,21 @@ describe("neoagent Agent-owned Applets", function()
 
     local copied, err = applet:copy_session()
     assert.is_nil(copied)
-    assert.are.equal("session", err.kind)
-    assert.matches("bound Agent", err.message)
+    assert.are.equal("session", assert(err).kind)
+    assert.matches("bound Agent", assert(err).message)
 
-    local source = assert(applet:resume(empty:metadata().path))
+    local source = assert(applet:resume(assert(empty:metadata()).path))
+    assert(type(source) == "table")
     copied, err = applet:copy_session()
     assert.is_nil(copied)
-    assert.matches("accepted user message", err.message)
+    assert.matches("accepted user message", assert(err).message)
 
     submit("running source")
     assert(vim.wait(1000, function() return pending ~= nil end, 5))
     copied, err = applet:copy_session()
     assert.is_nil(copied)
-    assert.matches("running", err.message)
-    pending.resolve("finished")
+    assert.matches("running", assert(err).message)
+    assert(pending).resolve("finished")
     assert(vim.wait(1000, function() return not source:is_running() end, 5))
     local before = assert(source:get_session():snapshot())
 
@@ -1075,15 +1110,17 @@ describe("neoagent Agent-owned Applets", function()
     pending = nil
     assert(applet:copy_session())
     local active_run = assert(source:send("run during Profile selection"))
+    assert(type(active_run) == "table")
     assert(vim.wait(1000, function() return pending ~= nil end, 5))
     local forked, fork_err = applet:select_fork()
     assert.is_nil(forked)
-    assert.matches("running", fork_err.message)
+    assert.matches("running", assert(fork_err).message)
     presentation.choose(applet, "profile:neo")
     assert(vim.wait(1000, function()
       return source:presenter():snapshot().active == nil
     end, 5))
-    pending.resolve("finished again")
+    ---@cast pending Neoagent.AwaitCallbacks<string>
+    assert(pending).resolve("finished again")
     assert(vim.wait(1000, function()
       return active_run:is_done() and not source:is_running()
     end, 5))
@@ -1102,7 +1139,7 @@ describe("neoagent Agent-owned Applets", function()
     assert(applet:close())
     copied, err = applet:copy_session()
     assert.is_nil(copied)
-    assert.matches("visible bound Agent", err.message)
+    assert.matches("visible bound Agent", assert(err).message)
   end)
 
   it("uses target Profile defaults on the next turn of a cross-Profile copy", function()
@@ -1154,8 +1191,8 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local source = applet:active_agent()
-    local before = assert(source:get_session():snapshot())
+    local source = assert(applet:active_agent())
+    local before = assert(assert(source):get_session():snapshot())
     local settings_before = assert(settings:load())
 
     assert(applet:copy_session())
@@ -1165,13 +1202,12 @@ describe("neoagent Agent-owned Applets", function()
       return #applet:agents() == 2 and agent
         and agent:profile_id() == "chat"
     end, 5))
-    local chat = applet:active_agent()
+    local chat = assert(applet:active_agent())
     assert.are.equal(models.target, chat:get_model())
-    assert.are.equal("source", chat:get_session():state().model.model)
+    assert.are.equal("source", assert(assert(chat:get_session():state()).model).model)
     assert.are.same(settings_before, assert(settings:load()))
 
-    local source_user = assert(vim.iter(chat:get_session():entries())
-      :find(function(entry)
+    local source_user = assert(find(chat:get_session():entries(), function(entry)
         return entry.type == "message" and entry.message.role == "user"
       end))
     assert(chat:branch(source_user.id))
@@ -1179,11 +1215,11 @@ describe("neoagent Agent-owned Applets", function()
 
     submit("target turn")
     assert(vim.wait(1000, function() return not chat:is_running() end, 5))
-    assert.are.equal("target", chat:get_session():state().model.model)
+    assert.are.equal("target", assert(assert(chat:get_session():state()).model).model)
     assert.are.equal(1, #models.target.requests)
     assert.are.equal("target turn",
-      models.target.requests[1].messages[#models.target.requests[1].messages].content)
-    assert.are.same(before, source:get_session():snapshot())
+      assert(assert(models.target.requests[1]).messages[#assert(models.target.requests[1]).messages]).content)
+    assert.are.same(before, assert(source):get_session():snapshot())
   end)
 
   it("reports a durable Session when its derived Agent cannot be built", function()
@@ -1202,47 +1238,50 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local source = applet:active_agent()
-    local source_snapshot = assert(source:get_session():snapshot())
-    local profile = applet:profile("neo")
+    local source = assert(applet:active_agent())
+    local source_snapshot = assert(assert(source):get_session():snapshot())
+    local profile = assert(applet:profile("neo"))
     local create_applet = profile.create_applet
     profile.create_applet = function()
       error("derived draft construction failed")
     end
 
     local missing_draft, draft_err = applet:fork()
+    ---@cast draft_err Neoagent.PublishedSessionError
 
     profile.create_applet = create_applet
     assert.is_nil(missing_draft)
-    assert.is_true(draft_err.session_created)
-    assert.is_string(draft_err.session_path)
-    assert.matches("derived draft construction failed", draft_err.detail)
-    assert(vim.uv.fs_stat(draft_err.session_path))
-    assert(applet:resume(draft_err.session_path))
+    assert.is_true(assert(draft_err).session_created)
+    assert.is_string(assert(draft_err).session_path)
+    assert.matches("derived draft construction failed", tostring(assert(draft_err).detail))
+    assert(vim.uv.fs_stat(assert(draft_err).session_path))
+    assert(applet:resume(assert(draft_err).session_path))
     assert.are.equal(source, applet:select(source))
 
     local create_agent = profile.create_agent
     profile.create_agent = function() error("derived construction failed") end
 
     local derived, err = applet:fork()
+    ---@cast err Neoagent.PublishedSessionError
 
     profile.create_agent = create_agent
     assert.is_nil(derived)
-    assert.is_string(err.session_path)
-    assert.is_true(err.session_created)
-    assert.is_truthy(err.message:find(err.session_path, 1, true))
-    assert(vim.uv.fs_stat(err.session_path))
-    assert.are.same(source_snapshot, source:get_session():snapshot())
+    assert.is_string(assert(err).session_path)
+    assert.is_true(assert(err).session_created)
+    assert.is_truthy((assert(assert(err).message):find(assert(err).session_path, 1, true)))
+    assert(vim.uv.fs_stat(assert(err).session_path))
+    assert.are.same(source_snapshot, assert(source):get_session():snapshot())
     local listed = require("neoagent.profile_sessions").list({
       enabled = true,
       directory = directory,
     }, vim.fn.getcwd())
-    assert.is_true(vim.iter(listed):any(function(item)
-      return item.path == err.session_path
+    assert.is_not_nil(find(listed, function(item)
+      return item.path == assert(err).session_path
     end))
 
-    local resumed = assert(applet:resume(err.session_path))
-    assert.are_not.equal(source:get_session():id(), resumed:get_session():id())
+    local resumed = assert(applet:resume(assert(err).session_path))
+    assert(type(resumed) == "table")
+    assert.are_not.equal(assert(source):get_session():id(), resumed:get_session():id())
   end)
 
   it("reports and reuses a derived Agent after activation failure", function()
@@ -1264,8 +1303,9 @@ describe("neoagent Agent-owned Applets", function()
     end, 5))
     local source = assert(applet:active_agent())
     local activate = applet._activate
+    ---@type Neoagent.Agent?
     local registered
-    applet._activate = function(self, surface, agent)
+    function applet:_activate(surface, agent)
       if agent and agent ~= source then
         registered = agent
         error("derived activation exploded")
@@ -1274,18 +1314,20 @@ describe("neoagent Agent-owned Applets", function()
     end
 
     local called, derived, err = pcall(applet.fork, applet)
+    ---@cast err Neoagent.PublishedSessionError
     applet._activate = activate
 
     assert.is_true(called)
     assert.is_nil(derived)
-    assert.matches("derived activation exploded", err.detail)
-    assert.is_true(err.session_created)
-    assert.is_string(err.session_path)
-    assert.are.equal(registered:id(), err.agent_id)
-    assert.is_false(registered:is_destroyed())
-    assert.are.equal(registered, applet:record(registered).agent)
+    assert.matches("derived activation exploded", tostring(assert(err).detail))
+    assert.is_true(assert(err).session_created)
+    assert.is_string(assert(err).session_path)
+    assert.are.equal(assert(registered):id(), assert(err).agent_id)
+    assert.is_false(assert(registered):is_destroyed())
+    assert.are.equal(registered, assert(applet:record((assert(registered)))).agent)
 
-    local resumed = assert(applet:resume(err.session_path))
+    local resumed = assert(applet:resume(assert(err).session_path))
+    assert(type(resumed) == "table")
     assert.are.equal(registered, resumed)
     assert.are.equal(registered, applet:active_agent())
   end)
@@ -1313,15 +1355,15 @@ describe("neoagent Agent-owned Applets", function()
   it("keeps sandbox controls scoped to the selected Profile draft", function()
     setup(fake_model.new({}))
     assert(applet:new("chat"))
-    local chat = applet:foreground_applet()
+    local chat = assert(applet:foreground_applet())
     assert.are.equal("chat", chat.profile)
 
     local status, err = neoagent.set_sandbox_enabled(true)
 
     assert.is_nil(status)
-    assert.are.equal("sandbox", err.kind)
-    assert.is_false(applet:profile("chat").config.sandbox.enabled)
-    assert.is_false(applet:profile("neo").config.sandbox.enabled)
+    assert.are.equal("sandbox", assert(err).kind)
+    assert.is_false(assert(applet:profile("chat")).config.sandbox.enabled)
+    assert.is_false(assert(applet:profile("neo")).config.sandbox.enabled)
     assert.are.same({}, applet:agents())
   end)
 
@@ -1337,17 +1379,17 @@ describe("neoagent Agent-owned Applets", function()
       return #applet:agents() == 1
         and record and record.draft_rollback == nil
     end, 5))
-    local first = applet:agents()[1]
-    assert.is_true(applet:record(first).metadata.sandbox.status.enabled)
+    local first = assert(applet:agents()[1])
+    assert.is_true(assert(assert(applet:record(first)).metadata.sandbox).status.enabled)
 
     assert(applet:new("neo"))
     assert.is_false(neoagent.sandbox_info().enabled)
-    assert.is_false(applet:profile("neo").config.sandbox.enabled)
+    assert.is_false(assert(applet:profile("neo")).config.sandbox.enabled)
   end)
 
   it("inspects static sandbox state without allocating a draft", function()
     setup(fake_model.new({}))
-    local profile = applet:profile("neo")
+    local profile = assert(applet:profile("neo"))
     local create_applet = profile.create_applet
     local created = 0
     profile.create_applet = function(context)
@@ -1364,9 +1406,11 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("keeps independently subscribed Agents alive while selecting Applets", function()
+    ---@type Neoagent.AwaitCallbacks<string>?
     local pending
     local calls = 0
-    local model = { api = "fake", provider = "fake", id = "test" }
+    local model = fake_model.new({})
+    model.id = "test"
     function model:stream(opts)
       calls = calls + 1
       if calls == 1 then
@@ -1391,36 +1435,38 @@ describe("neoagent Agent-owned Applets", function()
     assert(applet:toggle())
     submit("alpha")
     assert(vim.wait(1000, function() return pending ~= nil end, 5))
-    local alpha = applet:active_agent()
+    local alpha = assert(applet:active_agent())
     local alpha_applet = alpha:applet()
 
     assert(applet:new("chat"))
     submit("beta")
     assert(vim.wait(1000, function() return #applet:agents() == 2 end, 5))
-    local chat = applet:active_agent()
+    local chat = assert(applet:active_agent())
     local chat_applet = chat:applet()
     assert.are_not.equal(alpha_applet, chat_applet)
-    assert.is_false(alpha_applet:is_open())
-    assert.is_true(chat_applet:is_open())
-    chat_applet:set_input("chat draft")
+    assert.is_false(assert(alpha_applet):is_open())
+    assert.is_true(assert(chat_applet):is_open())
+    assert(chat_applet):set_input("chat draft")
 
-    pending.resolve("alpha reply")
+    assert(pending).resolve("alpha reply")
     assert(vim.wait(1000, function() return not alpha:is_running() end, 5))
     assert.are.equal(chat, applet:active_agent())
-    assert.are.equal("chat draft", chat_applet:get_input())
+    assert.are.equal("chat draft", assert(chat_applet):get_input())
 
     assert.are.equal(alpha, applet:select(alpha:id()))
-    assert.is_true(alpha_applet:is_open())
-    assert.is_false(chat_applet:is_open())
+    assert.is_true(assert(alpha_applet):is_open())
+    assert.is_false(assert(chat_applet):is_open())
     assert.are.equal("alpha reply",
-      alpha:get_session():messages()[2].content[1].text)
+      assert(assert(assert(alpha:get_session():messages()[2]).content)[1]).text)
     assert.are.equal(chat, applet:select(chat:id()))
-    assert.are.equal("chat draft", chat_applet:get_input())
+    assert.are.equal("chat draft", assert(chat_applet):get_input())
   end)
 
   it("restores the last Agent with its completed background state", function()
+    ---@type Neoagent.AwaitCallbacks<string>?
     local pending
-    local model = { api = "fake", provider = "fake", id = "test" }
+    local model = fake_model.new({})
+    model.id = "test"
     function model:stream(opts)
       return async.run(function()
         local value = async.await(function(done)
@@ -1438,22 +1484,22 @@ describe("neoagent Agent-owned Applets", function()
     assert(applet:toggle())
     submit("continue closed")
     assert(vim.wait(1000, function() return pending ~= nil end, 5))
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
     local owned = agent:applet()
-    local view = owned:view()
+    local view = assert(owned):view()
 
-    assert.is_false(applet:toggle())
+    assert.is_false((applet:toggle()))
     assert.is_nil(applet:foreground_applet())
     assert.is_true(agent:is_running())
-    pending.resolve("completed while closed")
+    assert(pending).resolve("completed while closed")
     assert(vim.wait(1000, function() return not agent:is_running() end, 5))
 
-    assert.is_true(applet:toggle())
+    assert.is_true((applet:toggle()))
     assert.are.equal(agent, applet:active_agent())
     assert.are.equal(owned, applet:foreground_applet())
-    assert.are.equal(view, owned:view())
+    assert.are.equal(view, assert(owned):view())
     assert.matches("completed while closed", table.concat(
-      vim.api.nvim_buf_get_lines(view_handles.buffer(view, "transcript"), 0, -1, false), "\n"))
+      vim.api.nvim_buf_get_lines((assert(view_handles.buffer(view, "transcript"))), 0, -1, false), "\n"))
   end)
 
   it("restores the last Agent after an unbound draft closes", function()
@@ -1466,15 +1512,15 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
     local agent_applet = agent:applet()
 
     assert(applet:new("chat"))
-    local chat_draft = applet:foreground_applet()
+    local chat_draft = assert(applet:foreground_applet())
     chat_draft:set_input("retained Chat draft")
-    assert.is_true(applet:close())
+    assert.is_true((applet:close()))
 
-    assert.is_true(applet:toggle())
+    assert.is_true((applet:toggle()))
     assert.are.equal(agent, applet:active_agent())
     assert.are.equal(agent_applet,
       applet:foreground_applet())
@@ -1483,8 +1529,10 @@ describe("neoagent Agent-owned Applets", function()
   end)
 
   it("reconfigures idle ownership and rejects replacement during work", function()
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ModelResult>?
     local pending
-    local model = { api = "fake", provider = "fake", id = "test" }
+    local model = fake_model.new({})
+    model.id = "test"
     function model:stream(opts)
       return async.run(function()
         return async.await(function(done)
@@ -1502,7 +1550,7 @@ describe("neoagent Agent-owned Applets", function()
     submit("running")
     assert(vim.wait(1000, function() return pending ~= nil end, 5))
     local original = applet
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
 
     assert.has_error(function()
       neoagent.setup(configuration(fake_model.new({})))
@@ -1511,7 +1559,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.is_false(original:is_destroyed())
     assert.is_false(agent:is_destroyed())
 
-    pending.resolve(fake_model.assistant({ { type = "text", text = "done" } }))
+    assert(pending).resolve(fake_model.assistant({ { type = "text", text = "done" } }))
     assert(vim.wait(1000, function() return not agent:is_running() end, 5))
     local replacement = neoagent.setup(configuration(fake_model.new({})))
     applet = replacement
@@ -1555,9 +1603,9 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local neo = applet:active_agent()
+    local neo = assert(applet:active_agent())
     assert(applet:new("chat"))
-    local foreground = applet:foreground_applet()
+    local foreground = assert(applet:foreground_applet())
 
     local selection = neo:presenter():select({
       prompt = "Background choice",
@@ -1567,17 +1615,19 @@ describe("neoagent Agent-owned Applets", function()
       return neo:activity().state == "waiting"
     end, 5))
     assert.are.equal(foreground, applet:foreground_applet())
-    assert.is_false(neo:applet():is_open())
+    assert.is_false(assert(neo:applet()):is_open())
     local request = assert(neo:presenter():snapshot().active)
     assert(neo:presenter():resolve(request.id, "continue"))
     assert(vim.wait(1000, function() return selection:is_done() end, 5))
-    assert.is_true(selection:result().ok)
+    assert.is_true(assert(selection:result()).ok)
     assert.are.equal("idle", neo:activity().state)
   end)
 
   it("selects New and live Agents through one activity-aware switcher", function()
+    ---@type Neoagent.AwaitCallbacks<string>?
     local pending
-    local model = { api = "fake", provider = "fake", id = "test" }
+    local model = fake_model.new({})
+    model.id = "test"
     function model:stream(opts)
       return async.run(function(run)
         local value = async.await(function(done)
@@ -1621,9 +1671,9 @@ describe("neoagent Agent-owned Applets", function()
       return table.concat(lines(), "\n"):find("Waiting", 1, true)
     end, 5))
     local waiting = table.concat(lines(), "\n")
-    assert.is_false(vim.wait(250, function()
+    assert.is_false((vim.wait(250, function()
       return table.concat(lines(), "\n") ~= waiting
-    end, 10))
+    end, 10)))
     local request = assert(neo:presenter():snapshot().active)
     assert(neo:presenter():resolve(request.id, "continue"))
     assert(vim.wait(1000, function()
@@ -1639,7 +1689,7 @@ describe("neoagent Agent-owned Applets", function()
       return not switcher_ui.is_open() and foreground
         and foreground.profile == "chat" and foreground:agent() == nil
     end, 5))
-    local chat_draft = applet:foreground_applet()
+    local chat_draft = assert(applet:foreground_applet())
 
     assert(applet:show_agents())
     switcher_ui.press("<C-c>")
@@ -1653,16 +1703,16 @@ describe("neoagent Agent-owned Applets", function()
       return applet:active_agent() == neo and not switcher_ui.is_open()
     end, 5))
 
-    pending.resolve("finished")
+    assert(pending).resolve("finished")
     assert(vim.wait(1000, function() return not neo:is_running() end, 5))
     assert(applet:show_agents())
     assert(vim.wait(1000, function()
       return table.concat(lines(), "\n"):find("Idle", 1, true)
     end, 5))
     local idle = table.concat(lines(), "\n")
-    assert.is_false(vim.wait(250, function()
+    assert.is_false((vim.wait(250, function()
       return table.concat(lines(), "\n") ~= idle
-    end, 10))
+    end, 10)))
     applet:close()
     assert.is_false(switcher_ui.is_open())
   end)
@@ -1677,8 +1727,8 @@ describe("neoagent Agent-owned Applets", function()
 
     assert(vim.wait(1000, switcher_ui.is_open, 5))
     local rendered = table.concat(switcher_ui.lines(), "\n")
-    assert.is_not_nil(rendered:find("New session - Neo", 1, true))
-    assert.is_not_nil(rendered:find("New session - Chat", 1, true))
+    assert.is_not_nil((rendered:find("New session - Neo", 1, true)))
+    assert.is_not_nil((rendered:find("New session - Chat", 1, true)))
   end)
 
   it("contains a switcher choice invalidated before scheduled dispatch", function()
@@ -1691,10 +1741,11 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
     assert(applet:show_agents())
     switcher_ui.set_filter("Neo Idle")
 
+    ---@type [string, integer?][]
     local notifications = {}
     local original_notify = vim.notify
     vim.notify = function(message, level)
@@ -1719,7 +1770,7 @@ describe("neoagent Agent-owned Applets", function()
       result = fake_model.assistant({ { type = "text", text = "done" } }),
     } }))
     assert(applet:toggle())
-    local first_draft = applet:foreground_applet()
+    local first_draft = assert(applet:foreground_applet())
     first_draft:destroy()
     assert.is_nil(applet:foreground_applet())
     assert(applet:new("neo"))
@@ -1730,15 +1781,15 @@ describe("neoagent Agent-owned Applets", function()
       local agent = applet:active_agent()
       return agent and not agent:is_running()
     end, 5))
-    local agent = applet:active_agent()
+    local agent = assert(applet:active_agent())
     local owned = agent:applet()
     agent:destroy()
 
     assert.are.same({}, applet:agents())
     assert.is_nil(applet:active_agent())
     assert.is_nil(applet:default_agent())
-    assert.is_true(owned:is_destroyed())
-    assert.is_true(applet:toggle())
-    assert.is_nil(applet:foreground_applet():agent())
+    assert.is_true(assert(owned):is_destroyed())
+    assert.is_true((applet:toggle()))
+    assert.is_nil(assert(applet:foreground_applet()):agent())
   end)
 end)

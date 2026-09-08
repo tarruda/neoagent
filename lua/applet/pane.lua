@@ -4,34 +4,202 @@ local input = require("applet.pane.input")
 local Domain = require("applet.interaction_domain")
 local Theme = require("applet.theme")
 local util = require("applet.util")
+local applet_expect = util.expect
 local ImageSource = require("applet.image.source")
 local Scene = require("applet.pane.scene")
 local Base = require("applet.host.base")
 local Mode = require("applet.mode")
 
+---@class Applet.PaneError
+---@field pane string
+---@field phase string
+---@field generation integer
+---@field message string
+
+---@class Applet.PaneRenderEnvironment
+---@field extent Applet.PaneExtent
+---@field width integer
+---@field height? integer
+---@field focused boolean
+---@field theme_generation integer
+---@field layout_generation integer
+---@field images {status: Applet.ImageStatus, generation: integer}
+
+---@class Applet.PaneOptions<S>
+---@field key string
+---@field extent? Applet.PaneExtent
+---@field buffer_mode? 'managed'|'editable'
+---@field render? fun(state: S, env: Applet.PaneRenderEnvironment): Applet.Tree|Applet.Node
+---@field handlers? table<string, fun(event: Applet.ActionEvent<Applet.Pane<S>>): unknown>
+---@field theme? Applet.Theme|Applet.ThemeOptions
+---@field image_system? Applet.ImageSystem
+---@field frame_interval_ms? integer
+---@field on_error? fun(error: Applet.PaneError)
+
+---@class Applet.PaneInteraction<P>: Applet.InputInteraction<P>
+---@field scopes Applet.LayoutScope[]
+---@field revision? integer
+
+---@class Applet.PaneSurface<P>: Applet.InputSurface<P, Applet.PaneInteraction<P>>, Applet.ReconcileSurface
+---@field buffer integer
+---@field window? fun(): integer?
+---@field owns_buffer? boolean
+---@field domain? Applet.InteractionDomain
+---@field buffer_options? Applet.Options
+---@field window_options? Applet.Options
+---@field visible? fun(): boolean
+---@field on_commit? fun(info: Applet.PaneCommit)
+---@field chrome? Applet.WindowChrome
+
+---@class Applet.ConnectedPaneSurface<P>: Applet.PaneSurface<P>
+---@field buffer integer
+---@field window fun(): integer?
+---@field buffer_options Applet.Options
+---@field window_options Applet.Options
+---@field runtime_record Applet.FocusRecord
+
+---@class Applet.AmbientTreeCache
+---@field root Applet.Node
+---@field wrapped Applet.Node
+---@field revision integer
+---@field scopes Applet.LayoutScope[]
+
+---@class Applet.PaneImageSource
+---@field identity string
+---@field value Applet.ImageSource
+
+---@class Applet.PaneImageRegion
+---@field revision? string|number
+---@field sources Applet.PaneImageSource[]
+
+---@class Applet.PaneCounters: Applet.ReconcileCounters, Applet.PaneCompileStats
+---@field requested_generations integer
+---@field renders integer
+---@field commits integer
+---@field document_reuses integer
+---@field layer_compilations integer
+---@field layer_reuses integer
+---@field composed_cells integer
+---@field mapping_changes integer
+---@field position_updates integer
+
+---@class Applet.PaneGeometry
+---@field host 'direct'|'tab'|'floating'
+---@field row integer
+---@field col integer
+---@field content_width integer
+---@field content_height integer
+---@field outer_width integer
+---@field outer_height integer
+---@field screen_row integer
+---@field screen_col integer
+---@field screen_width integer
+---@field screen_height integer
+---@field zindex? integer
+
+---@class Applet.Pane<S = unknown>: Applet.InputPane<Applet.Pane<S>, Applet.PaneLayout, Applet.ConnectedPaneSurface<Applet.Pane<S>>>, Applet.DomainMember
+---@field id integer
+---@field handlers table<string, fun(event: Applet.ActionEvent<Applet.Pane<S>>): unknown>
+---@field committed_generation integer
+---@field mapping_description? string
+---@field saved_mappings? table<string, Applet.SavedMapping>
+---@field installed_mappings? table<string, Applet.MappingPair>
+---@field _key string
+---@field buffer_mode 'managed'|'editable'
+---@field extent Applet.PaneExtent
+---@field render? fun(state: S, env: Applet.PaneRenderEnvironment): Applet.Tree|Applet.Node
+---@field pending_state S
+---@field pending_tree? Applet.Tree|Applet.Node
+---@field tree? Applet.Tree|Applet.Node
+---@field direct_tree boolean
+---@field theme Applet.Theme
+---@field theme_generation integer
+---@field compile_theme Applet.CompileTheme
+---@field image_system? Applet.ImageSystem
+---@field on_error? fun(error: Applet.PaneError)
+---@field generation integer
+---@field _owner? Applet.Applet
+---@field domain? Applet.InteractionDomain
+---@field owned_domain? Applet.InteractionDomain
+---@field destroyed boolean
+---@field has_submission? boolean
+---@field reconcile_state Applet.ReconcileState
+---@field compile_cache Applet.PaneCompileCache
+---@field image_region_cache table<string, Applet.PaneImageRegion>
+---@field ambient_tree_cache? Applet.AmbientTreeCache
+---@field pending_scene? Applet.CompiledScene
+---@field current_scene? Applet.CompiledScene
+---@field position_overrides table<string, Applet.ScenePosition>
+---@field owned_buffers table<integer, true>
+---@field requested_image_references? table<string, true>
+---@field image_errors? table<string, true>
+---@field deferred_images? boolean
+---@field unsubscribe_images? fun()
+---@field counters Applet.PaneCounters
+---@field frame_interval_ns? number
+---@field last_flush_ns? number
+---@field frame_timer? uv.uv_timer_t
+---@field resize_timer? uv.uv_timer_t
+---@field last_width? integer
+---@field last_height? integer
+---@field last_window? integer
+---@field last_focused? boolean
+---@field last_image_geometry? string
+---@field force_images? boolean
+---@field force_chrome? boolean
+---@field initial_target_applied boolean
+---@field applied_target_intent? string|number
+---@field view_policy_revision integer
+---@field interaction_revision integer
+---@field focus_signature? string
+---@field mask_signature? string
+---@field surface_option_states? table<string, Applet.WrittenOption>
+---@field requested_surface_options? Applet.Options
+---@field augroup? integer
+---@field known_changedtick? integer
+---@field observed_edit_changedtick? integer
+---@field attached? boolean
+---@field committing? boolean
+---@field edit_revision? string|number
+---@field namespace integer
+---@field virtual_namespace integer
+---@field image_namespace integer
+---@field scene_namespace integer
+---@field focus_namespace integer
+---@field region_namespace integer
+---@field cursor_namespace integer
+---@field mask_namespace integer
 local Pane = {}
 Pane.__index = Pane
 
-local function owner_record(self, required)
+---@generic S
+---@param self Applet.Pane<S>
+---@return Applet.HostRecord?, Applet.Applet?
+local function owner_record(self)
   local owner = self._owner
   local record = owner and owner.records and owner.records[self._key] or nil
   if record and record.descriptor and record.descriptor.pane == self then
     return record, owner
   end
-  if required ~= false then error("Pane is unavailable", 3) end
 end
 
+---@overload fun(cursor: Applet.Cursor|[integer, integer]): Applet.Cursor
+---@param cursor? Applet.Cursor|[integer, integer]
+---@return Applet.Cursor?
 local function semantic_cursor(cursor)
   if cursor == nil then return nil end
-  util.expect(type(cursor) == "table", "Pane cursor", "must be a table", 4)
+  applet_expect(type(cursor) == "table", "Pane cursor", "must be a table", 4)
   local line = cursor.line or cursor[1]
   local column = cursor.column
   if column == nil then column = cursor[2] end
-  util.expect(type(line) == "number" and type(column) == "number",
+  applet_expect(type(line) == "number" and type(column) == "number",
     "Pane cursor", "must contain numeric line and column fields", 4)
   return { line = line, column = column }
 end
 
+---@overload fun(cursor: Applet.Cursor|[integer, integer]): [integer, integer]
+---@param cursor? Applet.Cursor|[integer, integer]
+---@return [integer, integer]?
 local function native_cursor(cursor)
   cursor = semantic_cursor(cursor)
   return cursor and { cursor.line, cursor.column } or nil
@@ -47,14 +215,19 @@ local sequence = 0
 local RESIZE_DEBOUNCE_MS = 40
 local NANOSECONDS_PER_MILLISECOND = 1000000
 
+---@param surface? Applet.SceneSurface
+---@return integer?
 local function valid_window(surface)
-  local window = surface and surface.window and surface.window()
+  if not surface then return nil end
+  local window = surface.window and surface.window()
   if window and vim.api.nvim_win_is_valid(window)
       and vim.api.nvim_win_get_buf(window) == surface.buffer then
     return window
   end
 end
 
+---@generic S
+---@param self Applet.Pane<S>
 local function stop_frame_timer(self)
   local timer = self.frame_timer
   if not timer then return end
@@ -63,19 +236,24 @@ local function stop_frame_timer(self)
   if not timer:is_closing() then timer:close() end
 end
 
-local function runtime_record(self, required)
-  local record, owner = owner_record(self, false)
+---@generic S
+---@param self Applet.Pane<S>
+---@return Applet.FocusRecord, Applet.Applet?
+local function runtime_record(self)
+  local record, owner = owner_record(self)
   if record then return record, owner end
   local surface = self.surface
   if surface and Base.loaded_buffer(surface.buffer) then
-    record = surface.runtime_record
-    record.buffer = surface.buffer
-    record.window = valid_window(surface)
-    return record
+    local direct = surface.runtime_record
+    direct.buffer = surface.buffer
+    direct.window = valid_window(surface)
+    return direct
   end
-  if required ~= false then error("Pane is unavailable", 3) end
+  error("Pane is unavailable", 3)
 end
 
+---@param surface? Applet.PaneSurface<Applet.Pane>
+---@return boolean
 local function surface_visible(surface)
   if not surface then return false end
   if surface.visible then
@@ -85,6 +263,10 @@ local function surface_visible(surface)
   return valid_window(surface) ~= nil
 end
 
+---@generic S
+---@param pane Applet.Pane<S>
+---@param surface Applet.PaneSurface<Applet.Pane<S>>
+---@return Applet.ConnectedPaneSurface<Applet.Pane<S>>
 local function connected_surface(pane, surface)
   return {
     buffer = surface.buffer,
@@ -95,8 +277,8 @@ local function connected_surface(pane, surface)
     chrome = surface.chrome,
     on_commit = surface.on_commit,
     interaction = surface.interaction,
-    buffer_options = util.copy(surface.buffer_options),
-    window_options = util.copy(surface.window_options),
+    buffer_options = util.copy(surface.buffer_options or {}),
+    window_options = util.copy(surface.window_options or {}),
     runtime_record = {
       buffer = surface.buffer,
       descriptor = {
@@ -108,6 +290,7 @@ local function connected_surface(pane, surface)
   }
 end
 
+---@param differences Applet.LayoutChanges
 function Pane:_publish_commit(differences)
   self.force_chrome = false
   self:_refresh_mask()
@@ -115,13 +298,16 @@ function Pane:_publish_commit(differences)
   if not callback then return end
   local ok, err = pcall(callback, {
     generation = self.committed_generation,
-    content = differences and differences.content == true,
-    chrome = differences and differences.chrome == true,
-    view = differences and differences.view == true,
+    content = differences.content,
+    chrome = differences.chrome,
+    view = differences.view,
   })
   if not ok then self:_report("surface", err, self.committed_generation) end
 end
 
+---@generic S
+---@param pane Applet.Pane<S>
+---@return integer, integer?, boolean, integer?
 local function dimensions(pane)
   local window = valid_window(pane.surface)
   if window then
@@ -134,12 +320,16 @@ local function dimensions(pane)
 end
 
 
+---@generic S
+---@param pane Applet.Pane<S>
+---@param tree Applet.Tree|Applet.Node
+---@return Applet.Tree|Applet.Node
 local function ambient_tree(pane, tree)
   local interaction = pane.surface and pane.surface.interaction
   local scopes = interaction and interaction.scopes or nil
   if not scopes or #scopes == 0 then return tree end
   local root = tree.type and tree or tree.root
-  local revision = interaction.revision or 0
+  local revision = assert(interaction).revision or 0
   local cached = pane.ambient_tree_cache
   local wrapped
   if cached and cached.root == root and cached.revision == revision
@@ -171,6 +361,9 @@ local function ambient_tree(pane, tree)
   return value
 end
 
+---@param node unknown
+---@param callback fun(source: Applet.ImageSource)
+---@param seen table<table, boolean>
 local function walk_images(node, callback, seen)
   if type(node) ~= "table" or seen[node] then return end
   seen[node] = true
@@ -193,6 +386,8 @@ local function walk_images(node, callback, seen)
   seen[node] = nil
 end
 
+---@param root Applet.Node
+---@return Applet.RegionNode[]?
 local function region_document(root)
   while type(root) == "table" and root.type == "scope" do root = root.child end
   if type(root) ~= "table" then return nil end
@@ -206,12 +401,15 @@ local function region_document(root)
       return nil
     end
   end
-  return regions
+  return regions --[[@as Applet.RegionNode[] ]]
 end
 
+---@generic S
+---@param pane Applet.Pane<S>
+---@return Applet.ImageState
 local function image_snapshot(pane)
-  return pane.image_system and util.copy(pane.image_system:snapshot(pane))
-    or {
+  if pane.image_system then return util.copy(pane.image_system:snapshot(pane)) end
+  return {
       status = "unavailable",
       generation = 0,
       cell_width = 1,
@@ -221,15 +419,20 @@ local function image_snapshot(pane)
     }
 end
 
+---@param value? Applet.Theme|Applet.ThemeOptions
+---@return Applet.Theme
 local function normalize_theme(value)
   if value == nil then return Theme.new() end
   if type(value) == "table" and type(value.group) == "function"
       and type(value.define) == "function" then
-    return value
+    return value --[[@as Applet.Theme]]
   end
-  return Theme.new(value)
+  return Theme.new(value --[[@as Applet.ThemeOptions]])
 end
 
+---@param layout Applet.PaneLayout
+---@param overrides table<string, Applet.ScenePosition>
+---@return Applet.PaneLayout
 local function apply_position_overrides(layout, overrides)
   if not layout.scene then return layout end
   local current = layout.scene
@@ -242,22 +445,25 @@ local function apply_position_overrides(layout, overrides)
   return compile.project_scene({ layout = layout, scene = current })
 end
 
+---@generic S
+---@param opts Applet.PaneOptions<S>
+---@return Applet.Pane<S>
 function Pane.new(opts)
   opts = opts or {}
-  util.expect(type(opts) == "table", "Pane", "options must be a table", 3)
-  util.expect(util.nonempty_string(opts.key), "Pane.key",
+  applet_expect(type(opts) == "table", "Pane", "options must be a table", 3)
+  applet_expect(util.nonempty_string(opts.key), "Pane.key",
     "must be a non-empty string", 3)
   local extent = opts.extent or "document"
-  util.expect(extent == "document" or extent == "viewport", "Pane.extent",
+  applet_expect(extent == "document" or extent == "viewport", "Pane.extent",
     "must be document or viewport", 3)
   local buffer_mode = opts.buffer_mode or "managed"
-  util.expect(buffer_mode == "managed" or buffer_mode == "editable",
+  applet_expect(buffer_mode == "managed" or buffer_mode == "editable",
     "Pane.buffer_mode", "must be managed or editable", 3)
-  util.expect(opts.render == nil or type(opts.render) == "function",
+  applet_expect(opts.render == nil or type(opts.render) == "function",
     "Pane.render", "must be a function", 3)
-  util.expect(opts.handlers == nil or type(opts.handlers) == "table",
+  applet_expect(opts.handlers == nil or type(opts.handlers) == "table",
     "Pane.handlers", "must be a table", 3)
-  util.expect(opts.frame_interval_ms == nil
+  applet_expect(opts.frame_interval_ms == nil
       or (type(opts.frame_interval_ms) == "number"
         and opts.frame_interval_ms == opts.frame_interval_ms
         and opts.frame_interval_ms > 0
@@ -266,23 +472,23 @@ function Pane.new(opts)
     "Pane.frame_interval_ms", "must be a positive integer", 3)
   local handlers = {}
   for name, handler in pairs(opts.handlers or {}) do
-    util.expect(util.nonempty_string(name) and not name:match("^applet%."),
+    applet_expect(util.nonempty_string(name) and not name:match("^applet%."),
       "Pane.handlers", "names must be non-empty and outside the applet namespace", 3)
-    util.expect(type(handler) == "function", "Pane.handlers." .. name,
+    applet_expect(type(handler) == "function", "Pane.handlers." .. name,
       "must be a function", 3)
     handlers[name] = handler
   end
   if opts.on_error ~= nil then
-    util.expect(type(opts.on_error) == "function", "Pane.on_error", "must be a function", 3)
+    applet_expect(type(opts.on_error) == "function", "Pane.on_error", "must be a function", 3)
   end
   if opts.image_system ~= nil then
-    util.expect(type(opts.image_system) == "table", "Pane.image_system",
+    applet_expect(type(opts.image_system) == "table", "Pane.image_system",
       "must be a table", 3)
     for _, method in ipairs({
       "subscribe", "snapshot", "request", "set_references",
       "present", "clear",
     }) do
-      util.expect(type(opts.image_system[method]) == "function",
+      applet_expect(type(opts.image_system[method]) == "function",
         "Pane.image_system." .. method, "must be a function", 3)
     end
   end
@@ -292,6 +498,7 @@ function Pane.new(opts)
   if opts.frame_interval_ms then
     frame_interval_ns = opts.frame_interval_ms * NANOSECONDS_PER_MILLISECOND
   end
+  ---@type Applet.Pane<S>
   local self = setmetatable({
     _key = key,
     id = sequence,
@@ -347,6 +554,7 @@ function Pane.new(opts)
   self.theme_generation = self.theme.generation or 0
   self.compile_theme = {
     generation = self.theme_generation,
+    ---@param style string
     group = function(_, style) return self.theme:group(style) end,
   }
   if self.image_system then
@@ -360,42 +568,52 @@ function Pane.new(opts)
   return self
 end
 
+---@param value unknown
+---@return TypeGuard<Applet.Pane>
 function Pane.is(value)
   return getmetatable(value) == Pane
 end
 
+---@return string
 function Pane:key()
   return self._key
 end
 
+---@return boolean
 function Pane:is_destroyed()
   return self.destroyed == true
 end
 
+---@return boolean
 function Pane:is_editable()
   return self.buffer_mode == "editable"
 end
 
+---@return boolean
 function Pane:is_connected()
-  return self.surface ~= nil and Base.loaded_buffer(self.surface.buffer)
+  return self.surface ~= nil and Base.loaded_buffer(self.surface.buffer) == true
 end
 
+---@return boolean
 function Pane:is_settled()
   return self.committed_generation == self.generation
 end
 
+---@param owner Applet.Applet
 function Pane:_bind(owner)
   assert(self._owner == nil or self._owner == owner,
     "Pane is already mounted by another Applet")
   self._owner = owner
 end
 
+---@param owner Applet.Applet
 function Pane:_unbind(owner)
   if self._owner == owner then self._owner = nil end
 end
 
+---@return boolean
 function Pane:is_mounted()
-  local record = owner_record(self, false)
+  local record = owner_record(self)
   if record then
     return Base.valid_window(record.window)
       and Base.valid_buffer(record.buffer)
@@ -404,29 +622,33 @@ function Pane:is_mounted()
   return valid_window(self.surface) ~= nil
 end
 
+---@return boolean
 function Pane:is_visible()
-  local record, owner = owner_record(self, false)
+  local record, owner = owner_record(self)
   if record then
-    return owner.driver ~= nil and owner.driver:pane_visible(record)
+    local driver = assert(owner).driver
+    return driver ~= nil and driver:pane_visible(record)
   end
   return surface_visible(self.surface)
 end
 
+---@return boolean
 function Pane:is_focused()
-  local record, owner = owner_record(self, false)
+  local record, owner = owner_record(self)
   if record then
-    return owner:focused_pane() == self._key and self:is_visible()
+    return assert(owner):focused_pane() == self._key and self:is_visible()
   end
   local window = valid_window(self.surface)
   return window ~= nil and vim.api.nvim_get_current_win() == window
 end
 
+---@return Applet.PaneGeometry
 function Pane:geometry()
   local record, owner = runtime_record(self)
   local actual = Base.window_geometry(record.window)
   assert(actual, "Pane is unavailable")
   if not owner then
-    local config = vim.api.nvim_win_get_config(record.window)
+    local config = vim.api.nvim_win_get_config((assert(record.window)))
     return {
       host = "direct",
       row = actual.row,
@@ -442,9 +664,10 @@ function Pane:geometry()
       zindex = config.relative ~= "" and config.zindex or nil,
     }
   end
-  local descriptor = record.descriptor
+  local descriptor = assert(owner.records[self._key]).descriptor
+  local projection = descriptor.projection
   return {
-    host = owner:host().kind,
+    host = assert(owner.driver).kind,
     row = descriptor.outer.row,
     col = descriptor.outer.col,
     content_width = descriptor.content.width,
@@ -455,13 +678,14 @@ function Pane:geometry()
     screen_col = actual and actual.col or nil,
     screen_width = actual and actual.width or nil,
     screen_height = actual and actual.height or nil,
-    zindex = descriptor.projection.config
-      and descriptor.projection.config.zindex or nil,
+    zindex = projection.kind == "floating"
+      and (projection --[[@as Applet.FloatingProjection]]).config.zindex or nil,
   }
 end
 
+---@return boolean
 function Pane:focus()
-  local _, owner = owner_record(self, false)
+  local _, owner = owner_record(self)
   if owner then return owner:focus(self._key) end
   local window = valid_window(self.surface)
   if not window then return false end
@@ -469,8 +693,9 @@ function Pane:focus()
   return true
 end
 
+---@return Applet.Mode|"preserve"
 function Pane:mode()
-  local record = owner_record(self, false)
+  local record = owner_record(self)
   if record then
     if self:is_focused() then
       if Mode.semantic() == "insert" then return "insert" end
@@ -484,6 +709,10 @@ function Pane:mode()
   return "normal"
 end
 
+---@param phase string
+---@param value unknown
+---@param generation? integer
+---@return nil, Applet.PaneError
 function Pane:_report(phase, value, generation)
   local source = type(value) == "table" and type(value.message) == "string"
       and value.message or tostring(value)
@@ -502,7 +731,7 @@ end
 
 function Pane:_request_resize()
   if self.destroyed or not self.surface then return end
-  if not self.resize_timer then self.resize_timer = vim.uv.new_timer() end
+  if not self.resize_timer then self.resize_timer = assert(vim.uv.new_timer()) end
   self.resize_timer:stop()
   self.resize_timer:start(RESIZE_DEBOUNCE_MS, 0, vim.schedule_wrap(function()
     if self.destroyed or not self.surface then return end
@@ -514,9 +743,11 @@ function Pane:_request_resize()
   end))
 end
 
+---@return boolean
 function Pane:_surface_options()
+  assert(self.surface)
   local buffer = self.surface.buffer
-  local desired = util.copy(self.surface.buffer_options)
+  local desired = util.copy(self.surface.buffer_options or {})
   for option, value in pairs({
     swapfile = false,
     modifiable = self.buffer_mode == "editable",
@@ -546,13 +777,14 @@ function Pane:_surface_options()
     if not util.equal(vim.api.nvim_get_option_value(option, { buf = buffer }), value) then
       vim.api.nvim_set_option_value(option, value, { buf = buffer })
     end
-    state.written = type(value) == "table" and util.copy(value) or value
+    state.written = util.copy_value(value)
   end
   self.requested_surface_options = util.copy(desired)
   return true
 end
 
 function Pane:_install_autocmds()
+  assert(self.surface)
   local pane = self
   self.augroup = vim.api.nvim_create_augroup(
     "AppletPane" .. self.id .. self._key, { clear = true })
@@ -634,6 +866,7 @@ function Pane:_install_autocmds()
 end
 
 function Pane:_attach_buffer()
+  assert(self.surface)
   local pane = self
   self.known_changedtick = vim.api.nvim_buf_get_changedtick(self.surface.buffer)
   self.observed_edit_changedtick = self.known_changedtick
@@ -654,45 +887,47 @@ function Pane:_attach_buffer()
   })
 end
 
+---@param surface Applet.PaneSurface<Applet.Pane<S>>
+---@return self
 function Pane:_connect(surface)
   assert(not self.destroyed, "Pane is destroyed")
-  util.expect(type(surface) == "table", "surface", "must be a table", 3)
-  util.expect(type(surface.buffer) == "number"
+  applet_expect(type(surface) == "table", "surface", "must be a table", 3)
+  applet_expect(type(surface.buffer) == "number"
       and vim.api.nvim_buf_is_valid(surface.buffer)
       and vim.api.nvim_buf_is_loaded(surface.buffer),
     "surface.buffer", "must be a valid loaded buffer", 3)
-  util.expect(surface.window == nil or type(surface.window) == "function",
+  applet_expect(surface.window == nil or type(surface.window) == "function",
     "surface.window", "must be a function", 3)
-  util.expect(surface.visible == nil or type(surface.visible) == "function",
+  applet_expect(surface.visible == nil or type(surface.visible) == "function",
     "surface.visible", "must be a function", 3)
-  util.expect(surface.buffer_options == nil or type(surface.buffer_options) == "table",
+  applet_expect(surface.buffer_options == nil or type(surface.buffer_options) == "table",
     "surface.buffer_options", "must be a table", 3)
-  util.expect(surface.window_options == nil or type(surface.window_options) == "table",
+  applet_expect(surface.window_options == nil or type(surface.window_options) == "table",
     "surface.window_options", "must be a table", 3)
-  util.expect(surface.owns_buffer == nil or type(surface.owns_buffer) == "boolean",
+  applet_expect(surface.owns_buffer == nil or type(surface.owns_buffer) == "boolean",
     "surface.owns_buffer", "must be a boolean", 3)
   if surface.chrome ~= nil then
-    util.expect(type(surface.chrome) == "table", "surface.chrome",
+    applet_expect(type(surface.chrome) == "table", "surface.chrome",
       "must be a table", 3)
     for _, method in ipairs({ "apply", "measure", "restore" }) do
-      util.expect(type(surface.chrome[method]) == "function",
+      applet_expect(type(surface.chrome[method]) == "function",
         "surface.chrome." .. method, "must be a function", 3)
     end
   end
   if surface.interaction ~= nil then
-    util.expect(type(surface.interaction) == "table", "surface.interaction",
+    applet_expect(type(surface.interaction) == "table", "surface.interaction",
       "must be a table", 3)
-    util.expect(type(surface.interaction.scopes) == "table",
+    applet_expect(type(surface.interaction.scopes) == "table",
       "surface.interaction.scopes", "must be a table", 3)
-    util.expect(type(surface.interaction.has_action) == "function",
+    applet_expect(type(surface.interaction.has_action) == "function",
       "surface.interaction.has_action", "must be a function", 3)
-    util.expect(type(surface.interaction.dispatch) == "function",
+    applet_expect(type(surface.interaction.dispatch) == "function",
       "surface.interaction.dispatch", "must be a function", 3)
   end
   if surface.domain ~= nil then
-    util.expect(type(surface.domain) == "table", "surface.domain", "must be a table", 3)
+    applet_expect(type(surface.domain) == "table", "surface.domain", "must be a table", 3)
     for _, method in ipairs({ "add", "remove", "activate", "deactivate", "request" }) do
-      util.expect(type(surface.domain[method]) == "function",
+      applet_expect(type(surface.domain[method]) == "function",
         "surface.domain." .. method, "must be a function", 3)
     end
   end
@@ -704,8 +939,8 @@ function Pane:_connect(surface)
     self.surface.chrome = surface.chrome or self.surface.chrome
     self.surface.interaction = surface.interaction or self.surface.interaction
     self.surface.on_commit = surface.on_commit or self.surface.on_commit
-    self.surface.buffer_options = util.copy(surface.buffer_options)
-    self.surface.window_options = util.copy(surface.window_options)
+    self.surface.buffer_options = util.copy(surface.buffer_options or {})
+    self.surface.window_options = util.copy(surface.window_options or {})
     self:_surface_options()
     local current_window = valid_window(self.surface)
     if previous_window ~= current_window
@@ -724,7 +959,7 @@ function Pane:_connect(surface)
       image_namespace = self.image_namespace,
       callback = function()
         if self.destroyed or not self.surface then return false end
-        return self.image_system:redraw(self)
+        return assert(self.image_system):redraw(self)
       end,
     })
   end
@@ -738,23 +973,26 @@ function Pane:_connect(surface)
     self.owned_domain = self.owned_domain or Domain.new()
     self.domain = self.owned_domain
   end
-  self.domain:add(self)
-  self.domain:activate(self)
+  assert(self.domain):add(self)
+  assert(self.domain):activate(self)
   self:_install_autocmds()
   self:_attach_buffer()
   if self.has_submission then self:_request_submission() end
   return self
 end
 
+---@param state S
+---@param opts? {eager?: boolean}
+---@return integer
 function Pane:set_state(state, opts)
   assert(not self.destroyed, "Pane is destroyed")
   opts = opts or {}
-  util.expect(type(opts) == "table", "Pane.set_state", "options must be a table", 3)
+  applet_expect(type(opts) == "table", "Pane.set_state", "options must be a table", 3)
   for key in pairs(opts) do
-    util.expect(key == "eager", "Pane.set_state." .. tostring(key),
+    applet_expect(key == "eager", "Pane.set_state." .. tostring(key),
       "is not recognized", 3)
   end
-  util.expect(opts.eager == nil or type(opts.eager) == "boolean",
+  applet_expect(opts.eager == nil or type(opts.eager) == "boolean",
     "Pane.set_state.eager", "must be a boolean", 3)
   self.generation = self.generation + 1
   self.counters.requested_generations = self.counters.requested_generations + 1
@@ -771,16 +1009,18 @@ function Pane:set_state(state, opts)
   return self.generation
 end
 
+---@param interaction Applet.PaneInteraction<Applet.Pane<S>>
+---@return boolean
 function Pane:set_surface_interaction(interaction)
   assert(not self.destroyed, "Pane is destroyed")
   assert(self.surface, "Pane is not connected")
-  util.expect(type(interaction) == "table", "surface.interaction",
+  applet_expect(type(interaction) == "table", "surface.interaction",
     "must be a table", 3)
-  util.expect(type(interaction.scopes) == "table",
+  applet_expect(type(interaction.scopes) == "table",
     "surface.interaction.scopes", "must be a table", 3)
-  util.expect(type(interaction.has_action) == "function",
+  applet_expect(type(interaction.has_action) == "function",
     "surface.interaction.has_action", "must be a function", 3)
-  util.expect(type(interaction.dispatch) == "function",
+  applet_expect(type(interaction.dispatch) == "function",
     "surface.interaction.dispatch", "must be a function", 3)
   if self.surface.interaction == interaction
       and self.surface.interaction.revision == interaction.revision then
@@ -793,6 +1033,8 @@ function Pane:set_surface_interaction(interaction)
   return true
 end
 
+---@param theme? Applet.Theme|Applet.ThemeOptions
+---@return Applet.Theme
 function Pane:set_theme(theme)
   assert(not self.destroyed, "Pane is destroyed")
   self.theme = normalize_theme(theme)
@@ -806,6 +1048,8 @@ function Pane:set_theme(theme)
   return self.theme
 end
 
+---@param tree Applet.Tree|Applet.Node
+---@return integer
 function Pane:update(tree)
   assert(not self.destroyed, "Pane is destroyed")
   self.generation = self.generation + 1
@@ -819,14 +1063,17 @@ function Pane:update(tree)
   return self.generation
 end
 
+---@param key string
+---@param position Applet.ScenePosition
+---@return boolean
 function Pane:set_position(key, position)
   assert(not self.destroyed, "Pane is destroyed")
-  util.expect(util.nonempty_string(key), "Pane.set_position.key",
+  applet_expect(util.nonempty_string(key), "Pane.set_position.key",
     "must be a non-empty string", 3)
-  util.expect(type(position) == "table", "Pane.set_position.position",
+  applet_expect(type(position) == "table", "Pane.set_position.position",
     "must be a table", 3)
   local current = self.pending_scene or self.current_scene
-  util.expect(current ~= nil, "Pane.set_position",
+  applet_expect(current ~= nil, "Pane.set_position",
     "requires a committed retained container", 3)
   self.pending_scene = Scene.reposition(current, key, position)
   local override = util.copy(self.position_overrides[key] or {})
@@ -858,7 +1105,7 @@ function Pane:_request_submission()
     return
   end
   if self.frame_timer then return end
-  local timer = vim.uv.new_timer()
+  local timer = assert(vim.uv.new_timer())
   self.frame_timer = timer
   timer:start(math.max(1,
     math.ceil(remaining / NANOSECONDS_PER_MILLISECOND)), 0,
@@ -871,16 +1118,18 @@ function Pane:_request_submission()
     end))
 end
 
+---@param opts? Applet.SurfaceChange
+---@return boolean
 function Pane:surface_changed(opts)
   if self.destroyed or not self.surface then return false end
   opts = opts or {}
-  util.expect(type(opts) == "table", "Pane.surface_changed",
+  applet_expect(type(opts) == "table", "Pane.surface_changed",
     "options must be a table", 3)
   for key in pairs(opts) do
-    util.expect(key == "chrome", "Pane.surface_changed." .. tostring(key),
+    applet_expect(key == "chrome", "Pane.surface_changed." .. tostring(key),
       "is not recognized", 3)
   end
-  util.expect(opts.chrome == nil or type(opts.chrome) == "boolean",
+  applet_expect(opts.chrome == nil or type(opts.chrome) == "boolean",
     "Pane.surface_changed.chrome", "must be a boolean", 3)
   if opts.chrome then self.force_chrome = true end
   self.force_images = true
@@ -888,8 +1137,13 @@ function Pane:surface_changed(opts)
   return true
 end
 
+---@param width integer
+---@param height integer?
+---@param focused boolean
+---@param generation integer
+---@return Applet.Tree|Applet.Node
 function Pane:_render_tree(width, height, focused, generation)
-  if self.direct_tree then return ambient_tree(self, self.pending_tree) end
+  if self.direct_tree then return ambient_tree(self, assert(self.pending_tree)) end
   if not self.render then error("Pane has no render function", 0) end
   local images = image_snapshot(self)
   local tree = self.render(self.pending_state, {
@@ -904,7 +1158,10 @@ function Pane:_render_tree(width, height, focused, generation)
   return ambient_tree(self, tree)
 end
 
+---@param layout Applet.PaneLayout
 function Pane:_validate_actions(layout)
+  ---@param action? Applet.Action
+  ---@param path string
   local function validate(action, path)
     if not action then return end
     local interaction = self.surface and self.surface.interaction
@@ -950,6 +1207,8 @@ function Pane:_validate_actions(layout)
   if layout.edit then validate(layout.edit.on_change, "edit.on_change") end
 end
 
+---@param tree? Applet.Tree|Applet.Node
+---@param images? Applet.ImageState
 function Pane:_prepare_images(tree, images)
   if not self.image_system or not tree then return end
   images = images or image_snapshot(self)
@@ -1026,6 +1285,7 @@ function Pane:_prepare_images(tree, images)
   end
 end
 
+---@param keep_requested? boolean
 function Pane:_sync_image_references(keep_requested)
   if not self.image_system then return end
   local references = {}
@@ -1046,6 +1306,7 @@ function Pane:_sync_image_references(keep_requested)
   self.image_system:set_references(self, references)
 end
 
+---@return boolean?, Applet.PaneError?
 function Pane:_flush_requested()
   if self.destroyed or not self.surface
       or not vim.api.nvim_buf_is_valid(self.surface.buffer)
@@ -1318,15 +1579,16 @@ function Pane:_flush_requested()
   return true
 end
 
+---@return boolean?, Applet.PaneError?
 function Pane:flush()
   if not self.surface then return false end
   stop_frame_timer(self)
-  self.domain.dirty[self] = nil
+  assert(self.domain).dirty[self] = nil
   return self:_flush_requested()
 end
 
 function Pane:_apply_target_policy()
-  local view = self.layout.view or {}
+  local view = assert(self.layout).view
   local applied = false
   if not self.initial_target_applied and view.initial_target then
     self.initial_target_applied = input.reveal(self, view.initial_target)
@@ -1345,6 +1607,7 @@ function Pane:_apply_target_policy()
   if applied then self.view_policy_revision = self.view_policy_revision + 1 end
 end
 
+---@return integer
 function Pane:_view_policy_revision()
   return self.view_policy_revision
 end
@@ -1356,6 +1619,7 @@ function Pane:_draw_focus()
     or mode == "s" or mode == "S" or mode == "\19"
   local _, _, focused = dimensions(self)
   local active = not selecting and focused and input.focus_target(self) or nil
+  ---@cast active Applet.CompiledTarget?
   local signature = table.concat({
     tostring(self.interaction_revision),
     selecting and "selecting" or "normal",
@@ -1366,7 +1630,7 @@ function Pane:_draw_focus()
   vim.api.nvim_buf_clear_namespace(self.surface.buffer, self.focus_namespace, 0, -1)
   if selecting then return end
   for _, key in ipairs(self.layout and self.layout.target_order or {}) do
-    local target = self.layout.targets[key]
+    local target = assert(self.layout).targets[key]
     local state = target == active and "active" or "inactive"
     for _, decoration in ipairs(target.focus and target.focus[state] or {}) do
       local text = vim.api.nvim_buf_get_lines(
@@ -1391,6 +1655,7 @@ function Pane:_draw_focus()
   if not active or not active.focus_style then return end
   for _, rect in ipairs(active.rectangles) do
     for row = rect.row, rect.row + rect.height - 1 do
+      ---@cast row integer
       local text = vim.api.nvim_buf_get_lines(self.surface.buffer, row, row + 1, false)[1]
       if text then
         local start_col = util.byte_col(text, math.min(rect.col, vim.fn.strdisplaywidth(text)))
@@ -1408,6 +1673,7 @@ function Pane:_draw_focus()
   end
 end
 
+---@return integer
 function Pane:_refresh_mask()
   local surface = self.surface
   if not surface or not vim.api.nvim_buf_is_valid(surface.buffer)
@@ -1439,6 +1705,7 @@ function Pane:_refresh_mask()
 end
 
 function Pane:_text_changed()
+  assert(self.surface)
   local changedtick = vim.api.nvim_buf_get_changedtick(self.surface.buffer)
   if changedtick == self.observed_edit_changedtick then return end
   self.observed_edit_changedtick = changedtick
@@ -1454,20 +1721,24 @@ function Pane:_text_changed()
   input.dispatch_action(self, action, nil, 1, vim.api.nvim_get_mode().mode, 0, 0)
 end
 
+---@param text string
+---@param cursor? Applet.Cursor|[integer, integer]
+---@param revision? string|number
+---@return boolean
 function Pane:replace_text(text, cursor, revision)
   assert(self.buffer_mode == "editable",
     "replace_text is available only for editable Panes")
-  local record = owner_record(self, false)
+  local record = owner_record(self)
   if not self.surface then
     assert(record, "Pane is not connected")
-    util.expect(type(text) == "string", "Pane text", "must be a string", 3)
+    applet_expect(type(text) == "string", "Pane text", "must be a string", 3)
     if revision ~= nil and revision == self.edit_revision then return false end
     self.edit_revision = revision
     record.edit_revision = revision
     return Base.replace_text(record, text, semantic_cursor(cursor))
   end
   assert(vim.api.nvim_buf_is_valid(self.surface.buffer), "Pane is not connected")
-  util.expect(type(text) == "string", "Pane text", "must be a string", 3)
+  applet_expect(type(text) == "string", "Pane text", "must be a string", 3)
   if revision ~= nil and revision == self.edit_revision then return false end
   local lines = vim.split(text, "\n", { plain = true })
   vim.api.nvim_buf_set_lines(self.surface.buffer, 0, -1, false, lines)
@@ -1487,26 +1758,32 @@ function Pane:replace_text(text, cursor, revision)
   return true
 end
 
+---@return string
 function Pane:text()
-  local record = owner_record(self, false)
+  local record = owner_record(self)
   if not self.surface then return record and Base.buffer_text(record) or "" end
   if not vim.api.nvim_buf_is_valid(self.surface.buffer) then return "" end
   return table.concat(vim.api.nvim_buf_get_lines(self.surface.buffer, 0, -1, false), "\n")
 end
 
+---@return Applet.Cursor
 function Pane:cursor()
   return Base.cursor(runtime_record(self))
 end
 
+---@param cursor Applet.Cursor|[integer, integer]
+---@return boolean
 function Pane:set_cursor(cursor)
   return Base.set_cursor(runtime_record(self), semantic_cursor(cursor))
 end
 
+---@return boolean
 function Pane:at_start()
   local cursor = self:cursor()
   return cursor.line == 1 and cursor.column == 0
 end
 
+---@return boolean
 function Pane:at_end()
   local cursor = self:cursor()
   local lines = vim.split(self:text(), "\n", { plain = true })
@@ -1519,14 +1796,20 @@ function Pane:at_end()
   return cursor.line == #lines and cursor.column >= column
 end
 
+---@param direction "up"|"previous"|"down"|"next"|"start"|"end"
+---@param count? integer
+---@return boolean
 function Pane:move_cursor(direction, count)
   return Base.move_cursor(runtime_record(self), direction, count)
 end
 
+---@param opts? Applet.ScrollOptions
+---@return boolean
 function Pane:scroll(opts)
   return Base.scroll(runtime_record(self), opts)
 end
 
+---@return boolean
 function Pane:completion_visible()
   runtime_record(self)
   assert(self.buffer_mode == "editable",
@@ -1534,6 +1817,7 @@ function Pane:completion_visible()
   return Base.completion_visible()
 end
 
+---@return boolean
 function Pane:complete()
   local record = runtime_record(self)
   assert(self.buffer_mode == "editable",
@@ -1541,6 +1825,8 @@ function Pane:complete()
   return Base.complete(record)
 end
 
+---@param direction "next"|"previous"
+---@return boolean
 function Pane:completion_move(direction)
   local record = runtime_record(self)
   assert(self.buffer_mode == "editable",
@@ -1548,6 +1834,7 @@ function Pane:completion_move(direction)
   return Base.completion_move(record, direction)
 end
 
+---@return boolean
 function Pane:completion_accept()
   local record = runtime_record(self)
   assert(self.buffer_mode == "editable",
@@ -1555,8 +1842,9 @@ function Pane:completion_accept()
   return Base.completion_accept(record)
 end
 
+---@return {buffer?: integer, window?: integer}
 function Pane:native()
-  local record = owner_record(self, false)
+  local record = owner_record(self)
   if record then
     return {
       buffer = Base.valid_buffer(record.buffer) and record.buffer or nil,
@@ -1570,18 +1858,21 @@ function Pane:native()
   }
 end
 
+---@return Applet.CompiledTarget?
 function Pane:focused_target()
-  return input.focus_target(self)
+  return input.focus_target(self) --[[@as Applet.CompiledTarget?]]
 end
 
+---@param opts? {group?: string}
+---@return Applet.CompiledTarget[]
 function Pane:targets(opts)
   if opts == nil then opts = {} end
-  util.expect(type(opts) == "table", "Pane.targets", "options must be a table", 3)
-  util.expect(opts.group == nil or type(opts.group) == "string",
+  applet_expect(type(opts) == "table", "Pane.targets", "options must be a table", 3)
+  applet_expect(opts.group == nil or type(opts.group) == "string",
     "Pane.targets.group", "must be a string", 3)
   local result = {}
   for _, key in ipairs(self.layout and self.layout.target_order or {}) do
-    local target = self.layout.targets[key]
+    local target = assert(self.layout).targets[key]
     if target and (opts.group == nil or target.group == opts.group) then
       local value = util.copy(target)
       value.key = key
@@ -1591,14 +1882,20 @@ function Pane:targets(opts)
   return result
 end
 
+---@param opts? Applet.TargetMove
+---@param count? integer
+---@return boolean
 function Pane:move_target(opts, count)
   return input.move(self, opts or {}, count)
 end
 
+---@param key string
+---@return boolean
 function Pane:reveal_target(key)
   return input.reveal(self, key)
 end
 
+---@return boolean
 function Pane:focus_target_intent()
   local intent = self.layout and self.layout.view
     and self.layout.view.target_intent
@@ -1606,10 +1903,12 @@ function Pane:focus_target_intent()
   return input.apply_target_intent(self, intent)
 end
 
+---@return Applet.PaneCounters
 function Pane:_stats()
   return util.copy(self.counters)
 end
 
+---@param wiped? boolean
 function Pane:_disconnect(wiped)
   if not self.surface then return end
   stop_frame_timer(self)
@@ -1688,13 +1987,18 @@ function Pane:destroy()
   self.owned_buffers = {}
 end
 
-return setmetatable({
+---@class Applet.PaneModule
+---@field new fun<S>(opts: Applet.PaneOptions<S>): Applet.Pane<S>
+---@field is fun(value: unknown): boolean
+local module = {
   new = Pane.new,
   is = Pane.is,
   nodes = require("applet.pane.nodes"),
   widgets = require("applet.pane.widgets"),
   text = require("applet.pane.text"),
   compile = require("applet.pane.compile").compile,
-}, {
+}
+
+return setmetatable(module, {
   __call = function(_, opts) return Pane.new(opts) end,
-})
+}) --[[@as Applet.PaneModule]]

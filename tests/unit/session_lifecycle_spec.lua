@@ -1,44 +1,38 @@
+local assert = require("luassert")
 local lifecycle_module = require("neoagent.agent.session_lifecycle")
 
 describe("neoagent Agent session lifecycle", function()
-  local function fixture(overrides)
+  local function fixture()
     local steering = require("neoagent.agent.steering").new()
     steering:enqueue(1, "previous", 1)
-    local session = {
-      path = function() return {} end,
-      state = function() return {} end,
-      move_to = function() return true end,
-    }
-    local selection = {
-      model_value = { id = "previous" },
-      selected = { provider = "fake", model = "previous" },
-      thinking = "high",
-    }
-    function selection:clear()
-      self.model_value, self.selected, self.thinking = nil, nil, nil
-    end
-    function selection:resolve(selected, thinking)
-      self.model_value = { id = selected.model }
-      self.selected = vim.deepcopy(selected)
-      self.thinking = thinking
-      return self.model_value
-    end
-    function selection:model() return self.model_value end
-    function selection:model_selection() return vim.deepcopy(self.selected) end
+    local session = assert(require("neoagent.session").new())
+    function session:move_to() return true end
+    local selection = require("neoagent.request_selection").new({
+      config = require("neoagent.config").resolve({ default_registry = false }),
+    })
+    selection.model_value = require("tests.helpers.fake_model").new()
+    selection.model_value.id = "previous"
+    selection.selected = { provider = "fake", model = "previous" }
+    selection.thinking_value = "high"
+    ---@class Neoagent.TestSessionLifecycleState: Neoagent.SessionLifecycleState
+    ---@field request_selection Neoagent.RequestSelection
     local state = {
       session = session,
       request_selection = selection,
-      live_usage = { used = 1 },
+      live_usage = { tokens = 1, message_count = 1 },
       provider_status = "ready",
       inference_stats = { generation_tokens_per_second = 40 },
-      pending_events = { "previous" },
+      pending_events = { { type = "provider_status", text = "previous" } },
       steering = steering,
-      last_result = { ok = true },
+      last_result = { ok = true, status = "succeeded", message_count = 1 },
     }
+    ---@type {message: string, level: integer}[]
     local notifications = {}
+    ---@type string?
     local activated
     local published = 0
     local updated = 0
+    ---@type Neoagent.SessionLifecycleOptions
     local opts = {
       state = state,
       workspace = "/bound-workspace",
@@ -52,7 +46,6 @@ describe("neoagent Agent session lifecycle", function()
       update_context = function() updated = updated + 1 end,
       activate_workspace = function(cwd) activated = cwd end,
     }
-    for key, value in pairs(overrides or {}) do opts[key] = value end
     return lifecycle_module.new(opts), state, notifications, session,
       function() return activated, published, updated end
   end
@@ -60,7 +53,7 @@ describe("neoagent Agent session lifecycle", function()
   it("labels empty messages with stable entry identity", function()
     assert.are.equal("assistant · empty-me", lifecycle_module.entry_label({
       type = "message",
-      id = "empty-message-id",
+      id = "empty-message-id", timestamp = "2026-01-01T00:00:00.000Z",
       message = { role = "assistant", content = {} },
     }))
   end)
@@ -69,7 +62,7 @@ describe("neoagent Agent session lifecycle", function()
     local text = "branch:" .. string.rep(" complete-message-text", 12)
     assert.are.equal("user · " .. text, lifecycle_module.entry_label({
       type = "message",
-      id = "complete-message-id",
+      id = "complete-message-id", timestamp = "2026-01-01T00:00:00.000Z",
       message = { role = "user", content = text },
     }))
   end)
@@ -87,7 +80,7 @@ describe("neoagent Agent session lifecycle", function()
   it("changes branches within the owned Session and resets transient state", function()
     local moved
     local lifecycle, state, _, session, observed = fixture()
-    session.move_to = function(_, entry_id)
+    function session:move_to(entry_id)
       moved = entry_id
       return true
     end
@@ -125,10 +118,13 @@ describe("neoagent Agent session lifecycle", function()
 
   it("rejects branch changes while a Run is active", function()
     local lifecycle, state, notifications = fixture()
-    state.activity = { phase = "running" }
+    state.activity = {
+      id = 1, kind = "interaction", phase = "running",
+      accepted = true, finalized = false,
+    }
 
-    assert.is_nil(lifecycle.branch("entry"))
-    assert.matches("cannot change branches", notifications[1].message)
-    assert.are.equal(vim.log.levels.WARN, notifications[1].level)
+    assert.is_nil((lifecycle.branch("entry")))
+    assert.matches("cannot change branches", assert(notifications[1]).message)
+    assert.are.equal(vim.log.levels.WARN, assert(notifications[1]).level)
   end)
 end)

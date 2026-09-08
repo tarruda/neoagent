@@ -3,11 +3,54 @@ local http_client = require("neoagent.transport.http")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.LlamaClientOptions
+---@field server_url string
+---@field api_key? string
+---@field transport? Neoagent.ByteBackend
+---@field wait_timeout_ms? number
+---@field download_timeout_ms? number
+---@field poll_interval_ms? number
+
+---@class Neoagent.LlamaModelStatus: Neoagent.JsonObject
+---@field value string
+
+---@class Neoagent.LlamaModelInfo: Neoagent.JsonObject
+---@field id string
+---@field status Neoagent.LlamaModelStatus
+
+---@class Neoagent.LlamaModelEvent: Neoagent.JsonObject
+---@field model string
+---@field event string
+
+---@class Neoagent.LlamaProgress
+---@field message string
+---@field ratio? number
+---@field detail? string
+
+---@class Neoagent.LlamaRequestOptions
+---@field method? string
+---@field body? string
+---@field timeout_ms? number|false
+
+---@class Neoagent.LlamaValueSuccess<T>
+---@field ok true
+---@field value T
+
+---@alias Neoagent.LlamaRequestSuccess Neoagent.LlamaValueSuccess<Neoagent.JsonValue?>
+
+---@alias Neoagent.LlamaListSuccess Neoagent.LlamaValueSuccess<Neoagent.LlamaModelInfo[]>
+
+---@alias Neoagent.LlamaLoadSuccess Neoagent.LlamaValueSuccess<Neoagent.LlamaModelInfo>
+
+---@alias Neoagent.LlamaUnloadSuccess Neoagent.LlamaValueSuccess<true>
+
 local REQUEST_TIMEOUT_MS = 15000
 local WAIT_TIMEOUT_MS = 10 * 60 * 1000
 local DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
 local POLL_INTERVAL_MS = 250
 
+---@param path string
+---@return string
 local function trim_path(path)
   path = path:gsub("/+$", "")
   if path == "/v1" then path = "" end
@@ -15,6 +58,8 @@ local function trim_path(path)
   return path
 end
 
+---@param value unknown
+---@return string
 function M.normalize_server_url(value)
   assert(type(value) == "string" and value ~= "",
     "llama.cpp server URL must be a non-empty string")
@@ -22,7 +67,7 @@ function M.normalize_server_url(value)
       and not value:find("[%z\1-\32\127]"),
     "llama.cpp server URL must be safe text of at most 512 bytes")
   local scheme, rest = value:match("^(https?)://(.+)$")
-  assert(scheme, "Server URL must use http or https")
+  assert(scheme and rest, "Server URL must use http or https")
   rest = rest:gsub("[?#].*$", "")
   local slash = rest:find("/")
   local authority, path
@@ -35,20 +80,28 @@ function M.normalize_server_url(value)
   return scheme .. "://" .. authority .. (trim_path(path) == "" and "" or trim_path(path))
 end
 
+---@param server_url string
+---@return string
 function M.inference_url(server_url)
   return M.normalize_server_url(server_url) .. "/v1"
 end
 
+---@param payload? Neoagent.JsonValue
+---@param fallback string
+---@return string
 local function payload_error(payload, fallback)
   if type(payload) ~= "table" then return fallback end
   local error = payload.error
   if type(error) == "table" then
-    error = error.message or error.code
+    local message, code = error.message, error.code
+    error = message or code
   end
   if type(error) == "string" and error ~= "" then return error end
   return fallback
 end
 
+---@param value unknown
+---@return TypeGuard<Neoagent.LlamaModelInfo>
 local function is_model_info(value)
   if type(value) ~= "table" then return false end
   return type(value.id) == "string"
@@ -56,10 +109,12 @@ local function is_model_info(value)
     and type(value.status.value) == "string"
 end
 
+---@async
+---@param milliseconds number
 local function sleep(milliseconds)
   return async.await(function(done)
-    local timer = vim.uv.new_timer()
-    timer:start(math.max(1, milliseconds), 0, function()
+    local timer = assert(vim.uv.new_timer())
+    timer:start(math.max(1, math.floor(milliseconds)), 0, function()
       timer:stop()
       if not timer:is_closing() then timer:close() end
       done.resolve(true)
@@ -71,22 +126,33 @@ local function sleep(milliseconds)
   end)
 end
 
+---@async
+---@generic T
+---@param run Neoagent.Run<Neoagent.LlamaValueSuccess<T>|Neoagent.AsyncFailure, nil>
+---@return Neoagent.LlamaValueSuccess<T>
 local function await_ok(run)
   local result = run:await()
   if not result.ok then error(result.error, 0) end
   return result
 end
 
+---@param timeout_ms number
+---@return number
 local function deadline(timeout_ms)
   return util.now_ms() + timeout_ms
 end
 
+---@param value number
+---@param action string
+---@param model string
 local function check_deadline(value, action, model)
   if util.now_ms() < value then return end
   error(util.error("provider",
     "Timed out waiting to " .. action .. " " .. model), 0)
 end
 
+---@param data? Neoagent.JsonValue
+---@return Neoagent.LlamaProgress?
 local function parse_load_progress(data)
   if type(data) ~= "table" then return nil end
   local progress = data.progress
@@ -116,10 +182,13 @@ local function parse_load_progress(data)
   }
 end
 
+---@param data? Neoagent.JsonValue
+---@return Neoagent.LlamaProgress?
 local function parse_download_progress(data)
   if type(data) ~= "table" then return nil end
   local nested = data.progress
   local files = type(nested) == "table" and nested or data
+  ---@type number, number
   local done, total = 0, 0
   for _, value in pairs(files) do
     if type(value) == "table" and type(value.done) == "number"
@@ -139,6 +208,8 @@ end
 M.parse_load_progress = parse_load_progress
 M.parse_download_progress = parse_download_progress
 
+---@param bytes unknown
+---@return string
 function M.format_bytes(bytes)
   bytes = tonumber(bytes) or 0
   if bytes < 1024 then return string.format("%d B", bytes) end
@@ -153,12 +224,24 @@ function M.format_bytes(bytes)
   return string.format("%." .. decimals .. "f %s", value, unit)
 end
 
+---@class Neoagent.LlamaClient
+---@field server_url string
+---@field api_key? string
+---@field transport Neoagent.HttpClient
+---@field wait_timeout_ms number
+---@field download_timeout_ms number
+---@field poll_interval_ms number
 local Client = {}
 Client.__index = Client
 
+---@param path string
+---@param opts? Neoagent.LlamaRequestOptions
+---@return Neoagent.Run<Neoagent.LlamaRequestSuccess|Neoagent.AsyncFailure, nil>
 function Client:request(path, opts)
   opts = opts or {}
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.LlamaRequestSuccess
+  function()
     local headers = {}
     if self.api_key then headers.Authorization = "Bearer " .. self.api_key end
     if opts.body ~= nil then headers["Content-Type"] = "application/json" end
@@ -176,6 +259,7 @@ function Client:request(path, opts)
       local payload = fetched.body
       local message = payload_error(payload,
         "llama.cpp returned HTTP " .. tostring(fetched.status))
+      ---@type Neoagent.ProviderHttpError
       local err = util.error("provider", message)
       err.status = fetched.status
       error(err, 0)
@@ -184,12 +268,17 @@ function Client:request(path, opts)
   end, { error_kind = "provider" })
 end
 
+---@param opts? {reload?: boolean}
+---@return Neoagent.Run<Neoagent.LlamaListSuccess|Neoagent.AsyncFailure, nil>
 function Client:list(opts)
   opts = opts or {}
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.LlamaListSuccess
+  function()
     local payload = await_ok(self:request(
       "/models" .. (opts.reload and "?reload=1" or ""))).value
-    if type(payload) ~= "table" or not util.is_list(payload.data) then
+    if type(payload) ~= "table" or type(payload.data) ~= "table"
+        or not util.is_list(payload.data) then
       error(util.error("provider", "llama.cpp returned an invalid model catalog"), 0)
     end
     local result = {}
@@ -203,6 +292,8 @@ function Client:list(opts)
   end, { error_kind = "provider" })
 end
 
+---@param model string
+---@return Neoagent.Run<Neoagent.LlamaRequestSuccess|Neoagent.AsyncFailure, nil>
 function Client:load(model)
   return self:request("/models/load", {
     method = "POST",
@@ -210,6 +301,8 @@ function Client:load(model)
   })
 end
 
+---@param model string
+---@return Neoagent.Run<Neoagent.LlamaRequestSuccess|Neoagent.AsyncFailure, nil>
 function Client:unload(model)
   return self:request("/models/unload", {
     method = "POST",
@@ -217,8 +310,12 @@ function Client:unload(model)
   })
 end
 
+---@param model string
+---@return Neoagent.Run<Neoagent.LlamaUnloadSuccess|Neoagent.AsyncFailure, nil>
 function Client:unload_and_wait(model)
-  return async.run(function()
+  return async.run(
+  ---@return Neoagent.LlamaUnloadSuccess
+  function()
     local expires = deadline(self.wait_timeout_ms)
     await_ok(self:unload(model))
     while true do
@@ -235,6 +332,8 @@ function Client:unload_and_wait(model)
   end, { error_kind = "provider" })
 end
 
+---@param model string
+---@return Neoagent.Run<Neoagent.LlamaRequestSuccess|Neoagent.AsyncFailure, nil>
 function Client:download(model)
   return self:request("/models", {
     method = "POST",
@@ -243,9 +342,13 @@ function Client:download(model)
   })
 end
 
+---@param on_event fun(event: Neoagent.LlamaModelEvent)
+---@return Neoagent.Run<Neoagent.NoReturn, nil>
 function Client:watch(on_event)
   assert(type(on_event) == "function", "llama watch callback is required")
-  return async.run(function()
+  return async.run(
+  ---@param _run Neoagent.Run<Neoagent.NoReturn, nil>
+  function(_run)
     local headers = {}
     if self.api_key then headers.Authorization = "Bearer " .. self.api_key end
     local fetched = self.transport.stream({
@@ -257,7 +360,10 @@ function Client:watch(on_event)
       },
       on_event = function(value)
         if type(value) == "table" and type(value.model) == "string"
-            and type(value.event) == "string" then on_event(value) end
+            and type(value.event) == "string" then
+          ---@cast value Neoagent.LlamaModelEvent
+          on_event(value)
+        end
       end,
     }):await()
     if not fetched.ok then error(fetched.error, 0) end
@@ -268,9 +374,15 @@ function Client:watch(on_event)
   end, { error_kind = "provider" })
 end
 
+---@param model string
+---@param on_progress fun(progress: Neoagent.LlamaProgress)
+---@return Neoagent.Run<Neoagent.LlamaLoadSuccess|Neoagent.AsyncFailure, nil>
 function Client:load_and_wait(model, on_progress)
   assert(type(on_progress) == "function", "llama load progress callback is required")
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.LlamaLoadSuccess|Neoagent.AsyncFailure, nil>
+  ---@return Neoagent.LlamaLoadSuccess
+  function(run)
     local expires = deadline(self.wait_timeout_ms)
     local event_loaded, event_error, event_exit_code = false, nil, nil
     local watcher = async.run(function()
@@ -331,9 +443,15 @@ function Client:load_and_wait(model, on_progress)
   end, { error_kind = "provider" })
 end
 
+---@param model string
+---@param on_progress fun(progress: Neoagent.LlamaProgress)
+---@return Neoagent.Run<Neoagent.LlamaListSuccess|Neoagent.AsyncFailure, nil>
 function Client:download_and_wait(model, on_progress)
   assert(type(on_progress) == "function", "llama download progress callback is required")
-  return async.run(function(run)
+  return async.run(
+  ---@param run Neoagent.Run<Neoagent.LlamaListSuccess|Neoagent.AsyncFailure, nil>
+  ---@return Neoagent.LlamaListSuccess
+  function(run)
     local finished, failure, saw_downloading = false, nil, false
     local expires = deadline(self.download_timeout_ms)
     local watcher = async.run(function()
@@ -397,6 +515,8 @@ function Client:download_and_wait(model, on_progress)
   end, { error_kind = "provider" })
 end
 
+---@param opts Neoagent.LlamaClientOptions
+---@return Neoagent.LlamaClient
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.server_url) == "string" and opts.server_url ~= "",

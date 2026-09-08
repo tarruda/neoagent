@@ -1,19 +1,28 @@
+local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local sandbox = require("neoagent.sandbox")
 local windows = require("neoagent.sandbox.windows")
 local Workspace = require("neoagent.workspace")
+local fake_model = require("tests.helpers.fake_model")
 
+---@generic T, E
+---@param run Neoagent.Run<T, E>
+---@param timeout? integer
+---@return T
 local function wait(run, timeout)
   assert(vim.wait(timeout or 30000, function() return run:is_done() end, 10))
-  local result = run:result()
-  if type(result) == "table" and result.ok == false then
-    assert.is_true(result.ok,
-      result.error and result.error.message or "sandbox operation failed")
+  local result = assert(run:result())
+  if type(result) == "table" and rawget(result, "ok") == false then
+    assert.is_true(false, require("neoagent.util").normalize_error(
+      rawget(result, "error"), "sandbox").message)
   end
   return result
 end
 
+---@param argv string[]
+---@param opts Neoagent.SandboxExecOptions<unknown>
+---@return Neoagent.ProcessResult
 local function run(argv, opts)
   return wait(async.run(function()
     return sandbox.sandbox_exec(argv, opts)
@@ -26,12 +35,19 @@ describe("neoagent Windows sandbox", function()
     return
   end
 
+  ---@type string
   local root
+  ---@type Neoagent.SandboxStatus
   local status
+  ---@type table<string, string>
   local environment
+  ---@type string
   local readonly
+  ---@type string
   local secret
 
+  ---@param network? Neoagent.SandboxNetwork
+  ---@return Neoagent.SandboxProfile
   local function profile(network)
     return {
       id = "windows-live",
@@ -53,13 +69,15 @@ describe("neoagent Windows sandbox", function()
     }
   end
 
+  ---@param extra? {profile?: Neoagent.SandboxProfile, timeout_ms?: integer, kill_grace_ms?: integer}
+  ---@return Neoagent.SandboxExecOptions<unknown>
   local function options(extra)
     return vim.tbl_extend("force", {
       os = "Windows",
       profile = profile(),
       cwd = root,
       env = environment,
-      capabilities = status.capabilities,
+      capabilities = assert(status.capabilities),
       nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath,
     }, extra or {})
   end
@@ -78,7 +96,7 @@ describe("neoagent Windows sandbox", function()
       PATH = assert(vim.env.PATH),
       PATHEXT = vim.env.PATHEXT or ".COM;.EXE;.BAT;.CMD",
       SystemRoot = assert(vim.env.SystemRoot),
-      WINDIR = vim.env.WINDIR or vim.env.SystemRoot,
+      WINDIR = vim.env.WINDIR or assert(vim.env.SystemRoot),
       COMSPEC = assert(vim.env.COMSPEC),
       TEMP = windows.temporary_root(),
       TMP = windows.temporary_root(),
@@ -113,57 +131,97 @@ describe("neoagent Windows sandbox", function()
     local execute = sandbox.new({
       platform = windows,
       profile = active,
-      capabilities = status.capabilities,
+      capabilities = assert(status.capabilities),
       nvim = vim.env.NEOAGENT_NVIM or vim.v.progpath,
     }):wrap()
     local context = {
-      context = {
-        workspace = Workspace.new({ root = root, cwd = root }),
-        agent = "Windows sandbox",
-      },
+      workspace = Workspace.new({ root = root, cwd = root }),
+      agent = "Windows sandbox",
     }
+    ---@param argv string[]
+    ---@return Neoagent.ToolResult
     local function command(argv)
-      return wait(async.run(function()
-        return execute({
-          execute = function(_, ctx)
-            local process_result = ctx.process(argv, { cwd = root })
-            local output = process_result.output
-            if output == "" then output = "(no output)" end
-            return {
-              content = { { type = "text", text = output } },
-              details = { exit_code = process_result.code },
-              isError = process_result.code ~= 0,
-            }
-          end,
-        }, {}, context)
-      end), 60000)
+      ---@type Neoagent.ToolResult?
+      local result
+      ---@async
+      ---@param ctx Neoagent.ToolContext<unknown>
+      ---@return Neoagent.ToolResult
+      local function execute_command(_, ctx)
+        local process_result = require("neoagent.tools.common").process(ctx, argv, { cwd = root })
+        local output = process_result.output
+        if output == "" then output = "(no output)" end
+        return {
+          content = { { type = "text", text = output } },
+          details = { exit_code = process_result.code },
+          isError = process_result.code ~= 0,
+        }
+      end
+      ---@type Neoagent.Tool<unknown>
+      local tool = {
+        name = "command", description = "Run a sandboxed command",
+        input_schema = { type = "object", properties = {} },
+        execute = execute_command,
+      }
+      wait(require("neoagent.agent_loop").run({
+        model = fake_model.new({
+          { result = fake_model.assistant({ {
+            type = "toolCall", id = "command", name = "command", arguments = {},
+          } }, "toolUse") },
+          { result = fake_model.assistant({}) },
+        }),
+        messages = {}, tools = { tool }, context = context,
+        commit_message = function() return true end,
+        execute_tool = function(selected, arguments, ctx)
+          result = execute(selected, arguments, ctx)
+          return result
+        end,
+      }), 60000)
+      return (assert(result))
     end
+    ---@param value Neoagent.ToolResult
+    ---@return string
+    local function content(value)
+      local block = assert(value.content[1])
+      assert(block.type == "text")
+      return block.text
+    end
+    ---@param value Neoagent.ToolResult
+    ---@return Neoagent.JsonObject
+    local function details(value)
+      local data = value.details
+      assert(type(data) == "table")
+      ---@cast data Neoagent.JsonObject
+      return data
+    end
+    ---@param value Neoagent.ToolResult
     local function assert_ordinary(value)
       assert.is_true(value.isError)
-      assert.is_nil(value.details.sandbox)
-      assert.is_nil(value.content[1].text:find(
-        "blocked by the sandbox", 1, true))
+      assert.is_nil(details(value).sandbox)
+      assert.is_nil((content(value):find(
+        "blocked by the sandbox", 1, true)))
     end
+    ---@param value Neoagent.ToolResult
     local function assert_restricted(value)
       assert.is_true(value.isError)
-      assert.is_true(value.details.sandbox.ran_restricted)
+      assert.is_true(details(value).sandbox.ran_restricted)
       assert.matches("blocked by the sandbox",
-        value.content[1].text, 1, true)
+        content(value), 1, true)
     end
 
     local search_path = vim.fs.joinpath(root, "no-match.txt")
     assert(fs.write_all(search_path, "present\r\n"))
     local findstr = vim.fs.joinpath(
-      vim.env.SystemRoot, "System32", "findstr.exe")
+      assert(vim.env.SystemRoot), "System32", "findstr.exe")
     local no_match = command({
       findstr, "/l", "/c:absent", search_path,
     })
     assert_ordinary(no_match)
-    assert.are.equal(1, no_match.details.exit_code)
+    assert.are.equal(1, details(no_match).exit_code)
 
     local git = vim.fn.exepath("git")
     assert.is_not.equal("", git)
     local git_parent = vim.fs.dirname(vim.fs.dirname(git))
+    ---@type string?
     local bash
     for _, candidate in ipairs({
       vim.fs.joinpath(git_parent, "bin", "bash.exe"),
@@ -174,7 +232,7 @@ describe("neoagent Windows sandbox", function()
     assert.is_string(bash)
     local function bash_command(script)
       return command({
-        bash, "--noprofile", "--norc", "-c", script,
+        assert(bash), "--noprofile", "--norc", "-c", script,
       })
     end
 
@@ -249,9 +307,9 @@ describe("neoagent Windows sandbox", function()
       'type "' .. vim.fs.joinpath(secret, "value") .. '"',
     }, options())
     assert.are_not.equal(0, value.code)
-    assert.is_nil(value.output:find("classified", 1, true))
-    assert.is_true(status.capabilities.windows_filtering_platform)
-    assert.is_true(status.capabilities.restricted_token)
+    assert.is_nil((value.output:find("classified", 1, true)))
+    assert.is_true(assert(status.capabilities).windows_filtering_platform)
+    assert.is_true(assert(status.capabilities).restricted_token)
   end)
 
   it("protects future carveouts and removes its owned placeholder", function()
@@ -277,7 +335,7 @@ describe("neoagent Windows sandbox", function()
     local listener_error
     assert(listener:listen(8, function(err)
       if err then listener_error = err return end
-      local client = vim.uv.new_tcp()
+      local client = assert(vim.uv.new_tcp())
       local ok, accept_err = listener:accept(client)
       if not ok then
         listener_error = accept_err
@@ -300,7 +358,7 @@ describe("neoagent Windows sandbox", function()
       end, 10)
     end
     listener:close()
-    assert.is_true(completed, tostring(value))
+    assert(completed, tostring(value))
     assert.are.equal(0, value.code, value.stderr)
     assert.are.equal("online", value.stdout)
     assert.is_nil(listener_error)
@@ -331,9 +389,9 @@ describe("neoagent Windows sandbox", function()
       "-ExecutionPolicy", "Bypass", "-File", parent,
     }, options({ timeout_ms = 500, kill_grace_ms = 0 }))
     assert.is_true(value.timed_out)
-    assert.is_false(vim.wait(5000, function()
+    assert.is_false((vim.wait(5000, function()
       return vim.uv.fs_stat(escaped) ~= nil
-    end, 20))
+    end, 20)))
     assert.is_nil(vim.uv.fs_stat(escaped))
 
     value = run({

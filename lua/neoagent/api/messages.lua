@@ -5,6 +5,8 @@ local M = {}
 local USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)"
 local TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"
 
+---@param model Neoagent.MessageTarget
+---@return boolean
 local function supports_images(model)
   assert(type(model) == "table" and type(model.input) == "table"
       and vim.tbl_contains(model.input, "text"),
@@ -12,8 +14,11 @@ local function supports_images(model)
   return vim.tbl_contains(model.input, "image")
 end
 
+---@param content Neoagent.InputBlock[]
+---@param placeholder string
+---@return Neoagent.InputBlock[]
 local function replace_images(content, placeholder)
-  if type(content) ~= "table" then return content end
+  ---@type Neoagent.InputBlock[]
   local result = {}
   local previous_was_placeholder = false
   for _, block in ipairs(content) do
@@ -30,13 +35,21 @@ local function replace_images(content, placeholder)
   return result
 end
 
+---@param message Neoagent.Message
+---@param content Neoagent.AssistantBlock[]|Neoagent.InputBlock[]
+---@return Neoagent.Message
 local function with_content(message, content)
   local result = {}
   for key, value in pairs(message) do result[key] = value end
   result.content = content
+  -- The callers retain the role and replace content with blocks valid for that role.
+  ---@cast result Neoagent.Message
   return result
 end
 
+---@param message Neoagent.Message
+---@param model Neoagent.MessageTarget
+---@return TypeGuard<Neoagent.AssistantMessage>
 local function foreign_assistant(message, model)
   return message.role == "assistant" and (
     (message.api ~= nil and message.api ~= model.api)
@@ -44,7 +57,10 @@ local function foreign_assistant(message, model)
     or (message.model ~= nil and message.model ~= model.id))
 end
 
+---@param content Neoagent.AssistantBlock[]
+---@return Neoagent.AssistantBlock[]
 local function portable_content(content)
+  ---@type Neoagent.AssistantBlock[]
   local result = {}
   for _, block in ipairs(content) do
     if block.type == "thinking" then
@@ -60,6 +76,9 @@ local function portable_content(content)
   return result
 end
 
+---@param messages Neoagent.Message[]
+---@param model Neoagent.MessageTarget
+---@return Neoagent.Message[]
 function M.for_model(messages, model)
   assert(type(messages) == "table" and vim.islist(messages),
     "messages must be a list")
@@ -70,6 +89,7 @@ function M.for_model(messages, model)
     end
   end
   local images = supports_images(model)
+  ---@type Neoagent.Message[]
   local result = {}
   local changed = false
   for index, message in ipairs(messages) do

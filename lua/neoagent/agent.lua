@@ -1,3 +1,64 @@
+---@class Neoagent.AgentState: Neoagent.SessionLifecycleState
+---@field request_selection Neoagent.RequestSelection
+---@field next_submission_id integer
+---@field run_id integer
+---@field destroyed boolean
+---@field destroy_runtimes? fun()
+---@field workspace? Neoagent.Workspace
+---@field session_id table
+---@field toolset Neoagent.AgentToolset
+---@field applet? Neoagent.AgentApplet
+---@field dialogs Neoagent.Dialogs
+---@field workspace_settings? Neoagent.WorkspaceSettings
+---@field workspace_model_pending boolean
+---@field context_usage_cache? Neoagent.AgentContextCache
+---@field provider_runtimes Neoagent.ProviderRuntimes
+---@field provider_id? string
+---@field provider_unsubscribes (fun())[]
+---@field presentation_runs table<table, Neoagent.PresentationRun>
+---@field publication_revision integer
+---@field listeners table<integer, fun(publication: Neoagent.AgentPublication)>
+---@field next_listener_id integer
+---@field activity_listeners table<integer, fun(activity: Neoagent.AgentActivitySnapshot)>
+---@field next_activity_listener_id integer
+---@field attention table<'dialog'|'presentation', Neoagent.AgentAttention>
+---@field last_activity? Neoagent.AgentActivitySnapshot
+---@field pending_warning? string
+---@field release_exit? fun()
+
+---@class Neoagent.ActivityOutcome
+---@field ok boolean
+---@field error? Neoagent.Error
+
+---@class Neoagent.AgentCompletion: Neoagent.ActivityOutcome
+---@field status 'succeeded'|'cancelled'|'failed'
+---@field message_count integer
+---@field stop_reason? string
+---@field usage? Neoagent.Usage
+
+---@class Neoagent.AgentContext
+---@field name? string|false
+---@field model? string
+---@field thinking? string|false
+---@field workspace? string
+---@field position? Neoagent.UiPosition
+---@field state? string
+---@field context_usage? Neoagent.ContextDisplay|false
+---@field provider_status? string|false
+---@field inference_stats? {prompt_tokens_per_second?: number, generation_tokens_per_second?: number}|false
+---@field steering? string[]
+
+---@class Neoagent.CompactionStartEvent
+---@field type 'compaction_start'
+---@field reason string
+
+---@class Neoagent.CompactionEndEvent
+---@field type 'compaction_end'
+---@field reason string
+---@field result Neoagent.CompactionResult
+
+---@alias Neoagent.AgentEvent Neoagent.AgentLoopEvent|Neoagent.CompactionEvent|Neoagent.CompactionStartEvent|Neoagent.CompactionEndEvent
+
 local config = require("neoagent.config")
 local agent_loop = require("neoagent.agent_loop")
 local async = require("neoagent.async")
@@ -8,6 +69,86 @@ local session_lifecycle = require("neoagent.agent.session_lifecycle")
 local thinking = require("neoagent.thinking")
 local util = require("neoagent.util")
 local workspace_preferences = require("neoagent.workspace_preferences")
+
+---@class Neoagent.AgentContextCache
+---@field session Neoagent.Session
+---@field leaf? string
+---@field model? Neoagent.Model
+---@field context_window? number
+---@field live_usage? Neoagent.LiveContextUsage
+---@field value Neoagent.ContextDisplay|false
+
+---@class Neoagent.AgentAttention
+---@field kind 'dialog'|'input'|'select'|'notice'
+---@field label string
+
+---@class Neoagent.AgentActivitySnapshot
+---@field state 'idle'|'working'|'waiting'
+---@field detail? string
+---@field attention Neoagent.AgentAttention|false
+
+---@class Neoagent.AgentSummary
+---@field id string
+---@field profile_id? string
+---@field session_id string
+---@field label string
+---@field workspace? string
+---@field model string
+---@field activity Neoagent.AgentActivitySnapshot
+
+---@class Neoagent.AgentMessagesPublication
+---@field type 'messages'
+---@field messages Neoagent.TranscriptMessage[]
+
+---@class Neoagent.AgentContextPublication
+---@field type 'context'
+---@field context Neoagent.AgentContext
+
+---@alias Neoagent.AgentUpdate Neoagent.AgentRunPublication|Neoagent.AgentMessagesPublication|Neoagent.AgentContextPublication
+---@class Neoagent.PublishedAgentEvent: Neoagent.AgentEventPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentFinish: Neoagent.AgentFinishPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentMessages: Neoagent.AgentMessagesPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentContext: Neoagent.AgentContextPublication
+---@field revision integer
+
+---@class Neoagent.PublishedAgentSubmission: Neoagent.AgentSubmissionAccepted
+---@field revision integer
+
+---@alias Neoagent.AgentPublication Neoagent.PublishedAgentEvent|Neoagent.PublishedAgentFinish|Neoagent.PublishedAgentMessages|Neoagent.PublishedAgentContext|Neoagent.PublishedAgentSubmission
+
+---@class Neoagent.AgentSnapshot
+---@field revision integer
+---@field messages Neoagent.TranscriptMessage[]
+---@field context Neoagent.AgentContext
+---@field events Neoagent.AgentEvent[]
+---@field result? Neoagent.AgentCompletion
+
+---@class Neoagent.AgentRuntimeOptions
+---@field workspace_trust? Neoagent.WorkspaceTrust
+---@field runtimes? Neoagent.ProviderRuntimes
+---@field destroy_runtimes? fun()
+---@field presenter? Neoagent.Presenter
+---@field dialogs? Neoagent.Dialogs
+---@field applet? Neoagent.AgentApplet
+---@field auth? Neoagent.AuthManager
+---@field id? string
+---@field profile_id? string
+---@field label? string
+---@field initial_selection? Neoagent.InitialSelection
+---@field host_effects? Applet.HostEffectsModule
+---@field interaction? fun(options: Neoagent.AgentInteractionOptions): Neoagent.ChatRun
+---@field compaction_run? fun(options: Neoagent.AgentCompactionOptions): Neoagent.Run<Neoagent.CompactionResult, Neoagent.CompactionEvent>
+---@field session? Neoagent.Session
+---@field workspace? string
+---@field restore_session_selection? boolean
+---@field commit_workspace_preference? boolean
+---@field transport? Neoagent.ByteBackend
 
 local M = {}
 local next_id = 0
@@ -20,6 +161,9 @@ local ui_positions = {
   center = true,
 }
 
+---@param options Neoagent.Config<Neoagent.AgentToolEnvironment>
+---@param runtime Neoagent.AgentRuntimeOptions?
+---@return Neoagent.Agent
 function M.from_config(options, runtime)
   assert(type(options) == "table", "agent configuration is required")
   runtime = runtime or {}
@@ -159,13 +303,64 @@ function M.from_config(options, runtime)
   local agent_id = runtime.id or "agent-" .. next_id
   local profile_id = runtime.profile_id
   local agent_label = runtime.label or options.name or agent_id
+  ---@class Neoagent.Agent
+  ---@field _neoagent_agent true
   local agent = { _neoagent_agent = true }
+  local runtimes = runtime.runtimes or {}
+  local auth_manager = runtime.auth
+  if not auth_manager then
+    auth_manager = require("neoagent.auth").configured({ auth = options.auth })
+  end
+  local request_selection = RequestSelection.new({
+    config = options,
+    auth = auth_manager,
+    runtimes = runtimes,
+    initial_selection = runtime.initial_selection,
+    request_context = function()
+      return {
+        workspace = workspace_root,
+        agent_id = agent_id,
+        session_id = initial_session:id(),
+      }
+    end,
+  })
+
+  ---@param message string
+  ---@param level integer?
+  local function report(message, level)
+    return presenter:notify({
+      message = message,
+      level = level or vim.log.levels.INFO,
+    })
+  end
+
+
+  ---@param message string
+  ---@param level integer?
+  local function notify(message, level)
+    return report("neoagent: " .. message, level)
+  end
+
+  local dialogs = runtime.dialogs or require("neoagent.dialog").new({
+    report = function(message, level) report(message, level) end,
+  })
+
+  ---@type Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
+  local tools
+  if options._tools_supplied then
+    tools = util.copy(assert(options.tools))
+  else
+    tools = require("neoagent.tools").coding({
+      shell_timeout = options.shell_timeout,
+    }) --[[@as Neoagent.Tool<Neoagent.AgentToolEnvironment>[] ]]
+  end
+  ---@type Neoagent.AgentState
   local state = {
     applet = runtime.applet,
-    dialogs = runtime.dialogs,
+    dialogs = dialogs,
     session = initial_session,
     session_id = initial_session:identity(),
-    request_selection = nil,
+    request_selection = request_selection,
     workspace = nil,
     workspace_settings = nil,
     workspace_model_pending = runtime.commit_workspace_preference == true
@@ -177,7 +372,7 @@ function M.from_config(options, runtime)
     context_usage_cache = nil,
     provider_status = nil,
     inference_stats = nil,
-    provider_runtimes = runtime.runtimes or {},
+    provider_runtimes = runtimes,
     provider_id = nil,
     provider_unsubscribes = {},
     presentation_runs = {},
@@ -197,36 +392,18 @@ function M.from_config(options, runtime)
     destroyed = false,
     pending_warning = options._sandbox_warning,
     toolset = {
-      tools = options._tools_supplied and util.copy(options.tools)
-        or require("neoagent.tools").coding({
-          shell_timeout = options.shell_timeout,
-        }),
+      tools = tools,
       execute_tool = options.execute_tool,
       system_prompt = options._sandbox_system_prompt,
     },
   }
-  local auth_manager = runtime.auth
-  if not auth_manager then
-    auth_manager = require("neoagent.auth").configured(options)
-  end
-  state.request_selection = RequestSelection.new({
-    config = options,
-    auth = auth_manager,
-    runtimes = state.provider_runtimes,
-    initial_selection = runtime.initial_selection,
-    request_context = function()
-      return {
-        workspace = workspace_root,
-        agent_id = agent_id,
-        session_id = state.session:id(),
-      }
-    end,
-  })
-
+  ---@return string
   local function trust_cwd()
     return state.workspace and state.workspace.root or vim.fn.getcwd()
   end
 
+  ---@param cwd string?
+  ---@return true
   local function require_workspace_trust(cwd)
     if not workspace_trust then return true end
     local trusted, err = workspace_trust:check(cwd or trust_cwd())
@@ -234,22 +411,9 @@ function M.from_config(options, runtime)
     return true
   end
 
-  local function report(message, level)
-    return presenter:notify({
-      message = message,
-      level = level or vim.log.levels.INFO,
-    })
-  end
-
-
-  local function notify(message, level)
-    return report("neoagent: " .. message, level)
-  end
-
-  state.dialogs = state.dialogs or require("neoagent.dialog").new({
-    report = function(message, level) report(message, level) end,
-  })
-
+  ---@param run Neoagent.PresentationRun
+  ---@param callback fun(result: Neoagent.PresentationResult)
+  ---@return Neoagent.PresentationRun
   local function track_presentation(run, callback)
     local token = {}
     local tracked = async.run(function()
@@ -265,6 +429,10 @@ function M.from_config(options, runtime)
     return tracked
   end
 
+  ---@param kind "select"
+  ---@param request Neoagent.SelectRequest
+  ---@param callback fun(value: string)
+  ---@return Neoagent.PresentationRun
   local function present_value(kind, request, callback)
     local run = presenter[kind](presenter, request)
     local function completed(result)
@@ -282,6 +450,9 @@ function M.from_config(options, runtime)
     return track_presentation(run, completed)
   end
 
+  ---@param choices string[]
+  ---@param callback fun(value: string)
+  ---@return Neoagent.PresentationRun
   local function present_model_choices(choices, callback)
     local models = require("neoagent.models")
     local function items(values)
@@ -330,13 +501,17 @@ function M.from_config(options, runtime)
     return tracked
   end
 
+  ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
   local function configured()
     return options
   end
 
+  ---@type fun(provider_id?: string)
   local bind_provider
+  ---@type fun(event: Neoagent.AgentEvent)
   local provider_event
 
+  ---@return Neoagent.ProviderService?
   local function model_service()
     local selected = state.request_selection:model_selection()
     local runtime = selected and state.provider_runtimes[selected.provider]
@@ -355,6 +530,7 @@ function M.from_config(options, runtime)
     state.provider_id = nil
   end
 
+  ---@return "idle"|"compacting"|"stopping"|"running"
   local function activity_state()
     local activity = state.activity
     if not activity or activity.phase == "finalizing" then return "idle" end
@@ -363,6 +539,7 @@ function M.from_config(options, runtime)
     return "running"
   end
 
+  ---@return Neoagent.AgentActivitySnapshot
   local function activity_snapshot()
     local attention = state.attention.dialog or state.attention.presentation
     if attention then
@@ -384,6 +561,7 @@ function M.from_config(options, runtime)
     return { state = "idle", attention = false }
   end
 
+  ---@return boolean
   local function publish_activity()
     local value = activity_snapshot()
     if state.last_activity and vim.deep_equal(state.last_activity, value) then
@@ -400,21 +578,25 @@ function M.from_config(options, runtime)
     return true
   end
 
+  ---@param update Neoagent.AgentUpdate
   local function publish(update)
     state.publication_revision = state.publication_revision + 1
-    local publication = util.copy(update)
+    local publication = util.copy(update) --[[@as Neoagent.AgentPublication]]
     publication.revision = state.publication_revision
     for _, listener in pairs(state.listeners) do
-      local ok, err = pcall(listener, util.copy(publication))
+      local copied = util.copy(publication)
+      local ok, err = pcall(listener, copied)
       if not ok then notify("agent listener failed: " .. tostring(err), vim.log.levels.ERROR) end
     end
     publish_activity()
   end
 
+  ---@return string
   local function model_label()
     return state.request_selection:label()
   end
 
+  ---@return Neoagent.WorkspacePreferenceDefaults
   local function preference_defaults()
     local options = configured()
     return {
@@ -424,25 +606,33 @@ function M.from_config(options, runtime)
     }
   end
 
+  ---@return Neoagent.WorkspacePreferences
   local function preferences()
     return state.request_selection:preferences()
   end
 
+  ---@param settings Neoagent.JsonObject
+  ---@param warn boolean
+  ---@return Neoagent.WorkspacePreferences
   local function scoped_workspace_settings(settings, warn)
     local accepted, issues = workspace_preferences.scope(
       settings, preference_defaults(), settings_name)
     if warn then
-      local path = state.workspace_settings:metadata().settings_path
+      local path = assert(state.workspace_settings):metadata().settings_path
       local warning = workspace_preferences.warning(issues, path)
       if warning then notify(warning, vim.log.levels.WARN) end
     end
     return accepted
   end
 
+  ---@param patch Neoagent.WorkspacePreferencesInput
+  ---@return Neoagent.JsonObject
   local function workspace_patch(patch)
     return workspace_preferences.patch(settings_name, patch)
   end
 
+  ---@param patch Neoagent.WorkspacePreferencesInput
+  ---@return true?, Neoagent.Error?
   local function save_workspace_settings(patch)
     local persistence = configured().persistence
     if not state.workspace_settings or not persistence.workspace_settings then return true end
@@ -453,6 +643,7 @@ function M.from_config(options, runtime)
     return true
   end
 
+  ---@param cwd string
   local function activate_workspace(cwd)
     local root = require("neoagent.fs").canonical(cwd)
     if state.workspace then
@@ -474,7 +665,8 @@ function M.from_config(options, runtime)
     if not options.workspace_settings then return end
     local settings, settings_err = state.workspace_settings:load()
     if not settings then
-      local path = state.workspace_settings:metadata().settings_path
+      assert(settings_err)
+      local path = assert(state.workspace_settings):metadata().settings_path
       notify(settings_err.message
         .. (settings_err.detail and ": " .. settings_err.detail or "")
         .. "; the file may be outdated, update or delete " .. path,
@@ -485,10 +677,13 @@ function M.from_config(options, runtime)
       scoped_workspace_settings(settings, true))
   end
 
+  ---@return Neoagent.Session
   local function ensure_session()
     return state.session
   end
 
+  ---@param session Neoagent.Session
+  ---@return Neoagent.TranscriptMessage[]
   local function transcript_messages(session)
     return session_lifecycle.transcript_messages(session)
   end
@@ -510,11 +705,13 @@ function M.from_config(options, runtime)
     end
   end
 
+  ---@param messages Neoagent.TranscriptMessage[]
   local function publish_messages(messages)
     sync_tools()
     publish({ type = "messages", messages = messages })
   end
 
+  ---@return true?, Neoagent.Error?
   local function commit_model_preference()
     state.session_selection_pending = false
     if not state.workspace_model_pending then return true end
@@ -538,6 +735,7 @@ function M.from_config(options, runtime)
     return true
   end
 
+  ---@return Neoagent.ModelSelection?
   local function first_available_model()
     local selected, err = require("neoagent.models").first_available(
       options, auth_manager, state.provider_runtimes)
@@ -545,6 +743,8 @@ function M.from_config(options, runtime)
     return selected
   end
 
+  ---@param selected Neoagent.ModelSelection
+  ---@return boolean
   local function configured_catalog_pending(selected)
     local configured_default = preference_defaults().default_model
     if not RequestSelection.same_model(selected, configured_default) then
@@ -558,11 +758,11 @@ function M.from_config(options, runtime)
       and runtime.catalog:snapshot().models[selected.model] == nil
   end
 
+  ---@return Neoagent.Model
   local function ensure_model()
     require_workspace_trust()
-    if state.request_selection:model() then
-      return state.request_selection:model()
-    end
+    local current = state.request_selection:model()
+    if current then return current end
     if not state.workspace then activate_workspace(workspace_root) end
     local selected = state.request_selection:candidate()
     if not selected then selected = first_available_model() end
@@ -575,6 +775,7 @@ function M.from_config(options, runtime)
       local uses_workspace_default = workspace_default ~= nil
         and RequestSelection.same_model(selected, workspace_default)
       if uses_workspace_default then
+        assert(workspace_default)
         overrides.default_model = nil
         state.request_selection:set_workspace_preferences(overrides)
         local fallback_selection = configured_default
@@ -590,7 +791,7 @@ function M.from_config(options, runtime)
           local fallback_model, fallback_err =
             state.request_selection:resolve(fallback_selection)
           if not fallback_model then error(fallback_err, 0) end
-          selected, model = fallback_selection, fallback_model
+          selected, model = assert(fallback_selection), fallback_model
         else
           notify("ignoring unavailable workspace model "
             .. selected.provider .. "/" .. selected.model, vim.log.levels.WARN)
@@ -607,13 +808,17 @@ function M.from_config(options, runtime)
     return model
   end
 
+  ---@param value string
+  ---@param tools Neoagent.Tool<Neoagent.AgentToolEnvironment>[]
+  ---@return string
   local function system_prompt(value, tools)
     require_workspace_trust()
     local options = configured()
+    local workspace = assert(state.workspace)
     local instructions_result = { files = {}, diagnostics = {} }
     if options.agent_instructions then
       instructions_result = require("neoagent.agent_instructions").discover({
-        cwd = state.workspace.root,
+        cwd = workspace.root,
         global_files = options.agent_instructions.global_files,
         project_filenames = options.agent_instructions.project_filenames,
       })
@@ -626,7 +831,7 @@ function M.from_config(options, runtime)
       end
     end
     local skills_result = options.skills and has_read and require("neoagent.skills").discover({
-      cwd = state.workspace.root,
+      cwd = workspace.root,
       global_dirs = options.skills.global_dirs,
       project_dirs = options.skills.project_dirs,
     }) or { skills = {}, diagnostics = {} }
@@ -637,7 +842,7 @@ function M.from_config(options, runtime)
     local context = {
       session = state.session,
       model = state.request_selection:model(),
-      workspace = state.workspace,
+      workspace = workspace,
       prompt = value,
       tools = tools,
       agent_instructions = instructions_result.files,
@@ -657,6 +862,8 @@ function M.from_config(options, runtime)
     return composed
   end
 
+  ---@param value Neoagent.AgentToolset
+  ---@return Neoagent.AgentToolset
   local function copy_toolset(value)
     assert(type(value) == "table" and not util.is_list(value),
       "toolset must be an object")
@@ -674,6 +881,7 @@ function M.from_config(options, runtime)
     }
   end
 
+  ---@param path string
   local function refresh_buffer(path)
     local absolute = state.workspace and state.workspace:resolve(path)
     if not absolute then return end
@@ -692,6 +900,7 @@ function M.from_config(options, runtime)
     end
   end
 
+  ---@return Neoagent.ContextDisplay|false
   local function context_usage()
     local session = state.session
     local model = state.request_selection:model()
@@ -715,6 +924,7 @@ function M.from_config(options, runtime)
     return value
   end
 
+  ---@return Neoagent.AgentContext
   local function context()
     return {
       name = options.name or false,
@@ -734,6 +944,7 @@ function M.from_config(options, runtime)
     publish({ type = "context", context = context() })
   end
 
+  ---@param provider_id string?
   bind_provider = function(provider_id)
     local runtime = provider_id and state.provider_runtimes[provider_id] or nil
     local service = runtime and runtime.service or nil
@@ -765,9 +976,9 @@ function M.from_config(options, runtime)
             and catalog:snapshot().models[selected.model] ~= nil then
           local resolved, resolve_err = pcall(ensure_model)
           if not resolved then
-            resolve_err = util.normalize_error(resolve_err, "model")
+            local failure = util.normalize_error(resolve_err, "model")
             notify("could not resolve " .. selected.provider .. "/"
-              .. selected.model .. ": " .. resolve_err.message,
+              .. selected.model .. ": " .. failure.message,
               vim.log.levels.ERROR)
           end
         end
@@ -796,6 +1007,7 @@ function M.from_config(options, runtime)
     update_context()
   end
 
+  ---@param event Neoagent.AgentEvent
   provider_event = function(event)
     local service = model_service()
     if service and type(service.on_event) == "function" then
@@ -848,6 +1060,7 @@ function M.from_config(options, runtime)
     end,
   })
 
+  ---@return true?, Neoagent.Error?
   function agent:prepare()
     local ok, err = pcall(function()
       if state.pending_warning then
@@ -856,7 +1069,7 @@ function M.from_config(options, runtime)
         report(warning, vim.log.levels.WARN)
       end
       if not state.workspace then activate_workspace(workspace_root) end
-      if workspace_trust then require_workspace_trust(state.workspace.root) end
+      if workspace_trust then require_workspace_trust(assert(state.workspace).root) end
       local selected = state.request_selection:candidate()
       if selected then
         if configured_catalog_pending(selected) then
@@ -871,42 +1084,56 @@ function M.from_config(options, runtime)
       update_context()
     end)
     if not ok then
-      err = util.normalize_error(err, "agent")
-      if err.pending ~= true then
-        notify(err.message, vim.log.levels.ERROR)
+      local failure = util.normalize_error(err, "agent")
+      if rawget(failure, "pending") ~= true then
+        notify(failure.message, vim.log.levels.ERROR)
       end
-      return nil, err
+      return nil, failure
     end
     return true
   end
 
+  ---@param text string
+  ---@return Neoagent.AgentRun|true|nil, Neoagent.Error?, integer?, ("turn"|"steering")?
   function agent:send(text)
     return runs.send(text)
   end
 
+  ---@param text string
+  ---@return true?, Neoagent.Error?, integer?, "steering"?
   function agent:steer(text)
     return runs.steer(text)
   end
 
+  ---@return string[], integer[]
   function agent:dequeue_steering()
     return runs.dequeue_steering()
   end
 
+  ---@param id integer
+  ---@return Neoagent.AgentRun?, Neoagent.Error?, integer?, "turn"?
   function agent:resubmit_steering(id)
     return runs.resubmit_steering(id)
   end
 
+  ---@param instructions string?
+  ---@return Neoagent.AgentRun?, Neoagent.Error?
   function agent:compact(instructions)
     return runs.compact(instructions)
   end
 
+  ---@return boolean
   function agent:stop()
     return runs.stop()
   end
 
+  ---@param entry_id string
+  ---@return true?, Neoagent.Error?
   function agent:branch(entry_id)
     return sessions.branch(entry_id)
   end
+  ---@param on_selected? fun(id: string)
+  ---@return true?
   function agent:select_branch(on_selected)
     if not state.session then notify("no active session") return nil end
     local entries = state.session:entries()
@@ -931,17 +1158,20 @@ function M.from_config(options, runtime)
     return true
   end
 
+  ---@param on_selected? fun(model: Neoagent.Model)
+  ---@return true?, Neoagent.Error?
   function agent:select_model(on_selected)
     local trusted, trust_err = pcall(require_workspace_trust)
     if not trusted then
-      trust_err = util.normalize_error(trust_err, "workspace_trust")
-      notify(trust_err.message, vim.log.levels.ERROR)
-      return nil, trust_err
+      local failure = util.normalize_error(trust_err, "workspace_trust")
+      notify(failure.message, vim.log.levels.ERROR)
+      return nil, failure
     end
     if state.activity then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local choices, err = require("neoagent.models").available(
       options, auth_manager, state.provider_runtimes)
     if not choices then
+      assert(err)
       notify(err.message .. (err.detail and ": " .. err.detail or ""), vim.log.levels.ERROR)
       return nil
     end
@@ -949,25 +1179,29 @@ function M.from_config(options, runtime)
     present_model_choices(choices, function(choice)
       local provider_id, model_id = choice:match("^([^/]+)/(.+)$")
       if provider_id then
-        local model = agent:set_model(provider_id, model_id)
+        local model = agent:set_model(provider_id, assert(model_id))
         if model and on_selected then on_selected(model) end
       end
     end)
     return true
   end
 
+  ---@param provider_id string
+  ---@param model_id string
+  ---@return Neoagent.Model?, Neoagent.Error?
   function agent:set_model(provider_id, model_id)
     if state.activity then notify("cannot change model while the agent is running", vim.log.levels.WARN) return nil end
     local trusted, trust_err = pcall(require_workspace_trust)
     if not trusted then
-      trust_err = util.normalize_error(trust_err, "workspace_trust")
-      notify(trust_err.message, vim.log.levels.ERROR)
-      return nil, trust_err
+      local failure = util.normalize_error(trust_err, "workspace_trust")
+      notify(failure.message, vim.log.levels.ERROR)
+      return nil, failure
     end
     if not state.workspace then activate_workspace(workspace_root) end
     local model, model_err = state.request_selection:select(
       provider_id, model_id, configured().default_thinking_level)
     if not model then
+      assert(model_err)
       notify(model_err.message, vim.log.levels.ERROR)
       return nil, model_err
     end
@@ -977,20 +1211,25 @@ function M.from_config(options, runtime)
     return model
   end
 
+  ---@return Neoagent.ThinkingLevel[]?, Neoagent.Error?
   function agent:available_thinking_levels()
     local ok, model = pcall(ensure_model)
     if not ok then return nil, util.normalize_error(model, "model") end
     return state.request_selection:levels()
   end
 
+  ---@return Neoagent.ThinkingLevel?
   function agent:get_thinking_level()
     return state.request_selection:thinking_level()
   end
 
+  ---@param level unknown
+  ---@return Neoagent.ThinkingLevel?, Neoagent.Error?
   function agent:set_thinking_level(level)
     if state.activity then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
     local selected, err = state.request_selection:set_thinking_level(level)
     if not selected then
+      assert(err)
       notify(err.message, err.message:match("not supported")
         and vim.log.levels.WARN or vim.log.levels.ERROR)
       return nil, err
@@ -999,12 +1238,14 @@ function M.from_config(options, runtime)
     return selected
   end
 
+  ---@return Neoagent.ThinkingLevel?, Neoagent.Error?
   function agent:cycle_thinking_level()
     if state.activity then notify("cannot change thinking level while the agent is running", vim.log.levels.WARN) return nil end
     local ok, model = pcall(ensure_model)
     if not ok then notify(util.normalize_error(model, "model").message, vim.log.levels.ERROR) return nil end
     local level, err = state.request_selection:cycle_thinking_level()
     if not level then
+      assert(err)
       notify(err.message, vim.log.levels.WARN)
       return nil, err
     end
@@ -1013,6 +1254,8 @@ function M.from_config(options, runtime)
     return level
   end
 
+  ---@param position Neoagent.UiPosition
+  ---@return Neoagent.UiPosition?, Neoagent.Error?
   function agent:set_ui_position(position)
     if not ui_positions[position] then return nil, util.error("ui", "invalid window position") end
     if not state.workspace then activate_workspace(workspace_root) end
@@ -1025,11 +1268,17 @@ function M.from_config(options, runtime)
     return position
   end
 
+  ---@return string
   function agent:id() return agent_id end
+  ---@return string?
   function agent:profile_id() return profile_id end
+  ---@return string
   function agent:label() return agent_label end
+  ---@return Neoagent.AgentApplet?
   function agent:applet() return state.applet end
 
+  ---@param applet Neoagent.AgentApplet
+  ---@return Neoagent.AgentApplet
   function agent:attach_applet(applet)
     assert(not state.destroyed, "Agent is destroyed")
     assert(type(applet) == "table"
@@ -1041,6 +1290,8 @@ function M.from_config(options, runtime)
     return applet
   end
 
+  ---@param applet Neoagent.AgentApplet
+  ---@return Neoagent.AgentApplet
   function agent:detach_applet(applet)
     assert(not state.destroyed, "Agent is destroyed")
     assert(state.applet == applet,
@@ -1049,6 +1300,9 @@ function M.from_config(options, runtime)
     return applet
   end
 
+  ---@param source "dialog"|"presentation"
+  ---@param value Neoagent.AgentAttention|false|nil
+  ---@return Neoagent.AgentActivitySnapshot
   function agent:set_attention(source, value)
     assert(source == "dialog" or source == "presentation",
       "attention source must be dialog or presentation")
@@ -1069,10 +1323,12 @@ function M.from_config(options, runtime)
     return activity_snapshot()
   end
 
+  ---@return Neoagent.AgentActivitySnapshot
   function agent:activity()
     return util.copy(activity_snapshot())
   end
 
+  ---@return Neoagent.AgentSummary
   function agent:summary()
     return {
       id = agent_id,
@@ -1085,6 +1341,8 @@ function M.from_config(options, runtime)
     }
   end
 
+  ---@param listener fun(activity: Neoagent.AgentActivitySnapshot)
+  ---@return fun()
   function agent:subscribe_activity(listener)
     assert(type(listener) == "function",
       "agent activity listener must be a function")
@@ -1104,6 +1362,8 @@ function M.from_config(options, runtime)
     end
   end
 
+  ---@param listener fun(publication: Neoagent.AgentPublication)
+  ---@return fun()
   function agent:subscribe(listener)
     assert(type(listener) == "function", "agent listener must be a function")
     state.next_listener_id = state.next_listener_id + 1
@@ -1117,6 +1377,7 @@ function M.from_config(options, runtime)
     end
   end
 
+  ---@return Neoagent.AgentSnapshot
   function agent:snapshot()
     local messages = state.session and transcript_messages(state.session) or {}
     sync_tools()
@@ -1129,18 +1390,26 @@ function M.from_config(options, runtime)
     }
   end
 
+  ---@return Neoagent.Session
   function agent:get_session() return state.session end
+  ---@return Neoagent.Model?
   function agent:get_model() return state.request_selection:model() end
+  ---@return Neoagent.ModelSelection?
   function agent:get_model_selection()
     return state.request_selection:model_selection()
   end
+  ---@return Neoagent.Workspace?
   function agent:get_workspace() return state.workspace end
+  ---@return Neoagent.Dialogs
   function agent:dialogs() return state.dialogs end
 
+  ---@return Neoagent.AgentToolset
   function agent:get_toolset()
     return copy_toolset(state.toolset)
   end
 
+  ---@param value Neoagent.AgentToolset
+  ---@return Neoagent.AgentToolset?, Neoagent.Error?
   function agent:set_toolset(value)
     if state.activity then
       local err = util.error("agent",
@@ -1157,9 +1426,13 @@ function M.from_config(options, runtime)
     return previous
   end
 
+  ---@return Neoagent.Config<Neoagent.AgentToolEnvironment>
   function agent:config() return util.copy(options) end
+  ---@return Neoagent.Presenter
   function agent:presenter() return presenter end
+  ---@return boolean
   function agent:is_running() return state.activity ~= nil end
+  ---@return boolean
   function agent:is_destroyed() return state.destroyed end
 
   function agent:destroy()
@@ -1194,12 +1467,19 @@ function M.from_config(options, runtime)
   return agent
 end
 
+---@param opts Neoagent.ConfigInput<Neoagent.AgentToolEnvironment>?
+---@param runtime Neoagent.AgentRuntimeOptions?
+---@return Neoagent.Agent
 function M.new(opts, runtime)
   local options = config.resolve(opts)
+  ---@type Neoagent.AgentRuntimeOptions
   local selected = {}
   for key, value in pairs(runtime or {}) do selected[key] = value end
   local destroy_runtimes
   if selected.runtimes == nil then
+    ---@param message string
+    ---@param level integer
+    ---@return unknown
     local function report(message, level)
       if selected.presenter then
         return selected.presenter:notify({ message = message, level = level })
@@ -1219,7 +1499,7 @@ function M.new(opts, runtime)
         transport or require("neoagent.transport.curl"))
     end
     local auth = selected.auth or require("neoagent.auth").configured(
-      options, { transport = transport })
+      { auth = options.auth }, { transport = transport })
     selected.auth = auth
     local runtimes, err = require("neoagent.provider_runtimes").compose(
       options, {
@@ -1235,6 +1515,7 @@ function M.new(opts, runtime)
       error(err, 0)
     end
     selected.runtimes = runtimes
+    ---@type Neoagent.ProviderRuntimes?
     local owned = runtimes
     destroy_runtimes = function()
       local current = owned

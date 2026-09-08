@@ -6,6 +6,8 @@ local M = {}
 local no_source_options = require("neoagent.model_catalog.source").no_options
 local CLOUD_TTL_MS = 14 * 24 * 60 * 60 * 1000
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function response_thinking(levels)
   return efforts.openai_responses(levels)
 end
@@ -15,13 +17,19 @@ local excluded_openai_kinds = {
   "transcribe", "whisper", "audio", "realtime", "search",
 }
 
+---@param model Neoagent.ModelConfigInput
+---@return boolean
 local function conversational(model)
+  local id = model.id
+  assert(type(id) == "string", "model rule input must contain an id")
   for _, pattern in ipairs(excluded_openai_kinds) do
-    if model.id:find(pattern) then return false end
+    if id:find(pattern) then return false end
   end
   return true
 end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return Neoagent.ModelTransform
 local function thinking_levels(levels)
   return function(model)
     model.thinking = response_thinking(levels)
@@ -29,6 +37,8 @@ local function thinking_levels(levels)
   end
 end
 
+---@param model Neoagent.ModelConfigInput
+---@return Neoagent.ModelConfigInput
 local function without_thinking(model)
   model.thinking = nil
   return model
@@ -105,8 +115,10 @@ local transform_openai = rules.compile({
   },
   {
     match = function(model)
-      return model.id:match("^gpt%-5%.4%-mini") ~= nil
-        or model.id:match("^gpt%-5%.4%-nano") ~= nil
+      local id = model.id
+      assert(type(id) == "string", "model rule input must contain an id")
+      return id:match("^gpt%-5%.4%-mini") ~= nil
+        or id:match("^gpt%-5%.4%-nano") ~= nil
     end,
     set = { context_window = 400000 },
   },
@@ -158,9 +170,12 @@ local openai_ids = {
   "o3", "o3-deep-research", "o3-mini", "o3-pro", "o4-mini",
   "o4-mini-deep-research",
 }
+---@type Neoagent.DiscoveredModel[]
 local openai_seed = {}
 for _, id in ipairs(openai_ids) do openai_seed[#openai_seed + 1] = { id = id } end
 
+---@param levels Neoagent.ThinkingLevel[]
+---@return Neoagent.ThinkingOptions
 local function codex_thinking(levels)
   local result = {}
   for _, level in ipairs(levels) do
@@ -170,7 +185,10 @@ local function codex_thinking(levels)
   return result
 end
 
+---@param model Neoagent.CodexCatalogModel
+---@return Neoagent.ModelConfig
 local function transform_codex(model)
+  ---@type Neoagent.ModelConfig
   local result = {
     id = model.id,
     api = "openai-codex-responses",
@@ -193,6 +211,7 @@ end
 M.transform_openai = transform_openai
 M.transform_codex = transform_codex
 
+---@type Neoagent.ProviderDefinition
 M.openai = {
   api = "openai-responses",
   base_url = "https://api.openai.com/v1",
@@ -212,6 +231,7 @@ M.openai = {
   service = require("neoagent.providers.openai").new,
 }
 
+---@type Neoagent.ProviderDefinition
 M["openai-codex"] = {
   api = "openai-codex-responses",
   base_url = "https://chatgpt.com/backend-api",

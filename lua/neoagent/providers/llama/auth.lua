@@ -6,12 +6,23 @@ local M = {}
 
 local DEFAULT_SERVER_URL = "http://127.0.0.1:8080"
 
+---@class Neoagent.LlamaAuthOptions
+---@field transport? Neoagent.ByteBackend
+
+---@async
+---@param interaction Neoagent.LoginInteraction
+---@param prompt Neoagent.LoginPrompt
+---@return string?
 local function await_prompt(interaction, prompt)
-  return async.await(function(done)
+  return async.await(
+  ---@param done Neoagent.AwaitCallbacks<string?>
+  function(done)
     return interaction.prompt(prompt, done)
   end)
 end
 
+---@param credential? Neoagent.ApiKeyCredential
+---@return string?
 local function server_url(credential)
   local value = credential and credential.env
     and credential.env.LLAMA_BASE_URL or nil
@@ -20,14 +31,20 @@ local function server_url(credential)
   end
 end
 
+---@param opts? Neoagent.LlamaAuthOptions
+---@return Neoagent.AuthMethod<Neoagent.ApiKeyCredential>
 function M.new(opts)
   opts = opts or {}
   local transport = opts.transport
+  ---@type Neoagent.AuthMethod<Neoagent.ApiKeyCredential>
   local method = {
     type = "api_key",
     name = "llama.cpp server",
+    ---@param interaction Neoagent.LoginInteraction
     login = function(interaction)
-      return async.run(function()
+      return async.run(
+      ---@return Neoagent.CredentialSuccess<Neoagent.ApiKeyCredential>
+      function()
         local entered_url = await_prompt(interaction, {
           type = "text",
           message = "llama.cpp server URL",
@@ -44,6 +61,7 @@ function M.new(opts)
           transport = transport,
         }):list():await()
         if not listed.ok then
+          ---@type Neoagent.ProviderHttpError
           local err = listed.error or util.error("auth",
             "llama.cpp server check failed")
           if err.status ~= 401 and err.status ~= 403 then error(err, 0) end
@@ -63,15 +81,14 @@ function M.new(opts)
           if not verified.ok then error(verified.error, 0) end
           anonymous = false
         end
+        local environment = { LLAMA_BASE_URL = selected }
+        if anonymous then environment.LLAMA_ANONYMOUS = "1" end
         return {
           ok = true,
           credential = {
             type = "api_key",
             key = key,
-            env = {
-              LLAMA_BASE_URL = selected,
-              LLAMA_ANONYMOUS = anonymous and "1" or nil,
-            },
+            env = environment,
           },
         }
       end, { error_kind = "auth" })

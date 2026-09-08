@@ -1,7 +1,38 @@
 local compiler = require("neoagent.sandbox.windows.compile")
 local path_module = require("neoagent.sandbox.path")
-local protocol = require("neoagent.sandbox.windows.protocol")
+local protocol = require("neoagent.sandbox.protocol")
 local util = require("neoagent.util")
+
+---@class Neoagent.WindowsSandboxProfile: Neoagent.SandboxProfile
+---@field windows Neoagent.WindowsSandboxPolicy
+
+---@class Neoagent.WindowsSandboxRequest: Neoagent.SandboxRequest
+---@field fs? Neoagent.SandboxFilesystemOperation
+---@field probe? {write: string, deny_write: string, deny_read: string}
+
+---@alias Neoagent.WindowsSandboxMode 'exec'|'fs'|'probe'
+
+---@class Neoagent.WindowsSandboxSpec
+---@field v 1
+---@field mode Neoagent.WindowsSandboxMode
+---@field profile Neoagent.SandboxProfile
+---@field cwd? string
+---@field argv? string[]
+---@field env table<string, string>
+---@field fs? Neoagent.SandboxFilesystemOperation
+---@field probe? {write: string, deny_write: string, deny_read: string}
+---@field timeout_ms? integer
+---@field runner {argv: string[], read_roots: string[], script: string, version: 'script'}
+
+---@class Neoagent.WindowsSandboxCapture
+---@field decoder Neoagent.SandboxProtocolDecoder
+---@field feed fun(data: string)
+---@field values fun(): string, string, string, string?
+
+---@class Neoagent.WindowsSandboxProbe
+---@field request Neoagent.WindowsSandboxRequest
+---@field spec Neoagent.WindowsSandboxSpec
+---@field root string
 
 local M = {
   name = "windows",
@@ -25,12 +56,17 @@ local CAPABILITIES = {
   windows_filtering_platform = true,
 }
 
+---@param value unknown
+---@return string
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
   if #value > 1000 then value = value:sub(1, 997) .. "..." end
   return value
 end
 
+---@param stage string
+---@param message unknown
+---@return Neoagent.SandboxStatus
 local function unavailable(stage, message)
   return {
     ok = false,
@@ -40,6 +76,7 @@ local function unavailable(stage, message)
   }
 end
 
+---@return string?
 local function runtime_file()
   local matches = vim.api.nvim_get_runtime_file(
     "scripts/sandbox_windows_runtime.lua", false)
@@ -49,47 +86,61 @@ local function runtime_file()
   return stat and stat.type == "file" and path or nil
 end
 
+---@param path unknown
+---@return string?
 local function executable(path)
   if type(path) ~= "string" or path == "" then return nil end
   local resolved = vim.uv.fs_realpath(path)
   local stat = resolved and vim.uv.fs_stat(resolved)
-  if stat and stat.type == "file" then
+  if resolved and stat and stat.type == "file" then
     return vim.fs.normalize(resolved)
   end
 end
 
-local function nvim_command(configured)
-  local command
-  if type(configured) == "string" and configured ~= "" then
-    command = { configured }
-  elseif type(configured) == "table" and util.is_list(configured)
-      and #configured > 0 then
-    command = util.copy(configured)
-  else
-    command = { vim.v.progpath }
-  end
+---@param command string[]
+---@return string[]
+local function resolved_command(command)
   if not M.paths.is_absolute(command[1]) then
-    command[1] = vim.fn.exepath(command[1])
+    command[1] = vim.fn.exepath((assert(command[1])))
   end
   command[1] = executable(command[1]) or command[1]
   return command
 end
 
+---@param configured? string|string[]
+---@return string[]
+local function nvim_command(configured)
+  if type(configured) == "string" and configured ~= "" then
+    return resolved_command({ configured })
+  elseif type(configured) == "table" and util.is_list(configured)
+      and #configured > 0 then
+    ---@cast configured string[]
+    return resolved_command(util.copy(configured))
+  end
+  return resolved_command({ vim.v.progpath })
+end
+
+---@param required [integer, integer, integer]
+---@return boolean
 local function version_at_least(required)
-  local version = vim.version()
+  local version = (vim.version --[[@as fun(): vim.Version]])()
   for index, name in ipairs({ "major", "minor", "patch" }) do
     local actual = tonumber(version[name])
-    local minimum = required[index]
+    local minimum = assert(required[index])
     if not actual then return false end
     if actual ~= minimum then return actual > minimum end
   end
   return true
 end
 
+---@return boolean
 local function supported_version()
   return version_at_least(MINIMUM_NVIM)
 end
 
+---@param nvim string[]
+---@param script string
+---@return string[]
 local function runtime_argv(nvim, script)
   local argv = util.copy(nvim)
   vim.list_extend(argv, {
@@ -98,9 +149,11 @@ local function runtime_argv(nvim, script)
   return argv
 end
 
+---@param nvim string[]
+---@return string[]
 local function runner_read_roots(nvim)
   if not M.paths.is_absolute(nvim[1]) then return {} end
-  local executable_root = M.paths.dirname(nvim[1])
+  local executable_root = M.paths.dirname((assert(nvim[1])))
   local roots = { executable_root }
   local installation = M.paths.dirname(executable_root)
   -- Release archives place the runtime below the installation root. Custom
@@ -120,19 +173,23 @@ local function runner_read_roots(nvim)
   return roots
 end
 
+---@return string
 local function state_dir()
   local configured = vim.env.NEOAGENT_WINDOWS_SANDBOX_STATE
   if type(configured) == "string" and configured ~= "" then
     return M.paths.normalize(configured)
   end
   return M.paths.normalize(vim.fs.joinpath(
-    vim.fn.stdpath("state"), "neoagent", "windows-sandbox"))
+    vim.fn.stdpath("state") --[[@as string]], "neoagent", "windows-sandbox"))
 end
 
+---@return string
 function M.temporary_root()
   return M.paths.join(state_dir(), "shared-tmp")
 end
 
+---@param spec Neoagent.WindowsSandboxSpec
+---@return table<string, string>
 local function environment(spec)
   local values = {
     NEOAGENT_SANDBOX_SPEC = util.json_encode(spec),
@@ -147,6 +204,9 @@ local function environment(spec)
   return values
 end
 
+---@param environment_map table<string, string>
+---@param name string
+---@return string?
 local function environment_value(environment_map, name)
   local selected
   for key, value in pairs(environment_map or {}) do
@@ -155,6 +215,9 @@ local function environment_value(environment_map, name)
   return selected
 end
 
+---@param program string
+---@param environment_map table<string, string>
+---@return string[]
 local function candidate_names(program, environment_map)
   local result = { program }
   local basename = program:gsub("/", "\\"):match("([^\\]+)$") or program
@@ -170,6 +233,10 @@ local function candidate_names(program, environment_map)
   return result
 end
 
+---@param program string
+---@param cwd? string
+---@param environment_map table<string, string>
+---@return string?
 local function resolve_candidate(program, cwd, environment_map)
   local roots = {}
   if M.paths.is_absolute(program) then
@@ -193,6 +260,11 @@ local function resolve_candidate(program, cwd, environment_map)
   end
 end
 
+---@param request Neoagent.WindowsSandboxRequest
+---@param mode Neoagent.WindowsSandboxMode
+---@param runtime string
+---@param nvim string[]
+---@return Neoagent.WindowsSandboxSpec
 local function specification(request, mode, runtime, nvim)
   local argv
   if mode == "exec" then
@@ -228,6 +300,8 @@ local function specification(request, mode, runtime, nvim)
   }
 end
 
+---@param request Neoagent.ProcessOptions
+---@return Neoagent.WindowsSandboxCapture
 local function new_capture(request)
   local stdout, stderr, output = "", "", ""
   local capture = request.capture ~= false
@@ -235,6 +309,7 @@ local function new_capture(request)
   local decoder = protocol.new({
     on_event = function(event)
       if event.type ~= "output" then return end
+      ---@cast event Neoagent.SandboxOutputEvent
       local is_stderr = event.stream == "stderr"
       if capture then
         if is_stderr then stderr = stderr .. event.data
@@ -259,6 +334,10 @@ local function new_capture(request)
   }
 end
 
+---@param request Neoagent.WindowsSandboxRequest
+---@param services Neoagent.SandboxServices
+---@param mode Neoagent.WindowsSandboxMode
+---@return Neoagent.ProcessResult
 local function process_request(request, services, mode)
   if not supported_version() then
     error(util.error("sandbox_unavailable",
@@ -339,6 +418,7 @@ local function process_request(request, services, mode)
       "Windows sandbox failed at " .. terminal.stage,
       "win32=" .. tostring(terminal.errno)), 0)
   end
+  ---@cast terminal Neoagent.SandboxExitEvent
   return {
     code = terminal.code,
     signal = terminal.signal,
@@ -349,16 +429,25 @@ local function process_request(request, services, mode)
   }
 end
 
+---@param profile Neoagent.SandboxProfile
+---@return Neoagent.WindowsSandboxProfile
 function M.compile(profile)
-  local compiled = util.copy(profile)
+  local compiled = util.copy(profile) --[[@as Neoagent.WindowsSandboxProfile]]
   compiled.windows = compiler.compile(profile, { paths = M.paths })
   return compiled
 end
 
+---@param request Neoagent.SandboxProcessRequest
+---@param services Neoagent.SandboxServices
+---@return Neoagent.ProcessResult
 function M.exec(request, services)
-  return process_request(request, services, "exec")
+  return process_request(
+    request --[[@as Neoagent.WindowsSandboxRequest]], services, "exec")
 end
 
+---@param request Neoagent.SandboxFilesystemRequest
+---@param services Neoagent.SandboxServices
+---@return string|true|nil, string?
 function M.fs(request, services)
   local value = process_request({
     profile = request.profile,
@@ -385,10 +474,17 @@ function M.fs(request, services)
   return true
 end
 
+---@param path? string
 local function cleanup_probe(path)
   if path then pcall(vim.fn.delete, path, "rf") end
 end
 
+---@param services Neoagent.SandboxCheckServices
+---@param runtime string
+---@param nvim string[]
+---@return Neoagent.WindowsSandboxProbe?, string?, unknown
+---@return_overload Neoagent.WindowsSandboxProbe
+---@return_overload nil, string, unknown
 local function check_request(services, runtime, nvim)
   local fs = services.fs or require("neoagent.fs")
   local root, root_err = fs.create_temp_directory(
@@ -408,6 +504,7 @@ local function check_request(services, runtime, nvim)
     cleanup_probe(root)
     return nil, "probe-directory", mkdir_err
   end
+  ---@type Neoagent.SandboxProfile
   local profile = {
     id = "windows-probe",
     network = "restricted",
@@ -457,11 +554,18 @@ local function check_request(services, runtime, nvim)
   }
 end
 
+---@param argv string[]
+---@param opts vim.SystemOpts
+---@param timeout integer
+---@return vim.SystemCompleted?
 local function system(argv, opts, timeout)
   return vim.system(argv, opts):wait(timeout)
 end
 
+---@param services? Neoagent.SandboxCheckServices
+---@return Neoagent.SandboxStatus
 function M.check(services)
+  ---@type Neoagent.SandboxCheckServices
   services = services or {}
   if not supported_version() then
     return unavailable("version",

@@ -5,6 +5,85 @@ local renderers = require("neoagent.ui.renderers")
 local util = require("neoagent.util")
 
 local M = {}
+---@class Neoagent.AgentAppletCallbacks
+---@field on_bind? fun(applet: Neoagent.AgentApplet, text: string): Neoagent.Agent?, Neoagent.Error?
+---@field on_accept? fun(applet: Neoagent.AgentApplet, agent: Neoagent.Agent): unknown
+---@field on_reject? fun(applet: Neoagent.AgentApplet, agent: Neoagent.Agent): unknown
+---@field on_close? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_destroy? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_agents? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_cycle_thinking? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_select_model? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_resume_session? fun(applet: Neoagent.AgentApplet): unknown
+---@field on_provider_shell? fun(applet: Neoagent.AgentApplet): unknown
+
+---@class Neoagent.AgentAppletOptions
+---@field config Neoagent.UIConfig
+---@field persistence? Neoagent.PersistenceConfig
+---@field context? Neoagent.AgentContext
+---@field presenter? Neoagent.Presenter
+---@field dialogs? Neoagent.Dialogs
+---@field profile_id? string
+---@field label? string
+---@field view? fun(options: Neoagent.ViewOptions): Neoagent.View
+---@field host? Neoagent.ViewHostFactory
+---@field agent? Neoagent.Agent
+
+---@class Neoagent.AppletSubmission
+---@field id integer
+---@field agent Neoagent.Agent
+---@field text string
+---@field created boolean
+---@field kind 'turn'|'steering'
+---@field input_cleared? boolean
+
+---@class Neoagent.AppletBindingRestore
+---@field display_label string
+---@field agent_snapshot? Neoagent.AgentSnapshot
+
+---@class Neoagent.HydratedView
+---@field snapshot Neoagent.AgentSnapshot
+---@field workspace? string
+---@field position? Neoagent.UiPosition
+
+---@alias Neoagent.AppletSubmissionResult Neoagent.AgentRun|boolean|nil
+
+---@class Neoagent.AgentApplet
+---@field _neoagent_agent_applet true
+---@field config Neoagent.UIConfig
+---@field persistence? Neoagent.PersistenceConfig
+---@field profile? string
+---@field display_label string
+---@field presenter_source Neoagent.Presenter
+---@field dialog_source Neoagent.Dialogs
+---@field owns_presenter boolean
+---@field owns_dialogs boolean
+---@field view_factory? fun(options: Neoagent.ViewOptions): Neoagent.View
+---@field host? Neoagent.ViewHostFactory
+---@field owner_value? table
+---@field owner_callbacks? Neoagent.AgentAppletCallbacks
+---@field renderer Neoagent.Renderer<unknown>
+---@field transcript_style 'codex'|'pi'
+---@field position Neoagent.UiPosition
+---@field draft_context Neoagent.AgentContext
+---@field agent_value? Neoagent.Agent
+---@field agent_snapshot? Neoagent.AgentSnapshot
+---@field view_value? Neoagent.View
+---@field agent_unsubscribe? fun()
+---@field binding_restore? Neoagent.AppletBindingRestore
+---@field presenter_unsubscribe? fun(reason?: string)
+---@field dialog_unsubscribe? fun()
+---@field presentation? Neoagent.PresentationSnapshot
+---@field dialog? Neoagent.DialogSnapshot
+---@field workspace_root? string
+---@field histories table<string, string[]>
+---@field history_stores table<string, Neoagent.InputHistory>
+---@field input_value string
+---@field input_submission_id? integer
+---@field pending_submission? string
+---@field submitting boolean
+---@field submissions Neoagent.AppletSubmission[]
+---@field destroyed boolean
 local AgentApplet = {}
 AgentApplet.__index = AgentApplet
 
@@ -30,6 +109,7 @@ local owner_callback_names = {
   on_provider_shell = true,
 }
 
+---@param callbacks Neoagent.AgentAppletCallbacks
 local function validate_owner_callbacks(callbacks)
   assert(type(callbacks) == "table"
       and (next(callbacks) == nil or not util.is_list(callbacks)),
@@ -42,17 +122,22 @@ local function validate_owner_callbacks(callbacks)
   end
 end
 
+---@param agent Neoagent.Agent
 local function assert_agent(agent)
   assert(type(agent) == "table" and agent._neoagent_agent,
     "Agent Applet requires a Neoagent Agent")
 end
 
+---@param snapshot Neoagent.PresentationSnapshot?
+---@return Neoagent.AgentAttention?
 local function presentation_attention(snapshot)
   local active = snapshot and snapshot.active
   if not active then return nil end
   return { kind = active.kind, label = active.prompt }
 end
 
+---@param snapshot Neoagent.DialogSnapshot?
+---@return Neoagent.AgentAttention?
 local function dialog_attention(snapshot)
   local active = snapshot and snapshot.active
   if not active then return nil end
@@ -64,8 +149,14 @@ local required_view_methods = {
   "set_messages", "set_context", "apply", "finish",
 }
 
+---@param view Neoagent.View
+---@param method string
+---@param ... unknown
+---@return_overload true, unknown
+---@return_overload nil, Neoagent.Error
 local function call_view(view, method, ...)
-  local ok, value, err = pcall(view[method], view, ...)
+  local invoke = view[method] --[[@as fun(view: Neoagent.View, ...: unknown): unknown, unknown]]
+  local ok, value, err = pcall(invoke, view, ...)
   if not ok then return nil, util.normalize_error(value, "ui") end
   if value == false or (value == nil and err ~= nil) then
     return nil, util.normalize_error(err or (method .. " failed"), "ui")
@@ -73,6 +164,8 @@ local function call_view(view, method, ...)
   return true, value
 end
 
+---@param snapshot unknown
+---@return TypeGuard<Neoagent.AgentSnapshot>
 local function valid_snapshot(snapshot)
   return type(snapshot) == "table"
     and (next(snapshot) == nil or not util.is_list(snapshot))
@@ -84,6 +177,8 @@ local function valid_snapshot(snapshot)
     and type(snapshot.events) == "table" and util.is_list(snapshot.events)
 end
 
+---@param opts Neoagent.AgentAppletOptions
+---@return Neoagent.AgentApplet
 function AgentApplet.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table",
@@ -95,6 +190,8 @@ function AgentApplet.new(opts)
   local owns_presenter = opts.presenter == nil
   local owns_dialogs = opts.dialogs == nil
   local presenter = opts.presenter or require("neoagent.presenter").new()
+  ---@param message string
+  ---@param level integer?
   local function report(message, level)
     return presenter:notify({ message = message, level = level })
   end
@@ -102,9 +199,10 @@ function AgentApplet.new(opts)
     report = report,
   })
   local selected = opts.config.renderer or renderers.get(opts.config.style)
-  renderer_protocol.assert(selected, "Agent Applet Renderer")
+  selected = renderer_protocol.assert(selected, "Agent Applet Renderer")
 
   local draft_context = util.copy(opts.context or {})
+  ---@type Neoagent.AgentApplet
   local self = setmetatable({
     _neoagent_agent_applet = true,
     config = util.copy(opts.config),
@@ -193,6 +291,9 @@ function AgentApplet.new(opts)
   return self
 end
 
+---@param owner table
+---@param callbacks Neoagent.AgentAppletCallbacks
+---@return Neoagent.AgentApplet
 function AgentApplet:claim(owner, callbacks)
   assert(not self.destroyed, "Agent Applet is destroyed")
   assert(type(owner) == "table", "Agent Applet owner must be a table")
@@ -205,6 +306,8 @@ function AgentApplet:claim(owner, callbacks)
   return self
 end
 
+---@param owner table
+---@return Neoagent.AgentApplet
 function AgentApplet:release(owner)
   assert(self.owner_value == owner,
     "Agent Applet is not owned by the caller")
@@ -213,14 +316,22 @@ function AgentApplet:release(owner)
   return self
 end
 
+---@return table?
 function AgentApplet:owner() return self.owner_value end
 
+---@param name string
+---@param ... unknown
+---@return unknown
 function AgentApplet:_owner_callback(name, ...)
   local callback = self.owner_callbacks and self.owner_callbacks[name]
   if not callback then return false end
-  return callback(self, ...) or false
+  local invoke = callback --[[@as fun(applet: Neoagent.AgentApplet, ...: unknown): unknown]]
+  return invoke(self, ...) or false
 end
 
+---@param message string
+---@param level integer?
+---@return unknown
 function AgentApplet:_notify(message, level)
   return self.presenter_source:notify({
     message = "neoagent: " .. message,
@@ -228,6 +339,8 @@ function AgentApplet:_notify(message, level)
   })
 end
 
+---@param view Neoagent.View
+---@return true?, Neoagent.Error?
 function AgentApplet:_set_view_presentation(view)
   if type(view.set_presentation) ~= "function" then
     if not self.presentation then return true end
@@ -240,6 +353,8 @@ function AgentApplet:_set_view_presentation(view)
   return nil, util.normalize_error(ok and err or shown, "ui")
 end
 
+---@param view Neoagent.View
+---@return true?, Neoagent.Error?
 function AgentApplet:_set_view_dialog(view)
   if type(view.set_dialog) ~= "function" then
     if not self.dialog then return true end
@@ -258,6 +373,8 @@ function AgentApplet:_set_view_dialog(view)
   return nil, failure
 end
 
+---@param source 'dialog'|'presentation'
+---@param value Neoagent.AgentAttention?
 function AgentApplet:_set_attention(source, value)
   local agent = self.agent_value
   if agent and not agent:is_destroyed() then
@@ -265,6 +382,8 @@ function AgentApplet:_set_attention(source, value)
   end
 end
 
+---@param root string
+---@return Neoagent.InputHistory?
 function AgentApplet:_history_store(root)
   local persistence = self.persistence
   if not persistence or not persistence.enabled then return nil end
@@ -277,6 +396,9 @@ function AgentApplet:_history_store(root)
   return self.history_stores[root]
 end
 
+---@param root string?
+---@param refresh boolean?
+---@return string[]
 function AgentApplet:_load_history(root, refresh)
   if not root then return {} end
   if self.histories[root] and not refresh then return self.histories[root] end
@@ -287,6 +409,7 @@ function AgentApplet:_load_history(root, refresh)
   end
   local history, err = store:load()
   if not history then
+    assert(err)
     self:_notify(err.message .. (err.detail and ": " .. err.detail or ""),
       vim.log.levels.WARN)
     self.histories[root] = self.histories[root] or {}
@@ -296,6 +419,8 @@ function AgentApplet:_load_history(root, refresh)
   return history
 end
 
+---@param root string?
+---@return boolean
 function AgentApplet:_select_workspace(root)
   local changed = self.workspace_root ~= root
   self.workspace_root = root
@@ -303,6 +428,8 @@ function AgentApplet:_select_workspace(root)
   return changed
 end
 
+---@param text string
+---@return true?, Neoagent.Error?
 function AgentApplet:_record_history(text)
   local root = self.workspace_root
   text = util.trim(text)
@@ -318,6 +445,7 @@ function AgentApplet:_record_history(text)
   end
   local history, err = store:add(text)
   if not history then
+    assert(err)
     self:_notify("input history was not saved: " .. err.message,
       vim.log.levels.WARN)
     return nil, err
@@ -326,9 +454,13 @@ function AgentApplet:_record_history(text)
   return true
 end
 
+---@param value Neoagent.AgentContext?
+---@param bound boolean
+---@param label string?
+---@return Neoagent.AgentContext
 function AgentApplet:_context_for(value, bound, label)
   value = bound and util.copy(value or {})
-    or util.deep_merge(self.draft_context, value or {})
+    or util.deep_merge(self.draft_context, value or {}) --[[@as Neoagent.AgentContext]]
   value.name = label or self.display_label
   value.position = value.position or self.position
   value.model = value.model or "no model"
@@ -342,10 +474,14 @@ function AgentApplet:_context_for(value, bound, label)
   return value
 end
 
+---@param value Neoagent.AgentContext?
+---@return Neoagent.AgentContext
 function AgentApplet:_context(value)
   return self:_context_for(value, self.agent_value ~= nil)
 end
 
+---@param view Neoagent.View?
+---@return string
 function AgentApplet:_capture_input(view)
   if not view or type(view.get_input) ~= "function" then
     return self.input_value
@@ -358,6 +494,8 @@ function AgentApplet:_capture_input(view)
   return self.input_value
 end
 
+---@param value string
+---@return string
 function AgentApplet:_restore_input(value)
   local view = self.view_value
   local current = self:_capture_input(view)
@@ -370,6 +508,10 @@ function AgentApplet:_restore_input(value)
   return value
 end
 
+---@param view Neoagent.View
+---@param snapshot Neoagent.AgentSnapshot
+---@param label string?
+---@return Neoagent.HydratedView?, Neoagent.Error?
 function AgentApplet:_hydrate_view(view, snapshot, label)
   assert(valid_snapshot(snapshot), "Agent snapshot is invalid")
   local context = self:_context_for(snapshot.context, true, label)
@@ -400,6 +542,8 @@ function AgentApplet:_hydrate_view(view, snapshot, label)
   }
 end
 
+---@param patch Neoagent.AgentContext
+---@return Neoagent.AgentContext?, Neoagent.Error?
 function AgentApplet:set_draft_context(patch)
   assert(type(patch) == "table" and not util.is_list(patch),
     "Agent Applet draft context must be an object")
@@ -407,7 +551,7 @@ function AgentApplet:set_draft_context(patch)
     return nil, util.error("agent",
       "A bound Agent owns the Applet context")
   end
-  self.draft_context = util.deep_merge(self.draft_context, patch)
+  self.draft_context = util.deep_merge(self.draft_context, patch) --[[@as Neoagent.AgentContext]]
   if patch.workspace ~= nil then self:_select_workspace(patch.workspace) end
   local context = self:_context()
   local view = self.view_value
@@ -415,9 +559,13 @@ function AgentApplet:set_draft_context(patch)
   return util.copy(context)
 end
 
+---@param context Neoagent.AgentContext?
+---@param view Neoagent.View?
+---@return boolean
 function AgentApplet:_sync_position(context, view)
   local position = context and context.position
   if not positions[position] or position == self.position then return false end
+  assert(position)
   self.position = position
   if view and not view.destroyed and type(view.set_position) == "function" then
     view:set_position(position)
@@ -425,6 +573,8 @@ function AgentApplet:_sync_position(context, view)
   return true
 end
 
+---@param update Neoagent.AgentPublication
+---@return false?
 function AgentApplet:_apply(update)
   local snapshot = self.agent_snapshot or {
     revision = 0,
@@ -479,6 +629,8 @@ function AgentApplet:_apply(update)
   end
 end
 
+---@param snapshot Neoagent.AgentSnapshot?
+---@return true?, Neoagent.Error?
 function AgentApplet:_hydrate(snapshot)
   local agent = self.agent_value
   if not agent then return true end
@@ -512,11 +664,14 @@ function AgentApplet:_hydrate(snapshot)
   return true
 end
 
+---@return Neoagent.Agent?
 function AgentApplet:_agent_or_nil()
   local agent = self.agent_value
   if agent and not agent:is_destroyed() then return agent end
 end
 
+---@param value string
+---@return Neoagent.Agent?, Neoagent.Error?, boolean?
 function AgentApplet:_ensure_agent(value)
   local agent = self:_agent_or_nil()
   local created = false
@@ -537,6 +692,10 @@ function AgentApplet:_ensure_agent(value)
   return agent, nil, created
 end
 
+---@param agent Neoagent.Agent
+---@param err Neoagent.Error?
+---@param text string?
+---@return nil, Neoagent.Error?
 function AgentApplet:_reject_agent(agent, err, text)
   text = text or self.pending_submission
   self.pending_submission = nil
@@ -549,6 +708,12 @@ function AgentApplet:_reject_agent(agent, err, text)
   return nil, err
 end
 
+---@param agent Neoagent.Agent
+---@param text string
+---@param created boolean
+---@param submission_id integer
+---@param kind 'turn'|'steering'
+---@return Neoagent.AppletSubmission
 function AgentApplet:_queue_submission(
     agent, text, created, submission_id, kind)
   assert(type(submission_id) == "number" and submission_id >= 1
@@ -568,6 +733,8 @@ function AgentApplet:_queue_submission(
   return submission
 end
 
+---@param submission Neoagent.AppletSubmission
+---@return boolean?, Neoagent.Error?
 function AgentApplet:_clear_submission_input(submission)
   if submission.kind ~= "steering"
       or self.input_submission_id ~= submission.id then
@@ -588,12 +755,15 @@ function AgentApplet:_clear_submission_input(submission)
   return true
 end
 
+---@param id integer
+---@return Neoagent.AppletSubmission?, integer?
 function AgentApplet:_submission(id)
   for index, submission in ipairs(self.submissions) do
     if submission.id == id then return submission, index end
   end
 end
 
+---@param ids integer[]?
 function AgentApplet:_forget_submissions(ids)
   local selected = {}
   for _, id in ipairs(ids or {}) do selected[id] = true end
@@ -605,11 +775,13 @@ function AgentApplet:_forget_submissions(ids)
   if selected[self.input_submission_id] then self.input_submission_id = nil end
 end
 
+---@param update Neoagent.AgentSubmissionAccepted
+---@return boolean
 function AgentApplet:_submission_accepted(update)
   local selected, index = self:_submission(update.submission_id)
   if not selected or selected.agent ~= self:_agent_or_nil() then return false end
   table.remove(self.submissions, index)
-  if selected.created then self:_accept_agent(selected.agent) end
+  if selected.created then self:_accept_agent(assert(selected.agent)) end
   self.pending_submission = nil
   local view = self.view_value
   local current = self:_capture_input(view)
@@ -631,6 +803,7 @@ function AgentApplet:_submission_accepted(update)
   return true
 end
 
+---@param result Neoagent.AgentCompletion
 function AgentApplet:_finish_submissions(result)
   local retained = {}
   local rejected
@@ -655,6 +828,8 @@ function AgentApplet:_finish_submissions(result)
   end
 end
 
+---@param agent Neoagent.Agent
+---@return boolean
 function AgentApplet:_accept_agent(agent)
   if self:_agent_or_nil() ~= agent or not self.binding_restore then return false end
   self.binding_restore = nil
@@ -662,6 +837,8 @@ function AgentApplet:_accept_agent(agent)
   return true
 end
 
+---@param text string
+---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:_attempt_submission(text)
   if util.trim(text) == "" then return nil end
   local agent, agent_err, created = self:_ensure_agent(text)
@@ -681,7 +858,7 @@ function AgentApplet:_attempt_submission(text)
   local prepared, prepare_err = agent:prepare()
   if not prepared then
     if prepare_err and prepare_err.kind == "workspace_trust"
-        and prepare_err.pending == true then
+        and rawget(prepare_err, "pending") == true then
       self.pending_submission = text
       return nil, prepare_err
     end
@@ -707,9 +884,9 @@ function AgentApplet:_attempt_submission(text)
   if run then
     self.pending_submission = nil
     local submission = self:_queue_submission(
-      agent, text, provisional, submission_id, kind)
+      agent, text, provisional, assert(submission_id), (assert(kind)))
     self:_clear_submission_input(submission)
-  elseif err and err.kind == "workspace_trust" and err.pending == true then
+  elseif err and err.kind == "workspace_trust" and rawget(err, "pending") == true then
     self.pending_submission = text
   else
     self.pending_submission = nil
@@ -718,6 +895,8 @@ function AgentApplet:_attempt_submission(text)
   return run, err
 end
 
+---@param text string
+---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:_submit(text)
   if self.submitting then return true end
   self.submitting = true
@@ -727,12 +906,15 @@ function AgentApplet:_submit(text)
   return result, err
 end
 
+---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:retry_submission()
   local text = self.pending_submission
   if not text or not self:_agent_or_nil() then return false end
   return self:_submit(text)
 end
 
+---@param result Neoagent.ActivityOutcome
+---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:trust_submission_result(result)
   local text = self.pending_submission
   local agent = self:_agent_or_nil()
@@ -745,10 +927,12 @@ function AgentApplet:trust_submission_result(result)
   return nil, result.error
 end
 
+---@return string?
 function AgentApplet:pending_message()
   return self.pending_submission
 end
 
+---@return string[]
 function AgentApplet:_dequeue_steering()
   local agent = self:_agent_or_nil()
   if not agent then return {} end
@@ -765,6 +949,7 @@ function AgentApplet:_dequeue_steering()
   return messages
 end
 
+---@return Neoagent.View
 function AgentApplet:_ensure_view()
   local view = self.view_value
   if view and not view.destroyed then return view end
@@ -778,7 +963,7 @@ function AgentApplet:_ensure_view()
     candidate = factory({
     config = view_config,
     host = self.host,
-    on_submit = function(prompt) return self:_submit(prompt) end,
+    on_submit = function(prompt) return (self:_submit(prompt)) end,
     on_stop = function()
       local agent = self:_agent_or_nil()
       return agent and agent:stop() or false
@@ -790,7 +975,7 @@ function AgentApplet:_ensure_view()
     on_select_history = function() return self:select_input_history() end,
     on_cycle_thinking = function()
       local agent = self:_agent_or_nil()
-      if agent then return agent:cycle_thinking_level() end
+      if agent then return (agent:cycle_thinking_level()) end
       return self:_owner_callback("on_cycle_thinking")
     end,
     on_agents = function()
@@ -798,7 +983,7 @@ function AgentApplet:_ensure_view()
     end,
     on_select_model = function()
       local agent = self:_agent_or_nil()
-      if agent then return agent:select_model() end
+      if agent then return (agent:select_model()) end
       return self:_owner_callback("on_select_model")
     end,
     on_resume_session = function()
@@ -812,10 +997,10 @@ function AgentApplet:_ensure_view()
       end
     end,
     on_dialog_action = function(id, action, input)
-      return self.dialog_source:choose(id, action, input)
+      return (self.dialog_source:choose(id, action, input))
     end,
     on_dialog_dismiss = function(id)
-      return self.dialog_source:cancel(id, "dialog dismissed by user")
+      return (self.dialog_source:cancel(id, "dialog dismissed by user"))
     end,
     on_provider_shell = function()
       return self:_owner_callback("on_provider_shell")
@@ -824,7 +1009,7 @@ function AgentApplet:_ensure_view()
       return self.presenter_source:notice(request)
     end,
     on_presentation_resolve = function(id, value)
-      return self.presenter_source:resolve(id, value)
+      return (self.presenter_source:resolve(id, value))
     end,
     on_presentation_cancel = function(id)
       return self.presenter_source:cancel(id)
@@ -902,6 +1087,9 @@ function AgentApplet:_ensure_view()
   return staged.view
 end
 
+---@param agent Neoagent.Agent
+---@param opts? {provisional?: boolean}
+---@return Neoagent.Agent
 function AgentApplet:bind(agent, opts)
   assert(not self.destroyed, "Agent Applet is destroyed")
   assert_agent(agent)
@@ -972,6 +1160,7 @@ function AgentApplet:bind(agent, opts)
         and previous.agent_snapshot.revision > snapshot.revision then
       snapshot = previous.agent_snapshot
     end
+    ---@type Neoagent.HydratedView?
     local hydrated = {
       snapshot = util.copy(snapshot),
       workspace = snapshot.context.workspace,
@@ -990,6 +1179,7 @@ function AgentApplet:bind(agent, opts)
       error(called and attach_err or owned, 0)
     end
     attached = true
+    assert(hydrated)
     local attentive, attention_err = pcall(
       agent.set_attention, agent, "dialog", dialog_attention(self.dialog))
     if not attentive then error(attention_err, 0) end
@@ -1014,6 +1204,8 @@ function AgentApplet:bind(agent, opts)
   return agent
 end
 
+---@param agent Neoagent.Agent
+---@return Neoagent.Agent, Neoagent.Error?
 function AgentApplet:unbind(agent)
   assert(not self.destroyed, "Agent Applet is destroyed")
   assert(self.agent_value == agent,
@@ -1047,14 +1239,21 @@ function AgentApplet:unbind(agent)
     self:_notify(util.normalize_error(detach_err, "agent").message,
       vim.log.levels.ERROR)
   end
-  return agent, detached and nil or util.normalize_error(detach_err, "agent")
+  if not detached then return agent, util.normalize_error(detach_err, "agent") end
+  return agent
 end
 
+---@return Neoagent.Agent?
 function AgentApplet:agent() return self:_agent_or_nil() end
+---@return Neoagent.Presenter
 function AgentApplet:presenter() return self.presenter_source end
+---@return Neoagent.Dialogs
 function AgentApplet:dialogs() return self.dialog_source end
+---@return Neoagent.View?
 function AgentApplet:view() return self.view_value end
 
+---@param opts? {origin?: integer, preserve_scroll?: boolean}
+---@return true?, Neoagent.Error|Applet.Error?
 function AgentApplet:open(opts)
   opts = opts or {}
   assert(type(opts) == "table",
@@ -1066,7 +1265,7 @@ function AgentApplet:open(opts)
   if agent then
     local prepared, err = agent:prepare()
     if not prepared and not (err and err.kind == "workspace_trust"
-        and err.pending == true) then
+        and rawget(err, "pending") == true) then
       return nil, err
     end
   end
@@ -1085,24 +1284,29 @@ function AgentApplet:close()
   end
 end
 
+---@return boolean?, Neoagent.Error|Applet.Error?
 function AgentApplet:toggle()
   if self:is_open() then self:close() return false end
   return self:open()
 end
 
+---@return boolean
 function AgentApplet:is_open()
   local view = self.view_value
   return view ~= nil and not view.destroyed and view:is_open()
 end
 
+---@return boolean
 function AgentApplet:is_destroyed() return self.destroyed end
 
+---@return boolean
 function AgentApplet:focus_input()
   local view = self.view_value
   return view and type(view.focus_input) == "function"
     and view:focus_input() or false
 end
 
+---@return boolean
 function AgentApplet:focus_attention()
   local view = self.view_value
   if not view then return false end
@@ -1121,11 +1325,14 @@ function AgentApplet:focus_attention()
   return type(view.focus_input) == "function" and view:focus_input() or false
 end
 
+---@return string
 function AgentApplet:get_input()
   local view = self.view_value
   return self:_capture_input(view)
 end
 
+---@param value string
+---@return unknown, Neoagent.Error?
 function AgentApplet:set_input(value)
   assert(type(value) == "string", "Agent Applet input must be a string")
   if value ~= self.input_value then self.input_submission_id = nil end
@@ -1136,16 +1343,20 @@ function AgentApplet:set_input(value)
   return result == nil and value or result
 end
 
+---@param value string
+---@return Neoagent.AppletSubmissionResult, Neoagent.Error?
 function AgentApplet:send(value)
   assert(type(value) == "string", "Agent Applet message must be a string")
   return self:_submit(value)
 end
 
+---@return string[]
 function AgentApplet:input_history()
   local persistent = self.persistence and self.persistence.enabled == true
   return util.copy(self:_load_history(self.workspace_root, persistent))
 end
 
+---@return true?
 function AgentApplet:select_input_history()
   local history = self:input_history()
   if #history == 0 then
@@ -1176,25 +1387,33 @@ function AgentApplet:select_input_history()
   return true
 end
 
+---@param position Neoagent.UiPosition
+---@return Neoagent.UiPosition?, Neoagent.Error?
 function AgentApplet:set_position(position)
   if not positions[position] then
     return nil, util.error("ui", "invalid window position")
   end
   self.position = position
   local agent = self:_agent_or_nil()
-  local saved, err = position
+  ---@type Neoagent.UiPosition?
+  local saved = position
+  ---@type Neoagent.Error?
+  local err
   if agent then saved, err = agent:set_ui_position(position) end
   local view = self.view_value
   if view and not view.destroyed and type(view.set_position) == "function" then
     view:set_position(position)
   end
   if not saved then
+    assert(err)
     self:_notify("window position changed but workspace settings were not saved: "
       .. err.message, vim.log.levels.WARN)
   end
   return position, err
 end
 
+---@param renderer unknown
+---@return Neoagent.Renderer<unknown>?, Neoagent.Error|Applet.Error?
 function AgentApplet:set_renderer(renderer)
   local selected, err = renderer_protocol.validate(renderer)
   if not selected then return nil, err end
@@ -1210,6 +1429,8 @@ function AgentApplet:set_renderer(renderer)
   return selected
 end
 
+---@param style 'codex'|'pi'
+---@return ('codex'|'pi')?, Neoagent.Error|Applet.Error?
 function AgentApplet:set_transcript_style(style)
   local renderer = renderers.get(style)
   if not renderer then return nil, util.error("ui", "invalid transcript style") end

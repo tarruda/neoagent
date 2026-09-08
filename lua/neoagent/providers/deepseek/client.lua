@@ -5,17 +5,48 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@class Neoagent.DeepSeekClientOptions
+---@field base_url string
+---@field ambient_api_key? fun(): string?
+---@field transport? Neoagent.ByteBackend
+---@field timeout_ms? number
+---@field max_response_bytes? integer
+
+---@class Neoagent.DeepSeekCurrency
+---@field currency "CNY"|"USD"
+---@field total string
+---@field granted string
+---@field topped_up string
+
+---@class Neoagent.DeepSeekBalance
+---@field is_available boolean
+---@field currencies Neoagent.DeepSeekCurrency[]
+
+---@class Neoagent.DeepSeekModelsSuccess
+---@field ok true
+---@field models string[]
+
+---@class Neoagent.DeepSeekBalanceSuccess
+---@field ok true
+---@field balance Neoagent.DeepSeekBalance
+
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_id(value)
   return type(value) == "string" and value ~= "" and #value <= 512
     and util.is_valid_utf8(value)
     and not value:find("[%z\1-\31\127]")
 end
 
+---@param value unknown
+---@return TypeGuard<string>
 local function safe_amount(value)
   return type(value) == "string" and #value <= 64
     and value:match("^%d+%.?%d*$") ~= nil
 end
 
+---@param value Neoagent.JsonValue
+---@return string[]?
 local function parse_models(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.data) ~= "table" or not util.is_list(value.data)
@@ -33,6 +64,8 @@ local function parse_models(value)
   return result
 end
 
+---@param value Neoagent.JsonValue
+---@return Neoagent.DeepSeekBalance?
 local function parse_balance(value)
   if type(value) ~= "table" or util.is_list(value)
       or type(value.is_available) ~= "boolean"
@@ -41,7 +74,9 @@ local function parse_balance(value)
       or #value.balance_infos == 0 or #value.balance_infos > 8 then
     return nil
   end
-  local currencies, seen = {}, {}
+  ---@type Neoagent.DeepSeekCurrency[]
+  local currencies = {}
+  local seen = {}
   for _, entry in ipairs(value.balance_infos) do
     if type(entry) ~= "table" or util.is_list(entry)
         or (entry.currency ~= "CNY" and entry.currency ~= "USD")
@@ -65,6 +100,9 @@ local function parse_balance(value)
   return { is_available = value.is_available, currencies = currencies }
 end
 
+---@param status number
+---@param resource string
+---@return string?
 local function status_message(status, resource)
   if status == 401 then
     return "DeepSeek " .. resource .. " requires a valid API key"
@@ -75,6 +113,8 @@ local function status_message(status, resource)
   end
 end
 
+---@param opts Neoagent.DeepSeekClientOptions
+---@return Neoagent.DeepSeekClient
 function M.new(opts)
   opts = opts or {}
   assert(type(opts.base_url) == "string" and opts.base_url ~= "",
@@ -90,8 +130,11 @@ function M.new(opts)
     max_response_bytes = opts.max_response_bytes,
     status_message = status_message,
   })
+  ---@class Neoagent.DeepSeekClient
   local client = {}
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.AuthHeadersResult, nil>
   local function headers(ctx)
     return auth_headers.resolve(ctx, {
       name = "DeepSeek",
@@ -101,13 +144,17 @@ function M.new(opts)
     })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.DeepSeekModelsSuccess|Neoagent.AsyncFailure, nil>
   function client:models(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.DeepSeekModelsSuccess
+    function()
       local resolved = headers(ctx):await()
       if resolved.ok == false then error(resolved.error, 0) end
-      resolved.headers.Accept = "application/json"
+      local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
       local fetched = request:get("/models", "model catalog",
-        resolved.headers):await()
+        headers):await()
       if fetched.ok == false then error(fetched.error, 0) end
       local models = parse_models(fetched.value)
       if not models then
@@ -118,13 +165,17 @@ function M.new(opts)
     end, { error_kind = "provider" })
   end
 
+  ---@param ctx Neoagent.ProviderAuthContext
+  ---@return Neoagent.Run<Neoagent.DeepSeekBalanceSuccess|Neoagent.AsyncFailure, nil>
   function client:balance(ctx)
-    return async.run(function()
+    return async.run(
+    ---@return Neoagent.DeepSeekBalanceSuccess
+    function()
       local resolved = headers(ctx):await()
       if resolved.ok == false then error(resolved.error, 0) end
-      resolved.headers.Accept = "application/json"
+      local headers = util.deep_merge(resolved.headers, { Accept = "application/json" })
       local fetched = request:get("/user/balance", "balance",
-        resolved.headers):await()
+        headers):await()
       if fetched.ok == false then error(fetched.error, 0) end
       local balance = parse_balance(fetched.value)
       if not balance then
