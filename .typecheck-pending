@@ -36,13 +36,11 @@ lua/neoagent/sandbox/linux/init.lua
 lua/neoagent/sandbox/macos/init.lua
 lua/neoagent/sandbox/platform.lua
 lua/neoagent/sandbox/windows/init.lua
-lua/neoagent/tools/activity_presentation.lua
 lua/neoagent/tools/edit_file.lua
 lua/neoagent/tools/edit_presentation.lua
 lua/neoagent/tools/find.lua
 lua/neoagent/tools/grep.lua
 lua/neoagent/tools/init.lua
-lua/neoagent/tools/read_agent_documentation.lua
 lua/neoagent/tools/read_file.lua
 lua/neoagent/tools/shell.lua
 lua/neoagent/tools/update_plan.lua

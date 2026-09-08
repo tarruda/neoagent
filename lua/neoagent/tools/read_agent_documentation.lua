@@ -1,11 +1,13 @@
+---@return string
 local function plugin_root()
-  local source = debug.getinfo(1, "S").source
+  local source = assert(debug.getinfo(1, "S")).source
   local path = source:sub(1, 1) == "@" and source:sub(2) or source
   path = vim.fn.fnamemodify(path, ":p")
-  for _ = 1, 4 do path = vim.fs.dirname(path) end
+  for _ = 1, 4 do path = assert(vim.fs.dirname(path)) end
   return path
 end
 
+---@return string
 local function init_path()
   local path = vim.env.MYVIMRC
   if type(path) == "string" and path ~= "" then
@@ -14,6 +16,7 @@ local function init_path()
   return vim.fn.stdpath("config") .. "/init.lua"
 end
 
+---@return string
 local function documentation()
   local root = plugin_root()
   return table.concat({
@@ -77,6 +80,7 @@ local DESCRIPTION = table.concat({
   "its Lua APIs. Do not call it for ordinary project work.",
 }, " ")
 
+---@return Neoagent.Tool<unknown>
 local function new()
   return {
     name = "read_agent_documentation",
