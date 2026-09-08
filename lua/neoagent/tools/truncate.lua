@@ -1,9 +1,30 @@
+---@class Neoagent.TruncationOptions
+---@field max_lines? integer
+---@field max_bytes? integer
+
+---@alias Neoagent.TruncationReason "lines"|"bytes"
+
+---@class Neoagent.TruncationResult
+---@field content string
+---@field truncated boolean
+---@field truncatedBy? Neoagent.TruncationReason
+---@field totalLines integer
+---@field totalBytes integer
+---@field outputLines integer
+---@field outputBytes integer
+---@field maxLines number
+---@field maxBytes number
+---@field firstLineExceedsLimit boolean
+---@field lastLinePartial boolean
+
 local M = {
   MAX_LINES = 2000,
   MAX_BYTES = 50 * 1024,
   GREP_LINE_LENGTH = 500,
 }
 
+---@param content string
+---@return string[]
 local function lines(content)
   if content == "" then
     return {}
@@ -15,6 +36,12 @@ local function lines(content)
   return result
 end
 
+---@param content string
+---@param output string
+---@param truncated boolean
+---@param by? Neoagent.TruncationReason
+---@param opts {max_lines: integer, max_bytes: integer}
+---@return Neoagent.TruncationResult
 local function metadata(content, output, truncated, by, opts)
   return {
     content = output,
@@ -31,6 +58,9 @@ local function metadata(content, output, truncated, by, opts)
   }
 end
 
+---@param content string
+---@param options? Neoagent.TruncationOptions
+---@return Neoagent.TruncationResult
 function M.head(content, options)
   options = options or {}
   local opts = {
@@ -48,6 +78,7 @@ function M.head(content, options)
   end
   local selected = {}
   local bytes = 0
+  ---@type Neoagent.TruncationReason
   local by = "lines"
   for index, line in ipairs(all) do
     if index > opts.max_lines then
@@ -65,6 +96,9 @@ function M.head(content, options)
   return metadata(content, table.concat(selected, "\n"), true, by, opts)
 end
 
+---@param value string
+---@param bytes integer
+---@return string
 local function utf8_tail(value, bytes)
   local start = math.max(1, #value - bytes + 1)
   while start <= #value and value:byte(start) >= 128 and value:byte(start) < 192 do
@@ -73,6 +107,9 @@ local function utf8_tail(value, bytes)
   return value:sub(start)
 end
 
+---@param content string
+---@param options? Neoagent.TruncationOptions
+---@return Neoagent.TruncationResult
 function M.tail(content, options)
   options = options or {}
   local opts = {
@@ -85,6 +122,7 @@ function M.tail(content, options)
   end
   local selected = {}
   local bytes = 0
+  ---@type Neoagent.TruncationReason
   local by = "lines"
   local partial = false
   for index = #all, 1, -1 do
@@ -109,6 +147,9 @@ function M.tail(content, options)
   return result
 end
 
+---@param value string
+---@param max_chars? integer
+---@return string, boolean
 function M.line(value, max_chars)
   max_chars = max_chars or M.GREP_LINE_LENGTH
   local index = 1
@@ -132,6 +173,8 @@ function M.line(value, max_chars)
   return value:sub(1, index - 1) .. "... [truncated]", true
 end
 
+---@param bytes number
+---@return string
 function M.format_size(bytes)
   if bytes < 1024 then
     return bytes .. "B"

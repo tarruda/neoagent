@@ -46,7 +46,6 @@ lua/neoagent/tools/init.lua
 lua/neoagent/tools/read_agent_documentation.lua
 lua/neoagent/tools/read_file.lua
 lua/neoagent/tools/shell.lua
-lua/neoagent/tools/truncate.lua
 lua/neoagent/tools/update_plan.lua
 lua/neoagent/tools/write_file.lua
 lua/neoagent/ui.lua
