@@ -7,17 +7,23 @@ local SUPERVISOR_GRACE_MS = 100
 local SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 local CLEANUP_HELPERS = { "/bin/sh" }
 
+---@param value unknown
+---@return string
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
   if #value > 1000 then value = value:sub(1, 997) .. "..." end
   return value
 end
 
+---@param path string
+---@return string?
 local function runtime_file(path)
   local matches = vim.api.nvim_get_runtime_file(path, false)
   return matches[1] and vim.uv.fs_realpath(matches[1]) or matches[1]
 end
 
+---@param path unknown
+---@return string?
 local function executable(path)
   if type(path) ~= "string" or path == "" then return nil end
   local candidate = path
@@ -26,21 +32,29 @@ local function executable(path)
   end
   local resolved = candidate ~= "" and vim.uv.fs_realpath(candidate) or nil
   local stat = resolved and vim.uv.fs_stat(resolved)
-  if stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
+  if resolved and stat and stat.type == "file"
+      and vim.fn.executable(resolved) == 1 then
     return vim.fs.normalize(resolved)
   end
 end
 
+---@param path string?
+---@return boolean?
 local function regular_file(path)
   local stat = path and vim.uv.fs_stat(path)
   return stat and stat.type == "file"
 end
 
+---@return string?
 local function sandbox_runtime()
   local path = runtime_file("scripts/sandbox_macos_runtime.lua")
   return regular_file(path) and path or nil
 end
 
+---@param nvim string
+---@param runtime string
+---@param command string[]
+---@return string[]
 local function runtime_argv(nvim, runtime, command)
   local argv = {
     nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
@@ -50,6 +64,10 @@ local function runtime_argv(nvim, runtime, command)
   return argv
 end
 
+---@param argv string[]
+---@param opts vim.SystemOpts
+---@param timeout integer
+---@return vim.SystemCompleted
 local function system(argv, opts, timeout)
   local completed = vim.system(argv, opts):wait(timeout)
   return completed or {
@@ -60,6 +78,8 @@ local function system(argv, opts, timeout)
   }
 end
 
+---@param services? Neoagent.SandboxCheckServices<string>
+---@return Neoagent.SandboxStatus
 function M.check(services)
   services = services or {}
   local configured_sandbox_exec = services.sandbox_exec or SANDBOX_EXEC
@@ -122,9 +142,14 @@ function M.check(services)
   }
 end
 
+---@param request Neoagent.SandboxProcessRequest
+---@param services Neoagent.SandboxServices<string>
+---@param protected? string[]
+---@return Neoagent.ProcessResult
 local function execute(request, services, protected)
   local configured = services.sandbox_exec or SANDBOX_EXEC
   local sandbox_exec = executable(configured) or configured
+  ---@type Neoagent.SandboxFilesystemEntry[]
   local internal = {}
   for _, path in ipairs(protected or {}) do
     internal[#internal + 1] = { path = path, access = "read" }
@@ -161,6 +186,9 @@ local function execute(request, services, protected)
   return value
 end
 
+---@param request Neoagent.SandboxProcessRequest
+---@param services Neoagent.SandboxServices<string>
+---@return Neoagent.ProcessResult
 function M.exec(request, services)
   local runtime = sandbox_runtime()
   if not runtime then
@@ -182,6 +210,9 @@ function M.exec(request, services)
   return execute(wrapped, services, protected)
 end
 
+---@param request Neoagent.SandboxFilesystemRequest
+---@param services Neoagent.SandboxServices<string>
+---@return string|true|nil, string?
 function M.fs(request, services)
   local runtime = sandbox_runtime()
   if not runtime then

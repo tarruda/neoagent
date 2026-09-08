@@ -19,10 +19,12 @@ local M = {}
 ---@field inherit string[]
 ---@field set table<string, string>
 
----@class Neoagent.SandboxProfile
----@field id string
+---@class Neoagent.SandboxAccessPolicy
 ---@field filesystem Neoagent.SandboxFilesystem
 ---@field network Neoagent.SandboxNetwork
+
+---@class Neoagent.SandboxProfile: Neoagent.SandboxAccessPolicy
+---@field id string
 ---@field environment Neoagent.SandboxEnvironment
 
 ---@alias Neoagent.SandboxProfileSource<C> Neoagent.SandboxProfile|(fun(ctx: C): Neoagent.SandboxProfile)

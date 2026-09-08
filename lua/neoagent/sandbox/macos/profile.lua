@@ -61,7 +61,7 @@ local function contains(root, path)
     or path:sub(1, #root + 1) == root .. "/"
 end
 
----@param profile Neoagent.SandboxProfile
+---@param profile Neoagent.SandboxAccessPolicy
 ---@return Neoagent.SandboxFilesystemEntry[]
 local function effective_entries(profile)
   ---@type Neoagent.SandboxFilesystemEntry[]
@@ -78,7 +78,7 @@ local function effective_entries(profile)
   return result
 end
 
----@param profile Neoagent.SandboxProfile
+---@param profile Neoagent.SandboxAccessPolicy
 ---@param internal? Neoagent.SandboxFilesystemEntry[]
 ---@return string, Neoagent.MacosSandboxParameter[]
 function M.compile(profile, internal)
