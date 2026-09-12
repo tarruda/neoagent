@@ -40,6 +40,10 @@ Architecture is the canonical ownership reference. Changes must preserve:
 - Explicit runtime sharing and coordination at the Service or Authentication
   boundary; request shaping receives copied request identity from the owning
   composition, and shared provider operations receive no Agent state.
+- Request-scoped file preparation uses independent shared Service leases and
+  content-key coordination. Credential changes and mutating management remain
+  exclusive. Sessions retain image bytes; remote references stay in request
+  copies and the separate provider cache.
 - Copied semantic state for Views, content Trees from Renderers, Pane-owned
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
@@ -101,7 +105,15 @@ guarantees, prohibitions, and errors.
 Minimum: Neovim 0.10, curl 7.76, `rg`, `fd`, Python 3, Git, and Make.
 Tests also require Mike Farah `yq` v4 on `PATH` to read YAML fixtures.
 `make deps` installs pinned Plenary and LuaCov checkouts in `.deps/`.
+Coverage also builds pinned CLuaCov with a C compiler (`CC`, or
+`cc`) on Linux or macOS; `make coverage-deps` installs it separately. Native
+Windows collection uses LuaCov alone, and CI generates the merged report on
+Linux. CLuaCov accelerates collection and filters non-executable lines using
+bytecode; LuaCov still measures line coverage.
 `yq` remains optional for runtime recording; JSON recording needs no `yq`.
+The large inline-image integration regressions require ImageMagick's `magick`
+on `PATH`; they are skipped when it is unavailable. Native macOS CI installs
+ImageMagick and runs them; the default image budget is also tested without it.
 
 `make typecheck-deps` installs pinned EmmyLua checker/language-server binaries
 and Neovim, libuv, and luassert definitions in `.deps/`. Run `make typecheck`
@@ -150,14 +162,17 @@ network access. UI tests inspect isolated headless Neovim children.
 `make test-http-live` runs the small localhost curl/callback suite;
 `make test-native-sandbox` runs native enforcement tests and requires working
 platform isolation. Neither is part of `make test`.
-Windows CI also runs portable core and API unit specs alongside its native
-platform suite.
+Windows CI also runs portable core, API, and storage tests alongside its
+native platform suite.
 
 `make benchmark-applet` checks container update budgets.
 `make benchmark-transcript` measures streaming updates with a long response and
 400 prior messages, checking latency, retained memory, and native mutations.
+`make benchmark-submission` checks resume, durable acceptance, native transcript
+publication, and request startup in a large persisted coding conversation with
+retained images, using the real DeepSeek composition and a local HTTP backend.
 Run benchmarks separately from other suites for useful timings. Linux stable
-CI runs both targets.
+CI runs all three targets.
 
 Coverage and terminal-image tests run in CI. Run `make coverage` or
 `make test-terminal-images` locally only when the user requests those checks.
@@ -182,22 +197,22 @@ Before completion:
 - Run the relevant fast suites and `make test`; keep health behavior valid.
 - Run `make typecheck` when changing Lua code or type-check configuration.
 - Check documentation against the reader needs above; edit only where needed.
-- Preserve aggregate shipped Lua line coverage strictly above 99.60%.
-  Every file under `lua/applet/`, `lua/neoagent/`, and `plugin/` must appear
-  in the LuaCov report, including files normal tests do not load. Coverage
-  under `lua/applet/` must be 100%.
-  CI enforces coverage and terminal-image behavior.
+- Require 100% shipped Lua line coverage, with zero missed lines rather
+  than a rounded percentage. Every file under `lua/applet/`, `lua/neoagent/`,
+  and `plugin/` must appear, including files normal tests do not load.
+  CI merges native Linux, macOS, and Windows counters before enforcing the
+  requirement; run platform-specific tests on their actual host.
+  CI also enforces terminal-image behavior.
 
 ### Improving coverage
 
-1. Run `make coverage` for a fresh baseline. It clears `.coverage/`, runs
-   the instrumented unit, replay integration and UI suites, generates the report,
-   and checks the thresholds. A threshold failure still leaves the report
-   available for inspection. Resolve test failures before using the result.
-   `make coverage-ci` makes a separate fresh collection including live HTTP
-   and native sandbox tests. Both commands enforce the same shipped-file and
-   percentage requirements; `make coverage` needs neither localhost listeners
-   nor native sandbox provisioning.
+1. Run `make coverage` for a fresh local baseline. It clears `.coverage/`,
+   records source hashes, runs the instrumented unit, replay integration and
+   UI suites, generates the LuaCov report, and checks for missed lines.
+   A threshold failure leaves the report available; resolve test failures
+   before using it. `make coverage-ci` additionally runs live HTTP and native
+   sandbox tests. A single host's report can still miss foreign-platform
+   behavior; the authoritative gate uses the union of all three native hosts.
 2. Read `.coverage/luacov.report.out`: its final summary lists hits and misses
    per file; annotated source marks missed lines with `***0` (the number of
    asterisks varies). Find them with:
@@ -206,25 +221,37 @@ Before completion:
    rg -n '\*+0' .coverage/luacov.report.out
    ```
 
-   These are report line numbers; locate the corresponding code in the source.
-   Choose uncovered behavior worth protecting, such as failure recovery or
-   cancellation, and add tests that assert its observable outcome. Keep
-   injection internal and restore patched dependencies during cleanup.
-3. Iterate with the relevant suite. For example:
+   These are report line numbers; locate the corresponding source. Choose
+   uncovered behavior worth protecting, such as failure recovery or
+   cancellation, and assert its observable outcome. Keep injection internal
+   and restore patched dependencies during cleanup. Prefer replay integration
+   and real native platform tests to simulated environments.
+3. Iterate with the relevant suite. For example, after a fresh baseline:
 
    ```sh
-   NEOAGENT_COVERAGE=1 make test-unit
+   NEOAGENT_COVERAGE=1 make test-integration
    make coverage-report coverage-check
    ```
 
-   Instrumented runs accumulate statistics in `.coverage/luacov.stats.out`.
-   The report and check targets do not run tests or clear those statistics.
-   Accumulated results help assess progress but can contain stale coverage
-   after source edits. Run suites sequentially; they share test state.
-4. Finish with `make test` and a fresh `make coverage` to verify the thresholds
-   above using only the final code and tests. The displayed percentage is
-   rounded; the check uses the unrounded ratio. A requested margin target
-   does not change the enforced threshold.
+   Instrumented processes write independent LuaCov files in `.coverage/raw/`.
+   Reporting combines their counters without losing overlapping child-process
+   writes. Runs can accumulate when only tests change; shipped-source changes
+   require a fresh collection. Source hashes prevent using stale counters.
+   Run suites sequentially because they share other test state.
+4. Finish with `make test` and a fresh `make coverage`. CI uses
+   `make coverage-collect` on Linux and macOS, and the native and portable
+   Windows suites with LuaCov enabled. Each exports `.coverage/collection.json`.
+   To reproduce the matrix report from downloaded collections:
+
+   ```sh
+   python3 scripts/coverage.py merge .coverage/native/*/collection.json \
+     --require-platforms Linux Darwin Windows
+   make coverage-render coverage-check
+   ```
+
+   Merging requires identical shipped sources and a complete file inventory.
+   It normalizes checkout paths and CRLF line endings, then sums ordinary
+   LuaCov counters. A foreign platform is never excluded to pass the gate.
 
 ## Reproducing provider issues
 

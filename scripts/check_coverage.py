@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 report = sys.argv[1]
-plugin_threshold = float(sys.argv[2])
 with open(report, "r", encoding="utf-8") as source:
     text = source.read()
 
@@ -52,13 +51,10 @@ print(
     f"Applet Lua line coverage: {applet_coverage:.2f}% "
     "(required: 100.00%)"
 )
-if applet_missed != 0:
-    raise SystemExit(1)
-
-_, _, plugin_coverage = coverage(expected)
+_, plugin_missed, plugin_coverage = coverage(expected)
 print(
     f"Shipped-plugin Lua line coverage: {plugin_coverage:.2f}% "
-    f"(required: > {plugin_threshold:.2f}%)"
+    f"(required: 100.00%; {plugin_missed} uncovered lines)"
 )
-if plugin_coverage <= plugin_threshold:
+if applet_missed or plugin_missed:
     raise SystemExit(1)

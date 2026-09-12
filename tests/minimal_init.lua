@@ -60,9 +60,11 @@ vim.g.clipboard = {
 }
 
 if vim.env.NEOAGENT_COVERAGE == "1" then
-  vim.fn.mkdir(root .. "/.coverage", "p")
+  vim.fn.mkdir(root .. "/.coverage/raw", "p")
+  package.path = root .. "/.deps/coverage-native/cluacov/src/?.lua;" .. package.path
+  package.cpath = root .. "/.deps/coverage-native/lib/?.so;" .. package.cpath
   local runner = require("luacov.runner")
-  runner((vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
+  runner(dofile(vim.env.LUACOV_CONFIG or (root .. "/scripts/luacov_config.lua")))
   vim.api.nvim_create_autocmd("VimLeavePre", {
     once = true,
     callback = function() runner.shutdown() end,

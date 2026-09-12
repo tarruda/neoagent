@@ -9,7 +9,7 @@ UI_TEST_TIMEOUT ?= 120000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript benchmark-submission coverage coverage-ci coverage-report coverage-check clean
+.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript benchmark-submission coverage-deps coverage coverage-ci coverage-collect coverage-report coverage-render coverage-check clean
 
 typecheck-deps:
 	python3 scripts/typecheck_deps.py
@@ -76,24 +76,39 @@ benchmark-submission:
 		$(NVIM) --headless --noplugin -u tests/minimal_init.lua \
 		-l scripts/benchmark-submission.lua
 
-coverage:
-	rm -rf .coverage
+coverage: coverage-deps
+	python3 scripts/coverage.py start
 	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 
-coverage-ci:
-	rm -rf .coverage
-	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast test-http-live test-native-sandbox
+coverage-ci: coverage-collect
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 
+coverage-collect: coverage-deps
+	python3 scripts/coverage.py start
+	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast test-http-live test-native-sandbox
+	python3 scripts/coverage.py export
+
 coverage-report:
-	mkdir -p .coverage
-	$(NVIM) --headless -u NONE -i NONE -c "set rtp^=. | lua package.path = './.deps/luacov/src/?.lua;./.deps/luacov/src/?/init.lua;' .. package.path; require('luacov.runner').run_report('scripts/luacov_config.lua')" -c qa
+	python3 scripts/coverage.py export
+	python3 scripts/coverage.py merge .coverage/collection.json
+	$(MAKE) coverage-render
+
+.deps/coverage-native/lib/cluacov/deepactivelines.so: scripts/coverage_deps.py
+	CC="$(CC)" python3 scripts/coverage_deps.py
+
+.deps/coverage-native/lib/cluacov/hook.so: .deps/coverage-native/lib/cluacov/deepactivelines.so
+	CC="$(CC)" python3 scripts/coverage_deps.py
+
+coverage-deps: .deps/coverage-native/lib/cluacov/deepactivelines.so .deps/coverage-native/lib/cluacov/hook.so
+
+coverage-render: coverage-deps
+	$(NVIM) --headless -u NONE -i NONE -l scripts/coverage_report.lua
 
 coverage-check:
-	python3 scripts/check_coverage.py .coverage/luacov.report.out 99.6
+	python3 scripts/check_coverage.py .coverage/luacov.report.out
 
 clean:
 	rm -rf .test-data .coverage
