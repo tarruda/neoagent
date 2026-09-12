@@ -1,13 +1,21 @@
 local assert = require("luassert")
 local agent_instructions = require("neoagent.agent_instructions")
 local fs = require("neoagent.fs")
+local resource_policy = require("neoagent.resource_policy")
 local skills = require("neoagent.skills")
+
+local original_canonical = fs.canonical
+local original_open_regular = fs.open_regular
+local original_lstat = vim.uv.fs_lstat
 
 describe("neoagent contextual resources", function()
   ---@type string[]
   local paths = {}
 
   after_each(function()
+    fs.canonical = original_canonical
+    fs.open_regular = original_open_regular
+    vim.uv.fs_lstat = original_lstat
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
   end)
@@ -189,11 +197,12 @@ describe("neoagent contextual resources", function()
     local outside = write(base .. "/outside.md", "external instructions")
     paths[1] = base
     directory(repo .. "/.git")
+    local canonical_path = fs.canonical(path)
 
     local original_open = fs.open_regular
     fs.open_regular = function(candidate, options)
       local file, err, stage = original_open(candidate, options)
-      if file and candidate == path then
+      if file and fs.canonical(candidate) == canonical_path then
         assert(vim.uv.fs_rename(path, path .. ".original"))
         assert(vim.uv.fs_symlink(outside, path))
       end
@@ -208,6 +217,107 @@ describe("neoagent contextual resources", function()
     assert(ok)
     assert.are.same({}, result.files)
     assert.matches("changed its resolved path", assert(result.diagnostics[1]).message)
+  end)
+
+  it("fails closed across project resource inspection stages", function()
+    local base = vim.fn.tempname()
+    paths[1] = base
+    local root = assert(vim.uv.fs_realpath(directory(base .. "/repo")))
+    local file_path = write(root .. "/resource.md", "resource")
+    local directory_path = assert(vim.uv.fs_realpath(directory(root .. "/skills")))
+    local outside = assert(vim.uv.fs_realpath(directory(base .. "/outside")))
+
+    local content, err = resource_policy.read(root .. "/missing", root)
+    assert.is_nil(content)
+    assert.is_string(err)
+
+    local selected
+    selected, err = resource_policy.directory(file_path, root)
+    assert.is_nil(selected)
+    assert.are.equal("project skill path is not a regular directory", err)
+
+    fs.canonical = function(path)
+      if path == directory_path then return outside end
+      return original_canonical(path)
+    end
+    selected, err = resource_policy.directory(directory_path, root)
+    fs.canonical = original_canonical
+    assert.is_nil(selected)
+    assert.are.equal("project skill path resolves outside the trusted root", err)
+
+    local inspected = false
+    vim.uv.fs_lstat = function(path)
+      if path == directory_path then
+        if inspected then return nil, "directory disappeared" end
+        inspected = true
+      end
+      return original_lstat(path)
+    end
+    selected, err = resource_policy.directory(directory_path, root)
+    vim.uv.fs_lstat = original_lstat
+    assert.is_nil(selected)
+    assert.are.equal("directory disappeared", err)
+
+    fs.canonical = function(path)
+      if path == file_path then return outside .. "/resource.md" end
+      return original_canonical(path)
+    end
+    content, err = resource_policy.read(file_path, root)
+    fs.canonical = original_canonical
+    assert.is_nil(content)
+    assert.are.equal("project resource resolves outside the trusted root", err)
+
+    fs.open_regular = function() return nil, "open denied" end
+    content, err = resource_policy.read(file_path, root)
+    fs.open_regular = original_open_regular
+    assert.is_nil(content)
+    assert.are.equal("open denied", err)
+
+    fs.open_regular = function(path, options)
+      local file, open_err, stage = original_open_regular(path, options)
+      if file then
+        file.verify_path = function() return nil, "verification failed" end
+      end
+      return file, open_err, stage
+    end
+    content, err = resource_policy.read(file_path, root)
+    fs.open_regular = original_open_regular
+    assert.is_nil(content)
+    assert.are.equal("verification failed", err)
+
+    fs.open_regular = function(path, options)
+      local file, open_err, stage = original_open_regular(path, options)
+      if file then
+        local verifies = 0
+        file.verify_path = function()
+          verifies = verifies + 1
+          if verifies == 2 then return nil, "resource changed after read" end
+          return true
+        end
+      end
+      return file, open_err, stage
+    end
+    content, err = resource_policy.read(file_path, root)
+    fs.open_regular = original_open_regular
+    assert.is_nil(content)
+    assert.are.equal("resource changed after read", err)
+
+    fs.open_regular = function(path, options)
+      local file, open_err, stage = original_open_regular(path, options)
+      if file then
+        local close = file.close
+        file.close = function()
+          file.close = close
+          assert(file:close())
+          return nil, "close failed"
+        end
+      end
+      return file, open_err, stage
+    end
+    content, err = resource_policy.read(file_path, root)
+    fs.open_regular = original_open_regular
+    assert.is_nil(content)
+    assert.are.equal("close failed", err)
   end)
 
   it("discovers valid skills lazily with local precedence", function()

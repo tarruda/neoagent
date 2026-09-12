@@ -811,6 +811,19 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.is_nil(failed)
     assert.are.equal("sandbox filesystem operation failed", reason)
+
+    local overflow = caught(function()
+      platform.exec({
+        argv = { "/bin/sh", "-c", "printf output" },
+        cwd = root,
+        env = {},
+        profile = profile(root),
+        capture = true,
+        max_capture_bytes = 3,
+      }, services)
+    end)
+    assert.matches("Invalid Linux sandbox protocol", overflow.message)
+    assert.are.equal("sandbox output exceeded capture limit", overflow.detail)
   end)
 
   it("keeps Linux staging outside filesystem profile grants", function()
@@ -2305,6 +2318,18 @@ describe("neoagent sandbox platform adapters", function()
       end)
     end)
     assert.matches("Invalid Windows sandbox protocol", structured_error(err).message)
+    err = caught(function()
+      execute(windows_events({
+        { v = 1, type = "ready" },
+        {
+          v = 1, type = "output", stream = "stdout",
+          seq = 1, data = "overflow",
+        },
+        { v = 1, type = "exit", code = 0, signal = 0 },
+      }), { capture = true, max_capture_bytes = 3 })
+    end)
+    assert.matches("Invalid Windows sandbox protocol", structured_error(err).message)
+    assert.are.equal("sandbox output exceeded capture limit", err.detail)
     err = caught(function()
       execute(function() error(string.rep("x", 2000)) end)
     end)

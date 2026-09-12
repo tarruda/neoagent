@@ -1684,6 +1684,8 @@ describe("neoagent sandbox execution", function()
     local root = temp()
     local temporary = vim.fs.joinpath(root, "spill")
     local raw_calls = {}
+    local fail_temporary_read = false
+    ---@type Neoagent.SandboxFilesystemService
     local raw_fs = {
       create_temp_directory = fs.create_temp_directory,
       create_temp = function(_, directory)
@@ -1692,6 +1694,7 @@ describe("neoagent sandbox execution", function()
       end,
       read = function(path)
         raw_calls[#raw_calls + 1] = "read:" .. path
+        if fail_temporary_read then return nil, "temporary read failed" end
         return "temporary"
       end,
       mkdirp = function(path)
@@ -1733,13 +1736,29 @@ describe("neoagent sandbox execution", function()
       name = "probe", description = "Probe sandbox behavior",
       input_schema = { type = "object", properties = {} },
       execute = function(_, ctx)
-        local path = assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).create_temp("spill-"))
-        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).write_all(path, "data", "a", 384))
-        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).atomic_replace(path, "replacement", {
+        local files = common.fs(ctx --[[@as Neoagent.ToolCapabilities]])
+        local path = assert(files.create_temp("spill-"))
+        assert(files.write_all(path, "data", "a", 384))
+        assert(files.atomic_replace(path, "replacement", {
           preserve_mode = true, new_mode = 420,
         }))
-        assert.are.equal("temporary", common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).read(path))
-        assert(common.fs(ctx --[[@as Neoagent.ToolCapabilities]]).mkdirp(vim.fs.joinpath(root, "directory")))
+        assert.are.equal("temporary", files.read(path))
+        local chunks = {}
+        local read_chunks = assert(files.read_chunks)
+        assert(read_chunks(path, function(data, offset)
+          chunks[#chunks + 1] = { data, offset }
+        end, 3))
+        assert.are.same({
+          { "tem", 0 },
+          { "por", 3 },
+          { "ary", 6 },
+        }, chunks)
+        fail_temporary_read = true
+        local read, read_err = read_chunks(path, function() end, 3)
+        fail_temporary_read = false
+        assert.is_nil(read)
+        assert.are.equal("temporary read failed", read_err)
+        assert(files.mkdirp(vim.fs.joinpath(root, "directory")))
         return { content = { { type = "text", text = "ok" } } }
       end,
     }, {}, context(root))
@@ -1749,8 +1768,34 @@ describe("neoagent sandbox execution", function()
       "write:" .. temporary,
       "replace:" .. temporary,
       "read:" .. temporary,
+      "read:" .. temporary,
+      "read:" .. temporary,
+      "read:" .. temporary,
+      "read:" .. temporary,
+      "read:" .. temporary,
       "platform:mkdirp",
     }, raw_calls)
+
+    raw_fs.read_chunks = function(path, on_chunk, chunk_size)
+      raw_calls[#raw_calls + 1] = "read_chunks:" .. path
+      assert.are.equal(4, chunk_size)
+      on_chunk("delegated", 0)
+      return true
+    end
+    value = execute({
+      name = "probe", description = "Probe sandbox behavior",
+      input_schema = { type = "object", properties = {} },
+      execute = function(_, ctx)
+        local files = common.fs(ctx --[[@as Neoagent.ToolCapabilities]])
+        local path = assert(files.create_temp("spill-"))
+        local chunks = {}
+        assert(assert(files.read_chunks)(path,
+          function(data) chunks[#chunks + 1] = data end, 4))
+        return { content = { { type = "text", text = table.concat(chunks) } } }
+      end,
+    }, {}, context(root))
+    assert.are.equal("delegated", assert(value.content[1]).text)
+    assert.are.equal("read_chunks:" .. temporary, raw_calls[#raw_calls])
 
     local path_module = require("neoagent.sandbox.path")
     local rejecting_paths = util.copy(path_module.posix)
