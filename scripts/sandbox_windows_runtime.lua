@@ -2110,6 +2110,7 @@ local function validate_spec(spec, directory)
         or type(spec.fs.path) ~= "string"
         or not ({
           read = true,
+          read_range = true,
           write_all = true,
           mkdirp = true,
           atomic_replace = true,
@@ -2118,6 +2119,16 @@ local function validate_spec(spec, directory)
     end
     spec.fs.path = vim.fs.normalize(spec.fs.path)
     if spec.fs.path:find("\0", 1, true) then failure("specification-fs", 0) end
+    if spec.fs.operation == "read_range" then
+      if type(spec.fs.offset) ~= "number" or spec.fs.offset < 0
+          or spec.fs.offset % 1 ~= 0
+          or type(spec.fs.size) ~= "number" or spec.fs.size < 1
+          or spec.fs.size > 1024 * 1024 or spec.fs.size % 1 ~= 0 then
+        failure("specification-fs", 0)
+      end
+    elseif spec.fs.offset ~= nil or spec.fs.size ~= nil then
+      failure("specification-fs", 0)
+    end
   end
   return spec
 end
@@ -3385,6 +3396,30 @@ local function direct_read(path)
   return table.concat(chunks)
 end
 
+---@param path string
+---@param offset integer
+---@param size integer
+---@return string?, integer?
+local function direct_read_range(path, offset, size)
+  local handle = K.CreateFileW(wide(path), WIN32.ACCESS.GENERIC_READ,
+    bit.bor(WIN32.FILE.SHARE_READ, WIN32.FILE.SHARE_WRITE,
+      WIN32.FILE.SHARE_DELETE),
+    nil, WIN32.FILE.OPEN_EXISTING, WIN32.FILE.ATTRIBUTE_NORMAL, nil)
+  if invalid_handle(handle) then return nil, last_error() end
+  if K.GetFileType(handle) ~= WIN32.FILE.TYPE_DISK then
+    close_handle(handle)
+    return nil, WIN32.ERROR.ACCESS_DENIED
+  end
+  if K.SetFilePointerEx(handle, offset, nil, WIN32.FILE.BEGIN) == 0 then
+    local err = last_error()
+    close_handle(handle)
+    return nil, err
+  end
+  local data, err = read_some(handle, size)
+  close_handle(handle)
+  return data, err
+end
+
 ---@param data string
 ---@return string
 local function content_fingerprint(data)
@@ -3582,6 +3617,8 @@ local function fs_operation(spec, stdin, output_handle, token)
   local value, err = with_impersonation(token, function()
     if operation == "read" then
       return direct_read(path)
+    elseif operation == "read_range" then
+      return direct_read_range(path, assert(request.offset), assert(request.size))
     elseif operation == "write_all" then
       return direct_write(path, stdin, request.flags)
     elseif operation == "atomic_replace" then
@@ -3597,7 +3634,9 @@ local function fs_operation(spec, stdin, output_handle, token)
   })
   local output = output_sender(output_handle)
   if value then
-    if operation == "read" then output("stdout", value --[[@as string]]) end
+    if operation == "read" or operation == "read_range" then
+      output("stdout", value --[[@as string]])
+    end
     send_event(output_handle, {
       v = RUNTIME.PROTOCOL_VERSION,
       type = "exit",

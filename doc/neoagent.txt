@@ -589,7 +589,7 @@ and needs one elevated setup from the plugin checkout: >
 Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to select another
 Windows state directory. Custom tools participate when they route file and
 process effects through `ctx.fs` and `ctx.process`; their Lua code itself runs
-inside Neovim.
+inside Neovim. Use `ctx.fs.read_chunks` for bounded reads.
 
 A denied call can request one host execution with: >json
 

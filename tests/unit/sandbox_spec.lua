@@ -1582,6 +1582,37 @@ describe("neoagent sandbox execution", function()
     assert.are.equal("nil:entropy unavailable", assert(value.content[1]).text)
   end)
 
+  it("preserves chunked reads through the guarded filesystem", function()
+    local root = temp()
+    local contents = "zero\none\ntwo\n" .. string.rep("padding\n", 140000)
+    local calls = 0
+    local box = require("neoagent.sandbox.enforce").new({
+      profile = profile(root),
+      platform = {
+        name = "test",
+        check = function() return { ok = true, platform = "test" } end,
+        fs = function(request)
+          calls = calls + 1
+          assert.are.equal("read_range", request.operation)
+          assert.is_number(request.offset)
+          assert.are.equal(1024 * 1024, request.size)
+          local offset = assert(request.offset)
+          return contents:sub(offset + 1, offset + assert(request.size))
+        end,
+        exec = function() error("no process expected") end,
+      },
+    })
+    local result = box:wrap()(
+      require("neoagent.tools.read_file").new(),
+      { path = "streamed.txt", offset = 2, limit = 2 },
+      context(root)
+    )
+    assert.is_nil(result.isError)
+    assert.are.equal(2, calls)
+    assert.matches("^one\ntwo", (assert(assert(result.content[1]).text)))
+    assert.matches("1 more lines in file", (assert(assert(result.content[1]).text)))
+  end)
+
   it("shares temporary read mounts across tool calls only while file identity is unchanged", function()
     local root = temp()
     ---@type Neoagent.SandboxFilesystemRequest[]

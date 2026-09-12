@@ -230,6 +230,7 @@ end
 ---@param require_active fun()
 ---@return Neoagent.ToolFilesystem
 function Enforcement:_guarded_fs(ctx, profile, require_active)
+  local read_range_bytes = 1024 * 1024
   local temporary = {}
   local raw, platform = self._fs, self._platform
   local remembered = self._temporary_paths
@@ -260,12 +261,13 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
     return record
   end
   ---@overload fun(operation: 'read', path: string): string?, string?
+  ---@overload fun(operation: 'read_range', path: string, arguments: {offset: integer, size: integer}): string?, string?
   ---@overload fun(operation: 'mkdirp', path?: string): true?, unknown
   ---@overload fun(operation: 'write_all', path: string, arguments: {data: string, flags?: string, mode?: integer}): true?, string?
   ---@overload fun(operation: 'atomic_replace', path: string, arguments: {data: string, policy: Neoagent.AtomicPolicy, suffix: string}): true?, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?
-  ---@param operation 'read'|'write_all'|'mkdirp'|'atomic_replace'
+  ---@param operation 'read'|'read_range'|'write_all'|'mkdirp'|'atomic_replace'
   ---@param path string
-  ---@param arguments? {data: string, flags?: string, mode?: integer, policy?: Neoagent.AtomicPolicy, suffix?: string}
+  ---@param arguments? {data?: string, flags?: string, mode?: integer, policy?: Neoagent.AtomicPolicy, suffix?: string, offset?: integer, size?: integer}
   ---@return string|true|nil, Neoagent.FileIdentity|string|nil, Neoagent.AtomicFailureStage?
   local function dispatch(operation, path, arguments)
     require_active()
@@ -273,23 +275,34 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
       if operation == "read" then
         return raw.read(path)
       end
+      if operation == "read_range" then
+        arguments = assert(arguments)
+        local offset = assert(arguments.offset)
+        local size = assert(arguments.size)
+        local content, read_err = raw.read(path)
+        if not content then
+          return nil, read_err
+        end
+        return content:sub(offset + 1, offset + size)
+      end
       if operation == "write_all" then
         arguments = assert(arguments)
-        return raw.write_all(path, arguments.data, arguments.flags, arguments.mode)
+        return raw.write_all(path, assert(arguments.data), arguments.flags, arguments.mode)
       end
       if operation == "atomic_replace" then
         arguments = assert(arguments)
-        return raw.atomic_replace(path, arguments.data, (assert(arguments.policy)))
+        return raw.atomic_replace(path, assert(arguments.data), (assert(arguments.policy)))
       end
     end
     local lexical, canonical = policy.resolve_path(ctx --[[@as Neoagent.SandboxPathContext]], path, self._paths)
-    local required = operation == "read" and "read" or "write"
+    local reading = operation == "read" or operation == "read_range"
+    local required = reading and "read" or "write"
     local allowed, granted = policy.allows(profile, lexical, canonical, required, self._paths)
     if not allowed then
       error(denied("filesystem." .. required, lexical, profile, platform.name, granted), 0)
     end
     local effective_profile = profile
-    local record = operation == "read" and remembered_file(lexical, canonical) or nil
+    local record = reading and remembered_file(lexical, canonical) or nil
     if record then
       effective_profile = util.copy(profile)
       effective_profile.filesystem.entries[#effective_profile.filesystem.entries + 1] = {
@@ -303,6 +316,8 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
       path = lexical,
       canonical_path = canonical,
       profile = effective_profile,
+      offset = arguments and arguments.offset,
+      size = arguments and arguments.size,
       data = arguments and arguments.data,
       flags = arguments and arguments.flags,
       mode = arguments and arguments.mode,
@@ -343,6 +358,41 @@ function Enforcement:_guarded_fs(ctx, profile, require_active)
     end,
     read = function(path)
       return dispatch("read", path)
+    end,
+    read_chunks = function(path, on_chunk, chunk_size)
+      assert(type(on_chunk) == "function", "chunk callback is required")
+      chunk_size = chunk_size or read_range_bytes
+      assert(
+        type(chunk_size) == "number" and chunk_size > 0 and chunk_size % 1 == 0,
+        "chunk size must be a positive integer"
+      )
+      require_active()
+      if temporary[path] and type(raw.read_chunks) == "function" then
+        return raw.read_chunks(path, on_chunk, chunk_size)
+      end
+      local offset = 0
+      local transfer_size = math.min(chunk_size, read_range_bytes)
+      while true do
+        local data, read_err = dispatch("read_range", path, {
+          offset = offset,
+          size = transfer_size,
+        })
+        if not data then
+          return nil, read_err
+        end
+        ---@cast data string
+        if data == "" then
+          return true
+        end
+        local accepted, callback_err = pcall(on_chunk, data, offset)
+        if not accepted then
+          return nil, callback_err
+        end
+        offset = offset + #data
+        if #data < transfer_size then
+          return true
+        end
+      end
     end,
     mkdirp = function(path)
       return dispatch("mkdirp", path)

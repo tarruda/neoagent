@@ -281,7 +281,16 @@ describe("neoagent shared sandbox contract", function()
       end,
     })
     local completion = run:await()
-    assert.is_true(completion.ok)
+    assert.is_true(completion.ok, vim.inspect(completion))
+    if not result then
+      local message = assert(messages_by_id(
+        assert(completion.new_messages)).sandbox)
+      result = {
+        content = message.content,
+        isError = message.isError,
+        details = message.details,
+      }
+    end
     return (assert(result))
   end
 
@@ -405,6 +414,37 @@ describe("neoagent shared sandbox contract", function()
         assert.is_nil(tool.input_schema.properties.options)
         assert.is_table(assert(assert(assert(options.tools)[index]).input_schema.properties).options)
       end
+    end)
+
+  sandbox_test("bounds large read_file transfers inside the native sandbox",
+    function()
+      local text_path = vim.fs.joinpath(workspace, "large.txt")
+      assert(fs.write_all(text_path,
+        "zero\none\ntwo\n" .. string.rep("padding\n", 140000)))
+      local image_path = vim.fs.joinpath(workspace, "large.png")
+      assert(fs.write_all(image_path,
+        "\137PNG\r\n\26\n" .. string.rep("x", 3 * 1024 * 1024)))
+      local read = require("neoagent.tools.read_file").new({
+        max_image_input_bytes = 1024 * 1024,
+      })
+      local options = sandboxed_config({ read })
+      local selected = assert(assert(options.tools)[1])
+      local value = wait(async.run(function()
+        return {
+          text = execute_tool(options, selected, {
+            path = text_path,
+            offset = 2,
+          }),
+          image = execute_tool(options, selected, {
+            path = image_path,
+          }),
+        }
+      end), 60000)
+      assert.is_nil(value.text.isError)
+      assert.matches("^one\ntwo", text(value.text))
+      assert.matches("Showing lines 2%-2001", text(value.text))
+      assert.is_true(value.image.isError)
+      assert.matches("image input exceeds 1048576 bytes", text(value.image))
     end)
 
   sandbox_test("classifies native command failures by sandbox-denial evidence",
