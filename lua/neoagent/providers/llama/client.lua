@@ -45,6 +45,7 @@ local M = {}
 ---@alias Neoagent.LlamaUnloadSuccess Neoagent.LlamaValueSuccess<true>
 
 local REQUEST_TIMEOUT_MS = 15000
+local INVENTORY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 local WAIT_TIMEOUT_MS = 10 * 60 * 1000
 local DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
 local POLL_INTERVAL_MS = 250
@@ -287,6 +288,7 @@ function Client:request(path, opts)
         headers = headers,
         body = opts.body,
         timeout_ms = opts.timeout_ms == nil and REQUEST_TIMEOUT_MS or opts.timeout_ms,
+        max_response_bytes = INVENTORY_MAX_RESPONSE_BYTES,
       }
       local fetched = self.transport.fetch({ request = request }):await()
       if not fetched.ok then

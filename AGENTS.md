@@ -48,18 +48,14 @@ Architecture is the canonical ownership reference. Changes must preserve:
   interaction, Applet-owned native surfaces, and transactional publication.
   Headless Agents do not load UI modules.
 - Verified regular-file replacement for bundled file tools.
-- RegularFile relinquishes descriptor ownership before native close; a close
-  error must not authorize retrying a potentially recycled descriptor.
-  Preserve the error independently of resource ownership.
 - Tool execution blocked when requested sandbox activation fails; host
   execution requires explicitly disabling sandboxing.
 - Private atomic credential storage; credentials excluded from provider state
   and diagnostics; HTTP and conversation bodies excluded from provider
   diagnostics. Persistence uncertainty blocks later Store mutations.
-- HTTP recording as an observer: mask protocol credentials, preserve model
-  and ordinary provider bodies, and mask response bodies only when
-  Authentication explicitly classifies them as sensitive.
-  Bound response buffering and never spool classified sensitive bodies.
+- HTTP recording cannot change provider results. It masks protocol credentials
+  and Authentication-classified response bodies, preserves ordinary bodies,
+  and never writes sensitive response content to temporary storage.
 
 ## Repository and documentation
 

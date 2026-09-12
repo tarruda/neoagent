@@ -1,4 +1,5 @@
 local fs = require("neoagent.fs")
+local resource_policy = require("neoagent.resource_policy")
 local util = require("neoagent.util")
 
 local M = {}
@@ -83,11 +84,21 @@ end
 
 ---@param path string
 ---@param source "global"|"project"
+---@param project_root? string
 ---@return Neoagent.Skill?, string?
 ---@return_overload Neoagent.Skill
 ---@return_overload nil, string
-local function load_skill(path, source)
-  local content, err = fs.read(path)
+local function load_skill(path, source, project_root)
+  local content, err
+  local canonical
+  if source == "project" then
+    content, err = resource_policy.read(path, assert(project_root))
+    if content then
+      canonical = err
+    end
+  else
+    content, err = fs.read(path)
+  end
   if not content then
     return nil, "failed to read skill: " .. tostring(err)
   end
@@ -111,7 +122,7 @@ local function load_skill(path, source)
   if #description > 1024 then
     return nil, "skill description exceeds 1024 characters"
   end
-  local canonical = fs.canonical(path)
+  canonical = canonical or fs.canonical(path)
   return {
     name = name,
     description = util.trim(description),
@@ -126,27 +137,39 @@ end
 ---@param add fun(skill: Neoagent.Skill)
 ---@param diagnostics Neoagent.ResourceDiagnostic[]
 ---@param visited table<string, boolean>
-local function scan(root, source, add, diagnostics, visited)
+---@param project_root? string
+local function scan(root, source, add, diagnostics, visited, project_root)
   local expanded = vim.fn.expand(root)
   ---@cast expanded string
   root = fs.normalize(expanded)
-  local stat = vim.uv.fs_stat(root)
+  local stat = source == "project" and vim.uv.fs_lstat(root) or vim.uv.fs_stat(root)
   if not stat then
     return
   end
-  if stat.type ~= "directory" then
+  local canonical
+  if source == "project" then
+    local directory_err
+    canonical, directory_err = resource_policy.directory(root, assert(project_root))
+    if not canonical then
+      diagnostics[#diagnostics + 1] = { path = root, message = tostring(directory_err) }
+      return
+    end
+  elseif stat.type ~= "directory" then
     diagnostics[#diagnostics + 1] = { path = root, message = "skill path is not a directory" }
     return
+  else
+    canonical = fs.canonical(root)
   end
-  local canonical = fs.canonical(root)
+  ---@cast canonical string
   if visited[canonical] then
     return
   end
   visited[canonical] = true
 
   local skill_path = fs.join(canonical, "SKILL.md")
-  if vim.uv.fs_stat(skill_path) then
-    local skill, err = load_skill(skill_path, source)
+  local skill_stat = source == "project" and vim.uv.fs_lstat(skill_path) or vim.uv.fs_stat(skill_path)
+  if skill_stat then
+    local skill, err = load_skill(skill_path, source, project_root)
     if skill then
       add(skill)
     else
@@ -169,14 +192,23 @@ local function scan(root, source, add, diagnostics, visited)
     if name:sub(1, 1) ~= "." and name ~= "node_modules" then
       local path = fs.join(canonical, name)
       local child_stat = kind == "link" and vim.uv.fs_stat(path) or nil
-      if kind == "directory" or child_stat and child_stat.type == "directory" then
+      if kind == "directory" then
         children[#children + 1] = path
+      elseif child_stat and child_stat.type == "directory" then
+        if source == "project" then
+          diagnostics[#diagnostics + 1] = {
+            path = path,
+            message = "project skill directory is a symbolic link",
+          }
+        else
+          children[#children + 1] = path
+        end
       end
     end
   end
   table.sort(children)
   for _, child in ipairs(children) do
-    scan(child, source, add, diagnostics, visited)
+    scan(child, source, add, diagnostics, visited, project_root)
   end
 end
 
@@ -198,9 +230,11 @@ function M.discover(opts)
   for _, directory in ipairs(opts.global_dirs or {}) do
     scan(directory, "global", add, diagnostics, visited)
   end
-  for _, ancestor in ipairs(fs.ancestors(opts.cwd)) do
+  local ancestors = fs.ancestors(opts.cwd)
+  local project_root = assert(ancestors[1])
+  for _, ancestor in ipairs(ancestors) do
     for _, directory in ipairs(opts.project_dirs or {}) do
-      scan(fs.join(ancestor, directory), "project", add, diagnostics, visited)
+      scan(fs.join(ancestor, directory), "project", add, diagnostics, visited, project_root)
     end
   end
   local skills = vim.tbl_values(by_name)

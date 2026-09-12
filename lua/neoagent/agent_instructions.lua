@@ -1,4 +1,5 @@
 local fs = require("neoagent.fs")
+local resource_policy = require("neoagent.resource_policy")
 local util = require("neoagent.util")
 
 local M = {}
@@ -33,25 +34,37 @@ function M.discover(opts)
   local files, diagnostics, seen = {}, {}, {}
 
   ---@param path string
-  local function add(path)
+  ---@param project_root? string
+  local function add(path, project_root)
     local expanded = vim.fn.expand(path)
     ---@cast expanded string
     path = fs.normalize(expanded)
-    local stat = vim.uv.fs_stat(path)
+    local stat = project_root and vim.uv.fs_lstat(path) or vim.uv.fs_stat(path)
     if not stat then
       return
     end
-    if stat.type ~= "file" then
+    if not project_root and stat.type ~= "file" then
       diagnostics[#diagnostics + 1] = { path = path, message = "AGENTS.md path is not a file" }
       return
     end
-    local canonical = fs.canonical(path)
-    if seen[canonical] then
-      return
+    local content, canonical
+    if project_root then
+      content, canonical = resource_policy.read(path, project_root)
+      if not content then
+        diagnostics[#diagnostics + 1] = { path = path, message = "refused project AGENTS.md: " .. tostring(canonical) }
+        return
+      end
+    else
+      canonical = fs.canonical(path)
+      local err
+      content, err = fs.read(path)
+      if not content then
+        diagnostics[#diagnostics + 1] = { path = path, message = "failed to read AGENTS.md: " .. tostring(err) }
+        return
+      end
     end
-    local content, err = fs.read(path)
-    if not content then
-      diagnostics[#diagnostics + 1] = { path = path, message = "failed to read AGENTS.md: " .. tostring(err) }
+    ---@cast canonical string
+    if seen[canonical] then
       return
     end
     seen[canonical] = true
@@ -61,9 +74,11 @@ function M.discover(opts)
   for _, path in ipairs(opts.global_files or {}) do
     add(path)
   end
-  for _, directory in ipairs(fs.ancestors(opts.cwd)) do
+  local ancestors = fs.ancestors(opts.cwd)
+  local project_root = assert(ancestors[1])
+  for _, directory in ipairs(ancestors) do
     for _, filename in ipairs(opts.project_filenames or {}) do
-      add(fs.join(directory, filename))
+      add(fs.join(directory, filename), project_root)
     end
   end
   return { files = files, diagnostics = diagnostics }

@@ -777,6 +777,18 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal("fs", requests[2].spec.mode)
     assert.are.equal(30000, requests[2].opts.timeout_ms)
 
+    data = assert(platform.fs({
+      operation = "read_range",
+      path = vim.fs.joinpath(root, "file"),
+      offset = 17,
+      size = 4096,
+      profile = profile(root),
+    }, services))
+    assert.are.equal("file\0data", data)
+    assert.are.equal("read_range", requests[3].spec.fs.operation)
+    assert.are.equal(17, requests[3].spec.fs.offset)
+    assert.are.equal(4096, requests[3].spec.fs.size)
+
     assert.is_true(platform.fs({
       operation = "write_all",
       path = vim.fs.joinpath(root, "file"),
@@ -799,6 +811,19 @@ describe("neoagent sandbox platform adapters", function()
     })
     assert.is_nil(failed)
     assert.are.equal("sandbox filesystem operation failed", reason)
+
+    local overflow = caught(function()
+      platform.exec({
+        argv = { "/bin/sh", "-c", "printf output" },
+        cwd = root,
+        env = {},
+        profile = profile(root),
+        capture = true,
+        max_capture_bytes = 3,
+      }, services)
+    end)
+    assert.matches("Invalid Linux sandbox protocol", overflow.message)
+    assert.are.equal("sandbox output exceeded capture limit", overflow.detail)
   end)
 
   it("keeps Linux staging outside filesystem profile grants", function()
@@ -1434,6 +1459,22 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal(30000, calls[2].opts.timeout_ms)
     assert.matches("NEOAGENT_SANDBOX_FS",
       table.concat(vim.tbl_keys(calls[2].opts.env), " "))
+
+    data = assert(macos.fs({
+      operation = "read_range",
+      path = vim.fs.joinpath(root, "file"),
+      offset = 19,
+      size = 8192,
+      profile = profile(root),
+    }, services))
+    assert.are.equal("runtime-data", data)
+    local process_environment = calls[3].opts.env --[[@as table<string, string>]]
+    local encoded_request = process_environment.NEOAGENT_SANDBOX_FS
+    assert.is_string(encoded_request)
+    local filesystem_request = vim.json.decode(encoded_request)
+    assert.are.equal("read_range", filesystem_request.operation)
+    assert.are.equal(19, filesystem_request.offset)
+    assert.are.equal(8192, filesystem_request.size)
   end)
 
   it("fails macOS requirements and execution closed", function()
@@ -1879,6 +1920,18 @@ describe("neoagent sandbox platform adapters", function()
     assert.are.equal("read", seen[2].spec.fs.operation)
     assert.are.equal("C:\\state\\shared-tmp", seen[2].spec.cwd)
 
+    read = windows.fs({
+      operation = "read_range",
+      path = "C:\\Repo\\file",
+      offset = 23,
+      size = 16384,
+      profile = windows_profile(),
+    }, services)
+    assert.are.equal("out\0", read)
+    assert.are.equal("read_range", seen[3].spec.fs.operation)
+    assert.are.equal(23, seen[3].spec.fs.offset)
+    assert.are.equal(16384, seen[3].spec.fs.size)
+
     assert.is_true(windows.fs({
       operation = "write_all",
       path = "C:\\Repo\\file",
@@ -2265,6 +2318,18 @@ describe("neoagent sandbox platform adapters", function()
       end)
     end)
     assert.matches("Invalid Windows sandbox protocol", structured_error(err).message)
+    err = caught(function()
+      execute(windows_events({
+        { v = 1, type = "ready" },
+        {
+          v = 1, type = "output", stream = "stdout",
+          seq = 1, data = "overflow",
+        },
+        { v = 1, type = "exit", code = 0, signal = 0 },
+      }), { capture = true, max_capture_bytes = 3 })
+    end)
+    assert.matches("Invalid Windows sandbox protocol", structured_error(err).message)
+    assert.are.equal("sandbox output exceeded capture limit", err.detail)
     err = caught(function()
       execute(function() error(string.rep("x", 2000)) end)
     end)

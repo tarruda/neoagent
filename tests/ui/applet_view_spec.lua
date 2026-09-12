@@ -1242,7 +1242,7 @@ describe("neoagent Applet View composition", function()
       value.transcript.pane.pending_state.blocks[1]))
   end)
 
-  it("coalesces independently delivered stream deltas into presentation frames", function()
+  it("coalesces a stream delta burst into one presentation frame", function()
     local value = view()
     value:set_messages({ {
       role = "user",
@@ -1254,27 +1254,22 @@ describe("neoagent Applet View composition", function()
         "stream a response")
     end))
 
+    assert.is_true((value.transcript.pane:flush()))
     local before = value.transcript.pane:_stats()
-    local started = vim.uv.hrtime()
     for index = 1, 24 do
       value:apply({
         type = "text_delta",
         index = 0,
         text = " part-" .. index,
       })
-      vim.wait(4, function() return false end, 1)
     end
     assert(vim.wait(1000, function()
       return contains((assert(view_handles.buffer(value, "transcript"))), "part-24")
     end))
 
     local after = value.transcript.pane:_stats()
-    local frame_interval_ns = 50 * 1000000
-    local maximum_frames = math.ceil(
-      (vim.uv.hrtime() - started) / frame_interval_ns
-    ) + 2
-    assert.is_true(after.renders - before.renders <= maximum_frames)
-    assert.is_true(after.commits - before.commits <= maximum_frames)
+    assert.are.equal(before.renders + 1, after.renders)
+    assert.are.equal(before.commits + 1, after.commits)
   end)
 
   it("appends a submitted message without rebuilding a long transcript", function()

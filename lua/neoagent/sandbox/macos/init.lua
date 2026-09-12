@@ -3,6 +3,8 @@ local util = require("neoagent.util")
 
 local M = { name = "macos" }
 local FS_TIMEOUT_MS = 30000
+local FS_MAX_READ_BYTES = 64 * 1024 * 1024
+local FS_CAPTURE_OVERHEAD_BYTES = 4096
 local SUPERVISOR_GRACE_MS = 100
 local SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 local CLEANUP_HELPERS = { "/bin/sh" }
@@ -185,6 +187,7 @@ local function execute(request, services, protected)
     capture = request.capture,
     timeout_ms = request.timeout_ms,
     kill_grace_ms = request.kill_grace_ms,
+    max_capture_bytes = request.max_capture_bytes,
     on_output = request.on_output,
   })
   if not ok then
@@ -234,6 +237,8 @@ function M.fs(request, services)
   env.NEOAGENT_SANDBOX_FS = util.json_encode({
     operation = request.operation,
     path = request.path,
+    offset = request.offset,
+    size = request.size,
     flags = request.flags,
     mode = request.mode,
     policy = request.policy,
@@ -258,6 +263,9 @@ function M.fs(request, services)
     clear_env = true,
     stdin = request.data,
     capture = true,
+    max_capture_bytes = (request.operation == "read_range"
+        and assert(request.size) or FS_MAX_READ_BYTES)
+      + FS_CAPTURE_OVERHEAD_BYTES,
     timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
     profile = request.profile,
   }
@@ -265,7 +273,7 @@ function M.fs(request, services)
   if value.code ~= 0 then
     return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
   end
-  if request.operation == "read" then
+  if request.operation == "read" or request.operation == "read_range" then
     return value.stdout
   end
   return true

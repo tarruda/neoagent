@@ -589,7 +589,7 @@ and needs one elevated setup from the plugin checkout: >
 Set `NEOAGENT_WINDOWS_SANDBOX_STATE` before Neovim starts to select another
 Windows state directory. Custom tools participate when they route file and
 process effects through `ctx.fs` and `ctx.process`; their Lua code itself runs
-inside Neovim.
+inside Neovim. Use `ctx.fs.read_chunks` for bounded reads.
 
 A denied call can request one host execution with: >json
 
@@ -613,7 +613,9 @@ AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
 Neo loads the global `stdpath("config") .. "/AGENTS.md"` and each project
 `AGENTS.md` from the Git root to the Workspace. Outside Git, discovery starts
-at the filesystem root. Files enter the prompt from broadest to most specific.
+at the Workspace. Linked project resources are ignored. Files enter the prompt
+from broadest to most specific. Explicitly configured global resources are not
+subject to the project boundary.
 
 Skills are directories containing a `SKILL.md` with YAML `name` and
 `description`. The defaults are:
@@ -830,12 +832,10 @@ requires `yq`. JSON recordings are newline-delimited JSON. Invalid UTF-8 bodies
 and response bodies larger than 1 MiB use base64 with an encoding marker,
 preserving their exact bytes and chunk boundaries.
 
-Response buffering is limited to 1 MiB per exchange. Larger ordinary responses
-use private `.body` spool files, removed after successful serialization.
-YAML conversion also streams its output. Sensitive authentication responses
-are never spooled; exceeding the buffering limit stops that recording without
-changing the provider's result. Failed finalization can leave private spool
-files beside the partial recording for recovery.
+Large ordinary responses may use private `.body` temporary files. Sensitive
+authentication responses never do; exceeding their 1 MiB limit stops recording
+without changing the provider result. Failed finalization can leave private
+temporary files beside the partial recording.
 
 Credential headers, credential-bearing URL values, known credential fields in
 non-model requests, and authentication response bodies classified as sensitive

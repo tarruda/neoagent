@@ -28,6 +28,7 @@ local M = {}
 ---@field stream fun(opts: Neoagent.HttpStreamOptions): Neoagent.Run<Neoagent.HttpResult, nil>
 
 local DETAIL_LIMIT = 64 * 1024
+local DEFAULT_JSON_RESPONSE_BYTES = 1024 * 1024
 
 ---@param body string
 ---@return boolean ok
@@ -77,7 +78,11 @@ function M.new(backend)
           "HTTP response_type must be json or text"
         )
         local fetch = assert(backend.fetch, "HTTP backend does not support fetch")
-        local result = fetch({ request = opts.request }):await()
+        local request = util.copy(opts.request)
+        if opts.response_type ~= "text" and request.max_response_bytes == nil then
+          request.max_response_bytes = DEFAULT_JSON_RESPONSE_BYTES
+        end
+        local result = fetch({ request = request }):await()
         if not result.ok then
           return result
         end
@@ -85,7 +90,7 @@ function M.new(backend)
         if type(body) ~= "string" then
           error(response_error("HTTP response body must be text", result), 0)
         end
-        local maximum = opts.request.max_response_bytes
+        local maximum = request.max_response_bytes
         if maximum and #body > maximum then
           error(response_error("HTTP response exceeds " .. maximum .. " bytes", result), 0)
         end

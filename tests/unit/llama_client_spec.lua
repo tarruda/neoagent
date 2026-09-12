@@ -54,6 +54,22 @@ describe("neoagent llama.cpp client", function()
     local result = wait(value:list({ reload = true }))
     assert.are.equal("qwen3", assert(assert(result.value)[1]).id)
     assert.matches("/models%?reload=1", assert(transport.fetch_requests[1]).url)
+    assert.are.equal(4 * 1024 * 1024,
+      assert(transport.fetch_requests[1]).max_response_bytes)
+  end)
+
+  it("rejects oversized router inventories", function()
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = string.rep(" ", 4 * 1024 * 1024 + 1) },
+    }
+    local value = client.new({
+      server_url = "http://127.0.0.1:8080",
+      transport = transport,
+    })
+    local result = wait(value:list())
+    assert.is_false(result.ok)
+    assert.matches("exceeds 4194304 bytes", assert(result.error).message)
   end)
 
   it("reports invalid catalogs and router-mode failures", function()

@@ -140,6 +140,7 @@ int close(int);
 int dup(int);
 ssize_t read(int, void *, size_t);
 ssize_t write(int, const void *, size_t);
+off_t lseek(int, off_t, int);
 ssize_t process_vm_readv(pid_t, const struct iovec *, unsigned long,
   const struct iovec *, unsigned long, unsigned long);
 int pipe2(int [2], int);
@@ -679,6 +680,34 @@ if type(spec.profile.filesystem) ~= "table"
     or type(spec.profile.filesystem.entries) ~= "table"
     or not vim.islist(spec.profile.filesystem.entries) then
   terminal_error("specification-profile", 0)
+end
+if spec.mode == "fs" then
+  local operation = type(spec.fs) == "table" and spec.fs.operation or nil
+  if type(spec.fs) ~= "table"
+      or type(spec.fs.path) ~= "string"
+      or spec.fs.path:sub(1, 1) ~= "/"
+      or spec.fs.path:find("\0", 1, true)
+      or not ({
+        read = true,
+        read_range = true,
+        write_all = true,
+        mkdirp = true,
+        atomic_replace = true,
+      })[operation] then
+    terminal_error("specification-fs", 0)
+  end
+  if operation == "read_range" then
+    if type(spec.fs.offset) ~= "number" or spec.fs.offset < 0
+        or spec.fs.offset % 1 ~= 0
+        or type(spec.fs.size) ~= "number" or spec.fs.size < 1
+        or spec.fs.size > 1024 * 1024 or spec.fs.size % 1 ~= 0 then
+      terminal_error("specification-fs", 0)
+    end
+  elseif spec.fs.offset ~= nil or spec.fs.size ~= nil then
+    terminal_error("specification-fs", 0)
+  end
+elseif spec.fs ~= nil then
+  terminal_error("specification-fs", 0)
 end
 if type(spec.protected_create) ~= "table"
     or not vim.islist(spec.protected_create) then
@@ -2027,7 +2056,7 @@ if init == 0 then
       C.close(confirm_w)
       local request = spec.fs or {}
       ---@cast request Neoagent.SandboxFilesystemOperation & {path: string}
-      if request.operation == "read" then
+      if request.operation == "read" or request.operation == "read_range" then
         local fd = C.open(request.path,
           bit.bor(O.RDONLY, O.CLOEXEC, O.NONBLOCK))
         if fd < 0 then
@@ -2040,9 +2069,17 @@ if init == 0 then
           write_all(2, "not a regular file\n")
           finish(66)
         end
+        if request.operation == "read_range"
+            and C.lseek(fd, request.offset, 0) < 0 then
+          C.close(fd)
+          write_all(2, string.format("seek failed (errno=%d)\n", ffi.errno()))
+          finish(74)
+        end
         local buffer = ffi.new("char[65536]")
-        while true do
-          local count = C.read(fd, buffer, 65536)
+        local remaining = request.operation == "read_range"
+            and request.size or math.huge
+        while remaining > 0 do
+          local count = C.read(fd, buffer, math.min(65536, remaining))
           if count == 0 then break end
           if count < 0 then
             if ffi.errno() ~= E.EINTR then
@@ -2053,6 +2090,8 @@ if init == 0 then
           elseif not write_all(1, ffi.string(buffer, count)) then
             write_all(2, "stdout write failed\n")
             finish(74)
+          elseif request.operation == "read_range" then
+            remaining = remaining - assert(tonumber(count))
           end
         end
         C.close(fd)

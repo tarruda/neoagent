@@ -28,6 +28,7 @@ local M = {}
 
 local DEFAULT_BASE_URL = "https://huggingface.co"
 local REQUEST_TIMEOUT_MS = 15000
+local INVENTORY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 local QUANTIZATION_ALTS = {
   "IQ%d[_A-Z0-9]+",
   "Q%d[_A-Z0-9]+",
@@ -159,6 +160,7 @@ function Client:request(path)
             method = "GET",
             headers = headers,
             timeout_ms = REQUEST_TIMEOUT_MS,
+            max_response_bytes = INVENTORY_MAX_RESPONSE_BYTES,
           },
         })
         :await()

@@ -40,6 +40,8 @@ local M = {
 }
 
 local FS_TIMEOUT_MS = 30000
+local FS_MAX_READ_BYTES = 64 * 1024 * 1024
+local FS_CAPTURE_OVERHEAD_BYTES = 4096
 local PROBE_TIMEOUT_MS = 30000
 local RUNTIME_TIMEOUT_MARGIN_MS = 10000
 local MINIMUM_NVIM = { 0, 12, 0 }
@@ -331,6 +333,11 @@ local function new_capture(request)
       ---@cast event Neoagent.SandboxOutputEvent
       local is_stderr = event.stream == "stderr"
       if capture then
+        if request.max_capture_bytes
+            and #output + #event.data > request.max_capture_bytes then
+          decoder_error = "sandbox output exceeded capture limit"
+          return
+        end
         if is_stderr then
           stderr = stderr .. event.data
         else
@@ -480,6 +487,8 @@ function M.fs(request, services)
     fs = {
       operation = request.operation,
       path = request.path,
+      offset = request.offset,
+      size = request.size,
       flags = request.flags,
       mode = request.mode,
       policy = request.policy,
@@ -487,12 +496,15 @@ function M.fs(request, services)
     },
     stdin = request.data,
     capture = true,
+    max_capture_bytes = (request.operation == "read_range"
+        and assert(request.size) or FS_MAX_READ_BYTES)
+      + FS_CAPTURE_OVERHEAD_BYTES,
     timeout_ms = request.timeout_ms or FS_TIMEOUT_MS,
   }, services, "fs")
   if value.code ~= 0 then
     return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
   end
-  if request.operation == "read" then
+  if request.operation == "read" or request.operation == "read_range" then
     return value.stdout
   end
   return true

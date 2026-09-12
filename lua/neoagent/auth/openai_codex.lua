@@ -31,6 +31,8 @@ end
 ---@field callback_host? string
 ---@field start_callback_server? fun(state: string, host: string): Neoagent.CallbackListener<string>?, string?
 ---@field sleep? async fun(milliseconds: number)
+---@field timeout_ms? integer
+---@field max_response_bytes? integer
 
 local CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 local AUTH_BASE_URL = "https://auth.openai.com"
@@ -38,6 +40,8 @@ local REDIRECT_URI = "http://localhost:1455/auth/callback"
 local DEVICE_REDIRECT_URI = AUTH_BASE_URL .. "/deviceauth/callback"
 local CLAIM = "https://api.openai.com/auth"
 local PROFILE_CLAIM = "https://api.openai.com/profile"
+local AUTH_TIMEOUT_MS = 30000
+local AUTH_MAX_RESPONSE_BYTES = 1024 * 1024
 
 local plan_labels = {
   free = "Free",
@@ -261,6 +265,14 @@ end
 ---@return Neoagent.AuthMethod<Neoagent.CodexCredential>
 function M.new(opts)
   opts = opts or {}
+  local timeout_ms = opts.timeout_ms or AUTH_TIMEOUT_MS
+  local max_response_bytes = opts.max_response_bytes
+    or AUTH_MAX_RESPONSE_BYTES
+  assert(type(timeout_ms) == "number" and timeout_ms > 0
+    and timeout_ms % 1 == 0, "OpenAI auth timeout_ms must be a positive integer")
+  assert(type(max_response_bytes) == "number" and max_response_bytes > 0
+    and max_response_bytes % 1 == 0,
+    "OpenAI auth max_response_bytes must be a positive integer")
   local http = http_client.new(opts.http)
   http = http.with_context({ credential_response_body = true })
   local now = opts.now or util.now_ms
@@ -274,9 +286,16 @@ function M.new(opts)
   ---@param url string
   ---@param headers table<string, string>
   ---@param body string
+  ---@param request_timeout_ms? integer
   ---@return Neoagent.JsonObject|Neoagent.JsonArray
-  local function post(url, headers, body)
-    local result = http.fetch({ request = { url = url, headers = headers, body = body } }):await()
+  local function post(url, headers, body, request_timeout_ms)
+    local result = http.fetch({ request = {
+      url = url,
+      headers = headers,
+      body = body,
+      timeout_ms = request_timeout_ms or timeout_ms,
+      max_response_bytes = max_response_bytes,
+    } }):await()
     if not result.ok then
       error(result.error, 0)
     end
@@ -421,12 +440,18 @@ function M.new(opts)
     local deadline = now() + 900000
     while now() < deadline do
       sleep(interval * 1000)
+      local remaining = deadline - now()
+      if remaining <= 0 then
+        break
+      end
       local result = http
         .fetch({
           request = {
             url = auth_base .. "/api/accounts/deviceauth/token",
             headers = { ["Content-Type"] = "application/json" },
             body = vim.json.encode({ device_auth_id = device.device_auth_id, user_code = device.user_code }),
+            timeout_ms = math.max(1, math.min(timeout_ms, math.floor(remaining))),
+            max_response_bytes = max_response_bytes,
           },
         })
         :await()

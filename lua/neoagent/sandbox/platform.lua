@@ -40,9 +40,11 @@ local util = require("neoagent.util")
 ---@field argv string[]
 
 ---@class Neoagent.SandboxFilesystemOperation
----@field operation 'read'|'write_all'|'mkdirp'|'atomic_replace'
+---@field operation 'read'|'read_range'|'write_all'|'mkdirp'|'atomic_replace'
 ---@field path string
 ---@field canonical_path? string
+---@field offset? integer
+---@field size? integer
 ---@field data? string
 ---@field flags? string
 ---@field mode? integer
@@ -52,6 +54,7 @@ local util = require("neoagent.util")
 
 ---@class Neoagent.SandboxFilesystemRequest: Neoagent.SandboxFilesystemOperation
 ---@field profile Neoagent.SandboxProfile
+---@field max_capture_bytes? integer
 
 ---@class Neoagent.SandboxPlatform<C = unknown>
 ---@field name string

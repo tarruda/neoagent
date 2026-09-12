@@ -41,6 +41,18 @@ describe("neoagent Hugging Face client", function()
     local result = wait(value:search("a b"))
     assert.are.same({ { id = "owner/repo", downloads = 42 } }, result)
     assert.matches("search=a%%20b", assert(transport.fetch_requests[1]).url)
+    assert.are.equal(4 * 1024 * 1024,
+      assert(transport.fetch_requests[1]).max_response_bytes)
+  end)
+
+  it("rejects oversized model inventories", function()
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = string.rep(" ", 4 * 1024 * 1024 + 1) },
+    }
+    local result = wait(huggingface.new({ transport = transport }):search("large"))
+    assert.is_false(result.ok)
+    assert.matches("exceeds 4194304 bytes", assert(result.error).message)
   end)
 
   it("parses model details and quantization sizes", function()

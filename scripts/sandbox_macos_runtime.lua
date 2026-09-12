@@ -196,14 +196,26 @@ local function filesystem_request(encoded)
   end
 
   ---@cast request Neoagent.SandboxFilesystemOperation
-  if request.operation == "read" then
+  local range = request.operation == "read_range"
+  if range and (type(request.offset) ~= "number" or request.offset < 0
+      or request.offset % 1 ~= 0
+      or type(request.size) ~= "number" or request.size < 1
+      or request.size > 1024 * 1024 or request.size % 1 ~= 0) then
+    fail("invalid request")
+  elseif not range and (request.offset ~= nil or request.size ~= nil) then
+    fail("invalid request")
+  end
+
+  if request.operation == "read" or range then
     local stat, stat_err = vim.uv.fs_stat(request.path)
     if not stat or stat.type ~= "file" then
       fail(stat_err or "not a regular file")
     end
     local fd, open_err = vim.uv.fs_open(request.path, "r", 438)
     if not fd then fail(open_err) end
-    local data, read_err = vim.uv.fs_read(fd, stat.size, 0)
+    local size = range and request.size or stat.size
+    local offset = range and request.offset or 0
+    local data, read_err = vim.uv.fs_read(fd, size, offset)
     vim.uv.fs_close(fd)
     if not data then fail(read_err) end
     io.stdout:write(data)

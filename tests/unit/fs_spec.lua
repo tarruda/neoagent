@@ -279,6 +279,12 @@ describe("neoagent.fs", function()
     assert.are.equal("successor", assert(fs.read(path)))
     assert.are.equal("before", assert(fs.read(detached)))
 
+    assert(original.chmod(path, 292))
+    file = assert(fs.open_regular(path, { read_only = true }))
+    assert.are.equal("successor", assert(file:read_all()))
+    assert(file:close())
+    assert(original.chmod(path, 384))
+
     local reopened, reopen_err, reopen_code = fs.open_regular(path, {
       identity = identity,
       mode = 384,
@@ -444,6 +450,9 @@ describe("neoagent.fs", function()
     assert.has_error(function()
       fs.open_regular("session", { unsupported = true })
     end, "unsupported regular file option unsupported")
+    assert.has_error(function()
+      fs.open_regular("session", { read_only = "yes" --[[@as boolean]] })
+    end, "regular file read_only must be boolean")
   end)
 
   it("truncates and confirms a file through one descriptor", function()
