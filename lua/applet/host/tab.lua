@@ -237,17 +237,8 @@ function Driver:_create_tab(frame, records)
     self:_open_layers(frame, records)
     self:_apply_sizes(topology)
   end)
-  if base.valid_buffer(temporary) then
-    local displayed = false
-    for _, window in ipairs(vim.api.nvim_list_wins()) do
-      if vim.api.nvim_win_get_buf(window) == temporary then
-        displayed = true
-        break
-      end
-    end
-    if not displayed then
-      pcall(vim.api.nvim_buf_delete, temporary, { force = true })
-    end
+  if base.valid_buffer(temporary) and #base.buffer_windows(temporary) == 0 then
+    pcall(vim.api.nvim_buf_delete, temporary, { force = true })
   end
   self.applet.counters.tab_opens = self.applet.counters.tab_opens + 1
   self.applet.counters.topology_rebuilds = self.applet.counters.topology_rebuilds + 1
@@ -496,10 +487,6 @@ function Driver:rollback(records)
     self.structure = shadow.old_structure
     for key, window in pairs(shadow.old_windows) do
       local saved = self.transaction and self.transaction.windows[key]
-      local record = records[key]
-      if record and (not saved or record ~= saved.record) then
-        record.window = nil
-      end
       if saved then
         saved.record.window = window
       end
@@ -711,8 +698,4 @@ function Driver:destroy(records)
   self:release(records)
 end
 
-return setmetatable({ new = Driver.new }, {
-  __call = function(_, applet, origin)
-    return Driver.new(applet, origin)
-  end,
-})
+return { new = Driver.new }

@@ -104,6 +104,7 @@ describe("Pane content Trees and compilation", function()
     local text = Applet.Pane.text
     assert.are.equal(4, text.width("a界b"))
     assert.are.equal("界", text.slice("a界b", 1, 3))
+    assert.are.equal("界b", text.slice("a界b", 1))
     assert.are.equal("a界b", text.truncate("a界b", 4))
     assert.are.equal("…def", text.truncate("abcdef", 4, { side = "left" }))
     assert.are.equal("ab…f", text.truncate("abcdef", 4, { side = "middle" }))
@@ -141,6 +142,7 @@ describe("Pane content Trees and compilation", function()
       palette:rgb("#123456"))
     assert.are.equal(196, palette:cterm("#ff0000"))
     assert.is_nil(palette:cterm("not-a-color"))
+    assert.is_nil(palette:rgb("not-a-color"))
     theme:define()
     local named = vim.api.nvim_get_hl(0, { name = "AppletPaletteNamed" })
     assert.are.equal(0xff0000, named.fg)
@@ -152,7 +154,7 @@ describe("Pane content Trees and compilation", function()
       theme:derive("overflow", { base = "base" }))
     assert.is_nil(theme:derive("overflow-without-base", {}))
 
-    local independent_one = Applet.Theme.new()
+    local independent_one = Applet.Theme.new({ name = "..." })
     local independent_two = Applet.Theme.new()
     local first_group = independent_one:derive("first", {
       base = "Normal",
@@ -1010,6 +1012,7 @@ describe("Pane content Trees and compilation", function()
       if target then
         target.rectangles = {
           { row = 0, col = 0, width = 3, height = 1 },
+          { row = 0, col = 0, width = 2, height = 1 },
           { row = 0, col = 2, width = 2, height = 1 },
         }
       end
@@ -1021,6 +1024,86 @@ describe("Pane content Trees and compilation", function()
     assert.are.same({
       { row = 0, col = 0, width = 4, height = 1 },
     }, canonical.targets.left.rectangles)
+  end)
+
+  it("moves retained scope rectangles while preserving root bindings", function()
+    local tree = ui.scope({
+      key = "root:scope",
+      bindings = { { lhs = "q", action = ui.action("close") } },
+      child = ui.container({
+        key = "stage", width = 10, height = 2,
+        layers = {
+          ui.container({
+            key = "popup", width = 4, height = 1,
+            position = { mode = "absolute", row = 0, col = 1 },
+            child = ui.scope({
+              key = "popup:scope",
+              bindings = { { lhs = "x", action = ui.action("choose") } },
+              child = ui.text({ key = "popup:text", text = "menu" }),
+            }),
+          }),
+        },
+      }),
+    })
+    local initial = compile({ tree = tree, width = 10, height = 2, retain_scene = true })
+    local moved_scene = require("applet.pane.scene").reposition(
+      assert(initial.scene), "popup", { row = 1, col = 5 })
+    local moved = require("applet.pane.compile").project_scene({ layout = initial, scene = moved_scene })
+    assert.are.same({ { row = 1, col = 5, width = 4, height = 1 } }, moved.scopes["popup:scope"].rectangles)
+    assert.are.same({ { row = 0, col = 1, width = 4, height = 1 } }, initial.scopes["popup:scope"].rectangles)
+    assert.are.equal("root:scope", moved.scopes["popup:scope"].parent)
+    assert.are.same(initial.scopes["root:scope"], moved.scopes["root:scope"])
+    assert.are.same(initial.binding_pairs, moved.binding_pairs)
+  end)
+
+  it("rejects cyclic region content before publishing it to the cache", function()
+    local cache = {}
+    local child = ui.text({ key = "content", text = "unchanged" })
+    rawset(child, "recursive", child)
+    error_matches("must not be cyclic", function()
+      compile({ tree = ui.region({ key = "region", revision = 1, child = child }), width = 10, cache = cache })
+    end)
+    assert.are.same({}, cache.regions)
+    rawset(child, "recursive", nil)
+    local recovered = compile({
+      tree = ui.region({ key = "region", revision = 1, child = child }), width = 10, cache = cache,
+    })
+    assert.are.same({ "unchanged" }, recovered.lines)
+  end)
+
+  it("rebinds cached positioned content when its enclosing scope changes", function()
+    local cache = {}
+    local function scoped(parent)
+      return ui.scope({
+        key = parent,
+        child = ui.container({
+          key = "stage", width = 10, height = 2,
+          layers = {
+            ui.container({
+              key = "popup", width = 4, height = 1,
+              position = { mode = "absolute", row = 0, col = 1 },
+              child = ui.scope({
+                key = "popup:scope",
+                bindings = { { lhs = "x", action = ui.action("choose") } },
+                child = ui.text({ key = "popup:text", text = "menu" }),
+              }),
+            }),
+          },
+        }),
+      })
+    end
+    local initial = compile({ tree = scoped("first"), width = 10, cache = cache })
+    assert.are.equal("first", initial.scopes["popup:scope"].parent)
+    local changed = compile({ tree = scoped("second"), width = 10, cache = cache })
+    assert.are.equal("second", changed.scopes["popup:scope"].parent)
+    assert.are.equal("first", initial.scopes["popup:scope"].parent)
+    assert.is_nil(changed.scopes.first)
+    assert.are.same({ " menu     ", "          " }, changed.lines)
+    assert.are.equal("choose", assert(changed.scopes["popup:scope"].bindings[1]).action.action)
+    local detached = compile({ tree = scoped("unused").child, width = 10, cache = cache })
+    assert.is_nil(detached.scopes["popup:scope"].parent)
+    assert.is_nil(detached.scopes.second)
+    assert.are.equal("second", changed.scopes["popup:scope"].parent)
   end)
 
   it("reuses nested positioned fragments and their image claims", function()
@@ -1209,6 +1292,35 @@ describe("Pane content Trees and compilation", function()
       width = 4,
     })
     assert.are.equal("a  …", clipped.lines[1])
+  end)
+
+  it("retains native lines until truncation and keeps oversized UTF-8 characters whole", function()
+    local native = compile({ tree = ui.text({
+      key = "native", text = "one two three\nfour five\nsix", wrap = "native", max_lines = 2, overflow = "ellipsis",
+    }), width = 5 })
+    assert.are.same({ "one two three", "four…" }, native.lines)
+    local narrow = compile({ tree = ui.text({ key = "narrow", text = "界x", wrap = "character" }), width = 1 })
+    assert.are.same({ "界", "x" }, narrow.lines)
+  end)
+
+  it("keeps empty columns out of spacing and confines row source ranges to their cells", function()
+    local column = compile({ tree = ui.column({ key = "column", gap = 1, children = {
+      ui.column({ key = "empty:start", children = {} }),
+      ui.text({ key = "before", text = "before" }),
+      ui.column({ key = "empty:middle", children = {} }),
+      ui.text({ key = "after", text = "after" }),
+    } }), width = 10 })
+    assert.are.same({ "before", "", "after" }, column.lines)
+    local row = compile({ tree = ui.row({ key = "row", children = {
+      ui.source({ key = "source", path = "left.lua", language = "lua",
+        child = ui.text({ key = "left", text = "left" }) }),
+      ui.text({ key = "right", text = "right" }),
+    } }), width = 10 })
+    assert.are.same({ "left right" }, row.lines)
+    local source = assert(row.source_ranges[1])
+    assert.is_false(source.linewise)
+    assert.are.equal("left.lua", source.path)
+    assert.are.same({ { row = 0, col = 0, width = 4, height = 1 } }, source.rectangles)
   end)
 
   it("selects responsive variants with advisory document height", function()
@@ -1559,6 +1671,51 @@ describe("Pane content Trees and compilation", function()
     assert.is_true(rawequal(second.lines, stable.lines))
     assert.are.same(second.lines, stable.lines)
     assert.are.equal(2, stats.document_reuses)
+  end)
+
+  it("removes a replaced suffix image while retaining the preceding Region", function()
+    local cache = {}
+    local source = { kind = "png_bytes", id = "suffix", data = "png", revision = 1 }
+    local identity = require("applet.image.source").identity(source)
+    local images = { status = "available", generation = 1,
+      resources = { [identity] = { id = identity, content_id = 7, width = 2, height = 1 } } }
+    local function document(child, revision)
+      return ui.column({ key = "document", children = {
+        ui.region({ key = "prefix", revision = 1, child = ui.text({ key = "prefix:text", text = "retained" }) }),
+        ui.region({ key = "suffix", revision = revision, child = child }),
+      } })
+    end
+    local first = compile({ tree = document(ui.image({ key = "image", alt = "image", width = 2, height = 1,
+      source = source,
+    }), 1), width = 20, cache = cache, images = images })
+    assert.is_table(first.images.image)
+    local second = compile({ tree = document(ui.text({ key = "replacement", text = "replacement" }), 2),
+      width = 20, cache = cache, previous = first, images = images })
+    assert.are.same({ "retained", "replacement" }, second.lines)
+    assert.are.same({}, second.images)
+    assert.is_table(first.images.image)
+    assert.is_true(rawequal(first.regions[1], second.regions[1]))
+  end)
+
+  it("discards fragments retained by a failed candidate when reusing the committed document", function()
+    local cache = {}
+    local stable = ui.region({ key = "stable", revision = 1,
+      child = ui.text({ key = "stable:text", text = "committed" }) })
+    local function document(children)
+      return ui.column({ key = "document", children = children })
+    end
+    local committed = compile({ tree = document({ stable }), width = 20, cache = cache })
+    local partial = ui.region({ key = "partial", revision = 1,
+      child = ui.text({ key = "partial:text", text = "uncommitted" }) })
+    error_matches("must be a non%-empty list", function()
+      compile({ tree = document({ stable, partial, ui.region({ key = "invalid", revision = 1,
+        child = ui.text({ key = "invalid:text", runs = {} }) }) }), width = 20, cache = cache, previous = committed })
+    end)
+    assert.is_table(cache.regions.partial)
+    local recovered = compile({ tree = document({ stable }), width = 20, cache = cache, previous = committed })
+    assert.are.same({ "committed" }, recovered.lines)
+    assert.is_true(rawequal(committed.lines, recovered.lines))
+    assert.is_nil(cache.regions.partial)
   end)
 
   it("retains immutable content for reused region fragments", function()

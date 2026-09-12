@@ -249,13 +249,10 @@ end
 ---@param record? Applet.HostRecord
 ---@return boolean
 function Driver:focus(record)
-  if not record or not self:pane_visible(record) then
-    if base.valid_tab(self.tab) and vim.api.nvim_get_current_tabpage() ~= self.tab then
-      vim.api.nvim_set_current_tabpage(self.tab)
-    end
-  end
-  if not record or not base.valid_window(record.window) then
-    return false
+  assert(self:is_open() and record and base.valid_window(record.window),
+    "floating Host focus requires an open mounted Pane")
+  if not self:pane_visible(record) and vim.api.nvim_get_current_tabpage() ~= self.tab then
+    vim.api.nvim_set_current_tabpage(self.tab)
   end
   return base.focus_mode(record)
 end
@@ -287,8 +284,4 @@ function Driver:destroy(records)
   self:release(records)
 end
 
-return setmetatable({ new = Driver.new }, {
-  __call = function(_, applet, origin)
-    return Driver.new(applet, origin)
-  end,
-})
+return { new = Driver.new }

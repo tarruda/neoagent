@@ -795,10 +795,7 @@ end
 ---@param record Applet.HostRecord
 ---@return Applet.HostSurface
 function M.update_surface(applet, driver, record)
-  local surface = record.surface
-  if not surface then
-    return M.surface(applet, driver, record)
-  end
+  local surface = assert(record.surface, "connected Pane requires its Host Surface")
   local kind = record.descriptor.projection.kind == "split" and "split" or "floating"
   if record.chrome_kind ~= kind then
     if record.chrome then

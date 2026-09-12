@@ -62,12 +62,9 @@ local function statusline(runs)
   return table.concat(result)
 end
 
----@param runs? Applet.ChromeRun[]
----@return string|[string, string?][]
+---@param runs Applet.ChromeRun[]
+---@return [string, string?][]
 local function float_runs(runs)
-  if not runs or #runs == 0 then
-    return ""
-  end
   local result = {}
   for _, run in ipairs(runs) do
     result[#result + 1] = { run[1] or run.text or "", run[2] or run.group }

@@ -980,7 +980,7 @@ function Applet:_mount_content(frame, opening, opts)
           Base.update_surface(self, driver, record)
           assert(pane.surface_changed)(pane, { chrome = true })
         end
-        if pane.has_submission and not (opts.preserve_connected and was_connected) then
+        if pane.has_submission and not opts.preserve_connected then
           local committed, commit_error = pane:flush()
           if not committed then
             error(commit_error and commit_error.message or "Pane commit failed", 0)
@@ -1274,6 +1274,7 @@ end
 ---@return boolean?, Applet.Error?
 function Applet:_flush_requested()
   if self.observing then
+    self:_request_flush()
     return true
   end
   self:_refresh_observations()
@@ -1387,7 +1388,11 @@ end
 function Applet:_abort_open_failure(previous, checkpoint, failure, structured)
   local aborted, abort_error = self:_abort_open(previous, checkpoint)
   if not aborted then
-    return self:_report("commit", "open rollback failed: " .. assert(abort_error))
+    local original = type(failure) == "table" and failure.message
+    if type(original) ~= "string" then
+      original = tostring(failure)
+    end
+    return self:_report("commit", "open rollback failed after " .. original .. ": " .. assert(abort_error))
   end
   if structured then
     return nil, failure --[[@as Applet.Error]]
@@ -2129,10 +2134,7 @@ end
 ---@param key string
 ---@param reason string
 function Applet:_mandatory_detach(key, reason)
-  local record = self.records[key]
-  if not record then
-    return
-  end
+  local record = assert(self.records[key], "mandatory detach requires an owned Pane record")
   local window, buffer = record.window, record.buffer
   Base.save_view(record)
   if record.descriptor.pane.surface then
@@ -2357,10 +2359,6 @@ function Applet:_observe(kinds, captured)
   end
 
   local candidate = Base.snapshot(self.driver, self.records, self.frame, 0, self.committed_generation)
-  if self.mutating then
-    self:_publish_snapshot(candidate, false)
-    return
-  end
 
   ---@type Applet.ObservationChange[]
   local detachments = {}
@@ -2556,8 +2554,4 @@ end
 ---@field new fun<S>(opts: Applet.AppletOptions<S>): Applet.Applet<S>
 local module = { new = Applet.new }
 
-return setmetatable(module, {
-  __call = function(_, opts)
-    return Applet.new(opts)
-  end,
-}) --[[@as Applet.Factory]]
+return module --[[@as Applet.Factory]]

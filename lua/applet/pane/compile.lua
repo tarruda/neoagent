@@ -127,6 +127,7 @@ local canvas = require("applet.pane.canvas")
 ---@field width integer
 ---@field height? integer
 ---@field extent Applet.PaneExtent
+---@field scope? string
 ---@field background_group? string
 ---@field theme_generation integer
 ---@field image_generation integer
@@ -1089,11 +1090,6 @@ local function compile_scope(node, ctx, path)
     rectangles = content_rectangles(child),
     bindings = bindings,
   }
-  for key, scope in pairs(child.scopes) do
-    if key ~= node.key and scope.parent == nil then
-      scope.parent = node.key
-    end
-  end
   return child
 end
 
@@ -1906,6 +1902,7 @@ local function layer_constraints(ctx)
     width = ctx.width,
     height = ctx.height,
     extent = ctx.extent,
+    scope = ctx.scope,
     background_group = ctx.background_group,
     theme_generation = ctx.theme.generation or 0,
     image_generation = ctx.images.generation or 0,
@@ -2644,12 +2641,15 @@ local function compile_chrome(chrome, theme)
   for _, field in ipairs({ "title", "footer" }) do
     if chrome[field] ~= nil then
       applet_expect(type(chrome[field]) == "table", "tree.chrome." .. field, "must be a list")
-      result[field] = {}
+      local runs = {}
       for index, run in ipairs(chrome[field]) do
         local path = ("tree.chrome.%s[%d]"):format(field, index)
         local group = resolve_group(run, theme, path)
         util.characters(run.text, path .. ".text")
-        result[field][#result[field] + 1] = { run.text, group }
+        runs[#runs + 1] = { run.text, group }
+      end
+      if #runs > 0 then
+        result[field] = runs
       end
     end
   end
@@ -2924,7 +2924,9 @@ local function normalize_regions(root)
       shape.kind = "column"
       shape.key = root.key
       shape.gap = root.gap or 0
-      return root.children --[[@as Applet.RegionNode[] ]], wrappers, root.gap or 0, shape
+      local regions = root.children
+      ---@cast regions Applet.RegionNode[]
+      return regions, wrappers, root.gap or 0, shape
     end
   end
   return nil, wrappers
@@ -2936,10 +2938,6 @@ end
 local function retained_prefix(previous, count)
   local value = fragment()
   value.regions = {}
-  if count == 0 then
-    return value
-  end
-
   local boundary = assert(previous.regions[count]).last
   for index = 1, boundary do
     value.lines[index] = previous.lines[index]

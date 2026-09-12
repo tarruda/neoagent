@@ -144,6 +144,28 @@ describe("Applet lifecycle", function()
     return value
   end
 
+  it("finishes closing when a native window-close callback closes it again", function()
+    local first, second = new_pane("first"), new_pane("second", "editable")
+    local value = applet({ name = "reentrant-close", host = Applet.host.floating({ width = 60, height = 20 }) })
+    value:update(tree(first, second))
+    succeeds(value:open())
+    local window = assert(assert(value:pane("first")):native().window)
+    local calls = 0
+    local callback = vim.api.nvim_create_autocmd("WinClosed", {
+      pattern = tostring(window), once = true,
+      callback = function()
+        calls = calls + 1
+        assert.is_true(value:close())
+      end,
+    })
+    assert.is_true(value:close())
+    pcall(vim.api.nvim_del_autocmd, callback)
+    assert.are.equal(1, calls)
+    assert.is_false(value:is_open())
+    assert.is_false(vim.api.nvim_win_is_valid(window))
+    assert.is_true(value:close())
+  end)
+
   it("borrows immutable state and Tree submissions by identity", function()
     local first = new_pane("first", "managed", "first")
     local second = new_pane("second", "editable", "draft")
@@ -434,6 +456,19 @@ describe("Applet lifecycle", function()
     assert.is_false(assert(editable):is_mounted())
     assert.is_false(assert(editable):scroll({ target = "end" }))
     assert.are.equal("changed", assert(editable):text())
+    assert.is_false(editable:complete())
+    assert.is_false(editable:completion_move("next"))
+    assert.is_false(editable:completion_accept())
+    local buffer = assert(editable:native().buffer)
+    vim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
+    assert(editable:replace_text("retained edit", { line = 1, column = 2 }, 5))
+    assert.are.equal("retained edit", editable:text())
+    assert.is_false(vim.api.nvim_get_option_value("modifiable", { buf = buffer }))
+    assert.are.same({ line = 1, column = 2 }, editable:cursor())
+    assert(editable:replace_text("retained edit without a cursor"))
+    assert.are.same({ line = 1, column = 2 }, editable:cursor())
+    succeeds(value:open())
+    assert.are.equal("retained edit without a cursor", editable:text())
   end)
 
   it("reports bounded render, Host, and compilation failures", function()
@@ -448,6 +483,7 @@ describe("Applet lifecycle", function()
       end,
       render = function(state)
         if state.render_error then error("render failed") end
+        if state.large_error then error({ message = string.rep("x", 600) }) end
         if state.semantic_error then
           error({ kind = "render", message = "semantic render failed" })
         end
@@ -477,8 +513,57 @@ describe("Applet lifecycle", function()
       assert.matches(case.text, assert(err).message)
       assert.are.same(native, assert(value:pane("first")):native())
     end
-    assert.are.equal(6, #errors)
-    assert.is_true(#errors[#errors].message <= 512)
+    value:set_state({ large_error = true })
+    local committed, err = value:flush()
+    assert.is_nil(committed)
+    assert.are.equal(string.rep("x", 509) .. "...", assert(err).message)
+    assert.are.same(native, assert(value:pane("first")):native())
+    assert.are.equal(7, #errors)
+  end)
+
+  it("contains stale actions and owns recursive observation payloads", function()
+    local first = new_pane("first", "managed", "first")
+    local value = applet({
+      name = "stale-surface-action",
+      host = Applet.host.floating({ width = 40, height = 10 }),
+    })
+    value:update({
+      root = layout.frame({ key = "frame", child = pane("first", first) }),
+      focus = {},
+    })
+    succeeds(value:open())
+    value.focused = nil
+    assert.is_false(value:_focus_move({ direction = "right" }))
+    assert.is_true(value:focus("first"))
+    local invalid_move = { direction = "diagonal" }
+    ---@cast invalid_move Applet.FocusMove
+    assert.is_false(value:_focus_move(invalid_move))
+
+    local interaction = assert(assert(first.surface).interaction)
+    local event = {
+      action = "missing.action",
+      pane = first,
+      count = 1,
+      mode = "n",
+      row = 0,
+      col = 0,
+    }
+    assert.is_false(interaction.dispatch(event --[[@as Applet.ActionEvent<Applet.Pane>]]))
+
+    local native = { event = "explicit" }
+    native.self = native
+    value:_schedule_observe("Explicit", native)
+    local copied = assert(assert(value.observation_native)[1])
+    ---@cast copied table<string, unknown>
+    assert.are_not.equal(native, copied)
+    assert.are.equal(copied, rawget(copied, "self"))
+
+    assert.is_true(value:close({ restore_origin = false }))
+    assert.is_false(interaction.dispatch(event --[[@as Applet.ActionEvent<Applet.Pane>]]))
+    value:_sync_observed()
+    value:destroy()
+    value:_schedule_observe("Explicit", { event = "late" })
+    value:_sync_observed()
   end)
 
   it("validates construction and rejects mutations after destruction", function()

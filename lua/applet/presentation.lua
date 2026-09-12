@@ -412,9 +412,7 @@ function Presentation:_move(direction)
       end
     end
   end
-  if not current or #enabled == 0 then
-    return false
-  end
+  assert(current, "selected presentation item must be enabled and visible")
   local next_index = ((current - 1 + direction) % #enabled) + 1
   self.selected = enabled[next_index]
   self.revision = self.revision + 1

@@ -602,8 +602,4 @@ local function diagnostics()
   } }
 end
 
-return setmetatable({ new = Kitty.new, diagnostics = diagnostics }, {
-  __call = function(_, opts)
-    return Kitty.new(opts)
-  end,
-})
+return { new = Kitty.new, diagnostics = diagnostics }

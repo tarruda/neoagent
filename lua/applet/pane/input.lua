@@ -234,15 +234,12 @@ end
 ---@generic P: Applet.InputPane<P>
 ---@param pane P
 ---@param window integer
----@param line? integer
----@param display_col? integer
+---@param line integer
+---@param display_col integer
 ---@return boolean
 local function place_cursor(pane, window, line, display_col)
-  if not line then
-    return false
-  end
   local text = vim.api.nvim_buf_get_lines(assert(pane.surface).buffer, line - 1, line, false)[1] or ""
-  local byte_col = util.byte_col(text, assert(display_col))
+  local byte_col = util.byte_col(text, display_col)
   vim.api.nvim_win_set_cursor(window, { line, math.min(byte_col, #text) })
   return true
 end
@@ -253,9 +250,7 @@ end
 ---@return boolean
 local function target_before_cursor(target, row, col)
   local line, target_col = target_point(target)
-  if not line then
-    return false
-  end
+  assert(line and target_col, "compiled target requires a cursor position")
   local target_row = line - 1
   return target_row < row or target_row == row and target_col < col
 end
@@ -326,7 +321,7 @@ function M.move(pane, payload, count)
   end
   local line, display_col = target_point(candidates[next_index])
   local ok = pcall(function()
-    place_cursor(pane, window, line, display_col)
+    place_cursor(pane, window, assert(line), assert(display_col))
     vim.api.nvim_win_call(window, function()
       vim.cmd("normal! zv")
     end)
@@ -463,7 +458,7 @@ function M.reveal(pane, key)
     return false
   end
   local ok = pcall(function()
-    place_cursor(pane, window, line, col)
+    place_cursor(pane, window, line, assert(col))
     vim.api.nvim_win_call(window, function()
       vim.cmd("normal! zv")
     end)
@@ -477,14 +472,8 @@ end
 ---@param intent Applet.TargetIntent
 ---@return boolean
 function M.apply_target_intent(pane, intent)
-  local layout = pane.layout
-  if not layout then
-    return false
-  end
-  local selected = layout.targets[intent.select]
-  if not selected then
-    return false
-  end
+  local layout = assert(pane.layout)
+  local selected = assert(layout.targets[intent.select], "compiled target intent must name a target")
   local select_line, select_col = target_point(selected)
   local revealed = intent.reveal and layout.targets[intent.reveal] or nil
   local reveal_line, reveal_col = target_end_point(revealed)
@@ -501,10 +490,10 @@ function M.apply_target_intent(pane, intent)
   end
   local ok = pcall(vim.api.nvim_win_call, window, function()
     if reveal_line then
-      place_cursor(pane, window, reveal_line, reveal_col)
+      place_cursor(pane, window, reveal_line, assert(reveal_col))
       vim.cmd("normal! zv")
     end
-    place_cursor(pane, window, select_line, select_col)
+    place_cursor(pane, window, select_line, assert(select_col))
     vim.cmd("normal! zv")
   end)
   if ok then

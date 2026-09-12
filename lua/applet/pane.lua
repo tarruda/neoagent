@@ -1587,9 +1587,6 @@ function Pane:_flush_requested()
       end
       self.counters.position_updates = self.counters.position_updates + 1
       self.counters.commits = self.counters.commits + 1
-      if differences.view then
-        self:_apply_target_policy()
-      end
       if differences.interaction then
         self:_draw_focus()
       end
@@ -2238,8 +2235,4 @@ local module = {
   compile = require("applet.pane.compile").compile,
 }
 
-return setmetatable(module, {
-  __call = function(_, opts)
-    return Pane.new(opts)
-  end,
-}) --[[@as Applet.PaneModule]]
+return module --[[@as Applet.PaneModule]]

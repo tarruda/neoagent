@@ -42,9 +42,6 @@ local exports = setmetatable(M, {
   __index = function(_, key)
     return load(key)
   end,
-  __call = function(_, opts)
-    return M.new(opts)
-  end,
 })
 
 return exports --[[@as Applet.Package]]

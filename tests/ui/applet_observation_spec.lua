@@ -171,7 +171,20 @@ describe("Applet observation", function()
       assert.is_true(default())
       assert.is_false(default())
       expired_default = default
-      if event.kind == "pane_close" then assert(value):close() end
+      if event.kind == "pane_close" then
+        local opaque = setmetatable({ marker = "opaque" }, {})
+        local close_options = { restore_origin = false, opaque = opaque }
+        close_options.self = close_options
+        assert(value):update(tree(first, second))
+        assert.is_true(assert(value).domain:flush())
+        assert.is_true(assert(value).domain.dirty[assert(value)])
+        assert.is_true(assert(value):flush())
+        assert.is_true(assert(value):close(close_options))
+        local deferred = assert(assert(value).deferred_close)
+        assert.are_not.equal(close_options, deferred)
+        assert.are.equal(deferred, deferred.self)
+        assert.are.equal(opaque, deferred.opaque)
+      end
     end
     value = applet({
       name = "ordered-observation",
@@ -361,6 +374,76 @@ describe("Applet observation", function()
     end)
   end)
 
+  it("adopts the addition and removal of a foreign split without replacing its Pane", function()
+    local content = new_pane("first", "managed", "retained")
+    local value = applet({
+      name = "foreign-split-removal",
+      host = Applet.host.tab({ label = "Foreign split" }),
+    })
+    local requested = tree(content)
+    value:update(requested)
+    succeeds(value:open())
+    local native = content:native()
+    vim.cmd("vsplit")
+    local foreign = vim.api.nvim_get_current_win()
+    foreign_windows[#foreign_windows + 1] = foreign
+    wait_for(function() return value:observed().foreign_windows == 1 end)
+    local added_revision = value:observed().revision
+
+    vim.api.nvim_win_close(foreign, true)
+    wait_for(function() return value:observed().foreign_windows == 0 end)
+    assert.is_true(value:observed().revision > added_revision)
+    assert.is_true(value:is_open())
+    assert.are.equal(native.window, content:native().window)
+    assert.are.equal(native.buffer, content:native().buffer)
+    content:set_state({ text = "updated" })
+    value:update(requested)
+    succeeds(value:flush())
+    assert.are.same({ "updated" }, vim.api.nvim_buf_get_lines((assert(native.buffer)), 0, -1, false))
+    assert.are.same({ assert(native.window) }, vim.api.nvim_tabpage_list_wins(0))
+  end)
+
+  it("reports a failed resize callback and continues observing later changes", function()
+    local content = new_pane("first", "managed", "retained")
+    ---@type Applet.Error[]
+    local errors = {}
+    local fail = true
+    local resized = 0
+    local value = applet({
+      name = "resize-callback-failure",
+      host = Applet.host.floating({ width = 40, height = 10 }),
+      on_error = function(err) errors[#errors + 1] = err end,
+      on_resize = function(_, default)
+        resized = resized + 1
+        if fail then error("resize observer failed") end
+        default()
+      end,
+    })
+    value:update(tree(content))
+    succeeds(value:open())
+    local window = assert(content:native().window)
+    local config = vim.api.nvim_win_get_config(window)
+    config.row = assert(config.row) + 1
+    vim.api.nvim_win_set_config(window, config)
+    value:invalidate({ host = true })
+    succeeds(value:flush())
+    assert.are.equal(1, #errors)
+    assert.are.equal("action", assert(errors[1]).phase)
+    assert.matches("resize observer failed", assert(errors[1]).message)
+    local failed_calls = resized
+
+    fail = false
+    config = vim.api.nvim_win_get_config(window)
+    config.row = assert(config.row) + 1
+    vim.api.nvim_win_set_config(window, config)
+    value:invalidate({ host = true })
+    succeeds(value:flush())
+    assert.is_true(resized > failed_calls)
+    assert.are.equal(1, #errors)
+    assert.is_true(value:is_open())
+    assert.are.equal(config.row, assert(value:observed().panes.first.geometry).row)
+  end)
+
   it("adopts floating Pane geometry through the resize default", function()
     local content = new_pane("first", "managed", "adopt resize")
     local value = applet({
@@ -407,6 +490,64 @@ describe("Applet observation", function()
     end)
     assert.are.equal("second", value:focused_pane())
   end)
+
+  it("uses the editor fallback when no native window can serve as a floating container", function()
+    local origin, original = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+    local special = vim.api.nvim_create_buf(false, true)
+    foreign_buffers[#foreign_buffers + 1] = special
+    vim.bo[special].buftype = "nofile"
+    vim.api.nvim_win_set_buf(origin, special)
+    local first = new_pane("first", "managed", "content")
+    local value = applet({ name = "unavailable-container",
+      host = Applet.host.floating({ container = "largest_window", width = 60, height = 20 }) })
+    value:update(tree(first))
+    local opened, err = value:open()
+    assert.is_nil(opened)
+    assert.matches("container is unavailable", assert(err).message)
+    assert.is_false(first:is_mounted())
+    value:set_host(Applet.host.floating({ container = "auto", width = 60, height = 20 }))
+    succeeds(value:open())
+    assert.is_true(first:is_mounted())
+    assert.are.equal("content", first:text())
+    assert.is_true(value:close())
+    vim.api.nvim_win_set_buf(origin, original)
+  end)
+
+  for _, event in ipairs({ "WinEnter", "TabEnter" }) do
+    it("rejects focus when " .. event .. " replaces the target Pane buffer", function()
+      local first, second = new_pane("first"), new_pane("second", "editable", "retained draft")
+      local value = applet({ name = "focus-buffer-replacement",
+        host = Applet.host.floating({ width = 60, height = 20 }) })
+      value:update(tree(first, second))
+      succeeds(value:open())
+      assert(second:replace_text("retained draft"))
+      local window = assert(first:native().window)
+      local foreign = vim.api.nvim_create_buf(false, true)
+      foreign_buffers[#foreign_buffers + 1] = foreign
+      vim.api.nvim_buf_set_lines(foreign, 0, -1, false, { "external content" })
+      local tab = vim.api.nvim_win_get_tabpage(window)
+      if event == "TabEnter" then vim.cmd("tabnew") end
+      local replaced = false
+      local callback = vim.api.nvim_create_autocmd(event, {
+        once = true,
+        callback = function()
+          local entered = event == "TabEnter" and vim.api.nvim_get_current_tabpage() == tab
+            or event == "WinEnter" and vim.api.nvim_get_current_win() == window
+          if entered and not replaced then
+            replaced = true
+            vim.api.nvim_win_set_buf(window, foreign)
+          end
+        end,
+      })
+      local focused = value:focus("first")
+      pcall(vim.api.nvim_del_autocmd, callback)
+      assert.is_true(replaced)
+      assert.is_false(focused)
+      wait_for(function() return not first:is_mounted() end)
+      assert.are.same({ "external content" }, vim.api.nvim_buf_get_lines(foreign, 0, -1, false))
+      assert.are.equal("retained draft", second:text())
+    end)
+  end
 
   it("redirects native focus into the active modal boundary", function()
     local main = new_pane("main", "managed", "main")
@@ -483,10 +624,45 @@ describe("Applet observation", function()
     value:update(tree(first, second))
     succeeds(value:open())
     local native = assert(value:pane("first")):native()
+    assert(second:replace_text("second"))
     vim.api.nvim_win_close((assert(native.window)), true)
     wait_for(function() return reasons[1] == "window_closed" end)
     vim.cmd("bunload! " .. native.buffer)
     wait_for(function() return reasons[2] == "buffer_unloaded" end)
+    assert.are.equal("", first:text())
+    assert.is_false(first:focus())
+    assert.is_false(first:scroll({ target = "end" }))
+    assert.are.equal("second", second:text())
+  end)
+
+  it("adopts replacement of every projected tab Pane", function()
+    local content = new_pane("first", "managed", "owned")
+    local sibling = new_pane("second", "editable", "sibling")
+    local reasons = 0
+    local value = applet({
+      name = "last-tab-pane-replaced",
+      host = Applet.host.tab({ label = "Replaced" }),
+      on_pane_buffer_change = function(event, default)
+        assert.are.equal("buffer_replaced", event.reason)
+        reasons = reasons + 1
+        default()
+      end,
+    })
+    value:update(tree(content, sibling))
+    succeeds(value:open())
+    for _, key in ipairs({ "first", "second" }) do
+      local window = assert(assert(value:pane(key)):native().window)
+      local replacement = vim.api.nvim_create_buf(false, true)
+      foreign_buffers[#foreign_buffers + 1] = replacement
+      vim.api.nvim_win_set_buf(window, replacement)
+    end
+    wait_for(function() return reasons == 2 end)
+    assert.is_true(value:is_open())
+    assert.is_false(content:is_mounted())
+    assert.is_false(sibling:is_mounted())
+    local driver = assert(value.driver)
+    ---@cast driver Applet.TabDriver
+    assert.is_nil(driver.structure)
   end)
 
   it("closes a single-window Host and releases its transient owner", function()

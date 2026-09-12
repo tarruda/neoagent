@@ -326,13 +326,10 @@ function ImageSystem:subscribe(callback)
   end
 end
 
----@param presentation? Applet.ResolvedImagePresentation
+---@param presentation Applet.ResolvedImagePresentation
 ---@param id string
 ---@return boolean
 local function presentation_references(presentation, id)
-  if not presentation then
-    return false
-  end
   for _, source_identity in pairs(presentation.slots) do
     if source_identity == id then
       return true
@@ -703,8 +700,4 @@ local module = {
   png_info = source.png_info,
 }
 
-return setmetatable(module, {
-  __call = function(_, opts)
-    return ImageSystem.new(opts)
-  end,
-})
+return module

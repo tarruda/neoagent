@@ -223,14 +223,18 @@ local function retained_document_changes(previous, layout)
         local decorations_changed = not util.equal(left.decorations, right.decorations)
           or shifted and (#left.decorations > 0 or #right.decorations > 0)
         changed.decorations = changed.decorations or decorations_changed
+        local interaction_moved = shifted
+          and (
+            next(left.targets) ~= nil
+            or next(right.targets) ~= nil
+            or next(left.scopes) ~= nil
+            or next(right.scopes) ~= nil
+          )
         local interaction_changed = not util.equal(left.targets, right.targets)
           or not util.equal(left.target_order, right.target_order)
           or not util.equal(left.hit_order, right.hit_order)
           or not util.equal(left.scopes, right.scopes)
-          or shifted
-            and (next(left.targets) ~= nil or next(right.targets) ~= nil or next(left.scopes) ~= nil or next(
-              right.scopes
-            ) ~= nil)
+          or interaction_moved
         changed.interaction = changed.interaction or interaction_changed
         local images_changed = not util.equal(left.images, right.images)
           or shifted and (next(left.images) ~= nil or next(right.images) ~= nil)
@@ -351,11 +355,11 @@ local function target_at(layout, row, col)
   if not layout then
     return nil
   end
-  local region = layout and layout.region_document and region_at(layout, row)
+  local region = layout.region_document and region_at(layout, row)
   local selected = region and layout.regions[region.index]
   local order = selected and (selected.hit_order or selected.target_order)
-    or layout and (layout.hit_order or layout.target_order)
-    or {}
+    or layout.hit_order
+    or layout.target_order
   for _, key in ipairs(order) do
     local target = layout.targets[key]
     for index, rect in ipairs(target and target.rectangles or {}) do
@@ -664,14 +668,11 @@ local function continuation_prefix(context, region, decoration)
   return string.rep(" ", indent) .. context.showbreak
 end
 
----@param context? Applet.ContinuationContext
+---@param context Applet.ContinuationContext
 ---@param line string
 ---@param fallback integer
 ---@return integer
 local function continuation_col(context, line, fallback)
-  if not context then
-    return fallback
-  end
   if not context.linebreak then
     return util.byte_col(line, context.width)
   end
@@ -719,7 +720,7 @@ local function write_decoration(buffer, namespace, region, decoration, context)
   local line = region.lines[decoration.row + 1] or ""
   local col = decoration.col
   if prefix then
-    col = continuation_col(context, line, decoration.col)
+    col = continuation_col(assert(context), line, decoration.col)
   end
   return vim.api.nvim_buf_set_extmark(buffer, namespace, region.first + decoration.row, col, options)
 end
@@ -1648,36 +1649,32 @@ function M.apply(opts)
     else
       state.content_result = "unchanged"
     end
-    if
-      not layout.scene
-      and (
+    if not layout.scene then
+      if
         not previous
         or differences.content
         or differences.decorations
         or differences.regions
         or not util.equal(state.continuation_context, continuation)
-      )
-    then
-      changes.extmark_writes = changes.extmark_writes
-        + sync_decorations(buffer, namespace, state, previous, layout, continuation, changed_first)
-    end
-    if not layout.scene and (not previous or state.content_result ~= "unchanged" or differences.virtuals) then
-      changes.extmark_writes = changes.extmark_writes + apply_virtuals(buffer, opts.virtual_namespace, layout)
-    end
-    if
-      not layout.scene
-      and (
+      then
+        changes.extmark_writes = changes.extmark_writes
+          + sync_decorations(buffer, namespace, state, previous, layout, continuation, changed_first)
+      end
+      if not previous or state.content_result ~= "unchanged" or differences.virtuals then
+        changes.extmark_writes = changes.extmark_writes + apply_virtuals(buffer, opts.virtual_namespace, layout)
+      end
+      if
         unknown
         or not previous
         or differences.sources
         or source_detection_content_changed(layout, differences, changed_first)
-      )
-    then
-      source.apply(
-        buffer,
-        layout.source_ranges,
-        opts.buffer_mode == "managed" and layout.lines or vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
-      )
+      then
+        source.apply(
+          buffer,
+          layout.source_ranges,
+          opts.buffer_mode == "managed" and layout.lines or vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+        )
+      end
     end
     changes.extmark_writes = changes.extmark_writes
       + sync_region_marks(buffer, opts.region_namespace, state, layout, changed_first)
@@ -1780,10 +1777,7 @@ end
 
 ---@param opts Applet.ReconcileRefreshOptions
 function M.refresh_chrome(opts)
-  if not opts.state.layout then
-    return
-  end
-  apply_chrome(opts.surface, opts.state.layout, opts.state)
+  apply_chrome(opts.surface, assert(opts.state.layout), opts.state)
 end
 
 ---@param opts Applet.RefreshVirtualsOptions

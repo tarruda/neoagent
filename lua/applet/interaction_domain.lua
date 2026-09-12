@@ -80,18 +80,6 @@ function Domain.new(opts)
 end
 
 ---@return boolean
-function Domain:_start_key_observer()
-  if self.key_observer_active or self.destroyed then
-    return false
-  end
-  vim.on_key(function(key)
-    self:_track_key(key)
-  end, self.key_namespace)
-  self.key_observer_active = true
-  return true
-end
-
----@return boolean
 function Domain:_stop_key_observer()
   if not self.key_observer_active then
     return false
@@ -181,7 +169,10 @@ function Domain:activate(value)
   self.active[value] = true
   self.active_count = self.active_count + 1
   if self.active_count == 1 then
-    self:_start_key_observer()
+    vim.on_key(function(key)
+      self:_track_key(key)
+    end, self.key_namespace)
+    self.key_observer_active = true
   end
   return true
 end
@@ -336,8 +327,4 @@ end
 ---@field new fun(opts?: Applet.DomainOptions): Applet.InteractionDomain
 local module = { new = Domain.new }
 
-return setmetatable(module, {
-  __call = function(_, opts)
-    return Domain.new(opts)
-  end,
-}) --[[@as Applet.DomainModule]]
+return module --[[@as Applet.DomainModule]]

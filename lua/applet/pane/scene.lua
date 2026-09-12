@@ -295,11 +295,8 @@ function M.reposition(current, key, position)
   return result --[[@as S]]
 end
 
----@param provider? Applet.SceneProvider
+---@param provider Applet.SceneProvider
 function M.clear(provider)
-  if not provider then
-    return
-  end
   provider.binding = nil
   vim.api.nvim_set_decoration_provider(provider.namespace, {})
 end
