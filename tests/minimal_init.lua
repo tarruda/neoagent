@@ -1,6 +1,6 @@
 local root = vim.fn.fnamemodify(assert(debug.getinfo(1, "S")).source:sub(2), ":p:h:h")
 vim.opt.runtimepath:prepend(root)
-package.path = root .. "/.deps/luacov/src/?.lua;" .. root .. "/.deps/luacov/src/?/init.lua;" .. package.path
+package.path = root .. "/?.lua;" .. root .. "/.deps/luacov/src/?.lua;" .. root .. "/.deps/luacov/src/?/init.lua;" .. package.path
 
 local plenary = vim.env.PLENARY_DIR
 if not plenary or plenary == "" then

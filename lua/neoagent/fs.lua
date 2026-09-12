@@ -8,11 +8,12 @@ local M = {}
 ---@field inode number
 
 ---@alias Neoagent.FileFailureStage 'ownership'|'read'|'write'|'truncate'|'close'|'open'
----@alias Neoagent.AtomicFailureStage 'write'|'mode'|'inspect'|'target'|'target_changed'|'temporary'|'rename'
+---@alias Neoagent.AtomicFailureStage 'write'|'mode'|'inspect'|'target'|'target_changed'|'temporary'|'rename'|'sync'
 
 ---@class Neoagent.AtomicRequirements
 ---@field require_existing? boolean
 ---@field expected_content_fingerprint? string
+---@field durable? boolean Verify written bytes and flush publication to stable storage.
 
 ---@class Neoagent.FixedModePolicy: Neoagent.AtomicRequirements
 ---@field mode integer
@@ -391,6 +392,38 @@ function RegularFile:read_chunks(on_chunk)
   return true
 end
 
+---@param size integer
+---@param offset integer
+---@return string?, string?
+function RegularFile:read_chunk(size, offset)
+  assert(
+    type(size) == "number" and size > 0 and size <= 65536 and size % 1 == 0,
+    "regular file chunk size must be between 1 and 65536 bytes"
+  )
+  assert(
+    type(offset) == "number" and offset >= 0 and offset % 1 == 0,
+    "regular file read offset must be a non-negative integer"
+  )
+  local stat, err = self:stat()
+  if not stat then
+    return nil, err
+  end
+  local data, read_err = self._uv.fs_read(assert(self._fd), size, offset)
+  return data, read_err
+end
+
+---@return true?, string?
+function RegularFile:sync()
+  if not self._fd then
+    return nil, "regular file handle is closed"
+  end
+  local synced, err = self._uv.fs_fsync(self._fd)
+  if not synced then
+    return nil, err
+  end
+  return true
+end
+
 ---@return string? data
 ---@return string? error
 ---@return Neoagent.FileFailureStage? stage
@@ -594,7 +627,8 @@ local function atomic_policy(value)
         or key == "preserve_mode"
         or key == "new_mode"
         or key == "require_existing"
-        or key == "expected_content_fingerprint",
+        or key == "expected_content_fingerprint"
+        or key == "durable",
       "atomic replacement policy has unsupported field " .. tostring(key)
     )
   end
@@ -606,6 +640,7 @@ local function atomic_policy(value)
     value.require_existing == nil or type(value.require_existing) == "boolean",
     "atomic replacement require_existing must be boolean"
   )
+  assert(value.durable == nil or type(value.durable) == "boolean", "atomic replacement durable must be boolean")
   assert(
     not (value.mode ~= nil and value.preserve_mode == true),
     "atomic replacement mode and preserve_mode are mutually exclusive"
@@ -734,11 +769,12 @@ end
 ---@param data string
 ---@param selected_mode integer
 ---@param exact_mode boolean
+---@param durable? boolean
 ---@return Neoagent.FileIdentity? identity
 ---@return string? error
 ---@return Neoagent.AtomicFailureStage? stage
-local function write_atomic_candidate(path, data, selected_mode, exact_mode)
-  local fd, open_err = vim.uv.fs_open(path, "wx", selected_mode)
+local function write_atomic_candidate(path, data, selected_mode, exact_mode, durable)
+  local fd, open_err = vim.uv.fs_open(path, durable and "wx+" or "wx", selected_mode)
   if not fd then
     return nil, open_err, "write"
   end
@@ -773,6 +809,24 @@ local function write_atomic_candidate(path, data, selected_mode, exact_mode)
       failure, stage = "atomic replacement candidate has an unexpected size", "inspect"
     elseif exact_mode and not candidate_mode_matches(stat.mode, selected_mode) then
       failure, stage = "atomic replacement candidate has an unexpected mode", "mode"
+    end
+  end
+  if not failure and durable then
+    local offset = 0
+    while offset < #data do
+      local size = math.min(64 * 1024, #data - offset)
+      local chunk, read_err = vim.uv.fs_read(fd, size, offset)
+      if chunk ~= data:sub(offset + 1, offset + size) then
+        failure, stage = read_err or "atomic replacement content verification failed", "write"
+        break
+      end
+      offset = offset + size
+    end
+    if not failure then
+      local synced, sync_err = vim.uv.fs_fsync(fd)
+      if not synced then
+        failure, stage = sync_err, "sync"
+      end
     end
   end
   local closed, close_err = vim.uv.fs_close(fd)
@@ -837,7 +891,8 @@ function M.atomic_replace(path, data, policy)
     return string.format("%02x", char:byte())
   end)
   local temporary = path .. "." .. suffix .. ".tmp"
-  local identity, write_err, write_stage = write_atomic_candidate(temporary, data, selected_mode, exact_mode)
+  local identity, write_err, write_stage =
+    write_atomic_candidate(temporary, data, selected_mode, exact_mode, policy.durable)
   if not identity then
     remove_atomic_candidate(temporary)
     return nil, write_err, write_stage
@@ -889,7 +944,36 @@ function M.atomic_replace(path, data, policy)
     remove_atomic_candidate(temporary, identity)
     return nil, replace_err, "rename"
   end
+  if policy.durable then
+    local synced, sync_err = M.sync_directory(assert(vim.fs.dirname(path)))
+    if not synced then
+      return nil, sync_err, "sync"
+    end
+  end
   return true, identity
+end
+
+-- Windows does not expose directory fsync through libuv. File contents are
+-- flushed before publication on every platform.
+---@param path string
+---@return true?, string?
+function M.sync_directory(path)
+  if jit.os == "Windows" then
+    return true
+  end
+  local fd, open_err = vim.uv.fs_open(path, "r", 0)
+  if not fd then
+    return nil, open_err
+  end
+  local synced, sync_err = vim.uv.fs_fsync(fd)
+  local closed, close_err = vim.uv.fs_close(fd)
+  if not synced then
+    return nil, sync_err
+  end
+  if not closed then
+    return nil, close_err
+  end
+  return true
 end
 
 ---@param path string

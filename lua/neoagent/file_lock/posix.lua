@@ -229,6 +229,7 @@ function M.new(opts)
   end
   local C = opts.C or ffi.C
   ---@cast C Neoagent.PosixLockApi
+  assert(C.flock, "POSIX file locks require flock")
   return setmetatable({
     ffi = ffi,
     C = C,

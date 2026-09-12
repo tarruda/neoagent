@@ -94,14 +94,7 @@ end
 
 ---@return Neoagent.LockBackend?, Neoagent.FileLockError?
 local function load_backend()
-  local module
-  if jit.os == "Linux" or jit.os == "OSX" then
-    module = "neoagent.file_lock.posix"
-  elseif jit.os == "Windows" then
-    module = "neoagent.file_lock.windows"
-  else
-    return nil, failure("unavailable", "File locks are unavailable on " .. tostring(jit.os))
-  end
+  local module = jit.os == "Windows" and "neoagent.file_lock.windows" or "neoagent.file_lock.posix"
   local loaded, value = pcall(require, module)
   if not loaded then
     return nil, failure("unavailable", "File lock backend is unavailable", value)
@@ -301,28 +294,20 @@ function Lock:acquire_async()
       local settled = false
 
       local function finish()
-        if settled then
-          return false
-        end
         settled = true
         close_timer(timer)
-        return true
       end
 
       ---@param err Neoagent.FileLockError
       local function reject(err)
-        if not finish() then
-          return
-        end
+        finish()
         self:_close_state(state)
         done.reject(err)
       end
 
       ---@param lease Neoagent.FileLockLease
       local function resolve(lease)
-        if not finish() then
-          return
-        end
+        finish()
         done.resolve(lease, function(acquired)
           local released, release_err = acquired:release()
           if not released then
@@ -358,9 +343,8 @@ function Lock:acquire_async()
 
       attempt()
       return function()
-        if finish() then
-          self:_close_state(state)
-        end
+        finish()
+        self:_close_state(state)
       end
     end
   )

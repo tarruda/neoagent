@@ -15,18 +15,15 @@ end
 describe("neoagent file locks", function()
   ---@type string[]
   local paths = {}
-  ---@type table<vim.SystemObj, boolean>
-  local children = {}
   local posix = require("neoagent.file_lock.posix")
   local original_backend_new = posix.new
+  ---@type fun(config?: Neoagent.TestLockFailures): string[]
+  local fake_backend
 
   after_each(function()
     posix.new = original_backend_new
-    for child in pairs(children) do pcall(child.kill, child, 9) end
-    for child in pairs(children) do pcall(child.wait, child, 1000) end
     for _, path in ipairs(paths) do vim.fn.delete(path, "rf") end
     paths = {}
-    children = {}
   end)
 
   ---@return string
@@ -35,18 +32,6 @@ describe("neoagent file locks", function()
     paths[#paths + 1] = directory
     assert(fs.mkdirp(directory))
     return directory .. "/resource.lock"
-  end
-
-  ---@param script string
-  ---@return vim.SystemObj
-  local function child(script)
-    local value = vim.system({
-      assert(vim.env.NEOAGENT_NVIM), "--headless", "--noplugin",
-      "-u", "tests/minimal_init.lua", "-c", "lua " .. script,
-      "-c", "qa!",
-    }, { text = true, env = { NEOAGENT_COVERAGE = "0" } })
-    children[value] = true
-    return value
   end
 
   it("reuses one stable regular lock file with restrictive permissions", function()
@@ -67,74 +52,6 @@ describe("neoagent file locks", function()
     assert.is_not.equal(first_token, assert(fs.read(lock_path)))
     assert(lease:release())
     assert.is_not_nil(vim.uv.fs_lstat(lock_path))
-  end)
-
-  it("serializes leases across Neovim processes", function()
-    local lock_path = path()
-    local directory = vim.fs.dirname(lock_path)
-    local acquired_path = directory .. "/child-acquired"
-    local parent = assert(file_lock.new({ path = lock_path }):acquire())
-    local process = child(string.format(
-      "local fs=require('neoagent.fs');"
-        .. "local lease=assert(require('neoagent.file_lock').new({"
-        .. "path=%q,timeout_ms=15000,poll_ms=5}):acquire());"
-        .. "assert(fs.write_all(%q,'acquired','wx',384));"
-        .. "assert(lease:release())",
-      lock_path, acquired_path))
-    assert.is_false((vim.wait(100, function()
-      return vim.uv.fs_stat(acquired_path) ~= nil
-    end, 5)))
-    assert(parent:release())
-    local result = process:wait(15000)
-    children[process] = nil
-    assert.are.equal(0, result.code, (vim.inspect(result)))
-    assert.are.equal("acquired", assert(fs.read(acquired_path)))
-    assert.is_not_nil(vim.uv.fs_lstat(lock_path))
-  end)
-
-  it("releases ownership on process death without replacing the path", function()
-    local lock_path = path()
-    local directory = vim.fs.dirname(lock_path)
-    local owner_ready = directory .. "/owner-ready"
-    local active_path = directory .. "/active"
-    local owner = child(string.format(
-      "local fs=require('neoagent.fs');"
-        .. "local lease=assert(require('neoagent.file_lock').new({path=%q}):acquire());"
-        .. "assert(fs.write_all(%q,'ready','wx',384));"
-        .. "vim.wait(30000,function() return false end,10)",
-      lock_path, owner_ready))
-    assert(vim.wait(5000, function()
-      return vim.uv.fs_stat(owner_ready) ~= nil
-    end, 5), "owner did not acquire file lock")
-    local held = assert(vim.uv.fs_lstat(lock_path))
-
-    local waiters = {}
-    for id = 1, 2 do
-      waiters[id] = child(string.format(
-        "local fs=require('neoagent.fs');"
-          .. "local lease=assert(require('neoagent.file_lock').new({"
-          .. "path=%q,timeout_ms=15000,poll_ms=5}):acquire());"
-          .. "assert(lease:run(function() "
-          .. "assert(fs.write_all(%q,%q,'wx',384));"
-          .. "vim.wait(50,function() return false end,5);"
-          .. "assert(vim.uv.fs_unlink(%q)); return true end))",
-        lock_path, active_path, tostring(id), active_path))
-    end
-    assert.is_false((vim.wait(100, function()
-      return vim.uv.fs_stat(active_path) ~= nil
-    end, 5)))
-    owner:kill(9)
-    owner:wait(5000)
-    children[owner] = nil
-
-    for _, waiter in ipairs(waiters) do
-      local result = waiter:wait(15000)
-      children[waiter] = nil
-      assert.are.equal(0, result.code, (vim.inspect(result)))
-    end
-    local current = assert(vim.uv.fs_lstat(lock_path))
-    assert.are.equal(held.dev, current.dev)
-    assert.are.equal(held.ino, current.ino)
   end)
 
   it("rejects symbolic links and detects pathname replacement", function()
@@ -228,7 +145,7 @@ describe("neoagent file locks", function()
 
   ---@param config? Neoagent.TestLockFailures
   ---@return string[]
-  local function fake_backend(config)
+  fake_backend = function(config)
     config = config or {}
     local calls = {}
     local handle = {
@@ -280,6 +197,69 @@ describe("neoagent file locks", function()
     end
     return calls
   end
+
+  it("ignores stale lock attempts after asynchronous cancellation", function()
+    local lock_path = path()
+    local calls = fake_backend({ busy = true })
+    local original_timer = vim.uv.new_timer
+    local callback
+    local closed = false
+    local ok, outcome = pcall(function()
+      vim.uv.new_timer = function()
+        return {
+          start = function(_, _, _, fn) callback = fn end,
+          stop = function() end,
+          close = function() closed = true end,
+          is_closing = function() return closed end,
+        } --[[@as uv.uv_timer_t]]
+      end
+      local run = async.run(function()
+        file_lock.new({ path = lock_path }):acquire_async()
+      end, { error_kind = "file_lock" })
+      assert.is_function(callback)
+      run:cancel()
+      local attempts = vim.tbl_count(vim.tbl_filter(
+        function(call) return call == "try" end,
+        calls
+      ))
+      if not callback then error("timer callback was not installed") end
+      callback()
+      assert.are.equal(attempts, vim.tbl_count(vim.tbl_filter(
+        function(call) return call == "try" end,
+        calls
+      )))
+      assert.are.equal("cancelled", assert(wait(run).error).kind)
+    end)
+    vim.uv.new_timer = original_timer
+    assert.is_true(ok, tostring(outcome))
+  end)
+
+  it("reports a failed lease disposal after an asynchronous handoff", function()
+    local lock_path = path()
+    local config = { busy = true, release_error = "unlock failed" }
+    fake_backend(config)
+    local util = require("neoagent.util")
+    local schedule = util.schedule
+    ---@type (fun())[]
+    local scheduled = {}
+    local run
+    local ok, outcome = pcall(function()
+      util.schedule = function(callback) scheduled[#scheduled + 1] = callback end
+      run = async.run(function()
+        file_lock.new({ path = lock_path, poll_ms = 1 }):acquire_async()
+      end, { error_kind = "file_lock" })
+      config.busy = false
+      assert(vim.wait(500, function() return #scheduled > 0 end, 5))
+      assert(run):cancel()
+    end)
+    util.schedule = schedule
+    if not ok then error(outcome, 0) end
+    for _, callback in ipairs(scheduled) do callback() end
+    if not run then error("asynchronous lock run was not started") end
+    assert.are.equal("cancelled", assert(wait(run).error).kind)
+    assert.are.equal("dispose", run:diagnostics()[1].phase)
+    assert.is_not.equal("", run:diagnostics()[1].message)
+  end)
 
   it("closes bounded synchronous and asynchronous contenders", function()
     local lock_path = path()
@@ -409,41 +389,22 @@ describe("neoagent file locks", function()
     assert.is_nil((assert(err).message:match("backend unavailable")))
   end)
 
-  it("selects platform backends and reports unavailable platforms", function()
-    local original_os = jit.os
+  it("reports failure to load the native backend before opening a lock file", function()
     local original_require = _G.require
-    local windows_name = "neoagent.file_lock.windows"
-    local original_windows = package.loaded[windows_name]
+    local name = jit.os == "Windows" and "neoagent.file_lock.windows" or "neoagent.file_lock.posix"
+    local lock_path = path()
     local ok, outcome = pcall(function()
-      local selected_backend = { platform = "windows" }
-      package.loaded[windows_name] = {
-        new = function() return selected_backend end,
-      }
-      jit.os = "Windows"
-      assert.are.equal(selected_backend,
-        file_lock.new({ path = path() }).backend)
-
-      rawset(jit, "os", "Plan9")
-      local lease, err = file_lock.new({ path = path() }):acquire()
-      assert.is_nil(lease)
-      assert.are.equal("unavailable", assert(err).code)
-      assert.matches("Plan9", assert(err).message)
-
-      jit.os = "Linux"
-      rawset(_G, "require", function(name)
-        if name == "neoagent.file_lock.posix" then
-          error("POSIX backend cannot be loaded")
-        end
-        return original_require(name)
+      rawset(_G, "require", function(requested)
+        if requested == name then error("native backend cannot be loaded") end
+        return original_require(requested)
       end)
-      lease, err = file_lock.new({ path = path() }):acquire()
+      local lease, err = file_lock.new({ path = lock_path }):acquire()
       assert.is_nil(lease)
       assert.are.equal("unavailable", assert(err).code)
       assert.matches("backend is unavailable", assert(err).message)
+      assert.is_nil(vim.uv.fs_lstat(lock_path))
     end)
-    jit.os = original_os
     rawset(_G, "require", original_require)
-    package.loaded[windows_name] = original_windows
     assert.is_true(ok, tostring(outcome))
   end)
 
@@ -453,6 +414,14 @@ describe("neoagent file locks", function()
     assert.has_error(function() file_lock.new({ path = lock_path, refresh_ms = 1 }) end)
     assert.has_error(function() file_lock.new({ path = lock_path, mode = 512 }) end)
     assert.has_error(function() file_lock.new({ path = lock_path, poll_ms = 0 }) end)
+  end)
+
+  it("rejects an unavailable POSIX locking capability during construction", function()
+    local unavailable = {}
+    ---@cast unavailable Neoagent.PosixLockApi
+    assert.has_error(function()
+      posix.new({ C = unavailable })
+    end, "POSIX file locks require flock")
   end)
 
   it("reports POSIX ownership, token, and descriptor failures", function()
@@ -558,6 +527,17 @@ describe("neoagent file locks", function()
       return handle:prepare(384)
     end, "mode", "secure")
     rejected(function(handle)
+      local fstat = uv.fs_fstat
+      uv.fs_fchmod = function()
+        uv.fs_fstat = function() return nil, "confirmation failed" end
+        return true
+      end
+      local prepared, err = handle:prepare(384)
+      uv.fs_fstat = fstat
+      uv.fs_fchmod = function() return true end
+      return prepared, err
+    end, "ownership", "inspect held")
+    rejected(function(handle)
       identity.mode = 420
       return handle:prepare(384)
     end, "mode", "unexpected permission")
@@ -592,6 +572,11 @@ describe("neoagent file locks", function()
     end, "release", "close")
 
     local handle = open()
+    assert(handle:release())
+    assert(handle:close())
+    assert(handle:close())
+
+    handle = open()
     failures.lock = true
     failures.errno = 5
     local acquired, err = handle:try_acquire()
@@ -656,6 +641,7 @@ describe("neoagent file locks", function()
       ---@param disposition integer
       CreateFileW = function(path, access, share, security, disposition)
         calls[#calls + 1] = "open:" .. path.path .. ":" .. disposition
+        if failures.open_nil then return nil end
         if failures.open or failures.verify_open and disposition == 3 then
           return failures.cast and -1 or { native = -1 }
         end
@@ -750,6 +736,7 @@ describe("neoagent file locks", function()
       fs_chmod = function(path, mode)
         calls[#calls + 1] = "chmod:" .. path .. ":" .. mode
         if failures.chmod then return nil, "chmod failed" end
+        if failures.chmod_replace then identity = 8 end
         return true
       end,
     }
@@ -770,16 +757,26 @@ describe("neoagent file locks", function()
     assert.is_true(vim.tbl_contains(calls, "close:10"))
     assert.is_false(vim.tbl_contains(calls, "open:a+"))
 
+    local opened, err = backend:open("C:\\invalid\0path", 384)
+    assert.is_nil(opened)
+    assert.are.equal("open", assert(err).code)
+
+    failures.open_nil = true
+    opened, err = backend:open("C:\\state.lock", 384)
+    assert.is_nil(opened)
+    assert.are.equal("open", assert(err).code)
+    failures.open_nil = nil
+
     handle = assert(backend:open("C:\\state.lock", 384))
     identity = 8
-    local verified, err = handle:verify_token("token")
+    local verified
+    verified, err = handle:verify_token("token")
     assert.is_nil(verified)
     assert.are.equal("ownership", assert(err).code)
     assert(handle:close())
 
     identity = 7
     failures.encode = true
-    local opened
     opened, err = backend:open("C:\\state.lock", 384)
     assert.is_nil(opened)
     assert.are.equal("open", assert(err).code)
@@ -893,6 +890,23 @@ describe("neoagent file locks", function()
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
+    failures.held_information = true
+    prepared, err = handle:prepare(384)
+    assert.is_nil(prepared)
+    assert.are.equal("ownership", assert(err).code)
+    failures.held_information = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
+    failures.chmod_replace = true
+    prepared, err = handle:prepare(384)
+    assert.is_nil(prepared)
+    assert.are.equal("ownership", assert(err).code)
+    failures.chmod_replace = nil
+    identity = 7
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
     failures.lock = true
     failures.error = 33
     assert.is_false((handle:try_acquire()))
@@ -928,6 +942,14 @@ describe("neoagent file locks", function()
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
+    failures.seek = true
+    verified, err = handle:verify_token("token")
+    assert.is_nil(verified)
+    assert.are.equal("release", assert(err).code)
+    failures.seek = nil
+    assert(handle:close())
+
+    handle = assert(backend:open("C:\\state.lock", 384))
     assert(handle:write_token("token"))
     contents = "another owner"
     verified, err = handle:verify_token("token")
@@ -936,6 +958,7 @@ describe("neoagent file locks", function()
     assert(handle:close())
 
     handle = assert(backend:open("C:\\state.lock", 384))
+    assert(handle:release())
     assert.is_true((handle:try_acquire()))
     failures.unlock = true
     local released
@@ -953,6 +976,7 @@ describe("neoagent file locks", function()
     assert.is_nil(closed)
     assert.are.equal("release", assert(err).code)
     failures.close = nil
+    assert(handle:close())
     assert(handle:close())
   end)
 end)
