@@ -26,6 +26,29 @@ local function fetch(body, status, maximum, response_type)
 end
 
 describe("decoded HTTP client", function()
+  it("applies a default limit to JSON fetches without mutating requests", function()
+    local backend = fake.new()
+    backend.fetches = {
+      { body = "{}" },
+      { body = "plain text" },
+      { body = string.rep(" ", 1024 * 1024 + 1) },
+    }
+    local request = { url = "https://example.test" }
+    local client = http.new(backend)
+    assert(wait(client.fetch({ request = request })).ok)
+    assert.is_nil(request.max_response_bytes)
+    assert.are.equal(1024 * 1024,
+      assert(backend.fetch_requests[1]).max_response_bytes)
+    assert(wait(client.fetch({
+      request = request,
+      response_type = "text",
+    })).ok)
+    assert.is_nil(assert(backend.fetch_requests[2]).max_response_bytes)
+    local oversized = wait(client.fetch({ request = request }))
+    assert.is_false(oversized.ok)
+    assert.matches("exceeds 1048576 bytes", assert(oversized.error).message)
+  end)
+
   it("reports unsupported backend operations through the returned Run", function()
     local request = { url = "https://example.test" }
     local result = wait(http.new({ request = fake.new().request }).fetch({ request = request }))

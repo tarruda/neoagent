@@ -96,6 +96,9 @@ describe("OpenAI Codex subscription authentication", function()
     assert.matches("originator=neoagent", assert(assert(events[1]).url))
     assert.matches("code_challenge_method=S256", assert(assert(events[1]).url))
     assert.are.equal("https://auth.test/oauth/token", assert(http.requests[1]).url)
+    assert.are.equal(30000, assert(http.requests[1]).timeout_ms)
+    assert.are.equal(1024 * 1024,
+      assert(http.requests[1]).max_response_bytes)
     assert.matches("code=browser%-code", assert(assert(http.requests[1]).body))
     local headers = assert(method.request_opts(result.credential).headers)
     assert.are.equal("Bearer " .. result.credential.access, rawget(headers, "Authorization"))
@@ -304,6 +307,109 @@ describe("OpenAI Codex subscription authentication", function()
     end)
     vim.uv.new_timer = original_new_timer
     assert(patched, patch_err)
+  end)
+
+  it("bounds stalled and oversized authentication responses", function()
+    local stalled_timeout
+    ---@type Neoagent.ByteBackend
+    local stalled = {
+      fetch = function(opts)
+        stalled_timeout = opts.request.timeout_ms
+        return async.run(function()
+          return async.await(function(done)
+            local timer = assert(vim.uv.new_timer())
+            local request_timeout = opts.request.timeout_ms
+            if type(request_timeout) ~= "number" then
+              error("expected a request timeout")
+            end
+            timer:start(math.floor(request_timeout), 0, function()
+              timer:stop()
+              timer:close()
+              done.resolve({
+                ok = false,
+                error = { kind = "transport", message = "request timed out" },
+              })
+            end)
+            return function()
+              timer:stop()
+              if not timer:is_closing() then
+                timer:close()
+              end
+            end
+          end)
+        end)
+      end,
+    }
+    local method = codex.new({
+      http = stalled,
+      timeout_ms = 5,
+      auth_base_url = "https://auth.test",
+      start_callback_server = function()
+        return {
+          port = 1455,
+          wait = function() return "code" end,
+          close = function() return true end,
+        }
+      end,
+    })
+    local result = wait(method.login(interaction({ "browser" }, {})))
+    assert.is_false(result.ok)
+    assert.matches("timed out", assert(result.error).message)
+    assert.are.equal(5, stalled_timeout)
+
+    method = codex.new({
+      http = fake_http({ {
+        ok = true,
+        headers = {},
+        status = 200,
+        body = string.rep("x", 33),
+      } }),
+      max_response_bytes = 32,
+      auth_base_url = "https://auth.test",
+      start_callback_server = function()
+        return {
+          port = 1455,
+          wait = function() return "code" end,
+          close = function() return true end,
+        }
+      end,
+    })
+    result = wait(method.login(interaction({ "browser" }, {})))
+    assert.is_false(result.ok)
+    assert.matches("exceeds 32 bytes", assert(result.error).message)
+  end)
+
+  it("bounds device polling by the remaining workflow deadline", function()
+    local http = fake_http({
+      json(200, {
+        device_auth_id = "device",
+        user_code = "CODE",
+        interval = 0,
+      }),
+      json(200, {
+        authorization_code = "authorization",
+        code_verifier = "verifier",
+      }),
+      json(200, {
+        access_token = token("account"),
+        refresh_token = "refresh",
+        expires_in = 1,
+      }),
+    })
+    local times = { 0, 899990, 899995, 899996 }
+    local method = codex.new({
+      http = http,
+      timeout_ms = 20,
+      now = function()
+        return table.remove(times, 1) or 899996
+      end,
+      sleep = function() end,
+      auth_base_url = "https://auth.test",
+    })
+    local result = wait(method.login(interaction({ "device_code" }, {})))
+    assert(result.ok)
+    assert.are.equal(5, assert(http.requests[2]).timeout_ms)
+    assert.are.equal(20, assert(http.requests[3]).timeout_ms)
   end)
 
   it("reports provider, selection, token, and credential failures", function()
