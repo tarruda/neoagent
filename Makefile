@@ -9,7 +9,7 @@ UI_TEST_TIMEOUT ?= 120000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
-.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript coverage coverage-ci coverage-report coverage-check clean
+.PHONY: deps typecheck-deps typecheck lint test test-fast test-unit test-integration test-ui test-terminal-images test-http-live test-native-sandbox test-windows benchmark-applet benchmark-transcript benchmark-submission coverage coverage-ci coverage-report coverage-check clean
 
 typecheck-deps:
 	python3 scripts/typecheck_deps.py
@@ -70,6 +70,11 @@ benchmark-transcript:
 	$(TEST_ENV) NEOAGENT_TRANSCRIPT_BENCH_ENFORCE=1 \
 		$(NVIM) --headless --noplugin -u tests/minimal_init.lua \
 		-l scripts/benchmark-transcript.lua
+
+benchmark-submission:
+	$(TEST_ENV) NEOAGENT_SUBMISSION_BENCH_ENFORCE=1 \
+		$(NVIM) --headless --noplugin -u tests/minimal_init.lua \
+		-l scripts/benchmark-submission.lua
 
 coverage:
 	rm -rf .coverage

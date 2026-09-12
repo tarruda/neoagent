@@ -63,9 +63,9 @@ jobs:
       - name: Run compatibility suite
         if: matrix.neovim != 'stable'
         run: make test test-http-live test-native-sandbox
-      - name: Check container and transcript performance budgets
+      - name: Check container, transcript, and submission performance budgets
         if: matrix.neovim == 'stable'
-        run: make benchmark-applet benchmark-transcript
+        run: make benchmark-applet benchmark-transcript benchmark-submission
 
   terminal-images:
     name: terminal images (Linux, stable)
