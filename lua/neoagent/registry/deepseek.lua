@@ -4,9 +4,8 @@ local no_source_options = require("neoagent.model_catalog.source").no_options
 ---@type Neoagent.DiscoveredModel[]
 local seed = {}
 for _, id in ipairs({
-  "deepseek-v4-flash",
+  "deepseek-flash",
   "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp",
 }) do
   seed[#seed + 1] = { id = id }
 end
