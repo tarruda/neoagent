@@ -220,11 +220,7 @@ end
 ---@param value string
 ---@return string
 local function uri_decode(value)
-  local ok, decoded = pcall(vim.uri_decode, value)
-  if ok then
-    return decoded
-  end
-  return value
+  return vim.uri_decode(value)
 end
 
 ---@param key unknown
@@ -245,8 +241,7 @@ end
 ---@param secrets Neoagent.RecordingSecrets
 ---@param authentication? boolean
 ---@param key unknown
----@param seen table<table, boolean>
-local function collect_json_secrets(value, secrets, authentication, key, seen)
+local function collect_json_secrets(value, secrets, authentication, key)
   if value == vim.NIL then
     return
   end
@@ -260,23 +255,20 @@ local function collect_json_secrets(value, secrets, authentication, key, seen)
     end
     return
   end
-  if type(value) ~= "table" or seen[value] then
+  if type(value) ~= "table" then
     return
   end
-  seen[value] = true
   for child_key, child in pairs(value) do
-    collect_json_secrets(child, secrets, authentication, child_key, seen)
+    collect_json_secrets(child, secrets, authentication, child_key)
   end
-  seen[value] = nil
 end
 
 ---@param value unknown
 ---@param secrets Neoagent.RecordingSecrets
 ---@param authentication? boolean
 ---@param key unknown
----@param seen table<table, boolean>
 ---@return unknown, boolean
-local function sanitize_json_value(value, secrets, authentication, key, seen)
+local function sanitize_json_value(value, secrets, authentication, key)
   if value == vim.NIL then
     return vim.NIL, false
   end
@@ -293,18 +285,13 @@ local function sanitize_json_value(value, secrets, authentication, key, seen)
   if type(value) ~= "table" then
     return value, false
   end
-  if seen[value] then
-    return "*", true
-  end
-  seen[value] = true
   local result = util.is_list(value) and {} or vim.empty_dict()
   local changed = false
   for child_key, child in pairs(value) do
-    local sanitized, child_changed = sanitize_json_value(child, secrets, authentication, child_key, seen)
+    local sanitized, child_changed = sanitize_json_value(child, secrets, authentication, child_key)
     result[child_key] = sanitized
     changed = changed or child_changed
   end
-  seen[value] = nil
   return result, changed
 end
 
@@ -439,7 +426,7 @@ local function collect_body_secrets(state, secrets, authentication)
   if state.form then
     collect_form_secrets(state.form, secrets, authentication)
   elseif state.json then
-    collect_json_secrets(state.json, secrets, authentication, "", {})
+    collect_json_secrets(state.json, secrets, authentication, "")
   elseif state.valid_utf8 then
     collect_text_url_secrets(state.body, secrets, authentication)
   end
@@ -463,7 +450,7 @@ local function sanitize_body_state(state, secrets, authentication)
     return sanitize_form(state.form, secrets, authentication)
   end
   if state.json then
-    local sanitized, changed = sanitize_json_value(state.json, secrets, authentication, "", {})
+    local sanitized, changed = sanitize_json_value(state.json, secrets, authentication, "")
     if changed then
       return util.json_encode(sanitized), true
     end
@@ -816,20 +803,21 @@ Sanitizer.__index = Sanitizer
 function M.new(request, context, workspace, format)
   local secrets = {}
   local authentication = context.origin == "authentication"
-  local model_exchange = context.origin == "model"
+  local preserve_request_body = context.origin == "model" or context.origin == "file-upload"
   local credential_response_body = context.credential_response_body == true
   local identity = published_identity(context, workspace)
   local request_url = url_state(request.url)
-  local request_body = model_exchange and raw_body_state(request.body) or body_state(request.body, request.headers)
+  local request_body = preserve_request_body and raw_body_state(request.body)
+    or body_state(request.body, request.headers)
   collect_url_secrets(request_url, secrets, authentication)
   collect_header_secrets(request.headers, secrets, authentication, identity)
-  if not model_exchange then
+  if not preserve_request_body then
     collect_body_secrets(request_body, secrets, authentication)
   end
   local sanitized_url = sanitize_url_state(request_url, secrets, authentication)
   local sanitized_headers = sanitize_headers(request.headers, secrets, authentication)
   local recorded_body, body_encoding, body_redacted
-  if model_exchange then
+  if preserve_request_body then
     recorded_body, body_encoding = exact_body_state(request_body)
   else
     recorded_body, body_redacted = sanitize_body_state(request_body, secrets, authentication)

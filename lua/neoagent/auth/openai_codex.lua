@@ -5,6 +5,15 @@ local util = require("neoagent.util")
 
 local M = {}
 
+-- Files creation, finalization and inspection return signed storage URLs.
+-- Authentication classifies these capability-bearing responses just as it
+-- classifies token responses; the file backend receives decoded values.
+---@param transport? Neoagent.ByteBackend
+---@return Neoagent.HttpClient
+function M._files_http(transport)
+  return http_client.new(transport).with_context({ credential_response_body = true })
+end
+
 ---@class Neoagent.CodexCredential: Neoagent.OAuthCredential
 ---@field accountId string
 ---@field email? string

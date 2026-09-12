@@ -1,0 +1,86 @@
+# Adapted from authorized synthetic-image validation on 2026-09-08.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: b49d8462876ce6a4abbb382c52856699d4ca9e8166f75d034e9abdb5ca921fce
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.openai.com/v1/responses
+  headers:
+    Accept: text/event-stream
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+  body:
+    input:
+    - content: Describe the provided image briefly.
+      role: system
+    - content:
+      - text: Inspect a generated two-color tile.
+        type: input_text
+      role: user
+    - arguments: '{}'
+      call_id: call-generated-tile
+      name: sample_tile
+      type: function_call
+    - call_id: call-generated-tile
+      output:
+      - detail: auto
+        file_id: file-managed-openai-fixed
+        type: input_image
+      - detail: auto
+        file_id: file-managed-openai-fixed
+        type: input_image
+      type: function_call_output
+    - content:
+      - text: Name the tile's two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    model: gpt-5.6-luna
+    store: false
+    stream: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 3798
+---
+type: response_body
+at_us: 2000
+bytes: 3798
+body: 'event: response.created
+
+  data: {"type":"response.created","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+
+  event: response.in_progress
+
+  data: {"type":"response.in_progress","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+
+  event: error
+
+  data: {"type":"error","error":{"type":"insufficient_quota","code":"credit_balance_exhausted","message":"You have
+  no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.","param":null},"sequence_number":2}
+
+
+  event: response.failed
+
+  data: {"type":"response.failed","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"failed","background":false,"completed_at":null,"error":{"code":"credit_balance_exhausted","message":"You
+  have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/."},"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":3}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: text/event-stream; charset=utf-8
+---
+type: complete
+at_us: 2000
+ok: true

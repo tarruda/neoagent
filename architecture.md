@@ -120,9 +120,48 @@ private atomic storage and never enter provider state or diagnostics.
 
 Provider Service coordination is keyed by the shared Service value. Models,
 catalog requests, compaction, and non-mutating operations may share use.
-Mutating operations require exclusive use. Login and logout coordinate all
-Services using the affected Authentication method. Retired Services are
-destroyed after leases and operations finish.
+Request-scoped file creation and preparation also use shared leases; their
+content-key coordination belongs to the provider runtime. Credential changes
+and mutating management operations require exclusive use. Login and logout
+coordinate all Services using the affected Authentication method. Retired
+Services are destroyed after leases and operations finish.
+
+Capable provider runtimes own upload protocols and request preparation. Each
+workspace supplies its file reader and optional mapping cache explicitly.
+Provider configuration can disable uploads; encoding then reads local bytes
+inline and ignores cached remote IDs. Final semantic request shaping and
+modality adaptation precede attachment preparation. Protocol message containers
+belong to encoders; request shaping can replace semantic messages separately
+from endpoint, headers, and protocol options.
+
+In-memory mappings and shared producers are scoped by workspace storage
+identity. Mapping compatibility includes the backend, authorization namespace,
+MIME type, and purpose; compatible Models share mappings. Shared producers also
+require the same credential snapshot. Validation freshness belongs to that
+snapshot and advances only after a remote check. File operations receive
+local file references and copied access values without Agent state. Local
+metadata checks do not materialize image bodies. Bytes are read and verified
+only for upload, inline encoding, or local rendering.
+
+Each file-capable Model call holds a Service lease from credential resolution
+through completion, including direct Model use. Shared inspection and upload
+producers hold independent leases and bounded preparation budgets. Cancelling
+a waiter detaches it; the last waiter cancels the producer. Retirement blocks
+new preparation and prevents stale producers from publishing.
+
+The workspace-local provider cache stores opaque remote IDs, processing state,
+and tagged object lifetimes under content and authorization hashes. It excludes
+credentials, signed access URLs, and image bodies. Backends with a reliable
+stale-reference rejection contract reuse ready objects optimistically, including
+after restart. Other backends inspect availability before reuse. Known expiry
+is checked before dispatch. An explicit input rejection can repair confirmed
+stale generations and resubmit the frozen request once, before any streamed
+output. Repair does not rerun tools, commits, or request shaping. Upload and
+local-read failures end preparation without an inline fallback.
+
+Cache publication uses generation comparison; uncertain persistence blocks
+further cache mutations while valid in-memory results remain usable. Closing
+an Agent or invalidating a mapping does not delete local or remote files.
 
 The Provider Shell presents authentication, catalogs, Service state, and
 operations independently of Agent selection. Provider diagnostics exclude

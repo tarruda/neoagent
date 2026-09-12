@@ -1,0 +1,37 @@
+# Synthetic adaptation of the Codex file protocol verified with an authorized generated-image probe.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://chatgpt.com/backend-api/files/file-tile/uploaded
+  headers:
+    Authorization: Bearer upload-replay-key
+    chatgpt-account-id: account-replay
+    Content-Type: application/json
+  body: {}
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 18
+---
+type: response_body
+at_us: 3000
+bytes: 18
+body:
+  status: retry
+body_format: json
+---
+type: response
+at_us: 3000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 3000
+ok: true

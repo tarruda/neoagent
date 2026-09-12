@@ -279,6 +279,48 @@ a model starts at `default_thinking_level`, clamped to a supported value.
 Built-in adapters replace unsupported images in the request copy with a text
 placeholder. Sessions keep the original image block.
 
+The built-in `openai`, `openai-codex`, `deepseek`, and `anthropic` providers
+upload eligible images lazily by default and reuse provider file IDs. Set
+`file_uploads = false` on a provider to embed local image bytes inline, including when remote mappings
+already exist: >lua
+
+  require("neoagent").setup({
+    providers = {
+      ["openai-codex"] = { file_uploads = false },
+    },
+  })
+<
+
+OpenAI Platform supports API-key access through Responses. Codex supports
+ChatGPT subscription access through Responses, including Responses Lite, using
+ChatGPT's separate file service. DeepSeek supports Chat Completions, Responses,
+and its Anthropic-compatible API. Anthropic supports API-key access through
+Messages and the Files API. Eligibility follows the resolved model's
+`input` modalities, including explicit additions and overrides, and requires
+native endpoints and PNG, JPEG, GIF, or WebP input. OpenAI Chat Completions and
+gateways use inline encoding.
+
+For Anthropic API keys with access to multiple provider workspaces, set
+`request_opts.headers["anthropic-workspace-id"]` to the selected workspace ID.
+Uploads, inspections, and remote mappings follow that selection.
+
+Attachments and remote mappings live in workspace storage. Sessions keep local
+SHA-256 references; switching provider selects an independent remote mapping,
+and compatible models can share mappings within the same workspace. OpenAI
+Platform and DeepSeek uploads request 24-hour expiration. Codex supplies no
+object expiration, so each reuse verifies availability remotely. Codex signed
+storage URLs are never cached. Anthropic uploads persist until deletion.
+OpenAI and Anthropic reuse ready cached IDs optimistically;
+an explicit missing-file rejection permits one repair before streamed output.
+Known expiry triggers replacement before inference. Other failures are returned
+normally. Upload and local-read failures return errors without an inline
+fallback.
+
+Opening or viewing a Session does not upload images. The accepted prompt
+appears in the transcript before preparation starts. You can keep editing the
+next prompt or cancel while images are being prepared. File references reduce
+HTTP request bytes; image token, count, and input-size limits still apply.
+
 The Anthropic provider enables ephemeral prompt caching by default. Set its
 `prompt_caching = false` to disable automatically added cache controls.
 
@@ -1147,13 +1189,17 @@ A Tool is `{ name, description, input_schema, execute }`.
 or local image references: `{ type = "image", file_id = sha256,
 mime_type = "image/png", bytes = byte_count, filename = "sample.png" }`.
 `filename` is optional metadata. Transient image updates sent through
-`ctx.on_update` may use stable `id` and changing `revision` values; these fields
+`ctx.on_update` require stable `id` and changing `revision` values; these fields
 are removed from persisted image blocks.
 
 Bundled `read_file` receives the Session's managed writer as `ctx.context.files`.
 It stores the processed image bytes before returning a reference; the original
 file can then change or disappear without changing the attachment.
-`max_image_output_bytes` bounds the binary attachment, defaulting to 20 MiB.
+`max_image_output_bytes` bounds the binary attachment, defaulting to 3.375 MiB
+(4.5 MiB after base64 encoding) so retained images also fit inline requests.
+With ImageMagick available, larger processed images are recompressed as JPEG.
+Raising this limit requires checking the image limits of every endpoint that
+will receive the attachment, including inline use when uploads are disabled.
 Custom producers call the same writer's asynchronous `put(bytes)` and use the
 returned `{ file_id, bytes }` in their image blocks. Failed publication must
 fail the tool result rather than return a reference.

@@ -1,0 +1,103 @@
+# Adapted from authorized synthetic Sonnet 5 validation on 2026-09-09.
+# Replace credentials, message IDs and signatures; reserialize stream chunks.
+# Source SHA-256: 70efb8d05838581714177e522f8a0a95b67833cce1ce947a62ee6e9a0d90749c
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.anthropic.com/v1/messages
+  headers:
+    Content-Type: application/json
+    anthropic-version: '2023-06-01'
+    x-api-key: anthropic-replay-key
+  body:
+    max_tokens: 1024
+    messages:
+    - content: Reply OK without using tools.
+      role: user
+    - content:
+      - text: OK
+        type: text
+      role: assistant
+    - content:
+      - cache_control:
+          type: ephemeral
+        text: Reply DONE without using tools.
+        type: text
+      role: user
+    model: claude-sonnet-5
+    output_config:
+      effort: medium
+    stream: true
+    system:
+    - cache_control:
+        type: ephemeral
+      text: Follow the requested output exactly.
+      type: text
+    thinking:
+      display: summarized
+      type: adaptive
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 1283
+---
+type: response_body
+at_us: 2000
+bytes: 1283
+body: 'event: message_start
+
+  data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"synthetic-id-2","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":45,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"global"}}}
+
+
+  event: content_block_start
+
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+
+  event: ping
+
+  data: {"type":"ping"}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"D"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ONE"}}
+
+
+  event: content_block_stop
+
+  data: {"type":"content_block_stop","index":0}
+
+
+  event: message_delta
+
+  data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":45,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5,"output_tokens_details":{"thinking_tokens":0}}}
+
+
+  event: message_stop
+
+  data: {"type":"message_stop"}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 2000
+ok: true

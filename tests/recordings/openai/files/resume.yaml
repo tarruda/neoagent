@@ -1,0 +1,104 @@
+# Synthetic upload conversation; no live provider capture.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.openai.com/v1/responses
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+    Accept: text/event-stream
+  body:
+    model: gpt-4.1
+    stream: true
+    input:
+      - role: user
+        content:
+          - type: input_text
+            text: Inspect the sample tile.
+      - type: function_call
+        call_id: call-tile
+        name: sample_tile
+        arguments: '{}'
+      - type: function_call_output
+        call_id: call-tile
+        output:
+          - type: input_text
+            text: Generated tile.
+          - type: input_image
+            file_id: file-tile
+            detail: auto
+          - type: input_image
+            file_id: file-tile
+            detail: auto
+      - role: user
+        content:
+          - type: input_text
+            text: Describe the tile.
+      - type: message
+        role: assistant
+        status: completed
+        id: msg-tile
+        content:
+          - type: output_text
+            text: One pixel.
+            annotations: []
+      - role: user
+        content:
+          - type: input_text
+            text: Describe it again.
+      - type: message
+        role: assistant
+        status: completed
+        id: msg-tile
+        content:
+          - type: output_text
+            text: One pixel.
+            annotations: []
+      - role: user
+        content:
+          - type: input_text
+            text: Continue.
+    store: false
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 19
+---
+type: response_chunk
+index: 2
+at_us: 2000
+bytes: 94
+---
+type: response_chunk
+index: 3
+at_us: 3000
+bytes: 636
+---
+type: response_body
+at_us: 4000
+bytes: 749
+body: |+
+  data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg-tile","role":"assistant","content":[]}}
+
+  data: {"type":"response.output_text.delta","output_index":0,"delta":"One pixel."}
+
+  data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","status":"completed","id":"msg-tile","content":[{"type":"output_text","text":"One pixel.","annotations":[]}]}}
+
+  data: {"type":"response.completed","response":{"id":"response-tile","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","id":"msg-tile","content":[{"type":"output_text","text":"One pixel.","annotations":[]}]}],"usage":{"input_tokens":50,"output_tokens":10,"total_tokens":60}}}
+
+---
+type: response
+at_us: 4000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 4000
+ok: true

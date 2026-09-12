@@ -1,0 +1,110 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: 932f267b37cf6fdd46aa44279295c373139ccf9983ca2e6f67aca0bb8b659727
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://chatgpt.com/backend-api/codex/responses
+  headers:
+    Accept: text/event-stream
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+    OpenAI-Beta: responses=experimental
+    User-Agent: neoagent
+    chatgpt-account-id: account-replay
+    originator: neoagent
+    x-openai-internal-codex-responses-lite: 'true'
+  body:
+    include:
+    - reasoning.encrypted_content
+    input:
+    - role: developer
+      tools:
+      - description: Read a generated image tile.
+        name: read_tile
+        parameters:
+          properties: {}
+          type: object
+        strict: null
+        type: function
+      type: additional_tools
+    - content:
+      - text: Inspect generated images using the provided tool.
+        type: input_text
+      role: developer
+      type: message
+    - content:
+      - text: Call read_tile once, then name the two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    model: gpt-5.6-luna
+    parallel_tool_calls: false
+    reasoning:
+      context: all_turns
+    store: false
+    stream: true
+    text:
+      verbosity: low
+    tool_choice: auto
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 5830
+---
+type: response_body
+at_us: 2000
+bytes: 5830
+body: 'event: response.created
+
+  data: {"type":"response.created","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-2","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Read
+  a generated image tile.","name":"read_tile","output_schema":null,"parameters":{"properties":{},"type":"object"},"strict":false}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+
+  event: response.in_progress
+
+  data: {"type":"response.in_progress","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-2","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Read
+  a generated image tile.","name":"read_tile","output_schema":null,"parameters":{"properties":{},"type":"object"},"strict":false}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+
+  event: response.output_item.added
+
+  data: {"type":"response.output_item.added","item":{"id":"synthetic-id-4","type":"function_call","status":"in_progress","arguments":"","call_id":"synthetic-call-5","name":"read_tile"},"output_index":0,"sequence_number":2}
+
+
+  event: response.function_call_arguments.delta
+
+  data: {"type":"response.function_call_arguments.delta","delta":"{}","item_id":"synthetic-id-4","obfuscation":"synthetic-padding","output_index":0,"sequence_number":3}
+
+
+  event: response.function_call_arguments.done
+
+  data: {"type":"response.function_call_arguments.done","arguments":"{}","item_id":"synthetic-id-4","output_index":0,"sequence_number":4}
+
+
+  event: response.output_item.done
+
+  data: {"type":"response.output_item.done","item":{"id":"synthetic-id-4","type":"function_call","status":"completed","arguments":"{}","call_id":"synthetic-call-5","name":"read_tile"},"output_index":0,"sequence_number":5}
+
+
+  event: response.completed
+
+  data: {"type":"response.completed","response":{"id":"synthetic-id-1","object":"response","created_at":1700000000,"status":"completed","background":false,"completed_at":1700000000,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"synthetic-prompt_cache_key-2","prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":"synthetic-safety_identifier-3","service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"low"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Read
+  a generated image tile.","name":"read_tile","output_schema":null,"parameters":{"properties":{},"type":"object"},"strict":false}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"attribution":{"items":{"at_07279b906f92a994016aa12566210887d298c951e7764d62a3":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":112,"output_tokens":0},"msg_07279b906f92a994016aa12566214c87d2bf1eb43e7ee003cf":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":12,"output_tokens":0}],"input_tokens":12,"output_tokens":0},"msg_07279b906f92a994016aa12566215887d28da420c694cde58e":{"cache_write_tokens":0,"cached_tokens":0,"content":[{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":24,"output_tokens":0}],"input_tokens":24,"output_tokens":0},"fc_07279b906f92a994016aa12566cb4487d2948619cf20d41154":{"cache_write_tokens":0,"cached_tokens":0,"input_tokens":2,"output_tokens":14}}},"input_tokens":150,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":14,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":164},"user":null,"metadata":{}},"sequence_number":6}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers: {}
+---
+type: complete
+at_us: 2000
+ok: true

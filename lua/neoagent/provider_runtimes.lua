@@ -26,6 +26,11 @@ local M = {}
 ---@field transport? Neoagent.ByteBackend
 ---@field report? fun(message: string, level: integer)
 ---@field auth_services table<string, Neoagent.ProviderService[]>
+---@field files? Neoagent.ProviderFiles
+
+---@class Neoagent.ProviderFiles
+---@field retire fun()
+---@field bind fun(api: string, model: Neoagent.ModelConfig): Neoagent.ImageRequest?
 
 ---@class Neoagent.ProviderRuntime: Neoagent.ProviderRuntimeConstruction
 ---@field service Neoagent.ProviderService
@@ -86,6 +91,9 @@ local function destroy_values(runtimes, candidate)
   for _, runtime in pairs(runtimes) do
     if runtime.catalog then
       pcall(runtime.catalog.destroy, runtime.catalog)
+    end
+    if runtime.files then
+      runtime.files.retire()
     end
     local service = runtime.service
     if type(service) == "table" and not services[service] then
@@ -160,14 +168,9 @@ function M.compose(configured, opts)
       now = opts.now,
       new_timer = opts.new_timer,
       acquire_use = function()
-        if not bound_service then
-          return {
-            release = function()
-              return true
-            end,
-          }
-        end
-        return provider_service.acquire_use(bound_service)
+        return provider_service.acquire_use(
+          assert(bound_service, "Provider Service is not bound")
+        )
       end,
     })
     if not ok then
@@ -224,6 +227,17 @@ function M.compose(configured, opts)
     end
     runtime.service = validated
     assert(binders[provider_id])(validated)
+    local method = provider.auth and configured.auth and configured.auth.methods[provider.auth]
+    local files_ok, files = pcall(require("neoagent.providers.file_uploads").new, provider_id, provider, validated, {
+      transport = opts.transport,
+      auth_type = method and method.type,
+      report = opts.report,
+    })
+    if not files_ok then
+      destroy_values(runtimes)
+      return nil, util.error("provider", "Failed to construct file uploads for " .. provider_id)
+    end
+    runtime.files = files
   end
 
   ---@cast runtimes Neoagent.ProviderRuntimes

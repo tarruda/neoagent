@@ -258,6 +258,58 @@ describe("neoagent default agent", function()
     return { ok = false, message = assistant.message, text = assistant.text, error = err }
   end
 
+  it("publishes an accepted prompt before uploads and stays editable during preparation", function()
+    local async = require("neoagent.async")
+    local session = assert(require("neoagent.session").new())
+    assert(session:append({ role = "user", content = {
+      require("tests.helpers.attachments").new(session:files()).image("abc"),
+    } }))
+    ---@type Neoagent.AwaitCallbacks<Neoagent.ByteFetchResult>?
+    local pending
+    local visible_at_upload = false
+    local requests = 0
+    local prompt = "Inspect the retained synthetic image"
+    local function transcript()
+      local buffer = assert(view_handles.buffer(current_view(), "transcript"))
+      return table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+    end
+    local agent = neoagent.new({
+      workspace_trust = false, default_registry = false, persistence = { enabled = false },
+      default_model = { provider = "deepseek", model = "deepseek-v4.1-flash-expires-on-0910" },
+      providers = { deepseek = { api = "openai-completions", base_url = "https://api.deepseek.com",
+        auth = "deepseek", api_key = "synthetic-key", models = {
+          ["deepseek-v4.1-flash-expires-on-0910"] = { input = { "text", "image" } },
+        } } },
+      tools = {}, agent_instructions = false, skills = false, ui = { images = false },
+    }, { session = session, transport = {
+      fetch = function()
+        visible_at_upload = transcript():find(prompt, 1, true) ~= nil
+        return async.run(function() return async.await(function(done) pending = done end) end)
+      end,
+      request = function()
+        requests = requests + 1
+        return async.run(function() return { ok = true, response = { status = 200, headers = {} } } end)
+      end,
+    } })
+    neoagent._set_default(agent)
+    assert(neoagent.open())
+    vim.cmd("stopinsert")
+    current_view():set_input(prompt)
+    local run = assert(neoagent.send(prompt))
+    assert(type(run) == "table")
+    assert(vim.wait(1000, function() return pending ~= nil end, 1))
+    current_view():set_input("Draft while upload is pending")
+    assert.are.equal("Draft while upload is pending", current_view():get_input())
+    assert.is_false(run:is_done())
+    assert.are.equal(0, requests)
+    assert(pending).reject({ kind = "transport", message = "Synthetic upload failure" })
+    assert(vim.wait(1000, function() return run:is_done() end, 1))
+    assert.is_false(assert(run:result()).ok)
+    assert.is_not_nil((transcript():find(prompt, 1, true)))
+    assert.are.equal("Draft while upload is pending", current_view():get_input())
+    assert.is_true(visible_at_upload, "upload began before the accepted prompt reached the native transcript")
+  end)
+
   it("composes a model, session, interaction, and passive UI", function()
     local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "hello" } }) } })
     setup_model(model)

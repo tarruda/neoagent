@@ -1,0 +1,45 @@
+# Adapted from authorized generated-image validation on 2026-09-09.
+# Replace credentials and metadata identities; reserialize the response.
+# Source SHA-256: ca389ec25d6e92a7a6f9d1b75ae441322857d29c6f51993fc814da206093aace
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.anthropic.com/v1/files
+  headers:
+    Content-Length: '247'
+    Content-Type: multipart/form-data; boundary=synthetic-upload-boundary
+    anthropic-version: '2023-06-01'
+    x-api-key: upload-replay-key
+  body: LS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImZpbGUiOyBmaWxlbmFtZT0iaW1hZ2UucG5nIg0KQ29udGVudC1UeXBlOiBpbWFnZS9wbmcNCg0KiVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5LS0NCg==
+  body_encoding: base64
+  body_bytes: 247
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 109
+---
+type: response_body
+at_us: 2000
+bytes: 109
+body:
+  error:
+    message: Not found
+    type: not_found_error
+  request_id: synthetic-request-id
+  type: error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 404
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

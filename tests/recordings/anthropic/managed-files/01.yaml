@@ -1,0 +1,48 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: 2d323f560a8fbee6ec228799a6753010ddfd82e259bb4c3dbf30b446dfb9e615
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.anthropic.com/v1/files
+  headers:
+    Content-Length: '247'
+    Content-Type: multipart/form-data; boundary=synthetic-upload-boundary
+    anthropic-version: '2023-06-01'
+    x-api-key: upload-replay-key
+  body: LS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImZpbGUiOyBmaWxlbmFtZT0iaW1hZ2UucG5nIg0KQ29udGVudC1UeXBlOiBpbWFnZS9wbmcNCg0KiVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5LS0NCg==
+  body_encoding: base64
+  body_bytes: 247
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 185
+---
+type: response_body
+at_us: 2000
+bytes: 185
+body:
+  created_at: '2023-11-14T22:13:20Z'
+  downloadable: false
+  expires_at: null
+  filename: image.png
+  id: file-managed-anthropic-1
+  mime_type: image/png
+  size_bytes: 91
+  type: file
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

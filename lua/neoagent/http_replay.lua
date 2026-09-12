@@ -180,8 +180,8 @@ function M.read(path)
   }
 end
 
----@param value? table<string, unknown>
----@return table<string, unknown>
+---@param value? table<string, string>
+---@return table<string, string>
 local function headers(value)
   local result = {}
   for key, item in pairs(value or {}) do
@@ -211,6 +211,47 @@ local function form(value)
     result[key] = item
   end
   return result
+end
+
+-- Multipart boundaries are transport framing. Retain every byte between
+-- delimiters, including part order, headers, field values and binary data.
+---@param request Neoagent.HttpRequest
+---@return string[]?
+local function multipart(request)
+  local fields = headers(request.headers)
+  local content_type = fields["content-type"]
+  local boundary = type(content_type) == "string" and content_type:match("^multipart/form%-data;%s*boundary=(.+)$")
+  if not boundary or not request.body then
+    return nil
+  end
+  boundary = boundary:match('^"(.*)"$') or boundary
+  if boundary == "" or boundary:find('[\r\n%z"]') then
+    return nil
+  end
+  if fields["content-length"] and tonumber(fields["content-length"]) ~= #request.body then
+    return nil
+  end
+  local delimiter, body = "--" .. boundary, request.body
+  if body:sub(1, #delimiter + 2) ~= delimiter .. "\r\n" then
+    return nil
+  end
+  local parts, cursor = {}, #delimiter + 3
+  while true do
+    local first, last = body:find("\r\n" .. delimiter, cursor, true)
+    if not first then
+      return nil
+    end
+    last = assert(last)
+    parts[#parts + 1] = body:sub(cursor, first - 1)
+    local suffix = body:sub(last + 1, last + 2)
+    if suffix == "--" then
+      return body:sub(last + 1) == "--\r\n" and parts or nil
+    end
+    if suffix ~= "\r\n" then
+      return nil
+    end
+    cursor = last + 3
+  end
 end
 
 ---@param request Neoagent.HttpRequest
@@ -277,6 +318,20 @@ local function mismatch(entry, request)
     return "URL"
   end
   local actual_headers, wanted_headers = headers(request.headers), headers(expected.headers)
+  local actual_parts, wanted_parts
+  if not entry.body_exact then
+    actual_parts, wanted_parts = multipart(request), multipart(expected)
+    if actual_parts and wanted_parts then
+      actual_headers["content-type"], wanted_headers["content-type"] = "multipart/form-data", "multipart/form-data"
+      -- Each original length was checked against its own framed body above.
+      if actual_headers["content-length"] then
+        actual_headers["content-length"] = "multipart"
+      end
+      if wanted_headers["content-length"] then
+        wanted_headers["content-length"] = "multipart"
+      end
+    end
+  end
   if entry.headers_subset then
     for key, value in pairs(wanted_headers) do
       if actual_headers[key] ~= value then
@@ -292,7 +347,7 @@ local function mismatch(entry, request)
     end
     return
   end
-  local actual, wanted = body_value(request), body_value(expected)
+  local actual, wanted = actual_parts or body_value(request), wanted_parts or body_value(expected)
   if entry.body_subset and wanted ~= nil then
     if type(actual) ~= "table" or type(wanted) ~= "table" then
       return "body"

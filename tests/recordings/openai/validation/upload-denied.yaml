@@ -1,0 +1,49 @@
+# Authorized invalid-credential upload validation on 2026-09-09.
+# Adapt request credentials and identity to the replay environment.
+# Source SHA-256: 4b97bc04259fa757cc8fb50a791ad0f7af326ef6d6c7f5756159d0ac87c6c6f3
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: POST
+  url: https://api.openai.com/v1/files
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Length: '540'
+    Content-Type: multipart/form-data; boundary=synthetic-upload-boundary
+  body: LS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9InB1cnBvc2UiDQoNCnZpc2lvbg0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbYW5jaG9yXSINCg0KY3JlYXRlZF9hdA0KLS1zeW50aGV0aWMtdXBsb2FkLWJvdW5kYXJ5DQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImV4cGlyZXNfYWZ0ZXJbc2Vjb25kc10iDQoNCjg2NDAwDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnkNCkNvbnRlbnQtRGlzcG9zaXRpb246IGZvcm0tZGF0YTsgbmFtZT0iZmlsZSI7IGZpbGVuYW1lPSJpbWFnZS5wbmciDQpDb250ZW50LVR5cGU6IGltYWdlL3BuZw0KDQqJUE5HDQoaCgAAAA1JSERSAAAAIAAAABAIAgAAAPhi6g4AAAAiSURBVHicY/jPwEASIlH5f1KVj1owasGoBaMWjFowIBYAAFCm/hBf6HhFAAAAAElFTkSuQmCCDQotLXN5bnRoZXRpYy11cGxvYWQtYm91bmRhcnktLQ0K
+  body_encoding: base64
+  body_bytes: 540
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 408
+---
+type: response_body
+at_us: 2000
+bytes: 408
+body:
+  detail:
+    code: invalid_api_key
+    message: 'Incorrect API key provided: invalid-*****************-key. You can find
+      your API key at https://platform.openai.com/account/api-keys.'
+  error:
+    code: invalid_api_key
+    message: 'Incorrect API key provided: invalid-*****************-key. You can find
+      your API key at https://platform.openai.com/account/api-keys.'
+    param: null
+    type: invalid_request_error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 401
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

@@ -1,0 +1,93 @@
+# Synthetic upload conversation; no live provider capture.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.deepseek.com/chat/completions
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+  body:
+    model: deepseek-v4.1-flash-expires-on-0910
+    stream: true
+    messages:
+      - role: user
+        content: Inspect the sample tile.
+      - role: assistant
+        content: null
+        reasoning_content: ""
+        tool_calls:
+          - id: call-tile
+            type: function
+            function:
+              name: sample_tile
+              arguments: '{}'
+      - role: tool
+        tool_call_id: call-tile
+        content: Generated tile.
+      - role: user
+        content:
+          - type: text
+            text: 'Attached image(s) from tool result:'
+          - type: file
+            file_id: file-tile-replacement
+          - type: file
+            file_id: file-tile-replacement
+      - role: user
+        content: Describe the tile.
+      - role: assistant
+        content: One pixel.
+        reasoning_content: I will inspect the tile.
+      - role: user
+        content: Describe it again.
+      - role: assistant
+        content: One pixel.
+        reasoning_content: I will inspect the tile.
+      - role: user
+        content: Continue.
+    stream_options:
+      include_usage: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 19
+---
+type: response_chunk
+index: 2
+at_us: 2000
+bytes: 94
+---
+type: response_chunk
+index: 3
+at_us: 3000
+bytes: 1326
+---
+type: response_body
+at_us: 4000
+bytes: 1439
+body: |+
+  data: {"id":"completion-tile","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4.1-flash-expires-on-0910","system_fingerprint":"fp_synthetic","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}],"usage":null}
+
+  data: {"id":"completion-tile","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4.1-flash-expires-on-0910","system_fingerprint":"fp_synthetic","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"I will inspect the tile."},"logprobs":null,"finish_reason":null}],"usage":null}
+
+  data: {"id":"completion-tile","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4.1-flash-expires-on-0910","system_fingerprint":"fp_synthetic","choices":[{"index":0,"delta":{"content":"One pixel.","reasoning_content":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+  data: {"id":"completion-tile","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-v4.1-flash-expires-on-0910","system_fingerprint":"fp_synthetic","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":50,"completion_tokens":10,"total_tokens":60,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":5},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":50}}
+
+  data: [DONE]
+
+---
+type: response
+at_us: 4000
+status: 200
+headers:
+  content-type: text/event-stream
+---
+type: complete
+at_us: 4000
+ok: true

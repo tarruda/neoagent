@@ -1,0 +1,42 @@
+# Authorized Files lookup validation on 2026-09-09.
+# Adapt credentials, remote identity and timestamps; retain HTTP response shape.
+# Source SHA-256: 34efc26ace95ae552537059476edd0d7c15a7f10deb08868afa421b8a5a07854
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.openai.com/v1/files/file-000000000000000000000000
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 216
+---
+type: response_body
+at_us: 2000
+bytes: 216
+body:
+  detail:
+    code: null
+    message: 'No such File object: file-000000000000000000000000'
+  error:
+    code: null
+    message: 'No such File object: file-000000000000000000000000'
+    param: id
+    type: invalid_request_error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 404
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

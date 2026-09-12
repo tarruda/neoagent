@@ -235,6 +235,58 @@ describe("HTTP recording replay", function()
     assert.is_true(wait(player.fetch({ request = request })).ok)
   end)
 
+  it("rejects malformed multipart framing before semantic matching", function()
+    local boundary = "neoagent-boundary"
+    local body = "--" .. boundary .. "\r\npart\r\n--" .. boundary .. "--\r\n"
+    local value = buffered("{}")
+    value[1].request.body = body
+    value[1].request.headers = {
+      ["content-type"] = "multipart/form-data; boundary=" .. boundary,
+      ["content-length"] = tostring(#body),
+    }
+    local cases = {
+      { name = "empty boundary", corrupt = function(actual)
+        actual.headers["content-type"] = "multipart/form-data; boundary=\"\""
+      end },
+      { name = "incorrect length", corrupt = function(actual)
+        actual.headers["content-length"] = tostring(#body + 1)
+      end },
+      { name = "invalid opener", corrupt = function(actual)
+        actual.body = "xx" .. body:sub(3)
+      end },
+      { name = "missing delimiter", corrupt = function(actual)
+        actual.body = "--" .. boundary .. "\r\npart"
+        actual.headers["content-length"] = tostring(#actual.body)
+      end },
+      { name = "invalid suffix", corrupt = function(actual)
+        actual.body = "--" .. boundary .. "\r\npart\r\n--" .. boundary .. "xx\r\n"
+      end },
+    }
+    for _, case in ipairs(cases) do
+      local player = new(value)
+      local actual = vim.deepcopy(value[1].request)
+      case.corrupt(actual)
+      assert.is_false(wait(player.fetch({ request = actual })).ok, case.name)
+    end
+  end)
+
+  it("detects unexpected body members and subset headers", function()
+    local value = buffered("{}")
+    value[1].request.body = "{}"
+    value[1].request.headers = {}
+    local player = new(value)
+    local actual = vim.deepcopy(value[1].request)
+    actual.body = '{"extra":1}'
+    assert.is_false(wait(player.fetch({ request = actual })).ok)
+
+    value[1].request.body = "{}"
+    value[1].request.headers = { required = "value" }
+    player = new(value, nil, { headers_subset = true })
+    actual = vim.deepcopy(value[1].request)
+    actual.headers.required = "different"
+    assert.is_false(wait(player.fetch({ request = actual })).ok)
+  end)
+
   it("reserves concurrent exchanges before delivery and orders events using explicit dependencies", function()
     local value = buffered("{}")
     local player = replay.new({ exchanges = {

@@ -291,7 +291,54 @@ describe("neoagent provider runtime composition", function()
     assert.matches("unsupported Provider Service field", assert(err).message)
   end)
 
+  it("disposes constructed Services when file-runtime construction fails", function()
+    local uploads = require("neoagent.providers.file_uploads")
+    local original, destroyed = uploads.new, 0
+    uploads.new = function() error("synthetic file construction failure") end
+    local ok, value, err = pcall(provider_runtimes.compose, {providers = {
+      managed = provider("managed", function(id)
+        return {id = id, name = "Managed", state = function() return false end, operations = {},
+          destroy = function() destroyed = destroyed + 1 end}
+      end),
+    }}, {startup = false})
+    uploads.new = original
+    assert.is_true(ok)
+    assert.is_nil(value)
+    assert.matches("Failed to construct file uploads", assert(err).message)
+    assert.are.equal(1, destroyed)
+  end)
+
+  it("declines file preparation for unsupported DeepSeek protocols", function()
+    ---@type Neoagent.ProviderDefinition
+    local definition = {
+      api = "openai-responses",
+      base_url = "https://api.deepseek.com",
+      auth = "deepseek",
+      catalog = { seed = {} },
+      models = {},
+    }
+    ---@type Neoagent.ProviderService
+    local service = {
+      id = "deepseek",
+      name = "DeepSeek",
+      operations = {},
+      state = function() return false end,
+    }
+    local uploads = assert(require("neoagent.providers.file_uploads").new(
+      "deepseek",
+      definition,
+      service,
+      { auth_type = "api_key" }
+    ))
+
+    assert.is_nil(uploads.bind("future-api", {
+      id = "vision",
+      input = { "text", "image" },
+    }))
+  end)
+
   it("owns idempotent runtime destruction", function()
+    assert.is_nil(provider_runtimes.destroy(nil))
     local destroyed = 0
     local configured = { providers = {
       owned = provider("owned", function(id)

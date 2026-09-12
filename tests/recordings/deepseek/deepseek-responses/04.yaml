@@ -1,0 +1,901 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: 3452f34ebe890a6be13686cdbeffe90f9527773949bc5a83a5126135a79923f9
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.deepseek.com/responses
+  headers:
+    Accept: text/event-stream
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+  body:
+    input:
+    - content: Describe the provided image briefly.
+      role: system
+    - content:
+      - text: Inspect a generated two-color tile.
+        type: input_text
+      role: user
+    - arguments: '{}'
+      call_id: call-generated-tile
+      name: sample_tile
+      type: function_call
+    - call_id: call-generated-tile
+      output:
+      - detail: auto
+        file_id: file-deepseek-responses-1
+        type: input_image
+      - detail: auto
+        file_id: file-deepseek-responses-1
+        type: input_image
+      type: function_call_output
+    - content:
+      - text: Name the tile's two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    - content:
+      - text: "1.  **Analyze the Request:**\n    *   The user wants me to name the tile's two colors from left to\
+          \ right.\n    *   The output format must be exactly two words.\n    *   The prompt uses an image (which\
+          \ I must inspect).\n\n2.  **Analyze the Image:**\n    *   The image shows a rectangular tile divided into\
+          \ two distinct colored halves.\n    *   The left half is a bright, solid red.\n    *   The right half\
+          \ is a bright, solid blue.\n    *   This matches the provided screenshot (both tiles are identical).\n\
+          \n3.  **Formulate the Output:**\n    *   \"Red\" for the left.\n    *   \"Blue\" for the right.\n    *\
+          \   Combine them: \"red blue\" or \"Red Blue\".\n    *   Constraint: \"Reply with two words.\" -> \"Red\
+          \ Blue\" (or \"red blue\").\n    *   Since it's asking for the names of the colors, \"Red Blue\" is a\
+          \ good fit. I'll use standard lowercase or uppercase? Usually, just \"red blue\" is a standard response,\
+          \ but \"Red Blue\" also works. Let's use \"red blue\" as it's the most basic formatting for two color\
+          \ names.\n\n4.  **Final Check:**\n    *   Left to right: red then blue. Correct.\n    *   Target: Two\
+          \ words. Correct."
+        type: reasoning_text
+      encrypted_content: synthetic-signature-3
+      id: synthetic-id-2
+      status: completed
+      summary: []
+      type: reasoning
+    - content:
+      - annotations: []
+        text: Red blue
+        type: output_text
+      id: synthetic-id-4
+      phase: final_answer
+      role: assistant
+      status: completed
+      type: message
+    - content:
+      - text: Name the tile's two colors from left to right. Reply with two words.
+        type: input_text
+      role: user
+    max_output_tokens: 1024
+    model: deepseek-v4-flash-vision-exp
+    store: false
+    stream: true
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 33888
+---
+type: response_body
+at_us: 2000
+bytes: 33888
+body: 'event: response.created
+
+  data: {"type":"response.created","response":{"id":"synthetic-id-5","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"deepseek-v4-flash-vision-exp","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+
+  event: response.in_progress
+
+  data: {"type":"response.in_progress","response":{"id":"synthetic-id-5","object":"response","created_at":1700000000,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"deepseek-v4-flash-vision-exp","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+
+  event: response.output_item.added
+
+  data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"synthetic-id-6","status":"in_progress","content":[],"summary":[],"encrypted_content":"synthetic-signature-7"},"output_index":0,"sequence_number":2}
+
+
+  event: response.content_part.added
+
+  data: {"type":"response.content_part.added","content_index":0,"item_id":"synthetic-id-6","output_index":0,"part":{"type":"reasoning_text","text":""},"sequence_number":3}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"1","item_id":"synthetic-id-6","output_index":0,"sequence_number":4}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"synthetic-id-6","output_index":0,"sequence_number":5}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" ","item_id":"synthetic-id-6","output_index":0,"sequence_number":6}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" **","item_id":"synthetic-id-6","output_index":0,"sequence_number":7}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Analy","item_id":"synthetic-id-6","output_index":0,"sequence_number":8}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"ze","item_id":"synthetic-id-6","output_index":0,"sequence_number":9}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":10}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Request","item_id":"synthetic-id-6","output_index":0,"sequence_number":11}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"synthetic-id-6","output_index":0,"sequence_number":12}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"**\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":13}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":14}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":15}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":16}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" User","item_id":"synthetic-id-6","output_index":0,"sequence_number":17}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" wants","item_id":"synthetic-id-6","output_index":0,"sequence_number":18}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" to","item_id":"synthetic-id-6","output_index":0,"sequence_number":19}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" name","item_id":"synthetic-id-6","output_index":0,"sequence_number":20}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":21}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" tile","item_id":"synthetic-id-6","output_index":0,"sequence_number":22}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"''s","item_id":"synthetic-id-6","output_index":0,"sequence_number":23}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" two","item_id":"synthetic-id-6","output_index":0,"sequence_number":24}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" colors","item_id":"synthetic-id-6","output_index":0,"sequence_number":25}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" from","item_id":"synthetic-id-6","output_index":0,"sequence_number":26}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" left","item_id":"synthetic-id-6","output_index":0,"sequence_number":27}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" to","item_id":"synthetic-id-6","output_index":0,"sequence_number":28}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" right","item_id":"synthetic-id-6","output_index":0,"sequence_number":29}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":30}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":31}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":32}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":33}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Must","item_id":"synthetic-id-6","output_index":0,"sequence_number":34}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" reply","item_id":"synthetic-id-6","output_index":0,"sequence_number":35}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" with","item_id":"synthetic-id-6","output_index":0,"sequence_number":36}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" exactly","item_id":"synthetic-id-6","output_index":0,"sequence_number":37}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" two","item_id":"synthetic-id-6","output_index":0,"sequence_number":38}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" words","item_id":"synthetic-id-6","output_index":0,"sequence_number":39}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":40}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":41}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":42}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":43}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Identify","item_id":"synthetic-id-6","output_index":0,"sequence_number":44}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":45}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" two","item_id":"synthetic-id-6","output_index":0,"sequence_number":46}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" colors","item_id":"synthetic-id-6","output_index":0,"sequence_number":47}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" in","item_id":"synthetic-id-6","output_index":0,"sequence_number":48}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":49}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" provided","item_id":"synthetic-id-6","output_index":0,"sequence_number":50}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" image","item_id":"synthetic-id-6","output_index":0,"sequence_number":51}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":52}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"2","item_id":"synthetic-id-6","output_index":0,"sequence_number":53}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"synthetic-id-6","output_index":0,"sequence_number":54}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" ","item_id":"synthetic-id-6","output_index":0,"sequence_number":55}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" **","item_id":"synthetic-id-6","output_index":0,"sequence_number":56}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Analy","item_id":"synthetic-id-6","output_index":0,"sequence_number":57}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"ze","item_id":"synthetic-id-6","output_index":0,"sequence_number":58}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":59}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Image","item_id":"synthetic-id-6","output_index":0,"sequence_number":60}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"synthetic-id-6","output_index":0,"sequence_number":61}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"**\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":62}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":63}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":64}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":65}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" The","item_id":"synthetic-id-6","output_index":0,"sequence_number":66}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" image","item_id":"synthetic-id-6","output_index":0,"sequence_number":67}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" is","item_id":"synthetic-id-6","output_index":0,"sequence_number":68}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" a","item_id":"synthetic-id-6","output_index":0,"sequence_number":69}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" rectangular","item_id":"synthetic-id-6","output_index":0,"sequence_number":70}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" tile","item_id":"synthetic-id-6","output_index":0,"sequence_number":71}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" split","item_id":"synthetic-id-6","output_index":0,"sequence_number":72}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" vertically","item_id":"synthetic-id-6","output_index":0,"sequence_number":73}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" in","item_id":"synthetic-id-6","output_index":0,"sequence_number":74}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" half","item_id":"synthetic-id-6","output_index":0,"sequence_number":75}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":76}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":77}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":78}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":79}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Left","item_id":"synthetic-id-6","output_index":0,"sequence_number":80}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" half","item_id":"synthetic-id-6","output_index":0,"sequence_number":81}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" is","item_id":"synthetic-id-6","output_index":0,"sequence_number":82}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" red","item_id":"synthetic-id-6","output_index":0,"sequence_number":83}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":84}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":85}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":86}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":87}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Right","item_id":"synthetic-id-6","output_index":0,"sequence_number":88}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" half","item_id":"synthetic-id-6","output_index":0,"sequence_number":89}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" is","item_id":"synthetic-id-6","output_index":0,"sequence_number":90}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" blue","item_id":"synthetic-id-6","output_index":0,"sequence_number":91}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":92}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"3","item_id":"synthetic-id-6","output_index":0,"sequence_number":93}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"synthetic-id-6","output_index":0,"sequence_number":94}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" ","item_id":"synthetic-id-6","output_index":0,"sequence_number":95}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" **","item_id":"synthetic-id-6","output_index":0,"sequence_number":96}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Form","item_id":"synthetic-id-6","output_index":0,"sequence_number":97}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"ulate","item_id":"synthetic-id-6","output_index":0,"sequence_number":98}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" the","item_id":"synthetic-id-6","output_index":0,"sequence_number":99}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Response","item_id":"synthetic-id-6","output_index":0,"sequence_number":100}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"synthetic-id-6","output_index":0,"sequence_number":101}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"**\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":102}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":103}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":104}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":105}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" The","item_id":"synthetic-id-6","output_index":0,"sequence_number":106}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" colors","item_id":"synthetic-id-6","output_index":0,"sequence_number":107}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" are","item_id":"synthetic-id-6","output_index":0,"sequence_number":108}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" \"","item_id":"synthetic-id-6","output_index":0,"sequence_number":109}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Red","item_id":"synthetic-id-6","output_index":0,"sequence_number":110}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"\"","item_id":"synthetic-id-6","output_index":0,"sequence_number":111}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" and","item_id":"synthetic-id-6","output_index":0,"sequence_number":112}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" \"","item_id":"synthetic-id-6","output_index":0,"sequence_number":113}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Blue","item_id":"synthetic-id-6","output_index":0,"sequence_number":114}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"\".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":115}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":116}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":117}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":118}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" From","item_id":"synthetic-id-6","output_index":0,"sequence_number":119}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" left","item_id":"synthetic-id-6","output_index":0,"sequence_number":120}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" to","item_id":"synthetic-id-6","output_index":0,"sequence_number":121}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" right","item_id":"synthetic-id-6","output_index":0,"sequence_number":122}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"synthetic-id-6","output_index":0,"sequence_number":123}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Red","item_id":"synthetic-id-6","output_index":0,"sequence_number":124}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Blue","item_id":"synthetic-id-6","output_index":0,"sequence_number":125}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".\n","item_id":"synthetic-id-6","output_index":0,"sequence_number":126}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"   ","item_id":"synthetic-id-6","output_index":0,"sequence_number":127}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" *","item_id":"synthetic-id-6","output_index":0,"sequence_number":128}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"  ","item_id":"synthetic-id-6","output_index":0,"sequence_number":129}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Const","item_id":"synthetic-id-6","output_index":0,"sequence_number":130}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"raint","item_id":"synthetic-id-6","output_index":0,"sequence_number":131}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"synthetic-id-6","output_index":0,"sequence_number":132}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Reply","item_id":"synthetic-id-6","output_index":0,"sequence_number":133}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" with","item_id":"synthetic-id-6","output_index":0,"sequence_number":134}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" two","item_id":"synthetic-id-6","output_index":0,"sequence_number":135}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" words","item_id":"synthetic-id-6","output_index":0,"sequence_number":136}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"synthetic-id-6","output_index":0,"sequence_number":137}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" \"","item_id":"synthetic-id-6","output_index":0,"sequence_number":138}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"Red","item_id":"synthetic-id-6","output_index":0,"sequence_number":139}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" blue","item_id":"synthetic-id-6","output_index":0,"sequence_number":140}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"\"","item_id":"synthetic-id-6","output_index":0,"sequence_number":141}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" fits","item_id":"synthetic-id-6","output_index":0,"sequence_number":142}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" perfectly","item_id":"synthetic-id-6","output_index":0,"sequence_number":143}
+
+
+  event: response.reasoning_text.delta
+
+  data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"synthetic-id-6","output_index":0,"sequence_number":144}
+
+
+  event: response.reasoning_text.done
+
+  data: {"type":"response.reasoning_text.done","content_index":0,"item_id":"synthetic-id-6","output_index":0,"sequence_number":145,"text":"1.  **Analyze
+  the Request:**\n    *   User wants to name the tile''s two colors from left to right.\n    *   Must reply with
+  exactly two words.\n    *   Identify the two colors in the provided image.\n\n2.  **Analyze the Image:**\n    *   The
+  image is a rectangular tile split vertically in half.\n    *   Left half is red.\n    *   Right half is blue.\n\n3.  **Formulate
+  the Response:**\n    *   The colors are \"Red\" and \"Blue\".\n    *   From left to right: Red Blue.\n    *   Constraint:
+  Reply with two words. \"Red blue\" fits perfectly."}
+
+
+  event: response.content_part.done
+
+  data: {"type":"response.content_part.done","content_index":0,"item_id":"synthetic-id-6","output_index":0,"part":{"type":"reasoning_text","text":"1.  **Analyze
+  the Request:**\n    *   User wants to name the tile''s two colors from left to right.\n    *   Must reply with
+  exactly two words.\n    *   Identify the two colors in the provided image.\n\n2.  **Analyze the Image:**\n    *   The
+  image is a rectangular tile split vertically in half.\n    *   Left half is red.\n    *   Right half is blue.\n\n3.  **Formulate
+  the Response:**\n    *   The colors are \"Red\" and \"Blue\".\n    *   From left to right: Red Blue.\n    *   Constraint:
+  Reply with two words. \"Red blue\" fits perfectly."},"sequence_number":146}
+
+
+  event: response.output_item.done
+
+  data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"synthetic-id-6","status":"completed","content":[{"type":"reasoning_text","text":"1.  **Analyze
+  the Request:**\n    *   User wants to name the tile''s two colors from left to right.\n    *   Must reply with
+  exactly two words.\n    *   Identify the two colors in the provided image.\n\n2.  **Analyze the Image:**\n    *   The
+  image is a rectangular tile split vertically in half.\n    *   Left half is red.\n    *   Right half is blue.\n\n3.  **Formulate
+  the Response:**\n    *   The colors are \"Red\" and \"Blue\".\n    *   From left to right: Red Blue.\n    *   Constraint:
+  Reply with two words. \"Red blue\" fits perfectly."}],"summary":[],"encrypted_content":"synthetic-signature-7"},"output_index":0,"sequence_number":147}
+
+
+  event: response.output_item.added
+
+  data: {"type":"response.output_item.added","item":{"type":"message","id":"synthetic-id-8","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":148}
+
+
+  event: response.content_part.added
+
+  data: {"type":"response.content_part.added","content_index":0,"item_id":"synthetic-id-8","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":149}
+
+
+  event: response.output_text.delta
+
+  data: {"type":"response.output_text.delta","content_index":0,"delta":"Red","item_id":"synthetic-id-8","logprobs":[],"output_index":1,"sequence_number":150}
+
+
+  event: response.output_text.delta
+
+  data: {"type":"response.output_text.delta","content_index":0,"delta":" blue","item_id":"synthetic-id-8","logprobs":[],"output_index":1,"sequence_number":151}
+
+
+  event: response.output_text.done
+
+  data: {"type":"response.output_text.done","content_index":0,"item_id":"synthetic-id-8","logprobs":[],"output_index":1,"sequence_number":152,"text":"Red
+  blue"}
+
+
+  event: response.content_part.done
+
+  data: {"type":"response.content_part.done","content_index":0,"item_id":"synthetic-id-8","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"Red
+  blue"},"sequence_number":153}
+
+
+  event: response.output_item.done
+
+  data: {"type":"response.output_item.done","item":{"type":"message","id":"synthetic-id-8","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"Red
+  blue"}],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":154}
+
+
+  event: response.completed
+
+  data: {"type":"response.completed","response":{"id":"synthetic-id-5","object":"response","created_at":1700000000,"status":"completed","background":false,"completed_at":1700000000,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"deepseek-v4-flash-vision-exp","moderation":null,"output":[{"type":"reasoning","id":"synthetic-id-6","status":"completed","content":[{"type":"reasoning_text","text":"1.  **Analyze
+  the Request:**\n    *   User wants to name the tile''s two colors from left to right.\n    *   Must reply with
+  exactly two words.\n    *   Identify the two colors in the provided image.\n\n2.  **Analyze the Image:**\n    *   The
+  image is a rectangular tile split vertically in half.\n    *   Left half is red.\n    *   Right half is blue.\n\n3.  **Formulate
+  the Response:**\n    *   The colors are \"Red\" and \"Blue\".\n    *   From left to right: Red Blue.\n    *   Constraint:
+  Reply with two words. \"Red blue\" fits perfectly."}],"summary":[],"encrypted_content":"synthetic-signature-7"},{"type":"message","id":"synthetic-id-8","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"Red
+  blue"}],"phase":"final_answer","role":"assistant"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":405,"input_tokens_details":{"cached_tokens":384},"output_tokens":144,"output_tokens_details":{"reasoning_tokens":141},"total_tokens":549},"user":null,"metadata":{}},"sequence_number":155}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: text/event-stream; charset=utf-8
+---
+type: complete
+at_us: 2000
+ok: true

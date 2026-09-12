@@ -1,0 +1,865 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, identities, timestamps and signatures; reserialize chunks.
+# Source SHA-256: a8e900ab3914d75f7f87e05a4169d2f0ae4bbc00979bc0553df93ea66c510feb
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.deepseek.com/anthropic/v1/messages
+  headers:
+    Authorization: Bearer upload-replay-key
+    Content-Type: application/json
+    anthropic-version: '2023-06-01'
+  body:
+    max_tokens: 1024
+    messages:
+    - content: Inspect a generated two-color tile.
+      role: user
+    - content:
+      - id: call-generated-tile
+        input: {}
+        name: sample_tile
+        type: tool_use
+      role: assistant
+    - content:
+      - content:
+        - text: (see attached image)
+          type: text
+        - source:
+            data: iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==
+            media_type: image/png
+            type: base64
+          type: image
+        - source:
+            data: iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==
+            media_type: image/png
+            type: base64
+          type: image
+        tool_use_id: call-generated-tile
+        type: tool_result
+      role: user
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - signature: synthetic-id-1
+        thinking: "1.  **Analyze the Request:**\n    *   Input: An image of a two-color tile.\n    *   Task: Name\
+          \ the tile's two colors from left to right.\n    *   Output constraint: Reply with two words.\n\n2.  **Analyze\
+          \ the Image:**\n    *   The image is a rectangle split vertically into two halves.\n    *   Left half:\
+          \ Bright red.\n    *   Right half: Bright blue.\n\n3.  **Determine the Colors:**\n    *   Left = Red.\n\
+          \    *   Right = Blue.\n\n4.  **Format the Output:**\n    *   Two words, left to right.\n    *   \"Red\
+          \ Blue\".\n\n5.  **Final Output Generation:**\n    *   Ensure strict adherence to the constraint."
+        type: thinking
+      - text: Red Blue
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - signature: synthetic-id-3
+        thinking: "1.  **Analyze the Request:**\n    *   User wants the two colors of the provided tile, from left\
+          \ to right.\n    *   Reply with exactly two words.\n    *   The image shows a tile split vertically. The\
+          \ left half is red. The right half is blue.\n2.  **Identify the Colors:**\n    *   Left: Red\n    *  \
+          \ Right: Blue\n3.  **Format the Output:**\n    *   Two words: \"Red Blue\"."
+        type: thinking
+      - text: Red Blue
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - signature: synthetic-id-4
+        thinking: "1.  **Analyze the Request:**\n    *   User is asking to name the tile's two colors from left\
+          \ to right.\n    *   Constraint: Reply with two words.\n    *   Context: The user previously asked the\
+          \ same thing, I replied \"Red Blue\", and the user repeated the exact same prompt. This might be a test\
+          \ of consistency or a loop. I must maintain the correct observation.\n    *   Look at the image: It's\
+          \ a rectangular tile divided vertically.\n    *   Left half: Bright red.\n    *   Right half: Bright blue.\n\
+          \    *   Colors from left to right: Red, Blue.\n\n2.  **Formulate the Response:**\n    *   Two words representing\
+          \ the colors from left to right.\n    *   \"Red Blue\" matches the requested format exactly."
+        type: thinking
+      - text: Red Blue
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    model: deepseek-v4-flash-vision-exp
+    stream: true
+    system: Describe the provided image briefly.
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 19259
+---
+type: response_body
+at_us: 2000
+bytes: 19259
+body: 'event: message_start
+
+  data: {"type":"message_start","message":{"id":"synthetic-id-5","type":"message","role":"assistant","model":"deepseek-v4-flash-vision-exp","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":69,"cache_creation_input_tokens":0,"cache_read_input_tokens":384,"output_tokens":0,"service_tier":"standard"}}}
+
+
+  event: content_block_start
+
+  data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"synthetic-signature-2"}}
+
+
+  event: ping
+
+  data: {"type":"ping"}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"1"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" **"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Analy"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ze"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Request"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"**\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" User"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" asks"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" \""}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Name"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tile"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"''s"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" colors"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" from"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" left"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" right"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Reply"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" with"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" words"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\"\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Previous"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" turns"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" show"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" identical"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" inputs"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" and"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" outputs"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" inspect"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" provided"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tile"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" image"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" image"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" shows"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" a"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" rectangle"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" split"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" vertically"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" into"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" halves"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" left"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" half"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" red"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" right"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" half"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" blue"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" The"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" format"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" requirement"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" two"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" words"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":","}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" left"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" right"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" \""}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Red"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Blue"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\".\n\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"2"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" **"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Form"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ulate"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Output"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"**\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Left"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" color"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Red"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Right"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" color"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Blue"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"   "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" *"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"  "}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Two"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" words"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Red"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Blue"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"synthetic-id-5"}}
+
+
+  event: content_block_stop
+
+  data: {"type":"content_block_stop","index":0}
+
+
+  event: content_block_start
+
+  data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Red"}}
+
+
+  event: content_block_delta
+
+  data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Blue"}}
+
+
+  event: content_block_stop
+
+  data: {"type":"content_block_stop","index":1}
+
+
+  event: message_delta
+
+  data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":69,"cache_creation_input_tokens":0,"cache_read_input_tokens":384,"output_tokens":143,"service_tier":"standard"}}
+
+
+  event: message_stop
+
+  data: {"type":"message_stop"}
+
+
+  '
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: text/event-stream; charset=utf-8
+---
+type: complete
+at_us: 2000
+ok: true

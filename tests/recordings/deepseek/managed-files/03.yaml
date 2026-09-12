@@ -1,0 +1,41 @@
+# Adapted from authorized synthetic-image validation on 2026-09-08.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: f3163a92811c889f04ee0e44f14bc0e877bf0e4182d847b353028e85192f55e1
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.deepseek.com/files/file-managed-deepseek
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 150
+---
+type: response_body
+at_us: 2000
+bytes: 150
+body:
+  bytes: 91
+  created_at: 1700000000
+  expires_at: 1700086400
+  filename: image.png
+  id: file-managed-deepseek
+  object: file
+  purpose: user_data
+body_format: json
+---
+type: response
+at_us: 2000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

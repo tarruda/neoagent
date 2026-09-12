@@ -5,6 +5,12 @@ local request_context = require("neoagent.api.request_context")
 local util = require("neoagent.util")
 
 local M = {}
+local BUILT_IN_APIS = {
+  ["anthropic-messages"] = true,
+  ["openai-codex-responses"] = true,
+  ["openai-completions"] = true,
+  ["openai-responses"] = true,
+}
 
 ---@class Neoagent.ResolvedApi
 ---@field api string
@@ -254,21 +260,14 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes, supplie
     report = runtime.report,
     request_context = supplied_context,
     transport = transport,
+    images = runtime.files and runtime.files.bind(api, model) or nil,
   }
   if provider.auth and manager == nil then
     manager = require("neoagent.auth").configured(configured)
   end
   local provider_credential = credentials(provider_id, provider, configured, manager, runtime)
   local factory = configured._apis[api]
-  if
-    not factory
-    and (
-      api == "openai-completions"
-      or api == "openai-responses"
-      or api == "openai-codex-responses"
-      or api == "anthropic-messages"
-    )
-  then
+  if not factory and BUILT_IN_APIS[api] then
     factory = api_factory
   end
   if not factory then
@@ -299,6 +298,9 @@ function M.resolve(provider_id, model_id, configured, manager, runtimes, supplie
   local service = runtime.service
   if type(service.wrap_model) == "function" then
     concrete = validated_model(service:wrap_model(concrete), "Provider Service Model wrapper")
+  end
+  if resolved.images then
+    concrete = require("neoagent.files.model").wrap(concrete, service)
   end
   return concrete
 end

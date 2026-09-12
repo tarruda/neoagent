@@ -1,0 +1,93 @@
+# Adapted from authorized synthetic-image validation on 2026-09-09.
+# Replace credentials, remote identities, timestamps and encrypted reasoning; reserialize chunks.
+# Source SHA-256: 88e41578e93f6b2441c2f0906c22cf0a80ce20ce24e7e1fd31e251f0733edb31
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: request
+request:
+  method: POST
+  url: https://api.anthropic.com/v1/messages
+  headers:
+    Content-Type: application/json
+    anthropic-version: '2023-06-01'
+    x-api-key: upload-replay-key
+  body:
+    max_tokens: 1024
+    messages:
+    - content: Inspect a generated two-color tile.
+      role: user
+    - content:
+      - id: call-generated-tile
+        input: {}
+        name: sample_tile
+        type: tool_use
+      role: assistant
+    - content:
+      - content:
+        - text: (see attached image)
+          type: text
+        - source:
+            file_id: file_017AAAAAAAAAAAAAAAAAAAAA
+            type: file
+          type: image
+        - source:
+            file_id: file_017AAAAAAAAAAAAAAAAAAAAA
+            type: file
+          type: image
+        tool_use_id: call-generated-tile
+        type: tool_result
+      role: user
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - text: Blue, red
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - text: Blue, red
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    - content:
+      - text: Blue, red
+        type: text
+      role: assistant
+    - content: Name the tile's two colors from left to right. Reply with two words.
+      role: user
+    model: claude-sonnet-5
+    stream: true
+    system: Describe the provided image briefly.
+    thinking:
+      type: disabled
+  body_format: json
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 155
+---
+type: response_body
+at_us: 2000
+bytes: 155
+body:
+  error:
+    message: File `file_017AAAAAAAAAAAAAAAAAAAAA` not found.
+    type: not_found_error
+  request_id: req_011CeruS2ZbUJbmY9gWTFLQH
+  type: error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 404
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

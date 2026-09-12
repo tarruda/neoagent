@@ -1,0 +1,41 @@
+# Synthetic adaptation of the Codex file protocol verified with an authorized generated-image probe.
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://chatgpt.com/backend-api/files/file-tile/download
+  headers:
+    Authorization: Bearer upload-replay-key
+    chatgpt-account-id: account-replay
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 235
+---
+type: response_body
+at_us: 3000
+bytes: 235
+body:
+  status: success
+  download_url: https://storage.example.test/file-tile?sig=synthetic-download-signature
+  file_name: image.png
+  mime_type: null
+  file_size_bytes: 68
+  creation_time: null
+  metadata: null
+  no_auth_user_upload: null
+body_format: json
+---
+type: response
+at_us: 3000
+status: 200
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 3000
+ok: true

@@ -97,12 +97,16 @@ local function invalid_config(invalid)
 end
 
 describe("neoagent configuration and model resolution", function()
-  it("validates explicit prompt-cache policy without overriding disabled values", function()
+  it("validates explicit upload and prompt-cache policies without overriding disabled values", function()
     local configured = config.setup({ providers = {
+      openai = { file_uploads = false },
+      deepseek = { file_uploads = true },
       anthropic = { prompt_caching = false },
     } })
+    assert.is_false(configured.providers.openai.file_uploads)
+    assert.is_true(configured.providers.deepseek.file_uploads)
     assert.is_false(configured.providers.anthropic.prompt_caching)
-    for _, field in ipairs({ "prompt_caching" }) do
+    for _, field in ipairs({ "file_uploads", "prompt_caching" }) do
       assert.has_error(function()
         invalid_config({ providers = { openai = { [field] = "disabled" } } })
       end)
@@ -302,6 +306,37 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("alternate-wire",
       models.resolve("mixed", "alternate").api)
     assert.are.same({ "default-wire", "alternate-wire" }, selected)
+  end)
+
+  it("validates model-specific built-in APIs and Codex diagnostics", function()
+    local diagnostics_ok, diagnostics_err = pcall(function()
+      invalid_config({
+        default_registry = false,
+        providers = { mixed = {
+          api = "custom",
+          base_url = "https://example.test/v1",
+          models = { codex = { api = "openai-codex-responses" } },
+          diagnostics = true,
+        } },
+        _apis = { custom = runtime_model },
+      })
+    end)
+    assert.is_false(diagnostics_ok)
+    assert.matches("provider diagnostics must be false or a table",
+      tostring(diagnostics_err))
+
+    local base_url_ok, base_url_err = pcall(function()
+      invalid_config({
+        default_registry = false,
+        providers = { mixed = {
+          api = "custom",
+          models = { chat = { api = "openai-completions" } },
+        } },
+        _apis = { custom = runtime_model },
+      })
+    end)
+    assert.is_false(base_url_ok)
+    assert.matches("requires base_url", tostring(base_url_err))
   end)
 
   it("supports providers whose authentication is optional", function()

@@ -159,6 +159,34 @@ describe("neoagent HTTP recording", function()
     assert.are.equal(0, #files(directory, ".body"))
   end)
 
+  it("preserves ordered binary upload media while masking protocol credentials", function()
+    local directory = tempdir()
+    directories[#directories + 1] = directory
+    local recorder = assert(require("neoagent.http_recording").new({
+      config = { enabled = true, format = "json" }, directory = directory,
+    }))
+    local body, content_type = require("neoagent.transport.multipart").encode({
+      { name = "purpose", value = "vision" },
+      { name = "file", filename = 'image"\\.png', mime_type = "image/png",
+        value = "\0\255ordinary image bytes including synthetic-secret" },
+    })
+    assert.matches('name="purpose".-name="file"', body)
+    assert.is_not_nil((body:find('filename="image\\"\\\\.png"', 1, true)))
+    local recorded = recorder:transport(transport(nil, {
+      ok = true, status = 200, headers = {}, body = '{"id":"file-synthetic"}',
+    }), { provider = "example", origin = "file-upload" })
+    assert.is_true(invoke(recorded, "fetch", { request = {
+      method = "POST", url = "https://example.test/files", body = body,
+      headers = { Authorization = "Bearer synthetic-secret", ["Content-Type"] = content_type },
+    } }).ok)
+    recorder:destroy()
+    local entries = records(assert(files(directory, ".jsonl")[1]))
+    local request = assert(assert(entries[1]).request)
+    assert.are.equal("base64", request.body_encoding)
+    assert.are.equal(body, vim.base64.decode(assert(request.body)))
+    assert.are.equal("*", assert(request.headers).Authorization)
+  end)
+
   it("releases the decoded YAML request after recording the streaming header", function()
     local directory = tempdir()
     directories[#directories + 1] = directory

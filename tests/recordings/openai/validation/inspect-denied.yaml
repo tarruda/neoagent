@@ -1,0 +1,42 @@
+# Captured an authorized Files inspection authentication failure on 2026-09-09.
+# Adapt the invalid credential echo and timing; preserve the HTTP error structure.
+# Source SHA-256: ba71d8727aceb7d8e2243eaae0dae4f2e4546fa1d5b12da07c5b62a0cbc1256c
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.openai.com/v1/files/file-tile
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 234
+---
+type: response_body
+at_us: 2000
+bytes: 234
+body:
+  detail:
+    code: invalid_api_key
+    message: 'Incorrect API key provided: upload-replay-key.'
+  error:
+    code: invalid_api_key
+    message: 'Incorrect API key provided: upload-replay-key.'
+    param: null
+    type: invalid_request_error
+body_format: json
+---
+type: response
+at_us: 2000
+status: 401
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 2000
+ok: true

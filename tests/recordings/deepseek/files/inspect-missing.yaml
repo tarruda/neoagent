@@ -1,0 +1,39 @@
+# Adapted from an authorized missing-file lookup on 2026-09-09.
+# Replace request identity; preserve the actual HTTP 400 error envelope.
+# Source SHA-256: 8cb6a5713667c1835f6059381c731050affbbb667a6fcff44a589742236f9014
+---
+schema: neoagent-http-recording
+version: 1
+type: exchange
+operation: fetch
+request:
+  method: GET
+  url: https://api.deepseek.com/files/file-tile
+  headers:
+    Authorization: Bearer upload-replay-key
+---
+type: response_chunk
+index: 1
+at_us: 1000
+bytes: 158
+---
+type: response_body
+at_us: 4000
+bytes: 158
+body:
+  error:
+    code: invalid_request_error
+    message: file_id does not exist or is not created under your account
+    param: null
+    type: invalid_request_error
+body_format: json
+---
+type: response
+at_us: 4000
+status: 400
+headers:
+  content-type: application/json
+---
+type: complete
+at_us: 4000
+ok: true

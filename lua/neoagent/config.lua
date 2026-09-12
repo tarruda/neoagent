@@ -333,6 +333,7 @@ local provider_fields = {
   base_url = true,
   catalog = true,
   diagnostics = true,
+  file_uploads = true,
   prompt_caching = true,
   models = true,
   request_opts = true,
@@ -471,7 +472,7 @@ local function validate(opts)
     end
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
-    for _, field in ipairs({ "prompt_caching" }) do
+    for _, field in ipairs({ "file_uploads", "prompt_caching" }) do
       assert(
         provider[field] == nil or type(provider[field]) == "boolean",
         "provider " .. id .. " " .. field .. " must be boolean"
