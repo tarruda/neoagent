@@ -11,6 +11,7 @@ local M = {}
 ---@field directory string
 ---@field path string
 ---@field limit integer
+---@field _workspace Neoagent.WorkspaceStorage
 local History = {}
 History.__index = History
 
@@ -23,6 +24,10 @@ end
 
 ---@return string[]?, Neoagent.Error?
 function History:load()
+  local valid, validation_err = self._workspace.validate()
+  if not valid then
+    return nil, validation_err
+  end
   if not vim.uv.fs_stat(self.path) then
     return {}
   end
@@ -68,11 +73,7 @@ end
 ---@param self Neoagent.InputHistory
 ---@return true?, Neoagent.Error?
 local function prepare_directory(self)
-  local ok, err = fs.ensure_private_directory(self.directory, 448)
-  if not ok then
-    return nil, history_error("Failed to create workspace directory", err)
-  end
-  return true
+  return self._workspace.prepare()
 end
 
 ---@param self Neoagent.InputHistory
@@ -155,13 +156,12 @@ function M.new(opts)
     "limit must be a positive integer"
   )
   local root = fs.canonical(opts.root)
-  local directory = require("neoagent.workspace_settings").new({
-    directory = opts.directory,
-    root = root,
-  }).directory
+  local workspace = require("neoagent.workspace_storage").resolve(opts.directory, root)
+  local directory = workspace.directory
   return setmetatable({
     root = root,
     directory = directory,
+    _workspace = workspace,
     path = fs.join(directory, "input-history.jsonl"),
     limit = opts.limit or 100,
   }, History)

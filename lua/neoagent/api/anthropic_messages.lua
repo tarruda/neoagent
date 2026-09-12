@@ -2,6 +2,7 @@ local async = require("neoagent.async")
 local model_contract = require("neoagent.model")
 local request = require("neoagent.api.anthropic_messages.request")
 local request_opts = require("neoagent.api.request_opts")
+local request_stream = require("neoagent.api.request_stream")
 local request_context = require("neoagent.api.request_context")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
@@ -144,21 +145,24 @@ end
 
 ---@class Neoagent.AnthropicModelOptions: Neoagent.ApiModelOptions
 ---@field max_output_tokens? integer
+---@field prompt_caching? boolean
 
 ---@class Neoagent.AnthropicModel: Neoagent.Model
 ---@field _base_url string
 ---@field _api_key? string|fun(): string?
 ---@field _max_output_tokens integer
+---@field _prompt_caching boolean
 ---@field _timeout_ms? integer
 ---@field _anthropic_version string
 ---@field _request_opts Neoagent.RequestLayer[]
 ---@field _request_context? Neoagent.RequestIdentity
 ---@field _transport Neoagent.HttpClient
+---@field _images? Neoagent.ImageRequest
 local Model = {}
 Model.__index = Model
 
 ---@param call_opts Neoagent.StreamOptions
----@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
+---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
 function Model:_request(call_opts)
   return request.build(self, call_opts)
 end
@@ -166,7 +170,7 @@ end
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = opts or {}
+  opts = util.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
   ---@type Neoagent.AnthropicMessage?
   local message
@@ -177,6 +181,7 @@ function Model:stream(opts)
     ---@return Neoagent.ModelResult
     function(run)
       local ok, outcome = pcall(function()
+        require("neoagent.model").require_files(opts)
         local outgoing, identity = self:_request(opts)
         local transport = request_context.bind_transport(self._transport, identity)
         message = {
@@ -406,15 +411,9 @@ function Model:stream(opts)
           end
         end
 
-        local child = transport.stream({
-          request = {
-            url = outgoing.url,
-            headers = outgoing.headers,
-            body = util.json_encode(outgoing.body),
-            timeout_ms = outgoing.timeout_ms,
-          },
+        local child = request_stream.send(transport, outgoing, opts, {
           on_event = process_payload,
-        })
+        }, self._images)
         local transport_ok, transport_result = pcall(function()
           return child:await()
         end)
@@ -465,6 +464,7 @@ function M.new(opts)
   assert(type(opts.provider) == "string" and opts.provider ~= "", "provider is required")
   assert(type(opts.model) == "string" and opts.model ~= "", "model is required")
   assert(type(opts.base_url) == "string" and opts.base_url ~= "", "base_url is required")
+  assert(opts.prompt_caching == nil or type(opts.prompt_caching) == "boolean", "prompt_caching must be boolean")
   local timeout_ms = request_opts.timeout(opts.timeout_ms)
   assert(
     opts.max_output_tokens == nil
@@ -491,10 +491,12 @@ function M.new(opts)
       _base_url = opts.base_url:gsub("/+$", ""),
       _api_key = opts.api_key,
       _max_output_tokens = opts.max_output_tokens or 4096,
+      _prompt_caching = opts.prompt_caching == true,
       _anthropic_version = "2023-06-01",
       _request_opts = layers,
       _request_context = request_context.copy(opts.request_context),
       _transport = http.new(opts.transport),
+      _images = request_stream.validate(opts._images),
     }, Model),
     "Anthropic Messages constructor"
   )

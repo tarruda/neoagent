@@ -8,8 +8,8 @@ local function base(entry_type, values)
   return vim.tbl_extend("force", {
     type = entry_type,
     id = entry_type,
-    parentId = vim.NIL,
-    timestamp = "2026-01-01T00:00:00.000Z",
+    parent_id = vim.NIL,
+    created_at = 1767225600000,
   }, values)
 end
 
@@ -25,13 +25,13 @@ end
 describe("neoagent.session_tree", function()
   it("assembles entries without exposing journal-owned fields", function()
     for _, entry_type in ipairs({ "message", "compaction", "leaf" }) do
-      for _, field in ipairs({ "type", "id", "parentId", "timestamp" }) do
+      for _, field in ipairs({ "type", "id", "parent_id", "created_at" }) do
         local payload = { [field] = "forged" }
         local entry, err = tree.prepare_entry({
           type = entry_type,
           id = "owned-id",
           parent_id = vim.NIL,
-          timestamp = "2026-01-01T00:00:00.000Z",
+          created_at = 1767225600000,
           payload = payload,
           by_id = {},
         })
@@ -45,7 +45,7 @@ describe("neoagent.session_tree", function()
       type = "message",
       id = "owned-id",
       parent_id = vim.NIL,
-      timestamp = "2026-01-01T00:00:00.000Z",
+      created_at = 1767225600000,
       payload = payload,
       by_id = {},
     }))
@@ -54,45 +54,38 @@ describe("neoagent.session_tree", function()
     assert.are.equal("owned", assert(entry.message).content)
   end)
 
-  it("rejects journal dates that cannot produce valid conversation timestamps", function()
-    for _, timestamp in ipairs({
-      "not-a-date", "2026-02-30T00:00:00.000Z", "2100-02-29T00:00:00Z",
-      "2026-01-01T24:00:00Z", "2026-01-01T00:60:00Z",
-      "2026-01-01T00:00:60Z", "2026-13-01T00:00:00Z",
-      "2026-00-01T00:00:00Z", "2026-01-00T00:00:00Z",
-      "2026-01-01T00:00:00.Z", "1969-12-31T23:59:59Z",
-    }) do
+  it("requires finite UTC milliseconds and preserves them in model context", function()
+    for _, created_at in ipairs({ "2026-01-01T00:00:00Z", -1, 0.5, math.huge, false, {} }) do
       local entry = base("compaction", {
-        timestamp = timestamp, summary = "Earlier work", tokensBefore = 12,
-        firstKeptEntryId = "user",
+        created_at = created_at, summary = "Earlier work", tokens_before = 12,
+        first_kept_entry_id = "user",
       })
       local valid, err = tree.validate_entry(entry)
-      assert.is_false(valid, timestamp)
-      assert.matches("timestamp", (assert(err)))
+      assert.is_false(valid)
+      assert.matches("created_at", (assert(err)))
     end
-
-    for _, case in ipairs({
-      { "1970-01-01T00:00:00Z", 0 },
-      { "2000-02-29T00:00:00.123Z", 951782400123 },
-      { "2026-01-01T00:00:00.123456Z", 1767225600123 },
-    }) do
+    for _, created_at in ipairs({ 0, 951782400123, 1767225600123 }) do
       local entry = valid_entry("compaction", {
-        timestamp = case[1], summary = "Earlier work", tokensBefore = 12,
-        firstKeptEntryId = "user",
+        created_at = created_at, summary = "Earlier work", tokens_before = 12,
+        first_kept_entry_id = "user",
       })
-      assert.is_true(tree.validate_entry(entry))
       local messages = tree.to_llm(tree.entry_messages(entry))
-      assert.are.equal(case[2], assert(messages[1]).timestamp)
-      local normalized, err = require("neoagent.semantic_message")
-        .normalize_list(messages)
-      assert.is_nil(err)
-      assert.are.same(messages, normalized)
+      assert.are.equal(created_at, assert(messages[1]).timestamp)
+      assert.same(messages, assert(require("neoagent.semantic_message").normalize_list(messages)))
     end
   end)
 
   it("validates every current entry shape", function()
+    local scalar_ok, scalar_err = tree.validate_entry(false)
+    assert.is_false(scalar_ok)
+    assert.matches("entry must be an object", assert(scalar_err))
+    local missing_id = base("message", { message = { role = "user", content = "x" } })
+    missing_id.id = ""
+    scalar_ok, scalar_err = tree.validate_entry(missing_id)
+    assert.is_false(scalar_ok)
+    assert.matches("entry id is required", assert(scalar_err))
     local invalid = {
-      base("message", { parentId = {}, message = { role = "user", content = "x" } }),
+      base("message", { parent_id = {}, message = { role = "user", content = "x" } }),
       base("message", { message = { role = "system", content = "x" } }),
       base("message", { message = { role = "user" } }),
       base("message", { message = { role = "assistant", content = "x" } }),
@@ -105,7 +98,7 @@ describe("neoagent.session_tree", function()
       }),
       base("message", {
         message = { role = "user", content = "x" },
-        request = { thinkingLevel = "" },
+        request = { thinking_level = "" },
       }),
       base("message", {
         message = { role = "user", content = "x" },
@@ -126,9 +119,9 @@ describe("neoagent.session_tree", function()
         unknown = true,
       }),
       base("model_change", { provider = "p", modelId = "x" }),
-      base("thinking_level_change", { thinkingLevel = "high" }),
-      base("compaction", { summary = "", firstKeptEntryId = "x", tokensBefore = 1 }),
-      base("leaf", { targetId = 1 }),
+      base("thinking_level_change", { thinking_level = "high" }),
+      base("compaction", { summary = "", first_kept_entry_id = "x", tokens_before = 1 }),
+      base("leaf", { target_id = 1 }),
     }
     for _, entry in ipairs(invalid) do
       local ok, err = tree.validate_entry(entry)
@@ -147,41 +140,41 @@ describe("neoagent.session_tree", function()
   it("rejects malformed tree relationships", function()
     local message = base("message", { message = { role = "user", content = "one" } })
     local duplicate = vim.deepcopy(message)
-    duplicate.parentId = message.id
+    duplicate.parent_id = message.id
     local validated, err, index = tree.validate_entries({ message, duplicate })
     assert.is_nil(validated)
     assert.matches("duplicate", (assert(err)))
     assert.are.equal(2, index)
 
     duplicate.id = "child"
-    duplicate.parentId = "missing"
+    duplicate.parent_id = "missing"
     validated, err = tree.validate_entries({ message, duplicate })
     assert.is_nil(validated)
     assert.matches("does not precede", (assert(err)))
 
-    local leaf = base("leaf", { id = "leaf", parentId = message.id, targetId = "missing" })
+    local leaf = base("leaf", { id = "leaf", parent_id = message.id, target_id = "missing" })
     validated, err = tree.validate_entries({ message, leaf })
     assert.is_nil(validated)
     assert.matches("leaf target", (assert(err)))
 
     local compaction = base("compaction", {
-      id = "compaction", parentId = message.id,
-      firstKeptEntryId = "missing", summary = "bad", tokensBefore = 1,
+      id = "compaction", parent_id = message.id,
+      first_kept_entry_id = "missing", summary = "bad", tokens_before = 1,
     })
     validated, err = tree.validate_entries({ message, compaction })
     assert.is_nil(validated)
     assert.matches("first kept", (assert(err)))
 
     local left = base("message", {
-      id = "left", parentId = message.id,
+      id = "left", parent_id = message.id,
       message = { role = "assistant", content = {} },
     })
     local right = base("message", {
-      id = "right", parentId = message.id,
+      id = "right", parent_id = message.id,
       message = { role = "assistant", content = {} },
     })
-    compaction.parentId = right.id
-    compaction.firstKeptEntryId = left.id
+    compaction.parent_id = right.id
+    compaction.first_kept_entry_id = left.id
     validated, err = tree.validate_entries({ message, left, right, compaction })
     assert.is_nil(validated)
     assert.matches("active path", (assert(err)))
@@ -199,7 +192,7 @@ describe("neoagent.session_tree", function()
       } }, timestamp = 1 },
     })
     local result = base("message", {
-      id = "result", parentId = call.id,
+      id = "result", parent_id = call.id,
       message = { role = "toolResult", toolCallId = "tool-1",
         toolName = "read", content = {}, timestamp = 2 },
     })
@@ -213,7 +206,7 @@ describe("neoagent.session_tree", function()
     assert.matches("does not match", (assert(err)))
 
     local duplicate = base("message", {
-      id = "duplicate", parentId = result.id,
+      id = "duplicate", parent_id = result.id,
       message = { role = "assistant", content = { {
         type = "toolCall", id = "tool-1", name = "read", arguments = {},
       } }, timestamp = 3 },
@@ -228,7 +221,7 @@ describe("neoagent.session_tree", function()
       id = "first", message = { role = "user", content = "one" },
     })
     local second = valid_entry("message", {
-      id = "second", parentId = first.id, message = { role = "assistant", content = {} },
+      id = "second", parent_id = first.id, message = { role = "assistant", content = {} },
     })
     local validated = assert(tree.validate_entries({ first, second }))
 
@@ -239,6 +232,7 @@ describe("neoagent.session_tree", function()
     assert(assert(indexed[1]).message).content = "changed"
     assert.are.equal("one", assert(first.message).content)
     assert.are.same({}, assert(tree.indexed_path(validated.by_id, vim.NIL)))
+    assert.are.same({}, assert(tree.indexed_path(validated.by_id, nil)))
     local missing, err = tree.indexed_path(validated.by_id, "missing")
     assert.is_nil(missing)
     assert.matches("entry not found", (assert(err)))
@@ -249,15 +243,15 @@ describe("neoagent.session_tree", function()
       id = "prefix", message = { role = "user", content = "old" },
     })
     local kept = valid_entry("message", {
-      id = "kept", parentId = prefix.id,
+      id = "kept", parent_id = prefix.id,
       message = { role = "assistant", content = {} },
     })
     local compaction = valid_entry("compaction", {
-      id = "compaction", parentId = kept.id, firstKeptEntryId = kept.id,
-      summary = "summary", tokensBefore = 100,
+      id = "compaction", parent_id = kept.id, first_kept_entry_id = kept.id,
+      summary = "summary", tokens_before = 100,
     })
     local after = valid_entry("message", {
-      id = "after", parentId = compaction.id,
+      id = "after", parent_id = compaction.id,
       message = { role = "assistant", content = {} },
     })
     local path = { prefix, kept, compaction, after }
@@ -273,7 +267,7 @@ describe("neoagent.session_tree", function()
 
   it("projects compaction summaries into LLM context", function()
     local context = tree.to_llm({
-      { role = "compactionSummary", summary = "old work", tokensBefore = 0, timestamp = 5 },
+      { role = "compactionSummary", summary = "old work", tokens_before = 0, created_at = 5 },
     })
     assert.are.equal(1, #context)
     assert.matches("old work", (assert(assert(assert(context[1]).content[1]).text)))
@@ -283,7 +277,7 @@ describe("neoagent.session_tree", function()
     local source = {
       { role = "user", content = "before", timestamp = 1 },
       { role = "compactionSummary", summary = "checkpoint",
-        tokensBefore = 20, timestamp = 2 },
+        tokens_before = 20, created_at = 2 },
       { role = "user", content = "after", timestamp = 3 },
     }
     local projected = assert(tree.normalize_projection(source))
@@ -293,10 +287,10 @@ describe("neoagent.session_tree", function()
 
     local invalid, err = tree.normalize_projection({ {
       role = "compactionSummary", summary = "checkpoint",
-      tokensBefore = math.huge, timestamp = 2,
+      tokens_before = math.huge, created_at = 2,
     } })
     assert.is_nil(invalid)
-    assert.matches("tokensBefore", (assert(err)))
+    assert.matches("tokens_before", (assert(err)))
   end)
 
   it("rejects malformed request, projection, and preparation boundaries", function()
@@ -307,6 +301,13 @@ describe("neoagent.session_tree", function()
     local invalid_projection, projection_err = tree.normalize_projection({ value = true })
     assert.is_nil(invalid_projection)
     assert.matches("messages must be a list", (assert(projection_err)))
+    invalid_projection, projection_err = tree.normalize_projection({
+      { role = "user" },
+      { role = "compactionSummary", summary = "checkpoint",
+        tokens_before = 1, created_at = 1 },
+    })
+    assert.is_nil(invalid_projection)
+    assert.matches("message content is required", assert(projection_err))
 
     local array_summary = setmetatable({ "array" }, {
       __index = { role = "compactionSummary" },
@@ -314,8 +315,8 @@ describe("neoagent.session_tree", function()
     local role_reads = 0
     local changing_summary = setmetatable({
       summary = "valid",
-      tokensBefore = 1,
-      timestamp = 1,
+      tokens_before = 1,
+      created_at = 1,
     }, {
       __index = function(_, key)
         if key ~= "role" then return nil end
@@ -327,13 +328,13 @@ describe("neoagent.session_tree", function()
       array_summary,
       changing_summary,
       { "array" },
-      { role = "compactionSummary", summary = "valid", tokensBefore = 1,
-        timestamp = 1, unknown = true },
-      { role = "user", summary = "valid", tokensBefore = 1, timestamp = 1 },
-      { role = "compactionSummary", summary = "", tokensBefore = 1,
-        timestamp = 1 },
-      { role = "compactionSummary", summary = "valid", tokensBefore = 1,
-        timestamp = -1 },
+      { role = "compactionSummary", summary = "valid", tokens_before = 1,
+        created_at = 1, unknown = true },
+      { role = "user", summary = "valid", tokens_before = 1, timestamp = 1 },
+      { role = "compactionSummary", summary = "", tokens_before = 1,
+        created_at = 1 },
+      { role = "compactionSummary", summary = "valid", tokens_before = 1,
+        created_at = -1 },
     }
     for _, summary in ipairs(summaries) do
       local normalized, err = tree.normalize_projection_message(summary)
@@ -346,11 +347,26 @@ describe("neoagent.session_tree", function()
     assert.matches("options must be an object", (assert(prepare_err)))
     prepared, prepare_err = tree.prepare_entry({
       type = "leaf", id = "leaf", parent_id = vim.NIL,
-      timestamp = "2026-01-01T00:00:00.000Z", payload = { "array" },
+      created_at = 1767225600000, payload = { "array" },
     })
     assert.is_nil(prepared)
     assert.matches("payload must be an object", (assert(prepare_err)))
-    assert.are.same({}, tree.entry_messages(valid_entry("leaf", { targetId = vim.NIL })))
+    prepared, prepare_err = tree.prepare_entry({
+      type = "leaf", id = "leaf", parent_id = vim.NIL,
+      created_at = 1767225600000,
+    })
+    assert(prepared, prepare_err)
+    prepared, prepare_err = tree.prepare_entry(({
+      type = "leaf", id = "leaf", parent_id = vim.NIL,
+      created_at = 1767225600000, payload = {}, by_id = false,
+    }) --[[@as Neoagent.EntryPreparation]])
+    assert.is_nil(prepared)
+    assert.matches("entry index must be a table", assert(prepare_err))
+    local invalid_path, path_err, path_index = tree.path({ false --[[@as Neoagent.JournalEntry]] })
+    assert.is_nil(invalid_path)
+    assert.matches("entry must be an object", assert(path_err))
+    assert.are.equal(1, path_index)
+    assert.are.same({}, tree.entry_messages(valid_entry("leaf", { target_id = vim.NIL })))
   end)
 
   it("rejects Tool results without an ancestor call", function()

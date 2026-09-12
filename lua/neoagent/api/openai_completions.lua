@@ -3,6 +3,7 @@ local messages = require("neoagent.api.messages")
 local model_contract = require("neoagent.model")
 local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
+local request_stream = require("neoagent.api.request_stream")
 local semantic_message = require("neoagent.semantic_message")
 local tool_arguments = require("neoagent.api.tool_arguments")
 local tool_schema = require("neoagent.api.tool_schema")
@@ -39,9 +40,11 @@ local function zero_usage()
   }
 end
 
+---@async
 ---@param content string|Neoagent.InputBlock[]
+---@param image Neoagent.ImageEncoder
 ---@return string|Neoagent.JsonObject[]
-local function encode_content(content)
+local function encode_content(content, image)
   if type(content) == "string" then
     return content
   end
@@ -50,10 +53,7 @@ local function encode_content(content)
     if block.type == "text" then
       result[#result + 1] = { type = "text", text = block.text or "" }
     elseif block.type == "image" then
-      result[#result + 1] = {
-        type = "image_url",
-        image_url = { url = "data:" .. block.mimeType .. ";base64," .. block.data },
-      }
+      result[#result + 1] = image(block)
     end
   end
   return result
@@ -109,11 +109,14 @@ local function encode_assistant(message, requires_reasoning_content)
   end
 end
 
+---@async
 ---@param messages Neoagent.Message[]
 ---@param system_prompt? string
 ---@param requires_reasoning_content? boolean
+---@param image? Neoagent.ImageEncoder
 ---@return Neoagent.JsonObject[]
-local function encode_messages(messages, system_prompt, requires_reasoning_content)
+local function encode_messages(messages, system_prompt, requires_reasoning_content, image)
+  image = image or require("neoagent.api.images").inline("openai-completions")
   local result = {}
   if system_prompt and system_prompt ~= "" then
     result[#result + 1] = { role = "system", content = system_prompt }
@@ -125,7 +128,7 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
       attachments = {}
     end
     if message.role == "user" then
-      result[#result + 1] = { role = "user", content = encode_content(message.content) }
+      result[#result + 1] = { role = "user", content = encode_content(message.content, image) }
     elseif message.role == "assistant" then
       local encoded = encode_assistant(message, requires_reasoning_content)
       if encoded then
@@ -152,11 +155,8 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
       }
       if #images > 0 then
         local content = { { type = "text", text = "Attached image(s) from tool result:" } }
-        for _, image in ipairs(images) do
-          content[#content + 1] = {
-            type = "image_url",
-            image_url = { url = "data:" .. image.mimeType .. ";base64," .. image.data },
-          }
+        for _, block in ipairs(images) do
+          content[#content + 1] = image(block)
         end
         attachments[#attachments + 1] = { role = "user", content = content }
       end
@@ -400,13 +400,15 @@ end
 ---@field _request_context? Neoagent.RequestIdentity
 ---@field _timeout_ms? integer
 ---@field _transport Neoagent.HttpClient
+---@field _images? Neoagent.ImageRequest
 local Model = {}
 Model.__index = Model
 
 ---@param call_opts Neoagent.StreamOptions
----@return Neoagent.ApiRequest
+---@return Neoagent.RequestPlan
 ---@return Neoagent.RequestIdentity?
 function Model:_request(call_opts)
+  call_opts = util.copy(call_opts)
   local headers = { ["Content-Type"] = "application/json" }
   local api_key = self._api_key
   if type(api_key) == "function" then
@@ -418,11 +420,6 @@ function Model:_request(call_opts)
   ---@type Neoagent.JsonObject
   local body = {
     model = self.id,
-    messages = encode_messages(
-      messages.for_model(call_opts.messages, self),
-      call_opts.system_prompt,
-      self._requires_reasoning_content
-    ),
     stream = true,
     stream_options = { include_usage = true },
   }
@@ -438,6 +435,7 @@ function Model:_request(call_opts)
     url = self._base_url .. "/chat/completions",
     headers = headers,
     body = body,
+    messages = util.copy(call_opts.messages),
     timeout_ms = request_opts.timeout(self._timeout_ms, call_opts.timeout_ms),
   }
   local ctx = {
@@ -451,13 +449,25 @@ function Model:_request(call_opts)
     request = request_opts.apply(request, layer, ctx)
   end
   request = request_opts.apply(request, call_opts.request_opts, ctx)
-  return request, ctx.request_context
+  local selected = messages.for_model(assert(request.messages), self)
+  return {
+    api = self.api,
+    request = request,
+    messages = selected,
+    ---@async
+    encode = function(image)
+      local encoded = util.copy(request.body or {})
+      encoded.messages = encode_messages(selected, call_opts.system_prompt, self._requires_reasoning_content, image)
+      return encoded
+    end,
+  },
+    ctx.request_context
 end
 
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = opts or {}
+  opts = util.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
   ---@type Neoagent.AssistantMessage?
   local message
@@ -469,6 +479,7 @@ function Model:stream(opts)
     ---@return Neoagent.ModelResult
     function(run)
       local ok, outcome = pcall(function()
+        require("neoagent.model").require_files(opts)
         local request, identity = self:_request(opts)
         local transport = request_context.bind_transport(self._transport, identity)
         message = {
@@ -607,19 +618,13 @@ function Model:stream(opts)
           end
         end
 
-        local child = transport.stream({
-          request = {
-            url = request.url,
-            headers = request.headers,
-            body = util.json_encode(request.body),
-            timeout_ms = request.timeout_ms,
-          },
+        local child = request_stream.send(transport, request, opts, {
           on_event = process_payload,
           on_done_marker = function()
             done_seen = true
             calls_complete = true
           end,
-        })
+        }, self._images)
         local transport_ok, transport_result = pcall(function()
           return child:await()
         end)
@@ -701,6 +706,7 @@ function M.new(opts)
       _request_context = request_context.copy(opts.request_context),
       _timeout_ms = timeout_ms,
       _transport = http.new(opts.transport),
+      _images = request_stream.validate(opts._images),
     }, Model),
     "OpenAI Chat Completions constructor"
   )

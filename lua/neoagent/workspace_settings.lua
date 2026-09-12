@@ -14,6 +14,7 @@ local M = {}
 ---@field sessions_directory string
 
 ---@class Neoagent.WorkspaceSettings: Neoagent.WorkspaceSettingsMetadata
+---@field _workspace Neoagent.WorkspaceStorage
 local Settings = {}
 Settings.__index = Settings
 
@@ -36,6 +37,10 @@ end
 
 ---@return Neoagent.JsonObject?, Neoagent.Error?
 function Settings:load()
+  local valid, validation_err = self._workspace.validate()
+  if not valid then
+    return nil, validation_err
+  end
   if not vim.uv.fs_stat(self.settings_path) then
     return {}
   end
@@ -124,11 +129,7 @@ end
 ---@param self Neoagent.WorkspaceSettings
 ---@return true?, Neoagent.Error?
 local function prepare_directory(self)
-  local ok, err = fs.ensure_private_directory(self.directory, 448)
-  if not ok then
-    return nil, settings_error("Failed to create workspace directory", err)
-  end
-  return true
+  return self._workspace.prepare()
 end
 
 ---@param self Neoagent.WorkspaceSettings
@@ -212,14 +213,12 @@ function M.new(opts)
   assert(type(opts.directory) == "string" and opts.directory ~= "", "directory is required")
   assert(type(opts.root) == "string" and opts.root ~= "", "root is required")
   local root = fs.canonical(opts.root)
-  local basename = assert(vim.fs.basename(root)):gsub('[%c<>:"/\\|?*]', "-")
-  if basename == "" or basename == "." or basename == ".." then
-    basename = "root"
-  end
-  local directory = fs.join(fs.normalize(opts.directory), basename .. "-" .. vim.fn.sha256(root))
+  local workspace = require("neoagent.workspace_storage").resolve(opts.directory, root)
+  local directory = workspace.directory
   return setmetatable({
     root = root,
     directory = directory,
+    _workspace = workspace,
     settings_path = fs.join(directory, "settings.json"),
     sessions_directory = fs.join(directory, "sessions"),
   }, Settings)

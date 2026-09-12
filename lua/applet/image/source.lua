@@ -14,7 +14,14 @@ local M = {}
 ---@field path string
 ---@field revision string|number
 
----@alias Applet.ImageSource Applet.PngBytes|Applet.PngFile
+---@class Applet.PngResource
+---@field kind 'png_resource'
+---@field id string
+---@field revision string|number
+
+---@alias Applet.ImageResourceReader fun(source: Applet.PngResource, maximum: integer, done: fun(data?: string, error?: string)): fun()
+
+---@alias Applet.ImageSource Applet.PngBytes|Applet.PngFile|Applet.PngResource
 
 ---@class Applet.PngInfo
 ---@field width integer
@@ -44,6 +51,7 @@ local M = {}
 ---@field fs_close fun(descriptor: integer, done: fun(error?: string)): unknown
 
 ---@class Applet.ImageLoadOptions
+---@field read_resource? Applet.ImageResourceReader
 ---@field max_bytes? integer
 ---@field max_pixels? integer
 ---@field read_file? fun(path: string, maximum: integer): string?, string?
@@ -81,12 +89,16 @@ end
 function M.identity(source)
   applet_expect(type(source) == "table", "image.source", "must be a table", 3)
   local rev = revision(source)
+  if source.kind == "png_resource" then
+    applet_expect(util.nonempty_string(source.id), "image.source.id", "must be a non-empty string", 3)
+    return "resource:" .. component(source.id) .. component(rev)
+  end
   if source.kind == "png_bytes" then
     applet_expect(util.nonempty_string(source.id), "image.source.id", "must be a non-empty string", 3)
     applet_expect(type(source.data) == "string", "image.source.data", "must be a string", 3)
     return "bytes:" .. component(source.id) .. component(rev)
   end
-  applet_expect(source.kind == "png_file", "image.source.kind", "must be png_bytes or png_file", 3)
+  applet_expect(source.kind == "png_file", "image.source.kind", "must be png_bytes, png_file, or png_resource", 3)
   applet_expect(util.nonempty_string(source.path), "image.source.path", "must be a non-empty string", 3)
   return "file:" .. component(source.path) .. component(rev)
 end
@@ -144,6 +156,9 @@ end
 function M.load(source, opts)
   opts = opts or {}
   local identity = M.identity(source)
+  if source.kind == "png_resource" then
+    return nil, "image source requires asynchronous loading"
+  end
   local maximum = opts.max_bytes or 20 * 1024 * 1024
   local data, err
   if source.kind == "png_bytes" then
@@ -208,6 +223,61 @@ function M.load_async(value, opts, done)
       finish(nil, identity)
     end)
     return cancel
+  end
+  if value.kind == "png_resource" then
+    ---@cast value Applet.PngResource
+    if type(opts.read_resource) ~= "function" then
+      later(function()
+        finish(nil, "image resource reader is required")
+      end)
+      return cancel
+    end
+    local accepted, received = false, false
+    local pending
+    ---@param data? string
+    ---@param err? string
+    local function deliver(data, err)
+      later(function()
+        if not data then
+          finish(nil, err or "could not read image")
+          return
+        end
+        local valid, info = pcall(M.png_info, data, opts)
+        if not valid then
+          finish(nil, info)
+          return
+        end
+        finish({ id = identity, data = data, width = info.width, height = info.height, bytes = info.bytes })
+      end)
+    end
+    local loaded, release = pcall(opts.read_resource, value, opts.max_bytes or 20 * 1024 * 1024, function(data, err)
+      if received or cancelled or completed then
+        return
+      end
+      received = true
+      if accepted then
+        deliver(data, err)
+      else
+        pending = { data = data, error = err }
+      end
+    end)
+    if not loaded or type(release) ~= "function" then
+      later(function()
+        finish(nil, loaded and "image loader must return a cancellation function" or tostring(release))
+      end)
+      return cancel
+    end
+    accepted = true
+    if pending then
+      deliver(pending.data, pending.error)
+    end
+    return function()
+      if cancelled or completed then
+        return
+      end
+      cancel()
+      release()
+    end
   end
   if value.kind == "png_bytes" then
     later(function()

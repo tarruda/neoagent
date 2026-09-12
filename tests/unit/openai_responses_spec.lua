@@ -1,3 +1,6 @@
+local it = require("tests.helpers.async_test")
+local images = require("neoagent.api.images")
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local fake_transport = require("tests.helpers.fake_transport")
 local responses = require("neoagent.api.openai_responses")
@@ -188,12 +191,12 @@ describe("neoagent.api.openai_responses", function()
       reasoning_summary = "detailed",
       request_opts_layers = { provider_opts },
     })
-    local request = instance:_request({
+    local plan = instance:_request({
       system_prompt = "Be precise",
       messages = {
         { role = "user", content = {
           { type = "text", text = "inspect" },
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "thinking", thinking = "secret", thinkingSignature = vim.json.encode({
@@ -205,7 +208,7 @@ describe("neoagent.api.openai_responses", function()
         } },
         { role = "toolResult", toolCallId = "call_saved|fc_saved", content = {
           { type = "text", text = "image" },
-          { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/jpeg"),
         } },
         { role = "toolResult", toolCallId = "empty", content = {} },
         { role = "assistant", content = {
@@ -222,6 +225,8 @@ describe("neoagent.api.openai_responses", function()
         }
       end,
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     assert.are.equal(1, key_calls)
     assert.are.equal("http://override/responses", request.url)
@@ -278,20 +283,22 @@ describe("neoagent.api.openai_responses", function()
 
   it("downgrades images before encoding requests for text-only models", function()
     local instance = model(fake_transport.new(), { input = { "text" } })
-    local request = instance:_request({
+    local plan = instance:_request({
       messages = {
         { role = "user", content = {
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "toolCall", id = "call-1", name = "read_file", arguments = {} },
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
-          { type = "image", mimeType = "image/png", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/png"),
         } },
       },
       tools = {},
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     local body = assert(request.body)
     assert.are.equal("(image omitted: model does not support images)",

@@ -333,6 +333,7 @@ local provider_fields = {
   base_url = true,
   catalog = true,
   diagnostics = true,
+  prompt_caching = true,
   models = true,
   request_opts = true,
   service = true,
@@ -470,6 +471,12 @@ local function validate(opts)
     end
     assert(type(provider.api) == "string" and provider.api ~= "", "provider " .. id .. " requires api")
     assert(type(provider.models) == "table", "provider " .. id .. " requires models")
+    for _, field in ipairs({ "prompt_caching" }) do
+      assert(
+        provider[field] == nil or type(provider[field]) == "boolean",
+        "provider " .. id .. " " .. field .. " must be boolean"
+      )
+    end
     assert(
       provider.service == nil or type(provider.service) == "function",
       "provider " .. id .. " service must be a function"

@@ -15,6 +15,7 @@ local widgets = Applet.Pane.widgets
 ---@field active Neoagent.Dialog
 
 ---@class Neoagent.TranscriptPaneState
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field blocks Neoagent.TranscriptBlock[]
 ---@field context Neoagent.AgentContext
 ---@field dialog? Neoagent.ActiveDialogSnapshot
@@ -34,6 +35,8 @@ local widgets = Applet.Pane.widgets
 ---@field dialog? fun(dialog: string, action: string): unknown
 
 ---@class Neoagent.TranscriptPaneOptions
+---@field image_reader? Applet.ImageResourceReader
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field renderer Neoagent.Renderer<unknown>
 ---@field image_system? Applet.ImageSystem
 ---@field on_error? fun(error: Applet.PaneError)
@@ -42,6 +45,7 @@ local widgets = Applet.Pane.widgets
 ---@field callbacks? Neoagent.TranscriptPaneCallbacks
 
 ---@class Neoagent.TranscriptBlockSignature
+---@field image_source Neoagent.ImageSourceFactory|false
 ---@field revision integer
 ---@field image_scope? string
 ---@field previous_key string|false
@@ -75,6 +79,8 @@ local widgets = Applet.Pane.widgets
 ---@field document? Neoagent.TranscriptDocumentCache
 
 ---@class Neoagent.TranscriptPane
+---@field image_reader? Applet.ImageResourceReader
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field renderer Neoagent.Renderer<unknown>
 ---@field image_system? Applet.ImageSystem
 ---@field on_error? fun(error: Applet.PaneError)
@@ -440,6 +446,9 @@ local function new_pane(self)
     frame_interval_ms = 50,
     theme = self.renderer.theme,
     image_system = self.image_system,
+    read_image_resource = function(resource, maximum, done)
+      return assert(self.image_reader, "Transcript image resource reader is required")(resource, maximum, done)
+    end,
     render = function(state, env)
       return render(state, env, self.render_cache)
     end,
@@ -497,6 +506,7 @@ local function cached_block_node(state, env, block, index, width, cache)
   local following = state.blocks[index + 1]
   ---@type Neoagent.TranscriptBlockSignature
   local signature = {
+    image_source = state.image_source or false,
     revision = block.revision,
     image_scope = block.image_scope,
     previous_key = previous and previous.key or false,
@@ -538,6 +548,7 @@ local function cached_block_node(state, env, block, index, width, cache)
     details_key = state.details_key,
     wrap_cards = state.config.wrap_cards == true,
     show_images = signature.show_images,
+    image_source = state.image_source,
     tool = tool,
     previous = previous,
     following = following,
@@ -558,6 +569,7 @@ local function cached_block_node(state, env, block, index, width, cache)
     "details_key",
     "wrap_cards",
     "show_images",
+    "image_source",
   }) do
     local value = tostring(signature[key])
     revision_parts[#revision_parts + 1] = #value .. ":" .. value
@@ -680,6 +692,8 @@ function Transcript.new(opts)
   local self = setmetatable({
     renderer = opts.renderer,
     image_system = opts.image_system,
+    image_source = opts.image_source,
+    image_reader = opts.image_reader,
     on_error = opts.on_error,
     config = opts.config,
     resolve_tool = opts.resolve_tool,
@@ -731,6 +745,7 @@ function Transcript:_state()
   end
   return {
     blocks = self.snapshot_blocks,
+    image_source = self.image_source,
     context = util.copy(self.context),
     dialog = util.copy(self.dialog),
     renderer = self.renderer,
@@ -743,6 +758,19 @@ function Transcript:_state()
     dialog_revision = self.dialog_revision,
     document_revision = self.document_revision,
   }
+end
+
+---@param source? Neoagent.ImageSourceFactory
+---@param reader? Applet.ImageResourceReader
+function Transcript:set_image_source(source, reader)
+  if self.image_source == source then
+    return
+  end
+  self.image_source = source
+  self.image_reader = reader
+  self.render_cache = { blocks = {} }
+  self.document_revision = self.document_revision + 1
+  self:_publish()
 end
 
 ---@return Applet.Binding[]
@@ -903,7 +931,7 @@ function Transcript:_message(message, prefix)
     return self:_add_block({
       kind = "compaction",
       summary = message.summary or "",
-      tokens_before = message.tokensBefore,
+      tokens_before = message.tokens_before,
     }, prefix .. ":compaction")
   end
 end

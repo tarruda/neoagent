@@ -218,6 +218,10 @@ function M.prepare(opts)
   assert(messages, message_err)
   assert(opts.system_prompt == nil or type(opts.system_prompt) == "string", "system_prompt must be a string")
   assert(opts.model_options == nil or object(opts.model_options), "model_options must be an object")
+  require("neoagent.model").require_files({
+    messages = messages,
+    files = opts.model_options and opts.model_options.files,
+  })
   assert(opts.on_event == nil or type(opts.on_event) == "function", "on_event must be a function")
   assert(opts.on_done == nil or type(opts.on_done) == "function", "on_done must be a function")
   assert(opts.report == nil or type(opts.report) == "function", "report must be a function")

@@ -410,11 +410,13 @@ describe("llama.cpp router HTTP integration", function()
     assert.are.same({ "text", "image" }, model.input)
     local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
       .. "AAAAC0lEQVR42mP8/x8AAusB9Wl5ZAAAAABJRU5ErkJggg=="
+    local attachments = require("tests.helpers.attachments").new()
     local inference_stats = {}
     local streamed = wait(model:stream({
+      files = attachments.files,
       messages = { { role = "user", content = {
         { type = "text", text = "What is in this image?" },
-        { type = "image", mimeType = "image/png", data = png },
+        attachments.image(vim.base64.decode(png)),
       } } },
       on_event = function(event)
         if event.type == "inference_stats" then

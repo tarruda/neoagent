@@ -33,6 +33,7 @@ local Mode = require("applet.mode")
 ---@field handlers? table<string, fun(event: Applet.ActionEvent<Applet.Pane<S>>): unknown>
 ---@field theme? Applet.Theme|Applet.ThemeOptions
 ---@field image_system? Applet.ImageSystem
+---@field read_image_resource? Applet.ImageResourceReader
 ---@field frame_interval_ms? integer
 ---@field on_error? fun(error: Applet.PaneError)
 
@@ -116,6 +117,7 @@ local Mode = require("applet.mode")
 ---@field theme_generation integer
 ---@field compile_theme Applet.CompileTheme
 ---@field image_system? Applet.ImageSystem
+---@field read_image_resource? Applet.ImageResourceReader
 ---@field on_error? fun(error: Applet.PaneError)
 ---@field generation integer
 ---@field _owner? Applet.Applet
@@ -534,6 +536,12 @@ function Pane.new(opts)
   if opts.on_error ~= nil then
     applet_expect(type(opts.on_error) == "function", "Pane.on_error", "must be a function", 3)
   end
+  applet_expect(
+    opts.read_image_resource == nil or type(opts.read_image_resource) == "function",
+    "Pane.read_image_resource",
+    "must be a function",
+    3
+  )
   if opts.image_system ~= nil then
     applet_expect(type(opts.image_system) == "table", "Pane.image_system", "must be a table", 3)
     for _, method in ipairs({
@@ -568,6 +576,7 @@ function Pane.new(opts)
     handlers = handlers,
     theme = normalize_theme(opts.theme),
     image_system = opts.image_system,
+    read_image_resource = opts.read_image_resource,
     on_error = opts.on_error,
     frame_interval_ns = frame_interval_ns,
     namespace = vim.api.nvim_create_namespace("applet-pane-" .. key .. "-" .. sequence),
@@ -1425,7 +1434,7 @@ function Pane:_prepare_images(tree, images)
     for _, source_value in ipairs(sources) do
       local identity, value = source_value.identity, source_value.value
       if not resources[identity] then
-        local ok, resource, err = pcall(self.image_system.request, self.image_system, value)
+        local ok, resource, err = pcall(self.image_system.request, self.image_system, value, self.read_image_resource)
         if not ok then
           self:_report("image", resource, self.generation)
         elseif err then

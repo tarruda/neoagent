@@ -77,12 +77,21 @@ local function session_commit(session)
   end
 end
 
----@generic C
 ---@param session Neoagent.Session
----@param opts Neoagent.PreparedChat<C>
+---@param overrides? Neoagent.StreamOverrides
 ---@return Neoagent.StreamOverrides
-local function model_options(session, opts)
-  local result = util.copy(opts.model_options or {})
+local function model_options(session, overrides)
+  local result = util.copy(overrides or {})
+  local files = session:files()
+  assert(
+    result.files == nil or result.files.identity == files.identity,
+    "Chat Model and Session must share attachment storage"
+  )
+  assert(
+    result.file_cache == nil or result.file_cache.scope == files.identity,
+    "Chat upload cache must belong to the Session's workspace"
+  )
+  result.files, result.file_cache = files, session:file_cache()
   result.request_context = request_context.resolve({ session_id = session:id() }, result.request_context)
   return result
 end
@@ -99,11 +108,12 @@ local function diagnostic_report(report)
 end
 
 ---@generic C
+---@param session Neoagent.Session
 ---@param opts Neoagent.ChatOptions<C>
 ---@param tools Neoagent.Tool<C>[]
 ---@param commit_message Neoagent.MessageCommit
 ---@return Neoagent.PreparedChat<C>
-local function preflight(opts, tools, commit_message)
+local function preflight(session, opts, tools, commit_message)
   assert(opts.report == nil or type(opts.report) == "function", "report must be a function")
   assert(opts.on_done == nil or type(opts.on_done) == "function", "on_done must be a function")
   assert(opts.on_accept == nil or type(opts.on_accept) == "function", "on_accept must be a function")
@@ -119,7 +129,7 @@ local function preflight(opts, tools, commit_message)
     messages = {},
     system_prompt = opts.system_prompt,
     tools = tools,
-    model_options = opts.model_options,
+    model_options = model_options(session, opts.model_options),
     context = opts.context,
     execute_tool = opts.execute_tool,
     get_steering_messages = opts.get_steering_messages,
@@ -307,7 +317,7 @@ end
 ---@return Neoagent.ChatRun
 function M.send(session, prompt, opts)
   opts = opts or {}
-  local prepared = preflight(opts, {}, session_commit(session))
+  local prepared = preflight(session, opts, {}, session_commit(session))
   local reservation, entry = begin(session, prompt, prepared.session_state)
   accepted(prepared, entry)
   return start_reserved(session, reservation, function()
@@ -316,7 +326,8 @@ function M.send(session, prompt, opts)
     run = async.run(
       ---@return Neoagent.ChatResult
       function()
-        local model_opts = model_options(session, prepared)
+        async.yield()
+        local model_opts = model_options(session, prepared.model_options)
         ---@cast model_opts Neoagent.StreamOptions
         model_opts.messages = context_messages(session, prepared)
         model_opts.system_prompt = prepared.system_prompt
@@ -368,13 +379,14 @@ local function run_agent(session, opts)
   run = async.run(
     ---@return Neoagent.ChatResult
     function()
+      async.yield()
       ---@type Neoagent.AgentLoopOptions<C>
       local child_options = {
         model = opts.model,
         messages = context_messages(session, opts),
         system_prompt = opts.system_prompt,
         tools = opts.tools,
-        model_options = model_options(session, opts),
+        model_options = model_options(session, opts.model_options),
         context = opts.context,
         execute_tool = opts.execute_tool,
         get_steering_messages = opts.get_steering_messages,
@@ -410,7 +422,7 @@ end
 ---@return Neoagent.ChatRun
 function M.run(session, prompt, opts)
   opts = opts or {}
-  local prepared = preflight(opts, opts.tools or {}, session_commit(session))
+  local prepared = preflight(session, opts, opts.tools or {}, session_commit(session))
   local reservation, entry = begin(session, prompt, prepared.session_state)
   accepted(prepared, entry)
   return start_reserved(session, reservation, function()
@@ -424,7 +436,7 @@ end
 ---@return Neoagent.ChatRun
 function M.continue(session, opts)
   opts = opts or {}
-  local prepared = preflight(opts, opts.tools or {}, session_commit(session))
+  local prepared = preflight(session, opts, opts.tools or {}, session_commit(session))
   local reservation = reserve(session)
   return start_reserved(session, reservation, function()
     return run_agent(session, prepared)

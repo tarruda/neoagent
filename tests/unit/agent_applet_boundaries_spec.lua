@@ -83,6 +83,8 @@ describe("Agent Applet boundaries", function()
         self.input = value
         return value
       end
+      ---@param files? Neoagent.FileSource
+      function view:set_files(files) self.files = files end
       ---@param value Neoagent.TranscriptMessage[]
       function view:set_messages(value) self.messages = value end
       ---@param value Neoagent.AgentContext
@@ -1070,6 +1072,8 @@ describe("Agent Applet boundaries", function()
     assert(value:bind(owned_agent))
     assert(value:open())
     local retained_view = assert(record.view)
+    ---@param files? Neoagent.FileSource
+    function retained_view:set_files(files) self.files = files end
     function retained_view:set_messages(_)
       return nil, util.error("ui", "message clearing failed")
     end

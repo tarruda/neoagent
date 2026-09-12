@@ -1,5 +1,6 @@
 local thinking = require("neoagent.thinking")
 local util = require("neoagent.util")
+local files = require("neoagent.files")
 
 local M = {}
 
@@ -60,6 +61,8 @@ local M = {}
 ---@alias Neoagent.ModelResult Neoagent.ModelSuccess|Neoagent.ModelFailure
 
 ---@class Neoagent.StreamOverrides
+---@field files? Neoagent.FileSource
+---@field file_cache? Neoagent.FileCache Workspace-owned upload mappings.
 ---@field retry_attempt? integer
 ---@field system_prompt? string
 ---@field tools? Neoagent.ToolDefinition[]
@@ -219,6 +222,23 @@ function M.assert(value, owner)
   local validated, err = M.validate(value)
   assert(validated, (owner or "Model") .. " must return a complete Model: " .. (err and err.message or "invalid Model"))
   return validated
+end
+
+---@param options Neoagent.StreamOptions
+function M.require_files(options)
+  if options.files ~= nil then
+    assert(files.valid(options.files), "Model attachment file reader is incomplete")
+  end
+  for _, message in ipairs(options.messages or {}) do
+    if type(message.content) == "table" then
+      for _, block in ipairs(message.content) do
+        if block.type == "image" then
+          assert(files.valid(options.files), "Model image messages require an attachment file reader")
+          return
+        end
+      end
+    end
+  end
 end
 
 -- Cancellation interrupts await even when the child has already produced a

@@ -95,6 +95,7 @@ end
 ---@class Neoagent.TestNativeEnvironment
 ---@field workspace Neoagent.Workspace
 ---@field agent string
+---@field files Neoagent.Files
 
 describe("neoagent shared sandbox contract", function()
   ---@type string
@@ -162,6 +163,7 @@ describe("neoagent shared sandbox contract", function()
     vim.env.NEOAGENT_SANDBOX_TEST_SECRET = "must-not-leak"
     vim.api.nvim_set_current_dir(workspace)
     context = {
+      files = require("neoagent.files.memory").new(),
       workspace = Workspace.new({ root = workspace, cwd = workspace }),
       agent = "Sandbox integration",
     }
@@ -386,7 +388,7 @@ describe("neoagent shared sandbox contract", function()
       assert.matches("# Neoagent API map", text(results.documentation))
       local image_block = assert(results.image.content[2])
       assert(image_block.type == "image")
-      assert.are.equal(image, vim.base64.decode(image_block.data))
+      assert.are.equal(image, require("tests.helpers.attachments").new(context.files).read(image_block))
       local output_path = assert(results.shell.details).output_path
       assert(type(output_path) == "string")
       spill_paths[#spill_paths + 1] = output_path

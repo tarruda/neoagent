@@ -45,20 +45,20 @@ end
 ---@return Neoagent.SessionChoice<T>[]
 function M.build(sessions, current_path)
   ---@type table<string, Neoagent.SessionChoiceNode<T>>
-  local by_path = {}
+  local by_id = {}
   ---@type Neoagent.SessionChoiceNode<T>[]
   local nodes = {}
   for _, info in ipairs(sessions) do
     ---@type Neoagent.SessionChoiceNode<T>
     local node = { info = info, children = {}, latest = info.modified_at }
     nodes[#nodes + 1] = node
-    by_path[fs.canonical(info.path)] = node
+    by_id[info.id] = node
   end
 
   ---@type Neoagent.SessionChoiceNode<T>[]
   local roots = {}
   for _, node in ipairs(nodes) do
-    local parent = node.info.parent_session and by_path[fs.canonical(node.info.parent_session)]
+    local parent = node.info.parent_session and by_id[node.info.parent_session]
     if parent and parent ~= node then
       parent.children[#parent.children + 1] = node
     else

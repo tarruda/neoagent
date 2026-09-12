@@ -5,6 +5,7 @@ local util = require("neoagent.util")
 local ui = Applet.Pane.nodes
 
 ---@class Neoagent.DetailsPaneState
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field block Neoagent.RenderBlock
 ---@field raw boolean
 ---@field renderer Neoagent.Renderer<unknown>
@@ -22,6 +23,8 @@ local ui = Applet.Pane.nodes
 ---@field changed? fun(): unknown
 
 ---@class Neoagent.DetailsPaneOptions
+---@field image_reader? Applet.ImageResourceReader
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field key? string
 ---@field config? Neoagent.UIConfigInput
 ---@field callbacks? Neoagent.DetailsPaneCallbacks
@@ -36,6 +39,7 @@ local ui = Applet.Pane.nodes
 ---@field continuation? unknown
 
 ---@class Neoagent.DetailsPane
+---@field image_source? Neoagent.ImageSourceFactory
 ---@field config Neoagent.UIConfigInput
 ---@field callbacks Neoagent.DetailsPaneCallbacks
 ---@field renderer Neoagent.Renderer<unknown>
@@ -196,6 +200,7 @@ local function render(component, state, env)
       spinner = state.spinner,
       wrap_cards = state.config.wrap_cards == true,
       tool = state.tool,
+      image_source = state.image_source,
     }, previous)
     if not node then
       if continuation then
@@ -267,6 +272,7 @@ function Details.new(opts)
     config = opts.config,
     callbacks = callbacks,
     renderer = opts.renderer,
+    image_source = opts.image_source,
     resolve_tool = opts.resolve_tool,
     block = nil,
     tool = nil,
@@ -284,6 +290,7 @@ function Details.new(opts)
     frame_interval_ms = 50,
     theme = opts.renderer.theme,
     image_system = opts.image_system,
+    read_image_resource = opts.image_reader,
     render = function(state, env)
       return render(self, state, env)
     end,
@@ -354,6 +361,7 @@ function Details:_publish()
     block = self.block or { kind = "notice", text = "" },
     raw = self.raw,
     renderer = self.renderer,
+    image_source = self.image_source,
     config = self.config,
     spinner = self.spinner,
     title = self.title,

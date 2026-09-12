@@ -2,6 +2,8 @@ local fs = require("neoagent.fs")
 local Session = require("neoagent.session")
 local storage = require("neoagent.storage")
 local util = require("neoagent.util")
+local workspace_storage = require("neoagent.workspace_storage")
+local files = require("neoagent.files")
 
 local M = {}
 
@@ -131,10 +133,7 @@ end
 ---@return_overload Neoagent.JsonObject
 ---@return_overload nil, Neoagent.Error
 local function bind_metadata(metadata, target_profile_id, derivation)
-  local selected, id_err = profile_id(target_profile_id)
-  if not selected then
-    return nil, id_err
-  end
+  local selected = assert(profile_id(target_profile_id))
   metadata = metadata == nil and {} or util.copy(metadata)
   if not object(metadata) then
     return nil, profile_error("Session metadata must be an object")
@@ -154,10 +153,7 @@ local function bind_metadata(metadata, target_profile_id, derivation)
     rawset(namespace, "derivation", util.copy(derivation))
   end
   rawset(metadata, "neoagent", namespace)
-  local _, inspect_err = inspect_metadata(metadata)
-  if inspect_err then
-    return nil, inspect_err
-  end
+  assert(inspect_metadata(metadata))
   return metadata
 end
 
@@ -235,7 +231,8 @@ end
 ---@param path string
 ---@return Neoagent.OpenedProfileSession?, Neoagent.Error?
 function M.open(path)
-  local store, err = storage.open(path)
+  local workspace = workspace_storage.new(assert(vim.fs.dirname(vim.fs.dirname(fs.normalize(path)))))
+  local store, err = storage.open(path, workspace)
   if not store then
     return nil, err
   end
@@ -244,11 +241,7 @@ function M.open(path)
   if not inspected then
     return nil, inspect_err
   end
-  local session
-  session, err = Session.new({ store = store })
-  if not session then
-    return nil, err
-  end
+  local session = assert(Session.new({ store = store }))
   return {
     session = session,
     profile_id = inspected.profile_id,
@@ -280,10 +273,10 @@ local function fork_entries(source, snapshot, entry_id, position)
     if not message or message.role ~= "user" then
       return nil, profile_error("Cannot fork Session", "before position requires a user message")
     end
-    if target.parentId == nil or target.parentId == vim.NIL then
+    if target.parent_id == nil or target.parent_id == vim.NIL then
       leaf_id = nil
     else
-      leaf_id = target.parentId
+      leaf_id = target.parent_id
     end
   elseif position ~= "at" then
     return nil, profile_error("Cannot fork Session", "position must be before or at")
@@ -299,6 +292,7 @@ local function fork_entries(source, snapshot, entry_id, position)
   return entries, validated.leaf_id
 end
 
+---@async
 ---@param source Neoagent.Session
 ---@param opts Neoagent.ProfileSessionDeriveOptions
 ---@return Neoagent.Session?, Neoagent.Error?
@@ -356,15 +350,11 @@ function M.derive(source, opts)
       derivation.sourceProfileId = source_profile
     end
   end
-  local metadata, metadata_err = bind_metadata(snapshot.metadata, target_profile, derivation)
-  if not metadata then
-    return nil, metadata_err
-  end
+  local metadata = assert(bind_metadata(snapshot.metadata, target_profile, derivation))
   local configured = persistence(opts.persistence)
   local parent_session
   if opts.kind == "fork" then
-    local source_metadata = source:metadata()
-    parent_session = source_metadata and source_metadata.path or nil
+    parent_session = source:id()
   end
   if configured.enabled then
     ---@cast configured Neoagent.EnabledPersistence
@@ -377,13 +367,30 @@ function M.derive(source, opts)
       parent_session = parent_session,
       metadata = metadata,
       index_attributes = index_attributes(metadata),
+      source_files = source:files(),
     })
     if not store then
       return nil, store_err
     end
     return Session.new({ store = store })
   end
+  local attachment_store = source:files()
+  if workspace ~= snapshot.workspace then
+    attachment_store = require("neoagent.files.memory").new()
+    local messages = {}
+    for _, entry in ipairs(entries) do
+      if entry.type == "message" then
+        messages[#messages + 1] = entry.message
+      end
+    end
+    local imported, import_err = files.import(source:files(), attachment_store, messages)
+    if not imported then
+      return nil, import_err
+    end
+  end
   return Session.new({
+    files = attachment_store,
+    file_cache = workspace == snapshot.workspace and source:file_cache() or nil,
     entries = entries,
     leaf_id = leaf_or_err,
     workspace = workspace,

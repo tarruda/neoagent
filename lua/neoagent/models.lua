@@ -15,6 +15,7 @@ local M = {}
 ---@field report? fun(message: string, level: integer)
 ---@field request_context? Neoagent.RequestIdentity
 ---@field transport? Neoagent.ByteBackend
+---@field images? Neoagent.ImageRequest
 
 ---@alias Neoagent.ApiFactory fun(resolved: Neoagent.ResolvedApi): Neoagent.Model
 ---@alias Neoagent.ModelResolutionConfig {default_model?: Neoagent.ModelSelection, auth: Neoagent.AuthConfig, _apis: table<string, Neoagent.ApiFactory>}
@@ -185,10 +186,12 @@ local function api_factory(resolved)
     responses_lite = resolved.model.responses_lite,
     text_verbosity = resolved.model.text_verbosity,
     thinking = resolved.model.thinking,
+    prompt_caching = resolved.provider.prompt_caching,
     request_context = resolved.request_context,
     request_opts_layers = layers,
     on_diagnostic = on_diagnostic,
     transport = resolved.transport,
+    _images = resolved.images,
   }
   if resolved.api == "openai-completions" then
     return require("neoagent.api.openai_completions").new(options)

@@ -745,7 +745,7 @@ function M.from_config(options, runtime)
       return
     end
     local messages = state.session and state.session:messages() or {}
-    local hook_context = { session_id = state.session_id }
+    local hook_context = { session_id = state.session_id, files = state.session:files() }
     for _, tool in ipairs(state.toolset.tools) do
       if type(tool.on_messages) == "function" then
         local ok, err = pcall(tool.on_messages, util.copy(messages), hook_context)

@@ -551,6 +551,7 @@ describe("neoagent Applet Presenter", function()
       get_input = function() return "" end,
       set_input = function() end,
       set_messages = function() end,
+      set_files = function() end,
       set_context = function() end,
       apply = function() end,
       finish = function() end,

@@ -4,10 +4,6 @@ local render = require("neoagent.ui.render")
 local tree = require("neoagent.ui.tree")
 local tool_presentation = require("neoagent.ui.tool_presentation")
 
----@class Neoagent.RenderImage: Neoagent.ImageBlock
----@field media_type? string
----@field mime_type? string
-
 ---@class Neoagent.RenderedImages
 ---@field signature string
 ---@field nodes Applet.Node[]
@@ -144,38 +140,6 @@ local function context(policy, theme, env, continuation, block)
   return value, { markdown = documents }
 end
 
----@param block Neoagent.RenderImage
----@return string?
-local function decoded_data(block)
-  if type(block.data) ~= "string" then
-    return nil
-  end
-  local data = block.data
-  if data:sub(1, 8) == "\137PNG\r\n\26\n" then
-    return data
-  end
-  if vim.base64 and type(vim.base64.decode) == "function" then
-    local ok, value = pcall(vim.base64.decode, data)
-    if ok and type(value) == "string" then
-      return value
-    end
-  end
-  return data
-end
-
----@param block Neoagent.RenderImage
----@return string?
-local function png_data(block)
-  local mime = block.mimeType or block.media_type or block.mime_type
-  if mime ~= nil and mime ~= "image/png" then
-    return nil
-  end
-  local data = decoded_data(block)
-  if data and data:sub(1, 8) == "\137PNG\r\n\26\n" then
-    return data
-  end
-end
-
 ---@param bytes integer
 ---@return string
 local function byte_size(bytes)
@@ -188,24 +152,11 @@ local function byte_size(bytes)
   return string.format("%.1f MiB", bytes / 1024 / 1024)
 end
 
----@param block Neoagent.RenderImage
----@param mime string
----@param data? string
+---@param block Neoagent.ImageBlock
 ---@return string
-local function image_tag(block, mime, data)
-  local format = tostring(mime):match("^image/(.+)$") or tostring(mime)
-  local parts = { "Image", format:upper() }
-  if data and mime == "image/png" then
-    local ok, info = pcall(require("applet").ImageSystem.png_info, data)
-    if ok then
-      parts[#parts + 1] = info.width .. "×" .. info.height
-    end
-  end
-  local decoded = data or decoded_data(block)
-  if decoded then
-    parts[#parts + 1] = byte_size(#decoded)
-  end
-  return table.concat(parts, " · ")
+local function image_tag(block)
+  local format = block.mime_type:match("^image/(.+)$") or block.mime_type
+  return "Image · " .. format:upper() .. " · " .. byte_size(block.bytes)
 end
 
 ---@param value unknown
@@ -215,7 +166,7 @@ local function identity_component(value)
   return tostring(#value) .. ":" .. value
 end
 
----@param value Neoagent.RenderImage
+---@param value Neoagent.ImageBlock
 ---@param index integer
 ---@return string
 local function image_slot(value, index)
@@ -252,6 +203,7 @@ local function image_render_signature(block, key, native, env)
     identity_component(block.image_scope or ""),
     identity_component(key),
     native == false and "0" or "1",
+    identity_component(env.image_source),
     details and "1" or "0",
     not details and type(env.width) == "number" and env.width > 1 and "1" or "0",
   })
@@ -278,25 +230,15 @@ local function image_nodes(block, key, native, env, continuation)
   end
   for index, value in ipairs(content) do
     if type(value) == "table" and value.type == "image" then
-      ---@cast value Neoagent.RenderImage
       local slot = image_slot(value, index)
       local image_key = key .. ":image:" .. slot
-      local data = png_data(value)
-      local mime = value.mimeType or value.media_type or value.mime_type or (data and "image/png") or "image"
-      local alt = image_tag(value, mime, data)
-      if data and native ~= false then
+      local alt = image_tag(value)
+      if value.mime_type == "image/png" and native ~= false and env.image_source then
         local details = env.image_mode == "details"
         ---@type Applet.Node
         local image = ui.image({
           key = image_key,
-          source = {
-            kind = "png_bytes",
-            id = "neoagent:" .. identity_component(block.image_scope or "direct") .. identity_component(
-              block.key or key
-            ) .. identity_component(slot),
-            data = data,
-            revision = value.revision ~= nil and value.revision or 1,
-          },
+          source = env.image_source(value),
           alt = alt,
           width = details and "native" or "fill",
           height = "auto",

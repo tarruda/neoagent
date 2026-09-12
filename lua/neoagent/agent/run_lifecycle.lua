@@ -21,6 +21,7 @@ local util = require("neoagent.util")
 ---@alias Neoagent.ProviderRelease fun(): boolean?, Neoagent.Error?
 
 ---@class Neoagent.AgentToolEnvironment
+---@field files Neoagent.Files
 ---@field workspace? Neoagent.Workspace
 ---@field agent? string
 ---@field session_id table
@@ -938,6 +939,8 @@ function M.new(opts)
       preparation = preparation,
       model = assert(selection:model()),
       model_options = {
+        files = state.session:files(),
+        file_cache = state.session:file_cache(),
         request_opts = require("neoagent.thinking").request_opts(selection:model(), selection:thinking_level()),
       },
       instructions = instructions,
@@ -950,8 +953,8 @@ function M.new(opts)
     if result.ok then
       local appended, append_err = state.session:append_compaction({
         summary = result.summary,
-        firstKeptEntryId = result.first_kept_entry_id,
-        tokensBefore = result.tokens_before,
+        first_kept_entry_id = result.first_kept_entry_id,
+        tokens_before = result.tokens_before,
       })
       if not appended then
         result = failed_result(append_err, "compaction")
@@ -1034,7 +1037,7 @@ function M.new(opts)
     end
     ---@cast last Neoagent.MessageEntry
     if last.message.role == "assistant" and last.message.stopReason == "error" then
-      local parent = last.parentId
+      local parent = last.parent_id
       if parent == vim.NIL then
         parent = nil
       end
@@ -1329,6 +1332,7 @@ function M.new(opts)
         tools = tools,
         workspace = state.workspace,
         context = {
+          files = state.session:files(),
           workspace = state.workspace,
           agent = config.name,
           session_id = state.session_id,
@@ -1337,7 +1341,11 @@ function M.new(opts)
         thinking_level = thinking_level,
         session_state = selection:snapshot({ persisted = true }),
         report = opts.notify,
-        model_options = { request_opts = request_opts },
+        model_options = {
+          request_opts = request_opts,
+          files = state.session:files(),
+          file_cache = state.session:file_cache(),
+        },
       }
       base.get_steering_messages = function()
         local message, settle = state.steering:offer()

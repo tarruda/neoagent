@@ -21,6 +21,7 @@ local provider = {
     transform_model = common.transform,
   },
   request_opts = common.request_opts(),
+  prompt_caching = true,
   models = {},
   service = require("neoagent.providers.anthropic").new,
 }

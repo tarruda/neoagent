@@ -273,12 +273,12 @@ function M.prepare(path_entries, settings)
     ---@cast previous Neoagent.CompactionEntry
     previous_summary = previous.summary
     for index, entry in ipairs(path_entries) do
-      if entry.id == previous.firstKeptEntryId then
+      if entry.id == previous.first_kept_entry_id then
         boundary_start = index
         break
       end
     end
-    if boundary_start == 1 and assert(path_entries[1]).id ~= previous.firstKeptEntryId then
+    if boundary_start == 1 and assert(path_entries[1]).id ~= previous.first_kept_entry_id then
       boundary_start = previous_index + 1
     end
   end

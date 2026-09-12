@@ -115,7 +115,9 @@ function M.run(command, opts)
         local next_bytes = captured_bytes + #data
         if opts.max_capture_bytes and next_bytes > opts.max_capture_bytes then
           accepting_output = false
-          done.reject(util.error("tool", "Process output exceeded " .. opts.max_capture_bytes .. " bytes"))
+          local err = util.error("tool", "Process output exceeded " .. opts.max_capture_bytes .. " bytes")
+          rawset(err, "code", "output_limit")
+          done.reject(err)
           terminate()
           return nil
         end

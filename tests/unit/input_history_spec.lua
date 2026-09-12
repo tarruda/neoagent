@@ -40,6 +40,18 @@ describe("neoagent input history", function()
     end)
   end)
 
+  it("allows a Session to follow input history in a fresh workspace", function()
+    local root, directory = vim.fn.tempname(), vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    local history = history_module.new({ directory = directory, root = root })
+    assert(history:add("a draft before acceptance"))
+    local store = require("neoagent.storage").new({ directory = directory, cwd = root })
+    local accepted, err = store:append({ role = "user", content = "accepted prompt" })
+    assert(accepted, vim.inspect(err))
+    assert.are.same({ "a draft before acceptance" }, assert(history:load()))
+  end)
+
   it("merges additions serialized with a concurrent writer", function()
     local root = vim.fn.tempname()
     local directory = vim.fn.tempname()
@@ -74,7 +86,7 @@ describe("neoagent input history", function()
     paths = { root, directory }
     vim.fn.mkdir(root, "p")
     local history = history_module.new({ directory = directory, root = root })
-    vim.fn.mkdir(history.directory, "p")
+    assert(history._workspace.prepare())
     vim.fn.writefile({ "not-json" }, history.path)
     local value, err = history:load()
     assert.is_nil(value)
@@ -107,6 +119,9 @@ describe("neoagent input history", function()
     value, err = history:load()
     assert.is_nil(value)
     assert.matches("read", assert(err).message)
+    value, err = history:add("new")
+    assert.is_nil(value)
+    assert.matches("read", assert(err).message)
 
     vim.fn.delete(history.path, "rf")
     local original_open = vim.uv.fs_open
@@ -118,5 +133,25 @@ describe("neoagent input history", function()
     vim.uv.fs_open = original_open
     assert.is_nil(value)
     assert.matches("acquire input history lock", assert(err).message)
+  end)
+
+  it("rejects reads and writes when Workspace storage is not a directory", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    vim.fn.mkdir(directory, "p")
+    local history = history_module.new({ directory = directory, root = root })
+    assert(require("neoagent.fs").write_all(history.directory, "occupied"))
+
+    for _, operation in ipairs({
+      function() return history:load() end,
+      function() return history:write({ "entry" }) end,
+      function() return history:add("entry") end,
+    }) do
+      local value, err = operation()
+      assert.is_nil(value)
+      assert.matches("not a directory", assert(err).message)
+    end
   end)
 end)

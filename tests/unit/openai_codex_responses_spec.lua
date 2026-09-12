@@ -1,3 +1,6 @@
+local it = require("tests.helpers.async_test")
+local images = require("neoagent.api.images")
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local codex = require("neoagent.api.openai_codex_responses")
 local fake_transport = require("tests.helpers.fake_transport")
@@ -26,7 +29,7 @@ describe("neoagent.api.openai_codex_responses", function()
       reasoning_effort = "high",
       text_verbosity = "medium",
     })
-    local request = model:_request({
+    local plan = model:_request({
       system_prompt = "Be precise.",
       messages = { { role = "user", content = "Hello" } },
       tools = { {
@@ -35,6 +38,8 @@ describe("neoagent.api.openai_codex_responses", function()
         input_schema = { type = "object", properties = {}, additionalProperties = false },
       } },
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
     assert.are.equal("openai-codex-responses", model.api)
     assert.are.equal("https://chatgpt.com/backend-api/codex/responses", request.url)
     local body = assert(request.body)
@@ -49,7 +54,7 @@ describe("neoagent.api.openai_codex_responses", function()
 
     assert.are.equal("https://example.test/codex/responses", codex.new({
       provider = "p", model = "m", base_url = "https://example.test/codex/responses",
-    }):_request({ messages = {}, tools = {} }).url)
+    }):_request({ messages = {}, tools = {} }).request.url)
   end)
 
   it("builds the Codex Responses Lite request profile", function()
@@ -62,7 +67,7 @@ describe("neoagent.api.openai_codex_responses", function()
       reasoning_summary = "none",
       responses_lite = true,
     })
-    local request = model:_request({
+    local plan = model:_request({
       system_prompt = "Use Codex channels.",
       messages = { { role = "user", content = "Hello" } },
       tools = { {
@@ -71,6 +76,8 @@ describe("neoagent.api.openai_codex_responses", function()
         input_schema = { type = "object", properties = {}, additionalProperties = false },
       } },
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     assert.are.equal("true", rawget(assert(request.headers), "x-openai-internal-codex-responses-lite"))
     local body = assert(request.body)
@@ -96,7 +103,15 @@ describe("neoagent.api.openai_codex_responses", function()
       tools = {},
       request_opts = { body = { reasoning = { effort = "medium" } } },
     })
-    assert.are.same({ effort = "medium", context = "all_turns" }, assert(layered.body).reasoning)
+    assert.are.same({ effort = "medium", context = "all_turns" }, layered.encode(images.inline(layered.api)).reasoning)
+  end)
+
+  it("includes the required Lite reasoning context without optional reasoning settings", function()
+    -- The live Luna endpoint rejects this request with HTTP 400 when context
+    -- is absent, even when the caller did not select a reasoning effort.
+    local plan = codex.new({ provider = "openai-codex", model = "gpt-5.6-luna", base_url = "https://chatgpt.com/backend-api",
+      responses_lite = true }):_request({ messages = { { role = "user", content = "Inspect the tile." } } })
+    assert.are.same({ context = "all_turns" }, plan.encode(images.inline(plan.api)).reasoning)
   end)
 
   it("accepts the Codex response.done terminal event", function()
@@ -453,6 +468,7 @@ describe("neoagent.api.openai_codex_responses", function()
       headers = {
         ["X-Codex-Primary-Used-Percent"] = "21",
         ["X-Codex-Primary-Window-Minutes"] = "10080",
+        ["X-Codex-Primary-Reset-At"] = "-1",
         ["X-Codex-Secondary-Used-Percent"] = "0",
         ["X-Codex-Secondary-Window-Minutes"] = "0",
       },
@@ -497,5 +513,52 @@ describe("neoagent.api.openai_codex_responses", function()
     assert.are.equal("weekly 0% left", rawget(assert(result.error), "provider_status"))
     assert.are.equal(0,
       rawget(assert(result.error), "provider_status_details").limits[1].primary.remaining)
+  end)
+
+  it("normalizes structured retry hints and cancellation failures", function()
+    local result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = fake_transport.new({ { error = {
+        kind = "transport",
+        message = "request failed",
+        detail = { error = { code = "server_error", message = "try later" } },
+        response = { status = 503, headers = { ["retry-after"] = "2" } },
+      } } }),
+      request_max_retries = 0,
+    }):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("server_error", rawget(assert(result.error), "code"))
+    assert.are.equal(2000, rawget(assert(result.error), "retry_after_ms"))
+
+    result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = fake_transport.new({ { chunks = { event({
+        type = "response.failed",
+        response = { error = {
+          code = "rate_limit_exceeded",
+          message = "Please try again later.",
+        } },
+      }) } } }),
+      request_max_retries = 0,
+    }):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.is_true(rawget(assert(result.error), "retryable"))
+    assert.is_nil(rawget(assert(result.error), "retry_after_ms"))
+
+    result = wait(codex.new({
+      provider = "openai-codex",
+      model = "gpt-test",
+      base_url = "https://example.test/codex",
+      transport = fake_transport.new({ { error = {
+        kind = "cancelled", message = "request cancelled",
+      } } }),
+      request_max_retries = 1,
+    }):stream({ messages = {} }))
+    assert.is_false(result.ok)
+    assert.are.equal("cancelled", assert(result.error).kind)
   end)
 end)

@@ -593,9 +593,10 @@ describe("neoagent Agent-owned Applets", function()
     local agent = assert(applet:active_agent())
     assert.are.equal("xhigh", assert(agent:get_session():state()).thinking_level)
     local stored = assert(require("neoagent.storage").open(
-      (assert(assert(agent:get_session():metadata()).path))))
+      assert(assert(agent:get_session():metadata()).path),
+      require("neoagent.workspace_storage").new(settings:metadata().directory)))
     assert.are.equal("xhigh", stored:state().thinking_level)
-    assert.are.equal("xhigh", assert(assert(stored:entries()[1]).request).thinkingLevel)
+    assert.are.equal("xhigh", assert(assert(stored:entries()[1]).request).thinking_level)
     assert.are.equal("xhigh",
       assert(assert(settings:load()).agents.neo).default_thinking_level)
   end)
@@ -1041,7 +1042,7 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same(source_snapshot, assert(source):get_session():snapshot())
   end)
 
-  it("enforces copy visibility, content, activity, and cancellation boundaries", function()
+  require("tests.helpers.async_test")("enforces copy visibility, content, activity, and cancellation boundaries", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
     local empty_source = assert(require("neoagent.profile_sessions").new({
@@ -1222,6 +1223,47 @@ describe("neoagent Agent-owned Applets", function()
     assert.are.same(before, assert(source):get_session():snapshot())
   end)
 
+  it("cancels pending attachment imports on destruction without publishing a derived Agent", function()
+    setup(fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "ready" } }) } }))
+    assert(applet:toggle())
+    local sent = assert(applet:send("synthetic source"))
+    assert(type(sent) == "table")
+    assert(vim.wait(1000, function() return sent:is_done() end))
+    local source = assert(applet:active_agent())
+    local session = source:get_session()
+    local image = require("tests.helpers.attachments").new(session:files()).image("image")
+    assert(session:append({ role = "user", content = { image } }))
+    local snapshot = assert(session:snapshot())
+    local directory = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    local profile = assert(applet:profile("neo"))
+    profile.config.persistence = { enabled = true, directory = directory, workspace_settings = false }
+    local created, create_agent = 0, profile.create_agent
+    profile.create_agent = function(...)
+      created = created + 1
+      return create_agent(...)
+    end
+    local closed = 0
+    ---@type Neoagent.AwaitCallbacks<string>?
+    local pending
+    session:files().open = function(_, maximum)
+      return require("neoagent.files").reader({ file_id = image.file_id, bytes = image.bytes }, maximum, function()
+        return async.await(function(done) pending = done end)
+      end, function() closed = closed + 1; return true end)
+    end
+    local operation = assert(applet:fork())
+    assert(vim.wait(1000, function() return pending ~= nil end))
+    assert.is_true(applet.derivations[operation])
+    applet:destroy()
+    assert(pending).resolve("image")
+    assert(vim.wait(1000, function() return operation:is_done() and next(applet.derivations) == nil end))
+    assert.is_false(assert(operation:result()).ok)
+    assert.are.equal(1, closed)
+    assert.are.equal(0, created)
+    assert.are.same(snapshot, session:snapshot())
+    assert.are.same({}, require("neoagent.storage").list(directory, vim.fn.getcwd()))
+  end)
+
   it("reports a durable Session when its derived Agent cannot be built", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
@@ -1246,11 +1288,14 @@ describe("neoagent Agent-owned Applets", function()
       error("derived draft construction failed")
     end
 
-    local missing_draft, draft_err = applet:fork()
+    local missing_draft = assert(applet:fork())
+    assert(vim.wait(1000, function() return missing_draft:is_done() end))
+    local draft_result = assert(missing_draft:result())
+    assert(draft_result.ok == false)
+    local draft_err = draft_result.error
     ---@cast draft_err Neoagent.PublishedSessionError
 
     profile.create_applet = create_applet
-    assert.is_nil(missing_draft)
     assert.is_true(assert(draft_err).session_created)
     assert.is_string(assert(draft_err).session_path)
     assert.matches("derived draft construction failed", tostring(assert(draft_err).detail))
@@ -1261,11 +1306,14 @@ describe("neoagent Agent-owned Applets", function()
     local create_agent = profile.create_agent
     profile.create_agent = function() error("derived construction failed") end
 
-    local derived, err = applet:fork()
+    local derived = assert(applet:fork())
+    assert(vim.wait(1000, function() return derived:is_done() end))
+    local result = assert(derived:result())
+    assert(result.ok == false)
+    local err = result.error
     ---@cast err Neoagent.PublishedSessionError
 
     profile.create_agent = create_agent
-    assert.is_nil(derived)
     assert.is_string(assert(err).session_path)
     assert.is_true(assert(err).session_created)
     assert.is_truthy((assert(assert(err).message):find(assert(err).session_path, 1, true)))
@@ -1313,12 +1361,16 @@ describe("neoagent Agent-owned Applets", function()
       return activate(self, surface, agent)
     end
 
-    local called, derived, err = pcall(applet.fork, applet)
+    local called, derived = pcall(applet.fork, applet)
+    assert(called and derived)
+    assert(vim.wait(1000, function() return derived:is_done() end))
+    local result = assert(derived:result())
+    assert(result.ok == false)
+    local err = result.error
     ---@cast err Neoagent.PublishedSessionError
     applet._activate = activate
 
     assert.is_true(called)
-    assert.is_nil(derived)
     assert.matches("derived activation exploded", tostring(assert(err).detail))
     assert.is_true(assert(err).session_created)
     assert.is_string(assert(err).session_path)

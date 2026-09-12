@@ -1,3 +1,4 @@
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local core_agent_loop = require("neoagent.agent_loop")
 local fake_model = require("tests.helpers.fake_model")
@@ -640,15 +641,12 @@ describe("neoagent.agent_loop", function()
     ---@param fields table<string, unknown>
     ---@return table<string, unknown>
     local function image(fields)
-      return vim.tbl_extend("force", {
-        type = "image",
-        data = "aW1hZ2U=",
-        mimeType = "image/png",
-      }, fields or {})
+      return vim.tbl_extend("force", attachments.image("image"), fields or {})
     end
     local result = wait(agent_loop.run({
       model = model,
       messages = {},
+      model_options = { files = attachments.files },
       tools = { {
         name = "preview",
         description = "preview",
@@ -657,9 +655,9 @@ describe("neoagent.agent_loop", function()
           local invalid = {
             image({ revision = 1 }),
             image({ id = "preview" }),
-            image({ id = "preview", revision = 1, data = false }),
-            image({ id = "preview", revision = 1, mimeType = false }),
-            { type = "image", data = "dW50eXBlZA==",
+            image({ id = "preview", revision = 1, file_id = false }),
+            image({ id = "preview", revision = 1, mime_type = false }),
+            { type = "image", file_id = string.rep("a", 64), bytes = 3,
               id = "untyped", revision = 1 },
             image({ id = false, revision = 1 }),
             image({ id = "", revision = 1 }),
@@ -684,12 +682,9 @@ describe("neoagent.agent_loop", function()
           } })
           ctx.on_update({ content = {
             image({ id = "preview", revision = "frame-1",
-              mimeType = "IMAGE/PNG" }),
+              mime_type = "IMAGE/PNG" }),
           } })
-          final_image = {
-            type = "image", data = "aW1tdXRhYmxlLWltYWdl",
-            mimeType = "IMAGE/PNG",
-          }
+          final_image = attachments.image("immutable-image", "IMAGE/PNG")
           return { content = { final_image } }
         end,
       }, {
@@ -707,7 +702,7 @@ describe("neoagent.agent_loop", function()
         input_schema = { type = "object" },
         execute = function()
           return { content = { {
-            type = "image", data = "dW50eXBlZC1pbWFnZQ==",
+            type = "image", file_id = string.rep("a", 64), bytes = 3,
           } } }
         end,
       } },
@@ -716,14 +711,12 @@ describe("neoagent.agent_loop", function()
 
     assert(result.ok == true)
     assert.is_false(result_message(result, 2).isError)
-    assert.are.same({
-      type = "image", data = "aW1tdXRhYmxlLWltYWdl", mimeType = "image/png",
-    }, result_message(result, 2).content[1])
-    assert.are.equal("IMAGE/PNG", assert(final_image).mimeType)
+    assert.are.same(attachments.image("immutable-image"), result_message(result, 2).content[1])
+    assert.are.equal("IMAGE/PNG", assert(final_image).mime_type)
     assert.is_true(result_message(result, 3).isError)
     assert.matches("finite", util.text_content(result_message(result, 3).content))
     assert.is_true(result_message(result, 4).isError)
-    assert.matches("mimeType", util.text_content(result_message(result, 4).content))
+    assert.matches("mime_type", util.text_content(result_message(result, 4).content))
     assert(vim.wait(1000, function()
       local count = 0
       for _, event in ipairs(events) do
@@ -738,7 +731,7 @@ describe("neoagent.agent_loop", function()
     end
     assert.are.equal("preview", assert(update).id)
     assert.are.equal("frame-1", assert(update).revision)
-    assert.are.equal("image/png", assert(update).mimeType)
+    assert.are.equal("image/png", assert(update).mime_type)
   end)
 
   it("forwards model events and preserves partial failed responses", function()
@@ -976,6 +969,7 @@ describe("neoagent.agent_loop", function()
     local run = agent_loop.run({
       model = model,
       messages = {},
+      model_options = { files = attachments.files },
       tools = { {
         name = "animate",
         description = "animate",
@@ -983,13 +977,7 @@ describe("neoagent.agent_loop", function()
         ---@async
         execute = function(_, ctx)
           late_update = ctx.on_update
-          ctx.on_update({ content = { {
-            type = "image",
-            mimeType = "image/png",
-            data = "ZnJhbWUtb25l",
-            id = "preview",
-            revision = 1,
-          } } })
+          ctx.on_update({ content = { attachments.image(vim.base64.decode("ZnJhbWUtb25l"), "image/png", { id = "preview", revision = 1 }) } })
           return require("neoagent.async").await(function()
             return function() cleaned = true end
           end)
@@ -1007,13 +995,7 @@ describe("neoagent.agent_loop", function()
     end))
     run:cancel()
     assert(vim.wait(1000, function() return run:is_done() end))
-    assert(late_update)({ content = { {
-      type = "image",
-      mimeType = "image/png",
-      data = "ZnJhbWUtdHdv",
-      id = "preview",
-      revision = 2,
-    } } })
+    assert(late_update)({ content = { attachments.image(vim.base64.decode("ZnJhbWUtdHdv"), "image/png", { id = "preview", revision = 2 }) } })
     vim.wait(20)
 
     assert.are.same({ 1 }, revisions)

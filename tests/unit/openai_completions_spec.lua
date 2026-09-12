@@ -1,3 +1,6 @@
+local it = require("tests.helpers.async_test")
+local images = require("neoagent.api.images")
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local openai = require("neoagent.api.openai_completions")
 local agent_loop = require("neoagent.agent_loop")
@@ -256,6 +259,25 @@ describe("neoagent.api.openai_completions", function()
     }, observed)
   end)
 
+  it("accepts numeric strings in compatible-server timing metadata", function()
+    local observed
+    local model = openai.new({
+      provider = "compatible", model = "timing-strings",
+      base_url = "http://localhost/v1",
+      transport = fake_transport.new({ { chunks = {
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"predicted_per_second":"12.5"}}\n\n',
+      } } }),
+    })
+    local result = wait(model:stream({ messages = {}, on_event = function(event)
+      if event.type == "inference_stats" then observed = event end
+    end }))
+    assert.is_true(result.ok)
+    if not observed then
+      error("timing metadata was not published")
+    end
+    assert.are.equal(12.5, observed.generation_tokens_per_second)
+  end)
+
   it("resets and bounds rolling generation samples", function()
     local chunks = {}
     local function sample(tokens, elapsed_ms, content, finish_reason)
@@ -304,7 +326,9 @@ describe("neoagent.api.openai_completions", function()
       model = "test",
       base_url = "http://localhost/v1",
     })
-    local request = model:_request({ messages = {} })
+    local plan = model:_request({ messages = {} })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     local body = assert(request.body)
     assert.is_true(body.stream_options.include_usage)
@@ -345,7 +369,7 @@ describe("neoagent.api.openai_completions", function()
       transport = fake_transport.new({ { chunks = { "data: [DONE]\n\n" } } }),
     })
     assert.is_nil(plain.timeout_ms)
-    assert.is_nil(plain:_request({ messages = {} }).timeout_ms)
+    assert.is_nil(plain:_request({ messages = {} }).request.timeout_ms)
     assert.has_error(function()
       openai.new({
         provider = "local",
@@ -435,12 +459,12 @@ describe("neoagent.api.openai_completions", function()
       end,
       max_output_tokens = 256,
     })
-    local request = model:_request({
+    local plan = model:_request({
       system_prompt = "Be precise",
       messages = {
         { role = "user", content = {
           { type = "text", text = "inspect this" },
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "text", text = "checking" },
@@ -448,13 +472,15 @@ describe("neoagent.api.openai_completions", function()
             arguments = { zeta = true, path = "x.lua", alpha = { second = 2, first = 1 } } },
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
-          { type = "image", mimeType = "image/jpeg", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/jpeg"),
         } },
         { role = "toolResult", toolCallId = "call-2", content = {} },
       },
       tools = { { name = "inspect", description = "Inspect a file", input_schema = { type = "object" } } },
       request_opts = { url = "http://override/v1/chat/completions", body = { temperature = 0 } },
     })
+    local request = plan.request
+    request.body = plan.encode(images.inline(plan.api, attachments.files))
 
     assert.are.equal(1, key_calls)
     assert.are.equal("Bearer dynamic", rawget(assert(request.headers), "Authorization"))
@@ -479,9 +505,9 @@ describe("neoagent.api.openai_completions", function()
       toolCallId = "c1",
       content = {
         { type = "text", text = "image" },
-        { type = "image", mimeType = "image/png", data = "AAAA" },
+        attachments.image(vim.base64.decode("AAAA"), "image/png"),
       },
-    } })
+    } }, nil, nil, images.inline("openai-completions", attachments.files))
     assert.are.equal("tool", assert(converted[1]).role)
     assert.are.equal("user", assert(converted[2]).role)
     assert.are.equal("data:image/png;base64,AAAA", assert(assert(converted[2]).content[2].image_url).url)
@@ -495,13 +521,13 @@ describe("neoagent.api.openai_completions", function()
       } },
       { role = "toolResult", toolCallId = "c1", content = {
         { type = "text", text = "first" },
-        { type = "image", mimeType = "image/png", data = "AAAA" },
+        attachments.image(vim.base64.decode("AAAA"), "image/png"),
       } },
       { role = "toolResult", toolCallId = "c2", content = {
         { type = "text", text = "second" },
-        { type = "image", mimeType = "image/png", data = "BBBB" },
+        attachments.image(vim.base64.decode("BBBB"), "image/png"),
       } },
-    })
+    }, nil, nil, images.inline("openai-completions", attachments.files))
 
     assert.are.same({ "assistant", "tool", "tool", "user", "user" },
       vim.tbl_map(function(message) return message.role end, converted))
@@ -516,10 +542,10 @@ describe("neoagent.api.openai_completions", function()
   it("flushes tool-result images before the following conversation turn", function()
     local converted = openai._encode_messages({
       { role = "toolResult", toolCallId = "c1", content = {
-        { type = "image", mimeType = "image/png", data = "AAAA" },
+        attachments.image(vim.base64.decode("AAAA"), "image/png"),
       } },
       { role = "user", content = "continue" },
-    })
+    }, nil, nil, images.inline("openai-completions", attachments.files))
 
     assert.are.same({ "tool", "user", "user" },
       vim.tbl_map(function(message) return message.role end, converted))
@@ -736,6 +762,20 @@ describe("neoagent.api.openai_completions", function()
     assert.is_false(result.ok)
     assert.are.equal("partial", assert(assert(result.message).content[1]).thinking)
     assert.are.equal("error", assert(result.message).stopReason)
+  end)
+
+  it("retains a completed Tool call when transport fails after its finish marker", function()
+    local model = openai.new({
+      provider = "p", model = "m", base_url = "http://x",
+      transport = fake_transport.new({ { chunks = {
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"inspect","arguments":"{\\"path\\":\\"x.lua\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      }, error = { kind = "transport", message = "connection lost" } } }),
+    })
+    local result = wait(model:stream({ messages = {} }))
+    assert.is_false(result.ok)
+    local call = assert(assert(result.message).content[1])
+    assert.are.equal("inspect", call.name)
+    assert.are.same({ path = "x.lua" }, call.arguments)
   end)
 
   it("suppresses unchanged cumulative token samples", function()

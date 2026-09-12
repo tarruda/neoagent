@@ -216,7 +216,7 @@ end
 
 ---@param entry_id string?
 ---@param position 'before'|'at'?
----@return Neoagent.Agent?, string|Neoagent.Error?
+---@return Neoagent.Run<Neoagent.SessionDerivation, unknown>?, Neoagent.Error?
 function M.fork(entry_id, position)
   return M.applet():fork(entry_id, position)
 end

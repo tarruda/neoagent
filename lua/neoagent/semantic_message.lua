@@ -1,4 +1,5 @@
 local util = require("neoagent.util")
+local files = require("neoagent.files")
 
 local M = {}
 
@@ -36,8 +37,10 @@ local M = {}
 
 ---@class Neoagent.ImageBlock
 ---@field type 'image'
----@field data string
----@field mimeType string
+---@field file_id string
+---@field mime_type string
+---@field bytes integer
+---@field filename? string
 ---@field id? string
 ---@field revision? string|number
 
@@ -162,8 +165,10 @@ local block_fields = {
   },
   image = {
     type = true,
-    data = true,
-    mimeType = true,
+    file_id = true,
+    mime_type = true,
+    bytes = true,
+    filename = true,
     id = true,
     revision = true,
   },
@@ -353,31 +358,17 @@ local function json(value, label)
 end
 
 ---@param value unknown
----@return true? valid
----@return string? error
-local function base64(value)
-  if type(value) ~= "string" or value == "" then
-    return failure("image data must be non-empty base64 text")
-  end
-  local body, padding = value:match("^([A-Za-z0-9+/]*)(=*)$")
-  if not body or #padding > 2 or #value % 4 == 1 or #padding > 0 and #value % 4 ~= 0 then
-    return failure("image data must be valid base64")
-  end
-  return true
-end
-
----@param value unknown
 ---@return string? normalized
 ---@return string? error
 local function mime_type(value)
-  local valid, err = check_string(value, "image mimeType", MAX_TYPE_BYTES)
+  local valid, err = check_string(value, "image mime_type", MAX_TYPE_BYTES)
   if not valid then
     return nil, err
   end
   local normalized = value:lower()
   local media_type, subtype = normalized:match("^([^/]+)/([^/]+)$")
   if media_type ~= "image" or not subtype or subtype:find("[^%w!#$%%&'*+%.%^_`|~%-]") then
-    return failure("image mimeType must be an image media type")
+    return failure("image mime_type must be an image media type")
   end
   return normalized
 end
@@ -493,12 +484,18 @@ local function normalize_block(value, role, transient)
       return nil, err
     end
   else
-    valid, err = base64(result.data)
-    if not valid then
+    if not files.valid_id(result.file_id) then
+      return failure("image file_id must be a lowercase SHA-256 digest")
+    end
+    if not finite(result.bytes) or result.bytes <= 0 or result.bytes % 1 ~= 0 then
+      return failure("image bytes must be a positive integer")
+    end
+    result.mime_type, err = mime_type(result.mime_type)
+    if not result.mime_type then
       return nil, err
     end
-    result.mimeType, err = mime_type(result.mimeType)
-    if not result.mimeType then
+    valid, err = check_optional_string(result.filename, "image filename", MAX_ID_BYTES)
+    if not valid then
       return nil, err
     end
     valid, err = check_optional_string(result.id, "image id", MAX_ID_BYTES)
@@ -520,6 +517,9 @@ local function normalize_block(value, role, transient)
       end
     elseif transient then
       return failure("transient image revision is required")
+    end
+    if not transient then
+      result.id, result.revision = nil, nil
     end
   end
   -- All fields of the selected variant have now passed validation.

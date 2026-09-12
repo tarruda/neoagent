@@ -118,18 +118,17 @@ describe("neoagent Applet View composition", function()
   local views = {}
   ---@type (Neoagent.InputPane|Neoagent.DialogPane|Neoagent.ProviderPane|Neoagent.ProvidersPane)[]
   local components = {}
-  local base64_decode = vim.base64.decode
+  local attachments = require("tests.helpers.attachments").new()
 
   before_each(function()
     config._reset()
-    base64_decode = vim.base64.decode
+    attachments = require("tests.helpers.attachments").new()
     vim.o.columns = 120
     vim.o.lines = 40
     vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "x", false)
   end)
 
   after_each(function()
-    vim.base64.decode = base64_decode
     for _, view in ipairs(views) do view:destroy() end
     for _, component in ipairs(components) do component:destroy() end
     views = {}
@@ -320,6 +319,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -327,11 +327,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "read-image",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(4, 3)),
-      } },
+      content = { attachments.image(png(4, 3)) },
     } })
     assert(value:open())
     assert(vim.wait(1000, function() return #placements > 0 end))
@@ -362,6 +358,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
 
@@ -369,13 +366,9 @@ describe("neoagent Applet View composition", function()
     ---@param revision integer
     ---@return Neoagent.ImageBlock
     local function frame(width, revision)
-      return {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(width, width)),
-        id = "preview",
-        revision = revision,
-      }
+      return attachments.image(png(width, width), "image/png", {
+        id = "preview", revision = revision,
+      })
     end
 
     ---@param pane Applet.Pane
@@ -484,10 +477,11 @@ describe("neoagent Applet View composition", function()
   end)
 
   it("retains stable image placements while clipped thinking streams", function()
-    local decodes = 0
-    vim.base64.decode = function(value)
-      decodes = decodes + 1
-      return base64_decode(value)
+    local reads = 0
+    local open = attachments.files.open
+    attachments.files.open = function(...)
+      reads = reads + 1
+      return open(...)
     end
     local batches = {}
     local images = Applet.ImageSystem._new({
@@ -504,6 +498,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -511,11 +506,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "screenshot",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(640, 400)),
-      } },
+      content = { attachments.image(png(640, 400)) },
     } })
     value:set_context({ state = "running" })
     local lines = {}
@@ -533,7 +524,7 @@ describe("neoagent Applet View composition", function()
     value.transcript.pane:flush()
 
     local batch_count = #batches
-    local decode_count = decodes
+    local read_count = reads
     local image_layout = vim.deepcopy(assert(value.transcript.pane.layout).images)
     value:apply({
       type = "thinking_delta",
@@ -544,7 +535,7 @@ describe("neoagent Applet View composition", function()
     assert.is_true(contains((assert(view_handles.buffer(value, "transcript"))), "thinking line 12"))
     assert.are.same(image_layout, assert(value.transcript.pane.layout).images)
     assert.are.equal(batch_count, #batches)
-    assert.are.equal(decode_count, decodes)
+    assert.are.equal(read_count, reads)
 
     local row, line = line_index((assert(view_handles.buffer(value, "transcript"))), "thinking line 12")
     row = assert(row) - 1
@@ -567,6 +558,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -582,11 +574,7 @@ describe("neoagent Applet View composition", function()
       toolCallId = "screenshot",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(640, 400)),
-      } },
+      content = { attachments.image(png(640, 400)) },
     }, {
       role = "assistant",
       content = { { type = "text", text = "after screenshot" } },
@@ -627,7 +615,7 @@ describe("neoagent Applet View composition", function()
     images:destroy()
   end)
 
-  it("prepares replacement-conversation images with independent identities", function()
+  it("shares identical stored images across conversations and replaces changed content", function()
     local images = Applet.ImageSystem._new({
       _backend = image_backend(),
     })
@@ -636,6 +624,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     ---@param width integer
@@ -644,11 +633,7 @@ describe("neoagent Applet View composition", function()
     local function messages(width, height)
       return { {
         role = "user",
-        content = { {
-          type = "image",
-          mimeType = "image/png",
-          data = vim.base64.encode(png(width, height)),
-        } },
+        content = { attachments.image(png(width, height)) },
       } }
     end
 
@@ -657,6 +642,10 @@ describe("neoagent Applet View composition", function()
     assert(vim.wait(1000, function()
       return images:_stats().prepared_resources == 1
     end))
+
+    value:set_messages(messages(1, 1))
+    assert(value.transcript.pane:flush())
+    assert.are.equal(1, images:_stats().preparations)
 
     value:set_messages(messages(2, 2))
     assert.is_true((value.transcript.pane:flush()))
@@ -692,6 +681,7 @@ describe("neoagent Applet View composition", function()
       config = resolved,
       renderer = resolved.renderer,
       image_system = images,
+      files = attachments.files,
     })
     views[#views + 1] = value
     value:set_messages({ {
@@ -699,15 +689,11 @@ describe("neoagent Applet View composition", function()
       toolCallId = "expanded-image",
       toolName = "read_file",
       isError = false,
-      content = { {
-        type = "image",
-        mimeType = "image/png",
-        data = vim.base64.encode(png(6, 5)),
-      } },
+      content = { attachments.image(png(6, 5)) },
     } })
     assert(value:open())
     assert(vim.wait(1000, function()
-      return contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG · 6×5")
+      return contains((assert(view_handles.buffer(value, "transcript"))), "Image · PNG · 24 B")
     end))
     assert.is_false((vim.wait(100, function() return #placements > 0 end)))
 
@@ -1340,7 +1326,7 @@ describe("neoagent Applet View composition", function()
       } },
       { role = "toolResult", toolCallId = "call", toolName = "shell",
         isError = false, content = { { type = "text", text = "done" } } },
-      { role = "compactionSummary", summary = "summary", tokensBefore = 10 },
+      { role = "compactionSummary", summary = "summary", tokens_before = 10 },
     })
     assert(value:open())
     assert(vim.wait(1000, function()
@@ -1575,7 +1561,7 @@ describe("neoagent Applet View composition", function()
     value:set_messages({
       { role = "toolResult", toolCallId = "missing", toolName = "inspect",
         isError = false, content = { { type = "text", text = "result" } } },
-      { role = "compactionSummary", summary = "compact", tokensBefore = 2000 },
+      { role = "compactionSummary", summary = "compact", tokens_before = 2000 },
     })
     value:apply({ type = "message_end", message = {
       role = "user", content = "new prompt",

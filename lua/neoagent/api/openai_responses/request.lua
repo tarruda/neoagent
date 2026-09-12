@@ -6,9 +6,11 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@async
 ---@param content string|Neoagent.InputBlock[]
+---@param image Neoagent.ImageEncoder
 ---@return Neoagent.JsonObject[]
-local function input_content(content)
+local function input_content(content, image)
   ---@type Neoagent.JsonObject[]
   local result = util.list()
   if type(content) == "string" then
@@ -19,11 +21,7 @@ local function input_content(content)
     if block.type == "text" then
       result[#result + 1] = { type = "input_text", text = block.text or "" }
     elseif block.type == "image" then
-      result[#result + 1] = {
-        type = "input_image",
-        detail = "auto",
-        image_url = "data:" .. block.mimeType .. ";base64," .. block.data,
-      }
+      result[#result + 1] = image(block)
     end
   end
   return result
@@ -97,9 +95,11 @@ local function encode_assistant(result, message, message_index)
   end
 end
 
+---@async
 ---@param content Neoagent.InputBlock[]
+---@param image Neoagent.ImageEncoder
 ---@return string|Neoagent.JsonObject[]
-local function tool_output(content)
+local function tool_output(content, image)
   local text = {}
   ---@type Neoagent.JsonObject[]
   local output = util.list()
@@ -107,11 +107,7 @@ local function tool_output(content)
     if block.type == "text" then
       text[#text + 1] = block.text or ""
     elseif block.type == "image" then
-      output[#output + 1] = {
-        type = "input_image",
-        detail = "auto",
-        image_url = "data:" .. block.mimeType .. ";base64," .. block.data,
-      }
+      output[#output + 1] = image(block)
     end
   end
   local joined = table.concat(text, "\n")
@@ -125,11 +121,14 @@ local function tool_output(content)
   return output
 end
 
+---@async
 ---@param messages Neoagent.Message[]
 ---@param system_prompt? string
 ---@param include_system? boolean
+---@param image? Neoagent.ImageEncoder
 ---@return Neoagent.JsonObject[]
-local function encode_messages(messages, system_prompt, include_system)
+local function encode_messages(messages, system_prompt, include_system, image)
+  image = image or require("neoagent.api.images").inline("openai-responses")
   ---@type Neoagent.JsonObject[]
   local result = util.list()
   if include_system ~= false and system_prompt and system_prompt ~= "" then
@@ -137,7 +136,7 @@ local function encode_messages(messages, system_prompt, include_system)
   end
   for message_index, message in ipairs(messages) do
     if message.role == "user" then
-      local content = input_content(message.content)
+      local content = input_content(message.content, image)
       if #content > 0 then
         result[#result + 1] = { role = "user", content = content }
       end
@@ -145,7 +144,7 @@ local function encode_messages(messages, system_prompt, include_system)
       encode_assistant(result, message, message_index)
     elseif message.role == "toolResult" then
       local call_id = split_call_id(message.toolCallId)
-      local output = tool_output(message.content)
+      local output = tool_output(message.content, image)
       result[#result + 1] = { type = "function_call_output", call_id = call_id, output = output }
     else
       error(util.error("model", "Unsupported message role: " .. tostring(message.role)), 0)
@@ -155,14 +154,11 @@ local function encode_messages(messages, system_prompt, include_system)
 end
 
 ---@param tools? Neoagent.ToolDefinition[]
----@param strict? boolean|vim.NIL
+---@param strict boolean|vim.NIL
 ---@return Neoagent.JsonObject[]
 local function encode_tools(tools, strict)
   ---@type Neoagent.JsonObject[]
   local result = util.list()
-  if strict == nil then
-    strict = false
-  end
   for _, tool in ipairs(tools or {}) do
     result[#result + 1] = {
       type = "function",
@@ -198,8 +194,9 @@ end
 
 ---@param self Neoagent.ResponsesModel
 ---@param call_opts Neoagent.StreamOptions
----@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
+---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
 function M.build(self, call_opts)
+  call_opts = util.copy(call_opts)
   local headers = {
     ["Accept"] = "text/event-stream",
     ["Content-Type"] = "application/json",
@@ -214,27 +211,25 @@ function M.build(self, call_opts)
 
   local codex = self._profile == "codex"
   local responses_lite = codex and self._responses_lite == true
-  local model_messages = messages.for_model(call_opts.messages, self)
-  local input = encode_messages(model_messages, call_opts.system_prompt, not codex)
   ---@type Neoagent.JsonObject
   local body = {
     model = self.id,
-    input = input,
     stream = true,
     store = false,
   }
   local tools = encode_tools(call_opts.tools, codex and vim.NIL or false)
+  ---@type Neoagent.JsonObject[]?
+  local prefix
   if codex then
     body.text = { verbosity = self._text_verbosity or "low" }
     body.include = { "reasoning.encrypted_content" }
     body.tool_choice = "auto"
     if responses_lite then
       headers["x-openai-internal-codex-responses-lite"] = "true"
-      local prefix = util.list({ { type = "additional_tools", role = "developer", tools = tools } })
+      prefix = util.list({ { type = "additional_tools", role = "developer", tools = tools } })
       if call_opts.system_prompt and call_opts.system_prompt ~= "" then
         prefix[#prefix + 1] = developer_message(call_opts.system_prompt)
       end
-      body.input = prepend_input(prefix, input)
       body.parallel_tool_calls = false
     else
       body.instructions = call_opts.system_prompt or "You are a helpful assistant."
@@ -266,6 +261,7 @@ function M.build(self, call_opts)
     url = self._base_url .. "/responses",
     headers = headers,
     body = body,
+    messages = util.copy(call_opts.messages),
     timeout_ms = request_opts.timeout(self._timeout_ms, call_opts.timeout_ms),
   }
   ---@type Neoagent.RequestOptionsInput
@@ -281,15 +277,28 @@ function M.build(self, call_opts)
   end
   request = request_opts.apply(request, call_opts.request_opts, context)
   local reasoning_context = self._reasoning_context or (responses_lite and "all_turns" or nil)
-  if
-    reasoning_context
-    and type(request.body) == "table"
-    and type(request.body.reasoning) == "table"
-    and request.body.reasoning.context == nil
-  then
-    request.body.reasoning.context = reasoning_context
+  if reasoning_context and type(request.body) == "table" then
+    if request.body.reasoning == nil then
+      request.body.reasoning = {}
+    end
+    if type(request.body.reasoning) == "table" and request.body.reasoning.context == nil then
+      request.body.reasoning.context = reasoning_context
+    end
   end
-  return request, context.request_context
+  local selected = messages.for_model(assert(request.messages), self)
+  return {
+    api = self.api,
+    request = request,
+    messages = selected,
+    ---@async
+    encode = function(image)
+      local encoded = util.copy(request.body or {})
+      local input = encode_messages(selected, call_opts.system_prompt, not codex, image)
+      encoded.input = prefix and prepend_input(prefix, input) or input
+      return encoded
+    end,
+  },
+    context.request_context
 end
 
 M.encode_messages = encode_messages

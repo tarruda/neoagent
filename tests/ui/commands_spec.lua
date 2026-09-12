@@ -222,11 +222,11 @@ describe("neoagent commands", function()
     assert.is_nil(rawget(original_agent, "select_fork"))
     vim.cmd("NeoagentBranch " .. entry_id)
     assert.are.equal(entry_id, assert(neoagent.get_session()):leaf_id())
-    local parent_path = assert(assert(neoagent.get_session()):metadata()).path
+    local parent_id = assert(neoagent.get_session()):id()
     vim.cmd("NeoagentFork " .. entry_id)
     assert.are.equal(2, #applet:agents())
     assert.is_false(original_agent:is_destroyed())
-    assert.are.equal(parent_path,
+    assert.are.equal(parent_id,
       assert(assert(neoagent.get_session()):metadata()).parent_session)
     assert.are.equal("stored", applet:get_input())
 

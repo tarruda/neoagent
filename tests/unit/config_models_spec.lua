@@ -1,3 +1,6 @@
+local it = require("tests.helpers.async_test")
+local images = require("neoagent.api.images")
+local attachments = require("tests.helpers.attachments").new()
 local assert = require("luassert")
 local config = require("neoagent.config")
 local model_api = require("neoagent.models")
@@ -72,13 +75,17 @@ end
 ---@field headers table<string, unknown>
 ---@field body Neoagent.JsonObject
 
+---@async
 ---@param model Neoagent.Model
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.TestConfiguredRequest
 local function request_for(model, opts)
-  local adapter = rawget(model, "_model") or model
+  local adapter = model
+  while rawget(adapter, "_model") do adapter = rawget(adapter, "_model") end
   ---@cast adapter Neoagent.CompletionsModel|Neoagent.ResponsesModel|Neoagent.AnthropicModel
-  local request = adapter:_request(opts)
+  local plan = adapter:_request(opts)
+  local request = plan.request
+  request.body = plan.encode(images.inline(plan.api, opts.files))
   assert(request.headers)
   assert(request.body)
   return request --[[@as Neoagent.TestConfiguredRequest]]
@@ -90,6 +97,17 @@ local function invalid_config(invalid)
 end
 
 describe("neoagent configuration and model resolution", function()
+  it("validates explicit prompt-cache policy without overriding disabled values", function()
+    local configured = config.setup({ providers = {
+      anthropic = { prompt_caching = false },
+    } })
+    assert.is_false(configured.providers.anthropic.prompt_caching)
+    for _, field in ipairs({ "prompt_caching" }) do
+      assert.has_error(function()
+        invalid_config({ providers = { openai = { [field] = "disabled" } } })
+      end)
+    end
+  end)
   ---@type string?
   local original_openai_key
   ---@type string?
@@ -545,7 +563,7 @@ describe("neoagent configuration and model resolution", function()
       messages = {
         { role = "user", content = {
           { type = "text", text = "Inspect this" },
-          { type = "image", mimeType = "image/png", data = "AAAA" },
+          attachments.image(vim.base64.decode("AAAA"), "image/png"),
         } },
         { role = "assistant", content = {
           { type = "toolCall", id = "call-1", name = "read_file",
@@ -553,7 +571,7 @@ describe("neoagent configuration and model resolution", function()
         } },
         { role = "toolResult", toolCallId = "call-1", content = {
           { type = "text", text = "Read image file [image/png]" },
-          { type = "image", mimeType = "image/png", data = "BBBB" },
+          attachments.image(vim.base64.decode("BBBB"), "image/png"),
         } },
       },
       tools = {},
@@ -812,16 +830,17 @@ describe("neoagent configuration and model resolution", function()
     assert.are.equal("ephemeral", assert(assert(request.body).tools[1].cache_control).type)
     local rich_messages = { { role = "user", content = {
       { type = "text", text = "Inspect this" },
-      { type = "image", data = "AA==", mimeType = "image/png" },
+      attachments.image(vim.base64.decode("AA==")),
     } } }
     request = request_for(opus, {
       messages = rich_messages,
+      files = attachments.files,
       tools = {},
       request_opts = assert(opus.thinking).low,
     })
     assert.are.equal("ephemeral",
       assert(assert(assert(assert(request.body).messages[1].content)[2]).cache_control).type)
-    assert.is_nil(rich_messages[1].content[2].cache_control)
+    assert.is_nil(rawget(rich_messages[1].content[2], "cache_control"))
   end)
 
   it("prefers stored API keys and resumes ambient keys after logout", function()

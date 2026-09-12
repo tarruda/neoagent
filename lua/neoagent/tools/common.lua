@@ -49,6 +49,15 @@ local util = require("neoagent.util")
 
 local M = {}
 
+---@param ctx Neoagent.ToolCapabilities
+---@return Neoagent.Files
+function M.files(ctx)
+  local context = ctx and ctx.context
+  local files = type(context) == "table" and rawget(context, "files") or nil
+  assert(require("neoagent.files").writable(files), "Tool requires an attachment store in ctx.context.files")
+  return files
+end
+
 ---@param ctx? Neoagent.ToolCapabilities
 ---@return Neoagent.ToolWorkspace
 function M.workspace(ctx)

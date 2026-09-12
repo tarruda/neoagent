@@ -82,6 +82,7 @@ describe("neoagent process runner", function()
     end)
     assert.is_false(completed.ok)
     assert.matches("exceeded 4 bytes", assert(completed.error).message)
+    assert.are.equal("output_limit", rawget(assert(completed.error), "code"))
   end)
 
   it("escalates timed-out TERM-resistant processes to KILL", function()
@@ -134,6 +135,21 @@ describe("neoagent process runner", function()
     assert.is_false(descendant_survived(marker))
   end)
 
+  it("closes a POSIX process tree only once", function()
+    local signals = {}
+    local tree = require("neoagent.process.posix").new({
+      kill = function(pid, signal)
+        signals[#signals + 1] = { pid, signal }
+        return 0
+      end,
+    })
+    assert(tree:attach(42))
+    tree:close(true)
+    tree:close(true)
+    assert.are.same({ { -42, 9 } }, signals)
+    assert.is_false(tree:terminate(15))
+  end)
+
   it("owns Windows process descendants through a kill-on-close job", function()
     ---@type string[]
     local calls = {}
@@ -152,8 +168,14 @@ describe("neoagent process runner", function()
       close = function(handle) calls[#calls + 1] = "close:" .. tostring(handle) end,
     }
     local tree = assert(require("neoagent.process.windows").new({ backend = backend }))
+    assert.is_false(tree:terminate(15))
+    assert(tree:attach(0))
     assert(tree:attach(42))
     assert.is_true(tree:terminate(15))
+    tree:close(true)
+    local attached, attach_err = tree:attach(42)
+    assert.is_nil(attached)
+    assert.are.equal("process tree is closed", attach_err)
     tree:close(true)
     assert.are.same({
       "create", "open:42", "assign:job:process", "close:process",

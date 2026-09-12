@@ -18,6 +18,7 @@ local M = {}
 ---@field service? Neoagent.ProviderFactory
 ---@field service_opts? table<string, unknown>
 ---@field diagnostics? {path: string}|false
+---@field prompt_caching? boolean
 
 ---@class Neoagent.ProviderDefinition: Neoagent.ProviderOptions
 ---@field api string

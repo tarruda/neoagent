@@ -18,25 +18,25 @@ local M = {}
 
 ---@class Neoagent.JournalRequest
 ---@field model? Neoagent.ModelSelection
----@field thinkingLevel? string|vim.NIL
+---@field thinking_level? string|vim.NIL
 
 ---@class Neoagent.JournalEntryInput
 ---@field [string] unknown
 ---@field type? unknown
 ---@field id? unknown
----@field parentId? unknown
----@field timestamp? unknown
+---@field parent_id? unknown
+---@field created_at? unknown
 ---@field message? unknown
 ---@field request? unknown
 ---@field summary? unknown
----@field firstKeptEntryId? unknown
----@field tokensBefore? unknown
----@field targetId? unknown
+---@field first_kept_entry_id? unknown
+---@field tokens_before? unknown
+---@field target_id? unknown
 
 ---@class Neoagent.JournalEntryBase: Neoagent.JournalEntryInput
 ---@field id string
----@field parentId? string|vim.NIL
----@field timestamp string
+---@field parent_id? string|vim.NIL
+---@field created_at integer
 
 ---@class Neoagent.MessageEntry: Neoagent.JournalEntryBase
 ---@field type "message"
@@ -46,12 +46,12 @@ local M = {}
 ---@class Neoagent.CompactionEntry: Neoagent.JournalEntryBase
 ---@field type "compaction"
 ---@field summary string
----@field firstKeptEntryId string
----@field tokensBefore integer
+---@field first_kept_entry_id string
+---@field tokens_before integer
 
 ---@class Neoagent.LeafEntry: Neoagent.JournalEntryBase
 ---@field type "leaf"
----@field targetId? string|vim.NIL
+---@field target_id? string|vim.NIL
 
 ---@alias Neoagent.JournalEntry Neoagent.MessageEntry|Neoagent.CompactionEntry|Neoagent.LeafEntry
 ---@alias Neoagent.JournalIndex table<string, Neoagent.JournalEntry>
@@ -60,15 +60,15 @@ local M = {}
 ---@field type "message"|"compaction"|"leaf"
 ---@field id string
 ---@field parent_id? string|vim.NIL
----@field timestamp string
+---@field created_at integer
 ---@field payload? table<string, unknown>
 ---@field by_id? Neoagent.JournalIndex
 
 ---@class Neoagent.CompactionSummary
 ---@field role "compactionSummary"
 ---@field summary string
----@field tokensBefore integer
----@field timestamp integer
+---@field tokens_before integer
+---@field created_at integer
 
 ---@alias Neoagent.ProjectionMessage Neoagent.Message|Neoagent.CompactionSummary
 
@@ -101,51 +101,6 @@ local function safe_text(value)
   return nonempty_string(value) and #value <= 512 and util.is_valid_utf8(value) and not value:find("[%z\1-\31\127]")
 end
 
--- Journal dates are UTC; calendar arithmetic avoids local timezone and DST.
----@param value string
----@return integer?
-local function timestamp_ms(value)
-  local date, fraction = value:match("^(.-)%.(%d+)Z$")
-  date = date or value:match("^(.-)Z$")
-  if not date then
-    return nil
-  end
-  local year, month, day, hour, minute, second = date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)$")
-  if not year then
-    return nil
-  end
-  local y, m, d = tonumber(year), tonumber(month), tonumber(day)
-  local h, min, sec = tonumber(hour), tonumber(minute), tonumber(second)
-  ---@cast y integer
-  ---@cast m integer
-  ---@cast d integer
-  ---@cast h integer
-  ---@cast min integer
-  ---@cast sec integer
-  if y < 1970 or m < 1 or m > 12 or d < 1 or h > 23 or min > 59 or sec > 59 then
-    return nil
-  end
-  local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
-  local month_days = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
-  if d > month_days[m] then
-    return nil
-  end
-  local previous_year = y - 1
-  local days = previous_year * 365
-    + math.floor(previous_year / 4)
-    - math.floor(previous_year / 100)
-    + math.floor(previous_year / 400)
-    - 719162
-    + d
-    - 1
-  for index = 1, m - 1 do
-    days = days + assert(month_days[index])
-  end
-  local millis = tonumber(((fraction or "") .. "000"):sub(1, 3))
-  ---@cast millis integer
-  return ((days * 24 + h) * 60 * 60 + min * 60 + sec) * 1000 + millis
-end
-
 ---@param request unknown
 ---@return TypeGuard<Neoagent.JournalRequest?>
 ---@return string? error
@@ -157,7 +112,7 @@ local function validate_request(request)
     return false, "message request must be an object"
   end
   for key in pairs(request) do
-    if key ~= "model" and key ~= "thinkingLevel" then
+    if key ~= "model" and key ~= "thinking_level" then
       return false, "unsupported message request field: " .. tostring(key)
     end
   end
@@ -172,9 +127,9 @@ local function validate_request(request)
       end
     end
   end
-  local thinking_level = rawget(request, "thinkingLevel")
+  local thinking_level = rawget(request, "thinking_level")
   if thinking_level ~= nil and not is_null(thinking_level) and not safe_text(thinking_level) then
-    return false, "message request thinkingLevel must be safe non-empty text"
+    return false, "message request thinking_level must be safe non-empty text"
   end
   return true
 end
@@ -198,7 +153,7 @@ function M.normalize_request_state(state)
   end
   local thinking_level = rawget(state, "thinking_level")
   if thinking_level ~= nil then
-    rawset(request, "thinkingLevel", thinking_level)
+    rawset(request, "thinking_level", thinking_level)
   end
   local valid, err = validate_request(next(request) and request or nil)
   if not valid then
@@ -217,7 +172,7 @@ local function normalize_compaction_summary(message)
     return nil, "compaction summary must be an object"
   end
   for key in pairs(message) do
-    if key ~= "role" and key ~= "summary" and key ~= "tokensBefore" and key ~= "timestamp" then
+    if key ~= "role" and key ~= "summary" and key ~= "tokens_before" and key ~= "created_at" then
       return nil, "compaction summary has unsupported field: " .. tostring(key)
     end
   end
@@ -227,11 +182,11 @@ local function normalize_compaction_summary(message)
   if not nonempty_string(message.summary) or not util.is_valid_utf8(message.summary) then
     return nil, "compaction summary must contain non-empty UTF-8 text"
   end
-  if not finite_nonnegative_integer(message.tokensBefore) then
-    return nil, "compaction summary tokensBefore must be a non-negative integer"
+  if not finite_nonnegative_integer(message.tokens_before) then
+    return nil, "compaction summary tokens_before must be a non-negative integer"
   end
-  if not finite_nonnegative_integer(message.timestamp) then
-    return nil, "compaction summary timestamp must be a non-negative integer"
+  if not finite_nonnegative_integer(message.created_at) then
+    return nil, "compaction summary created_at must be a non-negative integer"
   end
   ---@cast message Neoagent.CompactionSummary
   return util.copy(message)
@@ -316,16 +271,16 @@ local validators = {
     if
       not nonempty_string(entry.summary)
       or not util.is_valid_utf8(entry.summary)
-      or not nonempty_string(entry.firstKeptEntryId)
-      or not finite_nonnegative_integer(entry.tokensBefore)
+      or not safe_text(entry.first_kept_entry_id)
+      or not finite_nonnegative_integer(entry.tokens_before)
     then
-      return false, "compactions require summary, firstKeptEntryId, and tokensBefore"
+      return false, "compactions require summary, first_kept_entry_id, and tokens_before"
     end
     return true
   end,
   leaf = function(entry)
-    if not is_null(entry.targetId) and not nonempty_string(entry.targetId) then
-      return false, "leaf targetId must be an entry id or null"
+    if not is_null(entry.target_id) and not safe_text(entry.target_id) then
+      return false, "leaf target_id must be a safe entry id or null"
     end
     return true
   end,
@@ -336,26 +291,26 @@ local entry_fields = {
   message = {
     type = true,
     id = true,
-    parentId = true,
-    timestamp = true,
+    parent_id = true,
+    created_at = true,
     message = true,
     request = true,
   },
   compaction = {
     type = true,
     id = true,
-    parentId = true,
-    timestamp = true,
+    parent_id = true,
+    created_at = true,
     summary = true,
-    firstKeptEntryId = true,
-    tokensBefore = true,
+    first_kept_entry_id = true,
+    tokens_before = true,
   },
   leaf = {
     type = true,
     id = true,
-    parentId = true,
-    timestamp = true,
-    targetId = true,
+    parent_id = true,
+    created_at = true,
+    target_id = true,
   },
 }
 
@@ -377,14 +332,14 @@ function M.validate_entry(entry)
   if not nonempty_string(entry.id) then
     return false, "entry id is required"
   end
-  if not is_null(entry.parentId) and not nonempty_string(entry.parentId) then
-    return false, "parentId must be an entry id or null"
+  if not safe_text(entry.id) then
+    return false, "entry id must be safe text"
   end
-  if not nonempty_string(entry.timestamp) then
-    return false, "entry timestamp is required"
+  if not is_null(entry.parent_id) and not safe_text(entry.parent_id) then
+    return false, "parent_id must be a safe entry id or null"
   end
-  if timestamp_ms(entry.timestamp) == nil then
-    return false, "entry timestamp must be a UTC ISO 8601 date"
+  if not finite_nonnegative_integer(entry.created_at) then
+    return false, "entry created_at must be UTC milliseconds"
   end
   return validators[entry.type](entry)
 end
@@ -393,16 +348,16 @@ end
 ---@param by_id Neoagent.JournalIndex
 ---@return true?, string?
 function M.validate_references(entry, by_id)
-  if entry.type == "leaf" and not is_null(entry.targetId) and not by_id[entry.targetId] then
+  if entry.type == "leaf" and not is_null(entry.target_id) and not by_id[entry.target_id] then
     return nil, "leaf target does not exist"
   end
   if entry.type == "compaction" then
-    if not by_id[entry.firstKeptEntryId] then
+    if not by_id[entry.first_kept_entry_id] then
       return nil, "compaction first kept entry does not exist"
     end
-    local current = is_null(entry.parentId) and nil or by_id[entry.parentId]
-    while current and current.id ~= entry.firstKeptEntryId do
-      current = is_null(current.parentId) and nil or by_id[current.parentId]
+    local current = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
+    while current and current.id ~= entry.first_kept_entry_id do
+      current = is_null(current.parent_id) and nil or by_id[current.parent_id]
     end
     if not current then
       return nil, "compaction first kept entry is not on the active path"
@@ -421,7 +376,7 @@ function M.validate_references(entry, by_id)
     local result_id = message.role == "toolResult" and message.toolCallId or nil
     local result_name = message.role == "toolResult" and message.toolName or nil
     local matched_result = result_id == nil
-    local current = is_null(entry.parentId) and nil or by_id[entry.parentId]
+    local current = is_null(entry.parent_id) and nil or by_id[entry.parent_id]
     while current do
       if current.type == "compaction" then
         break
@@ -452,7 +407,7 @@ function M.validate_references(entry, by_id)
       if matched_result and next(new_calls) == nil then
         break
       end
-      current = is_null(current.parentId) and nil or by_id[current.parentId]
+      current = is_null(current.parent_id) and nil or by_id[current.parent_id]
     end
     if not matched_result then
       return nil, "toolResult references an unknown toolCall: " .. tostring(result_id)
@@ -476,7 +431,7 @@ function M.prepare_entry(opts)
   if type(payload) ~= "table" or next(payload) ~= nil and util.is_list(payload) then
     return nil, "entry payload must be an object"
   end
-  for _, name in ipairs({ "type", "id", "parentId", "timestamp" }) do
+  for _, name in ipairs({ "type", "id", "parent_id", "created_at" }) do
     if rawget(payload, name) ~= nil then
       return nil, "entry payload must not set protected field " .. name
     end
@@ -485,8 +440,8 @@ function M.prepare_entry(opts)
   local entry = {
     type = opts.type,
     id = opts.id,
-    parentId = opts.parent_id == nil and vim.NIL or opts.parent_id,
-    timestamp = opts.timestamp,
+    parent_id = opts.parent_id == nil and vim.NIL or opts.parent_id,
+    created_at = opts.created_at,
   }
   for key, value in pairs(payload) do
     entry[key] = util.copy(value)
@@ -533,7 +488,7 @@ function M.validate_entries(entries)
     if by_id[entry.id] then
       return nil, "duplicate entry id", index
     end
-    if not is_null(entry.parentId) and not by_id[entry.parentId] then
+    if not is_null(entry.parent_id) and not by_id[entry.parent_id] then
       return nil, "parent entry does not precede child", index
     end
     local references, reference_err = M.validate_references(entry, by_id)
@@ -541,7 +496,7 @@ function M.validate_entries(entries)
       return nil, reference_err, index
     end
     if entry.type == "leaf" then
-      leaf_id = entry.targetId ~= vim.NIL and entry.targetId or nil
+      leaf_id = entry.target_id ~= vim.NIL and entry.target_id or nil
     else
       leaf_id = entry.id
     end
@@ -567,7 +522,7 @@ local function indexed_path(by_id, leaf_id)
   local reversed = {}
   while current do
     reversed[#reversed + 1] = current
-    current = is_null(current.parentId) and nil or by_id[current.parentId]
+    current = is_null(current.parent_id) and nil or by_id[current.parent_id]
   end
   local result = {}
   for index = #reversed, 1, -1 do
@@ -606,8 +561,8 @@ function M.entry_messages(entry)
       {
         role = "compactionSummary",
         summary = entry.summary,
-        tokensBefore = entry.tokensBefore,
-        timestamp = assert(timestamp_ms(entry.timestamp)),
+        tokens_before = entry.tokens_before,
+        created_at = entry.created_at,
       },
     }
   end
@@ -634,7 +589,7 @@ local function retained_before(path, compaction_index)
   local keeping = false
   local compaction = path[compaction_index]
   ---@cast compaction Neoagent.CompactionEntry
-  local first_kept = compaction.firstKeptEntryId
+  local first_kept = compaction.first_kept_entry_id
   for index = 1, compaction_index - 1 do
     local entry = assert(path[index])
     if entry.id == first_kept then
@@ -710,7 +665,7 @@ function M.to_llm(messages)
           message.summary,
           "\n</summary>"
         ),
-        timestamp = message.timestamp,
+        timestamp = message.created_at,
       }
     end
   end
@@ -725,7 +680,7 @@ local function apply_state(result, entry)
     if request.model then
       result.model = util.copy(request.model)
     end
-    local thinking_level = rawget(request, "thinkingLevel")
+    local thinking_level = rawget(request, "thinking_level")
     if thinking_level ~= nil then
       if is_null(thinking_level) then
         result.thinking_level = nil

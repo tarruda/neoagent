@@ -682,7 +682,8 @@ current terminal supports persistent Kitty placements. A custom backend owns
 its protocol-specific diagnostics. Explicit `cell_width` and `cell_height`
 options override terminal pixel detection.
 
-Image nodes accept bounded PNG bytes or trusted local PNG paths: >lua
+Image nodes accept bounded PNG bytes, trusted local PNG paths, or application
+resource descriptors: >lua
 
   ui.image({
     key = "attachment:42",
@@ -708,6 +709,15 @@ uses the available width; `width = "native"` approaches the source pixel width.
 The source `id` is unique among byte resources that can coexist in one
 ImageSystem. Change `revision` whenever its bytes change. An image node `key`
 identifies its visual slot.
+
+For managed application storage, use a plain source descriptor
+`{ kind = "png_resource", id = resource_id, revision = revision }` and supply
+`read_image_resource(source, maximum_bytes, done)` to `Applet.Pane.new()`.
+The reader calls `done(png_bytes)` or `done(nil, error_message)` and returns a
+cancellation function. It must bound reads by `maximum_bytes` and keep resource
+IDs unique within the ImageSystem. The reader belongs to the Pane composition;
+content Trees contain only the descriptor. Loading begins when the image is
+needed for presentation, and the ImageSystem validates the returned PNG.
 
 Source loading is asynchronous. Existing content remains presented while a new
 revision prepares. Removing a node releases its slot; disconnecting a Pane

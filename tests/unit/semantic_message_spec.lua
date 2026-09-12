@@ -2,6 +2,52 @@ local assert = require("luassert")
 local semantic_message = require("neoagent.semantic_message")
 
 describe("neoagent semantic messages", function()
+  it("validates complete local file identities and metadata without reading bytes", function()
+    local id = string.rep("a", 64)
+    local original = { type = "image", file_id = id, bytes = 9,
+      mime_type = "IMAGE/PNG", filename = "sample.png" }
+    local normalized = assert(semantic_message.normalize_image(original))
+    assert.are.equal(id, normalized.file_id)
+    assert.are.equal("image/png", normalized.mime_type)
+    assert.are.equal("IMAGE/PNG", original.mime_type)
+    assert.are.equal("sample.png", normalized.filename)
+    for _, invalid in ipairs({ "", id:sub(2), id .. "a", id:upper(), "../" .. id, string.rep("g", 64) }) do
+      local value = vim.tbl_extend("force", original, { file_id = invalid })
+      local image, err = semantic_message.normalize_image(value)
+      assert.is_nil(image)
+      assert.matches("SHA%-256", assert(err))
+    end
+    for _, invalid in ipairs({ 0, -1, 0.5, math.huge, "9" }) do
+      local image, err = semantic_message.normalize_image(vim.tbl_extend("force", original, { bytes = invalid }))
+      assert.is_nil(image)
+      assert.matches("positive integer", assert(err))
+    end
+    for key, value in pairs({ data = "YQ==", mimeType = "image/png", provider_file_id = "file-remote" }) do
+      local image, err = semantic_message.normalize_image(vim.tbl_extend("force", original, { [key] = value }))
+      assert.is_nil(image)
+      assert.matches("unsupported field", assert(err))
+    end
+    local invalid = vim.tbl_extend("force", original, { filename = 1 })
+    assert.is_nil((semantic_message.normalize_image(invalid)))
+  end)
+
+  it("copies local references and keeps occurrence metadata transient", function()
+    local original = { type = "image", file_id = string.rep("b", 64), bytes = 3,
+      mime_type = "IMAGE/PNG", id = "preview", revision = 2 }
+    local retained = assert(semantic_message.normalize_image(original))
+    assert.is_nil(retained.id)
+    assert.is_nil(retained.revision)
+    assert.are.equal(original.file_id, retained.file_id)
+    retained.filename = "copied.png"
+    assert.is_nil(original.filename)
+    local invalid, err = semantic_message.normalize_image(vim.tbl_extend("force", original, { mime_type = "text/plain" }))
+    assert.is_nil(invalid)
+    assert.matches("image media type", assert(err))
+    invalid, err = semantic_message.normalize_image(vim.tbl_extend("force", original, { revision = math.huge }))
+    assert.is_nil(invalid)
+    assert.matches("finite text or a number", assert(err))
+  end)
+
   it("canonicalizes empty top-level Tool arguments as a JSON object", function()
     local message = assert(semantic_message.normalize({
       role = "assistant",
@@ -33,7 +79,7 @@ describe("neoagent semantic messages", function()
   it("normalizes one complete linked conversation without mutating input", function()
     local messages = {
       { role = "user", content = { {
-        type = "image", data = "aW1hZ2U=", mimeType = "IMAGE/PNG",
+        type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "IMAGE/PNG",
       } }, timestamp = 1 },
       { role = "assistant", content = {
         { type = "thinking", thinking = "reason", thinkingSignature = "sig" },
@@ -44,7 +90,7 @@ describe("neoagent semantic messages", function()
         usage = { input = 1, output = 2, totalTokens = 3 }, timestamp = 2 },
       { role = "toolResult", toolCallId = "call-1", toolName = "read",
         content = { {
-          type = "image", data = "cmVzdWx0", mimeType = "IMAGE/PNG",
+          type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "IMAGE/PNG",
           id = "preview", revision = 1,
         } }, isError = false,
         details = { changed_paths = {}, optional = vim.NIL }, timestamp = 3 },
@@ -52,9 +98,9 @@ describe("neoagent semantic messages", function()
 
     local normalized = assert(semantic_message.normalize_list(messages))
 
-    assert.are.equal("image/png", assert(assert(normalized[1]).content[1]).mimeType)
-    assert.are.equal("image/png", assert(assert(normalized[3]).content[1]).mimeType)
-    assert.are.equal("IMAGE/PNG", messages[1].content[1].mimeType)
+    assert.are.equal("image/png", assert(assert(normalized[1]).content[1]).mime_type)
+    assert.are.equal("image/png", assert(assert(normalized[3]).content[1]).mime_type)
+    assert.are.equal("IMAGE/PNG", messages[1].content[1].mime_type)
     assert(assert(assert(normalized[2]).content[3]).arguments).path = "changed"
     assert.are.equal("README.md", messages[2].content[3].arguments.path)
   end)
@@ -71,7 +117,7 @@ describe("neoagent semantic messages", function()
         messages = { { role = "user", content = { {
           type = "image", data = "not base64", mimeType = "image/png",
         } } } },
-        pattern = "valid base64",
+        pattern = "unsupported field",
       },
       {
         messages = { { role = "assistant", content = {
@@ -125,7 +171,7 @@ describe("neoagent semantic messages", function()
         type = "thinking", thinking = "value", redacted = "yes",
       } } }, pattern = "redacted must be a boolean" },
       { value = { role = "user", content = { {
-        type = "image", data = "aW1hZ2U=", mimeType = "text/plain",
+        type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "text/plain",
       } } }, pattern = "image media type" },
       { value = { role = "assistant", content = {}, timestamp = -1 },
         pattern = "timestamp must be a non%-negative integer" },
@@ -174,6 +220,12 @@ describe("neoagent semantic messages", function()
       { result = {}, pattern = "content blocks" },
       { result = { content = {}, is_error = "yes" },
         pattern = "error state must be a boolean" },
+      { result = { content = {}, unsupported = true },
+        pattern = "unsupported field" },
+      { result = { content = {}, details = { text = "\255" } },
+        pattern = "valid UTF%-8" },
+      { result = { content = {}, usage = { output = -1 } },
+        pattern = "non%-negative finite" },
     }) do
       local normalized, err = semantic_message.normalize_tool_result(case.result)
       assert.is_nil(normalized)
@@ -183,20 +235,20 @@ describe("neoagent semantic messages", function()
 
   it("separates transient image requirements from persistent images", function()
     local direct = assert(semantic_message.normalize_image({
-      type = "image", data = "ZGlyZWN0", mimeType = "IMAGE/PNG",
+      type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "IMAGE/PNG",
     }))
-    assert.are.equal("image/png", direct.mimeType)
+    assert.are.equal("image/png", direct.mime_type)
 
     local final = assert(semantic_message.normalize_tool_result({
       content = { {
-        type = "image", data = "ZmluYWw=", mimeType = "IMAGE/PNG",
+        type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "IMAGE/PNG",
       } },
     }))
-    assert.are.equal("image/png", assert(final.content[1]).mimeType)
+    assert.are.equal("image/png", assert(final.content[1]).mime_type)
 
     local transient, err = semantic_message.normalize_tool_result({
       content = { {
-        type = "image", data = "ZnJhbWU=", mimeType = "image/png",
+        type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "image/png",
       } },
     }, { transient = true })
     assert.is_nil(transient)
@@ -204,10 +256,10 @@ describe("neoagent semantic messages", function()
 
     transient = assert(semantic_message.normalize_tool_result({
       content = { {
-        type = "image", data = "ZnJhbWU=", mimeType = "IMAGE/PNG",
+        type = "image", file_id = string.rep("c", 64), bytes = 3, mime_type = "IMAGE/PNG",
         id = "preview", revision = "frame-1",
       } },
     }, { transient = true }))
-    assert.are.equal("image/png", assert(transient.content[1]).mimeType)
+    assert.are.equal("image/png", assert(transient.content[1]).mime_type)
   end)
 end)

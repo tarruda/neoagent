@@ -10,8 +10,8 @@ local function entry(id, parent, message)
   return {
     type = "message",
     id = id,
-    parentId = parent or vim.NIL,
-    timestamp = "2026-01-01T00:00:00.000Z",
+    parent_id = parent or vim.NIL,
+    created_at = 1767225600000,
     message = message,
   }
 end
@@ -31,12 +31,12 @@ describe("neoagent.compaction", function()
     assert.are.same({ auto = true, reserve_tokens = 8000, keep_recent_tokens = 12000 }, settings)
     assert.is_true(compaction.should_compact(24001, 32000, settings))
     assert.is_false(compaction.should_compact(24000, 32000, settings))
-    assert.are.equal(1200, compaction.estimate_tokens({ role = "user", content = { { type = "image", data = "aW1hZ2U=", mimeType = "image/png" } } }))
+    assert.are.equal(1200, compaction.estimate_tokens({ role = "user", content = { { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" } } }))
     assert.are.equal(2, compaction.estimate_tokens({
       role = "assistant", content = { { type = "thinking", thinking = "12345678" } },
     }))
     assert.are.equal(2, compaction.estimate_tokens({
-      role = "compactionSummary", summary = "12345678", tokensBefore = 0, timestamp = 1,
+      role = "compactionSummary", summary = "12345678", tokens_before = 0, created_at = 1,
     }))
     assert.are.equal(0, compaction.estimate_tokens({ role = "unknown" } --[[@as Neoagent.ProjectionMessage]]))
   end)
@@ -60,10 +60,10 @@ describe("neoagent.compaction", function()
   it("reports session histories that have no compactable prefix", function()
     assert.is_nil((compaction.prepare({}, compaction.settings({ keep_recent_tokens = 20 }))))
     assert.are.same({ first_kept_index = 1, split_turn = false },
-      compaction.find_cut_point({ { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" } }, 1, 1, 1))
+      compaction.find_cut_point({ { type = "leaf", id = "leaf", created_at = 1767225600000 } }, 1, 1, 1))
     local compacted = {
-      type = "compaction", id = "c", parentId = vim.NIL, timestamp = "2026-01-01T00:00:00.000Z",
-      summary = "done", firstKeptEntryId = "u", tokensBefore = 10,
+      type = "compaction", id = "c", parent_id = vim.NIL, created_at = 1767225600000,
+      summary = "done", first_kept_entry_id = "u", tokens_before = 10,
     }
     assert.is_nil((compaction.prepare({ compacted }, compaction.settings({ keep_recent_tokens = 20 }))))
 
@@ -86,8 +86,8 @@ describe("neoagent.compaction", function()
     ---@type Neoagent.JournalEntry[]
     local path = {
       entry("u", nil, { role = "user", content = "request" }),
-      { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" },
-      { type = "leaf", id = "leaf", timestamp = "2026-01-01T00:00:00.000Z" },
+      { type = "leaf", id = "leaf", created_at = 1767225600000 },
+      { type = "leaf", id = "leaf", created_at = 1767225600000 },
       entry("a", "u", {
         role = "assistant",
         content = { { type = "text", text = "response" } },
@@ -107,7 +107,7 @@ describe("neoagent.compaction", function()
     })
     retained.request = {
       model = { provider = "fake", model = "test" },
-      thinkingLevel = "high",
+      thinking_level = "high",
     }
     ---@type Neoagent.JournalEntry[]
     local path = {
@@ -133,7 +133,7 @@ describe("neoagent.compaction", function()
       { role = "assistant", content = { { type = "text", text = "answer" } } },
       { role = "user", content = "follow-up" },
       { role = "toolResult", content = { {
-        type = "image", mimeType = "image/png", data = string.rep("a", 2400000),
+        type = "image", mime_type = "image/png", file_id = string.rep("a", 64), bytes = 1800000,
       } } },
     }
     assert.are.equal(50 + 3 + 1200,
@@ -154,8 +154,8 @@ describe("neoagent.compaction", function()
     assert.are.equal(2, #prepared.messages)
 
     path[#path + 1] = {
-      type = "compaction", id = "compact", parentId = "a2", timestamp = "2026-01-01T00:00:01.000Z",
-      summary = "Earlier work", firstKeptEntryId = "u2", tokensBefore = 42,
+      type = "compaction", id = "compact", parent_id = "a2", created_at = 1767225601000,
+      summary = "Earlier work", first_kept_entry_id = "u2", tokens_before = 42,
     }
     path[#path + 1] = entry("u3", "compact", { role = "user", content = string.rep("c", 40) })
     path[#path + 1] = entry("a3", "u3", {
@@ -311,7 +311,7 @@ describe("neoagent.compaction", function()
     assert(session:append({ role = "assistant", content = { { type = "text", text = "Initial work" } } }))
     local previous = "Preserve the production database"
     assert(session:append_compaction({
-      summary = previous, firstKeptEntryId = assert(retained).id, tokensBefore = 1000,
+      summary = previous, first_kept_entry_id = assert(retained).id, tokens_before = 1000,
     }))
     assert(session:append({ role = "assistant", content = {
       { type = "text", text = string.rep("Recent work. ", 40) },
@@ -329,8 +329,8 @@ describe("neoagent.compaction", function()
     assert.matches(previous, (assert(result.summary)), 1, true)
     assert.are.equal(1, #model.requests)
     assert(session:append_compaction({
-      summary = assert(result.summary), firstKeptEntryId = assert(result.first_kept_entry_id),
-      tokensBefore = assert(result.tokens_before),
+      summary = assert(result.summary), first_kept_entry_id = assert(result.first_kept_entry_id),
+      tokens_before = assert(result.tokens_before),
     }))
     assert.matches(previous, require("neoagent.util").text_content(assert(assert(session:context_messages())[1]).content), 1, true)
   end)
@@ -354,8 +354,8 @@ describe("neoagent.compaction", function()
       local result = assert(run:result())
       assert(result.ok)
       local persisted, err = session:append_compaction({
-        summary = result.summary, firstKeptEntryId = result.first_kept_entry_id,
-        tokensBefore = result.tokens_before,
+        summary = result.summary, first_kept_entry_id = result.first_kept_entry_id,
+        tokens_before = result.tokens_before,
       })
       assert(persisted, vim.inspect(err))
       assert.are.equal(44, result.tokens_before)

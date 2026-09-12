@@ -7,6 +7,7 @@ local fake_model = require("tests.helpers.fake_model")
 
 ---@class Neoagent.TestSandboxEnvironment
 ---@field workspace Neoagent.Workspace
+---@field files Neoagent.Files
 ---@field agent string
 ---@field session_id? string
 
@@ -41,7 +42,7 @@ local function context(root)
   local run = async.run(lifetime)
   context_runs[#context_runs + 1] = run
   return {
-    context = { workspace = workspace(root), agent = "Neo" },
+    context = { workspace = workspace(root), agent = "Neo", files = require("neoagent.files.memory").new() },
     model = fake_model.new(), run = run,
     execute_tool = function(tool, arguments, ctx) return tool.execute(arguments, ctx) end,
     call = { type = "toolCall", id = "sandbox-probe", name = "probe", arguments = {} },
@@ -1136,7 +1137,7 @@ describe("neoagent sandbox execution", function()
 
     ---@type Neoagent.ToolResult
     local expected = {
-      content = { { type = "image", data = "ordinary-error", mimeType = "image/png" } },
+      content = { { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" } },
       is_error = true,
       details = { exit_code = 1, source = "command" },
     }
@@ -1277,7 +1278,7 @@ describe("neoagent sandbox execution", function()
         stderr = "Permission denied",
       }
       local image = execute("image", {
-        content = { { type = "image", data = "bytes", mimeType = "image/png" } },
+        content = { { type = "image", file_id = string.rep("a", 64), bytes = 3, mime_type = "image/png" } },
         details = { source = "custom" },
         is_error = true,
       })

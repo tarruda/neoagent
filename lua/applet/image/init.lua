@@ -450,8 +450,9 @@ function ImageSystem:_complete(id, operation, resource, err, limits)
 end
 
 ---@param value Applet.ImageSource
+---@param read_resource? Applet.ImageResourceReader
 ---@return Applet.ImageResource?, string?
-function ImageSystem:request(value)
+function ImageSystem:request(value, read_resource)
   if self.destroyed then
     return nil, "image system is destroyed"
   end
@@ -470,6 +471,7 @@ function ImageSystem:request(value)
   self.pending[id] = operation
   local limits = {
     read_file = self.read_file,
+    read_resource = read_resource,
     max_bytes = self.max_bytes,
     max_pixels = self.max_pixels,
   }

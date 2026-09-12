@@ -2,12 +2,14 @@ local fs = require("neoagent.fs")
 local file_lock = require("neoagent.file_lock")
 local tree = require("neoagent.session_tree")
 local util = require("neoagent.util")
+local files = require("neoagent.files")
+local workspace_storage = require("neoagent.workspace_storage")
 
 local M = {}
 ---@class Neoagent.StoredSessionMetadata: Neoagent.SessionMetadata
 ---@field path string
 ---@field cwd string
----@field timestamp string
+---@field created_at integer
 ---@field persisted boolean
 
 ---@class Neoagent.StoredSessionInfo
@@ -15,18 +17,19 @@ local M = {}
 ---@field id string
 ---@field cwd string
 ---@field parent_session? string
----@field created_at string
+---@field created_at integer
 ---@field modified_at number
 ---@field message_count integer
 ---@field first_message string
 
 ---@class Neoagent.SessionIndexEntry
+---@field id string
 ---@field text string
 ---@field parent_session? string
 ---@field attributes? Neoagent.JsonObject
 
 ---@class Neoagent.SessionIndex
----@field version integer
+---@field format "neoagent-session-index"
 ---@field sessions table<string, Neoagent.SessionIndexEntry>
 
 ---@class Neoagent.ListedSession: Neoagent.SessionIndexEntry
@@ -35,17 +38,17 @@ local M = {}
 
 ---@class Neoagent.StoredSessionHeader: Neoagent.StoredSessionRecord
 ---@field type "session"
----@field version 3
+---@field format "neoagent-session"
 ---@field id string
----@field timestamp string
+---@field created_at integer
 ---@field cwd string
----@field parentSession? string|vim.NIL
+---@field parent_session? string|vim.NIL
 ---@field metadata? Neoagent.JsonObject|vim.NIL
 
 ---@class Neoagent.StoredSessionRecord: Neoagent.JournalEntryInput
----@field version? unknown
+---@field format? unknown
 ---@field cwd? unknown
----@field parentSession? unknown
+---@field parent_session? unknown
 ---@field metadata? unknown
 
 ---@class Neoagent.StoreOptions
@@ -54,6 +57,7 @@ local M = {}
 ---@field parent_session? string
 ---@field metadata? Neoagent.JsonObject
 ---@field index_attributes? Neoagent.JsonObject
+---@field source_files? Neoagent.FileSource Source capability for derivation into this workspace.
 
 ---@class Neoagent.ForkOptions
 ---@field directory string
@@ -67,11 +71,12 @@ local M = {}
 ---@alias Neoagent.StoreProjection {type: "append"|"replace", messages: Neoagent.ProjectionMessage[]}
 
 ---@class Neoagent.SessionStore: Neoagent.SessionStorage
+---@field _workspace Neoagent.WorkspaceStorage
 ---@field _cwd string
 ---@field _id string
----@field _timestamp string
+---@field _created_at integer
 ---@field _path string
----@field _index_path? string
+---@field _index_path string
 ---@field _persisted boolean
 ---@field _messages Neoagent.ProjectionMessage[]
 ---@field _entries Neoagent.JournalEntry[]
@@ -88,7 +93,7 @@ local Store = {}
 Store.__index = Store
 
 local INDEX_FILENAME = "session-index.json"
-local INDEX_VERSION = 3
+local INDEX_FORMAT = "neoagent-session-index"
 local INDEX_LOCK_TIMEOUT_MS = 15000
 local INDEX_LOCK_POLL_MS = 50
 
@@ -110,13 +115,6 @@ local function random_id(bytes)
       return string.format("%02x", char:byte())
     end)
   )
-end
-
----@param ms integer
----@return string
-local function iso_time(ms)
-  local seconds = math.floor(ms / 1000)
-  return os.date("!%Y-%m-%dT%H:%M:%S", seconds) .. string.format(".%03dZ", ms % 1000)
 end
 
 ---@param message string
@@ -161,20 +159,27 @@ end
 
 ---@return Neoagent.SessionIndex
 local function empty_index()
-  return { version = INDEX_VERSION, sessions = vim.empty_dict() }
+  return { format = INDEX_FORMAT, sessions = vim.empty_dict() }
 end
 
 ---@param value unknown
 ---@return Neoagent.SessionIndexEntry?
 local function index_entry(value)
-  if type(value) ~= "table" or util.is_list(value) or type(value.text) ~= "string" or value.text == "" then
+  if
+    type(value) ~= "table"
+    or util.is_list(value)
+    or type(value.id) ~= "string"
+    or value.id == ""
+    or type(value.text) ~= "string"
+    or value.text == ""
+  then
     return nil
   end
   if value.parent_session ~= nil and value.parent_session ~= vim.NIL and type(value.parent_session) ~= "string" then
     return nil
   end
   ---@type Neoagent.SessionIndexEntry
-  local result = { text = value.text }
+  local result = { id = value.id, text = value.text }
   if type(value.parent_session) == "string" then
     result.parent_session = value.parent_session
   end
@@ -202,7 +207,7 @@ local function read_index(path)
     not ok
     or type(decoded) ~= "table"
     or util.is_list(decoded)
-    or decoded.version ~= INDEX_VERSION
+    or decoded.format ~= INDEX_FORMAT
     or type(decoded.sessions) ~= "table"
     or util.is_list(decoded.sessions)
   then
@@ -223,7 +228,7 @@ local function read_index(path)
       end
     end
   end
-  return { version = INDEX_VERSION, sessions = sessions }
+  return { format = INDEX_FORMAT, sessions = sessions }
 end
 
 ---@param path string
@@ -258,29 +263,18 @@ local function modify_index(path, modifier)
   return result
 end
 
----@param workspace Neoagent.WorkspaceSettings
+---@param workspace Neoagent.WorkspaceStorage
 ---@return string
 local function workspace_index_path(workspace)
   return fs.join(workspace.directory, INDEX_FILENAME)
 end
 
----@param path string
----@return string?
-local function session_index_path(path)
-  local sessions_directory = vim.fs.dirname(path)
-  if vim.fs.basename(sessions_directory) ~= "sessions" then
-    return nil
-  end
-  return fs.join(vim.fs.dirname(sessions_directory), INDEX_FILENAME)
-end
-
----@param value unknown
+---@param value string
 ---@return string
 local function picker_text(value)
-  value = type(value) == "string" and value or ""
   value = util.trim(value:gsub("[%c%s]+", " "))
   if value == "" then
-    value = "(no messages)"
+    return "(no messages)"
   end
   return value
 end
@@ -317,7 +311,7 @@ local function commit_entry(store, entry)
   store._entries[#store._entries + 1] = stored
   store._by_id[stored.id] = stored
   if stored.type == "leaf" then
-    store._leaf_id = stored.targetId ~= vim.NIL and stored.targetId or nil
+    store._leaf_id = stored.target_id ~= vim.NIL and stored.target_id or nil
     local rebuilt, err = rebuild(store)
     if not rebuilt then
       return nil, err
@@ -332,6 +326,21 @@ end
 ---@return Neoagent.ProjectionMessage[]
 function Store:load()
   return util.copy(self._messages)
+end
+
+---@return Neoagent.Files
+function Store:files()
+  return self._workspace.files
+end
+
+---@return Neoagent.FileCache
+function Store:file_cache()
+  return self._workspace.file_cache
+end
+
+---@return Neoagent.WorkspaceStorage
+function Store:workspace_storage()
+  return self._workspace
 end
 
 ---@return Neoagent.Message[]?, Neoagent.Error?
@@ -415,7 +424,7 @@ function Store:info()
     id = self._id,
     cwd = self._cwd,
     parent_session = self._parent_session,
-    created_at = self._timestamp,
+    created_at = self._created_at,
     modified_at = modified_at or 0,
     message_count = message_count,
     first_message = first_message or "(no messages)",
@@ -428,7 +437,7 @@ end
 local function store_index_entry(store, projector)
   local info = store:info()
   ---@type Neoagent.SessionIndexEntry
-  local result = { text = picker_text(info.first_message) }
+  local result = { id = info.id, text = picker_text(info.first_message) }
   if store._parent_session then
     result.parent_session = store._parent_session
   end
@@ -449,9 +458,6 @@ end
 
 ---@param store Neoagent.SessionStore
 local function update_store_index(store)
-  if not store._index_path then
-    return
-  end
   local filename = vim.fs.basename(store._path)
   local value = store_index_entry(store)
   modify_index(store._index_path, function(sessions)
@@ -465,7 +471,7 @@ function Store:metadata()
     id = self._id,
     path = self._path,
     cwd = self._cwd,
-    timestamp = self._timestamp,
+    created_at = self._created_at,
     persisted = self._persisted,
     parent_session = self._parent_session,
     data = copy_metadata(self._metadata),
@@ -488,7 +494,7 @@ local function prepare_entry(self, entry_type, values)
     type = entry_type,
     id = random_id(8),
     parent_id = self._leaf_id or vim.NIL,
-    timestamp = iso_time(util.now_ms()),
+    created_at = util.now_ms(),
     payload = values or {},
     by_id = self._by_id,
   })
@@ -508,13 +514,13 @@ local function session_header(self)
   ---@type Neoagent.StoredSessionHeader
   local header = {
     type = "session",
-    version = 3,
+    format = "neoagent-session",
     id = self._id,
-    timestamp = self._timestamp,
+    created_at = self._created_at,
     cwd = self._cwd,
   }
   if self._parent_session then
-    header.parentSession = self._parent_session
+    header.parent_session = self._parent_session
   end
   if self._metadata then
     header.metadata = copy_metadata(self._metadata)
@@ -596,6 +602,7 @@ local function append_existing(self, contents)
   local rollback_failed
   local ownership_failed
   local close_failed
+  local sync_failed
   local append_err
   local file, open_err, open_code = safe_call(fs.open_regular, self._path, {
     identity = self._file_identity,
@@ -619,7 +626,12 @@ local function append_existing(self, contents)
         local after, after_err, after_code = safe_call(file.stat, file)
         local current, current_err, current_code = safe_call(file.verify_path, file)
         if after and after.size == before.size + #contents and current then
-          committed = true
+          local synced, sync_err = safe_call(file.sync, file)
+          if synced then
+            committed = true
+          else
+            append_err, sync_failed = sync_err, sync_err
+          end
         else
           append_err = after_err or current_err or "session append has an unexpected size"
           if after_code == "ownership" or current_code == "ownership" then
@@ -633,6 +645,12 @@ local function append_existing(self, contents)
         local rolled_back, rollback_err = safe_call(file.truncate, file, before.size)
         if not rolled_back then
           rollback_failed = rollback_err
+        end
+        if rolled_back then
+          local synced, sync_err = safe_call(file.sync, file)
+          if not synced then
+            sync_failed = sync_err
+          end
         end
         local current, current_err, current_code = safe_call(file.verify_path, file)
         if not current and current_code == "ownership" then
@@ -654,7 +672,7 @@ local function append_existing(self, contents)
     end
     return nil, err
   end
-  if rollback_failed or ownership_failed or close_failed then
+  if rollback_failed or ownership_failed or close_failed or sync_failed then
     local details = {
       committed and "append committed" or "append failed: " .. bounded_error(append_err),
     }
@@ -666,6 +684,9 @@ local function append_existing(self, contents)
     end
     if close_failed then
       details[#details + 1] = "handle close failed: " .. bounded_error(close_failed)
+    end
+    if sync_failed then
+      details[#details + 1] = "flush failed: " .. bounded_error(sync_failed)
     end
     local err = poison(self, "Session Store is unusable after an unconfirmed append", table.concat(details, "; "))
     if committed then
@@ -716,6 +737,12 @@ function Store:_append(entry_type, values, persist)
   if not entry then
     return nil, encoded_or_err
   end
+  if entry.type == "message" then
+    local published, file_err = files.check_messages(self:files(), { entry.message })
+    if not published then
+      return nil, file_err
+    end
+  end
   ---@cast encoded_or_err string
   local encoded = encoded_or_err
 
@@ -730,6 +757,10 @@ function Store:_append(entry_type, values, persist)
   end
 
   local first_persistence = not self._persisted
+  local ready, workspace_err = self._workspace.prepare()
+  if not ready then
+    return nil, workspace_err
+  end
   if first_persistence then
     local encoded_header, header_err = encode_session_value(session_header(self), "session header")
     if not encoded_header then
@@ -737,20 +768,25 @@ function Store:_append(entry_type, values, persist)
     end
     local contents = { encoded_header }
     for _, pending in ipairs(self._pending) do
-      local value, pending_err = encode_session_value(pending, pending.type)
-      if not value then
-        return nil, pending_err
-      end
+      local value = assert(encode_session_value(pending, pending.type))
       contents[#contents + 1] = value
     end
     contents[#contents + 1] = encoded
-    local ok, err = fs.mkdirp(vim.fs.dirname(self._path))
+    local ok, err = fs.ensure_private_directory(assert(vim.fs.dirname(self._path)), 448)
     if not ok then
       return nil, storage_error("Failed to create session directory", err)
     end
+    local synced, sync_err = fs.sync_directory(self._workspace.directory)
+    if not synced then
+      return nil, poison(self, "Failed to publish session directory", sync_err)
+    end
     local identity
-    ok, identity = fs.atomic_replace(self._path, append_contents(contents), { mode = 384 })
+    local stage
+    ok, identity, stage = fs.atomic_replace(self._path, append_contents(contents), { mode = 384, durable = true })
     if not ok then
+      if stage == "sync" then
+        return nil, poison(self, "Failed to create session file; further writes are blocked", identity)
+      end
       return nil, storage_error("Failed to create session file", identity)
     end
     self._file_identity = util.copy(identity)
@@ -817,7 +853,7 @@ function Store:set_leaf(id)
   if id ~= nil and not self._by_id[id] then
     return nil, storage_error("Failed to move session leaf", "entry not found: " .. tostring(id))
   end
-  return self:_append("leaf", { targetId = id or vim.NIL }, self._persisted)
+  return self:_append("leaf", { target_id = id or vim.NIL }, self._persisted)
 end
 
 ---@param opts Neoagent.StoreOptions
@@ -835,13 +871,14 @@ function M.new(opts)
   local cwd = fs.canonical(opts.cwd)
   local id = random_id(12)
   local now = util.now_ms()
-  local timestamp = iso_time(now)
-  local filename = os.date("!%Y%m%dT%H%M%S", math.floor(now / 1000)) .. "_" .. id .. ".jsonl"
-  local workspace = require("neoagent.workspace_settings").new({ directory = opts.directory, root = cwd })
+  local created_at = now
+  local filename = id .. ".jsonl"
+  local workspace = workspace_storage.resolve(opts.directory, cwd)
   return setmetatable({
+    _workspace = workspace,
     _cwd = cwd,
     _id = id,
-    _timestamp = timestamp,
+    _created_at = created_at,
     _path = fs.join(workspace.sessions_directory, filename),
     _index_path = workspace_index_path(workspace),
     _persisted = false,
@@ -860,10 +897,11 @@ end
 
 ---@param path string
 ---@param data string
+---@param workspace Neoagent.WorkspaceStorage
 ---@return Neoagent.SessionStore?, Neoagent.Error?
-local function decode_session_file(path, data)
+local function decode_session_file(path, data, workspace)
   local lines = vim.tbl_filter(function(line)
-    return util.trim(line) ~= ""
+    return line:find("%S") ~= nil
   end, vim.split(data, "\n", { plain = true }))
   ---@type Neoagent.StoredSessionRecord[]
   local decoded = {}
@@ -878,23 +916,25 @@ local function decode_session_file(path, data)
   if
     not header
     or header.type ~= "session"
-    or header.version ~= 3
+    or header.format ~= "neoagent-session"
     or type(header.id) ~= "string"
     or header.id == ""
-    or type(header.timestamp) ~= "string"
-    or header.timestamp == ""
+    or type(header.created_at) ~= "number"
+    or header.created_at < 0
+    or header.created_at % 1 ~= 0
+    or header.created_at == math.huge
     or type(header.cwd) ~= "string"
     or header.cwd == ""
   then
-    return nil, storage_error("Invalid session at line 1", "expected Neoagent session version 3 header")
+    return nil, storage_error("Invalid session at line 1", "expected neoagent-session header")
   end
   local header_fields = {
     type = true,
-    version = true,
+    format = true,
     id = true,
-    timestamp = true,
+    created_at = true,
     cwd = true,
-    parentSession = true,
+    parent_session = true,
     metadata = true,
   }
   for key in pairs(header) do
@@ -902,8 +942,8 @@ local function decode_session_file(path, data)
       return nil, storage_error("Invalid session at line 1", "unsupported session header field: " .. tostring(key))
     end
   end
-  if header.parentSession ~= nil and header.parentSession ~= vim.NIL and type(header.parentSession) ~= "string" then
-    return nil, storage_error("Invalid session at line 1", "parentSession must be a string")
+  if header.parent_session ~= nil and header.parent_session ~= vim.NIL and type(header.parent_session) ~= "string" then
+    return nil, storage_error("Invalid session at line 1", "parent_session must be a string")
   end
   if
     header.metadata ~= nil
@@ -926,11 +966,12 @@ local function decode_session_file(path, data)
   ---@cast entries Neoagent.JournalEntry[]
   ---@type Neoagent.SessionStore
   local store = setmetatable({
+    _workspace = workspace,
     _cwd = header.cwd,
     _id = header.id,
-    _timestamp = header.timestamp,
+    _created_at = header.created_at,
     _path = path,
-    _index_path = session_index_path(path),
+    _index_path = workspace_index_path(workspace),
     _persisted = true,
     _messages = {},
     _entries = entries,
@@ -939,20 +980,18 @@ local function decode_session_file(path, data)
     _leaf_id = validated.leaf_id,
     _state = {},
     _file_identity = nil,
-    _parent_session = header.parentSession ~= vim.NIL and header.parentSession or nil,
+    _parent_session = header.parent_session ~= vim.NIL and header.parent_session or nil,
     _metadata = header.metadata ~= vim.NIL and header.metadata or nil,
     _index_attributes = nil,
   }, Store)
-  local rebuilt, rebuild_err = rebuild(store)
-  if not rebuilt then
-    return nil, storage_error("Failed to open session", rebuild_err)
-  end
+  assert(rebuild(store))
   return store
 end
 
 ---@param path string
+---@param workspace Neoagent.WorkspaceStorage
 ---@return Neoagent.SessionStore?, string|Neoagent.Error|nil
-local function read_session_file(path)
+local function read_session_file(path, workspace)
   local file, open_err = fs.open_regular(path, { mode = 384 })
   if not file then
     return nil, open_err
@@ -980,7 +1019,7 @@ local function read_session_file(path)
     end
     data = data:sub(1, boundary)
   end
-  local decoded, store, decode_err = pcall(decode_session_file, path, data)
+  local decoded, store, decode_err = pcall(decode_session_file, path, data, workspace)
   if not decoded then
     return failure(storage_error("Failed to decode session", store))
   end
@@ -1006,13 +1045,29 @@ local function read_session_file(path)
 end
 
 ---@param path string
+---@param workspace Neoagent.WorkspaceStorage
 ---@return Neoagent.SessionStore?, Neoagent.Error?
 ---@return_overload Neoagent.SessionStore
 ---@return_overload nil, Neoagent.Error
-function M.open(path)
+function M.open(path, workspace)
+  assert(
+    type(workspace) == "table" and type(workspace.validate) == "function",
+    "workspace storage is required to open a Session"
+  )
   path = fs.normalize(path)
+  if vim.fs.dirname(path) ~= workspace.sessions_directory then
+    return nil, storage_error("Session is outside the supplied workspace storage")
+  end
+  local valid, validation_err = workspace.validate()
+  if not valid then
+    return nil, validation_err
+  end
+  local stat, stat_err = vim.uv.fs_lstat(path)
+  if not stat then
+    return nil, storage_error("Failed to read session", stat_err)
+  end
   local store, read_err = session_lock(path):with(function()
-    return read_session_file(path)
+    return read_session_file(path, workspace)
   end)
   if not store then
     if type(read_err) == "table" then
@@ -1028,6 +1083,7 @@ function M.open(path)
   return store
 end
 
+---@async
 ---@param snapshot {entries: Neoagent.JournalEntry[], leaf_id?: string}
 ---@param opts Neoagent.StoreOptions
 ---@return Neoagent.SessionStore?, Neoagent.Error?
@@ -1055,24 +1111,39 @@ function M.derive(snapshot, opts)
     metadata = opts.metadata,
     index_attributes = opts.index_attributes,
   })
+  local messages = {}
+  for _, entry in ipairs(entries) do
+    if entry.type == "message" then
+      messages[#messages + 1] = entry.message
+    end
+  end
+  local imported, import_err = files.import(opts.source_files or store:files(), store:files(), messages)
+  if not imported then
+    return nil, import_err
+  end
+  local ready, workspace_err = store._workspace.prepare()
+  if not ready then
+    return nil, workspace_err
+  end
   local encoded_header, header_err = encode_session_value(session_header(store), "session header")
   if not encoded_header then
     return nil, header_err
   end
   local contents = { encoded_header }
   for _, entry in ipairs(entries) do
-    local encoded_entry, entry_err = encode_session_value(entry, entry.type)
-    if not encoded_entry then
-      return nil, entry_err
-    end
+    local encoded_entry = assert(encode_session_value(entry, entry.type))
     contents[#contents + 1] = encoded_entry
   end
-  local ok, err = fs.mkdirp(vim.fs.dirname(store._path))
+  local ok, err = fs.ensure_private_directory(assert(vim.fs.dirname(store._path)), 448)
   if not ok then
     return nil, storage_error("Failed to create session directory", err)
   end
+  local synced, sync_err = fs.sync_directory(store._workspace.directory)
+  if not synced then
+    return nil, storage_error("Failed to publish session directory", sync_err)
+  end
   local identity
-  ok, identity = fs.atomic_replace(store._path, append_contents(contents), { mode = 384 })
+  ok, identity = fs.atomic_replace(store._path, append_contents(contents), { mode = 384, durable = true })
   if not ok then
     return nil, storage_error("Failed to create derived session", identity)
   end
@@ -1093,20 +1164,14 @@ function M.derive(snapshot, opts)
   return store
 end
 
----@param source string|Neoagent.SessionStore
+---@async
+---@param source Neoagent.SessionStore
 ---@param opts Neoagent.ForkOptions
 ---@return Neoagent.SessionStore?, Neoagent.Error?
 ---@return_overload Neoagent.SessionStore
 ---@return_overload nil, Neoagent.Error
 function M.fork(source, opts)
   opts = opts or {}
-  if type(source) == "string" then
-    local opened, err = M.open(source)
-    if not opened then
-      return nil, err
-    end
-    source = opened
-  end
   if type(source) ~= "table" or type(source.entries) ~= "function" then
     return nil, storage_error("Failed to fork session", "source store is required")
   end
@@ -1127,7 +1192,7 @@ function M.fork(source, opts)
       if target.type ~= "message" or target.message.role ~= "user" then
         return nil, storage_error("Failed to fork session", "before position requires a user message")
       end
-      local parent_id = target.parentId
+      local parent_id = target.parent_id
       leaf_id = type(parent_id) == "string" and parent_id or nil
     elseif opts.position ~= "at" then
       return nil, storage_error("Failed to fork session", "position must be before or at")
@@ -1147,7 +1212,8 @@ function M.fork(source, opts)
   }, {
     directory = opts.directory,
     cwd = opts.cwd or source_metadata.cwd,
-    parent_session = source_metadata.path,
+    parent_session = source_metadata.id,
+    source_files = source:files(),
     metadata = opts.metadata or source_metadata.data,
     index_attributes = opts.index_attributes,
   })
@@ -1162,10 +1228,11 @@ end
 ---@param cwd string
 ---@return string[]
 function M.list(directory, cwd)
-  local namespace = require("neoagent.workspace_settings").new({
-    directory = directory,
-    root = cwd,
-  }).sessions_directory
+  local workspace = workspace_storage.resolve(directory, cwd)
+  if not workspace.validate() then
+    return {}
+  end
+  local namespace = workspace.sessions_directory
   local handle = vim.uv.fs_scandir(namespace)
   if not handle then
     return {}
@@ -1196,10 +1263,10 @@ function M.list_sessions(directory, cwd, opts)
     opts.index_attributes == nil or type(opts.index_attributes) == "function",
     "index_attributes must be a function"
   )
-  local workspace = require("neoagent.workspace_settings").new({
-    directory = directory,
-    root = cwd,
-  })
+  local workspace = workspace_storage.resolve(directory, cwd)
+  if not workspace.validate() then
+    return {}
+  end
   local index_path = workspace_index_path(workspace)
   local indexed = read_index(index_path)
   ---@type Neoagent.ListedSession[]
@@ -1213,7 +1280,7 @@ function M.list_sessions(directory, cwd, opts)
     present[filename] = true
     local value = indexed.sessions[filename]
     if not value or opts.index_attributes and value.attributes == nil then
-      local store = M.open(path)
+      local store = M.open(path, workspace)
       if store then
         value = store_index_entry(store, opts.index_attributes)
         repairs[filename] = value
@@ -1222,6 +1289,7 @@ function M.list_sessions(directory, cwd, opts)
     local stat = value and vim.uv.fs_stat(path)
     if value and stat then
       sessions[#sessions + 1] = {
+        id = value.id,
         path = path,
         parent_session = value.parent_session,
         attributes = copy_metadata(value.attributes),

@@ -37,6 +37,7 @@ local util = require("neoagent.util")
 ---@field key? string
 ---@field show_images? boolean
 ---@field image_mode? 'details'
+---@field image_source? Neoagent.ImageSourceFactory
 
 ---@class Neoagent.Renderer<C>
 ---@field name string

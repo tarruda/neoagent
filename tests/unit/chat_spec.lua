@@ -48,6 +48,19 @@ describe("neoagent.chat", function()
     assert.are.equal(2, #session:messages())
   end)
 
+  for _, method in ipairs({ "send", "run" }) do
+    it("keeps accepted " .. method .. " prompts when cancelled before provider preparation", function()
+      local session = assert(Session.new())
+      local model = fake_model.new({ { result = fake_model.assistant({ { type = "text", text = "unused" } }) } })
+      local run = chat[method](session, "accepted prompt", { model = model })
+      assert.are.equal("accepted prompt", assert(session:messages()[1]).content)
+      run:cancel()
+      assert.is_false(wait(run).ok)
+      assert.are.equal(0, #model.requests, "provider preparation ran before cancellation could be handled")
+      assert.are.equal(1, #session:messages())
+    end)
+  end
+
   it("publishes acceptance after journaling the request model", function()
     local session = assert(Session.new())
     local model = fake_model.new({ {
@@ -298,10 +311,11 @@ describe("neoagent.chat", function()
       } }, "toolUse") },
       { result = fake_model.assistant({ { type = "text", text = "done" } }) },
     })
-    ---@type string[]
+    local attachments = require("tests.helpers.attachments").new(session:files())
+    ---@type Neoagent.ImageBlock[]
     local frames = {}
     for revision = 1, 3 do
-      frames[revision] = vim.base64.encode(png(8 + revision))
+      frames[revision] = attachments.image(png(8 + revision), "image/png", { id = "preview", revision = revision })
     end
     local updates = {}
     local result = wait(chat.run(session, "animate", {
@@ -311,22 +325,8 @@ describe("neoagent.chat", function()
         description = "emit deterministic PNG frames",
         input_schema = { type = "object" },
         execute = function(_, ctx)
-          for revision = 1, 3 do
-            ctx.on_update({ content = { {
-              type = "image",
-              mimeType = "image/png",
-              data = assert(frames[revision]),
-              id = "preview",
-              revision = revision,
-            } } })
-          end
-          return { content = { {
-            type = "image",
-            mimeType = "image/png",
-            data = assert(frames[3]),
-            id = "preview",
-            revision = 3,
-          } } }
+          for revision = 1, 3 do ctx.on_update({ content = { frames[revision] } }) end
+          return { content = { frames[3] } }
         end,
       } },
       on_event = function(event)
@@ -341,18 +341,20 @@ describe("neoagent.chat", function()
     local messages = session:messages()
     assert.are.equal(4, #messages)
     assert.are.equal("toolResult", assert(messages[3]).role)
-    assert.are.equal(3, assert(assert(assert(messages[3]).content)[1]).revision)
-    assert.are.equal(frames[3], assert(assert(assert(messages[3]).content)[1]).data)
-    assert.are.equal(frames[3],
-      assert(assert(assert(model.requests[2]).messages[3]).content[1]).data)
+    assert.is_nil(assert(assert(assert(messages[3]).content)[1]).revision)
+    assert.are.equal(assert(frames[3]).file_id, assert(assert(assert(messages[3]).content)[1]).file_id)
+    assert.are.equal(png(11), attachments.read(assert(assert(assert(messages[3]).content)[1])))
+    assert.are.equal(assert(frames[3]).file_id,
+      assert(assert(assert(model.requests[2]).messages[3]).content[1]).file_id)
 
     local path = store:metadata().path
     local journal = table.concat(vim.fn.readfile(path), "\n")
-    assert.is_nil((journal:find((assert(frames[1])), 1, true)))
-    assert.is_nil((journal:find((assert(frames[2])), 1, true)))
-    assert.is_not_nil((journal:find((assert(frames[3])), 1, true)))
-    local resumed = assert(storage.open(path)):load()
-    assert.are.equal(3, assert(assert(assert(resumed[3]).content)[1]).revision)
+    assert.is_nil((journal:find((assert(frames[1]).file_id), 1, true)))
+    assert.is_nil((journal:find((assert(frames[2]).file_id), 1, true)))
+    assert.is_not_nil((journal:find((assert(frames[3]).file_id), 1, true)))
+    local resumed = assert(storage.open(path, store:workspace_storage())):load()
+    assert.is_nil(assert(assert(assert(resumed[3]).content)[1]).revision)
+    assert.are.equal(assert(frames[3]).file_id, assert(assert(assert(resumed[3]).content)[1]).file_id)
   end)
 
   it("publishes persisted message identities with agent events", function()
@@ -457,8 +459,7 @@ describe("neoagent.chat", function()
     local throwing = fake_model.new()
     function throwing:stream() error("stream startup failed") end
     local sent = chat.send(session, "first", { model = throwing })
-    assert.is_true(sent:is_done())
-    assert.matches("stream startup failed", assert(assert(sent:result()).error).message)
+    assert.matches("stream startup failed", assert(wait(sent).error).message)
 
     local invalid_options = { model = {} }
     local invalid_ok, invalid_err = pcall(

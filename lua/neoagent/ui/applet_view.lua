@@ -6,6 +6,7 @@ local presentation_surface = require("neoagent.ui.presentation_surface")
 local Transcript = require("neoagent.ui.panes.transcript")
 local protocol = require("neoagent.ui.renderer")
 local renderers = require("neoagent.ui.renderers")
+local image_source = require("neoagent.ui.image_source")
 local util = require("neoagent.util")
 
 local layout = Applet.layout
@@ -32,6 +33,7 @@ local layout = Applet.layout
 ---@alias Neoagent.ViewHostFactory Applet.HostInput|fun(state: Neoagent.ViewState, config: Neoagent.UIConfig): Applet.HostInput
 
 ---@class Neoagent.ViewOptions
+---@field files? Neoagent.FileSource
 ---@field config Neoagent.UIConfig
 ---@field renderer? Neoagent.Renderer<unknown>
 ---@field image_system? Applet.ImageSystem|false
@@ -86,6 +88,9 @@ local layout = Applet.layout
 ---@field bindings? Applet.Binding[]
 
 ---@class Neoagent.View: Neoagent.PresentationSurfaceView
+---@field image_source? Neoagent.ImageSourceFactory
+---@field image_reader? Applet.ImageResourceReader
+---@field files_identity? string
 ---@field config Neoagent.UIConfig
 ---@field renderer Neoagent.Renderer<unknown>
 ---@field applet_theme Applet.Theme
@@ -312,6 +317,7 @@ local render_view_state
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
+  local factory, reader = image_source.new(opts.files)
   local selected =
     protocol.assert(opts.renderer or opts.config.renderer or renderers.get(opts.config.style), "Applet UI Renderer")
   assert(selected.theme, "Applet UI Renderer requires a theme")
@@ -334,6 +340,9 @@ function View.new(opts)
     renderer = selected,
     applet_theme = selected.theme,
     image_system = image_system,
+    image_source = factory,
+    image_reader = reader,
+    files_identity = opts.files and opts.files.identity,
     owns_image_system = owns_image_system,
     callbacks = {
       on_submit = opts.on_submit or function() end,
@@ -377,6 +386,8 @@ function View.new(opts)
   }, View)
 
   self.transcript = Transcript.new({
+    image_source = self.image_source,
+    image_reader = self.image_reader,
     renderer = selected,
     config = self.config,
     image_system = image_system,
@@ -928,6 +939,20 @@ function View:set_context(context)
   self:_sync_spinner()
 end
 
+---@param files? Neoagent.FileSource
+function View:set_files(files)
+  local factory, reader = image_source.new(files)
+  local identity = files and files.identity
+  if self.files_identity == identity then
+    return
+  end
+  self:_close_details(false)
+  self.files_identity = identity
+  self.image_source = factory
+  self.image_reader = reader
+  self.transcript:set_image_source(factory, reader)
+end
+
 ---@param messages Neoagent.TranscriptMessage[]?
 function View:set_messages(messages)
   self.transcript:set_messages(messages)
@@ -1062,6 +1087,13 @@ function View:submission_accepted(value)
   if self.config.scroll_on_submit then
     self:_scroll_transcript_to_bottom()
   end
+  local pane = self:pane("transcript")
+  if pane and pane.domain then
+    -- Acceptance is a discrete publication, outside the streaming frame
+    -- throttle. The owning domain still defers unsafe native editing.
+    pane.domain:request(pane)
+    pane.domain:flush()
+  end
   return true
 end
 
@@ -1167,6 +1199,8 @@ function View:show_card_details(key)
   end
   self:_close_details(false)
   local details = Details.new({
+    image_source = self.image_source,
+    image_reader = self.image_reader,
     renderer = self.transcript.renderer,
     resolve_tool = self.callbacks.resolve_tool,
     config = self.config,

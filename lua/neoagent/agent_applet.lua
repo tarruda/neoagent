@@ -153,6 +153,7 @@ local required_view_methods = {
   "destroy",
   "get_input",
   "set_input",
+  "set_files",
   "set_messages",
   "set_context",
   "apply",
@@ -550,8 +551,9 @@ end
 ---@param view Neoagent.View
 ---@param snapshot Neoagent.AgentSnapshot
 ---@param label string?
+---@param files Neoagent.FileSource
 ---@return Neoagent.HydratedView?, Neoagent.Error?
-function AgentApplet:_hydrate_view(view, snapshot, label)
+function AgentApplet:_hydrate_view(view, snapshot, label, files)
   assert(valid_snapshot(snapshot), "Agent snapshot is invalid")
   local context = self:_context_for(snapshot.context, true, label)
   local applied, err
@@ -560,6 +562,10 @@ function AgentApplet:_hydrate_view(view, snapshot, label)
     if not applied then
       return nil, err
     end
+  end
+  applied, err = call_view(view, "set_files", files)
+  if not applied then
+    return nil, err
   end
   applied, err = call_view(view, "set_messages", util.copy(snapshot.messages))
   if not applied then
@@ -712,7 +718,7 @@ function AgentApplet:_hydrate(snapshot)
   local hydrated
   if view and not view.destroyed then
     local err
-    hydrated, err = self:_hydrate_view(view, snapshot, self.display_label)
+    hydrated, err = self:_hydrate_view(view, snapshot, self.display_label, agent:get_session():files())
     if not hydrated then
       return nil, err
     end
@@ -1188,7 +1194,7 @@ function AgentApplet:_ensure_view()
       end
       local label = type(agent.label) == "function" and agent:label() or self.display_label
       while true do
-        hydrated, err = self:_hydrate_view(candidate, snapshot, label)
+        hydrated, err = self:_hydrate_view(candidate, snapshot, label, agent:get_session():files())
         if not hydrated then
           error(err, 0)
         end
@@ -1316,7 +1322,7 @@ function AgentApplet:bind(agent, opts)
     if view and not view.destroyed then
       view_hydrated = true
       local err
-      hydrated, err = self:_hydrate_view(view, snapshot, agent:label())
+      hydrated, err = self:_hydrate_view(view, snapshot, agent:label(), agent:get_session():files())
       if not hydrated then
         error(err, 0)
       end
@@ -1385,6 +1391,9 @@ function AgentApplet:unbind(agent)
   self.binding_restore = nil
   if view and not view.destroyed then
     local cleared, err = call_view(view, "set_messages", {})
+    if cleared then
+      cleared, err = call_view(view, "set_files", nil)
+    end
     if cleared then
       cleared, err = call_view(view, "set_context", self:_context())
     end

@@ -692,11 +692,12 @@ function Manager:wrap(model, id, opts)
   ---@param call_opts Neoagent.StreamOptions
   ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
   function wrapped:stream(call_opts)
-    call_opts = call_opts or {}
+    call_opts = util.copy(call_opts or {})
     return async.run(
       ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
       ---@return Neoagent.ModelResult
       function(run)
+        model_contract.require_files(call_opts)
         local resolved = self._manager:resolve(self._method, { optional = self._optional }):await()
         if not resolved.ok then
           error(resolved.error, 0)
@@ -711,6 +712,7 @@ function Manager:wrap(model, id, opts)
               url = authorized.url,
               headers = authorized.headers,
               body = authorized.body,
+              messages = authorized.messages,
             }
           end
         end

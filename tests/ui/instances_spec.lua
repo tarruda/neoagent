@@ -183,6 +183,8 @@ describe("neoagent direct Agent Applets", function()
       function view:get_input() return self.input end
       ---@param value string
       function view:set_input(value) self.input = value return value end
+      ---@param files? Neoagent.FileSource
+      function view:set_files(files) self.files = files end
       ---@param value Neoagent.TranscriptMessage[]
       function view:set_messages(value)
         self.messages = value

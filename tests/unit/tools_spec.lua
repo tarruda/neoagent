@@ -2,6 +2,8 @@ local assert = require("luassert")
 local async = require("neoagent.async")
 local fs = require("neoagent.fs")
 local Workspace = require("neoagent.workspace")
+local attachment_fixture = require("tests.helpers.attachments")
+local attachments = attachment_fixture.new()
 
 ---@return string, Neoagent.Workspace
 local function fixture()
@@ -59,7 +61,7 @@ end
 ---@return Neoagent.TestToolCapabilities
 local function ctx(workspace, updates, capabilities)
   return {
-    context = { workspace = workspace },
+    context = { workspace = workspace, files = attachments.files },
     on_update = function(value) if updates then updates[#updates + 1] = value end end,
     fs = capabilities and capabilities.fs and filesystem(capabilities.fs) or nil,
     process = capabilities and capabilities.process or nil,
@@ -89,6 +91,7 @@ end
 describe("neoagent bundled tools", function()
   ---@type string[]
   local roots = {}
+  before_each(function() attachments = attachment_fixture.new() end)
   after_each(function()
     for _, root in ipairs(roots) do vim.fn.delete(root, "rf") end
     roots = {}
@@ -519,7 +522,7 @@ describe("neoagent bundled tools", function()
     }))
     vim.env.PATH = old_path
 
-    assert.are.equal(converted, vim.base64.decode(assert(result.content[2]).data))
+    assert.are.equal(converted, attachments.read(assert(result.content[2])))
     assert.matches("Resized from 3000x1000 to 2000x667", (assert(assert(result.content[1]).text)))
     assert.are.equal(3, #calls)
     for _, call in ipairs(calls) do
@@ -634,7 +637,7 @@ describe("neoagent bundled tools", function()
     assert.matches("offset=4", (assert(assert(result.content[1]).text)))
   end)
 
-  it("returns supported images as raw base64 when ImageMagick is absent", function()
+  it("stores supported image snapshots when ImageMagick is absent", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local png = "\137PNG\r\n\26\nraw"
@@ -643,9 +646,30 @@ describe("neoagent bundled tools", function()
     vim.env.PATH = "/nonexistent"
     local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path
-    assert.are.equal("image/png", assert(result.content[2]).mimeType)
-    assert.are.equal(png, vim.base64.decode(assert(result.content[2]).data))
+    assert.are.equal("image/png", assert(result.content[2]).mime_type)
+    assert(vim.uv.fs_unlink(root .. "/image.png"))
+    assert.are.equal(png, attachments.read(assert(result.content[2])))
     assert.matches("unavailable", (assert(assert(result.content[1]).text)))
+  end)
+
+  it("fails image ingestion when managed storage cannot publish the snapshot", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local png = "\137PNG\r\n\26\nraw"
+    assert(fs.write_all(root .. "/image.png", png, "w"))
+    local context = ctx(workspace)
+    local puts = 0
+    attachments.files.put = function()
+      puts = puts + 1
+      return nil, require("neoagent.files").error("synthetic publication failure")
+    end
+    local old_path = vim.env.PATH
+    vim.env.PATH = "/nonexistent"
+    local ok, err = pcall(execute, require("neoagent.tools.read_file"), { path = "image.png" }, context)
+    vim.env.PATH = old_path
+    assert.is_false(ok)
+    assert.matches("synthetic publication failure", tostring(err))
+    assert.are.equal(1, puts)
   end)
 
   it("bounds image input and fallback payloads", function()
@@ -672,16 +696,16 @@ describe("neoagent bundled tools", function()
     local old_path = vim.env.PATH
     vim.env.PATH = root
     ok, err = pcall(execute,
-      read.new({ max_image_payload_bytes = 16 }),
+      read.new({ max_image_output_bytes = 16 }),
       { path = "image.png" }, ctx(workspace))
     assert.is_false(ok)
-    assert.matches("image payload exceeds 16 bytes", tostring(err))
+    assert.matches("image output exceeds 16 bytes", tostring(err))
 
     local magick = root .. "/magick"
     assert(fs.write_all(magick, "placeholder\n", "w"))
     assert(vim.uv.fs_chmod(magick, 493))
     ok, err = pcall(execute,
-      read.new({ max_image_payload_bytes = 16 }),
+      read.new({ max_image_output_bytes = 16 }),
       { path = "image.png" }, ctx(workspace, nil, {
         process = function(argv)
           if argv[2] == "identify" then
@@ -692,7 +716,7 @@ describe("neoagent bundled tools", function()
       }))
     vim.env.PATH = old_path
     assert.is_false(ok)
-    assert.matches("image payload exceeds 16 bytes", tostring(err))
+    assert.matches("image output exceeds 16 bytes", tostring(err))
   end)
 
   it("rejects excessive image dimensions and converted payloads", function()
@@ -729,7 +753,7 @@ describe("neoagent bundled tools", function()
       read.new({ max_image_pixels = 9999 }),
       { path = "image.png" }, ctx(workspace, nil, capability))
     local payload_ok, payload_err = pcall(execute,
-      read.new({ max_image_payload_bytes = 8 }),
+      read.new({ max_image_output_bytes = 8 }),
       { path = "image.png" }, ctx(workspace, nil, capability))
     identify_output = "invalid"
     local inspect_ok, inspect_err = pcall(execute, read,
@@ -744,7 +768,7 @@ describe("neoagent bundled tools", function()
     assert.are.equal(30000, assert(seen_options).timeout_ms)
     assert.is_not_nil(assert(seen_options).max_capture_bytes)
     assert.is_false(payload_ok)
-    assert.matches("image payload exceeds 8 bytes", tostring(payload_err))
+    assert.matches("image output exceeds 8 bytes", tostring(payload_err))
     assert.is_false(inspect_ok)
     assert.matches("could not inspect image dimensions", tostring(inspect_err))
     assert.is_false(identify_ok)
@@ -772,7 +796,7 @@ describe("neoagent bundled tools", function()
     vim.env.PATH = root .. ":" .. old_path
     local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     assert.matches("Resized from 3000x1000 to 2000x667", (assert(assert(result.content[1]).text)))
-    assert.are.equal("converted" .. png, vim.base64.decode(assert(result.content[2]).data))
+    assert.are.equal("converted" .. png, attachments.read(assert(result.content[2])))
 
     assert(fs.write_all(magick, table.concat({
       "#!" .. shebang_shell(),
@@ -784,7 +808,7 @@ describe("neoagent bundled tools", function()
     result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path
     assert.matches("resize failed", (assert(assert(result.content[1]).text)))
-    assert.are.equal(png, vim.base64.decode(assert(result.content[2]).data))
+    assert.are.equal(png, attachments.read(assert(result.content[2])))
   end)
 
   it("re-encodes oversized images as bounded JPEG payloads", function()
@@ -808,11 +832,11 @@ describe("neoagent bundled tools", function()
     assert(vim.uv.fs_chmod(magick, 493))
     local old_path = vim.env.PATH
     vim.env.PATH = root .. ":" .. old_path
-    local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
+    local result = execute(require("neoagent.tools.read_file").new({ max_image_output_bytes = 3 * 1024 * 1024 }), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path
 
-    assert.are.equal("image/jpeg", assert(result.content[2]).mimeType)
-    assert.are.equal("bounded jpeg", vim.base64.decode(assert(result.content[2]).data))
+    assert.are.equal("image/jpeg", assert(result.content[2]).mime_type)
+    assert.are.equal("bounded jpeg", attachments.read(assert(result.content[2])))
     assert.matches("Resized from 3000x3000 to 1600x1600", (assert(assert(result.content[1]).text)))
   end)
 

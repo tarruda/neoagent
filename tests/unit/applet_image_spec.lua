@@ -67,6 +67,94 @@ local function replace(value, owner, placements)
 end
 
 describe("Applet images", function()
+  it("loads bounded PNG resources lazily and accepts only the first completion", function()
+    local data = png(7, 9)
+    local calls, releases, delivered = 0, 0, 0
+    ---@type fun(data?: string, error?: string)
+    local complete
+    ---@type Applet.PngResource
+    local loader = { kind = "png_resource", id = "content-id", revision = 1 }
+    local reader = function(_, maximum, done)
+        assert.are.equal(#data, maximum)
+        calls = calls + 1
+        complete = done
+        return function() releases = releases + 1 end
+      end
+    assert.matches("^resource:", source.identity(loader))
+    assert.are.equal(0, calls)
+    local resource, err = source.load(loader)
+    assert.is_nil(resource)
+    assert.matches("asynchronous", assert(err))
+    local cancel = source.load_async(loader, { max_bytes = #data, read_resource = reader }, function(value, failure)
+      assert.is_nil(failure)
+      resource = value
+      delivered = delivered + 1
+    end)
+    assert.are.equal(1, calls)
+    assert.is_nil(resource)
+    complete(data)
+    complete(nil, "late failure")
+    assert(vim.wait(1000, function() return delivered == 1 end))
+    assert.are.equal(data, assert(resource).data)
+    assert.are.equal(7, assert(resource).width)
+    complete(data)
+    cancel()
+    assert.are.equal(0, releases)
+    assert.are.equal(1, delivered)
+
+    cancel = source.load_async(loader, { max_bytes = #data, read_resource = reader }, function() delivered = delivered + 1 end)
+    cancel()
+    cancel()
+    complete(data)
+    local drained = false
+    vim.schedule(function() drained = true end)
+    assert(vim.wait(1000, function() return drained end))
+    assert.are.equal(1, delivered)
+    assert.are.equal(1, releases)
+  end)
+
+  it("validates loader completion and cancellation contracts before publishing a PNG", function()
+    local data = png(2, 3)
+    ---@param load fun(maximum: integer, done: fun(data?: string, error?: string)): fun()
+    ---@param pattern? string
+    ---@param limits? Applet.ImageLoadOptions
+    local function check(load, pattern, limits)
+      local completed = false
+      ---@type Applet.ImageResource?, string?
+      local resource, failure
+      local options = vim.tbl_extend("force", limits or {}, {
+        read_resource = function(_, maximum, done) return load(maximum, done) end,
+      })
+      local cancel = source.load_async({ kind = "png_resource", id = "x", revision = 1 },
+        options, function(value, err) completed, resource, failure = true, value, err end)
+      assert(vim.wait(1000, function() return completed end))
+      cancel()
+      if pattern then
+        assert.is_nil(resource)
+        assert.matches(pattern, assert(failure))
+      else
+        assert.is_nil(failure)
+        assert.are.equal(data, assert(resource).data)
+      end
+    end
+    check(function(_, done) done(data); done("ignored"); return function() end end)
+    check(function(_, done) done(nil, "storage unavailable"); return function() end end, "storage unavailable")
+    check(function(_, done) done(); return function() end end, "could not read image")
+    check(function(_, done) done("invalid"); return function() end end, "signature")
+    check(function(_, done) done(data); return function() end end, "byte limit", { max_bytes = #data - 1 })
+    check(function(_, done) done(data); return function() end end, "pixel limit", { max_pixels = 1 })
+    check(function() error("loader failed") end, "loader failed")
+    check(function(_, done) done(data); error("failed after completion") end, "failed after completion")
+    check(function(_, done) done(data); return false --[[@as fun()]] end, "cancellation function")
+    fails("id", function()
+      source.identity({ kind = "png_resource", id = "", revision = 1 })
+    end)
+    local failure
+    source.load_async({ kind = "png_resource", id = "x", revision = 1 }, {}, function(_, err) failure = err end)
+    assert(vim.wait(1000, function() return failure ~= nil end))
+    assert.matches("reader is required", tostring(failure))
+  end)
+
   it("identifies, validates, and loads bounded PNG sources", function()
     local bytes = png(3, 4)
     local inline = {

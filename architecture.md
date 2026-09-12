@@ -22,20 +22,24 @@ Neoagent Applet
 ## Core and execution
 
 The reusable core consists of `neoagent.async`, `neoagent.transport.*`,
-`neoagent.api.*`, `neoagent.semantic_message`, and `neoagent.agent_loop`.
+`neoagent.api.*`, `neoagent.semantic_message`, `neoagent.files`, and
+`neoagent.agent_loop`.
 These modules must not import configuration, Sessions, storage, Workspace,
 bundled tools, Agents, or UI.
 
 A Model supplies identity, input modalities, and `stream(opts)`. API adapters
-encode requests, decode provider streams, and recover meaningful partial
-output. They adapt images and provider-specific metadata in request copies;
-the original conversation remains unchanged.
+shape semantic requests before encoding, decode provider streams, and recover
+meaningful partial output. Images carry immutable local content IDs and metadata;
+image-bearing calls receive an explicit file reader. Text-only calls need no
+file dependency. Adapters resolve images and provider-specific metadata in
+request copies; the original conversation remains unchanged.
 
-The shared HTTP client supplies parsed response headers, status, and JSON
-values or decoded SSE events to API adapters, Authentication, catalogs, and
-Services. It owns JSON decoding and SSE framing; consumers own provider
-semantics. A byte transport beneath it owns network I/O, allowing the HTTP
-client to use curl or replayed responses without changing those consumers.
+The shared HTTP client supplies parsed response headers, status, JSON values,
+decoded SSE events, or explicitly requested response bytes to API adapters,
+Authentication, catalogs, Services, and file backends. It owns JSON decoding
+and SSE framing; consumers own provider semantics. A byte transport beneath it
+owns network I/O, allowing the HTTP client to use curl or replayed responses
+without changing those consumers.
 
 The Agent Loop receives its Model, messages, toolset, executor, context,
 steering source, and commit function explicitly. It validates the turn before
@@ -153,10 +157,28 @@ It works in memory or with an injected store. The tree retains branches,
 derivations, request selections, and compaction entries. Model context is a
 projection of that path.
 
-The bundled store is append-only JSONL. Session documents are authoritative;
-Workspace indexes are rebuildable discovery data. Derivations publish their
-document before Agent activation, allowing recovery when activation fails.
-No file is created for an empty Session.
+The bundled store uses Neoagent's append-only JSONL format. Each workspace
+storage root has an exact format marker, Session documents, immutable blobs
+indexed by SHA-256, a rebuildable Session index, and provider mappings. The
+workspace storage composition owns this layout and its validation. Unsupported
+workspace and Session formats are rejected without migration or recovery writes.
+A Session document depends on its workspace's sibling blob storage; backing up
+the complete workspace preserves its authoritative data.
+
+File-producing tools store snapshots through the bound file writer before
+returning semantic references. Session commits validate blob existence and size;
+opening a Session validates journal structure without loading image bytes.
+In-memory Sessions use the same reference shape with an in-memory file store.
+The original source pathname is never a recovery source for an attachment.
+
+Same-workspace derivations share blobs and provider mappings. Cross-workspace
+derivations import every attachment in the retained tree before publishing the
+new document and keep provider mappings independent. The top-level Applet owns
+cancellable derivation Runs and publishes Agents only after durable Session
+publication. Provenance refers to a source Session ID, not a pathname.
+No Session document is created for an empty, unaccepted Session. Unreferenced
+published blobs and unused mappings remain until workspace storage is removed;
+there is no garbage collector.
 
 Persistence uses private files, verified atomic publication, and cross-process
 locks. Uncertain write outcomes make the affected Store reject later
@@ -190,9 +212,14 @@ native handles; components own semantic state.
 Semantic presentation can use a fallback host without a View. Sensitive input
 uses transient mounts whose buffers are cleared and disposed on unmount.
 
-A View's ImageSystem owns prepared PNG resources and replaces each Pane's
-complete visible placement set through a backend. Backend failure clears
-placements and leaves text fallbacks.
+A View receives the Session's file reader separately from semantic messages.
+Renderers produce plain resource descriptors without reading attachment bytes.
+Panes request visible resources through the View's bound reader; resource
+identity includes workspace storage and content identity, while placement keys
+identify occurrences. A View's ImageSystem owns prepared PNG resources and
+replaces each Pane's complete visible placement set through a backend. Backend
+failure clears placements and leaves text fallbacks. The Applet package knows
+only resource descriptors and readers, not Session or workspace storage.
 
 ## HTTP recording
 

@@ -4,6 +4,7 @@ local model_contract = require("neoagent.model")
 local request_builder = require("neoagent.api.openai_responses.request")
 local request_context = require("neoagent.api.request_context")
 local request_opts = require("neoagent.api.request_opts")
+local request_stream = require("neoagent.api.request_stream")
 local semantic_message = require("neoagent.semantic_message")
 local http = require("neoagent.transport.http")
 local http_response = require("neoagent.api.http_response")
@@ -39,11 +40,12 @@ local M = {}
 ---@field _request_opts Neoagent.RequestLayer[]
 ---@field _request_context? Neoagent.RequestIdentity
 ---@field _transport Neoagent.HttpClient
+---@field _images? Neoagent.ImageRequest
 local Model = {}
 Model.__index = Model
 
 ---@param call_opts Neoagent.StreamOptions
----@return Neoagent.ApiRequest, Neoagent.RequestIdentity?
+---@return Neoagent.RequestPlan, Neoagent.RequestIdentity?
 function Model:_request(call_opts)
   return request_builder.build(self, call_opts)
 end
@@ -51,7 +53,7 @@ end
 ---@param opts Neoagent.StreamOptions
 ---@return Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
 function Model:stream(opts)
-  opts = opts or {}
+  opts = util.copy(opts or {})
   assert(type(opts.messages) == "table", "messages are required")
   ---@type Neoagent.ResponsesDecoder?
   local stream
@@ -60,20 +62,15 @@ function Model:stream(opts)
     ---@return Neoagent.ModelResult
     function(run)
       local ok, outcome = pcall(function()
+        require("neoagent.model").require_files(opts)
         local request, identity = self:_request(opts)
         local transport = request_context.bind_transport(self._transport, identity)
         stream = decoder.new(self, function(event)
           run:emit(event)
         end)
-        local child = transport.stream({
-          request = {
-            url = request.url,
-            headers = request.headers,
-            body = util.json_encode(request.body),
-            timeout_ms = request.timeout_ms,
-          },
+        local child = request_stream.send(transport, request, opts, {
           on_event = stream.process,
-        })
+        }, self._images)
         local transport_ok, transport_result = pcall(function()
           return child:await()
         end)
@@ -163,6 +160,7 @@ function M.new(opts)
       _request_opts = layers,
       _request_context = request_context.copy(opts.request_context),
       _transport = http.new(opts.transport),
+      _images = request_stream.validate(opts._images),
     }, Model),
     "OpenAI Responses constructor"
   )

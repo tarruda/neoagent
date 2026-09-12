@@ -136,7 +136,7 @@ describe("neoagent workspace settings", function()
     paths = { root, directory }
     vim.fn.mkdir(root, "p")
     local settings = settings_module.new({ directory = directory, root = root })
-    vim.fn.mkdir(settings.directory, "p")
+    assert(require("neoagent.workspace_storage").new(settings.directory).prepare())
     vim.fn.writefile({ "[]" }, settings.settings_path)
     local value, err = settings:load()
     assert.is_nil(value)
@@ -180,6 +180,9 @@ describe("neoagent workspace settings", function()
     value, err = settings:load()
     assert.is_nil(value)
     assert.matches("read", assert(err).message)
+    value, err = settings:update({ retained = true })
+    assert.is_nil(value)
+    assert.matches("read", assert(err).message)
 
     vim.fn.delete(settings.settings_path, "rf")
     local original_open = vim.uv.fs_open
@@ -193,5 +196,30 @@ describe("neoagent workspace settings", function()
     vim.uv.fs_open = original_open
     assert.is_nil(value)
     assert.matches("acquire workspace settings lock", assert(err).message)
+
+    value = assert(settings:write({ retained = true }))
+    value, err = settings:update({ invalid = function() end })
+    assert.is_nil(value)
+    assert.matches("encode", assert(err).message)
+  end)
+
+  it("rejects reads and writes when Workspace storage is not a directory", function()
+    local root = vim.fn.tempname()
+    local directory = vim.fn.tempname()
+    paths = { root, directory }
+    vim.fn.mkdir(root, "p")
+    vim.fn.mkdir(directory, "p")
+    local settings = settings_module.new({ directory = directory, root = root })
+    assert(require("neoagent.fs").write_all(settings.directory, "occupied"))
+
+    for _, operation in ipairs({
+      function() return settings:load() end,
+      function() return settings:write({ value = true }) end,
+      function() return settings:update({ value = true }) end,
+    }) do
+      local value, err = operation()
+      assert.is_nil(value)
+      assert.matches("not a directory", assert(err).message)
+    end
   end)
 end)

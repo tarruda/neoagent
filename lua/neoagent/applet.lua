@@ -75,6 +75,12 @@ local M = {}
 ---@field source_profile_id? string
 ---@field entry_id? string
 ---@field position? 'before'|'at'
+---@field input? string
+
+---@class Neoagent.SessionDerivation
+---@field ok true
+---@field agent Neoagent.Agent
+---@field input? string
 
 ---@class Neoagent.NeoagentApplet
 ---@field _neoagent_applet true
@@ -96,6 +102,7 @@ local M = {}
 ---@field last_id? string
 ---@field switcher_value? Neoagent.AgentSwitcher
 ---@field destroyed boolean
+---@field derivations table<Neoagent.Run<Neoagent.SessionDerivation, unknown>, boolean>
 local NeoagentApplet = {}
 NeoagentApplet.__index = NeoagentApplet
 
@@ -160,6 +167,7 @@ local function create(opts)
     last_id = nil,
     switcher_value = nil,
     destroyed = false,
+    derivations = {},
   }, NeoagentApplet)
   ---@type Neoagent.AdoptionTransaction[]
   local adoptions = {}
@@ -1535,7 +1543,7 @@ end
 ---@param applet Neoagent.AgentApplet
 ---@param prompt string
 ---@param source_profile_id string?
----@param callback fun(profile_id: string): Neoagent.Agent?, Neoagent.Error?
+---@param callback fun(profile_id: string): Neoagent.Run<Neoagent.SessionDerivation, unknown>?, Neoagent.Error?
 ---@return true?, Neoagent.Error?
 function NeoagentApplet:_select_profile(applet, prompt, source_profile_id, callback)
   local profiles = {}
@@ -1564,16 +1572,21 @@ function NeoagentApplet:_select_profile(applet, prompt, source_profile_id, callb
     items = items,
   })
   async.run(function()
-    return selection:await()
+    local result = selection:await()
+    if not result.ok or self.destroyed then
+      return result
+    end
+    assert(type(result.value) == "string", "Selected Profile id must be a string")
+    local derivation, err = callback(result.value)
+    if not derivation then
+      error(err, 0)
+    end
+    return derivation:await()
   end, {
     error_kind = "presentation",
     on_done = function(result)
-      if self.destroyed or not result.ok then
-        return
-      end
-      local ok, selected, err = pcall(callback, result.value)
-      if not ok or not selected then
-        self:_report_lifecycle_error(applet, ok and err or selected)
+      if not self.destroyed and not result.ok and result.error.kind ~= "cancelled" then
+        self:_report_lifecycle_error(applet, result.error)
       end
     end,
   })
@@ -1637,9 +1650,12 @@ end
 ---@param source_agent Neoagent.Agent
 ---@param target_profile_id string?
 ---@param opts Neoagent.AgentDeriveOptions
----@return Neoagent.Agent?, Neoagent.Error?
+---@return Neoagent.Run<Neoagent.SessionDerivation, unknown>?, Neoagent.Error?
 function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
-  opts = opts or {}
+  opts = util.copy(opts or {})
+  if self.destroyed then
+    return nil, util.error("session", "Neoagent Applet is destroyed")
+  end
   local source = source_agent:get_session()
   if source_agent:is_running() then
     return nil, util.error("session", "Cannot derive a Session while its Agent is running")
@@ -1653,25 +1669,42 @@ function NeoagentApplet:_derive(source_agent, target_profile_id, opts)
   if source_profile_id == nil then
     source_profile_id = source_agent:profile_id()
   end
-  local session
-  session, err = require("neoagent.profile_sessions").derive(source, {
+  local derive_options = {
     kind = opts.kind,
     source_profile_id = source_profile_id,
     target_profile_id = profile.id,
     workspace = workspace,
-    persistence = profile.config.persistence,
+    persistence = util.copy(profile.config.persistence),
     entry_id = opts.entry_id,
     position = opts.position,
-  })
-  if not session then
-    return nil, err
-  end
+  }
   local same_profile = source_agent:profile_id() == profile.id
-  return self:_open_published_session(session, profile, workspace, {
-    workspace = workspace,
-    restore_session_selection = same_profile,
-    commit_workspace_preference = not same_profile,
-  })
+  local operation = async.run(function(run)
+    local session, derive_err = require("neoagent.profile_sessions").derive(source, derive_options)
+    if not session then
+      error(derive_err, 0)
+    end
+    if self.destroyed or run:is_cancelled() then
+      error(async.cancelled_error, 0)
+    end
+    local agent, open_err = self:_open_published_session(session, profile, workspace, {
+      workspace = workspace,
+      restore_session_selection = same_profile,
+      commit_workspace_preference = not same_profile,
+    })
+    if not agent then
+      error(open_err, 0)
+    end
+    if opts.input then
+      assert(agent:applet()):set_input(opts.input)
+    end
+    return { ok = true, agent = agent, input = opts.input }
+  end, { error_kind = "session" })
+  self.derivations[operation] = true
+  operation:_listen(function()
+    self.derivations[operation] = nil
+  end)
+  return operation
 end
 
 ---@return Neoagent.ProfileSessionChoice[]
@@ -1785,7 +1818,7 @@ end
 
 ---@param entry_id string?
 ---@param position 'before'|'at'?
----@return Neoagent.Agent?, string|Neoagent.Error?
+---@return Neoagent.Run<Neoagent.SessionDerivation, unknown>?, Neoagent.Error?
 function NeoagentApplet:fork(entry_id, position)
   local source = self:target_agent()
   if not source then
@@ -1804,18 +1837,12 @@ function NeoagentApplet:fork(entry_id, position)
       end
     end
   end
-  local agent, err = self:_derive(source, source:profile_id(), {
+  return self:_derive(source, source:profile_id(), {
     kind = "fork",
     entry_id = entry_id,
     position = position,
+    input = selected_text,
   })
-  if not agent then
-    return nil, err
-  end
-  if selected_text then
-    assert(agent:applet()):set_input(selected_text)
-  end
-  return agent, selected_text
 end
 
 ---@return true?, Neoagent.Error?
@@ -1847,16 +1874,20 @@ function NeoagentApplet:select_fork()
     items = choices,
   })
   async.run(function()
-    return selection:await()
+    local result = selection:await()
+    if not result.ok or self.destroyed then
+      return result
+    end
+    local operation, err = self:fork(result.value, "before")
+    if not operation then
+      error(err, 0)
+    end
+    return operation:await()
   end, {
     error_kind = "presentation",
     on_done = function(result)
-      if self.destroyed or not result.ok then
-        return
-      end
-      local forked, err = self:fork(result.value, "before")
-      if not forked then
-        self:_report_lifecycle_error(assert(source:applet()), err)
+      if not self.destroyed and not result.ok and result.error.kind ~= "cancelled" then
+        self:_report_lifecycle_error(assert(source:applet()), result.error)
       end
     end,
   })
@@ -2002,6 +2033,9 @@ function NeoagentApplet:destroy()
     return
   end
   self.destroyed = true
+  for operation in pairs(self.derivations) do
+    operation:cancel()
+  end
   if self.switcher_value then
     self.switcher_value:destroy()
   end

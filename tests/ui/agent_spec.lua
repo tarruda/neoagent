@@ -161,7 +161,7 @@ describe("neoagent default agent", function()
   ---@param id string
   local function accept_entry(options, id)
     assert(options.on_accept)({
-      type = "message", id = id, timestamp = "2026-01-01T00:00:00Z",
+      type = "message", id = id, created_at = 1767225600000,
       message = { role = "user", content = options.prompt, timestamp = 1 },
     })
   end
@@ -1362,7 +1362,7 @@ describe("neoagent default agent", function()
     assert(checkpoint.type == "compaction")
     assert(type(checkpoint.summary) == "string")
     assert.matches("Turn Context %(split turn%):.-## Goal\nContinue the work", checkpoint.summary)
-    assert.are.equal(900, entries[#entries].tokensBefore)
+    assert.are.equal(900, entries[#entries].tokens_before)
     assert.matches("context summarization assistant", (assert(assert(model.requests[2]).system_prompt)))
     local context = assert(current_session():context_messages())
     assert.matches("Continue the work", (assert(assert(assert(context[1]).content[1]).text)))
@@ -1371,7 +1371,7 @@ describe("neoagent default agent", function()
       estimated = estimated + require("neoagent.compaction").estimate_tokens(message)
     end
     assert.are.equal(estimated, assert(current_view().context.context_usage).used)
-    assert.is_true(estimated < entries[#entries].tokensBefore)
+    assert.is_true(estimated < entries[#entries].tokens_before)
     local transcript = table.concat(vim.api.nvim_buf_get_lines(
       (assert(view_handles.buffer(current_view(), "transcript"))), 0, -1, false), "\n")
     assert.matches("Compacted from 900 tokens", transcript)
@@ -3428,16 +3428,17 @@ describe("neoagent default agent", function()
     assert(type(first) == "table")
     assert(vim.wait(1000, function() return first:is_done() end, 5))
     local path = assert(current_session():metadata()).path
+    local workspace_storage = require("neoagent.workspace_storage").new(settings:metadata().directory)
     assert.are.same({ provider = "fake", model = "test" },
       assert(assert(settings:load()).agents.Neo).default_model)
     assert.are.same({ provider = "fake", model = "test" },
-      assert(require("neoagent.storage").open((assert(path)))):state().model)
+      assert(require("neoagent.storage").open(assert(path), workspace_storage)):state().model)
 
     assert.are.equal(models.alpha, neoagent.set_model("fake", "alpha"))
     assert.are.same({ provider = "fake", model = "test" },
       assert(assert(settings:load()).agents.Neo).default_model)
     assert.are.same({ provider = "fake", model = "test" },
-      assert(require("neoagent.storage").open((assert(path)))):state().model)
+      assert(require("neoagent.storage").open(assert(path), workspace_storage)):state().model)
 
     local second = assert(neoagent.send("use alpha"))
     assert(type(second) == "table")
@@ -3445,7 +3446,7 @@ describe("neoagent default agent", function()
     assert.are.same({ provider = "fake", model = "test" },
       assert(assert(settings:load()).agents.Neo).default_model)
     assert.are.same({ provider = "fake", model = "alpha" },
-      assert(require("neoagent.storage").open((assert(path)))):state().model)
+      assert(require("neoagent.storage").open(assert(path), workspace_storage)):state().model)
 
     assert.are.equal(models.alpha, neoagent.get_model())
   end)
@@ -3514,8 +3515,9 @@ describe("neoagent default agent", function()
     local run = assert(neoagent.send("remember this"))
     assert(type(run) == "table")
     local session_path = assert(current_session():metadata()).path
+    local workspace_storage = require("neoagent.workspace_storage").new(settings:metadata().directory)
     assert(vim.wait(1000, function() return run:is_done() end))
-    local stored = assert(require("neoagent.storage").open((assert(session_path)))):state()
+    local stored = assert(require("neoagent.storage").open(assert(session_path), workspace_storage)):state()
     assert.are.same({ provider = "fake", model = "alpha" }, stored.model)
     assert.are.equal("high", stored.thinking_level)
     saved = assert(settings:load())
@@ -3535,7 +3537,7 @@ describe("neoagent default agent", function()
     assert.are.equal("high", neoagent.get_thinking_level())
 
     setup_session(models.test,
-      assert(require("neoagent.storage").open((assert(session_path)))), options)
+      assert(require("neoagent.storage").open(assert(session_path), workspace_storage)), options)
     assert.are.equal("alpha", assert(neoagent.get_model()).id)
     assert.are.equal("high", neoagent.get_thinking_level())
   end)
@@ -3586,16 +3588,17 @@ describe("neoagent default agent", function()
     local run = assert(neoagent.send("use plain"))
     assert(type(run) == "table")
     local session_path = assert(current_session():metadata()).path
+    local workspace_storage = require("neoagent.workspace_storage").new(settings:metadata().directory)
     assert(vim.wait(1000, function() return run:is_done() end, 5))
 
     local saved = assert(settings:load()).agents.Neo
     assert.are.same({ provider = "fake", model = "plain" },
       assert(saved).default_model)
     assert.is_nil(assert(saved).default_thinking_level)
-    local stored = assert(require("neoagent.storage").open((assert(session_path))))
+    local stored = assert(require("neoagent.storage").open(assert(session_path), workspace_storage))
     assert.is_nil(stored:state().thinking_level)
     assert.are.equal(vim.NIL,
-      assert(assert(stored:entries()[1]).request).thinkingLevel)
+      assert(assert(stored:entries()[1]).request).thinking_level)
 
     setup_model(models.plain, options)
     original:destroy()
@@ -4076,7 +4079,7 @@ describe("neoagent default agent", function()
     assert.is_false(neoagent.stop())
   end)
 
-  it("selects forked sessions by recent tree activity", function()
+  require("tests.helpers.async_test")("selects forked sessions by recent tree activity", function()
     local directory = vim.fn.tempname()
     paths[#paths + 1] = directory
     local storage = require("neoagent.storage")
@@ -4226,7 +4229,7 @@ describe("neoagent default agent", function()
     assert.are.equal("left", assert(assert(assert(current_session():messages()[2]).content)[1]).text)
     assert.are.equal("high", neoagent.get_thinking_level())
 
-    local source_path = assert(current_session():metadata()).path
+    local source_id = current_session():id()
     assert.is_false((neoagent.toggle()))
     assert(neoagent.select_fork())
     assert.is_true(current_view():is_open())
@@ -4235,10 +4238,10 @@ describe("neoagent default agent", function()
     presentation.choose(neoagent.applet(), assert(first).id)
     assert(vim.wait(1000, function()
       local session = current_session()
-      return session and assert(session:metadata()).parent_session == source_path
+      return session and assert(session:metadata()).parent_session == source_id
     end, 5))
     local forked = current_session()
-    assert.are.equal(source_path, assert(assert(forked):metadata()).parent_session)
+    assert.are.equal(source_id, assert(assert(forked):metadata()).parent_session)
     assert.are.same({}, assert(forked):messages())
     assert.are.equal("question", current_view():get_input())
     assert.are.equal(2, #require("neoagent.storage").list(directory, vim.fn.getcwd()))

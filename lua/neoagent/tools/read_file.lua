@@ -2,18 +2,24 @@ local async = require("neoagent.async")
 local common = require("neoagent.tools.common")
 local presentation = require("neoagent.tools.activity_presentation")
 local truncate = require("neoagent.tools.truncate")
+local util = require("neoagent.util")
 
 ---@alias Neoagent.FileImageMime "image/png"|"image/jpeg"|"image/gif"|"image/webp"|"image/bmp"
 
 ---@class Neoagent.ReadFileOptions
 ---@field max_image_input_bytes? integer
 ---@field max_image_pixels? integer
----@field max_image_payload_bytes? integer
+---@field max_image_output_bytes? integer
 
 ---@class Neoagent.ReadFileSettings
 ---@field max_image_input_bytes integer
 ---@field max_image_pixels integer
----@field max_image_payload_bytes integer
+---@field max_image_output_bytes integer
+
+---@class Neoagent.ProcessedImage
+---@field data string
+---@field mime_type Neoagent.FileImageMime
+---@field note string
 
 local MIME = {
   png = "image/png",
@@ -53,30 +59,36 @@ end
 
 local DEFAULT_MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
 local DEFAULT_MAX_IMAGE_PIXELS = 40 * 1000 * 1000
-local DEFAULT_MAX_IMAGE_PAYLOAD_BYTES = 4.5 * 1024 * 1024
+-- Retained snapshots must also fit inline requests after uploads are disabled.
+-- This binary budget leaves room for base64 within a 4.5 MiB payload.
+local DEFAULT_MAX_IMAGE_OUTPUT_BYTES = 4.5 * 1024 * 1024 / 4 * 3
 local IMAGE_TIMEOUT_MS = 30000
-local MAGICK_CAPTURE_BYTES = 20 * 1024 * 1024
 local IDENTIFY_CAPTURE_BYTES = 64 * 1024
 
----@param bytes integer
----@return integer
-local function encoded_size(bytes)
-  return math.floor((bytes + 2) / 3) * 4
-end
-
+---@async
 ---@param data string
 ---@param mime Neoagent.FileImageMime
 ---@param note string
----@param max_payload_bytes integer
+---@param max_output_bytes integer
+---@param files Neoagent.Files
+---@param filename string
 ---@return Neoagent.ToolResult
-local function image_result(data, mime, note, max_payload_bytes)
-  if encoded_size(#data) > max_payload_bytes then
-    error("image payload exceeds " .. max_payload_bytes .. " bytes")
+local function image_result(data, mime, note, max_output_bytes, files, filename)
+  if #data > max_output_bytes then
+    error("image output exceeds " .. max_output_bytes .. " bytes")
   end
+  local stored, err = files.put(data)
+  if not stored then
+    error(err, 0)
+  end
+  -- Filesystem names need not be safe semantic metadata. The snapshot remains
+  -- usable even when its optional display filename cannot be retained.
+  local display_filename = #filename <= 512 and util.is_valid_utf8(filename) and not filename:find("[%c]") and filename
+    or nil
   return {
     content = {
       { type = "text", text = note },
-      { type = "image", data = vim.base64.encode(data), mimeType = mime },
+      { type = "image", file_id = stored.file_id, bytes = stored.bytes, mime_type = mime, filename = display_filename },
     },
   }
 end
@@ -154,7 +166,7 @@ end
 ---@param mime Neoagent.FileImageMime
 ---@param ctx Neoagent.ToolCapabilities
 ---@param settings Neoagent.ReadFileSettings
----@return Neoagent.ToolResult?, string?, boolean?
+---@return Neoagent.ProcessedImage?, string?, boolean?
 local function run_magick(data, mime, ctx, settings)
   local input_format = assert(MAGICK_FORMAT[mime])
   local input = input_format .. ":-[0]"
@@ -177,16 +189,19 @@ local function run_magick(data, mime, ctx, settings)
 
   local ok, result = pcall(function()
     local output_format = mime == MIME.jpeg and "jpeg" or "png"
-    local bytes = process_magick(data, ctx, settings, nil, {
+    local converted, bytes = pcall(process_magick, data, ctx, settings, nil, {
       input,
       "-auto-orient",
       "-resize",
       "2000x2000>",
       output_format .. ":-",
-    }, MAGICK_CAPTURE_BYTES)
+    }, settings.max_image_output_bytes + 1)
+    if not converted and (type(bytes) ~= "table" or bytes.code ~= "output_limit") then
+      error(bytes, 0)
+    end
     ---@type Neoagent.FileImageMime
     local transmitted_mime = output_format == "jpeg" and MIME.jpeg or MIME.png
-    if encoded_size(#bytes) > settings.max_image_payload_bytes then
+    if not converted or #bytes > settings.max_image_output_bytes then
       output_format = "jpeg"
       bytes = process_magick(data, ctx, settings, nil, {
         input,
@@ -196,9 +211,10 @@ local function run_magick(data, mime, ctx, settings)
         "-quality",
         "80",
         output_format .. ":-",
-      }, settings.max_image_payload_bytes)
+      }, settings.max_image_output_bytes + 1)
       transmitted_mime = MIME.jpeg
     end
+    ---@cast bytes string
 
     local final_ok, final_dimensions = pcall(process_magick, bytes, ctx, settings, "identify", {
       "-format",
@@ -223,7 +239,7 @@ local function run_magick(data, mime, ctx, settings)
           oh / th
         )
     end
-    return image_result(bytes, transmitted_mime, note, settings.max_image_payload_bytes)
+    return { data = bytes, mime_type = transmitted_mime, note = note }
   end)
   if not ok then
     return nil, tostring(result), true
@@ -244,6 +260,12 @@ end
 ---@return Neoagent.Tool<unknown>
 local function new(options)
   options = options or {}
+  for key in pairs(options) do
+    assert(
+      key == "max_image_input_bytes" or key == "max_image_pixels" or key == "max_image_output_bytes",
+      "unsupported read_file option: " .. tostring(key)
+    )
+  end
   ---@type Neoagent.ReadFileSettings
   local settings = {
     max_image_input_bytes = positive_integer(
@@ -251,9 +273,9 @@ local function new(options)
       "max_image_input_bytes"
     ),
     max_image_pixels = positive_integer(options.max_image_pixels or DEFAULT_MAX_IMAGE_PIXELS, "max_image_pixels"),
-    max_image_payload_bytes = positive_integer(
-      options.max_image_payload_bytes or DEFAULT_MAX_IMAGE_PAYLOAD_BYTES,
-      "max_image_payload_bytes"
+    max_image_output_bytes = positive_integer(
+      options.max_image_output_bytes or DEFAULT_MAX_IMAGE_OUTPUT_BYTES,
+      "max_image_output_bytes"
     ),
   }
   return {
@@ -281,8 +303,10 @@ local function new(options)
       if limit ~= nil and (type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0) then
         error("limit must be a positive integer")
       end
+      local files = common.files(ctx)
       local filesystem = common.fs(ctx)
       local absolute = common.workspace(ctx):resolve(path)
+      local filename = assert(vim.fs.basename(absolute))
       local text = common.line_capture({
         offset = offset,
         select_lines = limit or math.huge,
@@ -340,7 +364,18 @@ local function new(options)
         if vim.fn.executable("magick") == 1 and async.current() then
           local processed, process_err, allow_original = run_magick(data, mime, ctx, settings)
           if processed then
-            return processed
+            local name = filename
+            if processed.mime_type ~= mime then
+              name = filename:gsub("%.[^.]+$", "") .. (processed.mime_type == MIME.jpeg and ".jpg" or ".png")
+            end
+            return image_result(
+              processed.data,
+              processed.mime_type,
+              processed.note,
+              settings.max_image_output_bytes,
+              files,
+              name
+            )
           end
           if not allow_original then
             error(process_err)
@@ -353,14 +388,16 @@ local function new(options)
               .. "]\n[ImageMagick resize failed: "
               .. tostring(process_err)
               .. "; sending original]",
-            settings.max_image_payload_bytes
+            settings.max_image_output_bytes,
+            files,
+            filename
           )
         end
         local note = "Read image file [" .. mime .. "]"
         if vim.fn.executable("magick") ~= 1 then
           note = note .. "\n[ImageMagick is unavailable; sending original image]"
         end
-        return image_result(data, mime, note, settings.max_image_payload_bytes)
+        return image_result(data, mime, note, settings.max_image_output_bytes, files, filename)
       end
 
       local shortened = text.finish(true)

@@ -53,7 +53,7 @@ describe("neoagent Agent session lifecycle", function()
   it("labels empty messages with stable entry identity", function()
     assert.are.equal("assistant · empty-me", lifecycle_module.entry_label({
       type = "message",
-      id = "empty-message-id", timestamp = "2026-01-01T00:00:00.000Z",
+      id = "empty-message-id", created_at = 1767225600000,
       message = { role = "assistant", content = {} },
     }))
   end)
@@ -62,7 +62,7 @@ describe("neoagent Agent session lifecycle", function()
     local text = "branch:" .. string.rep(" complete-message-text", 12)
     assert.are.equal("user · " .. text, lifecycle_module.entry_label({
       type = "message",
-      id = "complete-message-id", timestamp = "2026-01-01T00:00:00.000Z",
+      id = "complete-message-id", created_at = 1767225600000,
       message = { role = "user", content = text },
     }))
   end)
