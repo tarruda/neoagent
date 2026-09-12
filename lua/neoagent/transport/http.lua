@@ -13,6 +13,7 @@ local M = {}
 
 ---@class Neoagent.HttpFetchOptions
 ---@field request Neoagent.HttpRequest
+---@field response_type? "json"|"text" Defaults to JSON; text preserves storage response bytes.
 ---@field on_done? fun(result: Neoagent.HttpResult)
 
 ---@class Neoagent.HttpStreamOptions: Neoagent.HttpFetchOptions
@@ -48,7 +49,7 @@ local function response_error(message, response, detail)
 end
 
 -- The byte backend owns I/O and recording. Consumers see HTTP metadata and
--- decoded JSON, regardless of whether the bytes came from curl or replay.
+-- decoded JSON or explicitly requested bytes, from either curl or replay.
 ---@param backend? Neoagent.ByteBackend
 ---@return Neoagent.HttpClient
 function M.new(backend)
@@ -71,6 +72,10 @@ function M.new(backend)
     return async.run(
       ---@return Neoagent.HttpResult
       function()
+        assert(
+          opts.response_type == nil or opts.response_type == "json" or opts.response_type == "text",
+          "HTTP response_type must be json or text"
+        )
         local fetch = assert(backend.fetch, "HTTP backend does not support fetch")
         local result = fetch({ request = opts.request }):await()
         if not result.ok then
@@ -83,6 +88,9 @@ function M.new(backend)
         local maximum = opts.request.max_response_bytes
         if maximum and #body > maximum then
           error(response_error("HTTP response exceeds " .. maximum .. " bytes", result), 0)
+        end
+        if opts.response_type == "text" then
+          return { ok = true, status = result.status, headers = result.headers or {}, body = body }
         end
         if body == "" and (result.status == 204 or result.status == 304) then
           return { ok = true, status = result.status, headers = result.headers or {} }

@@ -15,11 +15,12 @@ end
 ---@param body unknown
 ---@param status integer
 ---@param maximum? integer
+---@param response_type? "json"|"text"
 ---@return Neoagent.RunResult<Neoagent.HttpResult>
-local function fetch(body, status, maximum)
+local function fetch(body, status, maximum, response_type)
   local backend = fake.new()
   backend.fetches = { { body = body --[[@as string]], status = status, headers = { etag = "v1" } } }
-  return wait(http.new(backend).fetch({ request = {
+  return wait(http.new(backend).fetch({ response_type = response_type, request = {
     url = "https://example.test", max_response_bytes = maximum,
   } }))
 end
@@ -79,6 +80,19 @@ describe("decoded HTTP client", function()
     assert.is_nil(result.body)
     assert.are.equal(503, result.status)
     assert.matches("unavailable", tostring(result.detail))
+  end)
+
+  it("accepts bounded storage upload acknowledgments without JSON decoding", function()
+    for _, value in ipairs({ { "", 201 }, { "<Error>expired</Error>", 403 }, { "a\0b", 200 } }) do
+      local result = fetch(value[1], value[2], 100, "text")
+      assert.is_true(result.ok)
+      assert.are.equal(value[1], result.body)
+      assert.are.equal(value[2], result.status)
+      assert.are.same({ etag = "v1" }, result.headers)
+    end
+    local oversized = fetch("too large", 201, 2, "text")
+    assert.is_false(oversized.ok)
+    assert.matches("exceeds 2 bytes", assert(oversized.error).message)
   end)
 
   it("bounds and diagnoses malformed buffered responses with their metadata", function()
@@ -156,7 +170,7 @@ describe("decoded HTTP client", function()
       }))
       return result, events
     end
-    local result, events = stream({ '  {"value":', '42}' }, 200)
+    local result, events = stream({ "  ", '{"value":', '42}' }, 200)
     assert(result.ok)
     assert.are.same({ { value = 42 } }, events)
     assert.are.equal(200, result.status)
@@ -204,6 +218,34 @@ describe("decoded HTTP client", function()
     assert(vim.wait(1000, function() return completions == 1 end))
     assert.are.same({ { text = "partial" } }, events)
     assert.are.equal(1, cancelled)
+  end)
+
+  it("stops decoding a chunk when its first event cancels the stream", function()
+    ---@type fun(chunk: string)?
+    local deliver
+    local backend = {
+      request = function(opts)
+        deliver = opts.on_chunk
+        return async.run(function()
+          return async.await(function(done)
+            return function() done.reject(async.cancelled_error) end
+          end)
+        end)
+      end,
+    }
+    local events = {}
+    ---@type Neoagent.Run<Neoagent.HttpResult, nil>?
+    local run
+    run = http.new(backend).stream({
+      request = { url = "https://example.test" },
+      on_event = function(value)
+        events[#events + 1] = value
+        assert(run):cancel()
+      end,
+    })
+    assert(deliver)('data: 1\n\ndata: 2\n\n')
+    assert.are.equal("cancelled", assert(wait(assert(run)).error).kind)
+    assert.are.same({ 1 }, events)
   end)
 
   it("bounds unfinished stream frames and JSON fallback bodies", function()
