@@ -78,7 +78,9 @@ local M = {}
 ---@param opts? Applet.WidgetBindingOptions
 ---@return Applet.Binding[]
 local function key_binding(lhs, action, opts)
-  if lhs == false or lhs == nil then return {} end
+  if lhs == false or lhs == nil then
+    return {}
+  end
   local values = type(lhs) == "table" and lhs or { lhs }
   local result = {}
   for _, value in ipairs(values) do
@@ -98,7 +100,9 @@ end
 ---@param destination T[]
 ---@param values T[]
 local function append(destination, values)
-  for _, value in ipairs(values) do destination[#destination + 1] = value end
+  for _, value in ipairs(values) do
+    destination[#destination + 1] = value
+  end
 end
 
 ---@param binding Applet.Binding
@@ -133,11 +137,12 @@ local function item_content(menu_key, item, text_wrap)
   -- The label always supplies the first child.
   local label = children[1]
   ---@cast label Applet.TextNode
-  return #children == 1 and label or ui.column({
-    key = menu_key .. ":item:" .. item.key .. ":content",
-    gap = 0,
-    children = children,
-  })
+  return #children == 1 and label
+    or ui.column({
+      key = menu_key .. ":item:" .. item.key .. ":content",
+      gap = 0,
+      children = children,
+    })
 end
 
 ---@param opts Applet.MenuOptions
@@ -146,15 +151,26 @@ function M.menu(opts)
   applet_expect(type(opts) == "table", "menu", "options must be a table", 3)
   applet_expect(util.nonempty_string(opts.key), "menu.key", "must be a non-empty string", 3)
   applet_expect(type(opts.items) == "table", "menu.items", "must be a list", 3)
-  applet_expect(opts.initial == nil or util.nonempty_string(opts.initial),
-    "menu.initial", "must name an enabled item", 3)
+  applet_expect(
+    opts.initial == nil or util.nonempty_string(opts.initial),
+    "menu.initial",
+    "must name an enabled item",
+    3
+  )
   local orientation = opts.orientation or "vertical"
-  applet_expect(orientation == "vertical" or orientation == "horizontal",
-    "menu.orientation", "must be vertical or horizontal", 3)
+  applet_expect(
+    orientation == "vertical" or orientation == "horizontal",
+    "menu.orientation",
+    "must be vertical or horizontal",
+    3
+  )
   local text_wrap = opts.text_wrap or "word"
-  applet_expect(text_wrap == "word" or text_wrap == "character"
-      or text_wrap == "none" or text_wrap == "native",
-    "menu.text_wrap", "must be word, character, none, or native", 3)
+  applet_expect(
+    text_wrap == "word" or text_wrap == "character" or text_wrap == "none" or text_wrap == "native",
+    "menu.text_wrap",
+    "must be word, character, none, or native",
+    3
+  )
   local group = opts.group or opts.key
   applet_expect(util.nonempty_string(group), "menu.group", "must be a non-empty string", 3)
   local item_nodes, bindings, seen, quick_bindings = {}, {}, {}, {}
@@ -165,16 +181,21 @@ function M.menu(opts)
     applet_expect(util.nonempty_string(item.key), path .. ".key", "must be a non-empty string", 3)
     applet_expect(not seen[item.key], path .. ".key", "must be unique", 3)
     seen[item.key] = true
-    applet_expect(type(item.label) == "string" or type(item.label) == "table",
-      path .. ".label", "must be text or runs", 3)
-    applet_expect(item.disabled == nil or type(item.disabled) == "boolean",
-      path .. ".disabled", "must be a boolean", 3)
+    applet_expect(
+      type(item.label) == "string" or type(item.label) == "table",
+      path .. ".label",
+      "must be text or runs",
+      3
+    )
+    applet_expect(item.disabled == nil or type(item.disabled) == "boolean", path .. ".disabled", "must be a boolean", 3)
     if not item.disabled then
       applet_expect(type(item.action) == "table", path .. ".action", "is required", 3)
     end
     local target_key = opts.key .. ":item:" .. item.key
     final = target_key
-    if not item.disabled and not first_enabled then first_enabled = target_key end
+    if not item.disabled and not first_enabled then
+      first_enabled = target_key
+    end
     if item.key == opts.initial then
       applet_expect(not item.disabled, "menu.initial", "must name an enabled item", 3)
       initial_target = target_key
@@ -185,14 +206,17 @@ function M.menu(opts)
       role = "menuitem",
       disabled = item.disabled == true,
       action = item.action,
-      focus_style = not item.disabled
-        and (item.focus_style or "selected") or nil,
+      focus_style = not item.disabled and (item.focus_style or "selected") or nil,
       child = item_content(opts.key, item, text_wrap),
     })
     for _, quick_key in ipairs(item.quick_keys or {}) do
-      local values = key_binding(quick_key, ui.action("applet.target.activate", {
-        target = target_key,
-      }), { desc = "Choose " .. item.key })
+      local values = key_binding(
+        quick_key,
+        ui.action("applet.target.activate", {
+          target = target_key,
+        }),
+        { desc = "Choose " .. item.key }
+      )
       for _, binding in ipairs(values) do
         quick_bindings[binding_id(binding)] = true
       end
@@ -210,20 +234,27 @@ function M.menu(opts)
       end
     end
   end
-  append_default(keys.previous, ui.action("applet.target.move", {
-    group = group,
-    direction = "previous",
-    wrap = opts.wrap_navigation == true,
-    entry = "first",
-  }), { count = true, desc = "Previous " .. opts.key })
-  append_default(keys.next, ui.action("applet.target.move", {
-    group = group,
-    direction = "next",
-    wrap = opts.wrap_navigation == true,
-    entry = "first",
-  }), { count = true, desc = "Next " .. opts.key })
-  append_default(keys.activate, ui.action("applet.target.activate"),
-    { desc = "Choose " .. opts.key })
+  append_default(
+    keys.previous,
+    ui.action("applet.target.move", {
+      group = group,
+      direction = "previous",
+      wrap = opts.wrap_navigation == true,
+      entry = "first",
+    }),
+    { count = true, desc = "Previous " .. opts.key }
+  )
+  append_default(
+    keys.next,
+    ui.action("applet.target.move", {
+      group = group,
+      direction = "next",
+      wrap = opts.wrap_navigation == true,
+      entry = "first",
+    }),
+    { count = true, desc = "Next " .. opts.key }
+  )
+  append_default(keys.activate, ui.action("applet.target.activate"), { desc = "Choose " .. opts.key })
   ---@type Applet.ColumnNode|Applet.RowNode
   local items
   if orientation == "vertical" then
@@ -256,8 +287,7 @@ function M.menu(opts)
       children = {
         ui.text({
           key = opts.key .. ":title",
-          runs = type(opts.title) == "table" and opts.title
-            or { { text = opts.title, style = "strong" } },
+          runs = type(opts.title) == "table" and opts.title or { { text = opts.title, style = "strong" } },
           wrap = text_wrap,
         }),
         items,
@@ -271,8 +301,7 @@ function M.menu(opts)
     child = content,
   })
   if opts.initial ~= nil then
-    applet_expect(initial_target ~= nil,
-      "menu.initial", "must name an enabled item", 3)
+    applet_expect(initial_target ~= nil, "menu.initial", "must name an enabled item", 3)
   end
   local selected = initial_target or first_enabled
   if selected then
@@ -287,14 +316,13 @@ end
 ---@param key string
 ---@return Applet.TargetIntent?
 function M.menu_intent(entry, key)
-  if entry == nil then return nil end
+  if entry == nil then
+    return nil
+  end
   applet_expect(type(entry) == "table", "menu entry", "must be a table", 3)
-  applet_expect(util.nonempty_string(entry.select), "menu entry.select",
-    "must name a target", 3)
-  applet_expect(util.nonempty_string(entry.reveal), "menu entry.reveal",
-    "must name a target", 3)
-  applet_expect(util.nonempty_string(key), "menu intent key",
-    "must be a non-empty string", 3)
+  applet_expect(util.nonempty_string(entry.select), "menu entry.select", "must name a target", 3)
+  applet_expect(util.nonempty_string(entry.reveal), "menu entry.reveal", "must name a target", 3)
+  applet_expect(util.nonempty_string(key), "menu intent key", "must be a non-empty string", 3)
   return {
     key = key,
     select = entry.select,
@@ -312,7 +340,9 @@ end
 ---@param value string|Applet.TextRun[]|Applet.Node
 ---@return Applet.Node
 local function dialog_body(key, value)
-  if is_node(value) then return value end
+  if is_node(value) then
+    return value
+  end
   return ui.text({
     key = key,
     runs = type(value) == "table" and value or { { text = value } },
@@ -340,15 +370,16 @@ function M.dialog(opts)
   if opts.title then
     children[#children + 1] = ui.text({
       key = opts.key .. ":title",
-      runs = type(opts.title) == "table" and opts.title
-        or { { text = opts.title, style = "strong" } },
+      runs = type(opts.title) == "table" and opts.title or { { text = opts.title, style = "strong" } },
       wrap = "word",
     })
   end
   if opts.body then
     children[#children + 1] = dialog_body(opts.key .. ":body", opts.body)
   end
-  if opts.queue_status then children[#children + 1] = opts.queue_status end
+  if opts.queue_status then
+    children[#children + 1] = opts.queue_status
+  end
   local action_menu, entry = M.menu({
     key = opts.key .. ":actions",
     group = opts.key .. ".actions",
@@ -361,8 +392,7 @@ function M.dialog(opts)
     },
     initial = opts.initial_action,
     wrap_navigation = opts.wrap_navigation ~= false,
-    gap = opts.action_gap ~= nil and opts.action_gap
-      or (opts.orientation == "horizontal" and 2 or 0),
+    gap = opts.action_gap ~= nil and opts.action_gap or (opts.orientation == "horizontal" and 2 or 0),
   })
   local bindings = util.copy(opts.bindings or {})
   append(bindings, action_menu.bindings)
@@ -382,7 +412,8 @@ function M.dialog(opts)
         children = children,
       }),
     }),
-  }), entry
+  }),
+    entry
 end
 
 ---@param opts Applet.CardOptions

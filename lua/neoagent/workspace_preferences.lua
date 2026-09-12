@@ -20,7 +20,6 @@ local M = {}
 ---@field default_thinking_level Neoagent.ThinkingLevel
 ---@field ui_position Neoagent.UiPosition
 
-
 ---@type table<string, boolean>
 local ui_positions = {
   auto = true,
@@ -34,8 +33,7 @@ local ui_positions = {
 ---@param value unknown
 ---@return TypeGuard<table<string, unknown>>
 local function is_object(value)
-  return type(value) == "table"
-    and (next(value) == nil or not util.is_list(value))
+  return type(value) == "table" and (next(value) == nil or not util.is_list(value))
 end
 
 ---@param settings Neoagent.JsonObject
@@ -45,15 +43,13 @@ end
 function M.scope(settings, defaults, name)
   assert(is_object(settings), "workspace settings must be an object")
   assert(is_object(defaults), "workspace preference defaults must be an object")
-  assert(type(name) == "string" and name ~= "",
-    "workspace preference name must be a non-empty string")
+  assert(type(name) == "string" and name ~= "", "workspace preference name must be a non-empty string")
 
   ---@type string[]
   local issues = {}
   for key in pairs(settings) do
     if key ~= "ui_position" and key ~= "agents" then
-      issues[#issues + 1] = "unsupported workspace setting: "
-        .. tostring(key)
+      issues[#issues + 1] = "unsupported workspace setting: " .. tostring(key)
     end
   end
   ---@type Neoagent.WorkspacePreferencesInput
@@ -65,15 +61,13 @@ function M.scope(settings, defaults, name)
   end
   local scoped = agents and agents[name]
   if scoped ~= nil and not is_object(scoped) then
-    issues[#issues + 1] = "workspace settings for " .. name
-      .. " must be an object"
+    issues[#issues + 1] = "workspace settings for " .. name .. " must be an object"
     scoped = nil
   end
   scoped = scoped or {}
   for key in pairs(scoped) do
     if key ~= "default_model" and key ~= "default_thinking_level" then
-      issues[#issues + 1] = "unsupported workspace setting for "
-        .. name .. ": " .. tostring(key)
+      issues[#issues + 1] = "unsupported workspace setting for " .. name .. ": " .. tostring(key)
     end
   end
   accepted.default_model = rawget(scoped, "default_model")
@@ -81,9 +75,14 @@ function M.scope(settings, defaults, name)
 
   local merged = util.deep_merge(defaults, accepted)
   ---@cast merged Neoagent.WorkspacePreferencesInput
-  if merged.default_model ~= nil and (type(merged.default_model) ~= "table"
+  if
+    merged.default_model ~= nil
+    and (
+      type(merged.default_model) ~= "table"
       or not model_config.safe_provider_id(merged.default_model.provider)
-      or not model_config.safe_id(merged.default_model.model)) then
+      or not model_config.safe_id(merged.default_model.model)
+    )
+  then
     issues[#issues + 1] = "workspace default_model is invalid"
     accepted.default_model = nil
   end
@@ -103,9 +102,10 @@ end
 ---@param path string
 ---@return string?
 function M.warning(issues, path)
-  if #issues == 0 then return nil end
-  return table.concat(issues, "; ")
-    .. "; the file may be outdated, update or delete " .. path
+  if #issues == 0 then
+    return nil
+  end
+  return table.concat(issues, "; ") .. "; the file may be outdated, update or delete " .. path
 end
 
 ---@param name string
@@ -113,13 +113,19 @@ end
 ---@return Neoagent.JsonObject
 function M.patch(name, patch)
   local result = {}
-  if patch.ui_position ~= nil then result.ui_position = patch.ui_position end
+  if patch.ui_position ~= nil then
+    result.ui_position = patch.ui_position
+  end
   local scoped = {}
-  if patch.default_model ~= nil then scoped.default_model = patch.default_model end
+  if patch.default_model ~= nil then
+    scoped.default_model = patch.default_model
+  end
   if patch.default_thinking_level ~= nil then
     scoped.default_thinking_level = patch.default_thinking_level
   end
-  if next(scoped) ~= nil then result.agents = { [name] = scoped } end
+  if next(scoped) ~= nil then
+    result.agents = { [name] = scoped }
+  end
   return result
 end
 

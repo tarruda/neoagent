@@ -205,21 +205,43 @@ local built_in_actions = {
 }
 
 local callback_names = {
-  "on_focus", "on_resize", "on_pane_buffer_change", "on_pane_close",
+  "on_focus",
+  "on_resize",
+  "on_pane_buffer_change",
+  "on_pane_close",
   "on_error",
 }
 
 local counter_names = {
-  "requested_generations", "renders", "frame_compilations", "frame_commits",
-  "host_publications", "host_snapshot_refreshes", "observation_batches",
+  "requested_generations",
+  "renders",
+  "frame_compilations",
+  "frame_commits",
+  "host_publications",
+  "host_snapshot_refreshes",
+  "observation_batches",
   "external_changes",
-  "default_external_handlers", "tab_opens", "tab_closes",
-  "topology_rebuilds", "pane_mounts", "pane_unmounts", "buffer_creations",
-  "window_opens", "window_closes", "window_config_changes",
-  "split_size_changes", "focus_changes", "mapping_scope_changes",
-  "measurement_passes", "surface_invalidations", "rollbacks",
-  "observer_activations", "observer_releases", "observer_callbacks",
-  "observer_relevant_callbacks", "observer_record_scans",
+  "default_external_handlers",
+  "tab_opens",
+  "tab_closes",
+  "topology_rebuilds",
+  "pane_mounts",
+  "pane_unmounts",
+  "buffer_creations",
+  "window_opens",
+  "window_closes",
+  "window_config_changes",
+  "split_size_changes",
+  "focus_changes",
+  "mapping_scope_changes",
+  "measurement_passes",
+  "surface_invalidations",
+  "rollbacks",
+  "observer_activations",
+  "observer_releases",
+  "observer_callbacks",
+  "observer_relevant_callbacks",
+  "observer_record_scans",
 }
 
 local sequence = 0
@@ -229,10 +251,16 @@ local sequence = 0
 ---@param seen? table<table, table>
 ---@return T
 local function copy_owned(value, seen)
-  if type(value) ~= "table" then return value end
-  if getmetatable(value) ~= nil then return value end
+  if type(value) ~= "table" then
+    return value
+  end
+  if getmetatable(value) ~= nil then
+    return value
+  end
   seen = seen or {}
-  if seen[value] then return seen[value] end
+  if seen[value] then
+    return seen[value]
+  end
   local result = {}
   seen[value] = result
   for key, item in pairs(value) do
@@ -246,11 +274,15 @@ end
 ---@param seen? table<table, table>
 ---@return T
 local function copy_semantic(value, seen)
-  if type(value) ~= "table" then return value end
+  if type(value) ~= "table" then
+    return value
+  end
   local source = value
   ---@cast source table<unknown, unknown>
   seen = seen or {}
-  if seen[source] then return seen[source] --[[@as T]] end
+  if seen[source] then
+    return seen[source] --[[@as T]]
+  end
   ---@type table<unknown, unknown>
   local result = {}
   seen[source] = result
@@ -277,7 +309,8 @@ end
 ---@param record? Applet.HostRecord
 ---@return boolean
 local function mounted(record)
-  return record ~= nil and Base.valid_window(record.window)
+  return record ~= nil
+    and Base.valid_window(record.window)
     and Base.valid_buffer(record.buffer)
     and vim.api.nvim_win_get_buf(record.window) == record.buffer
 end
@@ -300,8 +333,10 @@ end
 ---@param descriptor Applet.MountDescriptor
 ---@return string
 local function mount_token(descriptor)
-  return table.concat({ tostring(descriptor.pane), buffer_token(descriptor),
-    tostring(descriptor.mount_revision) }, "\0")
+  return table.concat(
+    { tostring(descriptor.pane), buffer_token(descriptor), tostring(descriptor.mount_revision) },
+    "\0"
+  )
 end
 
 ---@param left? Applet.LayoutMeasurement
@@ -327,41 +362,48 @@ end
 function Applet.new(opts)
   opts = opts or {}
   applet_expect(type(opts) == "table", "Applet", "options must be a table", 3)
-  applet_expect(util.nonempty_string(opts.name), "Applet.name",
-    "must be a non-empty string", 3)
-  applet_expect(type(opts.host) == "table" or type(opts.host) == "function",
-    "Applet.host", "must be a Host or resolver", 3)
-  applet_expect(opts.render == nil or type(opts.render) == "function",
-    "Applet.render", "must be a function", 3)
-  applet_expect(opts.handlers == nil or type(opts.handlers) == "table",
-    "Applet.handlers", "must be a table", 3)
-  applet_expect(opts.domain == nil or type(opts.domain) == "table",
-    "Applet.domain", "must be an InteractionDomain", 3)
-  applet_expect(opts.critical == nil or type(opts.critical) == "function",
-    "Applet.critical", "must be a function", 3)
-  applet_expect(opts.notify == nil or type(opts.notify) == "function",
-    "Applet.notify", "must be a function", 3)
-  applet_expect(opts.open_uri == nil or type(opts.open_uri) == "function",
-    "Applet.open_uri", "must be a function", 3)
+  applet_expect(util.nonempty_string(opts.name), "Applet.name", "must be a non-empty string", 3)
+  applet_expect(
+    type(opts.host) == "table" or type(opts.host) == "function",
+    "Applet.host",
+    "must be a Host or resolver",
+    3
+  )
+  applet_expect(opts.render == nil or type(opts.render) == "function", "Applet.render", "must be a function", 3)
+  applet_expect(opts.handlers == nil or type(opts.handlers) == "table", "Applet.handlers", "must be a table", 3)
+  applet_expect(opts.domain == nil or type(opts.domain) == "table", "Applet.domain", "must be an InteractionDomain", 3)
+  applet_expect(opts.critical == nil or type(opts.critical) == "function", "Applet.critical", "must be a function", 3)
+  applet_expect(opts.notify == nil or type(opts.notify) == "function", "Applet.notify", "must be a function", 3)
+  applet_expect(opts.open_uri == nil or type(opts.open_uri) == "function", "Applet.open_uri", "must be a function", 3)
   for _, name in ipairs(callback_names) do
-    applet_expect(opts[name] == nil or type(opts[name]) == "function",
-      "Applet." .. name, "must be a function", 3)
+    applet_expect(opts[name] == nil or type(opts[name]) == "function", "Applet." .. name, "must be a function", 3)
   end
   local handlers, known_handlers = {}, {}
   for name, handler in pairs(opts.handlers or {}) do
-    applet_expect(util.nonempty_string(name) and not name:match("^applet%."),
-      "Applet.handlers", "names must be non-empty and outside the applet namespace", 3)
-    applet_expect(type(handler) == "function", "Applet.handlers." .. name,
-      "must be a function", 3)
+    applet_expect(
+      util.nonempty_string(name) and not name:match("^applet%."),
+      "Applet.handlers",
+      "names must be non-empty and outside the applet namespace",
+      3
+    )
+    applet_expect(type(handler) == "function", "Applet.handlers." .. name, "must be a function", 3)
     handlers[name], known_handlers[name] = handler, true
   end
   local selected_host
-  if type(opts.host) == "table" then selected_host = host_api.validate(opts.host --[[@as Applet.HostInput]]) end
-  applet_expect(type(opts.host) ~= "function" or opts.render ~= nil,
-    "Applet.host", "a resolver requires state-driven rendering", 3)
+  if type(opts.host) == "table" then
+    selected_host = host_api.validate(opts.host --[[@as Applet.HostInput]])
+  end
+  applet_expect(
+    type(opts.host) ~= "function" or opts.render ~= nil,
+    "Applet.host",
+    "a resolver requires state-driven rendering",
+    3
+  )
   sequence = sequence + 1
   local counters = {}
-  for _, name in ipairs(counter_names) do counters[name] = 0 end
+  for _, name in ipairs(counter_names) do
+    counters[name] = 0
+  end
   local domain = opts.domain or Domain.new({ critical = opts.critical })
   ---@type Applet.Applet<S>
   local self = setmetatable({
@@ -391,14 +433,15 @@ function Applet.new(opts)
     observed_snapshot = {
       revision = 0,
       request_generation = 0,
-      host = { kind = selected_host and selected_host.kind or nil,
-        open = false, visible = false },
+      host = { kind = selected_host and selected_host.kind or nil, open = false, visible = false },
       layout = { kind = "closed" },
       panes = {},
       foreign_windows = 0,
     },
   }, Applet)
-  for _, name in ipairs(callback_names) do self.callbacks[name] = opts[name] end
+  for _, name in ipairs(callback_names) do
+    self.callbacks[name] = opts[name]
+  end
   domain:add(self, { phase = "frame" })
   return self
 end
@@ -415,7 +458,9 @@ end
 ---@param scope? "live"|"retained"
 ---@return boolean
 function Applet:_set_observer_scope(scope)
-  if self.observer_scope == scope then return false end
+  if self.observer_scope == scope then
+    return false
+  end
   if self.observer_scope ~= nil then
     Base.clear_observers(self)
     self.counters.observer_releases = self.counters.observer_releases + 1
@@ -430,7 +475,9 @@ end
 ---@return "retained"?
 function Applet:_closed_observer_scope()
   for _, record in pairs(self.records) do
-    if Base.loaded_buffer(record.buffer) then return "retained" end
+    if Base.loaded_buffer(record.buffer) then
+      return "retained"
+    end
   end
 end
 
@@ -439,11 +486,11 @@ end
 ---@param pane? string
 ---@return nil, Applet.Error
 function Applet:_report(phase, value, pane)
-  local source = type(value) == "table" and type(value.message) == "string"
-      and value.message or tostring(value)
-  local message = source:gsub("\nstack traceback:.*", "")
-    :gsub("[\r\n].*", "")
-  if #message > 512 then message = message:sub(1, 509) .. "..." end
+  local source = type(value) == "table" and type(value.message) == "string" and value.message or tostring(value)
+  local message = source:gsub("\nstack traceback:.*", ""):gsub("[\r\n].*", "")
+  if #message > 512 then
+    message = message:sub(1, 509) .. "..."
+  end
   local err = {
     applet = self.name,
     phase = phase,
@@ -452,18 +499,23 @@ function Applet:_report(phase, value, pane)
     message = message,
   }
   local callback = self.callbacks.on_error
-  if callback then pcall(callback, copy_semantic(err)) end
+  if callback then
+    pcall(callback, copy_semantic(err))
+  end
   return nil, err
 end
 
 function Applet:_request_flush()
-  if self.lifecycle ~= "destroyed" then self.domain:request(self) end
+  if self.lifecycle ~= "destroyed" then
+    self.domain:request(self)
+  end
 end
 
 ---@return boolean
 function Applet:_refresh_observations()
-  if not self.observation_kinds or self.observing or self.mutating
-      or self.lifecycle == "destroyed" then return false end
+  if not self.observation_kinds or self.observing or self.mutating or self.lifecycle == "destroyed" then
+    return false
+  end
   local kinds = self.observation_kinds
   local native = self.observation_native
   self.observation_kinds = nil
@@ -507,11 +559,16 @@ end
 ---@return self
 function Applet:set_host(value)
   self:_assert_alive()
-  applet_expect(type(value) == "table" or type(value) == "function",
-    "Applet Host", "must be a Host or resolver", 3)
-  applet_expect(type(value) ~= "function" or self.render ~= nil,
-    "Applet Host", "a resolver requires state-driven rendering", 3)
-  if type(value) == "table" then value = host_api.validate(value --[[@as Applet.HostInput]]) end
+  applet_expect(type(value) == "table" or type(value) == "function", "Applet Host", "must be a Host or resolver", 3)
+  applet_expect(
+    type(value) ~= "function" or self.render ~= nil,
+    "Applet Host",
+    "a resolver requires state-driven rendering",
+    3
+  )
+  if type(value) == "table" then
+    value = host_api.validate(value --[[@as Applet.HostInput]])
+  end
   self.host_source = value
   if type(value) == "table" and self.lifecycle ~= "open" then
     self.selected_host = value
@@ -530,16 +587,19 @@ function Applet:_resolved_host()
   local requested
   if type(self.host_source) == "function" then
     local ok, value = pcall(self.host_source, self.pending_state)
-    if not ok then return self:_report("host", value) end
+    if not ok then
+      return self:_report("host", value)
+    end
     local validated, result = pcall(host_api.validate, value)
-    if not validated then return self:_report("host", result) end
+    if not validated then
+      return self:_report("host", result)
+    end
     requested = result
   else
     requested = host_api.validate(self.host_source --[[@as Applet.HostInput]])
   end
   self.requested_host = requested
-  if self.lifecycle == "open" and self.active_host
-      and requested.kind ~= self.active_host.kind then
+  if self.lifecycle == "open" and self.active_host and requested.kind ~= self.active_host.kind then
     self.queued_host = requested
     return self.active_host
   end
@@ -581,31 +641,40 @@ function Applet:_render_environment(host, reopening)
     focused_pane = self.focused,
     layout_generation = self.generation,
     measurements = copy_semantic(self.measurements),
-  }, native
+  },
+    native
 end
 
 ---@param reopening? boolean
 ---@return Applet.Frame?, Applet.Error?
 function Applet:_prepare_frame(reopening)
-  if not self.has_submission then return self:_report("render", "Applet has no Tree") end
+  if not self.has_submission then
+    return self:_report("render", "Applet has no Tree")
+  end
   if self.direct_tree and type(self.host_source) == "function" then
     return self:_report("host", "a Host resolver requires state-driven rendering")
   end
   local host, host_error = self:_resolved_host()
-  if not host then return nil, host_error end
-  local environment_ok, environment, native = pcall(
-    self._render_environment, self, host, reopening)
-  if not environment_ok then return self:_report("host", environment) end
+  if not host then
+    return nil, host_error
+  end
+  local environment_ok, environment, native = pcall(self._render_environment, self, host, reopening)
+  if not environment_ok then
+    return self:_report("host", environment)
+  end
   assert(native)
   local tree = self.pending_tree
   if not self.direct_tree then
     self.counters.renders = self.counters.renders + 1
     local rendered, value = pcall(function()
-      return assert(self.render)(self.pending_state --[[@as S]],
-        copy_semantic(environment))
+      return assert(self.render)(self.pending_state --[[@as S]], copy_semantic(environment))
     end)
-    if not rendered then return self:_report("render", value) end
-    if value == nil then return self:_report("render", "render returned nil") end
+    if not rendered then
+      return self:_report("render", value)
+    end
+    if value == nil then
+      return self:_report("render", "render returned nil")
+    end
     tree = value
   end
   self.counters.frame_compilations = self.counters.frame_compilations + 1
@@ -618,7 +687,9 @@ function Applet:_prepare_frame(reopening)
     overrides = self.overrides,
     handlers = self.known_handlers,
   })
-  if not compiled then return self:_report("compile", frame) end
+  if not compiled then
+    return self:_report("compile", frame)
+  end
   ---@cast frame Applet.Frame
   frame.generation = self.generation
   return frame
@@ -632,8 +703,7 @@ function Applet:_dispose_record(record, destroy_pane)
   local active_elsewhere = false
   if pane then
     for _, current in pairs(self.records) do
-      if current ~= record and current.descriptor
-          and current.descriptor.pane == pane then
+      if current ~= record and current.descriptor and current.descriptor.pane == pane then
         active_elsewhere = true
         break
       end
@@ -642,13 +712,16 @@ function Applet:_dispose_record(record, destroy_pane)
   -- Replaced records are disconnected while their candidate is prepared, so
   -- finalization releases native ownership and optional Pane ownership.
   record.surface = nil
-  if self.driver and record.window then self.driver:detach(record) end
+  if self.driver and record.window then
+    self.driver:detach(record)
+  end
   Base.delete_buffer(record)
-  if destroy_pane and descriptor and descriptor.owns_pane
-      and not active_elsewhere and not pane.destroyed then
+  if destroy_pane and descriptor and descriptor.owns_pane and not active_elsewhere and not pane.destroyed then
     pane:destroy()
   end
-  if pane and not active_elsewhere then pane:_unbind(self) end
+  if pane and not active_elsewhere then
+    pane:_unbind(self)
+  end
   record.active = false
 end
 
@@ -664,10 +737,11 @@ function Applet:_prepare_records(frame)
       self.records[key] = record
     elseif record.descriptor and record.buffer_token ~= buffer_token(descriptor) then
       local previous = record.descriptor
-      if previous.pane.surface then previous.pane:_disconnect() end
+      if previous.pane.surface then
+        previous.pane:_disconnect()
+      end
       record = { key = key, applet = self, descriptor = descriptor }
-      if previous.buffer.name == descriptor.buffer.name
-          and previous.buffer.uri == descriptor.buffer.uri then
+      if previous.buffer.name == descriptor.buffer.name and previous.buffer.uri == descriptor.buffer.uri then
         record.buffer_name_generation = frame.generation
       end
       self.records[key] = record
@@ -675,7 +749,9 @@ function Applet:_prepare_records(frame)
     end
     if record.descriptor and record.descriptor.pane ~= descriptor.pane then
       local previous = record.descriptor
-      if previous.pane.surface then previous.pane:_disconnect() end
+      if previous.pane.surface then
+        previous.pane:_disconnect()
+      end
       record.surface = nil
       record.view_policy_revision = nil
       assert(self.pane_replacements)[#self.pane_replacements + 1] = previous
@@ -708,12 +784,16 @@ function Applet:_prepare_records(frame)
     record.declared = true
     record.active = true
     local _, created = Base.ensure_buffer(self, record, descriptor)
-    if created then self.counters.buffer_creations = self.counters.buffer_creations + 1 end
+    if created then
+      self.counters.buffer_creations = self.counters.buffer_creations + 1
+    end
   end
   for key, record in pairs(self.records) do
     if record.active and not desired[key] then
       Base.save_view(record)
-      if record.descriptor.pane.surface then record.descriptor.pane:_disconnect() end
+      if record.descriptor.pane.surface then
+        record.descriptor.pane:_disconnect()
+      end
       record.surface = nil
       record.active = false
       record.declared = false
@@ -733,9 +813,13 @@ function Applet:_record_checkpoint()
     result.records[key] = record
     local state = {}
     for field, value in pairs(record) do
-      if type(value) == "table" and field ~= "applet"
-          and field ~= "descriptor" and field ~= "surface"
-          and field ~= "chrome" then
+      if
+        type(value) == "table"
+        and field ~= "applet"
+        and field ~= "descriptor"
+        and field ~= "surface"
+        and field ~= "chrome"
+      then
         state[field] = copy_owned(value)
       else
         state[field] = value
@@ -752,39 +836,54 @@ function Applet:_discard_candidate_records(checkpoint)
   for key, current in pairs(util.copy(self.records)) do
     local previous = checkpoint.records[key]
     if current ~= previous then
-      if current.descriptor then candidate_panes[current.descriptor.pane] = true end
+      if current.descriptor then
+        candidate_panes[current.descriptor.pane] = true
+      end
       if current.descriptor and current.descriptor.pane.surface then
         current.descriptor.pane:_disconnect()
       end
       current.surface = nil
-      if self.driver and current.window then self.driver:detach(current) end
+      if self.driver and current.window then
+        self.driver:detach(current)
+      end
       Base.delete_buffer(current)
       self.records[key] = previous
-    elseif current.descriptor ~= checkpoint.states[current].descriptor
-        and current.descriptor.pane.surface then
+    elseif current.descriptor ~= checkpoint.states[current].descriptor and current.descriptor.pane.surface then
       candidate_panes[current.descriptor.pane] = true
       current.descriptor.pane:_disconnect()
     end
   end
-  for key, previous in pairs(checkpoint.records) do self.records[key] = previous end
+  for key, previous in pairs(checkpoint.records) do
+    self.records[key] = previous
+  end
   for record, state in pairs(checkpoint.states) do
     local destination = record --[[@as table<string, unknown>]]
-    for field in pairs(destination) do destination[field] = nil end
-    for field, value in pairs(state --[[@as table<string, unknown>]]) do
+    for field in pairs(destination) do
+      destination[field] = nil
+    end
+    for field, value in
+      pairs(state --[[@as table<string, unknown>]])
+    do
       destination[field] = value
     end
     if record.owns_buffer and Base.loaded_buffer(record.buffer) then
       record.reproject_buffer_options = true
       Base.configure_buffer(record, record.descriptor)
     end
-    if record.descriptor then record.descriptor.pane:_bind(self) end
+    if record.descriptor then
+      record.descriptor.pane:_bind(self)
+    end
   end
   local restored_panes = {}
   for _, record in pairs(self.records) do
-    if record.descriptor then restored_panes[record.descriptor.pane] = true end
+    if record.descriptor then
+      restored_panes[record.descriptor.pane] = true
+    end
   end
   for pane in pairs(candidate_panes) do
-    if not restored_panes[pane] then pane:_unbind(self) end
+    if not restored_panes[pane] then
+      pane:_unbind(self)
+    end
   end
   self.measurements = copy_owned(checkpoint.measurements)
 end
@@ -792,7 +891,9 @@ end
 ---@param checkpoint Applet.RecordCheckpoint
 function Applet:_finalize_replaced_records(checkpoint)
   for key, previous in pairs(checkpoint.records) do
-    if self.records[key] ~= previous then self:_dispose_record(previous, true) end
+    if self.records[key] ~= previous then
+      self:_dispose_record(previous, true)
+    end
   end
   local finalized = {}
   for _, descriptor in ipairs(self.pane_replacements or {}) do
@@ -823,7 +924,9 @@ function Applet:_surface_interaction(record)
   ---@return unknown
   interaction.dispatch = function(event)
     self:_refresh_observations()
-    if self.lifecycle ~= "open" then return false end
+    if self.lifecycle ~= "open" then
+      return false
+    end
     -- Enrich the same event so pass requests retain their identity.
     ---@cast event Applet.AppletActionEvent<S>
     event.applet = self
@@ -840,7 +943,9 @@ function Applet:_surface_interaction(record)
       return self:_restore_focus()
     end
     local handler = self.handlers[event.action]
-    if not handler then return false end
+    if not handler then
+      return false
+    end
     local ok, result = pcall(handler, event)
     if not ok then
       self:_report("action", result, record.key)
@@ -850,7 +955,9 @@ function Applet:_surface_interaction(record)
   end
   ---@param event Applet.ActionEvent<Applet.Pane>
   ---@return boolean
-  interaction.pass = function(event) return Base.pass(record, event) end
+  interaction.pass = function(event)
+    return Base.pass(record, event)
+  end
   return interaction
 end
 
@@ -873,20 +980,24 @@ function Applet:_mount_content(frame, opening, opts)
           Base.update_surface(self, driver, record)
           assert(pane.surface_changed)(pane, { chrome = true })
         end
-        if pane.has_submission
-            and not (opts.preserve_connected and was_connected) then
+        if pane.has_submission and not (opts.preserve_connected and was_connected) then
           local committed, commit_error = pane:flush()
-          if not committed then error(commit_error and commit_error.message
-            or "Pane commit failed", 0) end
+          if not committed then
+            error(commit_error and commit_error.message or "Pane commit failed", 0)
+          end
         end
       end)
       if not ok then
-        if record.descriptor.required and not was_connected then error(err, 0) end
+        if record.descriptor.required and not was_connected then
+          error(err, 0)
+        end
         if was_connected then
           self:_report("commit", err, key)
           Base.restore_view(record)
         else
-          if pane.surface then pane:_disconnect() end
+          if pane.surface then
+            pane:_disconnect()
+          end
           record.surface = nil
           record.suppressed = record.mount_token
           driver:detach(record)
@@ -912,7 +1023,9 @@ function Applet:_cleanup_inactive()
     if not record.active and record.descriptor.lifecycle == "transient" then
       Base.delete_buffer(record)
       local pane = record.descriptor.pane
-      if record.descriptor.owns_pane then pane:destroy() end
+      if record.descriptor.owns_pane then
+        pane:destroy()
+      end
       pane:_unbind(self)
       self.records[key] = nil
       self.measurements[key] = nil
@@ -925,7 +1038,9 @@ end
 ---@param opening boolean
 function Applet:_focus_after_commit(previous, frame, opening)
   local previous_layers = {}
-  for _, layer in ipairs(previous and previous.layers or {}) do previous_layers[layer.key] = true end
+  for _, layer in ipairs(previous and previous.layers or {}) do
+    previous_layers[layer.key] = true
+  end
   local current_layers = {}
   local target
   for _, layer in ipairs(frame.layers) do
@@ -974,19 +1089,21 @@ function Applet:_commit_frame(previous, frame, opening)
   -- Capture every live Pane immediately before that transaction so restoration
   -- reflects the user's current view at the transaction boundary.
   for _, record in pairs(self.records) do
-    if record.active and mounted(record) then Base.save_view(record) end
+    if record.active and mounted(record) then
+      Base.save_view(record)
+    end
   end
   for _, key in ipairs(frame.pane_order) do
     local before = previous and previous.panes[key]
     if not before or not util.equal(before.scopes, frame.panes[key].scopes) then
-      self.counters.mapping_scope_changes =
-        self.counters.mapping_scope_changes + 1
+      self.counters.mapping_scope_changes = self.counters.mapping_scope_changes + 1
     end
   end
   self:_prepare_records(frame)
-  local reconciled, reconcile_error = pcall(
-    self.driver.reconcile, self.driver, previous, frame, self.records)
-  if not reconciled then error(reconcile_error, 0) end
+  local reconciled, reconcile_error = pcall(self.driver.reconcile, self.driver, previous, frame, self.records)
+  if not reconciled then
+    error(reconcile_error, 0)
+  end
   self:_mount_content(frame, opening)
   self.frame = frame
   self.active_host = frame.host
@@ -1020,24 +1137,33 @@ end
 ---@param info? Applet.PaneCommit
 ---@return boolean
 function Applet:_content_committed(record, info)
-  if self.lifecycle ~= "open" or self.mutating or self.measuring
-      or not record.active or not self.frame then return false end
+  if self.lifecycle ~= "open" or self.mutating or self.measuring or not record.active or not self.frame then
+    return false
+  end
   if info and info.chrome then
     self:_refresh_observations()
-    if self.lifecycle ~= "open" or self.mutating or self.measuring
-        or not record.active or not self.frame then return false end
+    if self.lifecycle ~= "open" or self.mutating or self.measuring or not record.active or not self.frame then
+      return false
+    end
     self:_sync_observed()
   end
   local requested = false
   for _, layer in ipairs(self.frame.layers) do
-    if (layer.width_request or layer.height_request) then
+    if layer.width_request or layer.height_request then
       for _, key in ipairs(layer.panes) do
-        if key == record.key then requested = true break end
+        if key == record.key then
+          requested = true
+          break
+        end
       end
     end
-    if requested then break end
+    if requested then
+      break
+    end
   end
-  if not requested then return false end
+  if not requested then
+    return false
+  end
   local measured = Base.measure(record)
   if not measured or same_measurement(self.measurements[record.key], measured) then
     return false
@@ -1049,8 +1175,7 @@ function Applet:_content_committed(record, info)
   end
   record.measurement_updates = assert(record.measurement_updates) + 1
   if record.measurement_updates > 2 then
-    self:_report("measure", "content measurement exceeded two recompilations",
-      record.key)
+    self:_report("measure", "content measurement exceeded two recompilations", record.key)
     return false
   end
   self.measurements[record.key] = measured
@@ -1062,19 +1187,25 @@ end
 
 ---@return boolean?, Applet.Error?
 function Applet:_settle_measurements()
-  if self.measuring then return true end
+  if self.measuring then
+    return true
+  end
   self.measuring = true
   local ok, result, result_error = pcall(function()
     local signatures = {}
     for _ = 1, 2 do
-      if not self:_measure() then return true end
+      if not self:_measure() then
+        return true
+      end
       self.counters.measurement_passes = self.counters.measurement_passes + 1
       local frame, err = self:_prepare_frame(false)
-      if not frame then return nil, err end
+      if not frame then
+        return nil, err
+      end
       local dimensions = {}
       for _, layer in ipairs(frame.layers) do
-        dimensions[#dimensions + 1] = table.concat({ layer.key, layer.rect.row,
-          layer.rect.col, layer.rect.width, layer.rect.height }, ":")
+        dimensions[#dimensions + 1] =
+          table.concat({ layer.key, layer.rect.row, layer.rect.col, layer.rect.width, layer.rect.height }, ":")
       end
       local signature = table.concat(dimensions, "|")
       if signatures[signature] then
@@ -1090,7 +1221,9 @@ function Applet:_settle_measurements()
     return true
   end)
   self.measuring = false
-  if not ok then return self:_report("measure", result) end
+  if not ok then
+    return self:_report("measure", result)
+  end
   return result, result_error
 end
 
@@ -1101,7 +1234,9 @@ function Applet:_rollback_update(previous, checkpoint)
   self.counters.rollbacks = self.counters.rollbacks + 1
   local restored, restore_error = pcall(function()
     local driver = assert(self.driver)
-    if driver.rollback then driver:rollback(self.records) end
+    if driver.rollback then
+      driver:rollback(self.records)
+    end
     self:_discard_candidate_records(checkpoint)
     self:_mount_content(previous, false, { preserve_connected = true })
     self.frame = previous
@@ -1112,7 +1247,9 @@ function Applet:_rollback_update(previous, checkpoint)
   self.host_transaction = false
   self.mutating = false
   self.pane_replacements = nil
-  if restored then return true end
+  if restored then
+    return true
+  end
 
   pcall(self.close, self, { restore_origin = false })
   return self:_report("commit", "rollback failed: " .. tostring(restore_error))
@@ -1125,19 +1262,28 @@ end
 ---@return nil, Applet.Error
 function Applet:_recover_update(previous, checkpoint, failure, structured)
   local restored, restore_error = self:_rollback_update(previous, checkpoint)
-  if not restored then return nil, assert(restore_error) end
-  if structured then return nil, failure --[[@as Applet.Error]] end
+  if not restored then
+    return nil, assert(restore_error)
+  end
+  if structured then
+    return nil, failure --[[@as Applet.Error]]
+  end
   return self:_report("commit", failure)
 end
 
 ---@return boolean?, Applet.Error?
 function Applet:_flush_requested()
-  if self.observing then return true end
+  if self.observing then
+    return true
+  end
   self:_refresh_observations()
-  if self.lifecycle == "destroyed" or not self.has_submission
-      or not self.request_pending then return false end
+  if self.lifecycle == "destroyed" or not self.has_submission or not self.request_pending then
+    return false
+  end
   local frame, err = self:_prepare_frame(false)
-  if not frame then return nil, err end
+  if not frame then
+    return nil, err
+  end
   self.pending_frame = frame
   if self.lifecycle ~= "open" then
     self.request_pending = false
@@ -1162,12 +1308,10 @@ function Applet:_flush_requested()
   end
   local measured, measurement_error = self:_settle_measurements()
   if not measured then
-    return self:_recover_update(previous, record_checkpoint,
-      measurement_error, true)
+    return self:_recover_update(previous, record_checkpoint, measurement_error, true)
   end
   local driver = assert(self.driver)
-  local published, publication_error = pcall(
-    driver.publish, driver, self.frame, self.records)
+  local published, publication_error = pcall(driver.publish, driver, self.frame, self.records)
   if not published then
     return self:_recover_update(previous, record_checkpoint, publication_error)
   end
@@ -1191,20 +1335,23 @@ function Applet:_abort_open(previous, checkpoint)
   local errors = {}
   for _, record in pairs(self.records) do
     if record.descriptor and record.descriptor.pane.surface then
-      local disconnected, disconnect_error = pcall(
-        record.descriptor.pane._disconnect, record.descriptor.pane)
-      if not disconnected then errors[#errors + 1] = disconnect_error end
+      local disconnected, disconnect_error = pcall(record.descriptor.pane._disconnect, record.descriptor.pane)
+      if not disconnected then
+        errors[#errors + 1] = disconnect_error
+      end
     end
     record.surface = nil
   end
   if self.driver then
-    local released, release_error = pcall(
-      self.driver.destroy, self.driver, self.records)
-    if not released then errors[#errors + 1] = release_error end
+    local released, release_error = pcall(self.driver.destroy, self.driver, self.records)
+    if not released then
+      errors[#errors + 1] = release_error
+    end
   end
-  local restored, restore_error = pcall(
-    self._discard_candidate_records, self, checkpoint)
-  if not restored then errors[#errors + 1] = restore_error end
+  local restored, restore_error = pcall(self._discard_candidate_records, self, checkpoint)
+  if not restored then
+    errors[#errors + 1] = restore_error
+  end
   for _, record in pairs(self.records) do
     record.window, record.surface = nil, nil
   end
@@ -1215,13 +1362,20 @@ function Applet:_abort_open(previous, checkpoint)
   self.mutating = false
   self.lifecycle = "closed"
   local synced, sync_error = pcall(self._sync_closed_observed, self)
-  if not synced then errors[#errors + 1] = sync_error end
-  local observed, observer_error = pcall(
-    self._set_observer_scope, self, self:_closed_observer_scope())
-  if not observed then errors[#errors + 1] = observer_error end
+  if not synced then
+    errors[#errors + 1] = sync_error
+  end
+  local observed, observer_error = pcall(self._set_observer_scope, self, self:_closed_observer_scope())
+  if not observed then
+    errors[#errors + 1] = observer_error
+  end
   local focused, focus_error = pcall(Base.restore_origin, self.origin, self)
-  if not focused then errors[#errors + 1] = focus_error end
-  if #errors > 0 then return nil, table.concat(errors, "; ") end
+  if not focused then
+    errors[#errors + 1] = focus_error
+  end
+  if #errors > 0 then
+    return nil, table.concat(errors, "; ")
+  end
   return true
 end
 
@@ -1235,7 +1389,9 @@ function Applet:_abort_open_failure(previous, checkpoint, failure, structured)
   if not aborted then
     return self:_report("commit", "open rollback failed: " .. assert(abort_error))
   end
-  if structured then return nil, failure --[[@as Applet.Error]] end
+  if structured then
+    return nil, failure --[[@as Applet.Error]]
+  end
   return self:_report("commit", failure)
 end
 
@@ -1250,14 +1406,19 @@ function Applet:open(opts)
   self:_refresh_observations()
   if self.lifecycle == "open" then
     local target = self.focused or self.frame and self.frame.focus.initial
-    if target then self:focus(target) end
+    if target then
+      self:focus(target)
+    end
     return true
   end
   assert(self.lifecycle == "closed", "Applet lifecycle transition is active")
   opts = opts or {}
   local origin_window
-  if type(opts) == "number" then origin_window = opts
-  elseif type(opts) == "table" then origin_window = opts.origin_window or opts.origin end
+  if type(opts) == "number" then
+    origin_window = opts
+  elseif type(opts) == "table" then
+    origin_window = opts.origin_window or opts.origin
+  end
   self.origin = Base.capture_origin(origin_window)
   self.lifecycle = "opening"
   local frame, prepare_error = self:_prepare_frame(self.has_opened == true)
@@ -1288,15 +1449,12 @@ function Applet:open(opts)
   end
   local measured, measurement_error = self:_settle_measurements()
   if not measured then
-    return self:_abort_open_failure(previous, record_checkpoint,
-      measurement_error, true)
+    return self:_abort_open_failure(previous, record_checkpoint, measurement_error, true)
   end
   local driver = assert(self.driver)
-  local published, publication_error = pcall(
-    driver.publish, driver, self.frame, self.records)
+  local published, publication_error = pcall(driver.publish, driver, self.frame, self.records)
   if not published then
-    return self:_abort_open_failure(previous, record_checkpoint,
-      publication_error)
+    return self:_abort_open_failure(previous, record_checkpoint, publication_error)
   end
   self.lifecycle = "open"
   self.has_opened = true
@@ -1317,8 +1475,12 @@ end
 ---@param opts? Applet.CloseOptions
 ---@return boolean
 function Applet:close(opts)
-  if self.lifecycle == "destroyed" or self.lifecycle == "closed" then return true end
-  if self.lifecycle == "closing" then return true end
+  if self.lifecycle == "destroyed" or self.lifecycle == "closed" then
+    return true
+  end
+  if self.lifecycle == "closing" then
+    return true
+  end
   if self.observing then
     self.deferred_close = copy_owned(opts or {})
     return true
@@ -1332,7 +1494,9 @@ function Applet:close(opts)
   for _, record in pairs(self.records) do
     if record.active then
       Base.save_view(record)
-      if record.descriptor.pane.surface then record.descriptor.pane:_disconnect() end
+      if record.descriptor.pane.surface then
+        record.descriptor.pane:_disconnect()
+      end
       record.surface = nil
       if record.descriptor.lifecycle == "transient" then
         transient[#transient + 1] = record.key
@@ -1340,13 +1504,14 @@ function Applet:close(opts)
       record.active = false
     end
   end
-  if self.driver then self.driver:release(self.records) end
+  if self.driver then
+    self.driver:release(self.records)
+  end
   for _, key in ipairs(transient) do
     local record = self.records[key]
     if record then
       Base.delete_buffer(record)
-      if record.descriptor.owns_pane
-          and not record.descriptor.pane.destroyed then
+      if record.descriptor.owns_pane and not record.descriptor.pane.destroyed then
         record.descriptor.pane:destroy()
       end
       record.descriptor.pane:_unbind(self)
@@ -1365,14 +1530,18 @@ function Applet:close(opts)
   self:_sync_closed_observed()
   self:_set_observer_scope(self:_closed_observer_scope())
   self.mutating = false
-  if restore then Base.restore_origin(self.origin, self) end
+  if restore then
+    Base.restore_origin(self.origin, self)
+  end
   return true
 end
 
 ---@param opts? Applet.ToggleOptions
 ---@return boolean?, Applet.Error?
 function Applet:toggle(opts)
-  if self:is_open() then return self:close(opts) end
+  if self:is_open() then
+    return self:close(opts)
+  end
   return self:open(opts)
 end
 
@@ -1428,10 +1597,14 @@ function Applet:_modal_allows(key)
   for _, candidate in ipairs(boundary) do
     if mounted(self.records[candidate]) then
       active = true
-      if candidate == key then return true end
+      if candidate == key then
+        return true
+      end
     end
   end
-  if not active then return true end
+  if not active then
+    return true
+  end
   return false
 end
 
@@ -1439,26 +1612,40 @@ end
 ---@return boolean
 function Applet:focus(key)
   self:_assert_alive()
-  if not key then return false end
+  if not key then
+    return false
+  end
   if self.observing then
     self.deferred_focus = key
     return true
   end
   self:_refresh_observations()
   local record = self.records[key]
-  if (self.lifecycle ~= "open" and self.lifecycle ~= "opening")
-      or not record or not record.active
-      or not mounted(record) or not self:_modal_allows(key) then return false end
+  if
+    (self.lifecycle ~= "open" and self.lifecycle ~= "opening")
+    or not record
+    or not record.active
+    or not mounted(record)
+    or not self:_modal_allows(key)
+  then
+    return false
+  end
   local previous = self.focused
-  if previous and self.records[previous] then Base.save_view(self.records[previous]) end
-  if not assert(self.driver):focus(record) then return false end
+  if previous and self.records[previous] then
+    Base.save_view(self.records[previous])
+  end
+  if not assert(self.driver):focus(record) then
+    return false
+  end
   self.focused = key
   if previous ~= key then
     self.counters.focus_changes = self.counters.focus_changes + 1
     local callback = self.callbacks.on_focus
     if callback then
       local ok, err = pcall(callback, key, previous)
-      if not ok then self:_report("action", err, key) end
+      if not ok then
+        self:_report("action", err, key)
+      end
     end
   end
   -- WinLeave runs while Neovim still exposes the departing window as current.
@@ -1486,38 +1673,49 @@ end
 function Applet:_focus_move(opts)
   local frame = self.frame
   local current = frame and frame.panes[self.focused]
-  if not current then return false end
+  if not current then
+    return false
+  end
   assert(frame)
   local direction = opts.direction
-  if direction ~= "left" and direction ~= "right"
-      and direction ~= "up" and direction ~= "down" then return false end
+  if direction ~= "left" and direction ~= "right" and direction ~= "up" and direction ~= "down" then
+    return false
+  end
   local current_x, current_y = center(current.outer)
   local candidates = {}
   for _, key in ipairs(frame.pane_order) do
     local pane = frame.panes[key]
-    if key ~= self.focused and pane.focusable and self:_modal_allows(key)
-        and self.records[key] and mounted(self.records[key]) then
+    if
+      key ~= self.focused
+      and pane.focusable
+      and self:_modal_allows(key)
+      and self.records[key]
+      and mounted(self.records[key])
+    then
       local x, y = center(pane.outer)
       local primary = direction == "left" and current_x - x
         or direction == "right" and x - current_x
         or direction == "up" and current_y - y
         or y - current_y
       if primary > 0 then
-        local secondary = (direction == "left" or direction == "right")
-            and math.abs(y - current_y) or math.abs(x - current_x)
+        local secondary = (direction == "left" or direction == "right") and math.abs(y - current_y)
+          or math.abs(x - current_x)
         candidates[#candidates + 1] = { key = key, primary = primary, secondary = secondary }
       end
     end
   end
   table.sort(candidates, function(left, right)
-    if left.primary == right.primary then return left.secondary < right.secondary end
+    if left.primary == right.primary then
+      return left.secondary < right.secondary
+    end
     return left.primary < right.primary
   end)
-  if candidates[1] then return self:focus(candidates[1].key) end
+  if candidates[1] then
+    return self:focus(candidates[1].key)
+  end
   if opts.wrap then
     local order = frame.pane_order
-    local target = (direction == "left" or direction == "up")
-        and order[#order] or order[1]
+    local target = (direction == "left" or direction == "up") and order[#order] or order[1]
     return self:focus(target)
   end
   return false
@@ -1527,7 +1725,9 @@ end
 function Applet:_restore_focus()
   for index = #(self.frame and self.frame.layers or {}), 1, -1 do
     local key = self.layer_focus[assert(assert(self.frame).layers[index]).key]
-    if key and self:focus(key) then return true end
+    if key and self:focus(key) then
+      return true
+    end
   end
   return false
 end
@@ -1551,11 +1751,15 @@ end
 ---@return boolean?, Applet.Error?
 function Applet:flush()
   self:_assert_alive()
-  if self.observing then return true end
+  if self.observing then
+    return true
+  end
   local observed = self:_refresh_observations()
   self.domain.dirty[self] = nil
   local committed, err = self:_flush_requested()
-  if committed == false and observed then return true end
+  if committed == false and observed then
+    return true
+  end
   return committed, err
 end
 
@@ -1564,18 +1768,23 @@ end
 function Applet:invalidate(opts)
   self:_assert_alive()
   opts = opts or {}
-  applet_expect(type(opts) == "table", "Applet.invalidate",
-    "options must be a table", 3)
+  applet_expect(type(opts) == "table", "Applet.invalidate", "options must be a table", 3)
   for key in pairs(opts) do
-    applet_expect(key == "host" or key == "reset_sizes",
-      "Applet.invalidate." .. tostring(key), "is not recognized", 3)
+    applet_expect(key == "host" or key == "reset_sizes", "Applet.invalidate." .. tostring(key), "is not recognized", 3)
   end
-  applet_expect(opts.host == nil or type(opts.host) == "boolean",
-    "Applet.invalidate.host", "must be a boolean", 3)
-  applet_expect(opts.reset_sizes == nil or type(opts.reset_sizes) == "boolean",
-    "Applet.invalidate.reset_sizes", "must be a boolean", 3)
-  if opts.host then self:_schedule_observe("Explicit", { event = "explicit" }) end
-  if opts.reset_sizes then self.overrides = {} end
+  applet_expect(opts.host == nil or type(opts.host) == "boolean", "Applet.invalidate.host", "must be a boolean", 3)
+  applet_expect(
+    opts.reset_sizes == nil or type(opts.reset_sizes) == "boolean",
+    "Applet.invalidate.reset_sizes",
+    "must be a boolean",
+    3
+  )
+  if opts.host then
+    self:_schedule_observe("Explicit", { event = "explicit" })
+  end
+  if opts.reset_sizes then
+    self.overrides = {}
+  end
   if not opts.host or opts.reset_sizes then
     self.generation = self.generation + 1
     self.counters.requested_generations = self.counters.requested_generations + 1
@@ -1613,10 +1822,14 @@ local function sorted_record_keys(applet)
   end
   local retained = {}
   for key in pairs(applet.records) do
-    if not present[key] then retained[#retained + 1] = key end
+    if not present[key] then
+      retained[#retained + 1] = key
+    end
   end
   table.sort(retained)
-  for _, key in ipairs(retained) do result[#result + 1] = key end
+  for _, key in ipairs(retained) do
+    result[#result + 1] = key
+  end
   return result
 end
 
@@ -1672,9 +1885,10 @@ function Applet:_publish_snapshot(candidate, external)
 end
 
 function Applet:_sync_observed()
-  if self.lifecycle ~= "open" or not self.driver or not self.frame then return end
-  local candidate = Base.snapshot(self.driver, self.records, self.frame, 0,
-    self.committed_generation)
+  if self.lifecycle ~= "open" or not self.driver or not self.frame then
+    return
+  end
+  local candidate = Base.snapshot(self.driver, self.records, self.frame, 0, self.committed_generation)
   self.counters.host_snapshot_refreshes = self.counters.host_snapshot_refreshes + 1
   self:_publish_snapshot(candidate, false)
 end
@@ -1686,12 +1900,16 @@ end
 ---@param kind string
 ---@param native Applet.NativeObservation
 function Applet:_schedule_observe(kind, native)
-  if self.lifecycle == "destroyed" then return end
+  if self.lifecycle == "destroyed" then
+    return
+  end
   self.observation_kinds = self.observation_kinds or {}
   self.observation_kinds[kind] = true
   self.observation_native = self.observation_native or {}
   self.observation_native[#self.observation_native + 1] = copy_semantic(native or {})
-  if self.observation_scheduled then return end
+  if self.observation_scheduled then
+    return
+  end
   self.observation_scheduled = true
   vim.schedule(function()
     self.observation_scheduled = false
@@ -1699,7 +1917,9 @@ function Applet:_schedule_observe(kind, native)
     local captured = self.observation_native
     self.observation_kinds = nil
     self.observation_native = nil
-    if kinds and self.lifecycle ~= "destroyed" then self:_observe(kinds, captured) end
+    if kinds and self.lifecycle ~= "destroyed" then
+      self:_observe(kinds, captured)
+    end
   end)
 end
 
@@ -1723,35 +1943,40 @@ function Applet:_event(kind, key, before, after, native, reason, fields)
     pane = key and self:pane(key) or nil,
     before = copy_semantic(before),
     after = copy_semantic(after),
-    native = function() return copy_semantic(native or {}) end,
+    native = function()
+      return copy_semantic(native or {})
+    end,
   }
-  for name, value in pairs(fields or {}) do event[name] = copy_semantic(value) end
+  for name, value in pairs(fields or {}) do
+    event[name] = copy_semantic(value)
+  end
   local default = function()
-    if called or not active then return false end
+    if called or not active then
+      return false
+    end
     called = true
-    self.counters.default_external_handlers =
-      self.counters.default_external_handlers + 1
+    self.counters.default_external_handlers = self.counters.default_external_handlers + 1
     if kind == "resize" then
       for pane_key in pairs(fields and fields.panes or {}) do
         local record = self.records[pane_key]
-        if record and record.descriptor.projection.kind == "floating"
-            and Base.valid_window(record.window) then
+        if record and record.descriptor.projection.kind == "floating" and Base.valid_window(record.window) then
           record.adopted_float_config = vim.api.nvim_win_get_config(record.window)
         end
       end
       if self.active_host and self.active_host.kind == "tab" then
         self:_adopt_sizes()
       end
-      if self.has_submission and self.lifecycle == "open"
-          and (assert(self.active_host).kind == "tab"
-            or reason == "container_resized" or reason == "editor_resized") then
+      if
+        self.has_submission
+        and self.lifecycle == "open"
+        and (assert(self.active_host).kind == "tab" or reason == "container_resized" or reason == "editor_resized")
+      then
         self.request_pending = true
         self:_request_flush()
       end
     elseif kind == "layout_change" then
       self.adopted_layout = copy_semantic(after --[[@as Applet.ObservedLayout]])
-    elseif (kind == "pane_buffer_change" or kind == "pane_close")
-        and key and self.records[key] then
+    elseif (kind == "pane_buffer_change" or kind == "pane_close") and key and self.records[key] then
       local record = self.records[key]
       record.suppressed = record.mount_token
       if self.driver and self.driver.adopt_detach then
@@ -1770,8 +1995,12 @@ function Applet:_event(kind, key, before, after, native, reason, fields)
         assert(fields)
         record.adopted_buffer_options[assert(fields.option)] = fields.value
       end
-    elseif kind == "mode_change" and key and self.records[key]
-        and self.records[key].descriptor.focus.mode == "preserve" then
+    elseif
+      kind == "mode_change"
+      and key
+      and self.records[key]
+      and self.records[key].descriptor.focus.mode == "preserve"
+    then
       self.records[key].mode = (after --[[@as Applet.PaneObservation]]).mode
     end
     return true
@@ -1779,7 +2008,9 @@ function Applet:_event(kind, key, before, after, native, reason, fields)
   local callback = self.callbacks["on_" .. kind]
   if callback then
     local ok, err = pcall(callback, event, default)
-    if not ok then self:_report("action", err, key) end
+    if not ok then
+      self:_report("action", err, key)
+    end
   else
     default()
   end
@@ -1804,7 +2035,9 @@ local function topology_bounds(applet, topology)
   for _, child in ipairs(topology.children) do
     local rect = topology_bounds(applet, child.child)
     if rect then
-      if not result then result = copy_semantic(rect) else
+      if not result then
+        result = copy_semantic(rect)
+      else
         local right = math.max(result.col + result.width, rect.col + rect.width)
         local bottom = math.max(result.row + result.height, rect.row + rect.height)
         result.row = math.min(result.row, rect.row)
@@ -1820,7 +2053,9 @@ end
 function Applet:_adopt_sizes()
   ---@param topology Applet.LayoutTopology
   local function visit(topology)
-    if topology.type == "pane" then return end
+    if topology.type == "pane" then
+      return
+    end
     if topology.type == "scope" then
       return visit((topology --[[@as Applet.ScopeTopology]]).child)
     end
@@ -1829,19 +2064,23 @@ function Applet:_adopt_sizes()
     local sizes = {}
     for _, child in ipairs(topology.children) do
       local rect = topology_bounds(self, child.child)
-      sizes[#sizes + 1] = rect and (topology.axis == "vertical"
-        and rect.height or rect.width) or child.size
+      sizes[#sizes + 1] = rect and (topology.axis == "vertical" and rect.height or rect.width) or child.size
       visit(child.child)
     end
     local bounds = topology_bounds(self, topology)
-    local total = bounds and (topology.axis == "vertical"
-        and bounds.height or bounds.width) or nil
+    local total = bounds and (topology.axis == "vertical" and bounds.height or bounds.width) or nil
     local used = 0
-    for _, size in ipairs(sizes) do used = used + size end
-    if total and used ~= total then sizes[#sizes] = assert(sizes[#sizes]) + total - used end
+    for _, size in ipairs(sizes) do
+      used = used + size
+    end
+    if total and used ~= total then
+      sizes[#sizes] = assert(sizes[#sizes]) + total - used
+    end
     self.overrides[topology.key] = { signature = topology.signature, sizes = sizes }
   end
-  if self.frame then visit(self.frame.topology) end
+  if self.frame then
+    visit(self.frame.topology)
+  end
 end
 
 ---@param captured? Applet.NativeObservation[]
@@ -1852,10 +2091,18 @@ local function captured_native(captured, key, record)
   local result = { events = {} }
   for _, value in ipairs(captured or {}) do
     result.events[#result.events + 1] = value.event
-    if value.window ~= nil then result.window = value.window end
-    if value.tab ~= nil then result.tab = value.tab end
-    if value.buffer ~= nil then result.buffer = value.buffer end
-    if value.match ~= nil then result.match = value.match end
+    if value.window ~= nil then
+      result.window = value.window
+    end
+    if value.tab ~= nil then
+      result.tab = value.tab
+    end
+    if value.buffer ~= nil then
+      result.buffer = value.buffer
+    end
+    if value.match ~= nil then
+      result.match = value.match
+    end
   end
   if record then
     result.window = record.window or result.window
@@ -1868,28 +2115,37 @@ end
 ---@param kinds table<string, true>
 ---@return string?
 local function buffer_reason(kinds)
-  if kinds.BufWipeout then return "buffer_wiped" end
-  if kinds.BufDelete then return "buffer_deleted" end
-  if kinds.BufUnload then return "buffer_unloaded" end
+  if kinds.BufWipeout then
+    return "buffer_wiped"
+  end
+  if kinds.BufDelete then
+    return "buffer_deleted"
+  end
+  if kinds.BufUnload then
+    return "buffer_unloaded"
+  end
 end
 
 ---@param key string
 ---@param reason string
 function Applet:_mandatory_detach(key, reason)
   local record = self.records[key]
-  if not record then return end
+  if not record then
+    return
+  end
   local window, buffer = record.window, record.buffer
   Base.save_view(record)
   if record.descriptor.pane.surface then
     record.descriptor.pane:_disconnect(reason == "buffer_wiped")
   end
   record.surface = nil
-  if window then self._windows[window] = nil end
+  if window then
+    self._windows[window] = nil
+  end
   record.window = nil
   record.detach_reason = reason
   self.counters.pane_unmounts = self.counters.pane_unmounts + 1
-  if reason == "buffer_unloaded" or reason == "buffer_deleted"
-      or reason == "buffer_wiped" then
+  if reason == "buffer_unloaded" or reason == "buffer_deleted" or reason == "buffer_wiped" then
     if record.descriptor.lifecycle == "transient" and Base.valid_buffer(buffer) then
       Base.delete_buffer(record)
     else
@@ -1938,9 +2194,13 @@ function Applet:_external_host_close(before, reason, captured)
     if record.descriptor and record.descriptor.pane.surface then
       record.descriptor.pane:_disconnect()
     end
-    if record.window then self._windows[record.window] = nil end
+    if record.window then
+      self._windows[record.window] = nil
+    end
     record.surface, record.window, record.active = nil, nil, false
-    if record.descriptor.lifecycle == "transient" then transient[#transient + 1] = key end
+    if record.descriptor.lifecycle == "transient" then
+      transient[#transient + 1] = key
+    end
   end
   for _, key in ipairs(transient) do
     local record = self.records[key]
@@ -1951,7 +2211,9 @@ function Applet:_external_host_close(before, reason, captured)
     record.descriptor.pane:_unbind(self)
     self.records[key], self.measurements[key] = nil, nil
   end
-  if driver then pcall(driver.release, driver, self.records) end
+  if driver then
+    pcall(driver.release, driver, self.records)
+  end
   self.driver, self.active_host, self.focused = nil, nil, nil
   self.selected_host = active_host or self.selected_host
   self.overrides, self.adopted_layout = {}, nil
@@ -1962,8 +2224,7 @@ function Applet:_external_host_close(before, reason, captured)
   self:_publish_snapshot(after, true)
   self.observing = true
   self.counters.external_changes = self.counters.external_changes + 1
-  self:_event("host_close", nil, before.host, self.observed_snapshot.host,
-    captured_native(captured), reason)
+  self:_event("host_close", nil, before.host, self.observed_snapshot.host, captured_native(captured), reason)
   self:_finish_observation()
 end
 
@@ -1971,8 +2232,12 @@ end
 ---@param after Applet.HostSnapshot
 ---@return string
 local function layout_change_reason(before, after)
-  if before.foreign_windows < after.foreign_windows then return "window_added" end
-  if before.foreign_windows > after.foreign_windows then return "window_removed" end
+  if before.foreign_windows < after.foreign_windows then
+    return "window_added"
+  end
+  if before.foreign_windows > after.foreign_windows then
+    return "window_removed"
+  end
   return "window_reordered"
 end
 
@@ -1987,10 +2252,16 @@ local function option_changes(key, old, new, native)
   for _, scope in ipairs({ "buffer", "window" }) do
     local field = scope .. "_options"
     local names = {}
-    for name in pairs(old[field] or {}) do names[name] = true end
-    for name in pairs(new[field] or {}) do names[name] = true end
+    for name in pairs(old[field] or {}) do
+      names[name] = true
+    end
+    for name in pairs(new[field] or {}) do
+      names[name] = true
+    end
     local ordered = {}
-    for name in pairs(names) do ordered[#ordered + 1] = name end
+    for name in pairs(names) do
+      ordered[#ordered + 1] = name
+    end
     table.sort(ordered)
     for _, name in ipairs(ordered) do
       local before_value, after_value = (old[field] or {})[name], (new[field] or {})[name]
@@ -2021,13 +2292,19 @@ function Applet:_observe_closed(kinds, captured)
     for _, key in ipairs(sorted_record_keys(self)) do
       local record = self.records[key]
       local old = before.panes[key] or {}
-      if record and record.owns_buffer and (not Base.valid_buffer(record.buffer)
-          or not Base.loaded_buffer(record.buffer)) then
+      if
+        record
+        and record.owns_buffer
+        and (not Base.valid_buffer(record.buffer) or not Base.loaded_buffer(record.buffer))
+      then
         local native = captured_native(captured, key, record)
         self:_mandatory_detach(key, loss)
         events[#events + 1] = {
-          kind = "pane_buffer_change", key = key, before = old,
-          native = native, reason = loss,
+          kind = "pane_buffer_change",
+          key = key,
+          before = old,
+          native = native,
+          reason = loss,
         }
       end
     end
@@ -2036,12 +2313,13 @@ function Applet:_observe_closed(kinds, captured)
   local candidate = self:_closed_snapshot()
   self.counters.host_snapshot_refreshes = self.counters.host_snapshot_refreshes + 1
   local changed = self:_publish_snapshot(candidate, #events > 0)
-  if not changed or #events == 0 then return end
+  if not changed or #events == 0 then
+    return
+  end
   self.observing = true
   for _, event in ipairs(events) do
     event.after = self.observed_snapshot.panes[event.key] or {}
-    self:_event(event.kind, event.key, event.before, assert(event.after),
-      event.native, event.reason)
+    self:_event(event.kind, event.key, event.before, assert(event.after), event.native, event.reason)
   end
   self.counters.external_changes = self.counters.external_changes + #events
   self:_finish_observation()
@@ -2060,25 +2338,29 @@ function Applet:_observe(kinds, captured)
   end
 
   local environment_changed, environment_reason, observed_environment = false, nil, nil
-  if kinds.VimResized or kinds.WinResized or kinds.WinNew
-      or kinds.WinClosed or kinds.TabEnter or kinds.TabLeave
-      or kinds.Explicit then
-    local ok, environment = pcall(self._render_environment,
-      self, assert(self.active_host), false)
+  if
+    kinds.VimResized
+    or kinds.WinResized
+    or kinds.WinNew
+    or kinds.WinClosed
+    or kinds.TabEnter
+    or kinds.TabLeave
+    or kinds.Explicit
+  then
+    local ok, environment = pcall(self._render_environment, self, assert(self.active_host), false)
     if ok and environment then
       observed_environment = environment
-      environment_changed = not same_rect(environment.host.bounds,
-        self.frame and self.frame.bounds or {})
-        or not same_rect(environment.host.container,
-          self.frame and self.frame.plan.container or {})
-      environment_reason = kinds.VimResized and "editor_resized"
-        or "container_resized"
+      environment_changed = not same_rect(environment.host.bounds, self.frame and self.frame.bounds or {})
+        or not same_rect(environment.host.container, self.frame and self.frame.plan.container or {})
+      environment_reason = kinds.VimResized and "editor_resized" or "container_resized"
     end
   end
 
-  local candidate = Base.snapshot(self.driver, self.records, self.frame, 0,
-    self.committed_generation)
-  if self.mutating then self:_publish_snapshot(candidate, false) return end
+  local candidate = Base.snapshot(self.driver, self.records, self.frame, 0, self.committed_generation)
+  if self.mutating then
+    self:_publish_snapshot(candidate, false)
+    return
+  end
 
   ---@type Applet.ObservationChange[]
   local detachments = {}
@@ -2088,23 +2370,26 @@ function Applet:_observe(kinds, captured)
     local old, new = before.panes[key] or {}, candidate.panes[key] or {}
     local reason, kind
     if old.mounted and not new.mounted then
-      if loss and (not Base.valid_buffer(record.buffer)
-          or not Base.loaded_buffer(record.buffer)) then
+      if loss and (not Base.valid_buffer(record.buffer) or not Base.loaded_buffer(record.buffer)) then
         kind, reason = "pane_buffer_change", loss
-      elseif Base.valid_window(record.window)
-          and Base.valid_buffer(record.buffer)
-          and vim.api.nvim_win_get_buf(record.window) ~= record.buffer then
+      elseif
+        Base.valid_window(record.window)
+        and Base.valid_buffer(record.buffer)
+        and vim.api.nvim_win_get_buf(record.window) ~= record.buffer
+      then
         kind, reason = "pane_buffer_change", "buffer_replaced"
       else
         kind, reason = "pane_close", "window_closed"
       end
-    elseif loss and old.buffer and old.buffer.loaded
-        and (not new.buffer or not new.buffer.loaded) then
+    elseif loss and old.buffer and old.buffer.loaded and (not new.buffer or not new.buffer.loaded) then
       kind, reason = "pane_buffer_change", loss
     end
     if kind then
       detachments[#detachments + 1] = {
-        kind = kind, key = key, before = old, reason = assert(reason),
+        kind = kind,
+        key = key,
+        before = old,
+        reason = assert(reason),
         native = captured_native(captured, key, record),
       }
       self:_mandatory_detach(key, assert(reason))
@@ -2115,8 +2400,11 @@ function Applet:_observe(kinds, captured)
   if kinds.WinClosed and #detachments > 0 then
     host_lost = true
     for _, record in pairs(self.records) do
-      if record.window and self.driver:owns_window(record.window, record)
-          and Base.window_displays(record.window, record.buffer) then
+      if
+        record.window
+        and self.driver:owns_window(record.window, record)
+        and Base.window_displays(record.window, record.buffer)
+      then
         host_lost = false
         break
       end
@@ -2126,8 +2414,7 @@ function Applet:_observe(kinds, captured)
     return self:_external_host_close(before, "last_host_window_closed", captured)
   end
 
-  local after = Base.snapshot(self.driver, self.records, self.frame, 0,
-    self.committed_generation)
+  local after = Base.snapshot(self.driver, self.records, self.frame, 0, self.committed_generation)
   if observed_environment and after.layout.kind == "floating" then
     after.layout.container = copy_semantic(observed_environment.host.container) --[[@as Applet.Rectangle]]
   end
@@ -2141,7 +2428,9 @@ function Applet:_observe(kinds, captured)
 
   if not util.equal(before.layout, after.layout) then
     events[#events + 1] = {
-      kind = "layout_change", before = before.layout, after = after.layout,
+      kind = "layout_change",
+      before = before.layout,
+      after = after.layout,
       native = captured_native(captured),
       reason = layout_change_reason(before, after),
     }
@@ -2150,14 +2439,15 @@ function Applet:_observe(kinds, captured)
   local changed_geometries = {}
   for _, key in ipairs(sorted_record_keys(self)) do
     local old, new = before.panes[key], after.panes[key]
-    if old and new and old.mounted and new.mounted
-        and not util.equal(old.geometry, new.geometry) then
+    if old and new and old.mounted and new.mounted and not util.equal(old.geometry, new.geometry) then
       changed_geometries[key] = copy_semantic(new.geometry)
     end
   end
   if next(changed_geometries) or environment_changed then
     events[#events + 1] = {
-      kind = "resize", before = before, after = after,
+      kind = "resize",
+      before = before,
+      after = after,
       native = captured_native(captured),
       reason = environment_reason or "pane_resized",
       fields = { panes = changed_geometries },
@@ -2166,8 +2456,7 @@ function Applet:_observe(kinds, captured)
 
   for _, key in ipairs(sorted_record_keys(self)) do
     local old, new = before.panes[key] or {}, after.panes[key] or {}
-    local changes = option_changes(key, old, new,
-      captured_native(captured, key, self.records[key]))
+    local changes = option_changes(key, old, new, captured_native(captured, key, self.records[key]))
     for _, event in ipairs(changes) do
       events[#events + 1] = event
     end
@@ -2177,7 +2466,10 @@ function Applet:_observe(kinds, captured)
     local old, new = before.panes[key], after.panes[key]
     if old and new and old.mode ~= new.mode and new.mounted then
       events[#events + 1] = {
-        kind = "mode_change", key = key, before = old, after = new,
+        kind = "mode_change",
+        key = key,
+        before = old,
+        after = new,
         native = captured_native(captured, key, self.records[key]),
         reason = "mode_changed",
       }
@@ -2188,32 +2480,38 @@ function Applet:_observe(kinds, captured)
   local current_focus = after.focused_pane
   local focus_changed = current_focus and current_focus ~= previous_focus
   local redirect = current_focus and not self:_modal_allows(current_focus)
-  if redirect then focus_changed = false end
+  if redirect then
+    focus_changed = false
+  end
 
   local facts_changed = self:_publish_snapshot(after, true)
-  if not facts_changed then return end
+  if not facts_changed then
+    return
+  end
   if #events == 0 and not focus_changed then
     self.counters.external_changes = self.counters.external_changes + 1
   else
-    self.counters.external_changes = self.counters.external_changes
-      + #events + (focus_changed and 1 or 0)
+    self.counters.external_changes = self.counters.external_changes + #events + (focus_changed and 1 or 0)
   end
   self.observing = true
   for _, event in ipairs(events) do
-    self:_event(event.kind, event.key, event.before, assert(event.after),
-      event.native, event.reason, event.fields)
+    self:_event(event.kind, event.key, event.before, assert(event.after), event.native, event.reason, event.fields)
   end
   if focus_changed then
     self.focused = current_focus
     local callback = self.callbacks.on_focus
     if callback then
       local ok, err = pcall(callback, assert(current_focus), previous_focus)
-      if not ok then self:_report("action", err, current_focus) end
+      if not ok then
+        self:_report("action", err, current_focus)
+      end
     end
   end
   if focus_changed and not redirect then
     local record = self.records[current_focus]
-    if record then Base.apply_mode(record) end
+    if record then
+      Base.apply_mode(record)
+    end
   end
   if before.host.visible ~= after.host.visible then
     self.domain:surfaces_changed()
@@ -2225,7 +2523,9 @@ function Applet:_observe(kinds, captured)
 end
 
 function Applet:destroy()
-  if self.lifecycle == "destroyed" then return end
+  if self.lifecycle == "destroyed" then
+    return
+  end
   if self.observing then
     self.deferred_close = { restore_origin = false }
     self.deferred_destroy = true
@@ -2234,17 +2534,20 @@ function Applet:destroy()
   self:close()
   for key, record in pairs(self.records) do
     Base.delete_buffer(record)
-    if record.descriptor and record.descriptor.owns_pane
-        and not record.descriptor.pane.destroyed then
+    if record.descriptor and record.descriptor.owns_pane and not record.descriptor.pane.destroyed then
       record.descriptor.pane:destroy()
     end
-    if record.descriptor then record.descriptor.pane:_unbind(self) end
+    if record.descriptor then
+      record.descriptor.pane:_unbind(self)
+    end
     self.records[key] = nil
   end
   self:_set_observer_scope(nil)
   self.observation_kinds, self.observation_native = nil, nil
   self.domain:remove(self)
-  if self.owns_domain then self.domain:destroy() end
+  if self.owns_domain then
+    self.domain:destroy()
+  end
   self.lifecycle = "destroyed"
   self._windows = {}
 end
@@ -2254,5 +2557,7 @@ end
 local module = { new = Applet.new }
 
 return setmetatable(module, {
-  __call = function(_, opts) return Applet.new(opts) end,
+  __call = function(_, opts)
+    return Applet.new(opts)
+  end,
 }) --[[@as Applet.Factory]]

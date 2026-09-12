@@ -30,8 +30,7 @@ local summaries = {
   end,
   edit_file = function(arguments)
     local count = type(arguments.edits) == "table" and #arguments.edits or 0
-    return string.format("Edit %s (%d replacement%s)",
-      tostring(arguments.path), count, count == 1 and "" or "s")
+    return string.format("Edit %s (%d replacement%s)", tostring(arguments.path), count, count == 1 and "" or "s")
   end,
   grep = function(arguments, ctx)
     local root = arguments.path or cwd(ctx) or "the workspace"
@@ -52,7 +51,9 @@ local summaries = {
 ---@return string
 function M.for_tool(tool, arguments, ctx)
   local summarize = summaries[tool.name]
-  if summarize then return summarize(arguments, ctx) end
+  if summarize then
+    return summarize(arguments, ctx)
+  end
   return "Run " .. tostring(tool.name) .. " with its current arguments"
 end
 

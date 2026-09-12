@@ -17,8 +17,7 @@ end
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.JsonObject
 local function arguments(opts)
-  return type(opts) == "table" and type(opts.arguments) == "table"
-      and opts.arguments or {}
+  return type(opts) == "table" and type(opts.arguments) == "table" and opts.arguments or {}
 end
 
 ---@param values Neoagent.JsonObject
@@ -37,7 +36,9 @@ end
 ---@param command? boolean
 ---@return Neoagent.ToolActivityPresentation?
 local function activity(opts, operation, ongoing, complete, value, command)
-  if type(opts) ~= "table" then return nil end
+  if type(opts) ~= "table" then
+    return nil
+  end
   return {
     kind = "activity",
     ongoing = ongoing,
@@ -52,32 +53,28 @@ end
 ---@return Neoagent.ToolActivityPresentation?
 function M.read(opts)
   local values = arguments(opts)
-  return activity(opts, "read", "Reading", "Read",
-    string_argument(values, "path", "…"))
+  return activity(opts, "read", "Reading", "Read", string_argument(values, "path", "…"))
 end
 
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.ToolActivityPresentation?
 function M.write(opts)
   local values = arguments(opts)
-  return activity(opts, "write", "Writing", "Written",
-    string_argument(values, "path", "…"))
+  return activity(opts, "write", "Writing", "Written", string_argument(values, "path", "…"))
 end
 
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.ToolActivityPresentation?
 function M.edit(opts)
   local values = arguments(opts)
-  return activity(opts, "edit", "Editing", "Edited",
-    string_argument(values, "path", "…"))
+  return activity(opts, "edit", "Editing", "Edited", string_argument(values, "path", "…"))
 end
 
 ---@param opts? Neoagent.ToolPresentationOptions
 ---@return Neoagent.ToolActivityPresentation?
 function M.grep(opts)
   local values = arguments(opts)
-  local value = string_argument(values, "pattern", "…")
-    .. " in " .. string_argument(values, "path", ".")
+  local value = string_argument(values, "pattern", "…") .. " in " .. string_argument(values, "path", ".")
   if type(values.glob) == "string" then
     value = value .. " (" .. values.glob .. ")"
   end
@@ -88,8 +85,7 @@ end
 ---@return Neoagent.ToolActivityPresentation?
 function M.find(opts)
   local values = arguments(opts)
-  local value = string_argument(values, "pattern", "…")
-    .. " in " .. string_argument(values, "path", ".")
+  local value = string_argument(values, "pattern", "…") .. " in " .. string_argument(values, "path", ".")
   return activity(opts, "search", "Finding", "Found", value)
 end
 

@@ -37,10 +37,14 @@ local tool_stream_unsupported = {
 local function thinking(enabled, effort, preserve)
   ---@type Neoagent.JsonObject
   local selected = { type = enabled and "enabled" or "disabled" }
-  if preserve and enabled then selected.clear_thinking = false end
+  if preserve and enabled then
+    selected.clear_thinking = false
+  end
   ---@type Neoagent.JsonObject
   local body = { thinking = selected }
-  if effort then body.reasoning_effort = effort end
+  if effort then
+    body.reasoning_effort = effort
+  end
   return { body = body }
 end
 
@@ -50,8 +54,7 @@ end
 local function thinking_levels(levels, preserve)
   local result = {}
   for _, level in ipairs(levels) do
-    result[level] = thinking(level ~= "off", level ~= "off" and level or nil,
-      preserve)
+    result[level] = thinking(level ~= "off", level ~= "off" and level or nil, preserve)
   end
   return result
 end
@@ -68,7 +71,9 @@ end
 ---@param context Neoagent.RequestOptionsContext
 ---@return Neoagent.RequestOverride
 local function tool_stream(context)
-  if #context.tools == 0 then return {} end
+  if #context.tools == 0 then
+    return {}
+  end
   return { body = { tool_stream = true } }
 end
 
@@ -79,9 +84,7 @@ function M.transform(model, ctx)
   local spec = specs[model.id]
   local preserve = ctx.provider_id == "zai-coding-plan"
   local result = util.copy(model)
-  result.input = (model.id:match("^glm%-.+v")
-      or model.id == "glm-5.3-flash")
-      and { "text", "image" } or { "text" }
+  result.input = (model.id:match("^glm%-.+v") or model.id == "glm-5.3-flash") and { "text", "image" } or { "text" }
   if spec then
     result.context_window = result.context_window or spec[1]
     result.max_output_tokens = result.max_output_tokens or spec[2]
@@ -103,7 +106,9 @@ end
 ---@return Neoagent.DiscoveredModel[]
 function M.seed(ids)
   local result = {}
-  for _, id in ipairs(ids) do result[#result + 1] = { id = id } end
+  for _, id in ipairs(ids) do
+    result[#result + 1] = { id = id }
+  end
   return result
 end
 

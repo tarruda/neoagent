@@ -59,19 +59,24 @@ local FOLLOW_INTERVAL_MS = 150
 ---@param block Neoagent.RenderBlock?
 ---@return boolean
 local function prose(block)
-  return type(block) == "table"
-    and (block.kind == "assistant" or block.kind == "thinking")
+  return type(block) == "table" and (block.kind == "assistant" or block.kind == "thinking")
 end
 
 ---@param block Neoagent.RenderBlock?
 ---@return string?
 local function tool_name(block)
-  if type(block) ~= "table" or block.kind ~= "tool" then return nil end
-  if block.name ~= nil then return block.name end
+  if type(block) ~= "table" or block.kind ~= "tool" then
+    return nil
+  end
+  if block.name ~= nil then
+    return block.name
+  end
   if type(block.call) == "table" and block.call.name ~= nil then
     return block.call.name
   end
-  if type(block.message) == "table" then return block.message.toolName end
+  if type(block.message) == "table" then
+    return block.message.toolName
+  end
 end
 
 ---@param block Neoagent.RenderBlock?
@@ -83,7 +88,9 @@ end
 ---@param value Neoagent.UIMapping?
 ---@return string|false|nil
 local function first(value)
-  if type(value) == "table" then return value[1] end
+  if type(value) == "table" then
+    return value[1]
+  end
   return value
 end
 
@@ -93,7 +100,9 @@ end
 ---@param action string
 ---@param desc string
 local function add_binding(result, mode, lhs, action, desc)
-  if type(lhs) ~= "string" or lhs == "" then return end
+  if type(lhs) ~= "string" or lhs == "" then
+    return
+  end
   result[#result + 1] = {
     mode = mode,
     lhs = lhs,
@@ -117,18 +126,23 @@ end
 local function set_following(component, enabled)
   stop_follow_timer(component)
   component.following = enabled == true and follow_available(component.block)
-  if not component.following then return end
+  if not component.following then
+    return
+  end
   local timer = assert(vim.uv.new_timer())
   component.follow_timer = timer
-  timer:start(0, FOLLOW_INTERVAL_MS, vim.schedule_wrap(function()
-    if component.destroyed or not component.following
-        or component.follow_timer ~= timer then
-      return
-    end
-    if component.pane:is_connected() then
-      component.pane:scroll({ target = "end", align = "bottom" })
-    end
-  end))
+  timer:start(
+    0,
+    FOLLOW_INTERVAL_MS,
+    vim.schedule_wrap(function()
+      if component.destroyed or not component.following or component.follow_timer ~= timer then
+        return
+      end
+      if component.pane:is_connected() then
+        component.pane:scroll({ target = "end", align = "bottom" })
+      end
+    end)
+  )
 end
 
 ---@param state Neoagent.DetailsPaneState
@@ -144,9 +158,10 @@ local function border_title(state, raw_available, can_follow, mappings)
   end
   local follow = can_follow and first(mappings.card_follow) or nil
   if follow then
-    if state.following then parts[#parts + 1] = "following" end
-    parts[#parts + 1] = follow
-      .. (state.following and " toggle" or " follow")
+    if state.following then
+      parts[#parts + 1] = "following"
+    end
+    parts[#parts + 1] = follow .. (state.following and " toggle" or " follow")
   end
   return " " .. table.concat(parts, " · ") .. " "
 end
@@ -183,7 +198,9 @@ local function render(component, state, env)
       tool = state.tool,
     }, previous)
     if not node then
-      if continuation then error(continuation.message, 0) end
+      if continuation then
+        error(continuation.message, 0)
+      end
       child = ui.text({
         key = "details:fallback",
         text = block.text or block.summary or block.name or block.kind or "",
@@ -204,22 +221,16 @@ local function render(component, state, env)
   local raw_available = prose(block)
   local wraps = raw_available or tool_name(block) == "shell"
   local can_follow = follow_available(block)
-  add_binding(bindings, "n", first(mappings.card_previous),
-    "details.previous", "Previous card")
-  add_binding(bindings, "n", first(mappings.card_next),
-    "details.next", "Next card")
-  add_binding(bindings, "n", first(mappings.card_center),
-    "details.center", "Center card in transcript")
+  add_binding(bindings, "n", first(mappings.card_previous), "details.previous", "Previous card")
+  add_binding(bindings, "n", first(mappings.card_next), "details.next", "Next card")
+  add_binding(bindings, "n", first(mappings.card_center), "details.center", "Center card in transcript")
   if can_follow then
-    add_binding(bindings, "n", first(mappings.card_follow),
-      "details.follow", "Toggle following")
+    add_binding(bindings, "n", first(mappings.card_follow), "details.follow", "Toggle following")
   end
   if raw_available then
-    add_binding(bindings, "n", first(mappings.card_raw),
-      "details.raw", "Toggle raw details")
+    add_binding(bindings, "n", first(mappings.card_raw), "details.raw", "Toggle raw details")
   end
-  add_binding(bindings, "n", first(mappings.close),
-    "details.close", "Close details")
+  add_binding(bindings, "n", first(mappings.close), "details.close", "Close details")
   if first(mappings.close) ~= "<C-c>" then
     add_binding(bindings, "n", "<C-c>", "details.close", "Close details")
   end
@@ -230,9 +241,9 @@ local function render(component, state, env)
       child = child,
     }),
     chrome = {
-      title = { { text = border_title(
-        state, raw_available, can_follow, mappings),
-        style = "window_title" } },
+      title = {
+        { text = border_title(state, raw_available, can_follow, mappings), style = "window_title" },
+      },
       title_pos = "center",
       options = {
         wrap = wraps,
@@ -273,29 +284,39 @@ function Details.new(opts)
     frame_interval_ms = 50,
     theme = opts.renderer.theme,
     image_system = opts.image_system,
-    render = function(state, env) return render(self, state, env) end,
+    render = function(state, env)
+      return render(self, state, env)
+    end,
     handlers = {
       ["details.close"] = callbacks.close or function() end,
       ["details.previous"] = callbacks.previous or function() end,
       ["details.next"] = callbacks.next or function() end,
       ["details.center"] = callbacks.center or function() end,
       ["details.follow"] = function()
-        if not follow_available(self.block) then return end
+        if not follow_available(self.block) then
+          return
+        end
         set_following(self, not self.following)
         self:_publish()
-        if callbacks.changed then callbacks.changed() end
+        if callbacks.changed then
+          callbacks.changed()
+        end
       end,
       ["details.raw"] = function()
         self.raw = not self.raw
         self:_publish()
-        if callbacks.changed then callbacks.changed() end
+        if callbacks.changed then
+          callbacks.changed()
+        end
       end,
     },
     on_error = opts.on_error,
   })
   if opts.image_system then
     self.unsubscribe_images = opts.image_system:subscribe(function()
-      if self.pane:is_connected() and callbacks.changed then callbacks.changed() end
+      if self.pane:is_connected() and callbacks.changed then
+        callbacks.changed()
+      end
     end)
   end
   return self
@@ -313,8 +334,7 @@ function Details:set(block, raw)
     self.render_cache = nil
   end
   self.tool = nil
-  if self.block and self.block.kind == "tool"
-      and type(self.resolve_tool) == "function" then
+  if self.block and self.block.kind == "tool" and type(self.resolve_tool) == "function" then
     local ok, resolved = pcall(self.resolve_tool, tool_name(self.block))
     if ok and type(resolved) == "table" then
       self.tool = { name = resolved.name, render = resolved.render }
@@ -324,7 +344,8 @@ function Details:set(block, raw)
   local kind = self.block and self.block.kind
   self.title = kind == "tool" and "Tool call"
     or kind == "thinking" and "Thinking"
-    or kind == "assistant" and "Text" or "Card details"
+    or kind == "assistant" and "Text"
+    or "Card details"
   self:_publish()
 end
 
@@ -347,10 +368,14 @@ function Details:text()
 end
 
 function Details:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   set_following(self, false)
-  if self.unsubscribe_images then self.unsubscribe_images() end
+  if self.unsubscribe_images then
+    self.unsubscribe_images()
+  end
   self.unsubscribe_images = nil
   self.pane:destroy()
 end

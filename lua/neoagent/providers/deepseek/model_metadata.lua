@@ -33,14 +33,21 @@ function M.for_id(id)
   local result = {
     input = { "text" },
   }
-  if id:find("vision", 1, true) then result.input = { "text", "image" } end
+  if id:find("vision", 1, true) then
+    result.input = { "text", "image" }
+  end
   if id:match("^deepseek%-v4%-flash") then
     result.thinking = efforts.thinking_completions({
-      "off", "low", "high", "max",
+      "off",
+      "low",
+      "high",
+      "max",
     })
   elseif id:match("^deepseek%-v4%-pro") then
     result.thinking = efforts.thinking_completions({
-      "off", "high", "max",
+      "off",
+      "high",
+      "max",
     })
   end
   local override = overrides[id]

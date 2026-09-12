@@ -112,10 +112,11 @@ ImageSystem.__index = ImageSystem
 ---@return Applet.KittyOptions
 local function kitty_options(opts)
   local configured = opts.kitty or {}
-  assert(type(configured) == "table",
-    "kitty image backend options must be a table")
+  assert(type(configured) == "table", "kitty image backend options must be a table")
   local result = {}
-  for key, value in pairs(configured) do result[key] = value end
+  for key, value in pairs(configured) do
+    result[key] = value
+  end
   return result
 end
 
@@ -133,19 +134,22 @@ end
 ---@param value Applet.ImageBackend
 local function validate_backend(value)
   assert(type(value) == "table", "image backend must be a table")
-  assert(value.name == nil or util.nonempty_string(value.name),
-    "image backend name must be a non-empty string")
-  assert(type(value.available) == "boolean",
-    "image backend available must be a boolean")
+  assert(value.name == nil or util.nonempty_string(value.name), "image backend name must be a non-empty string")
+  assert(type(value.available) == "boolean", "image backend available must be a boolean")
   for _, method in ipairs({
-    "cell_dimensions", "replace", "clear", "release", "redraw", "destroy",
+    "cell_dimensions",
+    "replace",
+    "clear",
+    "release",
+    "redraw",
+    "destroy",
   }) do
-    assert(type(value[method]) == "function",
-      "image backend must implement " .. method)
+    assert(type(value[method]) == "function", "image backend must implement " .. method)
   end
-  assert(value.set_error_handler == nil
-      or type(value.set_error_handler) == "function",
-    "image backend set_error_handler must be a function")
+  assert(
+    value.set_error_handler == nil or type(value.set_error_handler) == "function",
+    "image backend set_error_handler must be a function"
+  )
 end
 
 ---@param opts? Applet.ImageDiagnosticsOptions
@@ -164,8 +168,7 @@ end
 ---@param name string
 ---@return integer
 local function positive(value, name)
-  assert(type(value) == "number" and value > 0,
-    name .. " must be positive")
+  assert(type(value) == "number" and value > 0, name .. " must be positive")
   return value
 end
 
@@ -197,12 +200,9 @@ local function create(opts)
     references = {},
     presentations = {},
     callbacks = {},
-    max_bytes = positive(
-      opts.max_source_bytes or 20 * 1024 * 1024, "max_source_bytes"),
-    max_pixels = positive(
-      opts.max_pixels or 40 * 1000 * 1000, "max_pixels"),
-    max_cache_bytes = positive(
-      opts.max_cache_bytes or 80 * 1024 * 1024, "max_cache_bytes"),
+    max_bytes = positive(opts.max_source_bytes or 20 * 1024 * 1024, "max_source_bytes"),
+    max_pixels = positive(opts.max_pixels or 40 * 1000 * 1000, "max_pixels"),
+    max_cache_bytes = positive(opts.max_cache_bytes or 80 * 1024 * 1024, "max_cache_bytes"),
     cache_bytes = 0,
     read_file = opts.read_file,
     load_source = load_source,
@@ -219,7 +219,9 @@ local function create(opts)
     local installed, install_err = pcall(backend.set_error_handler, backend, function(err)
       value:_backend_failure(err)
     end)
-    if not installed then value:_backend_failure(install_err) end
+    if not installed then
+      value:_backend_failure(install_err)
+    end
   end
   return value
 end
@@ -250,12 +252,16 @@ end
 
 function ImageSystem:_changed()
   self.generation = self.generation + 1
-  for callback in pairs(self.callbacks) do pcall(callback, self) end
+  for callback in pairs(self.callbacks) do
+    pcall(callback, self)
+  end
 end
 
 ---@return boolean
 function ImageSystem:_destroy_backend()
-  if self.backend_destroyed then return false end
+  if self.backend_destroyed then
+    return false
+  end
   self.backend_destroyed = true
   pcall(self.backend.destroy, self.backend)
   return true
@@ -263,14 +269,18 @@ end
 
 ---@param err unknown
 function ImageSystem:_backend_failure(err)
-  if self.destroyed or self.status == "unavailable" then return end
+  if self.destroyed or self.status == "unavailable" then
+    return
+  end
   self.status = "unavailable"
   self.backend_generation = self.backend_generation + 1
   self.last_backend_error = tostring(err or "image backend failed")
   self.counters.backend_errors = self.counters.backend_errors + 1
   for id, operation in pairs(self.pending) do
     self.pending[id] = nil
-    if operation.cancel then pcall(operation.cancel) end
+    if operation.cancel then
+      pcall(operation.cancel)
+    end
   end
   self:_destroy_backend()
   self.resources = {}
@@ -284,8 +294,7 @@ end
 ---@param invoke fun(backend: Applet.ImageBackend): T
 ---@return T?, boolean
 function ImageSystem:_backend_call(invoke)
-  if self.destroyed or self.status ~= "available"
-      or self.backend_destroyed then
+  if self.destroyed or self.status ~= "available" or self.backend_destroyed then
     return nil, false
   end
   local backend = self.backend
@@ -295,10 +304,13 @@ function ImageSystem:_backend_call(invoke)
     self:_backend_failure(result)
     return nil, false
   end
-  if self.destroyed or self.status ~= "available"
-      or self.backend ~= backend
-      or self.backend_generation ~= generation
-      or self.backend_destroyed then
+  if
+    self.destroyed
+    or self.status ~= "available"
+    or self.backend ~= backend
+    or self.backend_generation ~= generation
+    or self.backend_destroyed
+  then
     return nil, false
   end
   return result, true
@@ -309,16 +321,22 @@ end
 function ImageSystem:subscribe(callback)
   assert(type(callback) == "function", "image callback must be a function")
   self.callbacks[callback] = true
-  return function() self.callbacks[callback] = nil end
+  return function()
+    self.callbacks[callback] = nil
+  end
 end
 
 ---@param presentation? Applet.ResolvedImagePresentation
 ---@param id string
 ---@return boolean
 local function presentation_references(presentation, id)
-  if not presentation then return false end
+  if not presentation then
+    return false
+  end
   for _, source_identity in pairs(presentation.slots) do
-    if source_identity == id then return true end
+    if source_identity == id then
+      return true
+    end
   end
   return false
 end
@@ -327,10 +345,14 @@ end
 ---@return boolean
 function ImageSystem:_wanted(id)
   for _, identities in pairs(self.references) do
-    if identities[id] then return true end
+    if identities[id] then
+      return true
+    end
   end
   for _, presentation in pairs(self.presentations) do
-    if presentation_references(presentation, id) then return true end
+    if presentation_references(presentation, id) then
+      return true
+    end
   end
   return false
 end
@@ -340,20 +362,25 @@ function ImageSystem:_release_unused()
   for id, operation in pairs(self.pending) do
     if not self:_wanted(id) then
       self.pending[id] = nil
-      if operation.cancel then pcall(operation.cancel) end
-      self.counters.cancelled_preparations =
-        self.counters.cancelled_preparations + 1
+      if operation.cancel then
+        pcall(operation.cancel)
+      end
+      self.counters.cancelled_preparations = self.counters.cancelled_preparations + 1
     end
   end
   for id in pairs(self.failures) do
-    if not self:_wanted(id) then self.failures[id] = nil end
+    if not self:_wanted(id) then
+      self.failures[id] = nil
+    end
   end
   for id, resource in pairs(self.resources) do
     if not self:_wanted(id) then
       local _, current = self:_backend_call(function(backend)
         return backend:release(resource)
       end)
-      if not current then return false end
+      if not current then
+        return false
+      end
       self.resources[id] = nil
       self.cache_bytes = self.cache_bytes - resource.bytes
       self.counters.releases = self.counters.releases + 1
@@ -368,13 +395,17 @@ end
 ---@return Applet.ImageResource
 ---@return_overload nil, string
 local function loaded_resource(id, resource, limits)
-  if type(resource) ~= "table" or resource.id ~= id
-      or type(resource.data) ~= "string" then
+  if type(resource) ~= "table" or resource.id ~= id or type(resource.data) ~= "string" then
     return nil, "image source loader returned an invalid resource"
   end
   local ok, info = pcall(source.png_info, resource.data, limits)
-  if not ok or type(info) ~= "table" or resource.width ~= info.width
-      or resource.height ~= info.height or resource.bytes ~= info.bytes then
+  if
+    not ok
+    or type(info) ~= "table"
+    or resource.width ~= info.width
+    or resource.height ~= info.height
+    or resource.bytes ~= info.bytes
+  then
     return nil, "image source loader returned an invalid resource"
   end
   return {
@@ -392,10 +423,16 @@ end
 ---@param err unknown
 ---@param limits Applet.ImageLoadOptions
 function ImageSystem:_complete(id, operation, resource, err, limits)
-  if self.destroyed or self.pending[id] ~= operation then return end
+  if self.destroyed or self.pending[id] ~= operation then
+    return
+  end
   self.pending[id] = nil
-  if not self:_wanted(id) then return end
-  if resource then resource, err = loaded_resource(id, resource, limits) end
+  if not self:_wanted(id) then
+    return
+  end
+  if resource then
+    resource, err = loaded_resource(id, resource, limits)
+  end
   if not resource then
     self.failures[id] = tostring(err or "image preparation failed")
     self:_changed()
@@ -415,11 +452,19 @@ end
 ---@param value Applet.ImageSource
 ---@return Applet.ImageResource?, string?
 function ImageSystem:request(value)
-  if self.destroyed then return nil, "image system is destroyed" end
+  if self.destroyed then
+    return nil, "image system is destroyed"
+  end
   local id = source.identity(value)
-  if self.resources[id] then return self.resources[id] end
-  if self.failures[id] then return nil, self.failures[id] end
-  if self.pending[id] or self.status ~= "available" then return nil end
+  if self.resources[id] then
+    return self.resources[id]
+  end
+  if self.failures[id] then
+    return nil, self.failures[id]
+  end
+  if self.pending[id] or self.status ~= "available" then
+    return nil
+  end
   ---@type Applet.OutputOperation
   local operation = {}
   self.pending[id] = operation
@@ -447,14 +492,12 @@ function ImageSystem:request(value)
     return nil
   end
   if cancel ~= nil and type(cancel) ~= "function" then
-    self:_complete(id, operation, nil,
-      "load_source must return a cancellation function or nil", limits)
+    self:_complete(id, operation, nil, "load_source must return a cancellation function or nil", limits)
     return nil
   end
   operation.cancel = cancel
   if completion then
-    self:_complete(id, operation,
-      completion.resource, completion.err, limits)
+    self:_complete(id, operation, completion.resource, completion.err, limits)
   end
   return nil
 end
@@ -462,10 +505,14 @@ end
 ---@param owner Applet.ImageOwner
 ---@param identities? table<string, unknown>
 function ImageSystem:set_references(owner, identities)
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   assert(owner ~= nil, "image reference owner is required")
   local copied = {}
-  for id in pairs(identities or {}) do copied[id] = true end
+  for id in pairs(identities or {}) do
+    copied[id] = true
+  end
   self.references[owner] = next(copied) and copied or nil
   self:_release_unused()
 end
@@ -486,29 +533,34 @@ end
 local function resolve_presentation(system, value)
   assert(type(value) == "table", "image presentation must be a table")
   local slots = value.slots
-  if slots == nil then slots = {} end
+  if slots == nil then
+    slots = {}
+  end
   local placements = value.placements
-  if placements == nil then placements = {} end
+  if placements == nil then
+    placements = {}
+  end
   assert(type(slots) == "table", "image presentation slots must be a table")
-  assert(type(placements) == "table" and vim.islist(placements),
-    "image presentation placements must be a list")
+  assert(type(placements) == "table" and vim.islist(placements), "image presentation placements must be a list")
   local result = { slots = {}, placements = {}, signature = {
-    slots = {}, placements = {},
+    slots = {},
+    placements = {},
   } }
   for key, id in pairs(slots) do
-    assert(util.nonempty_string(key) and util.nonempty_string(id),
-      "image presentation slots must map string keys to source identities")
-    assert(system.resources[id],
-      "image presentation references an unknown resource")
+    assert(
+      util.nonempty_string(key) and util.nonempty_string(id),
+      "image presentation slots must map string keys to source identities"
+    )
+    assert(system.resources[id], "image presentation references an unknown resource")
     result.slots[key] = id
     result.signature.slots[key] = id
   end
   for index, placement in ipairs(placements) do
-    assert(type(placement) == "table"
-        and util.nonempty_string(placement.key),
-      "image presentation placements require a string key")
-    local id = assert(result.slots[placement.key],
-      "image presentation placement must reference a slot")
+    assert(
+      type(placement) == "table" and util.nonempty_string(placement.key),
+      "image presentation placements require a string key"
+    )
+    local id = assert(result.slots[placement.key], "image presentation placement must reference a slot")
     ---@type Applet.ImageRequest
     local request = util.copy(placement)
     request.resource = system.resources[id]
@@ -522,23 +574,26 @@ end
 ---@param value Applet.ImagePresentation
 ---@return boolean
 function ImageSystem:present(owner, value)
-  if self.destroyed or self.status ~= "available" then return false end
+  if self.destroyed or self.status ~= "available" then
+    return false
+  end
   assert(owner ~= nil, "image presentation owner is required")
   local presentation = resolve_presentation(self, value)
   local current = self.presentations[owner]
   if current and util.equal(current.signature, presentation.signature) then
     return false
   end
-  if not current and not next(presentation.slots)
-      and #presentation.placements == 0 then return false end
+  if not current and not next(presentation.slots) and #presentation.placements == 0 then
+    return false
+  end
   local _, current_generation = self:_backend_call(function(backend)
     return backend:replace(owner, presentation.placements)
   end)
-  if not current_generation then return false end
-  self.presentations[owner] = next(presentation.slots)
-      and presentation or nil
-  self.counters.presentation_changes =
-    self.counters.presentation_changes + 1
+  if not current_generation then
+    return false
+  end
+  self.presentations[owner] = next(presentation.slots) and presentation or nil
+  self.counters.presentation_changes = self.counters.presentation_changes + 1
   self:_release_unused()
   return true
 end
@@ -546,14 +601,18 @@ end
 ---@param owner? Applet.ImageOwner
 ---@return boolean
 function ImageSystem:clear(owner)
-  if self.destroyed or owner == nil then return false end
+  if self.destroyed or owner == nil then
+    return false
+  end
   local changed = self.presentations[owner] ~= nil
   local backend_changed, current_generation = self:_backend_call(function(backend)
     return backend:clear(owner)
   end)
   self.presentations[owner] = nil
   self.references[owner] = nil
-  if not current_generation then return false end
+  if not current_generation then
+    return false
+  end
   self:_release_unused()
   return changed or backend_changed == true
 end
@@ -566,7 +625,9 @@ function ImageSystem:snapshot(owner)
     local selected, current_generation = self:_backend_call(function(backend)
       return backend:cell_dimensions()
     end)
-    if current_generation and type(selected) == "table" then cells = selected end
+    if current_generation and type(selected) == "table" then
+      cells = selected
+    end
   end
   local resources = {}
   for key, value in pairs(self.resources) do
@@ -587,7 +648,9 @@ end
 ---@param owner Applet.ImageOwner
 ---@return boolean
 function ImageSystem:redraw(owner)
-  if self.destroyed or self.status ~= "available" then return false end
+  if self.destroyed or self.status ~= "available" then
+    return false
+  end
   local redrawn, current_generation = self:_backend_call(function(backend)
     return backend:redraw(owner)
   end)
@@ -609,11 +672,15 @@ function ImageSystem:_stats()
 end
 
 function ImageSystem:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   self.backend_generation = self.backend_generation + 1
   for _, operation in pairs(self.pending) do
-    if operation.cancel then pcall(operation.cancel) end
+    if operation.cancel then
+      pcall(operation.cancel)
+    end
   end
   self:_destroy_backend()
   self.resources = {}
@@ -635,5 +702,7 @@ local module = {
 }
 
 return setmetatable(module, {
-  __call = function(_, opts) return ImageSystem.new(opts) end,
+  __call = function(_, opts)
+    return ImageSystem.new(opts)
+  end,
 })

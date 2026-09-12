@@ -245,7 +245,6 @@ local applet_expect = util.expect
 ---| Applet.ScopeNode
 ---| Applet.VirtualNode
 
-
 local M = {}
 
 ---@generic K: string, T: table

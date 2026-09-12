@@ -37,8 +37,12 @@ Dialog.__index = Dialog
 ---@param value Neoagent.UIMapping?
 ---@return string[]
 local function values(value)
-  if type(value) == "string" then return { value } end
-  if type(value) == "table" then return value end
+  if type(value) == "string" then
+    return { value }
+  end
+  if type(value) == "table" then
+    return value
+  end
   return {}
 end
 
@@ -111,12 +115,10 @@ local function input_lines(dialog, queue_count)
   end
   append_line(lines, "", nil)
   for _, action in ipairs(dialog.actions or {}) do
-    append_line(lines, string.format("[%s] %s", action.key, action.label),
-      "dialog_action")
+    append_line(lines, string.format("[%s] %s", action.key, action.label), "dialog_action")
   end
   if queue_count and queue_count > 0 then
-    append_line(lines, string.format("%d more dialog%s pending",
-      queue_count, queue_count == 1 and "" or "s"), "muted")
+    append_line(lines, string.format("%d more dialog%s pending", queue_count, queue_count == 1 and "" or "s"), "muted")
   end
   return lines
 end
@@ -134,10 +136,11 @@ local function render(state)
   local dialog = snapshot.active
   if dialog.input then
     local bindings = action_bindings(dialog, state.config)
-    if type(state.config.cancel_key) == "string"
-        and state.config.cancel_key ~= "" then
+    if type(state.config.cancel_key) == "string" and state.config.cancel_key ~= "" then
       local cancel_modes = { "n" }
-      if dialog.input then cancel_modes[#cancel_modes + 1] = "i" end
+      if dialog.input then
+        cancel_modes[#cancel_modes + 1] = "i"
+      end
       for _, mode in ipairs(cancel_modes) do
         bindings[#bindings + 1] = {
           mode = mode,
@@ -185,9 +188,16 @@ local function render(state)
   if snapshot.queue_count and snapshot.queue_count > 0 then
     queue = ui.text({
       key = "dialog:" .. dialog.id .. ":queue",
-      runs = { { text = string.format("%d more dialog%s pending",
-        snapshot.queue_count, snapshot.queue_count == 1 and "" or "s"),
-        style = "muted" } },
+      runs = {
+        {
+          text = string.format(
+            "%d more dialog%s pending",
+            snapshot.queue_count,
+            snapshot.queue_count == 1 and "" or "s"
+          ),
+          style = "muted",
+        },
+      },
       wrap = "word",
     })
   end
@@ -215,8 +225,7 @@ local function render(state)
       options = { wrap = false, cursorline = true },
     },
     view = {
-      target_intent = widgets.menu_intent(entry,
-        "dialog-focus:" .. dialog.id),
+      target_intent = widgets.menu_intent(entry, "dialog-focus:" .. dialog.id),
     },
   }
 end
@@ -248,17 +257,24 @@ function Dialog.new(opts)
       ["dialog.choose"] = function(event)
         local active = self.snapshot and self.snapshot.active
         if active then
-          callbacks.choose(active.id, (event.payload --[[@as {action: string}]]).action,
-            self.pane:is_editable() and self:text() or nil)
+          callbacks.choose(
+            active.id,
+            (event.payload --[[@as {action: string}]]).action,
+            self.pane:is_editable() and self:text() or nil
+          )
         end
       end,
       ["dialog.cancel"] = function()
         local active = self.snapshot and self.snapshot.active
-        if active then callbacks.cancel(active.id) end
+        if active then
+          callbacks.cancel(active.id)
+        end
       end,
       ["dialog.changed"] = function()
         self.input_value = self:text()
-        if callbacks.changed then callbacks.changed(self.input_value) end
+        if callbacks.changed then
+          callbacks.changed(self.input_value)
+        end
       end,
     },
     on_error = opts.on_error,
@@ -269,8 +285,7 @@ end
 ---@param snapshot Neoagent.DialogSnapshot?
 function Dialog:set(snapshot)
   self.snapshot = snapshot and util.copy(snapshot) or nil
-  local input = self.snapshot and self.snapshot.active
-    and self.snapshot.active.input
+  local input = self.snapshot and self.snapshot.active and self.snapshot.active.input
   self.input_value = input and input.value or ""
   self.pane:set_state({
     snapshot = self.snapshot,
@@ -283,7 +298,9 @@ end
 
 ---@return string
 function Dialog:text()
-  if not self.pane:is_editable() then return self.input_value end
+  if not self.pane:is_editable() then
+    return self.input_value
+  end
   return self.pane:text()
 end
 

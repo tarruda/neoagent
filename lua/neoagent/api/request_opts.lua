@@ -45,13 +45,18 @@ local M = {}
 ---@param override? number|false
 ---@return integer|false|nil
 function M.timeout(default, override)
-  if override == false then return false end
+  if override == false then
+    return false
+  end
   ---@type number?
   local value = default
-  if override ~= nil then value = override end
-  assert(value == nil or type(value) == "number" and value > 0
-      and value < math.huge and value % 1 == 0,
-    "timeout_ms must be a positive integer")
+  if override ~= nil then
+    value = override
+  end
+  assert(
+    value == nil or type(value) == "number" and value > 0 and value < math.huge and value % 1 == 0,
+    "timeout_ms must be a positive integer"
+  )
   ---@cast value integer?
   return value
 end
@@ -94,7 +99,9 @@ end
 ---@param context Neoagent.RequestOptionsInput
 ---@return Neoagent.ApiRequest
 function M.apply(request, layer, context)
-  if layer == nil then return request end
+  if layer == nil then
+    return request
+  end
   local override = layer
   if type(layer) == "function" then
     local snapshot = util.copy(context)

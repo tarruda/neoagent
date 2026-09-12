@@ -11,22 +11,30 @@ Tree.__index = Tree
 ---@param pid integer
 ---@return true
 function Tree:attach(pid)
-  if type(pid) == "number" and pid > 0 then self.pid = pid end
+  if type(pid) == "number" and pid > 0 then
+    self.pid = pid
+  end
   return true
 end
 
 ---@param signal integer
 ---@return boolean
 function Tree:terminate(signal)
-  if not self.pid or self.closed then return false end
+  if not self.pid or self.closed then
+    return false
+  end
   local ok = self.kill(-self.pid, signal)
   return ok ~= nil and ok ~= false
 end
 
 ---@param terminate? boolean
 function Tree:close(terminate)
-  if self.closed then return end
-  if terminate then self:terminate(9) end
+  if self.closed then
+    return
+  end
+  if terminate then
+    self:terminate(9)
+  end
   self.closed = true
 end
 

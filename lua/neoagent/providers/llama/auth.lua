@@ -15,17 +15,17 @@ local DEFAULT_SERVER_URL = "http://127.0.0.1:8080"
 ---@return string?
 local function await_prompt(interaction, prompt)
   return async.await(
-  ---@param done Neoagent.AwaitCallbacks<string?>
-  function(done)
-    return interaction.prompt(prompt, done)
-  end)
+    ---@param done Neoagent.AwaitCallbacks<string?>
+    function(done)
+      return interaction.prompt(prompt, done)
+    end
+  )
 end
 
 ---@param credential? Neoagent.ApiKeyCredential
 ---@return string?
 local function server_url(credential)
-  local value = credential and credential.env
-    and credential.env.LLAMA_BASE_URL or nil
+  local value = credential and credential.env and credential.env.LLAMA_BASE_URL or nil
   if type(value) == "string" and util.trim(value) ~= "" then
     return client.normalize_server_url(value)
   end
@@ -43,55 +43,68 @@ function M.new(opts)
     ---@param interaction Neoagent.LoginInteraction
     login = function(interaction)
       return async.run(
-      ---@return Neoagent.CredentialSuccess<Neoagent.ApiKeyCredential>
-      function()
-        local entered_url = await_prompt(interaction, {
-          type = "text",
-          message = "llama.cpp server URL",
-        })
-        local selected = util.trim(entered_url or "")
-        if selected == "" then
-          selected = util.trim(vim.env.LLAMA_BASE_URL or DEFAULT_SERVER_URL)
-        end
-        selected = client.normalize_server_url(selected)
-        local key = "anonymous"
-        local anonymous = true
-        local listed = client.new({
-          server_url = selected,
-          transport = transport,
-        }):list():await()
-        if not listed.ok then
-          ---@type Neoagent.ProviderHttpError
-          local err = listed.error or util.error("auth",
-            "llama.cpp server check failed")
-          if err.status ~= 401 and err.status ~= 403 then error(err, 0) end
-          local entered_key = await_prompt(interaction, {
-            type = "secret",
-            message = "llama.cpp API key",
+        ---@return Neoagent.CredentialSuccess<Neoagent.ApiKeyCredential>
+        function()
+          local entered_url = await_prompt(interaction, {
+            type = "text",
+            message = "llama.cpp server URL",
           })
-          key = util.trim(entered_key or "")
-          if key == "" then
-            error(util.error("auth", "API key is required"), 0)
+          local selected = util.trim(entered_url or "")
+          if selected == "" then
+            selected = util.trim(vim.env.LLAMA_BASE_URL or DEFAULT_SERVER_URL)
           end
-          local verified = client.new({
-            server_url = selected,
-            api_key = key,
-            transport = transport,
-          }):list():await()
-          if not verified.ok then error(verified.error, 0) end
-          anonymous = false
-        end
-        local environment = { LLAMA_BASE_URL = selected }
-        if anonymous then environment.LLAMA_ANONYMOUS = "1" end
-        return {
-          ok = true,
-          credential = {
-            type = "api_key",
-            key = key,
-            env = environment,
-          },
-        }
-      end, { error_kind = "auth" })
+          selected = client.normalize_server_url(selected)
+          local key = "anonymous"
+          local anonymous = true
+          local listed = client
+            .new({
+              server_url = selected,
+              transport = transport,
+            })
+            :list()
+            :await()
+          if not listed.ok then
+            ---@type Neoagent.ProviderHttpError
+            local err = listed.error or util.error("auth", "llama.cpp server check failed")
+            if err.status ~= 401 and err.status ~= 403 then
+              error(err, 0)
+            end
+            local entered_key = await_prompt(interaction, {
+              type = "secret",
+              message = "llama.cpp API key",
+            })
+            key = util.trim(entered_key or "")
+            if key == "" then
+              error(util.error("auth", "API key is required"), 0)
+            end
+            local verified = client
+              .new({
+                server_url = selected,
+                api_key = key,
+                transport = transport,
+              })
+              :list()
+              :await()
+            if not verified.ok then
+              error(verified.error, 0)
+            end
+            anonymous = false
+          end
+          local environment = { LLAMA_BASE_URL = selected }
+          if anonymous then
+            environment.LLAMA_ANONYMOUS = "1"
+          end
+          return {
+            ok = true,
+            credential = {
+              type = "api_key",
+              key = key,
+              env = environment,
+            },
+          }
+        end,
+        { error_kind = "auth" }
+      )
     end,
     request_opts = function(credential)
       local value = server_url(credential)
@@ -105,7 +118,9 @@ function M.new(opts)
     end,
     public_metadata = function(credential)
       local value = server_url(credential)
-      if not value then return nil end
+      if not value then
+        return nil
+      end
       return { server_url = value }
     end,
     cache_identity = function(credential)

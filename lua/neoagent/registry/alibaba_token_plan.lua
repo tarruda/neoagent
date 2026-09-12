@@ -4,8 +4,7 @@ local function request(body)
   return { body = body }
 end
 
-local BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com"
-  .. "/compatible-mode/v1"
+local BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com" .. "/compatible-mode/v1"
 
 ---@param levels Neoagent.ThinkingLevel[]
 ---@return Neoagent.ThinkingOptions
@@ -34,7 +33,9 @@ end
 ---@param context Neoagent.RequestOptionsContext
 ---@return Neoagent.RequestOverride
 local function tool_stream(context)
-  if #context.tools == 0 then return {} end
+  if #context.tools == 0 then
+    return {}
+  end
   return { body = { tool_stream = true } }
 end
 
@@ -72,38 +73,49 @@ end
 local provider = {
   api = "openai-completions",
   base_url = BASE_URL,
-  api_key = function() return vim.env.BAILIAN_TOKEN_PLAN_API_KEY end,
+  api_key = function()
+    return vim.env.BAILIAN_TOKEN_PLAN_API_KEY
+  end,
   auth = "alibaba-token-plan",
   auth_scopes = {
     dashboard = "alibaba-token-plan-dashboard",
   },
-  catalog = { seed = {
-    model("qwen3.8-max", 1000000, 131072, {
-      image = true, thinking = qwen38(), tool_stream = true,
-    }),
-    model("qwen3.8-flash", 1000000, 131072, {
-      image = true, thinking = qwen38(), tool_stream = true,
-    }),
-    model("qwen3.7-plus", 1000000, 131072, {
-      image = true, tool_stream = true,
-    }),
-    model("qwen3.7-max", 1000000, 131072, { tool_stream = true }),
-    model("qwen3.6-flash", 1000000, 65536, {
-      image = true, tool_stream = true,
-    }),
-    model("deepseek-v4-pro-0813", 1000000, 393216, {
-      thinking = deepseek_snapshot(),
-    }),
-    model("deepseek-v4-pro", 1000000, 393216, {
-      thinking = deepseek(),
-    }),
-    model("deepseek-v4-flash-0731", 1000000, 393216, {
-      thinking = deepseek_snapshot(),
-    }),
-    model("glm-5.2", 1048576, 131072, {
-      thinking = deepseek(), tool_stream = true,
-    }),
-  } },
+  catalog = {
+    seed = {
+      model("qwen3.8-max", 1000000, 131072, {
+        image = true,
+        thinking = qwen38(),
+        tool_stream = true,
+      }),
+      model("qwen3.8-flash", 1000000, 131072, {
+        image = true,
+        thinking = qwen38(),
+        tool_stream = true,
+      }),
+      model("qwen3.7-plus", 1000000, 131072, {
+        image = true,
+        tool_stream = true,
+      }),
+      model("qwen3.7-max", 1000000, 131072, { tool_stream = true }),
+      model("qwen3.6-flash", 1000000, 65536, {
+        image = true,
+        tool_stream = true,
+      }),
+      model("deepseek-v4-pro-0813", 1000000, 393216, {
+        thinking = deepseek_snapshot(),
+      }),
+      model("deepseek-v4-pro", 1000000, 393216, {
+        thinking = deepseek(),
+      }),
+      model("deepseek-v4-flash-0731", 1000000, 393216, {
+        thinking = deepseek_snapshot(),
+      }),
+      model("glm-5.2", 1048576, 131072, {
+        thinking = deepseek(),
+        tool_stream = true,
+      }),
+    },
+  },
   request_opts = {
     headers = { ["User-Agent"] = "neoagent" },
     body = {

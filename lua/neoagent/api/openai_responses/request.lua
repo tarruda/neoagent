@@ -33,8 +33,12 @@ end
 ---@param fallback string
 ---@return string
 local function signature_id(signature, fallback)
-  if type(signature) ~= "string" or signature == "" then return fallback end
-  if signature:sub(1, 1) ~= "{" then return signature end
+  if type(signature) ~= "string" or signature == "" then
+    return fallback
+  end
+  if signature:sub(1, 1) ~= "{" then
+    return signature
+  end
   local ok, value = pcall(vim.json.decode, signature)
   return ok and type(value) == "table" and type(value.id) == "string" and value.id or fallback
 end
@@ -64,15 +68,18 @@ local function encode_assistant(result, message, message_index)
         type = "message",
         role = "assistant",
         status = "completed",
-        id = signature_id(block.textSignature,
-          string.format("msg_neoagent_%d_%d", message_index, text_index)),
-        content = { {
-          type = "output_text",
-          text = block.text or "",
-          annotations = util.list(),
-        } },
+        id = signature_id(block.textSignature, string.format("msg_neoagent_%d_%d", message_index, text_index)),
+        content = {
+          {
+            type = "output_text",
+            text = block.text or "",
+            annotations = util.list(),
+          },
+        },
       }
-      if type(block.phase) == "string" and block.phase ~= "" then item.phase = block.phase end
+      if type(block.phase) == "string" and block.phase ~= "" then
+        item.phase = block.phase
+      end
       result[#result + 1] = item
     elseif block.type == "toolCall" then
       local call_id, item_id = split_call_id(block.id)
@@ -82,7 +89,9 @@ local function encode_assistant(result, message, message_index)
         name = block.name,
         arguments = util.json_encode(block.arguments or vim.empty_dict()),
       }
-      if item_id then item.id = item_id end
+      if item_id then
+        item.id = item_id
+      end
       result[#result + 1] = item
     end
   end
@@ -107,7 +116,9 @@ local function tool_output(content)
   end
   local joined = table.concat(text, "\n")
   if #output > 0 then
-    if joined ~= "" then table.insert(output, 1, { type = "input_text", text = joined }) end
+    if joined ~= "" then
+      table.insert(output, 1, { type = "input_text", text = joined })
+    end
   else
     return joined ~= "" and joined or "(no tool output)"
   end
@@ -127,7 +138,9 @@ local function encode_messages(messages, system_prompt, include_system)
   for message_index, message in ipairs(messages) do
     if message.role == "user" then
       local content = input_content(message.content)
-      if #content > 0 then result[#result + 1] = { role = "user", content = content } end
+      if #content > 0 then
+        result[#result + 1] = { role = "user", content = content }
+      end
     elseif message.role == "assistant" then
       encode_assistant(result, message, message_index)
     elseif message.role == "toolResult" then
@@ -147,7 +160,9 @@ end
 local function encode_tools(tools, strict)
   ---@type Neoagent.JsonObject[]
   local result = util.list()
-  if strict == nil then strict = false end
+  if strict == nil then
+    strict = false
+  end
   for _, tool in ipairs(tools or {}) do
     result[#result + 1] = {
       type = "function",
@@ -190,8 +205,12 @@ function M.build(self, call_opts)
     ["Content-Type"] = "application/json",
   }
   local api_key = self._api_key
-  if type(api_key) == "function" then api_key = api_key() end
-  if api_key ~= nil and api_key ~= "" then headers.Authorization = "Bearer " .. api_key end
+  if type(api_key) == "function" then
+    api_key = api_key()
+  end
+  if api_key ~= nil and api_key ~= "" then
+    headers.Authorization = "Bearer " .. api_key
+  end
 
   local codex = self._profile == "codex"
   local responses_lite = codex and self._responses_lite == true
@@ -220,15 +239,21 @@ function M.build(self, call_opts)
     else
       body.instructions = call_opts.system_prompt or "You are a helpful assistant."
       body.parallel_tool_calls = true
-      if #tools > 0 then body.tools = tools end
+      if #tools > 0 then
+        body.tools = tools
+      end
     end
   elseif #tools > 0 then
     body.tools = tools
   end
-  if self._max_output_tokens then body.max_output_tokens = math.max(16, self._max_output_tokens) end
+  if self._max_output_tokens then
+    body.max_output_tokens = math.max(16, self._max_output_tokens)
+  end
   if self._reasoning then
     local reasoning = { effort = self._reasoning_effort or "medium" }
-    if self._reasoning_summary ~= "none" then reasoning.summary = self._reasoning_summary or "auto" end
+    if self._reasoning_summary ~= "none" then
+      reasoning.summary = self._reasoning_summary or "auto"
+    end
     if self._reasoning_context or responses_lite then
       reasoning.context = self._reasoning_context or "all_turns"
     end
@@ -249,16 +274,19 @@ function M.build(self, call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
-    request_context = request_context.resolve(
-      self._request_context, call_opts.request_context),
+    request_context = request_context.resolve(self._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, context)
   end
   request = request_opts.apply(request, call_opts.request_opts, context)
   local reasoning_context = self._reasoning_context or (responses_lite and "all_turns" or nil)
-  if reasoning_context and type(request.body) == "table" and type(request.body.reasoning) == "table"
-      and request.body.reasoning.context == nil then
+  if
+    reasoning_context
+    and type(request.body) == "table"
+    and type(request.body.reasoning) == "table"
+    and request.body.reasoning.context == nil
+  then
     request.body.reasoning.context = reasoning_context
   end
   return request, context.request_context

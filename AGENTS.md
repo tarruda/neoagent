@@ -136,6 +136,13 @@ make test-ui
 make test
 ```
 
+`make lint` checks shipped Lua statement layout with Neovim's bundled Lua
+parser. Statements, including compound bodies, occupy separate lines from
+surrounding code. LuaCov counts lines, so inline bodies can hide unexecuted
+statements. Comments, string contents, and empty function bodies are allowed.
+`make test` and CI run this check. StyLua 2.5.2 with `.stylua.toml` produces
+the required layout; use `--verify` when reformatting shipped Lua.
+
 `make test` (also `make test-fast`) runs all three suites without coverage or
 terminal images. Integration tests replay HTTP recordings through the real
 HTTP decoder and use in-memory browser callback connections, so they need no

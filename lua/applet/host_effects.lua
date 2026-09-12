@@ -13,7 +13,6 @@ local M = {}
 ---@field filetype string
 ---@field content string
 
-
 local sequence = 0
 
 ---@param path string
@@ -25,8 +24,7 @@ end
 ---@param value unknown
 ---@return boolean
 local function safe_document_name(value)
-  if type(value) ~= "string" or value == "" or #value > 256
-      or value:find("[/\\]") or value:find("[%z\1-\31\127]") then
+  if type(value) ~= "string" or value == "" or #value > 256 or value:find("[/\\]") or value:find("[%z\1-\31\127]") then
     return false
   end
   local ok = pcall(util.validate_text, value, "host document name")
@@ -36,8 +34,7 @@ end
 ---@param path string
 ---@return Applet.FileRefreshResult
 function M.refresh_file(path)
-  assert(type(path) == "string" and path ~= "",
-    "host file path must be a non-empty string")
+  assert(type(path) == "string" and path ~= "", "host file path must be a non-empty string")
   local target = canonical(path)
   local result = { refreshed = 0, modified = {}, failures = {} }
   for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
@@ -67,12 +64,9 @@ end
 ---@return_overload nil, unknown
 function M.open_document(document)
   assert(type(document) == "table", "host document must be a table")
-  assert(safe_document_name(document.name),
-    "host document name must be safe text without path separators")
-  assert(type(document.filetype) == "string",
-    "host document filetype must be a string")
-  assert(type(document.content) == "string",
-    "host document content must be a string")
+  assert(safe_document_name(document.name), "host document name must be safe text without path separators")
+  assert(type(document.filetype) == "string", "host document filetype must be a string")
+  assert(type(document.content) == "string", "host document content must be a string")
   local original_tab = vim.api.nvim_get_current_tabpage()
   ---@type integer?
   local candidate_tab
@@ -83,16 +77,20 @@ function M.open_document(document)
     candidate_tab = vim.api.nvim_get_current_tabpage()
     candidate_buffer = vim.api.nvim_get_current_buf()
     sequence = sequence + 1
-    vim.api.nvim_buf_set_name(candidate_buffer,
-      "neoagent://provider/" .. tostring(sequence) .. "/" .. document.name)
+    vim.api.nvim_buf_set_name(candidate_buffer, "neoagent://provider/" .. tostring(sequence) .. "/" .. document.name)
     vim.bo[candidate_buffer].buftype = "nofile"
     vim.bo[candidate_buffer].buflisted = false
     vim.bo[candidate_buffer].bufhidden = "wipe"
     vim.bo[candidate_buffer].swapfile = false
     vim.bo[candidate_buffer].modifiable = true
     vim.bo[candidate_buffer].filetype = document.filetype
-    vim.api.nvim_buf_set_lines(candidate_buffer, 0, -1, false,
-      vim.split(document.content, "\n", { plain = true, trimempty = false }))
+    vim.api.nvim_buf_set_lines(
+      candidate_buffer,
+      0,
+      -1,
+      false,
+      vim.split(document.content, "\n", { plain = true, trimempty = false })
+    )
     vim.bo[candidate_buffer].modified = false
     vim.bo[candidate_buffer].modifiable = true
   end)
@@ -119,15 +117,16 @@ end
 function M.on_exit(callback)
   assert(type(callback) == "function", "host exit callback must be a function")
   sequence = sequence + 1
-  local group = vim.api.nvim_create_augroup(
-    "AppletHostEffects" .. sequence, { clear = true })
+  local group = vim.api.nvim_create_augroup("AppletHostEffects" .. sequence, { clear = true })
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = callback,
   })
   local active = true
   return function()
-    if not active then return end
+    if not active then
+      return
+    end
     active = false
     pcall(vim.api.nvim_del_augroup_by_id, group)
   end

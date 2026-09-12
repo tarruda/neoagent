@@ -17,12 +17,10 @@ local M = {}
 ---@class Neoagent.SkillDiscoveryOptions: Neoagent.SkillOptions
 ---@field cwd string
 
-
 ---@param value string
 ---@return string
 local function escape_xml(value)
-  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-    :gsub('"', "&quot;"):gsub("'", "&apos;"))
+  return (value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"):gsub("'", "&apos;"))
 end
 
 ---@param value string
@@ -31,7 +29,9 @@ local function scalar(value)
   value = util.trim(value)
   if value:sub(1, 1) == '"' and value:sub(-1) == '"' then
     local ok, decoded = pcall(vim.json.decode, value)
-    if ok and type(decoded) == "string" then return decoded end
+    if ok and type(decoded) == "string" then
+      return decoded
+    end
   elseif value:sub(1, 1) == "'" and value:sub(-1) == "'" then
     return (value:sub(2, -2):gsub("''", "'"))
   end
@@ -45,7 +45,9 @@ end
 local function frontmatter(content)
   content = content:gsub("\r\n", "\n")
   local header = content:match("^%-%-%-\n(.-)\n%-%-%-\n")
-  if not header then return nil, "missing YAML frontmatter" end
+  if not header then
+    return nil, "missing YAML frontmatter"
+  end
   local lines = vim.split(header, "\n", { plain = true })
   ---@type table<string, string>
   local values = {}
@@ -60,7 +62,9 @@ local function frontmatter(content)
         index = index + 1
         while lines[index] do
           local continuation = lines[index]
-          if not (continuation:match("^%s+") or continuation == "") then break end
+          if not (continuation:match("^%s+") or continuation == "") then
+            break
+          end
           block[#block + 1] = continuation:gsub("^%s+", "")
           index = index + 1
         end
@@ -84,20 +88,29 @@ end
 ---@return_overload nil, string
 local function load_skill(path, source)
   local content, err = fs.read(path)
-  if not content then return nil, "failed to read skill: " .. tostring(err) end
+  if not content then
+    return nil, "failed to read skill: " .. tostring(err)
+  end
   local values, parse_err = frontmatter(content)
-  if not values then return nil, parse_err end
+  if not values then
+    return nil, parse_err
+  end
   local name, description = values.name, values.description
-  if type(name) ~= "string" or name == "" then return nil, "skill name is required" end
-  local valid_name = #name <= 64 and (name:match("^[a-z0-9]$")
-    or name:match("^[a-z0-9][a-z0-9-]*[a-z0-9]$")) and not name:find("--", 1, true)
+  if type(name) ~= "string" or name == "" then
+    return nil, "skill name is required"
+  end
+  local valid_name = #name <= 64
+    and (name:match("^[a-z0-9]$") or name:match("^[a-z0-9][a-z0-9-]*[a-z0-9]$"))
+    and not name:find("--", 1, true)
   if not valid_name then
     return nil, "skill name must use 1-64 lowercase letters, numbers, or single hyphens"
   end
   if type(description) ~= "string" or util.trim(description) == "" then
     return nil, "skill description is required"
   end
-  if #description > 1024 then return nil, "skill description exceeds 1024 characters" end
+  if #description > 1024 then
+    return nil, "skill description exceeds 1024 characters"
+  end
   local canonical = fs.canonical(path)
   return {
     name = name,
@@ -118,19 +131,27 @@ local function scan(root, source, add, diagnostics, visited)
   ---@cast expanded string
   root = fs.normalize(expanded)
   local stat = vim.uv.fs_stat(root)
-  if not stat then return end
+  if not stat then
+    return
+  end
   if stat.type ~= "directory" then
     diagnostics[#diagnostics + 1] = { path = root, message = "skill path is not a directory" }
     return
   end
   local canonical = fs.canonical(root)
-  if visited[canonical] then return end
+  if visited[canonical] then
+    return
+  end
   visited[canonical] = true
 
   local skill_path = fs.join(canonical, "SKILL.md")
   if vim.uv.fs_stat(skill_path) then
     local skill, err = load_skill(skill_path, source)
-    if skill then add(skill) else diagnostics[#diagnostics + 1] = { path = skill_path, message = err } end
+    if skill then
+      add(skill)
+    else
+      diagnostics[#diagnostics + 1] = { path = skill_path, message = err }
+    end
     return
   end
 
@@ -142,7 +163,9 @@ local function scan(root, source, add, diagnostics, visited)
   local children = {}
   while true do
     local name, kind = vim.uv.fs_scandir_next(handle)
-    if not name then break end
+    if not name then
+      break
+    end
     if name:sub(1, 1) ~= "." and name ~= "node_modules" then
       local path = fs.join(canonical, name)
       local child_stat = kind == "link" and vim.uv.fs_stat(path) or nil
@@ -152,7 +175,9 @@ local function scan(root, source, add, diagnostics, visited)
     end
   end
   table.sort(children)
-  for _, child in ipairs(children) do scan(child, source, add, diagnostics, visited) end
+  for _, child in ipairs(children) do
+    scan(child, source, add, diagnostics, visited)
+  end
 end
 
 ---@param opts Neoagent.SkillDiscoveryOptions
@@ -164,7 +189,9 @@ function M.discover(opts)
   local by_name, diagnostics, visited, paths = {}, {}, {}, {}
   ---@param skill Neoagent.Skill
   local function add(skill)
-    if paths[skill.path] then return end
+    if paths[skill.path] then
+      return
+    end
     paths[skill.path] = true
     by_name[skill.name] = skill
   end
@@ -177,7 +204,9 @@ function M.discover(opts)
     end
   end
   local skills = vim.tbl_values(by_name)
-  table.sort(skills, function(a, b) return a.name < b.name end)
+  table.sort(skills, function(a, b)
+    return a.name < b.name
+  end)
   return { skills = skills, diagnostics = diagnostics }
 end
 
@@ -185,7 +214,9 @@ end
 ---@return string
 function M.format(skills)
   skills = skills or {}
-  if #skills == 0 then return "" end
+  if #skills == 0 then
+    return ""
+  end
   local lines = {
     "The following skills provide specialized instructions for specific tasks.",
     "Use read_file to load a skill's SKILL.md when the task matches its description.",

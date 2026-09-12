@@ -7,10 +7,19 @@ local M = {}
 
 ---@type Neoagent.ThinkingLevel[]
 local order = {
-  "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
 }
 local known = {}
-for _, level in ipairs(order) do known[level] = true end
+for _, level in ipairs(order) do
+  known[level] = true
+end
 
 ---@param level unknown
 ---@return TypeGuard<Neoagent.ThinkingLevel>
@@ -22,7 +31,9 @@ end
 ---@return Neoagent.ThinkingLevel[]
 function M.levels(model)
   local configured = model and model.thinking
-  if type(configured) ~= "table" then return {} end
+  if type(configured) ~= "table" then
+    return {}
+  end
   local result = {}
   for _, level in ipairs(order) do
     local value = configured[level]
@@ -38,18 +49,31 @@ end
 ---@return Neoagent.ThinkingLevel?
 function M.clamp(model, level)
   local available = M.levels(model)
-  if #available == 0 then return nil end
-  if vim.tbl_contains(available, level) then return level end
+  if #available == 0 then
+    return nil
+  end
+  if vim.tbl_contains(available, level) then
+    return level
+  end
   local requested
   for index, candidate in ipairs(order) do
-    if candidate == level then requested = index break end
+    if candidate == level then
+      requested = index
+      break
+    end
   end
-  if not requested then return available[1] end
+  if not requested then
+    return available[1]
+  end
   for index = requested + 1, #order do
-    if vim.tbl_contains(available, order[index]) then return order[index] end
+    if vim.tbl_contains(available, order[index]) then
+      return order[index]
+    end
   end
   for index = requested - 1, 1, -1 do
-    if vim.tbl_contains(available, order[index]) then return order[index] end
+    if vim.tbl_contains(available, order[index]) then
+      return order[index]
+    end
   end
 end
 
@@ -58,10 +82,14 @@ end
 ---@return Neoagent.ThinkingLevel?
 function M.next(model, level)
   local available = M.levels(model)
-  if #available == 0 then return nil end
+  if #available == 0 then
+    return nil
+  end
   local current = M.clamp(model, level)
   for index, candidate in ipairs(available) do
-    if candidate == current then return available[index % #available + 1] end
+    if candidate == current then
+      return available[index % #available + 1]
+    end
   end
 end
 
@@ -69,9 +97,13 @@ end
 ---@param level? Neoagent.ThinkingLevel
 ---@return Neoagent.RequestLayer?
 function M.request_opts(model, level)
-  if level == nil then return nil end
+  if level == nil then
+    return nil
+  end
   local value = model and type(model.thinking) == "table" and model.thinking[level] or nil
-  if type(value) ~= "table" and type(value) ~= "function" then return nil end
+  if type(value) ~= "table" and type(value) ~= "function" then
+    return nil
+  end
   return util.copy(value)
 end
 

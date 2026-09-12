@@ -43,27 +43,28 @@ end
 ---@return Neoagent.ProcessResult
 function M.sandbox_exec(argv, opts)
   opts = opts or {}
-  assert(type(argv) == "table" and util.is_list(argv) and #argv > 0,
-    "sandbox argv must be a non-empty list")
+  assert(type(argv) == "table" and util.is_list(argv) and #argv > 0, "sandbox argv must be a non-empty list")
   local selected, status = platform_dispatch.select(opts.os, opts.platforms)
-  if not selected then error(platform_dispatch.status_error(status), 0) end
+  if not selected then
+    error(platform_dispatch.status_error(status), 0)
+  end
   local active_services = services(opts)
   if opts.capabilities == nil then
     local checked, value = pcall(selected.check, active_services)
-    status = checked and value or {
-      ok = false,
-      platform = selected.name,
-      stage = "requirements",
-      message = util.normalize_error(value, "sandbox_unavailable").message,
-    }
+    status = checked and value
+      or {
+        ok = false,
+        platform = selected.name,
+        stage = "requirements",
+        message = util.normalize_error(value, "sandbox_unavailable").message,
+      }
     if type(status) ~= "table" or not status.ok then
       error(platform_dispatch.status_error(status), 0)
     end
     active_services.capabilities = util.copy(status.capabilities or {})
   end
   local paths = opts.paths or selected.paths or path_module.posix
-  local profile = profile_module.resolve(
-    opts.profile, opts.ctx, { paths = paths })
+  local profile = profile_module.resolve(opts.profile, opts.ctx, { paths = paths })
   if type(selected.compile) == "function" then
     profile = selected.compile(profile, opts.ctx, active_services)
   end
@@ -90,11 +91,12 @@ function M.info(agent)
   end
   configured = type(configured) == "table" and configured or {}
   ---@cast configured Neoagent.SandboxInfoConfig
-  local enabled = configured.sandbox
-    and configured.sandbox.enabled == true or false
+  local enabled = configured.sandbox and configured.sandbox.enabled == true or false
   local recorded = util.copy(configured._sandbox_status or {})
   recorded.enabled = enabled
-  if not enabled then recorded.active = false end
+  if not enabled then
+    recorded.active = false
+  end
   return recorded
 end
 
@@ -111,20 +113,19 @@ function M.format_info(status)
     lines[#lines + 1] = "platform: " .. tostring(status.platform)
   end
   if status.enabled and status.active then
-    lines[#lines + 1] =
-      "isolation: " .. (status.degraded and "degraded" or "full")
+    lines[#lines + 1] = "isolation: " .. (status.degraded and "degraded" or "full")
     if status.degraded_reason then
-      lines[#lines + 1] =
-        "reason: " .. tostring(status.degraded_reason)
+      lines[#lines + 1] = "reason: " .. tostring(status.degraded_reason)
     end
     local capabilities = status.capabilities or {}
     local names = vim.tbl_keys(capabilities)
     table.sort(names)
     for _, name in ipairs(names) do
       local value = capabilities[name]
-      if type(value) == "boolean" then value = value and "yes" or "no" end
-      lines[#lines + 1] =
-        "capability." .. name .. ": " .. tostring(value)
+      if type(value) == "boolean" then
+        value = value and "yes" or "no"
+      end
+      lines[#lines + 1] = "capability." .. name .. ": " .. tostring(value)
     end
   elseif status.enabled then
     if status.stage then

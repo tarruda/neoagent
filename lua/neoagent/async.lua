@@ -104,7 +104,9 @@ function Run._record_diagnostic(self, diagnostic)
     table.remove(self._diagnostics, 1)
   end
   self._diagnostics[#self._diagnostics + 1] = diagnostic
-  if self._report then pcall(self._report, util.copy(diagnostic)) end
+  if self._report then
+    pcall(self._report, util.copy(diagnostic))
+  end
   for listener in pairs(self._diagnostic_listeners) do
     pcall(listener, util.copy(diagnostic))
   end
@@ -131,7 +133,9 @@ function Run._subscribe_diagnostics(self, listener)
   end
   local active = true
   return function()
-    if not active then return false end
+    if not active then
+      return false
+    end
     active = false
     self._diagnostic_listeners[listener] = nil
     return true
@@ -140,7 +144,9 @@ end
 
 ---@param run Neoagent.Run<unknown, unknown>
 local function schedule_drain(run)
-  if run._drain_scheduled then return end
+  if run._drain_scheduled then
+    return
+  end
   run._drain_scheduled = true
   util.schedule(function()
     while run._callback_head <= #run._callback_queue do
@@ -148,10 +154,11 @@ local function schedule_drain(run)
       run._callback_queue[run._callback_head] = false
       run._callback_head = run._callback_head + 1
       local ok, err = pcall(item.invoke)
-      if not ok then run:_diagnose(item.phase, err) end
+      if not ok then
+        run:_diagnose(item.phase, err)
+      end
       local length = #run._callback_queue
-      if run._callback_head > CALLBACK_COMPACT_THRESHOLD
-          and run._callback_head > length / 2 then
+      if run._callback_head > CALLBACK_COMPACT_THRESHOLD and run._callback_head > length / 2 then
         local compacted = {}
         for index = run._callback_head, length do
           compacted[#compacted + 1] = run._callback_queue[index]
@@ -176,7 +183,9 @@ function Run._enqueue(self, fn, value, phase)
     return
   end
   self._callback_queue[#self._callback_queue + 1] = {
-    invoke = function() fn(value) end,
+    invoke = function()
+      fn(value)
+    end,
     phase = phase,
   }
   schedule_drain(self)
@@ -229,7 +238,9 @@ function Run._finish(self, result)
     self:_enqueue(listener, result, "listener")
   end
   self._listeners = {}
-  for _, entry in ipairs(self._cancel_handlers) do entry.active = false end
+  for _, entry in ipairs(self._cancel_handlers) do
+    entry.active = false
+  end
   self._cancel_handlers = {}
   self._inactive_cancel_handlers = 0
   return true
@@ -240,13 +251,14 @@ end
 function Run._compact_cancel_handlers(self)
   local inactive = self._inactive_cancel_handlers
   local handlers = self._cancel_handlers
-  if self._cancelling or inactive < CANCEL_COMPACT_THRESHOLD
-      or inactive * 2 < #handlers then
+  if self._cancelling or inactive < CANCEL_COMPACT_THRESHOLD or inactive * 2 < #handlers then
     return false
   end
   local compacted = {}
   for _, entry in ipairs(handlers) do
-    if entry.active then compacted[#compacted + 1] = entry end
+    if entry.active then
+      compacted[#compacted + 1] = entry
+    end
   end
   self._cancel_handlers = compacted
   self._inactive_cancel_handlers = 0
@@ -258,16 +270,26 @@ end
 ---@param self Neoagent.Run<unknown, unknown>
 function Run.on_cancel(self, fn)
   assert(type(fn) == "function", "cancel handler must be a function")
-  if self._completed then return function() return false end end
+  if self._completed then
+    return function()
+      return false
+    end
+  end
   if self._cancelled then
     local ok, err = pcall(fn)
-    if not ok then self:_diagnose("cancel", err) end
-    return function() return false end
+    if not ok then
+      self:_diagnose("cancel", err)
+    end
+    return function()
+      return false
+    end
   end
   local entry = { fn = fn, active = true }
   self._cancel_handlers[#self._cancel_handlers + 1] = entry
   return function()
-    if not entry.active then return false end
+    if not entry.active then
+      return false
+    end
     entry.active = false
     self._inactive_cancel_handlers = self._inactive_cancel_handlers + 1
     self:_compact_cancel_handlers()
@@ -288,7 +310,9 @@ function Run.cancel(self)
   for _, entry in ipairs(self._cancel_handlers) do
     if entry.active then
       local ok, err = pcall(entry.fn)
-      if not ok then self:_diagnose("cancel", err) end
+      if not ok then
+        self:_diagnose("cancel", err)
+      end
       entry.active = false
     end
   end
@@ -296,7 +320,9 @@ function Run.cancel(self)
   self._cancel_handlers = {}
   self._inactive_cancel_handlers = 0
   local waiting = self._waiting
-  if waiting and waiting.cancel_wait then waiting.cancel_wait() end
+  if waiting and waiting.cancel_wait then
+    waiting.cancel_wait()
+  end
   if not waiting and (not self._co or coroutine.status(self._co) == "dead") then
     self:_finish({ ok = false, error = cancelled_error })
   end
@@ -342,12 +368,15 @@ function Run.await(self)
   end
   local remove_diagnostic_listener
   if parent ~= self and self._report == nil then
-    remove_diagnostic_listener = self:_subscribe_diagnostics(
-      function(diagnostic) parent:_record_diagnostic(diagnostic) end)
+    remove_diagnostic_listener = self:_subscribe_diagnostics(function(diagnostic)
+      parent:_record_diagnostic(diagnostic)
+    end)
   end
   return M.await(function(done)
     self:_listen(function(result)
-      if remove_diagnostic_listener then remove_diagnostic_listener() end
+      if remove_diagnostic_listener then
+        remove_diagnostic_listener()
+      end
       done.resolve(result)
     end)
     return function()
@@ -410,17 +439,23 @@ function M.await(start)
   ---@param value? unknown
   local function diagnose(phase, fn, value)
     local ok, err = pcall(fn, value)
-    if not ok then run:_diagnose(phase, err) end
+    if not ok then
+      run:_diagnose(phase, err)
+    end
   end
 
   ---@param value unknown
   ---@param disposer? fun(value: unknown)
   local function dispose(value, disposer)
-    if disposer then diagnose("dispose", disposer, value) end
+    if disposer then
+      diagnose("dispose", disposer, value)
+    end
   end
 
   local function cancel_producer()
-    if waiting.cancel_invoked or not waiting.cancel_producer then return end
+    if waiting.cancel_invoked or not waiting.cancel_producer then
+      return
+    end
     waiting.cancel_invoked = true
     diagnose("cancel", waiting.cancel_producer)
   end
@@ -440,7 +475,9 @@ function M.await(start)
       waiting.value, waiting.disposer = nil, nil
       dispose(value, disposer)
     end
-    if waiting.yielded then schedule_delivery() end
+    if waiting.yielded then
+      schedule_delivery()
+    end
     return true
   end
 
@@ -455,15 +492,21 @@ function M.await(start)
       disposer = nil
     end
     if waiting.state == "cancelled" then
-      if ok then dispose(value, disposer) end
+      if ok then
+        dispose(value, disposer)
+      end
       return false
     end
-    if waiting.state ~= "pending" or run._completed then return false end
+    if waiting.state ~= "pending" or run._completed then
+      return false
+    end
     waiting.state = "settled"
     waiting.ok = ok
     waiting.value = value
     waiting.disposer = ok and disposer or nil
-    if waiting.yielded then schedule_delivery() end
+    if waiting.yielded then
+      schedule_delivery()
+    end
     return true
   end
   waiting.resolve = function(value, disposer)
@@ -477,14 +520,17 @@ function M.await(start)
   waiting.remove_cancel = run:on_cancel(cancel_wait)
 
   schedule_delivery = function()
-    if waiting.delivery_scheduled or not waiting.yielded
-        or waiting.state == "pending" then
+    if waiting.delivery_scheduled or not waiting.yielded or waiting.state == "pending" then
       return
     end
     waiting.delivery_scheduled = true
     util.schedule(function()
-      if run._completed then return end
-      if run._cancelled then cancel_wait() end
+      if run._completed then
+        return
+      end
+      if run._cancelled then
+        cancel_wait()
+      end
       resume_run(run)
       waiting.delivery_scheduled = false
     end)
@@ -498,14 +544,18 @@ function M.await(start)
     waiting.reject(cancel_or_error)
   elseif type(cancel_or_error) == "function" then
     waiting.cancel_producer = cancel_or_error
-    if waiting.cancel_pending then cancel_producer() end
+    if waiting.cancel_pending then
+      cancel_producer()
+    end
   end
 
   if waiting.state == "pending" then
     waiting.yielded = true
     coroutine.yield()
   end
-  if run._cancelled then cancel_wait() end
+  if run._cancelled then
+    cancel_wait()
+  end
   local state = waiting.state
   local resolved, value = waiting.ok, waiting.value
   if state == "settled" then
@@ -513,12 +563,16 @@ function M.await(start)
     state = "delivered"
     waiting.disposer = nil
   end
-  if waiting.remove_cancel then waiting.remove_cancel() end
+  if waiting.remove_cancel then
+    waiting.remove_cancel()
+  end
   if run._waiting == waiting then
     run._waiting = nil
   end
   waiting.value = nil
-  if state == "cancelled" then error(cancelled_error, 0) end
+  if state == "cancelled" then
+    error(cancelled_error, 0)
+  end
   assert(state == "delivered", "async await resumed before settlement")
   if not resolved then
     error(util.normalize_error(value, "cancelled"), 0)
@@ -533,8 +587,7 @@ end
 function M.run(fn, opts)
   assert(type(fn) == "function", "async.run fn must be a function")
   opts = opts or {}
-  assert(opts.report == nil or type(opts.report) == "function",
-    "async.run report must be a function")
+  assert(opts.report == nil or type(opts.report) == "function", "async.run report must be a function")
   ---@type Neoagent.Run<T, E>
   local run = setmetatable({
     _on_event = opts.on_event,

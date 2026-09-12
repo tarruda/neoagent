@@ -20,7 +20,6 @@ local M = {}
 ---@field environment_key fun(name: string): string
 ---@field validate_component fun(part: string): string
 
-
 ---@param message string
 ---@return never
 local function invalid(message)
@@ -42,11 +41,15 @@ end
 ---@return string
 local function canonical_candidate(paths, path, realpath)
   local resolved = realpath(path)
-  if resolved then return paths.normalize(resolved) end
+  if resolved then
+    return paths.normalize(resolved)
+  end
   local current, suffix = path, {}
   while true do
     local parent = paths.dirname(current)
-    if parent == current then break end
+    if parent == current then
+      break
+    end
     table.insert(suffix, 1, paths.basename(current))
     current = parent
     resolved = realpath(current)
@@ -93,8 +96,7 @@ end
 ---@return boolean
 function posix.contains(root, path)
   root, path = posix.key(root), posix.key(path)
-  return root == "/" or path == root
-    or path:sub(1, #root + 1) == root .. "/"
+  return root == "/" or path == root or path:sub(1, #root + 1) == root .. "/"
 end
 
 ---@param path string
@@ -102,7 +104,9 @@ end
 function posix.depth(path)
   local normalized = posix.normalize(path)
   local count = 0
-  for _ in normalized:gmatch("[^/]+") do count = count + 1 end
+  for _ in normalized:gmatch("[^/]+") do
+    count = count + 1
+  end
   return count
 end
 
@@ -127,8 +131,7 @@ end
 ---@param path string
 ---@return string
 function posix.canonical_candidate(path)
-  return canonical_candidate(
-    posix, posix.normalize(path), vim.uv.fs_realpath)
+  return canonical_candidate(posix, posix.normalize(path), vim.uv.fs_realpath)
 end
 
 ---@param path string
@@ -225,8 +228,7 @@ local function windows_parts(path)
     root = drive:upper() .. ":\\"
     suffix = tail
   elseif path:sub(1, 2) == "\\\\" then
-    local server, share, rest =
-      path:match("^\\\\([^\\]+)\\([^\\]+)\\?(.*)$")
+    local server, share, rest = path:match("^\\\\([^\\]+)\\([^\\]+)\\?(.*)$")
     if not server or not share then
       invalid("UNC paths require a server and share")
     end
@@ -243,7 +245,9 @@ local function windows_parts(path)
   local parts = {}
   for part in suffix:gmatch("[^\\]+") do
     if part == ".." then
-      if #parts > 0 then table.remove(parts) end
+      if #parts > 0 then
+        table.remove(parts)
+      end
     elseif part ~= "." then
       windows_component(part)
       parts[#parts + 1] = part
@@ -267,14 +271,18 @@ function M.windows(opts)
   ---@return string
   function paths.normalize(path)
     local root, parts = windows_parts(path)
-    if #parts == 0 then return root end
+    if #parts == 0 then
+      return root
+    end
     return root .. table.concat(parts, "\\")
   end
 
   ---@param path unknown
   ---@return boolean
   function paths.is_absolute(path)
-    if type(path) ~= "string" or path == "" then return false end
+    if type(path) ~= "string" or path == "" then
+      return false
+    end
     return (pcall(paths.normalize, path))
   end
 
@@ -299,8 +307,7 @@ function M.windows(opts)
     if root:sub(-1) == "\\" then
       return path == root or path:sub(1, #root) == root
     end
-    return path == root
-      or path:sub(1, #root + 1) == root .. "\\"
+    return path == root or path:sub(1, #root + 1) == root .. "\\"
   end
 
   ---@param path string
@@ -314,9 +321,13 @@ function M.windows(opts)
   ---@return string
   function paths.dirname(path)
     local root, parts = windows_parts(path)
-    if #parts == 0 then return root end
+    if #parts == 0 then
+      return root
+    end
     table.remove(parts)
-    if #parts == 0 then return root end
+    if #parts == 0 then
+      return root
+    end
     return root .. table.concat(parts, "\\")
   end
 
@@ -381,7 +392,9 @@ end
 ---@param os string
 ---@return Neoagent.SandboxPaths
 function M.for_os(os)
-  if os == "Windows" then return M.windows() end
+  if os == "Windows" then
+    return M.windows()
+  end
   return M.posix
 end
 

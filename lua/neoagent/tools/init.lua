@@ -7,16 +7,30 @@ local M = {}
 
 ---@type table<Neoagent.BundledToolName, fun(options: Neoagent.ToolPresetOptions): Neoagent.Tool<unknown>>
 local constructors = {
-  read_file = function() return require("neoagent.tools.read_file").new() end,
-  write_file = function() return require("neoagent.tools.write_file").new() end,
-  edit_file = function() return require("neoagent.tools.edit_file").new() end,
+  read_file = function()
+    return require("neoagent.tools.read_file").new()
+  end,
+  write_file = function()
+    return require("neoagent.tools.write_file").new()
+  end,
+  edit_file = function()
+    return require("neoagent.tools.edit_file").new()
+  end,
   shell = function(options)
     return require("neoagent.tools.shell").new({ default_timeout = options.shell_timeout })
   end,
-  grep = function() return require("neoagent.tools.grep").new() end,
-  find = function() return require("neoagent.tools.find").new() end,
-  read_agent_documentation = function() return require("neoagent.tools.read_agent_documentation").new() end,
-  update_plan = function() return require("neoagent.tools.update_plan").new() end,
+  grep = function()
+    return require("neoagent.tools.grep").new()
+  end,
+  find = function()
+    return require("neoagent.tools.find").new()
+  end,
+  read_agent_documentation = function()
+    return require("neoagent.tools.read_agent_documentation").new()
+  end,
+  update_plan = function()
+    return require("neoagent.tools.update_plan").new()
+  end,
 }
 
 ---@param names Neoagent.BundledToolName[]
@@ -37,7 +51,10 @@ end
 ---@return Neoagent.Tool<unknown>[]
 function M.coding(options)
   return tools({
-    "read_file", "write_file", "edit_file", "shell",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "shell",
     "read_agent_documentation",
   }, options)
 end
@@ -56,8 +73,14 @@ end
 ---@return Neoagent.Tool<unknown>[]
 function M.all(options)
   return tools({
-    "read_file", "write_file", "edit_file", "shell", "grep", "find",
-    "read_agent_documentation", "update_plan",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "shell",
+    "grep",
+    "find",
+    "read_agent_documentation",
+    "update_plan",
   }, options)
 end
 

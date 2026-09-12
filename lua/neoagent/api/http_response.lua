@@ -7,11 +7,19 @@ local M = {}
 ---@param fallback? string
 ---@return string?
 function M.error_message(body, fallback)
-  if type(body) ~= "table" then return fallback end
+  if type(body) ~= "table" then
+    return fallback
+  end
   local message = body.error
-  if type(message) == "table" then message = message.message or message.code end
-  if type(message) ~= "string" then message = body.message or body.detail end
-  if type(message) == "string" then return message end
+  if type(message) == "table" then
+    message = message.message or message.code
+  end
+  if type(message) ~= "string" then
+    message = body.message or body.detail
+  end
+  if type(message) == "string" then
+    return message
+  end
   return fallback
 end
 
@@ -28,13 +36,17 @@ function M.check(result)
     ---@type Neoagent.HttpError
     local err = failure or util.error("transport", "HTTP " .. status)
     local message = M.error_message(result.ok and result.body or nil)
-    if type(message) ~= "string" and err.kind ~= "transport" then message = err.message end
+    if type(message) ~= "string" and err.kind ~= "transport" then
+      message = err.message
+    end
     err.message = "HTTP " .. status .. (type(message) == "string" and ": " .. message or "")
     err.response = { status = status, headers = response.headers or {} }
     err.detail = result.ok and result.detail or err.detail
     error(err, 0)
   end
-  if not result.ok then error(result.error, 0) end
+  if not result.ok then
+    error(result.error, 0)
+  end
   -- Only successful transport results survive classification.
   ---@cast result Neoagent.HttpSuccess
   return result

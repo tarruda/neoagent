@@ -38,8 +38,7 @@ function M.transform(model)
   }
   local levels = model.reasoning_levels
   if type(levels) == "table" and #levels > 0 then
-    result.thinking = model.thinking_type == "adaptive"
-      and efforts.anthropic_adaptive(levels) or effort_levels(levels)
+    result.thinking = model.thinking_type == "adaptive" and efforts.anthropic_adaptive(levels) or effort_levels(levels)
   end
   if model.thinking_type == "enabled" then
     result.request_opts = {
@@ -68,13 +67,16 @@ end
 local function cache_messages(messages)
   local result = util.copy(messages)
   local last = result[#result]
-  if not last or last.role ~= "user" then return result end
+  if not last or last.role ~= "user" then
+    return result
+  end
   if type(last.content) == "string" then
-    last.content = { {
-      type = "text",
-      text = last.content,
-      cache_control = util.copy(CACHE_CONTROL),
-    } }
+    last.content =
+      { {
+        type = "text",
+        text = last.content,
+        cache_control = util.copy(CACHE_CONTROL),
+      } }
   elseif type(last.content) == "table" and #last.content > 0 then
     local block = last.content[#last.content]
     if block.type == "text" or block.type == "image" or block.type == "tool_result" then
@@ -88,8 +90,12 @@ end
 ---@return Neoagent.JsonObject[]
 local function cache_tools(tools)
   local result = util.copy(tools)
-  for _, tool in ipairs(result) do tool.eager_input_streaming = true end
-  if #result > 0 then result[#result].cache_control = util.copy(CACHE_CONTROL) end
+  for _, tool in ipairs(result) do
+    tool.eager_input_streaming = true
+  end
+  if #result > 0 then
+    result[#result].cache_control = util.copy(CACHE_CONTROL)
+  end
   return result
 end
 
@@ -101,9 +107,13 @@ function M.request_opts()
     ---@cast body Neoagent.AnthropicCacheBody
     ---@type Neoagent.JsonObject
     local override = { messages = cache_messages(body.messages) }
-    if body.tools then override.tools = cache_tools(body.tools) end
+    if body.tools then
+      override.tools = cache_tools(body.tools)
+    end
     local system = cache_system(context.system_prompt)
-    if #system > 0 then override.system = system end
+    if #system > 0 then
+      override.system = system
+    end
     return { body = override }
   end
 end

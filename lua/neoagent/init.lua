@@ -17,8 +17,7 @@ end
 ---@param runtime Neoagent.ProfileRuntimeOptions?
 ---@return Neoagent.NeoagentApplet
 local function build_applet(configured, runtime)
-  local profiles, default_profile, resources =
-    require("neoagent.profiles").bundled(configured, runtime)
+  local profiles, default_profile, resources = require("neoagent.profiles").bundled(configured, runtime)
   return applet_type().new({
     profiles = profiles,
     default_profile = default_profile,
@@ -64,7 +63,9 @@ local function setup(opts, runtime)
   local previous = default_applet
   default_applet = replacement
   config._set(configured)
-  if previous then previous:destroy() end
+  if previous then
+    previous:destroy()
+  end
   return replacement
 end
 
@@ -78,16 +79,14 @@ end
 ---@param runtime Neoagent.ProfileRuntimeOptions?
 ---@return Neoagent.NeoagentApplet
 function M._setup(opts, runtime)
-  assert(runtime == nil or type(runtime) == "table",
-    "setup runtime must be an object")
+  assert(runtime == nil or type(runtime) == "table", "setup runtime must be an object")
   return setup(opts, runtime)
 end
 
 ---@param agent Neoagent.Agent
 ---@return Neoagent.Agent?
 function M._set_default(agent)
-  assert(type(agent) == "table" and agent._neoagent_agent,
-    "default must be a Neoagent Agent")
+  assert(type(agent) == "table" and agent._neoagent_agent, "default must be a Neoagent Agent")
   local previous
   if default_applet and not default_applet:is_destroyed() then
     previous = default_applet:default_agent()
@@ -95,7 +94,9 @@ function M._set_default(agent)
   local replacement = applet_type()._from_agents({
     agents = { agent },
   })
-  if default_applet then default_applet:destroy() end
+  if default_applet then
+    default_applet:destroy()
+  end
   default_applet = replacement
   config._set(agent:config())
   return previous
@@ -104,12 +105,13 @@ end
 ---@param applet Neoagent.NeoagentApplet
 ---@return Neoagent.NeoagentApplet?
 function M._set_default_applet(applet)
-  assert(type(applet) == "table" and applet._neoagent_applet,
-    "default applet must be a Neoagent Applet")
+  assert(type(applet) == "table" and applet._neoagent_applet, "default applet must be a Neoagent Applet")
   local previous = default_applet
   default_applet = applet
   local agent = applet:default_agent()
-  if agent then config._set(agent:config()) end
+  if agent then
+    config._set(agent:config())
+  end
   return previous
 end
 
@@ -139,13 +141,19 @@ function M.notify(message, level)
 end
 
 ---@return true?, Neoagent.Error|Applet.Error?
-function M.open() return M.applet():open() end
+function M.open()
+  return M.applet():open()
+end
 
 ---@return boolean
-function M.close() return M.applet():close() end
+function M.close()
+  return M.applet():close()
+end
 
 ---@return boolean?, Neoagent.Error|Applet.Error?
-function M.toggle() return M.applet():toggle() end
+function M.toggle()
+  return M.applet():toggle()
+end
 
 ---@return true?, Neoagent.Error|Applet.Error?
 function M.show_agents()
@@ -162,14 +170,18 @@ end
 ---@return true?, Neoagent.Error?, integer?, 'steering'?
 function M.steer(text)
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   return agent:steer(text)
 end
 
 ---@return string[], integer[]?
 function M.dequeue_steering()
   local agent = M.applet():target_agent()
-  if not agent then return {} end
+  if not agent then
+    return {}
+  end
   return agent:dequeue_steering()
 end
 
@@ -177,14 +189,18 @@ end
 ---@return Neoagent.AgentRun?, Neoagent.Error?
 function M.compact(instructions)
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   return agent:compact(instructions)
 end
 
 ---@return boolean
 function M.stop()
   local agent = M.applet():target_agent()
-  if not agent then return false end
+  if not agent then
+    return false
+  end
   return agent:stop()
 end
 
@@ -192,7 +208,9 @@ end
 ---@return true?, Neoagent.Error?
 function M.branch(entry_id)
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   return agent:branch(entry_id)
 end
 
@@ -206,14 +224,18 @@ end
 ---@return Neoagent.Session?
 function M.get_session()
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   return agent:get_session()
 end
 
 ---@return Neoagent.Model?
 function M.get_model()
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   return agent:get_model()
 end
 
@@ -236,7 +258,9 @@ function M.select_position()
   })
   local run = async.run(function()
     local result = selection:await()
-    if result.ok then M.set_position(result.value --[[@as Neoagent.UiPosition]]) end
+    if result.ok then
+      M.set_position(result.value --[[@as Neoagent.UiPosition]])
+    end
     return result
   end, { error_kind = "presentation" })
   M.open()
@@ -285,7 +309,9 @@ end
 ---@return true?
 function M.select_model()
   local selected = M.applet():select_model()
-  if selected then M.open() end
+  if selected then
+    M.open()
+  end
   return selected
 end
 
@@ -294,7 +320,9 @@ end
 ---@return (Neoagent.Model|Neoagent.ModelSelection)?, Neoagent.Error?
 function M.set_model(provider, model)
   local selected, err = M.applet():set_model(provider, model)
-  if selected then M.open() end
+  if selected then
+    M.open()
+  end
   return selected, err
 end
 
@@ -322,18 +350,26 @@ end
 ---@return true?
 function M.select_branch()
   local agent = M.applet():target_agent()
-  if not agent then return nil end
+  if not agent then
+    return nil
+  end
   local selected = agent:select_branch(function()
-    if M.default() == agent then M.open() end
+    if M.default() == agent then
+      M.open()
+    end
   end)
-  if selected then M.open() end
+  if selected then
+    M.open()
+  end
   return selected
 end
 
 ---@return true?, Neoagent.Error?
 function M.select_fork()
   local selected, err = M.applet():select_fork()
-  if selected then M.open() end
+  if selected then
+    M.open()
+  end
   return selected, err
 end
 
@@ -364,16 +400,19 @@ local function sandbox_target(create_draft)
   local selected = applet:selected_applet()
   local profile_id = selected and selected.profile or applet.default_profile
   local profile = profile_id and applet:profile(profile_id) or nil
-  if not profile or profile.id ~= "neo" then return {} end
-  if not selected then selected = applet:retained_draft(profile.id) end
+  if not profile or profile.id ~= "neo" then
+    return {}
+  end
+  if not selected then
+    selected = applet:retained_draft(profile.id)
+  end
   if not selected and create_draft then
     selected = assert(applet:draft(profile.id))
   end
   local options = selected and applet:get_draft_options(selected) or {}
   local configured = util.copy(profile.config)
   local sandbox_options = (assert(options).sandbox or {}) --[[@as table]]
-  configured.sandbox = util.deep_merge(
-    configured.sandbox --[[@as table]], sandbox_options) --[[@as Neoagent.SandboxSettings<Neoagent.AgentToolEnvironment>]]
+  configured.sandbox = util.deep_merge(configured.sandbox --[[@as table]], sandbox_options) --[[@as Neoagent.SandboxSettings<Neoagent.AgentToolEnvironment>]]
   return {
     applet = applet,
     draft = selected,
@@ -392,15 +431,17 @@ function M.set_sandbox_enabled(enabled)
       local updated, update_err = assert(target.applet):update_draft_options({
         sandbox = { enabled = enabled },
       }, target.draft)
-      if not updated then return nil, update_err end
+      if not updated then
+        return nil, update_err
+      end
       local status = { enabled = enabled, active = false }
-      M.notify(enabled and "sandbox will be enabled for the next Neo Agent"
-          or "sandbox disabled; tools execute on the host",
-        vim.log.levels.INFO)
+      M.notify(
+        enabled and "sandbox will be enabled for the next Neo Agent" or "sandbox disabled; tools execute on the host",
+        vim.log.levels.INFO
+      )
       return status
     end
-    local err = util.error("sandbox",
-      "Sandbox toggling is unavailable for the selected Agent")
+    local err = util.error("sandbox", "Sandbox toggling is unavailable for the selected Agent")
     M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
@@ -408,20 +449,21 @@ function M.set_sandbox_enabled(enabled)
   if not status then
     assert(err)
     state.status = state.runtime:status()
-    if state.trust then state.trust:set_sandbox_status(state.status) end
+    if state.trust then
+      state.trust:set_sandbox_status(state.status)
+    end
     M.notify(err.message, vim.log.levels.ERROR)
     return nil, err
   end
   state.status = util.copy(status)
-  if state.trust then state.trust:set_sandbox_status(status) end
+  if state.trust then
+    state.trust:set_sandbox_status(status)
+  end
   if enabled and not status.active then
-    report(require("neoagent.sandbox.composition").warning(
-      assert(target.agent):label(), status), vim.log.levels.WARN)
+    report(require("neoagent.sandbox.composition").warning(assert(target.agent):label(), status), vim.log.levels.WARN)
     return util.copy(status)
   end
-  M.notify(enabled and "sandbox enabled"
-      or "sandbox disabled; tools execute on the host",
-    vim.log.levels.INFO)
+  M.notify(enabled and "sandbox enabled" or "sandbox disabled; tools execute on the host", vim.log.levels.INFO)
   return util.copy(status)
 end
 
@@ -434,7 +476,9 @@ end
 ---@return Neoagent.SandboxInfo
 function M.sandbox_info()
   local target = sandbox_target()
-  if target.runtime then return util.copy(target.runtime.status) end
+  if target.runtime then
+    return util.copy(target.runtime.status)
+  end
   return require("neoagent.sandbox").info(target.config)
 end
 
@@ -442,9 +486,10 @@ end
 function M.show_sandbox_info()
   local sandbox = require("neoagent.sandbox")
   local status = M.sandbox_info()
-  report(sandbox.format_info(status),
-    status.enabled and not status.active
-      and vim.log.levels.WARN or vim.log.levels.INFO)
+  report(
+    sandbox.format_info(status),
+    status.enabled and not status.active and vim.log.levels.WARN or vim.log.levels.INFO
+  )
   return status
 end
 

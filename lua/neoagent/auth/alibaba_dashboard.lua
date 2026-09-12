@@ -21,8 +21,7 @@ local function decode_fields(value)
     local key, item = pair:match("^([^=]+)=?(.*)$")
     if key then
       ---@cast item string
-      result[vim.uri_decode(key:gsub("+", " "))] =
-        vim.uri_decode(item:gsub("+", " "))
+      result[vim.uri_decode(key:gsub("+", " "))] = vim.uri_decode(item:gsub("+", " "))
     end
   end
   return result
@@ -39,7 +38,9 @@ end
 ---@param names string[]
 ---@return string?
 local function field_from_object(value, names)
-  if type(value) ~= "table" or util.is_list(value) then return nil end
+  if type(value) ~= "table" or util.is_list(value) then
+    return nil
+  end
   for _, name in ipairs(names) do
     local field = value[name]
     if type(field) == "string" and util.trim(field) ~= "" then
@@ -54,26 +55,29 @@ end
 ---@param names string[]
 ---@return string?
 local function field_from_multipart(body, content_type, names)
-  local boundary = content_type:match(
-    '[Bb][Oo][Uu][Nn][Dd][Aa][Rr][Yy]%s*=%s*"([^";]+)"')
-    or content_type:match(
-      "[Bb][Oo][Uu][Nn][Dd][Aa][Rr][Yy]%s*=%s*([^;%s]+)")
-  if not boundary then return nil end
+  local boundary = content_type:match('[Bb][Oo][Uu][Nn][Dd][Aa][Rr][Yy]%s*=%s*"([^";]+)"')
+    or content_type:match("[Bb][Oo][Uu][Nn][Dd][Aa][Rr][Yy]%s*=%s*([^;%s]+)")
+  if not boundary then
+    return nil
+  end
   local delimiter = "--" .. boundary
   local position = 1
   while true do
     local first = body:find(delimiter, position, true)
-    if not first then break end
+    if not first then
+      break
+    end
     local following = first + #delimiter
     local next_part = body:find(delimiter, following, true)
-    if not next_part then break end
+    if not next_part then
+      break
+    end
     local part = body:sub(following, next_part - 1)
     local lower = part:lower()
     local selected = false
     for _, name in ipairs(names) do
       local lower_name = name:lower()
-      if lower:find('name="' .. lower_name .. '"', 1, true)
-          or lower:find("name='" .. lower_name .. "'", 1, true) then
+      if lower:find('name="' .. lower_name .. '"', 1, true) or lower:find("name='" .. lower_name .. "'", 1, true) then
         selected = true
         break
       end
@@ -81,7 +85,9 @@ local function field_from_multipart(body, content_type, names)
     if selected then
       local value = part:match("\r\n\r\n(.*)") or part:match("\n\n(.*)")
       value = value and util.trim(value:gsub("[\r\n]+$", "")) or nil
-      if value and value ~= "" then return value end
+      if value and value ~= "" then
+        return value
+      end
     end
     position = next_part
   end
@@ -92,21 +98,17 @@ local ACCESS_NAMES = { "access_token", "accessToken" }
 ---@param request Neoagent.CallbackRequest
 ---@return string?
 local function access_token_from_request(request)
-  local result = field_from_object(decode_fields(
-    request.target:match("%?(.*)$") or ""), ACCESS_NAMES)
+  local result = field_from_object(decode_fields(request.target:match("%?(.*)$") or ""), ACCESS_NAMES)
   local content_type = request.headers["content-type"] or ""
   if content_type:lower():find("multipart/form-data", 1, true) then
-    result = result or field_from_multipart(
-      request.body, content_type, ACCESS_NAMES)
-  elseif content_type:lower():find("json", 1, true)
-      or request.body:match("^%s*{") then
+    result = result or field_from_multipart(request.body, content_type, ACCESS_NAMES)
+  elseif content_type:lower():find("json", 1, true) or request.body:match("^%s*{") then
     local ok, decoded = pcall(vim.json.decode, request.body)
     if ok then
       result = result or field_from_object(decoded, ACCESS_NAMES)
     end
   else
-    result = result or field_from_object(
-      decode_fields(request.body), ACCESS_NAMES)
+    result = result or field_from_object(decode_fields(request.body), ACCESS_NAMES)
   end
   return result
 end
@@ -122,15 +124,21 @@ local function callback_server(expected_state, host)
     max_request_bytes = 65536,
     handler = function(request)
       if request.method == "OPTIONS" then
-        return { status = 204, headers = {
-          ["Access-Control-Allow-Origin"] = "*",
-          ["Access-Control-Allow-Methods"] =
-            "GET, POST, PUT, PATCH, OPTIONS",
-          ["Access-Control-Allow-Headers"] = "Content-Type",
-        } }
+        return {
+          status = 204,
+          headers = {
+            ["Access-Control-Allow-Origin"] = "*",
+            ["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, OPTIONS",
+            ["Access-Control-Allow-Headers"] = "Content-Type",
+          },
+        }
       end
-      if request.method ~= "GET" and request.method ~= "POST"
-          and request.method ~= "PUT" and request.method ~= "PATCH" then
+      if
+        request.method ~= "GET"
+        and request.method ~= "POST"
+        and request.method ~= "PUT"
+        and request.method ~= "PATCH"
+      then
         return { status = 404, body = "Callback route not found.\n" }
       end
       local fields = decode_fields(request.target:match("%?(.*)$") or "")
@@ -143,8 +151,7 @@ local function callback_server(expected_state, host)
       end
       return {
         status = 200,
-        body = "Alibaba Cloud authentication completed. "
-          .. "You can close this window.\n",
+        body = "Alibaba Cloud authentication completed. " .. "You can close this window.\n",
         headers = { ["Access-Control-Allow-Origin"] = "*" },
         done = true,
         value = access,
@@ -171,31 +178,39 @@ function M.new(opts)
       return async.run(function()
         local state = state_source()
         if type(state) ~= "string" or state == "" then
-          error(util.error("auth",
-            "Failed to create console login state"), 0)
+          error(util.error("auth", "Failed to create console login state"), 0)
         end
         local server, listen_err = start_server(state, callback_host)
         if not server then
-          error(util.error("auth",
-            "Could not start Alibaba Cloud console login callback",
-            tostring(listen_err or "listener unavailable")), 0)
+          error(
+            util.error(
+              "auth",
+              "Could not start Alibaba Cloud console login callback",
+              tostring(listen_err or "listener unavailable")
+            ),
+            0
+          )
         end
-        local url = console_origin .. "/console-login?notice="
-          .. callback_host .. ":" .. tostring(server.port)
-          .. "?state=" .. vim.uri_encode(state, "rfc2396")
+        local url = console_origin
+          .. "/console-login?notice="
+          .. callback_host
+          .. ":"
+          .. tostring(server.port)
+          .. "?state="
+          .. vim.uri_encode(state, "rfc2396")
         interaction.notify({
           type = "auth_url",
           url = url,
-          instructions =
-            "Complete Alibaba Cloud dashboard login in your browser.",
+          instructions = "Complete Alibaba Cloud dashboard login in your browser.",
         })
         local ok, access = pcall(server.wait)
         server.close()
-        if not ok then error(access, 0) end
+        if not ok then
+          error(access, 0)
+        end
         access = type(access) == "string" and util.trim(access) or ""
         if access == "" then
-          error(util.error("auth",
-            "Alibaba Cloud dashboard login returned no access token"), 0)
+          error(util.error("auth", "Alibaba Cloud dashboard login returned no access token"), 0)
         end
         return { ok = true, credential = {
           type = "api_key",
@@ -204,11 +219,9 @@ function M.new(opts)
       end, { error_kind = "auth" })
     end,
     request_opts = function(credential)
-      local access = type(credential.key) == "string"
-          and util.trim(credential.key) or ""
+      local access = type(credential.key) == "string" and util.trim(credential.key) or ""
       if access == "" then
-        error(util.error("auth",
-          "Alibaba Cloud dashboard authorization is unavailable"), 0)
+        error(util.error("auth", "Alibaba Cloud dashboard authorization is unavailable"), 0)
       end
       return { headers = { Authorization = "Bearer " .. access } }
     end,

@@ -122,8 +122,12 @@ end
 ---@param value Neoagent.UIMapping?
 ---@return string[]
 local function mapping_values(value)
-  if type(value) == "string" then return { value } end
-  if type(value) == "table" then return value end
+  if type(value) == "string" then
+    return { value }
+  end
+  if type(value) == "table" then
+    return value
+  end
   return {}
 end
 
@@ -152,7 +156,9 @@ end
 local function title(state)
   local parts = {}
   local label = state.context.name
-  if type(label) == "string" and label ~= "" then parts[#parts + 1] = label end
+  if type(label) == "string" and label ~= "" then
+    parts[#parts + 1] = label
+  end
   parts[#parts + 1] = state.context.model or "no model"
   if type(state.context.thinking) == "string" then
     parts[#parts + 1] = "think: " .. state.context.thinking
@@ -163,7 +169,9 @@ end
 ---@param value number
 ---@return string
 local function token_count(value)
-  if value < 1000 then return tostring(math.floor(value + 0.5)) end
+  if value < 1000 then
+    return tostring(math.floor(value + 0.5))
+  end
   local divisor = value >= 1000000 and 1000000 or 1000
   local suffix = value >= 1000000 and "m" or "k"
   return string.format("%.1f", value / divisor):gsub("%.0$", "") .. suffix
@@ -172,8 +180,7 @@ end
 ---@param value number?
 ---@return string?
 local function token_rate(value)
-  if type(value) ~= "number" or value <= 0 or value ~= value
-      or value == math.huge then
+  if type(value) ~= "number" or value <= 0 or value ~= value or value == math.huge then
     return nil
   end
   return string.format("%.1f", value)
@@ -184,8 +191,12 @@ end
 local function border_character(border)
   if type(border) == "table" then
     local value = border[6] or border[2]
-    if type(value) == "table" then value = value[1] end
-    if type(value) == "string" and value ~= "" then return value end
+    if type(value) == "table" then
+      value = value[1]
+    end
+    if type(value) == "string" and value ~= "" then
+      return value
+    end
   elseif border == "double" then
     return "═"
   elseif border == "solid" then
@@ -209,8 +220,12 @@ end
 ---@param width integer
 ---@return string
 local function truncate(value, width)
-  if display.width(value) <= width then return value end
-  if width <= 1 then return "…" end
+  if display.width(value) <= width then
+    return value
+  end
+  if width <= 1 then
+    return "…"
+  end
   return display.truncate(value, width)
 end
 
@@ -219,12 +234,18 @@ end
 ---@param maximum integer
 ---@return Applet.TextRun[], integer
 local function fit_left(runs, width, maximum)
-  if width <= maximum then return runs, width end
-  if maximum <= 0 then return {}, 0 end
+  if width <= maximum then
+    return runs, width
+  end
+  if maximum <= 0 then
+    return {}, 0
+  end
   local remaining = maximum - 1
   local fitted = {}
   for index = #runs, 1, -1 do
-    if remaining <= 0 then break end
+    if remaining <= 0 then
+      break
+    end
     local run = runs[index]
     local run_width = display.width(run.text)
     if run_width <= remaining then
@@ -233,8 +254,7 @@ local function fit_left(runs, width, maximum)
     else
       local suffix = slice_width(run.text, remaining, true)
       if suffix ~= "" then
-        table.insert(fitted, 1, { text = suffix, style = run.style,
-          group = run.group })
+        table.insert(fitted, 1, { text = suffix, style = run.style, group = run.group })
         remaining = remaining - display.width(suffix)
       end
     end
@@ -252,22 +272,21 @@ end
 ---@return Applet.TextRun[]
 local function footer(state, width)
   local context = state.context
-  local active = context.state == "running" or context.state == "stopping"
-    or context.state == "compacting"
+  local active = context.state == "running" or context.state == "stopping" or context.state == "compacting"
   local waiting = state.dialog ~= nil
   local label = waiting and "Waiting for response"
     or context.state == "stopping" and "Stopping..."
     or context.state == "compacting" and "Compacting..."
-    or active and "Working..." or "Idle"
-  local padding = waiting and 1
-    or display.width("Compacting...")
-      - display.width(label) + 1
+    or active and "Working..."
+    or "Idle"
+  local padding = waiting and 1 or display.width("Compacting...") - display.width(label) + 1
   local left = {
     { text = " ", style = "muted" },
-    { text = active and not waiting and state.spinner or " ",
-      style = active and not waiting and "accent" or "muted" },
-    { text = " " .. label .. string.rep(" ", padding),
-      style = waiting and "dialog_action" or "muted" },
+    {
+      text = active and not waiting and state.spinner or " ",
+      style = active and not waiting and "accent" or "muted",
+    },
+    { text = " " .. label .. string.rep(" ", padding), style = waiting and "dialog_action" or "muted" },
   }
   local left_width = 0
   for _, run in ipairs(left) do
@@ -276,10 +295,9 @@ local function footer(state, width)
   local usage = context.context_usage
   local right_parts = {}
   if type(usage) == "table" then
-    local percent = usage.percent > 0 and usage.percent < 0.1
-        and "<0.1" or string.format("%.1f", usage.percent)
-    right_parts[#right_parts + 1] = string.format("ctx %s/%s (%s%%)",
-      token_count(usage.used), token_count(usage.total), percent)
+    local percent = usage.percent > 0 and usage.percent < 0.1 and "<0.1" or string.format("%.1f", usage.percent)
+    right_parts[#right_parts + 1] =
+      string.format("ctx %s/%s (%s%%)", token_count(usage.used), token_count(usage.total), percent)
   end
   local stats = context.inference_stats
   if type(stats) == "table" then
@@ -291,8 +309,7 @@ local function footer(state, width)
       right_parts[#right_parts + 1] = "pp " .. prompt .. " t/s"
     end
   end
-  local right = #right_parts > 0
-    and " " .. table.concat(right_parts, " · ") .. " " or nil
+  local right = #right_parts > 0 and " " .. table.concat(right_parts, " · ") .. " " or nil
   local border = border_character(state.config.border)
   if not active and not waiting and not right then
     local idle = truncate(" Idle ", width)
@@ -307,17 +324,25 @@ local function footer(state, width)
   end
   local midpoint = math.floor(width / 2)
   left, left_width = fit_left(left, left_width, midpoint)
-  if right then right = truncate(right, width - midpoint) end
+  if right then
+    right = truncate(right, width - midpoint)
+  end
   local runs, used = {}, 0
   ---@param run Applet.TextRun
   local function add(run)
-    if run.text == "" then return end
+    if run.text == "" then
+      return
+    end
     runs[#runs + 1] = run
     used = used + display.width(run.text)
   end
   add({ text = string.rep(border, midpoint - left_width), group = "NeoagentBorder" })
-  for _, run in ipairs(left) do add(run) end
-  if right then add({ text = right, style = "muted" }) end
+  for _, run in ipairs(left) do
+    add(run)
+  end
+  if right then
+    add({ text = right, style = "muted" })
+  end
   add({ text = string.rep(border, math.max(0, width - used)), group = "NeoagentBorder" })
   return runs
 end
@@ -326,19 +351,23 @@ end
 ---@return Applet.RegionNode?
 local function status_region(state)
   local steering = state.context.steering or {}
-  if #steering == 0 then return nil end
+  if #steering == 0 then
+    return nil
+  end
   local lines = {}
   for _, message in ipairs(steering) do
-    lines[#lines + 1] = { {
-      text = " Steering: " .. util.trim(tostring(message):gsub("%s+", " ")),
-      style = "muted",
-    } }
+    lines[#lines + 1] =
+      { {
+        text = " Steering: " .. util.trim(tostring(message):gsub("%s+", " ")),
+        style = "muted",
+      } }
   end
-  lines[#lines + 1] = { {
-    text = " ↳ " .. (state.dequeue_key or "Alt-Up")
-      .. " to edit queued messages",
-    style = "muted",
-  } }
+  lines[#lines + 1] = {
+    {
+      text = " ↳ " .. (state.dequeue_key or "Alt-Up") .. " to edit queued messages",
+      style = "muted",
+    },
+  }
   return ui.region({
     key = "transcript:status",
     revision = state.status_revision,
@@ -354,7 +383,9 @@ end
 ---@return Applet.RegionNode?, Applet.MenuEntry?
 local function dialog_region(state)
   local snapshot = state.dialog
-  if not snapshot then return nil end
+  if not snapshot then
+    return nil
+  end
   local dialog = snapshot.active
   ---@type Applet.MenuItem[]
   local actions = {}
@@ -373,8 +404,7 @@ local function dialog_region(state)
   if snapshot.queue_count and snapshot.queue_count > 0 then
     queue = ui.text({
       key = "dialog:" .. dialog.id .. ":queue",
-      text = string.format("%d more dialog%s pending",
-        snapshot.queue_count, snapshot.queue_count == 1 and "" or "s"),
+      text = string.format("%d more dialog%s pending", snapshot.queue_count, snapshot.queue_count == 1 and "" or "s"),
       wrap = "word",
     })
   end
@@ -397,7 +427,8 @@ local function dialog_region(state)
     key = "dialog:" .. dialog.id,
     revision = state.dialog_revision,
     child = root,
-  }), entry
+  }),
+    entry
 end
 
 ---@param self Neoagent.TranscriptPane
@@ -435,17 +466,22 @@ local function root_bindings(state)
   ---@type Applet.Binding[]
   local bindings = {}
   if not state.dialog then
-    add_bindings(bindings, "n", mappings.card_details,
-      ui.action("applet.target.activate"), { desc = "Open card details" })
+    add_bindings(
+      bindings,
+      "n",
+      mappings.card_details,
+      ui.action("applet.target.activate"),
+      { desc = "Open card details" }
+    )
   end
-  add_bindings(bindings, "n", mappings.card_previous,
-    ui.action("transcript.card_move", { direction = -1 }), {
-      count = true, desc = "Previous card",
-    })
-  add_bindings(bindings, "n", mappings.card_next,
-    ui.action("transcript.card_move", { direction = 1 }), {
-      count = true, desc = "Next card",
-    })
+  add_bindings(bindings, "n", mappings.card_previous, ui.action("transcript.card_move", { direction = -1 }), {
+    count = true,
+    desc = "Previous card",
+  })
+  add_bindings(bindings, "n", mappings.card_next, ui.action("transcript.card_move", { direction = 1 }), {
+    count = true,
+    desc = "Next card",
+  })
   return bindings
 end
 
@@ -472,15 +508,19 @@ local function cached_block_node(state, env, block, index, width, cache)
     details_key = state.details_key or false,
     wrap_cards = state.config.wrap_cards == true,
     show_images = state.config.images ~= false
-      and (type(state.config.images) ~= "table"
-        or state.config.images.display ~= "expanded"),
+      and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"),
   }
   local cached = cache[block.key]
   local matches = cached ~= nil
   for key, value in pairs(signature) do
-    if not cached or cached[key] ~= value then matches = false break end
+    if not cached or cached[key] ~= value then
+      matches = false
+      break
+    end
   end
-  if matches then return cached.node, cached.region_revision end
+  if matches then
+    return cached.node, cached.region_revision
+  end
 
   local tool
   if block.kind == "tool" and state.resolve_tool then
@@ -502,12 +542,22 @@ local function cached_block_node(state, env, block, index, width, cache)
     previous = previous,
     following = following,
   }, cached and cached.renderer_continuation or nil)
-  if not node then error(assert(continuation).message, 0) end
+  if not node then
+    error(assert(continuation).message, 0)
+  end
   local revision_parts = {}
   for _, key in ipairs({
-    "revision", "image_scope", "previous_key", "previous_revision",
-    "following_key", "following_revision", "width", "surface_width",
-    "details_key", "wrap_cards", "show_images",
+    "revision",
+    "image_scope",
+    "previous_key",
+    "previous_revision",
+    "following_key",
+    "following_revision",
+    "width",
+    "surface_width",
+    "details_key",
+    "wrap_cards",
+    "show_images",
   }) do
     local value = tostring(signature[key])
     revision_parts[#revision_parts + 1] = #value .. ":" .. value
@@ -527,16 +577,14 @@ end
 render = function(state, env, cache)
   local width = math.max(1, env.width - 2)
   local document = cache.document
-  if not document or document.revision ~= state.document_revision
-      or document.width ~= width then
+  if not document or document.revision ~= state.document_revision or document.width ~= width then
     local block_regions = {}
     local dirty = {}
-    local reusable = document and document.width == width
+    local reusable = document
+      and document.width == width
       and document.details_key == state.details_key
       and document.wrap_cards == (state.config.wrap_cards == true)
-      and document.show_images == (state.config.images ~= false
-        and (type(state.config.images) ~= "table"
-          or state.config.images.display ~= "expanded"))
+      and document.show_images == (state.config.images ~= false and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"))
       and #state.blocks >= #(document.block_regions or {})
     if reusable and document then
       for index, block in ipairs(state.blocks) do
@@ -548,14 +596,15 @@ render = function(state, env, cache)
         end
       end
     else
-      for index = 1, #state.blocks do dirty[index] = true end
+      for index = 1, #state.blocks do
+        dirty[index] = true
+      end
     end
     local active = {}
     for index, block in ipairs(state.blocks) do
       active[block.key] = true
       if dirty[index] then
-        local node, revision = cached_block_node(
-          state, env, block, index, width, cache.blocks)
+        local node, revision = cached_block_node(state, env, block, index, width, cache.blocks)
         block_regions[index] = ui.region({
           key = "block:" .. block.key,
           revision = revision,
@@ -564,18 +613,23 @@ render = function(state, env, cache)
       end
     end
     for key in pairs(cache.blocks) do
-      if not active[key] then cache.blocks[key] = nil end
+      if not active[key] then
+        cache.blocks[key] = nil
+      end
     end
     local regions = vim.list_slice(block_regions)
     local status = status_region(state)
-    if status then regions[#regions + 1] = status end
+    if status then
+      regions[#regions + 1] = status
+    end
     local dialog, dialog_entry = dialog_region(state)
-    if dialog then regions[#regions + 1] = dialog end
+    if dialog then
+      regions[#regions + 1] = dialog
+    end
     ---@type Applet.ViewOptions
     local view = { scroll = "follow_end" }
     if dialog_entry then
-      view.target_intent = widgets.menu_intent(dialog_entry,
-        "dialog-focus:" .. assert(state.dialog).active.id)
+      view.target_intent = widgets.menu_intent(dialog_entry, "dialog-focus:" .. assert(state.dialog).active.id)
     end
     document = {
       revision = state.document_revision,
@@ -583,8 +637,7 @@ render = function(state, env, cache)
       details_key = state.details_key,
       wrap_cards = state.config.wrap_cards == true,
       show_images = state.config.images ~= false
-        and (type(state.config.images) ~= "table"
-          or state.config.images.display ~= "expanded"),
+        and (type(state.config.images) ~= "table" or state.config.images.display ~= "expanded"),
       block_regions = block_regions,
       block_snapshots = vim.list_slice(state.blocks),
       root = ui.scope({
@@ -739,13 +792,15 @@ end
 ---@return boolean
 function Transcript:_can_append(messages)
   local count = #self.messages
-  if count == 0 then return true end
-  if #messages < count then return false end
+  if count == 0 then
+    return true
+  end
+  if #messages < count then
+    return false
+  end
   local first = entry_id(self.messages[1])
   local last = entry_id(self.messages[count])
-  return first ~= nil and last ~= nil
-    and first == entry_id(messages[1])
-    and last == entry_id(messages[count])
+  return first ~= nil and last ~= nil and first == entry_id(messages[1]) and last == entry_id(messages[count])
 end
 
 ---@param block Neoagent.TranscriptBlock
@@ -807,31 +862,36 @@ function Transcript:_message(message, prefix)
     ---@cast message Neoagent.ObservedAssistantMessage
     for index, content in ipairs(message.content or {}) do
       if content.type == "thinking" and self.config.show_thinking ~= false then
-        self:_add_block({ kind = "thinking", text = content.thinking or "" },
-          prefix .. ":thinking:" .. index)
+        self:_add_block({ kind = "thinking", text = content.thinking or "" }, prefix .. ":thinking:" .. index)
       elseif content.type == "text" then
-        self:_add_block({ kind = "assistant", text = content.text or "" },
-          prefix .. ":text:" .. index)
+        self:_add_block({ kind = "assistant", text = content.text or "" }, prefix .. ":text:" .. index)
       elseif content.type == "toolCall" then
         local block = self:_add_block({
-          kind = "tool", name = content.name, state = "pending",
+          kind = "tool",
+          name = content.name,
+          state = "pending",
           call = util.copy(content),
-        }, content.id and "tool:" .. content.id
-          or prefix .. ":tool:" .. tostring(index))
+        }, content.id and "tool:" .. content.id or prefix .. ":tool:" .. tostring(index))
         self:_set_animated(block, true)
-        if content.id then self.calls[content.id] = block end
+        if content.id then
+          self.calls[content.id] = block
+        end
       end
     end
   elseif message.role == "toolResult" then
     local block = self.calls[message.toolCallId]
-    if block and block.finished then return block end
+    if block and block.finished then
+      return block
+    end
     if not block then
       block = self:_add_block({
-        kind = "tool", name = message.toolName,
+        kind = "tool",
+        name = message.toolName,
         call = { name = message.toolName, arguments = {} },
-      }, message.toolCallId and "tool:" .. message.toolCallId
-        or prefix .. ":tool-result:unknown")
-      if message.toolCallId then self.calls[message.toolCallId] = block end
+      }, message.toolCallId and "tool:" .. message.toolCallId or prefix .. ":tool-result:unknown")
+      if message.toolCallId then
+        self.calls[message.toolCallId] = block
+      end
     end
     block.message = util.copy(message)
     block.state = message.isError and "error" or "success"
@@ -841,7 +901,8 @@ function Transcript:_message(message, prefix)
     return block
   elseif message.role == "compactionSummary" then
     return self:_add_block({
-      kind = "compaction", summary = message.summary or "",
+      kind = "compaction",
+      summary = message.summary or "",
       tokens_before = message.tokensBefore,
     }, prefix .. ":compaction")
   end
@@ -855,10 +916,11 @@ function Transcript:set_messages(messages)
     for index = first, #messages do
       local message = util.copy((assert(messages[index])))
       self.messages[index] = message
-      self:_message(message, "message:"
-        .. tostring(message._neoagent_entry_id or index))
+      self:_message(message, "message:" .. tostring(message._neoagent_entry_id or index))
     end
-    if first <= #messages then self:_publish() end
+    if first <= #messages then
+      self:_publish()
+    end
     return
   end
   self.messages = util.copy(messages)
@@ -876,8 +938,7 @@ function Transcript:set_messages(messages)
   self.live_text, self.live_texts = nil, {}
   self.live_thinking, self.live_thinkings = nil, {}
   for index, message in ipairs(self.messages) do
-    self:_message(message, "message:"
-      .. tostring(message._neoagent_entry_id or index))
+    self:_message(message, "message:" .. tostring(message._neoagent_entry_id or index))
   end
   self:_publish()
 end
@@ -895,10 +956,11 @@ function Transcript:apply(event)
         kind = "assistant",
         text = "",
         text_epoch = self:_next_text_epoch(),
-      },
-        "response:" .. self.response .. ":text:" .. key)
+      }, "response:" .. self.response .. ":text:" .. key)
       self.live_texts[key] = block
-      if key == "default" then self.live_text = block end
+      if key == "default" then
+        self.live_text = block
+      end
     end
     block.text = block.text .. (event.text or "")
     self:_change(block)
@@ -912,10 +974,11 @@ function Transcript:apply(event)
           kind = "thinking",
           text = "",
           text_epoch = self:_next_text_epoch(),
-        },
-          "response:" .. self.response .. ":thinking:" .. key)
+        }, "response:" .. self.response .. ":thinking:" .. key)
         self.live_thinkings[key] = block
-        if key == "default" then self.live_thinking = block end
+        if key == "default" then
+          self.live_thinking = block
+        end
       end
       block.text = block.text .. (event.text or "")
       self:_change(block)
@@ -926,7 +989,10 @@ function Transcript:apply(event)
     local block = self.pending_calls[key]
     if not block then
       block = self:_add_block({
-        kind = "tool", name = event.name, state = "pending", raw = "",
+        kind = "tool",
+        name = event.name,
+        state = "pending",
+        raw = "",
       }, "response:" .. self.response .. ":tool:" .. tostring(event.index))
       self.pending_calls[key] = block
     end
@@ -951,38 +1017,40 @@ function Transcript:apply(event)
       for _, content in ipairs(message.content or {}) do
         if content.type == "text" then
           local key = content.index ~= nil and tostring(content.index) or "default"
-          local block = self.live_texts[key]
-            or (key == "default" and self.live_text or nil)
+          local block = self.live_texts[key] or (key == "default" and self.live_text or nil)
           if block then
             block.text_epoch = nil
             block.text = content.text or block.text
             self:_change(block)
           else
-            block = self:_add_block({ kind = "assistant", text = content.text or "" },
-              "response:" .. self.response .. ":text:" .. key)
+            block = self:_add_block(
+              { kind = "assistant", text = content.text or "" },
+              "response:" .. self.response .. ":text:" .. key
+            )
             self.live_texts[key] = block
           end
         elseif content.type == "thinking" and self.config.show_thinking ~= false then
           local key = content.index ~= nil and tostring(content.index) or "default"
-          local block = self.live_thinkings[key]
-            or (key == "default" and self.live_thinking or nil)
+          local block = self.live_thinkings[key] or (key == "default" and self.live_thinking or nil)
           if block then
             block.text_epoch = nil
             block.text = content.thinking or ""
             self:_change(block)
           else
-            block = self:_add_block({ kind = "thinking", text = content.thinking or "" },
-              "response:" .. self.response .. ":thinking:" .. key)
+            block = self:_add_block(
+              { kind = "thinking", text = content.thinking or "" },
+              "response:" .. self.response .. ":thinking:" .. key
+            )
           end
         elseif content.type == "toolCall" then
-          local provider_index = content.index ~= nil
-              and content.index or call_index
+          local provider_index = content.index ~= nil and content.index or call_index
           local block = content.id and self.calls[content.id]
             or self.pending_calls[self.response .. ":" .. provider_index]
           if not block then
-            block = self:_add_block({ kind = "tool", state = "pending" },
-              content.id and "tool:" .. content.id
-                or "response:" .. self.response .. ":tool:" .. provider_index)
+            block = self:_add_block(
+              { kind = "tool", state = "pending" },
+              content.id and "tool:" .. content.id or "response:" .. self.response .. ":tool:" .. provider_index
+            )
           end
           self:_set_animated(block, true)
           block.call, block.id, block.name = util.copy(content), content.id, content.name
@@ -1006,14 +1074,16 @@ function Transcript:apply(event)
       block = self:_add_block({ kind = "tool" }, "tool:" .. event.call.id)
       self.calls[event.call.id] = block
     end
-    block.call, block.name, block.state = util.copy(event.call),
-      event.call.name, "running"
+    block.call, block.name, block.state = util.copy(event.call), event.call.name, "running"
     self:_set_animated(block, true)
     self:_change(block)
   elseif event.type == "tool_update" then
     ---@cast event Neoagent.ToolUpdateEvent
     local block = self.calls[event.call.id]
-    if block then block.update = util.copy(event.result) self:_change(block) end
+    if block then
+      block.update = util.copy(event.result)
+      self:_change(block)
+    end
   elseif event.type == "tool_end" then
     ---@cast event Neoagent.ToolEndEvent
     local block = self.calls[event.call.id]
@@ -1046,8 +1116,7 @@ end
 ---@param result Neoagent.ActivityOutcome
 function Transcript:finish(result)
   self:_finish_text_streams()
-  local cancelled = not result.ok
-    and result.error and result.error.kind == "cancelled"
+  local cancelled = not result.ok and result.error and result.error.kind == "cancelled"
   for block in pairs(self.animated_blocks) do
     if block.kind == "tool" and not block.finished then
       block.state = cancelled and "cancelled" or "error"
@@ -1092,7 +1161,9 @@ end
 ---@param value string
 function Transcript:set_spinner(value)
   self.spinner = value
-  for block in pairs(self.animated_blocks) do self:_change(block) end
+  for block in pairs(self.animated_blocks) do
+    self:_change(block)
+  end
   self:_publish()
 end
 
@@ -1100,7 +1171,9 @@ end
 ---@return Neoagent.TranscriptBlock?
 function Transcript:block(key)
   for _, block in ipairs(self.blocks) do
-    if block.key == key then return block end
+    if block.key == key then
+      return block
+    end
   end
 end
 

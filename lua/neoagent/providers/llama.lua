@@ -20,7 +20,6 @@ local M = {}
 ---@field catalog Neoagent.ModelCatalog
 ---@field auth? Neoagent.AuthManager
 
-
 ---@param value unknown
 ---@return string
 local function trimmed(value)
@@ -37,9 +36,13 @@ end
 ---@param maximum integer
 ---@return string?
 local function safe_text(value, maximum)
-  if type(value) ~= "string" or value == "" or #value > maximum
-      or not util.is_valid_utf8(value)
-      or value:find("[%z\1-\31\127]") then
+  if
+    type(value) ~= "string"
+    or value == ""
+    or #value > maximum
+    or not util.is_valid_utf8(value)
+    or value:find("[%z\1-\31\127]")
+  then
     return nil
   end
   return value
@@ -51,8 +54,12 @@ end
 local function bounded_text(value, maximum)
   value = tostring(value or "")
   value = value:gsub("[%z\1-\31\127]", " ")
-  if not util.is_valid_utf8(value) then return "Invalid provider text" end
-  if #value <= maximum then return value end
+  if not util.is_valid_utf8(value) then
+    return "Invalid provider text"
+  end
+  if #value <= maximum then
+    return value
+  end
   local limit = maximum - 3
   local result = value:sub(1, limit)
   while result ~= "" and not util.is_valid_utf8(result) do
@@ -76,7 +83,9 @@ local function normalized_catalog(raw)
   local result = {}
   for _, model in ipairs(type(raw) == "table" and raw or {}) do
     local normalized = normalized_model(model)
-    if normalized then result[#result + 1] = normalized end
+    if normalized then
+      result[#result + 1] = normalized
+    end
   end
   return result
 end
@@ -86,8 +95,7 @@ end
 local function context_label(model)
   local value = llama_catalog.reported_context(model)
   if value then
-    return value >= 1000 and string.format("%dk", math.floor(value / 1000 + 0.5))
-      or string.format("%d", value)
+    return value >= 1000 and string.format("%dk", math.floor(value / 1000 + 0.5)) or string.format("%d", value)
   end
 end
 
@@ -108,7 +116,9 @@ local function model_description(model)
     details[#details + 1] = model.status.value
   end
   local context = context_label(model)
-  if context then details[#details + 1] = context .. " context" end
+  if context then
+    details[#details + 1] = context .. " context"
+  end
   local size = type(model.meta) == "table" and model.meta.size or nil
   if type(size) == "number" and size > 0 then
     details[#details + 1] = client_module.format_bytes(size)
@@ -119,7 +129,9 @@ end
 ---@param resolved? Neoagent.AuthConfigured|Neoagent.AuthUnconfigured
 ---@return Neoagent.RequestOverride?
 local function auth_request_opts(resolved)
-  if not resolved or resolved.configured ~= true then return nil end
+  if not resolved or resolved.configured ~= true then
+    return nil
+  end
   return resolved.request_opts or {}
 end
 
@@ -132,7 +144,9 @@ local function bearer_key(request_opts)
   for name, value in pairs(request_opts.headers) do
     if name:lower() == "authorization" and type(value) == "string" then
       local key = value:match("^Bearer%s+(.+)$")
-      if key then return key end
+      if key then
+        return key
+      end
     end
   end
 end
@@ -154,7 +168,9 @@ end
 ---@return Neoagent.LlamaValueSuccess<T>
 local function await_ok(run)
   local result = run:await()
-  if not result.ok then error(result.error, 0) end
+  if not result.ok then
+    error(result.error, 0)
+  end
   return result
 end
 
@@ -178,7 +194,9 @@ end
 local function interact_value(method, options)
   local ok, value = pcall(interact_await, method, options)
   if not ok then
-    if type(value) == "table" and value.kind == "cancelled" then return nil end
+    if type(value) == "table" and value.kind == "cancelled" then
+      return nil
+    end
     error(value, 0)
   end
   return value
@@ -229,9 +247,10 @@ end
 ---@return Neoagent.LlamaServiceOptions
 local function validate_service_opts(value)
   value = value or {}
-  assert(type(value) == "table"
-      and (next(value) == nil or not util.is_list(value)),
-    "llama.cpp service_opts must be an object")
+  assert(
+    type(value) == "table" and (next(value) == nil or not util.is_list(value)),
+    "llama.cpp service_opts must be an object"
+  )
   local allowed = {
     wait_timeout_ms = true,
     download_timeout_ms = true,
@@ -239,8 +258,10 @@ local function validate_service_opts(value)
   }
   for name, entry in pairs(value) do
     assert(allowed[name], "unknown llama.cpp service option: " .. tostring(name))
-    assert(type(entry) == "number" and entry > 0 and entry % 1 == 0,
-      "llama.cpp service option " .. name .. " must be a positive integer")
+    assert(
+      type(entry) == "number" and entry > 0 and entry % 1 == 0,
+      "llama.cpp service option " .. name .. " must be a positive integer"
+    )
   end
   ---@cast value Neoagent.LlamaServiceOptions
   return util.copy(value)
@@ -252,8 +273,7 @@ end
 function M.new(opts, resources)
   opts = opts or {}
   resources = resources or {}
-  local model_catalog = assert(resources.catalog,
-    "llama.cpp model catalog is required")
+  local model_catalog = assert(resources.catalog, "llama.cpp model catalog is required")
   local catalog = normalized_catalog(model_catalog:discoveries())
   local display_server_url = client_module.normalize_server_url(opts.base_url or "")
   ---@type Neoagent.ProviderLevel
@@ -270,40 +290,51 @@ function M.new(opts, resources)
     model_definitions.collect(opts.catalog and opts.catalog.additions)
   local service_opts = validate_service_opts(opts.service_opts)
   local report = resources.report or function() end
-  local dashboard = provider_state.new({ blocks = { {
-    type = "field",
-    label = "Endpoint",
-    value = display_server_url,
-    level = connection_level,
-  } } }, { report = report })
+  local dashboard = provider_state.new(
+    {
+      blocks = {
+        {
+          type = "field",
+          label = "Endpoint",
+          value = display_server_url,
+          level = connection_level,
+        },
+      },
+    },
+    { report = report }
+  )
 
   ---@return Neoagent.ProviderBlock[]
   local function state_blocks()
     ---@type Neoagent.ProviderBlock[]
-    local blocks = { {
-      type = "field",
-      label = "Endpoint",
-      value = display_server_url,
-      level = connection_level,
-    } }
+    local blocks = {
+      {
+        type = "field",
+        label = "Endpoint",
+        value = display_server_url,
+        level = connection_level,
+      },
+    }
     local loaded_ids = {}
     for _, model in ipairs(catalog) do
-      if loaded(model) then loaded_ids[#loaded_ids + 1] = model.id end
+      if loaded(model) then
+        loaded_ids[#loaded_ids + 1] = model.id
+      end
     end
     table.sort(loaded_ids)
     blocks[#blocks + 1] = {
       type = "field",
       label = #loaded_ids <= 1 and "Loaded model" or "Loaded models",
-      value = #loaded_ids == 0 and "No model loaded"
-        or bounded_text(table.concat(loaded_ids, ", "), 512),
+      value = #loaded_ids == 0 and "No model loaded" or bounded_text(table.concat(loaded_ids, ", "), 512),
     }
     blocks[#blocks + 1] = {
       type = "field",
       label = "Models",
-      value = tostring(vim.tbl_count(model_catalog:snapshot().models))
-        .. " available",
+      value = tostring(vim.tbl_count(model_catalog:snapshot().models)) .. " available",
     }
-    if last_response then blocks[#blocks + 1] = util.copy(last_response) end
+    if last_response then
+      blocks[#blocks + 1] = util.copy(last_response)
+    end
     local progress_models = {}
     for model_id in pairs(model_progress) do
       progress_models[#progress_models + 1] = model_id
@@ -324,26 +355,28 @@ function M.new(opts, resources)
   end
 
   local function publish()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     local ok, err = dashboard:push({ blocks = state_blocks() })
     if not ok then
-      report("neoagent llama.cpp dashboard failed: "
-        .. tostring(err and err.message or err), vim.log.levels.ERROR)
+      report("neoagent llama.cpp dashboard failed: " .. tostring(err and err.message or err), vim.log.levels.ERROR)
     end
   end
 
   ---@param raw unknown
   ---@param resolved_server_url? string
   local function set_catalog(raw, resolved_server_url)
-    if type(resolved_server_url) == "string"
-        and resolved_server_url ~= "" then
+    if type(resolved_server_url) == "string" and resolved_server_url ~= "" then
       display_server_url = resolved_server_url
     end
     catalog = normalized_catalog(raw)
     table.sort(catalog, function(left, right)
       local left_loaded = loaded(left) and 1 or 0
       local right_loaded = loaded(right) and 1 or 0
-      if left_loaded ~= right_loaded then return left_loaded > right_loaded end
+      if left_loaded ~= right_loaded then
+        return left_loaded > right_loaded
+      end
       return left.id < right.id
     end)
     connection_level = "success"
@@ -378,8 +411,7 @@ function M.new(opts, resources)
     local server_url = opts.base_url
     local request_opts = auth_request_opts(resolved)
     local metadata = resolved and resolved.metadata
-    if type(metadata) == "table" and type(metadata.server_url) == "string"
-        and trimmed(metadata.server_url) ~= "" then
+    if type(metadata) == "table" and type(metadata.server_url) == "string" and trimmed(metadata.server_url) ~= "" then
       server_url = client_module.normalize_server_url(metadata.server_url)
     end
     return client_module.new({
@@ -396,7 +428,9 @@ function M.new(opts, resources)
   ---@return Neoagent.LlamaCatalogModel?
   local function catalog_entry(model_id)
     for _, entry in ipairs(catalog) do
-      if entry.id == model_id then return entry end
+      if entry.id == model_id then
+        return entry
+      end
     end
   end
 
@@ -418,7 +452,9 @@ function M.new(opts, resources)
     end
     if type(data) == "table" and type(data.exit_code) == "number" then
       entry.status.exit_code = data.exit_code
-      if data.exit_code ~= 0 then entry.status.failed = true end
+      if data.exit_code ~= 0 then
+        entry.status.failed = true
+      end
     end
     local info = type(data) == "table" and data.info or nil
     if type(info) == "table" and type(info.meta) == "table" then
@@ -429,7 +465,9 @@ function M.new(opts, resources)
   ---@param event Neoagent.LlamaModelEvent
   local function router_event(event)
     local model_id = safe_text(event.model, 512)
-    if not model_id then return end
+    if not model_id then
+      return
+    end
     local data = type(event.data) == "table" and event.data or {}
     local status = type(data.status) == "string" and data.status or nil
     if event.event == "download_progress" then
@@ -487,24 +525,31 @@ function M.new(opts, resources)
 
   local function stop_watcher()
     watcher_generation = watcher_generation + 1
-    if watcher_run then watcher_run:cancel() end
+    if watcher_run then
+      watcher_run:cancel()
+    end
     watcher_run = nil
   end
 
   ensure_watcher = function()
-    if destroyed or subscriber_count == 0 or watcher_run then return end
+    if destroyed or subscriber_count == 0 or watcher_run then
+      return
+    end
     watcher_generation = watcher_generation + 1
     local generation = watcher_generation
     local client = status_client
     watcher_run = async.run(function()
       if not client then
         local resolved
-        if type(resources.auth) == "table"
-            and type(resources.auth.resolve) == "function" then
-          resolved = resources.auth:resolve(opts.auth or "llama", {
-            optional = opts.auth_optional == true,
-          }):await()
-          if resolved.ok == false then error(resolved.error, 0) end
+        if type(resources.auth) == "table" and type(resources.auth.resolve) == "function" then
+          resolved = resources.auth
+            :resolve(opts.auth or "llama", {
+              optional = opts.auth_optional == true,
+            })
+            :await()
+          if resolved.ok == false then
+            error(resolved.error, 0)
+          end
         end
         client = client_from_auth(resolved)
         status_client = client
@@ -512,7 +557,9 @@ function M.new(opts, resources)
       return client:watch(router_event):await()
     end, {
       on_done = function(result)
-        if generation ~= watcher_generation then return end
+        if generation ~= watcher_generation then
+          return
+        end
         watcher_run = nil
         connection_level = result.ok and "muted" or "error"
         publish()
@@ -528,10 +575,14 @@ function M.new(opts, resources)
     local resolved
     if type(ctx.resolve_auth) == "function" then
       resolved = ctx.resolve_auth():await()
-      if resolved.ok == false then error(resolved.error, 0) end
+      if resolved.ok == false then
+        error(resolved.error, 0)
+      end
     end
     local client = client_from_auth(resolved)
-    if watcher_run then stop_watcher() end
+    if watcher_run then
+      stop_watcher()
+    end
     status_client = client
     ensure_watcher()
     return client
@@ -562,7 +613,9 @@ function M.new(opts, resources)
     ensure_watcher()
     local active = true
     return function()
-      if not active then return end
+      if not active then
+        return
+      end
       active = false
       unsubscribe()
       subscriber_count = math.max(0, subscriber_count - 1)
@@ -573,7 +626,9 @@ function M.new(opts, resources)
   end
 
   function service:destroy()
-    if destroyed then return end
+    if destroyed then
+      return
+    end
     destroyed = true
     catalog_unsubscribe()
     stop_watcher()
@@ -595,15 +650,21 @@ function M.new(opts, resources)
   ---@param usage unknown
   ---@return Neoagent.ProviderFieldBlock?
   local function response_usage(usage)
-    if type(usage) ~= "table" then return nil end
-    local input = tonumber(
-      usage.inputTokens or usage.input_tokens or usage.input)
-    local output = tonumber(
-      usage.outputTokens or usage.output_tokens or usage.output)
-    if not input and not output then return nil end
+    if type(usage) ~= "table" then
+      return nil
+    end
+    local input = tonumber(usage.inputTokens or usage.input_tokens or usage.input)
+    local output = tonumber(usage.outputTokens or usage.output_tokens or usage.output)
+    if not input and not output then
+      return nil
+    end
     local parts = {}
-    if input then parts[#parts + 1] = tostring(input) .. " in" end
-    if output then parts[#parts + 1] = tostring(output) .. " out" end
+    if input then
+      parts[#parts + 1] = tostring(input) .. " in"
+    end
+    if output then
+      parts[#parts + 1] = tostring(output) .. " out"
+    end
     return {
       type = "field",
       label = "Last response",
@@ -616,10 +677,8 @@ function M.new(opts, resources)
   ---@param model Neoagent.Model
   ---@return Neoagent.Model
   function service:wrap_model(model)
-    model = require("neoagent.model").assert(
-      model, "llama.cpp input Model")
-    local router_id = definitions[model.id]
-      and definitions[model.id].router_id or model.id
+    model = require("neoagent.model").assert(model, "llama.cpp input Model")
+    local router_id = definitions[model.id] and definitions[model.id].router_id or model.id
     local wrapped = {
       api = model.api,
       provider = model.provider,
@@ -634,85 +693,88 @@ function M.new(opts, resources)
     function wrapped:stream(opts)
       opts = opts or {}
       local has_timeout_override = opts.timeout_ms ~= nil
-      local timeout = has_timeout_override and opts.timeout_ms
-        or model.timeout_ms
+      local timeout = has_timeout_override and opts.timeout_ms or model.timeout_ms
       return async.run(
-      ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
-      ---@return Neoagent.ModelResult
-      function(run)
-        next_request_id = next_request_id + 1
-        local request_id = next_request_id
-        local status = known_model_status(router_id)
-        local inner = util.copy(opts)
-        if router_id ~= model.id then
-          local request_opts = inner.request_opts
-          if type(request_opts) == "function" then
-            inner.request_opts = function(context)
-              local selected_context = util.copy(context)
-              selected_context.request.body = util.deep_merge(
-                context.request.body, { model = router_id })
-              return alias_request(request_opts(selected_context), router_id)
+        ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+        ---@return Neoagent.ModelResult
+        function(run)
+          next_request_id = next_request_id + 1
+          local request_id = next_request_id
+          local status = known_model_status(router_id)
+          local inner = util.copy(opts)
+          if router_id ~= model.id then
+            local request_opts = inner.request_opts
+            if type(request_opts) == "function" then
+              inner.request_opts = function(context)
+                local selected_context = util.copy(context)
+                selected_context.request.body = util.deep_merge(context.request.body, { model = router_id })
+                return alias_request(request_opts(selected_context), router_id)
+              end
+            else
+              inner.request_opts = alias_request(request_opts, router_id)
             end
-          else
-            inner.request_opts = alias_request(request_opts, router_id)
           end
-        end
-        local generating = false
-        request_progress[request_id] = {
-          type = "progress",
-          label = bounded_text("Request · " .. router_id, 512),
-          detail = (status == "loaded" or status == "sleeping")
-            and "Waiting for first token" or "Waiting for model worker",
-        }
-        publish()
-        inner.on_event = function(event)
-          if not generating and type(event) == "table"
-              and (event.type == "text_delta"
-                or event.type == "thinking_delta"
-                or event.type == "tool_call_delta") then
-            generating = true
-            request_progress[request_id] = {
-              type = "progress",
-              label = bounded_text("Request · " .. router_id, 512),
-              detail = "Generating response",
-            }
-            publish()
-          elseif type(event) == "table" and event.type == "usage" then
-            last_response = response_usage(event.usage) or last_response
-          end
-          ---@cast event Neoagent.ModelEvent
-          run:emit(event)
-        end
-        inner.on_done = nil
-        if not has_timeout_override
-            and type(timeout) == "number" and timeout > 0
-            and status ~= "loaded" and status ~= "sleeping" then
-          inner.timeout_ms = false
-        end
-        local ok, result = pcall(function()
-          return model:stream(inner):await()
-        end)
-        request_progress[request_id] = nil
-        if not ok then
+          local generating = false
+          request_progress[request_id] = {
+            type = "progress",
+            label = bounded_text("Request · " .. router_id, 512),
+            detail = (status == "loaded" or status == "sleeping") and "Waiting for first token"
+              or "Waiting for model worker",
+          }
           publish()
-          error(result, 0)
-        end
-        if result.ok then
-          last_response = response_usage(result.message and result.message.usage)
-            or last_response
-        end
-        publish()
-        return result
-      end, {
-        on_event = opts.on_event,
-        on_done = opts.on_done,
-        error_kind = "model",
-      })
+          inner.on_event = function(event)
+            if
+              not generating
+              and type(event) == "table"
+              and (event.type == "text_delta" or event.type == "thinking_delta" or event.type == "tool_call_delta")
+            then
+              generating = true
+              request_progress[request_id] = {
+                type = "progress",
+                label = bounded_text("Request · " .. router_id, 512),
+                detail = "Generating response",
+              }
+              publish()
+            elseif type(event) == "table" and event.type == "usage" then
+              last_response = response_usage(event.usage) or last_response
+            end
+            ---@cast event Neoagent.ModelEvent
+            run:emit(event)
+          end
+          inner.on_done = nil
+          if
+            not has_timeout_override
+            and type(timeout) == "number"
+            and timeout > 0
+            and status ~= "loaded"
+            and status ~= "sleeping"
+          then
+            inner.timeout_ms = false
+          end
+          local ok, result = pcall(function()
+            return model:stream(inner):await()
+          end)
+          request_progress[request_id] = nil
+          if not ok then
+            publish()
+            error(result, 0)
+          end
+          if result.ok then
+            last_response = response_usage(result.message and result.message.usage) or last_response
+          end
+          publish()
+          return result
+        end,
+        {
+          on_event = opts.on_event,
+          on_done = opts.on_done,
+          error_kind = "model",
+        }
+      )
     end
     wrapped._llama_service = service
     wrapped._llama_router_id = router_id
-    return require("neoagent.model").assert(
-      wrapped, "llama.cpp Model wrapper")
+    return require("neoagent.model").assert(wrapped, "llama.cpp Model wrapper")
   end
 
   publish_catalog = function(current, server_url)
@@ -723,7 +785,9 @@ function M.new(opts, resources)
     local published, err = model_catalog:publish_discoveries(safe, {
       source = "router",
     })
-    if published == nil then error(err, 0) end
+    if published == nil then
+      error(err, 0)
+    end
     return util.copy(catalog)
   end
 
@@ -734,13 +798,14 @@ function M.new(opts, resources)
     run = function(ctx)
       return async.run(function()
         local operation = {
-          id = "reload", label = "Reload router catalog",
-          state = "running", message = "Reloading router catalog",
+          id = "reload",
+          label = "Reload router catalog",
+          state = "running",
+          message = "Reloading router catalog",
         }
         progress(ctx, operation)
         local client = resolved_client(ctx)
-        publish_catalog(fetch_catalog(client, { reload = true }),
-          client.server_url)
+        publish_catalog(fetch_catalog(client, { reload = true }), client.server_url)
         return { ok = true }
       end, { error_kind = "provider" })
     end,
@@ -755,19 +820,22 @@ function M.new(opts, resources)
   local function select_model(ctx, client, catalog_snapshot, target)
     local loaded_models = {}
     for _, model in ipairs(catalog_snapshot) do
-      if loaded(model) then loaded_models[#loaded_models + 1] = model end
+      if loaded(model) then
+        loaded_models[#loaded_models + 1] = model
+      end
     end
     if #loaded_models > 0 then
       local choice = interact_select(ctx, {
-        prompt = string.format("%d model%s loaded",
-          #loaded_models, #loaded_models == 1 and " is" or "s are"),
+        prompt = string.format("%d model%s loaded", #loaded_models, #loaded_models == 1 and " is" or "s are"),
         items = {
           { id = "replace", label = "Unload all and load" },
           { id = "keep", label = "Keep loaded and load" },
           { id = "cancel", label = "Cancel" },
         },
       })
-      if not choice or choice == "cancel" then return false end
+      if not choice or choice == "cancel" then
+        return false
+      end
       if choice == "replace" then
         for _, model in ipairs(loaded_models) do
           await_ok(client:unload_and_wait(model.id))
@@ -781,9 +849,13 @@ function M.new(opts, resources)
   ---@return Neoagent.LlamaDefinition?
   local function definition_for(model_id)
     local direct = definitions[model_id]
-    if direct then return direct end
+    if direct then
+      return direct
+    end
     for _, definition in ipairs(alias_definitions) do
-      if definition.router_id == model_id then return definition end
+      if definition.router_id == model_id then
+        return definition
+      end
     end
   end
 
@@ -793,7 +865,9 @@ function M.new(opts, resources)
     local description = model_description(model)
     local definition = definition_for(model.id)
     local summary = definition and model_definitions.summary(definition) or nil
-    if not summary then return description end
+    if not summary then
+      return description
+    end
     return (description ~= "" and description .. " · " or "") .. summary
   end
 
@@ -813,18 +887,21 @@ function M.new(opts, resources)
           }
         end, current)
         local seen = {}
-        for _, item in ipairs(items) do seen[item.id] = true end
+        for _, item in ipairs(items) do
+          seen[item.id] = true
+        end
         for _, id in ipairs(definition_order) do
           if not seen[id] then
             items[#items + 1] = {
               id = id,
               label = id,
-              description = model_definitions.summary(definitions[id])
-                or "configured model",
+              description = model_definitions.summary(definitions[id]) or "configured model",
             }
           end
         end
-        table.sort(items, function(left, right) return left.label < right.label end)
+        table.sort(items, function(left, right)
+          return left.label < right.label
+        end)
         interact_select(ctx, {
           prompt = "llama.cpp model catalog",
           items = items,
@@ -839,7 +916,9 @@ function M.new(opts, resources)
   local function complete_catalog(predicate)
     local result = {}
     for _, model in ipairs(catalog) do
-      if predicate(model) then result[#result + 1] = model.id end
+      if predicate(model) then
+        result[#result + 1] = model.id
+      end
     end
     table.sort(result)
     return result
@@ -860,7 +939,9 @@ function M.new(opts, resources)
         local current = publish_catalog(fetch_catalog(client), client.server_url)
         local unloaded = {}
         for _, model in ipairs(current) do
-          if model.status.value == "unloaded" then unloaded[#unloaded + 1] = model end
+          if model.status.value == "unloaded" then
+            unloaded[#unloaded + 1] = model
+          end
         end
         local selected = ctx.args
         if selected == nil or selected == "" then
@@ -874,7 +955,9 @@ function M.new(opts, resources)
             end, unloaded),
           }
           selected = interact_select(ctx, options)
-          if not selected then return { ok = true, cancelled = true } end
+          if not selected then
+            return { ok = true, cancelled = true }
+          end
         end
         local definition = definitions[selected]
         if definition and definition.router_id ~= selected then
@@ -882,15 +965,22 @@ function M.new(opts, resources)
         end
         local target
         for _, model in ipairs(current) do
-          if model.id == selected then target = model break end
+          if model.id == selected then
+            target = model
+            break
+          end
         end
-        if not target then error(util.error("provider", "Unknown model: " .. selected), 0) end
+        if not target then
+          error(util.error("provider", "Unknown model: " .. selected), 0)
+        end
         if not select_model(ctx, client, current, target) then
           return { ok = true, cancelled = true }
         end
         local operation = {
-          id = "load", label = "Load model",
-          state = "running", message = "Loading " .. target.id,
+          id = "load",
+          label = "Load model",
+          state = "running",
+          message = "Loading " .. target.id,
         }
         progress(ctx, operation)
         local result = await_ok(client:load_and_wait(target.id, function(update)
@@ -918,7 +1008,9 @@ function M.new(opts, resources)
         local current = publish_catalog(fetch_catalog(client), client.server_url)
         local loaded_models = {}
         for _, model in ipairs(current) do
-          if loaded(model) then loaded_models[#loaded_models + 1] = model end
+          if loaded(model) then
+            loaded_models[#loaded_models + 1] = model
+          end
         end
         local selected = ctx.args
         if selected == nil or selected == "" then
@@ -931,7 +1023,9 @@ function M.new(opts, resources)
               return { id = model.id, label = model.id, description = select_description(model) }
             end, loaded_models),
           })
-          if not selected then return { ok = true, cancelled = true } end
+          if not selected then
+            return { ok = true, cancelled = true }
+          end
         end
         local definition = definitions[selected]
         if definition and definition.router_id ~= selected then
@@ -941,8 +1035,10 @@ function M.new(opts, resources)
           return { ok = true, cancelled = true }
         end
         local operation = {
-          id = "unload", label = "Unload model",
-          state = "running", message = "Unloading " .. selected,
+          id = "unload",
+          label = "Unload model",
+          state = "running",
+          message = "Unloading " .. selected,
         }
         progress(ctx, operation)
         await_ok(client:unload_and_wait(selected))
@@ -971,7 +1067,9 @@ function M.new(opts, resources)
           query = interact_input(ctx, {
             prompt = "Model definition or Hugging Face search",
           })
-          if not query then return { ok = true, cancelled = true } end
+          if not query then
+            return { ok = true, cancelled = true }
+          end
         end
         local model
         local checked_details
@@ -997,8 +1095,7 @@ function M.new(opts, resources)
               return {
                 id = entry.name,
                 label = entry.name,
-                description = #detail > 0
-                  and table.concat(detail, " · ") or nil,
+                description = #detail > 0 and table.concat(detail, " · ") or nil,
               }
             end, details.quantizations),
           }
@@ -1006,13 +1103,12 @@ function M.new(opts, resources)
           return selected, selected ~= nil
         end
         if definition and definition.hf_repo then
-          local details = await_value(
-            huggingface_client:details(definition.hf_repo))
-          local quantization, selected = choose_quantization(
-            details, definition.quantization)
-          if not selected then return { ok = true, cancelled = true } end
-          model = quantization and (details.id .. ":" .. quantization)
-            or details.id
+          local details = await_value(huggingface_client:details(definition.hf_repo))
+          local quantization, selected = choose_quantization(details, definition.quantization)
+          if not selected then
+            return { ok = true, cancelled = true }
+          end
+          model = quantization and (details.id .. ":" .. quantization) or details.id
           checked_details = details
         else
           local results = await_value(huggingface_client:search(query))
@@ -1029,12 +1125,13 @@ function M.new(opts, resources)
               }
             end, results),
           })
-          if not selected then return { ok = true, cancelled = true } end
+          if not selected then
+            return { ok = true, cancelled = true }
+          end
           local repository, quantization = model_definitions.parse_source(selected)
           local details = await_value(huggingface_client:details(repository))
           local selected_quantization
-          quantization, selected_quantization = choose_quantization(
-            details, quantization)
+          quantization, selected_quantization = choose_quantization(details, quantization)
           if not selected_quantization then
             return { ok = true, cancelled = true }
           end
@@ -1046,14 +1143,20 @@ function M.new(opts, resources)
         ---@param details Neoagent.HuggingFaceDetails
         ---@return boolean
         local function gated_choice(details)
-          if not details.gated then return true end
+          if not details.gated then
+            return true
+          end
           local message = "Accept the access terms"
           if details.gated == "manual" then
             message = "Manual approval is required"
           end
           local choice = interact_select(ctx, {
-            prompt = "Hugging Face access required\n" .. details.id .. "\n\n"
-              .. message .. " at:\nhttps://huggingface.co/" .. details.id
+            prompt = "Hugging Face access required\n"
+              .. details.id
+              .. "\n\n"
+              .. message
+              .. " at:\nhttps://huggingface.co/"
+              .. details.id
               .. "\n\nThe llama.cpp server needs HF_TOKEN with access.",
             items = {
               { id = "continue", label = "Continue" },
@@ -1067,8 +1170,10 @@ function M.new(opts, resources)
           return { ok = true, cancelled = true }
         end
         local operation = {
-          id = "download", label = "Download model",
-          state = "running", message = "Downloading " .. model,
+          id = "download",
+          label = "Download model",
+          state = "running",
+          message = "Downloading " .. model,
         }
         progress(ctx, operation)
         local result = await_ok(client:download_and_wait(model, function(update)
@@ -1091,8 +1196,7 @@ function M.new(opts, resources)
       return async.run(function()
         local ini = model_definitions.preset_ini(definitions, definition_order)
         if ini == "" then
-          error(util.error("provider",
-            "No model definitions with load parameters"), 0)
+          error(util.error("provider", "No model definitions with load parameters"), 0)
         end
         return {
           ok = true,

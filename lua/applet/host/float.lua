@@ -52,8 +52,7 @@ function Driver:begin(records)
   ---@type table<string, Applet.HostWindowState>
   local windows = {}
   for key, record in pairs(records) do
-    if self:owns_window(record.window, record)
-        and base.window_displays(record.window, record.buffer) then
+    if self:owns_window(record.window, record) and base.window_displays(record.window, record.buffer) then
       windows[key] = {
         record = record,
         window = record.window,
@@ -72,14 +71,15 @@ end
 
 ---@return boolean
 function Driver:is_visible()
-  return self.published and self:is_open()
-    and vim.api.nvim_get_current_tabpage() == self.tab
+  return self.published and self:is_open() and vim.api.nvim_get_current_tabpage() == self.tab
 end
 
 ---@param record Applet.HostRecord
 ---@return boolean
 function Driver:pane_visible(record)
-  if not self:is_visible() or not base.valid_window(record.window) then return false end
+  if not self:is_visible() or not base.valid_window(record.window) then
+    return false
+  end
   local config = vim.api.nvim_win_get_config(record.window)
   return not config.hide and vim.api.nvim_win_get_buf(record.window) == record.buffer
 end
@@ -101,8 +101,7 @@ end
 ---@param record Applet.HostRecord
 ---@return integer
 function Driver:_open(record)
-  local config = self.published and not self.transaction
-      and desired_config(record) or staged_config(record)
+  local config = self.published and not self.transaction and desired_config(record) or staged_config(record)
   local window = base.with_tab(self.tab, function()
     return vim.api.nvim_open_win(assert(record.buffer), false, config)
   end)
@@ -119,14 +118,12 @@ function Driver:publish(_, records)
   assert(self:is_open(), "floating Host is closed")
   self.published = true
   for _, record in pairs(records) do
-    if record.active and not record.suppressed
-        and base.window_displays(record.window, record.buffer) then
+    if record.active and not record.suppressed and base.window_displays(record.window, record.buffer) then
       local config = desired_config(record)
       config.hide = false
       if not base.same_float_config(record.window, config) then
         vim.api.nvim_win_set_config(record.window, config)
-        self.applet.counters.window_config_changes =
-          self.applet.counters.window_config_changes + 1
+        self.applet.counters.window_config_changes = self.applet.counters.window_config_changes + 1
       end
     end
   end
@@ -140,8 +137,7 @@ function Driver:publish(_, records)
         end
         if base.valid_window(saved.window) then
           pcall(vim.api.nvim_win_close, saved.window, true)
-          self.applet.counters.window_closes =
-            self.applet.counters.window_closes + 1
+          self.applet.counters.window_closes = self.applet.counters.window_closes + 1
         end
       end
     end
@@ -154,22 +150,30 @@ end
 ---@return boolean
 function Driver:rollback(records)
   local transaction = self.transaction
-  if not transaction then return true end
+  if not transaction then
+    return true
+  end
   local retained = {}
-  for key, saved in pairs(transaction.windows) do retained[saved.window] = key end
+  for key, saved in pairs(transaction.windows) do
+    retained[saved.window] = key
+  end
   for window, key in pairs(util.copy(self.applet._windows)) do
-    if base.valid_window(window)
-        and vim.api.nvim_win_get_tabpage(window) == self.tab
-        and not retained[window] then
+    if base.valid_window(window) and vim.api.nvim_win_get_tabpage(window) == self.tab and not retained[window] then
       self.applet._windows[window] = nil
-      if base.valid_window(window) then pcall(vim.api.nvim_win_close, window, true) end
+      if base.valid_window(window) then
+        pcall(vim.api.nvim_win_close, window, true)
+      end
       local record = records[key]
-      if record and record.window == window then record.window = nil end
+      if record and record.window == window then
+        record.window = nil
+      end
     end
   end
   for key, saved in pairs(transaction.windows) do
     local record = records[key]
-    if record and record ~= saved.record then record.window = nil end
+    if record and record ~= saved.record then
+      record.window = nil
+    end
     if base.valid_window(saved.window) then
       pcall(vim.api.nvim_win_set_config, saved.window, saved.config)
       self.applet._windows[saved.window] = key
@@ -184,7 +188,9 @@ end
 function Driver:_close(record)
   local window = record.window
   record.window = nil
-  if window then self.applet._windows[window] = nil end
+  if window then
+    self.applet._windows[window] = nil
+  end
   if base.valid_window(window) then
     pcall(vim.api.nvim_win_close, window, true)
     self.applet.counters.window_closes = self.applet.counters.window_closes + 1
@@ -200,7 +206,9 @@ function Driver:reconcile(_, frame, records)
   local desired = {}
   for _, key in ipairs(frame.pane_order) do
     local record = records[key]
-    if record and not record.suppressed then desired[key] = true end
+    if record and not record.suppressed then
+      desired[key] = true
+    end
   end
   for key, record in pairs(records) do
     if record.window and not desired[key] then
@@ -219,8 +227,7 @@ function Driver:reconcile(_, frame, records)
     local record = records[key]
     if record and desired[key] then
       local window = record.window
-      if base.valid_window(window)
-          and vim.api.nvim_win_get_buf(window) ~= record.buffer then
+      if base.valid_window(window) and vim.api.nvim_win_get_buf(window) ~= record.buffer then
         self.applet._windows[window] = nil
         record.window = nil
         window = nil
@@ -228,12 +235,10 @@ function Driver:reconcile(_, frame, records)
       if not base.valid_window(window) then
         self:_open(record)
       else
-        local config = self.transaction and staged_config(record)
-          or desired_config(record)
+        local config = self.transaction and staged_config(record) or desired_config(record)
         if not base.same_float_config(window, config) then
           vim.api.nvim_win_set_config(window, config)
-          self.applet.counters.window_config_changes =
-            self.applet.counters.window_config_changes + 1
+          self.applet.counters.window_config_changes = self.applet.counters.window_config_changes + 1
         end
       end
     end
@@ -249,7 +254,9 @@ function Driver:focus(record)
       vim.api.nvim_set_current_tabpage(self.tab)
     end
   end
-  if not record or not base.valid_window(record.window) then return false end
+  if not record or not base.valid_window(record.window) then
+    return false
+  end
   return base.focus_mode(record)
 end
 
@@ -260,12 +267,18 @@ end
 
 ---@param records table<string, Applet.HostRecord>
 function Driver:release(records)
-  if self.released then return end
-  if self.transaction then self:rollback(records) end
+  if self.released then
+    return
+  end
+  if self.transaction then
+    self:rollback(records)
+  end
   self.released = true
   self.published = false
   for _, record in pairs(records) do
-    if record.window then self:_close(record) end
+    if record.window then
+      self:_close(record)
+    end
   end
 end
 
@@ -275,5 +288,7 @@ function Driver:destroy(records)
 end
 
 return setmetatable({ new = Driver.new }, {
-  __call = function(_, applet, origin) return Driver.new(applet, origin) end,
+  __call = function(_, applet, origin)
+    return Driver.new(applet, origin)
+  end,
 })

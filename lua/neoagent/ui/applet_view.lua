@@ -125,8 +125,7 @@ local common_window_options = {
   relativenumber = false,
   signcolumn = "no",
   foldcolumn = "0",
-  winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder,"
-    .. "FloatTitle:NeoagentWindowTitle",
+  winhl = "NormalFloat:Normal,FloatBorder:NeoagentBorder," .. "FloatTitle:NeoagentWindowTitle",
 }
 
 ---@generic T
@@ -135,22 +134,32 @@ local common_window_options = {
 ---@return T
 local function copy_extend(base, values)
   local result = util.copy(base or {})
-  for key, value in pairs(values or {}) do result[key] = value end
+  for key, value in pairs(values or {}) do
+    result[key] = value
+  end
   return result
 end
 
 ---@param value Neoagent.UIMapping?
 ---@return string?
 local function mapping_hint(value)
-  if type(value) == "string" then return value end
-  if type(value) == "table" then return value[1] end
+  if type(value) == "string" then
+    return value
+  end
+  if type(value) == "table" then
+    return value[1]
+  end
 end
 
 ---@param value Neoagent.UIMapping?
 ---@return string[]
 local function mapping_values(value)
-  if type(value) == "string" then return { value } end
-  if type(value) == "table" then return value end
+  if type(value) == "string" then
+    return { value }
+  end
+  if type(value) == "table" then
+    return value
+  end
   return {}
 end
 
@@ -176,8 +185,7 @@ end
 ---@param context Neoagent.AgentContext
 ---@return boolean
 local function active_state(context)
-  return context.state == "running" or context.state == "stopping"
-    or context.state == "compacting"
+  return context.state == "running" or context.state == "stopping" or context.state == "compacting"
 end
 
 ---@param config Neoagent.UIConfig
@@ -185,9 +193,13 @@ end
 ---@return string
 local function input_footer(config, width)
   local key = mapping_hint((config.mappings or {}).help)
-  if not key then return "" end
+  if not key then
+    return ""
+  end
   local result = " " .. key .. " help "
-  if Applet.Pane.text.width(result) <= width then return result end
+  if Applet.Pane.text.width(result) <= width then
+    return result
+  end
   return Applet.Pane.text.truncate(result, width)
 end
 
@@ -198,8 +210,12 @@ end
 local function mapping_help_section(title, bindings, annotate_modes)
   local rows, by_description = {}, {}
   for _, binding in ipairs(bindings or {}) do
-    if type(binding.lhs) == "string" and binding.lhs ~= ""
-        and type(binding.desc) == "string" and binding.desc ~= "" then
+    if
+      type(binding.lhs) == "string"
+      and binding.lhs ~= ""
+      and type(binding.desc) == "string"
+      and binding.desc ~= ""
+    then
       local row = by_description[binding.desc]
       if not row then
         row = { description = binding.desc, keys = {}, seen = {}, modes = {} }
@@ -217,11 +233,9 @@ local function mapping_help_section(title, bindings, annotate_modes)
   for _, row in ipairs(rows) do
     local description = row.description
     if annotate_modes and row.modes.n ~= row.modes.i then
-      description = description .. (row.modes.i
-          and " (Insert mode)" or " (Normal mode)")
+      description = description .. (row.modes.i and " (Insert mode)" or " (Normal mode)")
     end
-    lines[#lines + 1] = "  " .. table.concat(row.keys, ", ")
-      .. "  " .. description
+    lines[#lines + 1] = "  " .. table.concat(row.keys, ", ") .. "  " .. description
   end
   return table.concat(lines, "\n")
 end
@@ -239,8 +253,7 @@ end
 ---@return Applet.MountNode
 local function pane_node(key, pane, opts)
   opts = opts or {}
-  assert(pane:key() == key,
-    ("Pane key %q does not match layout key %q"):format(pane:key(), key))
+  assert(pane:key() == key, ("Pane key %q does not match layout key %q"):format(pane:key(), key))
   return layout.mount(pane, {
     lifecycle = opts.lifecycle or "retained",
     owns_pane = opts.owns_pane == true,
@@ -274,16 +287,18 @@ end
 local function default_host(config, position)
   ---@type Applet.HostSide
   local side
-  if position == "auto" then side = "center" else side = position end
+  if position == "auto" then
+    side = "center"
+  else
+    side = position
+  end
   local horizontal = side == "left" or side == "right"
   local vertical = side == "top" or side == "bottom"
   return Applet.host.floating({
     container = position == "auto" and "auto" or "editor",
     side = side,
-    width = config.width or (horizontal and 0.45
-      or side == "center" and 0.95 or 1),
-    height = config.height or (vertical and 0.45
-      or side == "center" and 0.95 or 1),
+    width = config.width or (horizontal and 0.45 or side == "center" and 0.95 or 1),
+    height = config.height or (vertical and 0.45 or side == "center" and 0.95 or 1),
     margin = config.margin == nil and 1 or config.margin,
     base_zindex = 50,
   })
@@ -297,12 +312,11 @@ local render_view_state
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "UI config is required")
-  local selected = protocol.assert(opts.renderer or opts.config.renderer
-    or renderers.get(opts.config.style), "Applet UI Renderer")
+  local selected =
+    protocol.assert(opts.renderer or opts.config.renderer or renderers.get(opts.config.style), "Applet UI Renderer")
   assert(selected.theme, "Applet UI Renderer requires a theme")
   local defined, define_err = protocol.define_highlights(selected)
-  assert(defined, define_err and define_err.message
-    or "Applet UI Renderer highlight definition failed")
+  assert(defined, define_err and define_err.message or "Applet UI Renderer highlight definition failed")
 
   local image_system = opts.image_system
   local owns_image_system = false
@@ -324,8 +338,12 @@ function View.new(opts)
     callbacks = {
       on_submit = opts.on_submit or function() end,
       on_stop = opts.on_stop or function() end,
-      on_dequeue_steering = opts.on_dequeue_steering or function() return {} end,
-      on_input_history = opts.on_input_history or function() return {} end,
+      on_dequeue_steering = opts.on_dequeue_steering or function()
+        return {}
+      end,
+      on_input_history = opts.on_input_history or function()
+        return {}
+      end,
       on_select_history = opts.on_select_history or function() end,
       on_cycle_thinking = opts.on_cycle_thinking or function() end,
       on_agents = opts.on_agents or function() end,
@@ -364,11 +382,15 @@ function View.new(opts)
     image_system = image_system,
     resolve_tool = self.callbacks.resolve_tool,
     callbacks = {
-      details = function(key) self:show_card_details(key) end,
+      details = function(key)
+        self:show_card_details(key)
+      end,
       card_move = function(direction, count)
         return self:_navigate_transcript(direction, count)
       end,
-      dialog = function(id, action) self:_choose_dialog(id, action) end,
+      dialog = function(id, action)
+        self:_choose_dialog(id, action)
+      end,
     },
     on_error = opts.on_error,
   })
@@ -376,13 +398,19 @@ function View.new(opts)
     config = self.config,
     theme = selected.theme,
     callbacks = {
-      submit = function(value) return self:_submit(value) end,
-      close = function() self:close() end,
+      submit = function(value)
+        return self:_submit(value)
+      end,
+      close = function()
+        self:close()
+      end,
       previous_card = function(event)
         return self:_focus_previous_card(event.count)
       end,
       history = self.callbacks.on_input_history,
-      pane = function() return self:pane("input") end,
+      pane = function()
+        return self:pane("input")
+      end,
     },
     on_error = opts.on_error,
   })
@@ -403,24 +431,33 @@ function View.new(opts)
     host = host_source,
     render = render_view_state,
     handlers = {
-      ["neoagent.interrupt"] = function() return self:_interrupt() end,
+      ["neoagent.interrupt"] = function()
+        return self:_interrupt()
+      end,
       ["neoagent.cycle_thinking"] = self.callbacks.on_cycle_thinking,
       ["neoagent.agents"] = self.callbacks.on_agents,
       ["neoagent.select_model"] = self.callbacks.on_select_model,
       ["neoagent.resume_session"] = self.callbacks.on_resume_session,
       ["neoagent.select_history"] = self.callbacks.on_select_history,
-      ["neoagent.dequeue"] = function() return self:_restore_steering() end,
+      ["neoagent.dequeue"] = function()
+        return self:_restore_steering()
+      end,
       ["neoagent.toggle_provider_shell"] = function()
-        return self.callbacks.on_provider_shell
-          and self.callbacks.on_provider_shell() or false
+        return self.callbacks.on_provider_shell and self.callbacks.on_provider_shell() or false
       end,
       ["neoagent.focus_dialog_menu"] = function()
         return self:_focus_dialog_menu()
       end,
-      ["neoagent.help"] = function() return self:_show_mapping_help() end,
-      ["neoagent.close"] = function() return self:close() end,
+      ["neoagent.help"] = function()
+        return self:_show_mapping_help()
+      end,
+      ["neoagent.close"] = function()
+        return self:close()
+      end,
     },
-    on_focus = function(current, previous) self:_applet_focus(current, previous) end,
+    on_focus = function(current, previous)
+      self:_applet_focus(current, previous)
+    end,
     on_resize = function(_, default)
       default()
       vim.schedule(function()
@@ -440,9 +477,15 @@ function View.new(opts)
     open_uri = opts.open_uri,
   })
   presentation_surface.configure(self, {
-    submit = function() self:_submit_frame() end,
-    flush = function() return self:_flush_frame() end,
-    is_open = function() return self:is_open() end,
+    submit = function()
+      self:_submit_frame()
+    end,
+    flush = function()
+      return self:_flush_frame()
+    end,
+    is_open = function()
+      return self:is_open()
+    end,
     resolve = function(id, value)
       return self.callbacks.on_presentation_resolve(id, value)
     end,
@@ -472,34 +515,46 @@ function View:_applet_bindings(pane)
     { mappings.resume_session, "neoagent.resume_session", "Resume session" },
     { mappings.select_history, "neoagent.select_history", "Select history" },
     { mappings.dequeue_steering, "neoagent.dequeue", "Edit steering" },
-    { mappings.toggle_provider_shell, "neoagent.toggle_provider_shell",
-      "Toggle provider shell" },
+    { mappings.toggle_provider_shell, "neoagent.toggle_provider_shell", "Toggle provider shell" },
   }) do
-    add_applet_binding(bindings, modes, descriptor[1],
-      Applet.Pane.nodes.action(descriptor[2]), descriptor[3])
+    add_applet_binding(bindings, modes, descriptor[1], Applet.Pane.nodes.action(descriptor[2]), descriptor[3])
   end
   if pane == "input" then
-    add_applet_binding(bindings, modes, mappings.focus_transcript,
+    add_applet_binding(
+      bindings,
+      modes,
+      mappings.focus_transcript,
       Applet.Pane.nodes.action("applet.focus", { pane = "transcript" }),
-      "Focus transcript")
+      "Focus transcript"
+    )
   else
-    add_applet_binding(bindings, modes, mappings.focus_input,
+    add_applet_binding(
+      bindings,
+      modes,
+      mappings.focus_input,
       Applet.Pane.nodes.action("applet.focus", { pane = "input" }),
-      "Focus input")
-    add_applet_binding(bindings, modes, mappings.close,
-      Applet.Pane.nodes.action("neoagent.close"), "Close Neoagent")
+      "Focus input"
+    )
+    add_applet_binding(bindings, modes, mappings.close, Applet.Pane.nodes.action("neoagent.close"), "Close Neoagent")
   end
   local dialog = self.dialog and self.dialog.active
   if dialog and not dialog.input then
-    local target_pane = dialog.placement == "transcript"
-      and "transcript" or "dialog"
+    local target_pane = dialog.placement == "transcript" and "transcript" or "dialog"
     if pane ~= target_pane then
-      add_applet_binding(bindings, "n", mappings.menu_previous,
+      add_applet_binding(
+        bindings,
+        "n",
+        mappings.menu_previous,
         Applet.Pane.nodes.action("neoagent.focus_dialog_menu"),
-        "Focus dialog actions")
-      add_applet_binding(bindings, "n", mappings.menu_next,
+        "Focus dialog actions"
+      )
+      add_applet_binding(
+        bindings,
+        "n",
+        mappings.menu_next,
         Applet.Pane.nodes.action("neoagent.focus_dialog_menu"),
-        "Focus dialog actions")
+        "Focus dialog actions"
+      )
     end
   end
   return bindings
@@ -514,10 +569,8 @@ function View:mapping_help()
     end
     return result
   end
-  local input = mapping_help_section(
-    "Input window", combined(self.input, "input"), true)
-  local transcript = mapping_help_section(
-    "Transcript window", combined(self.transcript, "transcript"), false)
+  local input = mapping_help_section("Input window", combined(self.input, "input"), true)
+  local transcript = mapping_help_section("Transcript window", combined(self.transcript, "transcript"), false)
   return input .. "\n\n" .. transcript
 end
 
@@ -555,8 +608,7 @@ render_view_state = function(state, env)
       container = "editor",
       anchor = "center",
       width = 0.8,
-      height = { content = true,
-        max = math.max(1, env.editor.height - 4) },
+      height = { content = true, max = math.max(1, env.editor.height - 4) },
       zindex = 70,
       enter = true,
       restore_focus = true,
@@ -576,8 +628,7 @@ render_view_state = function(state, env)
       container = "editor",
       anchor = "center",
       width = math.max(1, math.min(80, env.editor.width - 4)),
-      height = math.max(3, math.min(env.editor.height - 4,
-        editable and 12 or 14)),
+      height = math.max(3, math.min(env.editor.height - 4, editable and 12 or 14)),
       zindex = 80,
       modal = false,
       enter = state.dialog.enter,
@@ -667,8 +718,7 @@ render_view_state = function(state, env)
       container = "editor",
       anchor = "center",
       width = math.max(1, math.min(80, env.editor.width - 4)),
-      height = editable and math.max(4, math.min(env.editor.height - 4,
-          request.multiline and 12 or 6))
+      height = editable and math.max(4, math.min(env.editor.height - 4, request.multiline and 12 or 6))
         or { content = true, max = math.max(3, env.editor.height - 4) },
       zindex = 90,
       modal = true,
@@ -685,8 +735,7 @@ render_view_state = function(state, env)
         axis = "vertical",
         children = {
           { key = "body", grow = 1, min = 3, child = transcript },
-          { key = "input", basis = { content = state.config.input_height or 7 },
-            grow = 0, child = input },
+          { key = "input", basis = { content = state.config.input_height or 7 }, grow = 0, child = input },
         },
       }),
       layers = layers,
@@ -701,15 +750,16 @@ end
 ---@param focus string?
 ---@return boolean
 function View:_submit_frame(focus)
-  if self.destroyed then return false end
+  if self.destroyed then
+    return false
+  end
   self.frame_revision = self.frame_revision + 1
   local intent
   if focus then
     self.focus_revision = self.focus_revision + 1
     intent = { key = focus, revision = self.focus_revision }
   end
-  local inline_dialog = self.dialog and self.dialog.active
-    and self.dialog.active.placement == "transcript" or false
+  local inline_dialog = self.dialog and self.dialog.active and self.dialog.active.placement == "transcript" or false
   local dialog
   if self.dialog_component then
     local editable = self.dialog_component.pane:is_editable()
@@ -720,8 +770,7 @@ function View:_submit_frame(focus)
     }
   end
   local presentation
-  if self.presentation_component and self.presentation
-      and self.presentation.active then
+  if self.presentation_component and self.presentation and self.presentation.active then
     presentation = {
       component = self.presentation_component,
       request = util.copy(self.presentation.active),
@@ -753,7 +802,9 @@ end
 ---@return true?, Applet.Error?
 function View:_flush_frame()
   local ok, err = self.applet:flush()
-  if ok == nil then return nil, err end
+  if ok == nil then
+    return nil, err
+  end
   return true
 end
 
@@ -792,15 +843,22 @@ end
 function View:open(origin, opts)
   opts = opts or {}
   assert(not self.destroyed, "View is destroyed")
-  if self:is_open() then self:focus_input() return true end
+  if self:is_open() then
+    self:focus_input()
+    return true
+  end
   local reopening = self.has_opened == true
   for _, key in ipairs({ "transcript", "input" }) do
-    if self:pane(key) then self.applet:remount(key) end
+    if self:pane(key) then
+      self.applet:remount(key)
+    end
   end
   self:_ensure_presentation_component()
   self:_submit_frame()
   local opened, err = self.applet:open({ origin = origin })
-  if not opened then return nil, err end
+  if not opened then
+    return nil, err
+  end
   if self.input.pending_text ~= nil then
     local text, cursor = self.input.pending_text, self.input.pending_cursor
     self.input.pending_text, self.input.pending_cursor = nil, nil
@@ -808,8 +866,7 @@ function View:open(origin, opts)
   end
   self:_seed_presentation()
   self.has_opened = true
-  if reopening and self.config.scroll_on_reopen
-      and opts.preserve_scroll ~= true then
+  if reopening and self.config.scroll_on_reopen and opts.preserve_scroll ~= true then
     self:_scroll_transcript_to_bottom()
   end
   self:_refresh_input_footer()
@@ -818,13 +875,19 @@ function View:open(origin, opts)
 end
 
 function View:close()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   local was_open = self:is_open()
-  if self.input then self.input.pending_text = self:get_input() end
+  if self.input then
+    self.input.pending_text = self:get_input()
+  end
   presentation_surface.retain_seed(self)
   self.applet:close()
   self:_stop_spinner()
-  if was_open then self.callbacks.on_close() end
+  if was_open then
+    self.callbacks.on_close()
+  end
 end
 
 ---@return boolean
@@ -833,17 +896,25 @@ function View:is_open()
 end
 
 function View:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self:_stop_spinner()
   self.destroyed = true
   self.applet:destroy()
-  if self.details_component then self.details_component:destroy() end
-  if self.dialog_component then self.dialog_component:destroy() end
+  if self.details_component then
+    self.details_component:destroy()
+  end
+  if self.dialog_component then
+    self.dialog_component:destroy()
+  end
   presentation_surface.destroy(self)
   self.details, self.details_component, self.dialog_component = nil, nil, nil
   self.transcript:destroy()
   self.input:destroy()
-  if self.owns_image_system then assert(self.image_system):destroy() end
+  if self.owns_image_system then
+    assert(self.image_system):destroy()
+  end
 end
 
 ---@param context Neoagent.AgentContext?
@@ -886,7 +957,9 @@ function View:get_input()
   local pane = self:pane("input")
   if pane then
     local ok, value = pcall(pane.text, pane)
-    if ok then return value end
+    if ok then
+      return value
+    end
   end
   return self.input and self.input.pending_text or ""
 end
@@ -906,40 +979,54 @@ end
 ---@param current string
 ---@param previous string?
 function View:_applet_focus(current, previous)
-  if previous == "transcript" and current ~= "transcript"
-      and self.config.scroll_on_transcript_leave and not self.details_component then
+  if
+    previous == "transcript"
+    and current ~= "transcript"
+    and self.config.scroll_on_transcript_leave
+    and not self.details_component
+  then
     self:_scroll_transcript_to_bottom()
   end
   self:_refresh_input_footer()
 end
 
 function View:_refresh_input_footer()
-  if not self.input then return end
+  if not self.input then
+    return
+  end
   local pane = self:pane("input")
   local geometry = pane and pane:geometry() or nil
   local width = geometry and geometry.content_width or 80
   self.input:set_footer(input_footer(self.config, width))
-  if self.input.pane:is_connected() then self.input.pane:flush() end
+  if self.input.pane:is_connected() then
+    self.input.pane:flush()
+  end
 end
 
 ---@return boolean
 function View:focus_transcript()
   local pane = self:pane("transcript")
-  if pane then return pane:focus() end
+  if pane then
+    return pane:focus()
+  end
   return false
 end
 
 ---@return boolean
 function View:focus_input()
   local pane = self:pane("input")
-  if pane then return pane:focus() end
+  if pane then
+    return pane:focus()
+  end
   return false
 end
 
 ---@return boolean
 function View:_focus_dialog_menu()
   local dialog = self.dialog and self.dialog.active
-  if not dialog or dialog.input then return false end
+  if not dialog or dialog.input then
+    return false
+  end
   local pane_key
   if dialog.placement == "transcript" then
     pane_key = "transcript"
@@ -960,24 +1047,34 @@ end
 ---@return unknown
 function View:_submit(value)
   local pane = self:pane("input")
-  if pane and pane:completion_visible() then return pane:completion_accept() end
+  if pane and pane:completion_visible() then
+    return pane:completion_accept()
+  end
   return self.callbacks.on_submit(value)
 end
 
 ---@param value string?
 ---@return true
 function View:submission_accepted(value)
-  if value == nil or self:get_input() == value then self:set_input("") end
-  if self.config.scroll_on_submit then self:_scroll_transcript_to_bottom() end
+  if value == nil or self:get_input() == value then
+    self:set_input("")
+  end
+  if self.config.scroll_on_submit then
+    self:_scroll_transcript_to_bottom()
+  end
   return true
 end
 
 ---@return integer
 function View:_restore_steering()
   local messages = util.copy(self.callbacks.on_dequeue_steering())
-  if type(messages) ~= "table" or #messages == 0 then return 0 end
+  if type(messages) ~= "table" or #messages == 0 then
+    return 0
+  end
   local current = util.trim(self:get_input())
-  if current ~= "" then messages[#messages + 1] = current end
+  if current ~= "" then
+    messages[#messages + 1] = current
+  end
   self:set_input(table.concat(messages, "\n\n"))
   self:focus_input()
   return #messages
@@ -1001,17 +1098,18 @@ end
 ---@param count integer?
 ---@return boolean
 function View:_navigate_transcript(direction, count)
-  if direction > 0 and self.dialog and self.dialog.active
-      and self.dialog.active.placement == "transcript" then
+  if direction > 0 and self.dialog and self.dialog.active and self.dialog.active.placement == "transcript" then
     self:focus_input()
     return true
   end
   local pane = self:pane("transcript")
-  local moved = pane and pane:move_target({
-    group = "transcript.cards",
-    direction = direction < 0 and "previous" or "next",
-    wrap = false,
-  }, count) or false
+  local moved = pane
+      and pane:move_target({
+        group = "transcript.cards",
+        direction = direction < 0 and "previous" or "next",
+        wrap = false,
+      }, count)
+    or false
   if not moved and direction > 0 then
     self:focus_input()
     return true
@@ -1023,9 +1121,15 @@ end
 ---@return boolean
 function View:_focus_previous_card(count)
   local pane = self:pane("transcript")
-  if not pane then return false end
-  if not pane:focus() then return false end
-  if not pane:scroll({ target = "end", align = "bottom" }) then return false end
+  if not pane then
+    return false
+  end
+  if not pane:focus() then
+    return false
+  end
+  if not pane:scroll({ target = "end", align = "bottom" }) then
+    return false
+  end
   return pane:move_target({
     group = "transcript.cards",
     direction = "previous",
@@ -1043,9 +1147,13 @@ end
 
 ---@return boolean
 function View:_refresh_details()
-  if not self.details or not self.details.block then return false end
+  if not self.details or not self.details.block then
+    return false
+  end
   local block = find_block(self.transcript, self.details.block.key)
-  if not block then return self:_close_details(false) end
+  if not block then
+    return self:_close_details(false)
+  end
   self.details:set(block, self.details.raw)
   return true
 end
@@ -1054,7 +1162,9 @@ end
 ---@return boolean
 function View:show_card_details(key)
   local block = find_block(self.transcript, key) or self:_current_block()
-  if not block then return false end
+  if not block then
+    return false
+  end
   self:_close_details(false)
   local details = Details.new({
     renderer = self.transcript.renderer,
@@ -1062,11 +1172,21 @@ function View:show_card_details(key)
     config = self.config,
     image_system = self.image_system,
     callbacks = {
-      close = function() self:_close_details(true) end,
-      previous = function() self:_details_move(-1) end,
-      next = function() self:_details_move(1) end,
-      center = function() self:_center_details() end,
-      changed = function() self.applet:invalidate({ host = true }) end,
+      close = function()
+        self:_close_details(true)
+      end,
+      previous = function()
+        self:_details_move(-1)
+      end,
+      next = function()
+        self:_details_move(1)
+      end,
+      center = function()
+        self:_center_details()
+      end,
+      changed = function()
+        self.applet:invalidate({ host = true })
+      end,
     },
   })
   self.details, self.details_component = details, details
@@ -1084,10 +1204,15 @@ end
 ---@param direction integer
 ---@return boolean
 function View:_details_move(direction)
-  if not self.details or not self.details.block then return false end
+  if not self.details or not self.details.block then
+    return false
+  end
   local index
   for candidate, value in ipairs(self.transcript.blocks) do
-    if value.key == self.details.block.key then index = candidate break end
+    if value.key == self.details.block.key then
+      index = candidate
+      break
+    end
   end
   local block = index and self.transcript.blocks[index + direction]
   if not block then
@@ -1105,10 +1230,11 @@ end
 
 ---@return boolean
 function View:_center_details()
-  if not self.details or not self.details.block then return false end
+  if not self.details or not self.details.block then
+    return false
+  end
   local pane = self:pane("transcript")
-  if not pane
-      or not pane:reveal_target("card:" .. self.details.block.key) then
+  if not pane or not pane:reveal_target("card:" .. self.details.block.key) then
     return false
   end
   return pane:scroll({ align = "center" })
@@ -1118,12 +1244,18 @@ end
 ---@return boolean
 function View:_close_details(focus)
   local details = self.details_component
-  if not details then return false end
+  if not details then
+    return false
+  end
   self.details, self.details_component = nil, nil
   self:_submit_frame(focus and "transcript" or nil)
-  if self:is_open() then self:_flush_frame() end
+  if self:is_open() then
+    self:_flush_frame()
+  end
   details:destroy()
-  if focus then self:focus_transcript() end
+  if focus then
+    self:focus_transcript()
+  end
   return true
 end
 
@@ -1131,27 +1263,34 @@ end
 ---@param action string
 ---@return unknown
 function View:_choose_dialog(id, action)
-  local input = self.dialog and self.dialog.active and self.dialog.active.input
-    and self.dialog_component and self.dialog_component:text() or nil
+  local input = self.dialog
+      and self.dialog.active
+      and self.dialog.active.input
+      and self.dialog_component
+      and self.dialog_component:text()
+    or nil
   return self.callbacks.on_dialog_action(id, action, input)
 end
 
 ---@param focus boolean?
 ---@return boolean?, Applet.Error?
 function View:_show_dialog(focus)
-  if not self.dialog then return false end
+  if not self.dialog then
+    return false
+  end
   if self.dialog.active.placement == "transcript" then
     self:_close_dialog_surface(false)
     self.transcript:set_dialog(self.dialog)
     self:_submit_frame(focus and "transcript" or nil)
-    if self:is_open() then self:_flush_frame() end
+    if self:is_open() then
+      self:_flush_frame()
+    end
     return true
   end
   self.transcript:set_dialog(nil)
   local editable = self.dialog.active.input ~= nil
   local created = false
-  if self.dialog_component
-      and self.dialog_component.pane:is_editable() ~= editable then
+  if self.dialog_component and self.dialog_component.pane:is_editable() ~= editable then
     self:_close_dialog_surface(false)
   end
   if not self.dialog_component then
@@ -1161,11 +1300,15 @@ function View:_show_dialog(focus)
       config = self.config,
       theme = self.transcript.renderer.theme,
       callbacks = {
-        focus_input = function() self:focus_input() end,
+        focus_input = function()
+          self:focus_input()
+        end,
         choose = function(id, action, input)
           return self.callbacks.on_dialog_action(id, action, input)
         end,
-        cancel = function(id) return self.callbacks.on_dialog_dismiss(id) end,
+        cancel = function(id)
+          return self.callbacks.on_dialog_dismiss(id)
+        end,
       },
     })
   end
@@ -1188,24 +1331,29 @@ function View:_close_dialog_surface(focus)
   if dialog then
     self.dialog_component = nil
     self:_submit_frame(focus and "input" or nil)
-    if self:is_open() then self:_flush_frame() end
+    if self:is_open() then
+      self:_flush_frame()
+    end
     dialog:destroy()
   end
   self.transcript:set_dialog(nil)
-  if focus then self:focus_input() end
+  if focus then
+    self:focus_input()
+  end
   return dialog ~= nil
 end
 
 ---@param snapshot Neoagent.ActiveDialogSnapshot?
 ---@return boolean?, Applet.Error?
 function View:set_dialog(snapshot)
-  local previous_id = self.dialog and self.dialog.active
-    and self.dialog.active.id or nil
+  local previous_id = self.dialog and self.dialog.active and self.dialog.active.id or nil
   self.dialog = snapshot and util.copy(snapshot) or nil
   if not self.dialog then
     self:_close_dialog_surface(true)
     self:_submit_frame("input")
-    if self:is_open() then self:_flush_frame() end
+    if self:is_open() then
+      self:_flush_frame()
+    end
     return true
   end
   return self:_show_dialog(previous_id ~= self.dialog.active.id)
@@ -1233,42 +1381,59 @@ function View:_pane_detached(key, default)
   elseif key == "dialog" then
     local id = self.dialog and self.dialog.active and self.dialog.active.id
     self:_close_dialog_surface(false)
-    if id then self.callbacks.on_dialog_dismiss(id) end
-  elseif key == "presentation" or key == "presentation-filter"
-      or key == "presentation-results" then
-    local id = self.presentation and self.presentation.active
-      and self.presentation.active.id
-    if id then self.callbacks.on_presentation_cancel(id) end
+    if id then
+      self.callbacks.on_dialog_dismiss(id)
+    end
+  elseif key == "presentation" or key == "presentation-filter" or key == "presentation-results" then
+    local id = self.presentation and self.presentation.active and self.presentation.active.id
+    if id then
+      self.callbacks.on_presentation_cancel(id)
+    end
   end
 end
 
 function View:_sync_spinner()
   local active = active_state(self.context) and not self.dialog
-  if not active or not self:is_open() then self:_stop_spinner() return end
-  if self.spinner_timer then return end
+  if not active or not self:is_open() then
+    self:_stop_spinner()
+    return
+  end
+  if self.spinner_timer then
+    return
+  end
   local timer = assert(vim.uv.new_timer())
   self.spinner_timer = timer
   ---@type fun()
   local arm
   arm = function()
-    if self.destroyed or self.spinner_timer ~= timer then return end
-    timer:start(80, 0, vim.schedule_wrap(function()
-      if self.destroyed or self.spinner_timer ~= timer then return end
-      local pane = self.transcript.pane
-      if pane:is_settled() then
-        self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
-        self.transcript:set_spinner((assert(self.spinner_frames[self.spinner_frame])))
-        vim.schedule(arm)
-      else
-        arm()
-      end
-    end))
+    if self.destroyed or self.spinner_timer ~= timer then
+      return
+    end
+    timer:start(
+      80,
+      0,
+      vim.schedule_wrap(function()
+        if self.destroyed or self.spinner_timer ~= timer then
+          return
+        end
+        local pane = self.transcript.pane
+        if pane:is_settled() then
+          self.spinner_frame = self.spinner_frame % #self.spinner_frames + 1
+          self.transcript:set_spinner((assert(self.spinner_frames[self.spinner_frame])))
+          vim.schedule(arm)
+        else
+          arm()
+        end
+      end)
+    )
   end
   arm()
 end
 
 function View:_stop_spinner()
-  if not self.spinner_timer then return end
+  if not self.spinner_timer then
+    return
+  end
   self.spinner_timer:stop()
   self.spinner_timer:close()
   self.spinner_timer = nil
@@ -1277,20 +1442,28 @@ end
 ---@param position Neoagent.UiPosition
 ---@return true?, Applet.Error?
 function View:set_position(position)
-  assert(({ auto = true, left = true, right = true, top = true,
-    bottom = true, center = true })[position], "invalid position")
+  assert(
+    ({ auto = true, left = true, right = true, top = true, bottom = true, center = true })[position],
+    "invalid position"
+  )
   self.position = position
   self:_submit_frame()
-  if self:is_open() then return self:_flush_frame() end
+  if self:is_open() then
+    return self:_flush_frame()
+  end
   return true
 end
 
 ---@return true?, string?
 function View:_reposition()
-  if not self:is_open() then return true end
+  if not self:is_open() then
+    return true
+  end
   self:_submit_frame()
   local positioned, err = self:_flush_frame()
-  if not positioned then return nil, "Neoagent UI does not fit in the available editor area" end
+  if not positioned then
+    return nil, "Neoagent UI does not fit in the available editor area"
+  end
   return true
 end
 
@@ -1298,26 +1471,35 @@ end
 ---@return Neoagent.Renderer<unknown>?, Neoagent.Error?
 function View:set_renderer(renderer)
   local selected, err = protocol.validate(renderer)
-  if not selected then return nil, err end
+  if not selected then
+    return nil, err
+  end
   local defined, define_err = protocol.define_highlights(selected)
-  if not defined then return nil, define_err end
+  if not defined then
+    return nil, define_err
+  end
   local dialog_visible = self.dialog_component ~= nil
-    and self.dialog and self.dialog.active
+    and self.dialog
+    and self.dialog.active
     and self.dialog.active.placement == "float"
-  local dialog_focused = dialog_visible
-    and self.applet:focused_pane() == "dialog"
-  local details_key = self.details and self.details.block
-    and self.details.block.key or nil
+  local dialog_focused = dialog_visible and self.applet:focused_pane() == "dialog"
+  local details_key = self.details and self.details.block and self.details.block.key or nil
   local details_raw = self.details and self.details.raw == true
-  if details_key then self:_close_details(false) end
-  if dialog_visible then self:_close_dialog_surface(false) end
+  if details_key then
+    self:_close_details(false)
+  end
+  if dialog_visible then
+    self:_close_dialog_surface(false)
+  end
   self.renderer = selected
   self.applet_theme = selected.theme
   self.config.renderer = selected
   self.transcript:set_renderer(selected)
   self.input:set_theme(selected.theme)
   presentation_surface.set_theme(self, selected.theme)
-  if dialog_visible then self:_show_dialog(dialog_focused) end
+  if dialog_visible then
+    self:_show_dialog(dialog_focused)
+  end
   if details_key and self:show_card_details(details_key) and details_raw then
     local details = assert(self.details)
     details:set(details.block, true)
@@ -1327,5 +1509,7 @@ function View:set_renderer(renderer)
 end
 
 return setmetatable({ new = View.new, View = View }, {
-  __call = function(_, opts) return View.new(opts) end,
+  __call = function(_, opts)
+    return View.new(opts)
+  end,
 })

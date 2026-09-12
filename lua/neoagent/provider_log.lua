@@ -6,10 +6,24 @@ local M = {}
 local MAX_BYTES = 1024 * 1024
 local LOCK_TIMEOUT_MS = 1000
 local fields = {
-  "type", "timestamp", "api", "provider", "model", "request_attempt",
-  "request_max_attempts", "stream_attempt", "kind", "message", "code",
-  "status", "retryable", "retry_after_ms", "request_id", "cf_ray",
-  "authorization_error", "exit_code",
+  "type",
+  "timestamp",
+  "api",
+  "provider",
+  "model",
+  "request_attempt",
+  "request_max_attempts",
+  "stream_attempt",
+  "kind",
+  "message",
+  "code",
+  "status",
+  "retryable",
+  "retry_after_ms",
+  "request_id",
+  "cf_ray",
+  "authorization_error",
+  "exit_code",
 }
 
 ---@param value unknown
@@ -47,15 +61,21 @@ end
 ---@return true?, string?
 local function append(path, encoded)
   local stat = vim.uv.fs_stat(path)
-  if stat then pcall(vim.uv.fs_chmod, path, 384) end
+  if stat then
+    pcall(vim.uv.fs_chmod, path, 384)
+  end
   if stat and stat.size >= MAX_BYTES then
     pcall(vim.uv.fs_unlink, path .. ".1")
     local renamed, rename_err = vim.uv.fs_rename(path, path .. ".1")
-    if not renamed then return nil, rename_err end
+    if not renamed then
+      return nil, rename_err
+    end
     pcall(vim.uv.fs_chmod, path .. ".1", 384)
   end
   local written, write_err = fs.write_all(path, encoded .. "\n", "a", 384)
-  if not written then return nil, write_err end
+  if not written then
+    return nil, write_err
+  end
   pcall(vim.uv.fs_chmod, path, 384)
   return true
 end
@@ -68,14 +88,26 @@ function M.append(path, event)
   assert(type(event) == "table", "diagnostic event is required")
   local encoded, encode_err
   local ok, result = pcall(vim.json.encode, sanitized(event))
-  if ok then encoded = result else encode_err = result end
-  if not encoded then return nil, encode_err end
+  if ok then
+    encoded = result
+  else
+    encode_err = result
+  end
+  if not encoded then
+    return nil, encode_err
+  end
   local ready, prepare_err = prepare_directory(path)
-  if not ready then return nil, prepare_err end
-  local appended, append_err = file_lock.new({
-    path = path .. ".lock",
-    timeout_ms = LOCK_TIMEOUT_MS,
-  }):with(function() return append(path, encoded) end)
+  if not ready then
+    return nil, prepare_err
+  end
+  local appended, append_err = file_lock
+    .new({
+      path = path .. ".lock",
+      timeout_ms = LOCK_TIMEOUT_MS,
+    })
+    :with(function()
+      return append(path, encoded)
+    end)
   if not appended and type(append_err) == "table" and append_err.kind == "file_lock" then
     return nil, rawget(append_err, "detail") or append_err.message
   end
@@ -88,8 +120,7 @@ end
 function M.callback(path, opts)
   opts = opts or {}
   assert(type(opts) == "table", "diagnostic callback options must be a table")
-  assert(opts.report == nil or type(opts.report) == "function",
-    "diagnostic callback report must be a function")
+  assert(opts.report == nil or type(opts.report) == "function", "diagnostic callback report must be a function")
   local report = opts.report or function() end
   local warned = false
   return function(event)
@@ -97,8 +128,7 @@ function M.callback(path, opts)
     if not ok and not warned then
       warned = true
       vim.schedule(function()
-        report("neoagent diagnostic log failed: " .. tostring(err),
-          vim.log.levels.WARN)
+        report("neoagent diagnostic log failed: " .. tostring(err), vim.log.levels.WARN)
       end)
     end
   end

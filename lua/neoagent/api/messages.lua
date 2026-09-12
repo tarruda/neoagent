@@ -8,9 +8,10 @@ local TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support imag
 ---@param model Neoagent.MessageTarget
 ---@return boolean
 local function supports_images(model)
-  assert(type(model) == "table" and type(model.input) == "table"
-      and vim.tbl_contains(model.input, "text"),
-    "messages.for_model requires a Model with declared input modalities")
+  assert(
+    type(model) == "table" and type(model.input) == "table" and vim.tbl_contains(model.input, "text"),
+    "messages.for_model requires a Model with declared input modalities"
+  )
   return vim.tbl_contains(model.input, "image")
 end
 
@@ -40,7 +41,9 @@ end
 ---@return Neoagent.Message
 local function with_content(message, content)
   local result = {}
-  for key, value in pairs(message) do result[key] = value end
+  for key, value in pairs(message) do
+    result[key] = value
+  end
   result.content = content
   -- The callers retain the role and replace content with blocks valid for that role.
   ---@cast result Neoagent.Message
@@ -51,10 +54,12 @@ end
 ---@param model Neoagent.MessageTarget
 ---@return TypeGuard<Neoagent.AssistantMessage>
 local function foreign_assistant(message, model)
-  return message.role == "assistant" and (
-    (message.api ~= nil and message.api ~= model.api)
-    or (message.provider ~= nil and message.provider ~= model.provider)
-    or (message.model ~= nil and message.model ~= model.id))
+  return message.role == "assistant"
+    and (
+      (message.api ~= nil and message.api ~= model.api)
+      or (message.provider ~= nil and message.provider ~= model.provider)
+      or (message.model ~= nil and message.model ~= model.id)
+    )
 end
 
 ---@param content Neoagent.AssistantBlock[]
@@ -80,8 +85,7 @@ end
 ---@param model Neoagent.MessageTarget
 ---@return Neoagent.Message[]
 function M.for_model(messages, model)
-  assert(type(messages) == "table" and vim.islist(messages),
-    "messages must be a list")
+  assert(type(messages) == "table" and vim.islist(messages), "messages must be a list")
   for index, message in ipairs(messages) do
     local normalized, err = semantic_message.normalize(message)
     if not normalized then
@@ -96,11 +100,9 @@ function M.for_model(messages, model)
     if foreign_assistant(message, model) then
       result[index] = with_content(message, portable_content(message.content))
     elseif not images and message.role == "user" and type(message.content) == "table" then
-      result[index] = with_content(message,
-        replace_images(message.content, USER_IMAGE_PLACEHOLDER))
+      result[index] = with_content(message, replace_images(message.content, USER_IMAGE_PLACEHOLDER))
     elseif not images and message.role == "toolResult" then
-      result[index] = with_content(message,
-        replace_images(message.content, TOOL_IMAGE_PLACEHOLDER))
+      result[index] = with_content(message, replace_images(message.content, TOOL_IMAGE_PLACEHOLDER))
     else
       result[index] = message
     end

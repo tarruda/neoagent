@@ -138,6 +138,11 @@ jobs:
           New-Item -ItemType Directory -Force .deps | Out-Null
           git clone https://github.com/nvim-lua/plenary.nvim.git .deps/plenary.nvim
           git -C .deps/plenary.nvim checkout 74b06c6c75e4eeb3108ec01852001636d85a932b
+      - name: Check statement layout
+        shell: pwsh
+        run: |
+          nvim --headless -u NONE -i NONE -l scripts/check_statement_layout.lua
+          if ($LASTEXITCODE -ne 0) { throw "Statement layout check failed" }
       - name: Provision Windows sandbox identities and policy
         shell: pwsh
         run: |

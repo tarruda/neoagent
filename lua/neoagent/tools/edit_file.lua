@@ -26,11 +26,25 @@ end
 ---@return string, integer[], integer[]
 local function fuzzy(text)
   local replacements = {
-    ["\226\128\152"] = "'", ["\226\128\153"] = "'", ["\226\128\154"] = "'", ["\226\128\155"] = "'",
-    ["\226\128\156"] = '"', ["\226\128\157"] = '"', ["\226\128\158"] = '"', ["\226\128\159"] = '"',
-    ["\226\128\144"] = "-", ["\226\128\145"] = "-", ["\226\128\146"] = "-", ["\226\128\147"] = "-",
-    ["\226\128\148"] = "-", ["\226\128\149"] = "-", ["\226\136\146"] = "-",
-    ["\194\160"] = " ", ["\226\128\175"] = " ", ["\226\129\159"] = " ", ["\227\128\128"] = " ",
+    ["\226\128\152"] = "'",
+    ["\226\128\153"] = "'",
+    ["\226\128\154"] = "'",
+    ["\226\128\155"] = "'",
+    ["\226\128\156"] = '"',
+    ["\226\128\157"] = '"',
+    ["\226\128\158"] = '"',
+    ["\226\128\159"] = '"',
+    ["\226\128\144"] = "-",
+    ["\226\128\145"] = "-",
+    ["\226\128\146"] = "-",
+    ["\226\128\147"] = "-",
+    ["\226\128\148"] = "-",
+    ["\226\128\149"] = "-",
+    ["\226\136\146"] = "-",
+    ["\194\160"] = " ",
+    ["\226\128\175"] = " ",
+    ["\226\129\159"] = " ",
+    ["\227\128\128"] = " ",
   }
   ---@type string[]
   local bytes = {}
@@ -49,8 +63,12 @@ local function fuzzy(text)
       width = 2
       byte = replacements[text:sub(index, index + 1)]
     end
-    if not byte then width, byte = 1, text:sub(index, index) end
-    if byte == "\n" then trim_line() end
+    if not byte then
+      width, byte = 1, text:sub(index, index)
+    end
+    if byte == "\n" then
+      trim_line()
+    end
     bytes[#bytes + 1] = byte
     starts[#starts + 1], finishes[#finishes + 1] = index, index + width - 1
     index = index + width
@@ -64,10 +82,14 @@ end
 ---@return integer, integer?
 local function occurrences(content, needle)
   local count, from, first = 0, 1, nil
-  if needle == "" then return count end
+  if needle == "" then
+    return count
+  end
   while true do
     local start = content:find(needle, from, true)
-    if not start then break end
+    if not start then
+      break
+    end
     count = count + 1
     first = first or start
     from = start + 1
@@ -100,7 +122,9 @@ local function apply(content, edits, path)
     if type(edit) ~= "table" or type(edit.oldText) ~= "string" or type(edit.newText) ~= "string" then
       error("edits[" .. index .. "] must contain string oldText and newText")
     end
-    if edit.oldText == "" then error("edits[" .. index .. "].oldText must not be empty in " .. path) end
+    if edit.oldText == "" then
+      error("edits[" .. index .. "].oldText must not be empty in " .. path)
+    end
     local needle = normalize_lf(edit.oldText)
     local count, start = occurrences(content, needle)
     local length = #needle
@@ -119,15 +143,28 @@ local function apply(content, edits, path)
       end
     end
     if not start then
-      error("Could not find edits[" .. index .. "] in " .. path .. ". The oldText must match exactly including all whitespace and newlines.")
+      error(
+        "Could not find edits["
+          .. index
+          .. "] in "
+          .. path
+          .. ". The oldText must match exactly including all whitespace and newlines."
+      )
     elseif count > 1 then
-      error("Found " .. count .. " occurrences of edits[" .. index .. "] in " .. path .. ". Each oldText must be unique.")
+      error(
+        "Found " .. count .. " occurrences of edits[" .. index .. "] in " .. path .. ". Each oldText must be unique."
+      )
     end
     replacements[#replacements + 1] = {
-      index = index, start = start, length = length, newText = normalize_lf(edit.newText),
+      index = index,
+      start = start,
+      length = length,
+      newText = normalize_lf(edit.newText),
     }
   end
-  table.sort(replacements, function(a, b) return a.start < b.start end)
+  table.sort(replacements, function(a, b)
+    return a.start < b.start
+  end)
   ---@type Neoagent.FileReplacement?
   local previous
   for _, current in ipairs(replacements) do
@@ -137,7 +174,9 @@ local function apply(content, edits, path)
     previous = current
   end
   local changed = apply_group(content, replacements)
-  if changed == content then error("No changes made to " .. path .. ". The replacements produced identical content.") end
+  if changed == content then
+    error("No changes made to " .. path .. ". The replacements produced identical content.")
+  end
   return changed
 end
 
@@ -147,7 +186,9 @@ end
 ---@return Neoagent.FileEditDetails
 local function diff_details(path, old, new)
   local ok, patch = pcall(vim.diff, old, new, { result_type = "unified", ctxlen = 4 })
-  if not ok or type(patch) ~= "string" then patch = "--- " .. path .. "\n+++ " .. path end
+  if not ok or type(patch) ~= "string" then
+    patch = "--- " .. path .. "\n+++ " .. path
+  end
   return {
     patch = patch,
     changed_paths = { path },
@@ -179,16 +220,24 @@ local function new()
     },
     execute = function(arguments, ctx)
       local path = common.require_string(arguments, "path")
-      if type(arguments.edits) ~= "table" or not require("neoagent.util").is_list(arguments.edits) or #arguments.edits == 0 then
+      if
+        type(arguments.edits) ~= "table"
+        or not require("neoagent.util").is_list(arguments.edits)
+        or #arguments.edits == 0
+      then
         error("edits must contain at least one replacement")
       end
       local absolute = common.workspace(ctx):resolve(path)
       local fs = common.fs(ctx)
       local raw, err = fs.read(absolute)
-      if not raw then error("Could not edit file " .. path .. ": " .. tostring(err)) end
+      if not raw then
+        error("Could not edit file " .. path .. ": " .. tostring(err))
+      end
       local original_fingerprint = require("neoagent.fs").content_fingerprint(raw)
       local bom = raw:sub(1, 3) == "\239\187\191" and raw:sub(1, 3) or ""
-      if bom ~= "" then raw = raw:sub(4) end
+      if bom ~= "" then
+        raw = raw:sub(4)
+      end
       local ending = raw:find("\r\n", 1, true) and "\r\n" or "\n"
       local content = normalize_lf(raw)
       local changed = apply(content, arguments.edits, path)
@@ -199,9 +248,13 @@ local function new()
         require_existing = true,
         expected_content_fingerprint = original_fingerprint,
       })
-      if not ok then error("Could not edit file " .. path .. ": " .. tostring(replace_err)) end
+      if not ok then
+        error("Could not edit file " .. path .. ": " .. tostring(replace_err))
+      end
       return {
-        content = { { type = "text", text = string.format("Successfully replaced %d block(s) in %s.", #arguments.edits, path) } },
+        content = {
+          { type = "text", text = string.format("Successfully replaced %d block(s) in %s.", #arguments.edits, path) },
+        },
         details = diff_details(path, content, changed),
       }
     end,

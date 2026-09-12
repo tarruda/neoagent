@@ -33,7 +33,6 @@ local M = {}
 ---@field previous_summary? string
 ---@field settings Neoagent.CompactionSettings
 
-
 ---@type Neoagent.CompactionSettings
 M.defaults = {
   auto = true,
@@ -44,7 +43,9 @@ M.defaults = {
 ---@param content? string|Neoagent.InputBlock[]
 ---@return integer
 local function content_chars(content)
-  if type(content) == "string" then return vim.fn.strchars(content) end
+  if type(content) == "string" then
+    return vim.fn.strchars(content)
+  end
   local count = 0
   for _, block in ipairs(content or {}) do
     if block.type == "text" then
@@ -59,12 +60,18 @@ end
 ---@param usage? Neoagent.Usage
 ---@return number?
 function M.usage_tokens(usage)
-  if type(usage) ~= "table" then return nil end
-  if type(usage.totalTokens) == "number" and usage.totalTokens > 0 then return usage.totalTokens end
+  if type(usage) ~= "table" then
+    return nil
+  end
+  if type(usage.totalTokens) == "number" and usage.totalTokens > 0 then
+    return usage.totalTokens
+  end
   ---@type number
   local total = 0
   for _, key in ipairs({ "input", "output", "cacheRead", "cacheWrite" }) do
-    if type(usage[key]) == "number" then total = total + usage[key] end
+    if type(usage[key]) == "number" then
+      total = total + usage[key]
+    end
   end
   return total > 0 and total or nil
 end
@@ -100,7 +107,9 @@ end
 ---@param message Neoagent.ProjectionMessage
 ---@return number?
 local function valid_assistant_usage(message)
-  if message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then return nil end
+  if message.role ~= "assistant" or message.stopReason == "aborted" or message.stopReason == "error" then
+    return nil
+  end
   return M.usage_tokens(message.usage)
 end
 
@@ -118,7 +127,9 @@ function M.estimate_context(messages)
     end
   end
   local total = 0
-  for _, message in ipairs(messages) do total = total + M.estimate_tokens(message) end
+  for _, message in ipairs(messages) do
+    total = total + M.estimate_tokens(message)
+  end
   return { tokens = total, usage_tokens = 0, trailing_tokens = total }
 end
 
@@ -149,14 +160,18 @@ end
 ---@param entry Neoagent.JournalEntry
 ---@return Neoagent.Message?
 local function entry_message(entry)
-  if entry.type == "message" then return util.copy(entry.message) end
+  if entry.type == "message" then
+    return util.copy(entry.message)
+  end
   return nil
 end
 
 ---@param entry Neoagent.JournalEntry
 ---@return boolean
 local function is_cut_point(entry)
-  if entry.type ~= "message" then return false end
+  if entry.type ~= "message" then
+    return false
+  end
   ---@cast entry Neoagent.MessageEntry
   local role = entry.message.role
   return role == "user" or role == "assistant"
@@ -165,7 +180,9 @@ end
 ---@param entry Neoagent.JournalEntry
 ---@return boolean
 local function is_turn_start(entry)
-  if entry.type ~= "message" then return false end
+  if entry.type ~= "message" then
+    return false
+  end
   ---@cast entry Neoagent.MessageEntry
   return entry.message.role == "user"
 end
@@ -176,7 +193,9 @@ end
 ---@return integer?
 function M.find_turn_start(entries, entry_index, start_index)
   for index = entry_index, start_index, -1 do
-    if is_turn_start(assert(entries[index])) then return index end
+    if is_turn_start(assert(entries[index])) then
+      return index
+    end
   end
   return nil
 end
@@ -190,7 +209,9 @@ function M.find_cut_point(entries, start_index, end_index, keep_recent_tokens)
   ---@type integer[]
   local cut_points = {}
   for index = start_index, end_index do
-    if is_cut_point(assert(entries[index])) then cut_points[#cut_points + 1] = index end
+    if is_cut_point(assert(entries[index])) then
+      cut_points[#cut_points + 1] = index
+    end
   end
   if #cut_points == 0 then
     return { first_kept_index = start_index, split_turn = false }
@@ -205,7 +226,9 @@ function M.find_cut_point(entries, start_index, end_index, keep_recent_tokens)
     end
     if accumulated >= keep_recent_tokens then
       for _, candidate in ipairs(cut_points) do
-        if candidate > index then break end
+        if candidate > index then
+          break
+        end
         cut_index = candidate
       end
       break
@@ -213,7 +236,9 @@ function M.find_cut_point(entries, start_index, end_index, keep_recent_tokens)
   end
   while cut_index > start_index do
     local previous = assert(entries[cut_index - 1])
-    if previous.type == "compaction" or previous.type == "message" then break end
+    if previous.type == "compaction" or previous.type == "message" then
+      break
+    end
     cut_index = cut_index - 1
   end
   local turn_start
@@ -231,10 +256,15 @@ end
 ---@param settings Neoagent.CompactionSettings
 ---@return Neoagent.CompactionPreparation?, Neoagent.Error?
 function M.prepare(path_entries, settings)
-  if #path_entries == 0 or assert(path_entries[#path_entries]).type == "compaction" then return nil end
+  if #path_entries == 0 or assert(path_entries[#path_entries]).type == "compaction" then
+    return nil
+  end
   local previous_index
   for index = #path_entries, 1, -1 do
-    if assert(path_entries[index]).type == "compaction" then previous_index = index break end
+    if assert(path_entries[index]).type == "compaction" then
+      previous_index = index
+      break
+    end
   end
   local boundary_start = 1
   local previous_summary
@@ -243,7 +273,10 @@ function M.prepare(path_entries, settings)
     ---@cast previous Neoagent.CompactionEntry
     previous_summary = previous.summary
     for index, entry in ipairs(path_entries) do
-      if entry.id == previous.firstKeptEntryId then boundary_start = index break end
+      if entry.id == previous.firstKeptEntryId then
+        boundary_start = index
+        break
+      end
     end
     if boundary_start == 1 and assert(path_entries[1]).id ~= previous.firstKeptEntryId then
       boundary_start = previous_index + 1
@@ -252,20 +285,26 @@ function M.prepare(path_entries, settings)
   local context = tree.to_llm(tree.messages(path_entries, true))
   local cut = M.find_cut_point(path_entries, boundary_start, #path_entries, settings.keep_recent_tokens)
   local first_kept = path_entries[cut.first_kept_index]
-  if not first_kept then return nil, util.error("compaction", "No context entry can be retained") end
+  if not first_kept then
+    return nil, util.error("compaction", "No context entry can be retained")
+  end
   local history_end = cut.turn_start_index or cut.first_kept_index
   ---@type Neoagent.Message[]
   local messages = {}
   for index = boundary_start, history_end - 1 do
     local message = entry_message(assert(path_entries[index]))
-    if message then messages[#messages + 1] = message end
+    if message then
+      messages[#messages + 1] = message
+    end
   end
   ---@type Neoagent.Message[]
   local turn_prefix = {}
   if cut.split_turn then
     for index = assert(cut.turn_start_index), cut.first_kept_index - 1 do
       local message = entry_message(assert(path_entries[index]))
-      if message then turn_prefix[#turn_prefix + 1] = message end
+      if message then
+        turn_prefix[#turn_prefix + 1] = message
+      end
     end
   end
   if #messages == 0 and #turn_prefix == 0 then

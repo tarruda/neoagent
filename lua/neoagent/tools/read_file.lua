@@ -34,11 +34,21 @@ local MAGICK_FORMAT = {
 ---@param data string
 ---@return Neoagent.FileImageMime?
 local function detect(data)
-  if data:sub(1, 8) == "\137PNG\r\n\26\n" then return MIME.png end
-  if data:sub(1, 3) == "\255\216\255" then return MIME.jpeg end
-  if data:sub(1, 6) == "GIF87a" or data:sub(1, 6) == "GIF89a" then return MIME.gif end
-  if data:sub(1, 2) == "BM" then return MIME.bmp end
-  if data:sub(1, 4) == "RIFF" and data:sub(9, 12) == "WEBP" then return MIME.webp end
+  if data:sub(1, 8) == "\137PNG\r\n\26\n" then
+    return MIME.png
+  end
+  if data:sub(1, 3) == "\255\216\255" then
+    return MIME.jpeg
+  end
+  if data:sub(1, 6) == "GIF87a" or data:sub(1, 6) == "GIF89a" then
+    return MIME.gif
+  end
+  if data:sub(1, 2) == "BM" then
+    return MIME.bmp
+  end
+  if data:sub(1, 4) == "RIFF" and data:sub(9, 12) == "WEBP" then
+    return MIME.webp
+  end
 end
 
 local DEFAULT_MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024
@@ -80,7 +90,9 @@ local function stream(filesystem, path, on_chunk)
     return filesystem.read_chunks(path, on_chunk)
   end
   local data, err = filesystem.read(path)
-  if not data then return nil, err end
+  if not data then
+    return nil, err
+  end
   on_chunk(data)
   return true
 end
@@ -91,12 +103,22 @@ end
 ---@return string[]
 local function magick_command(settings, operation, arguments)
   local command = { "magick" }
-  if operation then command[#command + 1] = operation end
+  if operation then
+    command[#command + 1] = operation
+  end
   vim.list_extend(command, {
-    "-limit", "memory", "128MiB",
-    "-limit", "map", "256MiB",
-    "-limit", "disk", "0",
-    "-limit", "area", tostring(settings.max_image_pixels),
+    "-limit",
+    "memory",
+    "128MiB",
+    "-limit",
+    "map",
+    "256MiB",
+    "-limit",
+    "disk",
+    "0",
+    "-limit",
+    "area",
+    tostring(settings.max_image_pixels),
   })
   return vim.list_extend(command, arguments)
 end
@@ -109,16 +131,16 @@ end
 ---@param arguments string[]
 ---@param max_capture_bytes integer
 ---@return string
-local function process_magick(data, ctx, settings, operation, arguments,
-    max_capture_bytes)
-  local result = common.process(ctx,
-    magick_command(settings, operation, arguments), {
-      stdin = data,
-      timeout_ms = IMAGE_TIMEOUT_MS,
-      kill_grace_ms = 100,
-      max_capture_bytes = max_capture_bytes,
-    })
-  if result.timed_out then error("ImageMagick timed out") end
+local function process_magick(data, ctx, settings, operation, arguments, max_capture_bytes)
+  local result = common.process(ctx, magick_command(settings, operation, arguments), {
+    stdin = data,
+    timeout_ms = IMAGE_TIMEOUT_MS,
+    kill_grace_ms = 100,
+    max_capture_bytes = max_capture_bytes,
+  })
+  if result.timed_out then
+    error("ImageMagick timed out")
+  end
   local code = tonumber(result.code) or -1
   if code ~= 0 then
     local stderr = type(result.stderr) == "string" and result.stderr or ""
@@ -136,10 +158,11 @@ end
 local function run_magick(data, mime, ctx, settings)
   local input_format = assert(MAGICK_FORMAT[mime])
   local input = input_format .. ":-[0]"
-  local inspected, dimensions = pcall(process_magick,
-    data, ctx, settings, "identify", {
-      "-format", "%w %h", input,
-    }, IDENTIFY_CAPTURE_BYTES)
+  local inspected, dimensions = pcall(process_magick, data, ctx, settings, "identify", {
+    "-format",
+    "%w %h",
+    input,
+  }, IDENTIFY_CAPTURE_BYTES)
   if not inspected then
     return nil, "could not inspect image dimensions: " .. tostring(dimensions), false
   end
@@ -149,30 +172,39 @@ local function run_magick(data, mime, ctx, settings)
     return nil, "could not inspect image dimensions: invalid output", false
   end
   if ow * oh > settings.max_image_pixels then
-    return nil, "image dimensions exceed " .. settings.max_image_pixels
-      .. " pixels", false
+    return nil, "image dimensions exceed " .. settings.max_image_pixels .. " pixels", false
   end
 
   local ok, result = pcall(function()
     local output_format = mime == MIME.jpeg and "jpeg" or "png"
     local bytes = process_magick(data, ctx, settings, nil, {
-      input, "-auto-orient", "-resize", "2000x2000>", output_format .. ":-",
+      input,
+      "-auto-orient",
+      "-resize",
+      "2000x2000>",
+      output_format .. ":-",
     }, MAGICK_CAPTURE_BYTES)
     ---@type Neoagent.FileImageMime
     local transmitted_mime = output_format == "jpeg" and MIME.jpeg or MIME.png
     if encoded_size(#bytes) > settings.max_image_payload_bytes then
       output_format = "jpeg"
       bytes = process_magick(data, ctx, settings, nil, {
-        input, "-auto-orient", "-resize", "1600x1600>",
-        "-quality", "80", output_format .. ":-",
+        input,
+        "-auto-orient",
+        "-resize",
+        "1600x1600>",
+        "-quality",
+        "80",
+        output_format .. ":-",
       }, settings.max_image_payload_bytes)
       transmitted_mime = MIME.jpeg
     end
 
-    local final_ok, final_dimensions = pcall(process_magick,
-      bytes, ctx, settings, "identify", {
-        "-format", "%w %h", output_format .. ":-[0]",
-      }, IDENTIFY_CAPTURE_BYTES)
+    local final_ok, final_dimensions = pcall(process_magick, bytes, ctx, settings, "identify", {
+      "-format",
+      "%w %h",
+      output_format .. ":-[0]",
+    }, IDENTIFY_CAPTURE_BYTES)
     local tw, th
     if final_ok then
       tw, th = final_dimensions:match("(%d+)%s+(%d+)")
@@ -180,14 +212,22 @@ local function run_magick(data, mime, ctx, settings)
     end
     local note = "Read image file [" .. transmitted_mime .. "]"
     if tw and th and (ow ~= tw or oh ~= th) then
-      note = note .. string.format(
-        "\n[Resized from %dx%d to %dx%d; coordinate scale %.4f x %.4f]",
-        ow, oh, tw, th, ow / tw, oh / th)
+      note = note
+        .. string.format(
+          "\n[Resized from %dx%d to %dx%d; coordinate scale %.4f x %.4f]",
+          ow,
+          oh,
+          tw,
+          th,
+          ow / tw,
+          oh / th
+        )
     end
-    return image_result(bytes, transmitted_mime, note,
-      settings.max_image_payload_bytes)
+    return image_result(bytes, transmitted_mime, note, settings.max_image_payload_bytes)
   end)
-  if not ok then return nil, tostring(result), true end
+  if not ok then
+    return nil, tostring(result), true
+  end
   return result
 end
 
@@ -195,8 +235,7 @@ end
 ---@param name string
 ---@return integer
 local function positive_integer(value, name)
-  assert(type(value) == "number" and value > 0 and value % 1 == 0,
-    name .. " must be a positive integer")
+  assert(type(value) == "number" and value > 0 and value % 1 == 0, name .. " must be a positive integer")
   ---@cast value integer
   return value
 end
@@ -209,13 +248,13 @@ local function new(options)
   local settings = {
     max_image_input_bytes = positive_integer(
       options.max_image_input_bytes or DEFAULT_MAX_IMAGE_INPUT_BYTES,
-      "max_image_input_bytes"),
-    max_image_pixels = positive_integer(
-      options.max_image_pixels or DEFAULT_MAX_IMAGE_PIXELS,
-      "max_image_pixels"),
+      "max_image_input_bytes"
+    ),
+    max_image_pixels = positive_integer(options.max_image_pixels or DEFAULT_MAX_IMAGE_PIXELS, "max_image_pixels"),
     max_image_payload_bytes = positive_integer(
       options.max_image_payload_bytes or DEFAULT_MAX_IMAGE_PAYLOAD_BYTES,
-      "max_image_payload_bytes"),
+      "max_image_payload_bytes"
+    ),
   }
   return {
     name = "read_file",
@@ -262,8 +301,7 @@ local function new(options)
       local function append_image(data)
         image_bytes = image_bytes + #data
         if image_bytes > settings.max_image_input_bytes then
-          error("image input exceeds "
-            .. settings.max_image_input_bytes .. " bytes")
+          error("image input exceeds " .. settings.max_image_input_bytes .. " bytes")
         end
         image_chunks[#image_chunks + 1] = data
       end
@@ -271,12 +309,18 @@ local function new(options)
       local function consume(data)
         if not mode then
           undecided = undecided .. data
-          if #undecided < 12 then return end
+          if #undecided < 12 then
+            return
+          end
           mime = detect(undecided)
           mode = mime and "image" or "text"
           data, undecided = undecided, ""
         end
-        if mode == "image" then append_image(data) else text.append(data) end
+        if mode == "image" then
+          append_image(data)
+        else
+          text.append(data)
+        end
       end
       local read, err = stream(filesystem, absolute, consume)
       if not read then
@@ -285,44 +329,70 @@ local function new(options)
       if not mode then
         mime = detect(undecided)
         mode = mime and "image" or "text"
-        if mode == "image" then append_image(undecided) else
+        if mode == "image" then
+          append_image(undecided)
+        else
           text.append(undecided)
         end
       end
       if mime then
         local data = table.concat(image_chunks)
         if vim.fn.executable("magick") == 1 and async.current() then
-          local processed, process_err, allow_original =
-            run_magick(data, mime, ctx, settings)
-          if processed then return processed end
-          if not allow_original then error(process_err) end
-          return image_result(data, mime,
-            "Read image file [" .. mime .. "]\n[ImageMagick resize failed: "
-              .. tostring(process_err) .. "; sending original]",
-            settings.max_image_payload_bytes)
+          local processed, process_err, allow_original = run_magick(data, mime, ctx, settings)
+          if processed then
+            return processed
+          end
+          if not allow_original then
+            error(process_err)
+          end
+          return image_result(
+            data,
+            mime,
+            "Read image file ["
+              .. mime
+              .. "]\n[ImageMagick resize failed: "
+              .. tostring(process_err)
+              .. "; sending original]",
+            settings.max_image_payload_bytes
+          )
         end
         local note = "Read image file [" .. mime .. "]"
         if vim.fn.executable("magick") ~= 1 then
           note = note .. "\n[ImageMagick is unavailable; sending original image]"
         end
-        return image_result(data, mime, note,
-          settings.max_image_payload_bytes)
+        return image_result(data, mime, note, settings.max_image_payload_bytes)
       end
 
       local shortened = text.finish(true)
       if offset > shortened.totalLines then
         error(string.format("Offset %d is beyond end of file (%d lines total)", offset, shortened.totalLines))
       end
-      local last = limit and math.min(shortened.totalLines, offset + limit - 1)
-        or shortened.totalLines
+      local last = limit and math.min(shortened.totalLines, offset + limit - 1) or shortened.totalLines
       local text
       if shortened.firstLineExceedsLimit then
-        text = string.format("[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]", offset, truncate.format_size(assert(shortened.firstLineBytes)), truncate.format_size(truncate.MAX_BYTES))
+        text = string.format(
+          "[Line %d is %s, exceeds %s limit. Use shell to inspect it in chunks.]",
+          offset,
+          truncate.format_size(assert(shortened.firstLineBytes)),
+          truncate.format_size(truncate.MAX_BYTES)
+        )
       elseif shortened.truncated then
         local ending = offset + shortened.outputLines - 1
-        text = shortened.content .. string.format("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", offset, ending, shortened.totalLines, ending + 1)
+        text = shortened.content
+          .. string.format(
+            "\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]",
+            offset,
+            ending,
+            shortened.totalLines,
+            ending + 1
+          )
       elseif limit and last < shortened.totalLines then
-        text = shortened.content .. string.format("\n\n[%d more lines in file. Use offset=%d to continue.]", shortened.totalLines - last, last + 1)
+        text = shortened.content
+          .. string.format(
+            "\n\n[%d more lines in file. Use offset=%d to continue.]",
+            shortened.totalLines - last,
+            last + 1
+          )
       else
         text = shortened.content
       end

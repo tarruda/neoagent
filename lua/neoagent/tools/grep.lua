@@ -26,16 +26,24 @@ local function new()
       local pattern = common.require_string(arguments, "pattern", true)
       local workspace = common.workspace(ctx)
       local limit = arguments.limit or 100
-      if type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0 then error("limit must be a positive integer") end
+      if type(limit) ~= "number" or limit < 1 or limit % 1 ~= 0 then
+        error("limit must be a positive integer")
+      end
       local context = arguments.context
       if context ~= nil and (type(context) ~= "number" or context < 0 or context % 1 ~= 0) then
         error("context must be a non-negative integer")
       end
       local command = { "rg", "--line-number", "--with-filename", "--no-heading", "--color", "never", "--hidden" }
-      if arguments.ignoreCase == true then command[#command + 1] = "--ignore-case" end
-      if arguments.literal == true then command[#command + 1] = "--fixed-strings" end
+      if arguments.ignoreCase == true then
+        command[#command + 1] = "--ignore-case"
+      end
+      if arguments.literal == true then
+        command[#command + 1] = "--fixed-strings"
+      end
       if arguments.glob ~= nil then
-        if type(arguments.glob) ~= "string" then error("glob must be a string") end
+        if type(arguments.glob) ~= "string" then
+          error("glob must be a string")
+        end
         command[#command + 1] = "--glob"
         command[#command + 1] = arguments.glob
       end
@@ -65,12 +73,20 @@ local function new()
       end
       local text = captured.content
       if captured.truncated then
-        text = text .. string.format("\n\n[Results truncated: showing %d of at least %d lines]", captured.outputLines, captured.totalLines)
+        text = text
+          .. string.format(
+            "\n\n[Results truncated: showing %d of at least %d lines]",
+            captured.outputLines,
+            captured.totalLines
+          )
       end
-      return { content = { { type = "text", text = text } }, details = {
-        truncation = captured,
-        lines_truncated = captured.linesTruncated,
-      } }
+      return {
+        content = { { type = "text", text = text } },
+        details = {
+          truncation = captured,
+          lines_truncated = captured.linesTruncated,
+        },
+      }
     end,
     render = presentation.grep,
   }

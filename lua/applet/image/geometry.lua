@@ -48,16 +48,13 @@ function M.calculate(image, cell_width, cell_height)
   local source_columns, source_rows = source_width, source_height
   if source_width and source_height and fit ~= "fill" then
     local source_ratio = source_width / source_height
-    local target_ratio = target_columns * cell_width
-      / (target_rows * cell_height)
+    local target_ratio = target_columns * cell_width / (target_rows * cell_height)
     if fit == "contain" then
       if source_ratio >= target_ratio then
-        rows = math.min(target_rows, rounded(
-          target_columns * cell_width / source_ratio / cell_height))
+        rows = math.min(target_rows, rounded(target_columns * cell_width / source_ratio / cell_height))
         row_offset = math.floor((target_rows - rows) / 2)
       else
-        columns = math.min(target_columns, rounded(
-          target_rows * cell_height * source_ratio / cell_width))
+        columns = math.min(target_columns, rounded(target_rows * cell_height * source_ratio / cell_width))
         col_offset = math.floor((target_columns - columns) / 2)
       end
     elseif source_ratio > target_ratio then
@@ -72,15 +69,18 @@ function M.calculate(image, cell_width, cell_height)
   end
 
   local viewport = image.viewport or {
-    row = 0, col = 0, width = target_columns, height = target_rows,
+    row = 0,
+    col = 0,
+    width = target_columns,
+    height = target_rows,
   }
   local first_row = math.max(row_offset, viewport.row)
-  local last_row = math.min(row_offset + rows,
-    viewport.row + viewport.height)
+  local last_row = math.min(row_offset + rows, viewport.row + viewport.height)
   local first_col = math.max(col_offset, viewport.col)
-  local last_col = math.min(col_offset + columns,
-    viewport.col + viewport.width)
-  if first_row >= last_row or first_col >= last_col then return nil end
+  local last_col = math.min(col_offset + columns, viewport.col + viewport.width)
+  if first_row >= last_row or first_col >= last_col then
+    return nil
+  end
 
   local row_in_image = first_row - row_offset
   local col_in_image = first_col - col_offset
@@ -96,14 +96,10 @@ function M.calculate(image, cell_width, cell_height)
     -- Crop dimensions start from the source size and remain defined when it is known.
     ---@cast source_columns integer
     ---@cast source_rows integer
-    local x = source_x + math.floor(
-      col_in_image * source_columns / columns)
-    local y = source_y + math.floor(
-      row_in_image * source_rows / rows)
-    local right = source_x + math.ceil(
-      (col_in_image + visible_columns) * source_columns / columns)
-    local bottom = source_y + math.ceil(
-      (row_in_image + visible_rows) * source_rows / rows)
+    local x = source_x + math.floor(col_in_image * source_columns / columns)
+    local y = source_y + math.floor(row_in_image * source_rows / rows)
+    local right = source_x + math.ceil((col_in_image + visible_columns) * source_columns / columns)
+    local bottom = source_y + math.ceil((row_in_image + visible_rows) * source_rows / rows)
     if x > 0 or y > 0 or right < source_width or bottom < source_height then
       result.source_x = x
       result.source_y = y

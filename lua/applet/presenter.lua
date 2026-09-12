@@ -47,18 +47,28 @@ local function protected(start, done)
   ---@param deliver fun(value: V)
   ---@param value V
   local function settle(deliver, value)
-    if not active then return end
+    if not active then
+      return
+    end
     active = false
     deliver(value)
   end
   ---@type Applet.PresentationCallbacks<T>
   local guarded = {
-    resolve = function(value) settle(done.resolve, value) end,
-    reject = function(err) settle(done.reject, err) end,
+    resolve = function(value)
+      settle(done.resolve, value)
+    end,
+    reject = function(err)
+      settle(done.reject, err)
+    end,
   }
   local ok, err = pcall(start, guarded)
-  if not ok then guarded.reject(err) end
-  return function() active = false end
+  if not ok then
+    guarded.reject(err)
+  end
+  return function()
+    active = false
+  end
 end
 
 ---@param item Applet.SelectItem
@@ -89,14 +99,18 @@ function M.select(request, done)
     ---@return Applet.SelectItem
     local function semantic_item(value)
       for index, item in ipairs(request.items) do
-        if items[index] == value then return item end
+        if items[index] == value then
+          return item
+        end
       end
       -- Native selection callbacks return one of the supplied items.
       return value --[[@as Applet.SelectItem]]
     end
     vim.ui.select(items, {
       prompt = request.prompt,
-      format_item = function(item) return item_label(semantic_item(item)) end,
+      format_item = function(item)
+        return item_label(semantic_item(item))
+      end,
     }, function(item)
       if item == nil then
         guarded.reject(cancelled("Selection cancelled"))
@@ -114,12 +128,15 @@ function M.input(request, done)
   if request.secret then
     local active = true
     vim.schedule(function()
-      if not active then return end
+      if not active then
+        return
+      end
       local ok, value = pcall(vim.fn.inputsecret, request.prompt .. " ")
-      if not active then return end
+      if not active then
+        return
+      end
       active = false
-      if ok and value ~= nil
-          and (request.allow_empty or value ~= "") then
+      if ok and value ~= nil and (request.allow_empty or value ~= "") then
         done.resolve(value --[[@as string]])
       elseif ok then
         done.reject(cancelled("Input cancelled"))
@@ -127,7 +144,9 @@ function M.input(request, done)
         done.reject(value)
       end
     end)
-    return function() active = false end
+    return function()
+      active = false
+    end
   end
   return protected(function(guarded)
     vim.ui.input({
@@ -192,7 +211,9 @@ end
 ---@return vim.SystemObj?
 ---@return string?
 function M.open_uri(uri)
-  if vim.ui and type(vim.ui.open) == "function" then return vim.ui.open(uri) end
+  if vim.ui and type(vim.ui.open) == "function" then
+    return vim.ui.open(uri)
+  end
   error("URI opening is unavailable", 2)
 end
 

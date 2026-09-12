@@ -61,7 +61,9 @@ end
 
 local reasoning_fields = { "reasoning_content", "reasoning", "reasoning_text" }
 local reasoning_field = {}
-for _, field in ipairs(reasoning_fields) do reasoning_field[field] = true end
+for _, field in ipairs(reasoning_fields) do
+  reasoning_field[field] = true
+end
 
 ---@param message Neoagent.AssistantMessage
 ---@param requires_reasoning_content? boolean
@@ -126,7 +128,9 @@ local function encode_messages(messages, system_prompt, requires_reasoning_conte
       result[#result + 1] = { role = "user", content = encode_content(message.content) }
     elseif message.role == "assistant" then
       local encoded = encode_assistant(message, requires_reasoning_content)
-      if encoded then result[#result + 1] = encoded end
+      if encoded then
+        result[#result + 1] = encoded
+      end
     elseif message.role == "toolResult" then
       local text = {}
       local images = {}
@@ -199,23 +203,30 @@ end
 ---@param err Neoagent.Error
 ---@return Neoagent.AssistantMessage?
 local function partial_message(message, calls_complete, err)
-  if type(message) ~= "table" then return nil end
+  if type(message) ~= "table" then
+    return nil
+  end
   local candidate = util.copy(message)
   candidate.content = {}
   for _, block in ipairs(message.content or {}) do
     local retained
-    if block.type == "text" and type(block.text) == "string"
-        and block.text ~= "" then
+    if block.type == "text" and type(block.text) == "string" and block.text ~= "" then
       retained = util.copy(block)
-    elseif block.type == "thinking" and type(block.thinking) == "string"
-        and block.thinking ~= "" then
+    elseif block.type == "thinking" and type(block.thinking) == "string" and block.thinking ~= "" then
       retained = util.copy(block)
-    elseif block.type == "toolCall" and calls_complete
-        and type(block.id) == "string" and block.id ~= ""
-        and type(block.name) == "string" and block.name ~= "" then
+    elseif
+      block.type == "toolCall"
+      and calls_complete
+      and type(block.id) == "string"
+      and block.id ~= ""
+      and type(block.name) == "string"
+      and block.name ~= ""
+    then
       retained = util.copy(block)
     end
-    if retained then candidate.content[#candidate.content + 1] = retained end
+    if retained then
+      candidate.content[#candidate.content + 1] = retained
+    end
   end
   candidate.stopReason = err.kind == "cancelled" and "aborted" or "error"
   candidate.errorMessage = err.message
@@ -225,8 +236,7 @@ end
 ---@param raw Neoagent.JsonObject|Neoagent.JsonArray
 ---@return Neoagent.Usage
 local function usage_from(raw)
-  local details = type(raw.prompt_tokens_details) == "table"
-    and raw.prompt_tokens_details or {}
+  local details = type(raw.prompt_tokens_details) == "table" and raw.prompt_tokens_details or {}
   local input = type(raw.prompt_tokens) == "number" and raw.prompt_tokens or 0
   local output = type(raw.completion_tokens) == "number" and raw.completion_tokens or 0
   local cache_read = type(details.cached_tokens) == "number" and details.cached_tokens
@@ -236,10 +246,8 @@ local function usage_from(raw)
     input = input,
     output = output,
     cacheRead = cache_read,
-    cacheWrite = type(details.cache_write_tokens) == "number"
-      and details.cache_write_tokens or 0,
-    totalTokens = type(raw.total_tokens) == "number" and raw.total_tokens
-      or (input + output),
+    cacheWrite = type(details.cache_write_tokens) == "number" and details.cache_write_tokens or 0,
+    totalTokens = type(raw.total_tokens) == "number" and raw.total_tokens or (input + output),
     cost = { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, total = 0 },
   }
 end
@@ -247,9 +255,10 @@ end
 ---@param value unknown
 ---@return number?
 local function positive_number(value)
-  if type(value) == "string" then value = tonumber(value) end
-  if type(value) ~= "number" or value <= 0 or value ~= value
-      or value == math.huge then
+  if type(value) == "string" then
+    value = tonumber(value)
+  end
+  if type(value) ~= "number" or value <= 0 or value ~= value or value == math.huge then
     return nil
   end
   return value
@@ -258,9 +267,10 @@ end
 ---@param value unknown
 ---@return number?
 local function nonnegative_number(value)
-  if type(value) == "string" then value = tonumber(value) end
-  if type(value) ~= "number" or value < 0 or value ~= value
-      or value == math.huge then
+  if type(value) == "string" then
+    value = tonumber(value)
+  end
+  if type(value) ~= "number" or value < 0 or value ~= value or value == math.huge then
     return nil
   end
   return value
@@ -273,7 +283,9 @@ end
 local function tokens_per_second(tokens, duration, scale)
   tokens = positive_number(tokens)
   duration = positive_number(duration)
-  if not tokens or not duration then return nil end
+  if not tokens or not duration then
+    return nil
+  end
   return positive_number(tokens * (scale or 1) / duration)
 end
 
@@ -298,8 +310,7 @@ local function rolling_generation_rate(timings, state)
     state.generation_head = 1
     return nil, true, tokens
   end
-  if previous and (tokens < previous.tokens
-      or elapsed_ms < previous.elapsed_ms) then
+  if previous and (tokens < previous.tokens or elapsed_ms < previous.elapsed_ms) then
     samples = {}
     state.generation_samples = samples
     state.generation_head = 1
@@ -329,9 +340,10 @@ local function rolling_generation_rate(timings, state)
   local baseline = samples[head]
   -- A sample was appended and head advances only to an existing sample.
   ---@cast baseline Neoagent.GenerationSample
-  if baseline == samples[#samples] then return nil, true, tokens end
-  return tokens_per_second(tokens - baseline.tokens,
-    elapsed_ms - baseline.elapsed_ms, 1000), true, tokens
+  if baseline == samples[#samples] then
+    return nil, true, tokens
+  end
+  return tokens_per_second(tokens - baseline.tokens, elapsed_ms - baseline.elapsed_ms, 1000), true, tokens
 end
 
 ---@param chunk Neoagent.JsonObject|Neoagent.JsonArray
@@ -339,8 +351,7 @@ end
 ---@return number? rate
 ---@return number? elapsed_ms
 local function prompt_rate(chunk, timings)
-  local progress = type(chunk.prompt_progress) == "table"
-    and chunk.prompt_progress or nil
+  local progress = type(chunk.prompt_progress) == "table" and chunk.prompt_progress or nil
   if progress then
     local processed = nonnegative_number(progress.processed)
     local cached = nonnegative_number(progress.cache) or 0
@@ -349,8 +360,7 @@ local function prompt_rate(chunk, timings)
     return tokens_per_second(tokens, elapsed_ms, 1000), elapsed_ms
   end
   local elapsed_ms = nonnegative_number(timings.prompt_ms)
-  return positive_number(timings.prompt_per_second)
-    or tokens_per_second(timings.prompt_n, elapsed_ms, 1000), elapsed_ms
+  return positive_number(timings.prompt_per_second) or tokens_per_second(timings.prompt_n, elapsed_ms, 1000), elapsed_ms
 end
 
 ---@param chunk Neoagent.JsonObject|Neoagent.JsonArray
@@ -358,8 +368,7 @@ end
 ---@return Neoagent.ModelInferenceStats?
 local function inference_stats(chunk, state)
   local timings = type(chunk.timings) == "table" and chunk.timings or {}
-  local generation, cumulative, generated =
-    rolling_generation_rate(timings, state)
+  local generation, cumulative, generated = rolling_generation_rate(timings, state)
   if not cumulative then
     generation = positive_number(timings.predicted_per_second)
   end
@@ -369,7 +378,9 @@ local function inference_stats(chunk, state)
       generation_tokens_per_second = generation,
     }
   end
-  if generated and generated > 0 then return nil end
+  if generated and generated > 0 then
+    return nil
+  end
   local prompt, elapsed_ms = prompt_rate(chunk, timings)
   if prompt then
     return {
@@ -407,8 +418,11 @@ function Model:_request(call_opts)
   ---@type Neoagent.JsonObject
   local body = {
     model = self.id,
-    messages = encode_messages(messages.for_model(call_opts.messages, self),
-      call_opts.system_prompt, self._requires_reasoning_content),
+    messages = encode_messages(
+      messages.for_model(call_opts.messages, self),
+      call_opts.system_prompt,
+      self._requires_reasoning_content
+    ),
     stream = true,
     stream_options = { include_usage = true },
   }
@@ -431,8 +445,7 @@ function Model:_request(call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
-    request_context = request_context.resolve(
-      self._request_context, call_opts.request_context),
+    request_context = request_context.resolve(self._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(self._request_opts) do
     request = request_opts.apply(request, layer, ctx)
@@ -452,200 +465,208 @@ function Model:stream(opts)
   local calls
   local calls_complete = false
   return async.run(
-  ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
-  ---@return Neoagent.ModelResult
-  function(run)
-    local ok, outcome = pcall(function()
-      local request, identity = self:_request(opts)
-      local transport = request_context.bind_transport(self._transport, identity)
-      message = {
-        role = "assistant",
-        content = {},
-        api = self.api,
-        provider = self.provider,
-        model = self.id,
-        usage = zero_usage(),
-        stopReason = "stop",
-        timestamp = util.now_ms(),
-      }
-      ---@type Neoagent.TextBlock?
-      local text_block
-      ---@type Neoagent.ThinkingBlock?
-      local thinking_block
-      calls = {}
-      local finish_seen = false
-      local done_seen = false
-      local protocol_error
-      ---@type Neoagent.ModelInferenceStats?
-      local last_inference_stats
-      local inference_state = { generation_samples = {}, generation_head = 1 }
+    ---@param run Neoagent.Run<Neoagent.ModelResult, Neoagent.ModelEvent>
+    ---@return Neoagent.ModelResult
+    function(run)
+      local ok, outcome = pcall(function()
+        local request, identity = self:_request(opts)
+        local transport = request_context.bind_transport(self._transport, identity)
+        message = {
+          role = "assistant",
+          content = {},
+          api = self.api,
+          provider = self.provider,
+          model = self.id,
+          usage = zero_usage(),
+          stopReason = "stop",
+          timestamp = util.now_ms(),
+        }
+        ---@type Neoagent.TextBlock?
+        local text_block
+        ---@type Neoagent.ThinkingBlock?
+        local thinking_block
+        calls = {}
+        local finish_seen = false
+        local done_seen = false
+        local protocol_error
+        ---@type Neoagent.ModelInferenceStats?
+        local last_inference_stats
+        local inference_state = { generation_samples = {}, generation_head = 1 }
 
-      ---@param chunk Neoagent.JsonValue
-      local function process_payload(chunk)
-        if type(chunk) ~= "table" then
-          error(util.error("protocol", "Expected an object in SSE response"), 0)
-        end
-        if type(chunk.error) == "table" then
-          error(util.error("model", http_response.error_message(chunk, "Provider returned an error"), util.json_encode(chunk)), 0)
-        end
-        if type(chunk.usage) == "table" then
-          message.usage = usage_from(chunk.usage)
-          run:emit({ type = "usage", usage = util.copy(message.usage) })
-        end
-        local stats = inference_stats(chunk, inference_state)
-        local stats_changed = false
-        if stats then
-          stats_changed = not last_inference_stats
-            or stats.prompt_tokens_per_second ~= last_inference_stats.prompt_tokens_per_second
-            or stats.generation_tokens_per_second ~= last_inference_stats.generation_tokens_per_second
-            or stats.elapsed_ms ~= last_inference_stats.elapsed_ms
-        end
-        if stats and stats_changed then
-          last_inference_stats = stats
-          run:emit(util.copy(stats))
-        end
-        local choice = type(chunk.choices) == "table" and chunk.choices[1] or nil
-        if not choice then
-          return
-        end
-        if choice.finish_reason ~= nil and choice.finish_reason ~= vim.NIL then
-          finish_seen = true
-          calls_complete = true
-          message.stopReason = stop_reason(choice.finish_reason)
-          if message.stopReason == "error" then
-            error(util.error("model", "Provider finish_reason: " .. tostring(choice.finish_reason)), 0)
+        ---@param chunk Neoagent.JsonValue
+        local function process_payload(chunk)
+          if type(chunk) ~= "table" then
+            error(util.error("protocol", "Expected an object in SSE response"), 0)
+          end
+          if type(chunk.error) == "table" then
+            error(
+              util.error(
+                "model",
+                http_response.error_message(chunk, "Provider returned an error"),
+                util.json_encode(chunk)
+              ),
+              0
+            )
+          end
+          if type(chunk.usage) == "table" then
+            message.usage = usage_from(chunk.usage)
+            run:emit({ type = "usage", usage = util.copy(message.usage) })
+          end
+          local stats = inference_stats(chunk, inference_state)
+          local stats_changed = false
+          if stats then
+            stats_changed = not last_inference_stats
+              or stats.prompt_tokens_per_second ~= last_inference_stats.prompt_tokens_per_second
+              or stats.generation_tokens_per_second ~= last_inference_stats.generation_tokens_per_second
+              or stats.elapsed_ms ~= last_inference_stats.elapsed_ms
+          end
+          if stats and stats_changed then
+            last_inference_stats = stats
+            run:emit(util.copy(stats))
+          end
+          local choice = type(chunk.choices) == "table" and chunk.choices[1] or nil
+          if not choice then
+            return
+          end
+          if choice.finish_reason ~= nil and choice.finish_reason ~= vim.NIL then
+            finish_seen = true
+            calls_complete = true
+            message.stopReason = stop_reason(choice.finish_reason)
+            if message.stopReason == "error" then
+              error(util.error("model", "Provider finish_reason: " .. tostring(choice.finish_reason)), 0)
+            end
+          end
+          local delta = choice.delta
+          if type(delta) ~= "table" then
+            return
+          end
+          if type(delta.content) == "string" and delta.content ~= "" then
+            if not util.is_valid_utf8(delta.content) then
+              error(util.error("protocol", "OpenAI text delta must contain valid UTF-8"), 0)
+            end
+            if not text_block then
+              text_block = { type = "text", text = "" }
+              message.content[#message.content + 1] = text_block
+            end
+            text_block.text = text_block.text .. delta.content
+            run:emit({ type = "text_delta", text = delta.content })
+          end
+          local thinking
+          local thinking_signature
+          for _, field in ipairs(reasoning_fields) do
+            local value = delta[field]
+            if type(value) == "string" and value ~= "" then
+              thinking = value
+              thinking_signature = field
+              break
+            end
+          end
+          if thinking then
+            if not util.is_valid_utf8(thinking) then
+              error(util.error("protocol", "OpenAI thinking delta must contain valid UTF-8"), 0)
+            end
+            if not thinking_block then
+              thinking_block = { type = "thinking", thinking = "", thinkingSignature = thinking_signature }
+              message.content[#message.content + 1] = thinking_block
+            end
+            thinking_block.thinking = thinking_block.thinking .. thinking
+            run:emit({ type = "thinking_delta", text = thinking })
+          end
+          local tool_calls = type(delta.tool_calls) == "table" and delta.tool_calls or {}
+          for _, raw_call in ipairs(tool_calls) do
+            local index = raw_call.index or 0
+            local pending = calls[index]
+            if not pending then
+              pending = {
+                block = { type = "toolCall", id = "", name = "", arguments = vim.empty_dict() },
+                raw = "",
+              }
+              calls[index] = pending
+              message.content[#message.content + 1] = pending.block
+            end
+            local call = pending.block
+            if type(raw_call.id) == "string" and raw_call.id ~= "" and call.id == "" then
+              call.id = raw_call.id
+            end
+            local fn = type(raw_call["function"]) == "table" and raw_call["function"] or {}
+            if type(fn.name) == "string" and fn.name ~= "" then
+              call.name = call.name .. fn.name
+            end
+            local arguments_delta
+            if type(fn.arguments) == "string" and fn.arguments ~= "" then
+              arguments_delta = fn.arguments
+              pending.raw = pending.raw .. arguments_delta
+            end
+            run:emit({
+              type = "tool_call_delta",
+              index = index,
+              id = call.id ~= "" and call.id or nil,
+              name = call.name ~= "" and call.name or nil,
+              arguments_delta = arguments_delta,
+            })
           end
         end
-        local delta = choice.delta
-        if type(delta) ~= "table" then
-          return
-        end
-        if type(delta.content) == "string" and delta.content ~= "" then
-          if not util.is_valid_utf8(delta.content) then
-            error(util.error("protocol",
-              "OpenAI text delta must contain valid UTF-8"), 0)
-          end
-          if not text_block then
-            text_block = { type = "text", text = "" }
-            message.content[#message.content + 1] = text_block
-          end
-          text_block.text = text_block.text .. delta.content
-          run:emit({ type = "text_delta", text = delta.content })
-        end
-        local thinking
-        local thinking_signature
-        for _, field in ipairs(reasoning_fields) do
-          local value = delta[field]
-          if type(value) == "string" and value ~= "" then
-            thinking = value
-            thinking_signature = field
-            break
-          end
-        end
-        if thinking then
-          if not util.is_valid_utf8(thinking) then
-            error(util.error("protocol",
-              "OpenAI thinking delta must contain valid UTF-8"), 0)
-          end
-          if not thinking_block then
-            thinking_block = { type = "thinking", thinking = "", thinkingSignature = thinking_signature }
-            message.content[#message.content + 1] = thinking_block
-          end
-          thinking_block.thinking = thinking_block.thinking .. thinking
-          run:emit({ type = "thinking_delta", text = thinking })
-        end
-        local tool_calls = type(delta.tool_calls) == "table" and delta.tool_calls or {}
-        for _, raw_call in ipairs(tool_calls) do
-          local index = raw_call.index or 0
-          local pending = calls[index]
-          if not pending then
-            pending = {
-              block = { type = "toolCall", id = "", name = "", arguments = vim.empty_dict() },
-              raw = "",
-            }
-            calls[index] = pending
-            message.content[#message.content + 1] = pending.block
-          end
+
+        local child = transport.stream({
+          request = {
+            url = request.url,
+            headers = request.headers,
+            body = util.json_encode(request.body),
+            timeout_ms = request.timeout_ms,
+          },
+          on_event = process_payload,
+          on_done_marker = function()
+            done_seen = true
+            calls_complete = true
+          end,
+        })
+        local transport_ok, transport_result = pcall(function()
+          return child:await()
+        end)
+        for _, pending in pairs(calls) do
           local call = pending.block
-          if type(raw_call.id) == "string" and raw_call.id ~= "" and call.id == "" then
-            call.id = raw_call.id
+          if calls_complete and call.id ~= "" and call.name ~= "" then
+            call.arguments, call.argumentsError = tool_arguments.decode(pending.raw)
           end
-          local fn = type(raw_call["function"]) == "table" and raw_call["function"] or {}
-          if type(fn.name) == "string" and fn.name ~= "" then
-            call.name = call.name .. fn.name
+          if calls_complete and call.id == "" then
+            protocol_error = util.error("protocol", "Tool call is missing an id")
+          elseif calls_complete and call.name == "" then
+            protocol_error = util.error("protocol", "Tool call is missing a name")
           end
-          local arguments_delta
-          if type(fn.arguments) == "string" and fn.arguments ~= "" then
-            arguments_delta = fn.arguments
-            pending.raw = pending.raw .. arguments_delta
-          end
-          run:emit({
-            type = "tool_call_delta",
-            index = index,
-            id = call.id ~= "" and call.id or nil,
-            name = call.name ~= "" and call.name or nil,
-            arguments_delta = arguments_delta,
-          })
         end
-      end
+        if not transport_ok then
+          error(transport_result, 0)
+        end
+        http_response.check(transport_result)
+        if protocol_error then
+          error(protocol_error, 0)
+        end
+        if not finish_seen and not done_seen then
+          error(util.error("protocol", "Stream ended without finish_reason or [DONE]"), 0)
+        end
+        return message
+      end)
 
-      local child = transport.stream({
-        request = {
-          url = request.url,
-          headers = request.headers,
-          body = util.json_encode(request.body),
-          timeout_ms = request.timeout_ms,
-        },
-        on_event = process_payload,
-        on_done_marker = function()
-          done_seen = true
-          calls_complete = true
-        end,
-      })
-      local transport_ok, transport_result = pcall(function() return child:await() end)
-      for _, pending in pairs(calls) do
-        local call = pending.block
-        if calls_complete and call.id ~= "" and call.name ~= "" then
-          call.arguments, call.argumentsError = tool_arguments.decode(pending.raw)
-        end
-        if calls_complete and call.id == "" then
-          protocol_error = util.error("protocol", "Tool call is missing an id")
-        elseif calls_complete and call.name == "" then
-          protocol_error = util.error("protocol", "Tool call is missing a name")
-        end
+      if not ok then
+        local err = util.normalize_error(outcome, "model")
+        local partial = partial_message(message, calls_complete, err)
+        return { ok = false, message = partial, error = err }
       end
-      if not transport_ok then
-        error(transport_result, 0)
+      local message, message_err = semantic_message.normalize_model_response(outcome)
+      if not message then
+        return {
+          ok = false,
+          error = message_err,
+        }
       end
-      http_response.check(transport_result)
-      if protocol_error then
-        error(protocol_error, 0)
-      end
-      if not finish_seen and not done_seen then
-        error(util.error("protocol", "Stream ended without finish_reason or [DONE]"), 0)
-      end
-      return message
-    end)
-
-    if not ok then
-      local err = util.normalize_error(outcome, "model")
-      local partial = partial_message(message, calls_complete, err)
-      return { ok = false, message = partial, error = err }
-    end
-    local message, message_err =
-      semantic_message.normalize_model_response(outcome)
-    if not message then
-      return {
-        ok = false,
-        error = message_err,
-      }
-    end
-    return { ok = true, message = message, text = util.text_content(message.content) }
-  end, {
-    on_event = opts.on_event,
-    on_done = opts.on_done,
-    error_kind = "model",
-  })
+      return { ok = true, message = message, text = util.text_content(message.content) }
+    end,
+    {
+      on_event = opts.on_event,
+      on_done = opts.on_done,
+      error_kind = "model",
+    }
+  )
 end
 
 ---@param opts Neoagent.CompletionsOptions
@@ -663,23 +684,26 @@ function M.new(opts)
     layers[#layers + 1] = opts.request_opts
   end
   local timeout_ms = request_opts.timeout(opts.timeout_ms)
-  local model = model_contract.assert(setmetatable({
-    api = "openai-completions",
-    provider = opts.provider,
-    id = opts.model,
-    input = util.copy(opts.input or { "text", "image" }),
-    context_window = opts.context_window,
-    timeout_ms = timeout_ms,
-    _base_url = opts.base_url:gsub("/+$", ""),
-    _api_key = opts.api_key,
-    _max_output_tokens = opts.max_output_tokens,
-    _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
-    thinking = util.copy(opts.thinking),
-    _request_opts = layers,
-    _request_context = request_context.copy(opts.request_context),
-    _timeout_ms = timeout_ms,
-    _transport = http.new(opts.transport),
-  }, Model), "OpenAI Chat Completions constructor")
+  local model = model_contract.assert(
+    setmetatable({
+      api = "openai-completions",
+      provider = opts.provider,
+      id = opts.model,
+      input = util.copy(opts.input or { "text", "image" }),
+      context_window = opts.context_window,
+      timeout_ms = timeout_ms,
+      _base_url = opts.base_url:gsub("/+$", ""),
+      _api_key = opts.api_key,
+      _max_output_tokens = opts.max_output_tokens,
+      _requires_reasoning_content = opts.requires_reasoning_content == true or opts.provider == "deepseek",
+      thinking = util.copy(opts.thinking),
+      _request_opts = layers,
+      _request_context = request_context.copy(opts.request_context),
+      _timeout_ms = timeout_ms,
+      _transport = http.new(opts.transport),
+    }, Model),
+    "OpenAI Chat Completions constructor"
+  )
   -- Validation normalizes public capabilities while retaining the adapter fields.
   ---@cast model Neoagent.CompletionsModel
   return model

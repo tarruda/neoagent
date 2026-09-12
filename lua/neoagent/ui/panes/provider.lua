@@ -124,12 +124,10 @@ local function progress(key, block, width)
   if type(block.value) == "number" then
     local value = math.max(0, math.min(1, block.value))
     local suffix = " " .. math.floor(value * 100 + 0.5) .. "%"
-    local available = math.max(1, math.min(40,
-      width - display.width(suffix)))
+    local available = math.max(1, math.min(40, width - display.width(suffix)))
     local filled = math.floor(value * available + 0.5)
     bar = {
-      { text = string.rep("█", filled),
-        style = level_styles[block.level or "info"] or "accent" },
+      { text = string.rep("█", filled), style = level_styles[block.level or "info"] or "accent" },
       { text = string.rep("─", available - filled) .. suffix, style = "muted" },
     }
   else
@@ -182,11 +180,14 @@ local function limit(key, block, width, label_width)
     local inline_reset = reset and display.width(meter .. " (" .. reset .. ")") <= width
     if inline_reset then
       meter_runs[#meter_runs + 1] = {
-        text = " (" .. reset .. ")", style = "muted",
+        text = " (" .. reset .. ")",
+        style = "muted",
       }
     end
     local meter_node = text(key .. ":meter", meter_runs, "none")
-    if label_fits and (not reset or inline_reset) then return meter_node end
+    if label_fits and (not reset or inline_reset) then
+      return meter_node
+    end
     local children = {}
     if not label_fits then
       children[#children + 1] = text(key .. ":label", {
@@ -205,7 +206,9 @@ local function limit(key, block, width, label_width)
     { text = label .. "  ", style = "strong" },
     { text = percent },
   })
-  if not reset then return summary end
+  if not reset then
+    return summary
+  end
   return ui.column({
     key = key,
     children = {
@@ -224,8 +227,7 @@ local function information_block(block, key, width, limit_label_width)
   if block.type == "status" then
     local level = block.level or "info"
     return text(key, {
-      { text = (level_symbols[level] or level_symbols.info) .. " ",
-        style = level_styles[level] or "accent" },
+      { text = (level_symbols[level] or level_symbols.info) .. " ", style = level_styles[level] or "accent" },
       { text = tostring(block.text or ""), style = "strong" },
     })
   end
@@ -234,17 +236,25 @@ local function information_block(block, key, width, limit_label_width)
       { text = tostring(block.label or "") .. "  ", style = "muted" },
       { text = tostring(block.value or "") },
     })
-    if not block.level then return value end
+    if not block.level then
+      return value
+    end
     local level = block.level or "info"
     return ui.row({
       key = key,
       children = {
         { node = value, min_width = 1, grow = 1 },
         {
-          node = text(key .. ":level", { {
-            text = field_symbols[level] or field_symbols.info,
-            style = level_styles[level] or "accent",
-          } }, "none"),
+          node = text(
+            key .. ":level",
+            {
+              {
+                text = field_symbols[level] or field_symbols.info,
+                style = level_styles[level] or "accent",
+              },
+            },
+            "none"
+          ),
           min_width = 1,
           grow = 0,
         },
@@ -262,11 +272,17 @@ local function information_block(block, key, width, limit_label_width)
       text(key .. ":title", { { text = tostring(block.title or ""), style = "strong" } }),
     }
     for index, item in ipairs(block.items or {}) do
-      children[#children + 1] = text(key .. ":item:" .. index, { {
-        text = "  " .. tostring(item.label or "")
-          .. (item.detail and item.detail ~= "" and " · " .. item.detail or ""),
-        style = "muted",
-      } })
+      children[#children + 1] = text(
+        key .. ":item:" .. index,
+        {
+          {
+            text = "  "
+              .. tostring(item.label or "")
+              .. (item.detail and item.detail ~= "" and " · " .. item.detail or ""),
+            style = "muted",
+          },
+        }
+      )
     end
     return ui.column({ key = key, children = children })
   end
@@ -277,8 +293,10 @@ local function information_block(block, key, width, limit_label_width)
     for index, entry in ipairs(block.entries or {}) do
       local level = entry.level or "info"
       children[#children + 1] = text(key .. ":entry:" .. index, {
-        { text = "  " .. (level_symbols[level] or level_symbols.info) .. " ",
-          style = level_styles[level] or "muted" },
+        {
+          text = "  " .. (level_symbols[level] or level_symbols.info) .. " ",
+          style = level_styles[level] or "muted",
+        },
         { text = tostring(entry.message or ""), style = "muted" },
       })
     end
@@ -298,7 +316,9 @@ local function information(state, key, width)
   ---@type Applet.Node[]
   local fields = {}
   local function flush_fields()
-    if #fields == 0 then return end
+    if #fields == 0 then
+      return
+    end
     children[#children + 1] = ui.column({
       key = key .. ":fields:" .. tostring(#children + 1),
       children = fields,
@@ -311,8 +331,7 @@ local function information(state, key, width)
       if block.type == "limit" then
         local remaining = math.max(0, math.min(1, block.remaining or 0))
         local percent = math.floor(remaining * 100 + 0.5) .. "% left"
-        limit_percent_width = math.max(limit_percent_width,
-          display.width(percent))
+        limit_percent_width = math.max(limit_percent_width, display.width(percent))
       end
     end
     local label_budget = math.max(0, width - 23 - limit_percent_width)
@@ -325,8 +344,7 @@ local function information(state, key, width)
       end
     end
     for index, block in ipairs(provider_state.blocks or {}) do
-      local node = information_block(block, key .. ":block:" .. index,
-        width, limit_label_width)
+      local node = information_block(block, key .. ":block:" .. index, width, limit_label_width)
       if node then
         if block.type == "field" then
           fields[#fields + 1] = node
@@ -338,7 +356,9 @@ local function information(state, key, width)
     end
     flush_fields()
   end
-  if #children == 0 then return nil end
+  if #children == 0 then
+    return nil
+  end
   return ui.column({ key = key, gap = 1, children = children })
 end
 
@@ -351,7 +371,10 @@ local function binding(result, value, action, desc)
   for _, lhs in ipairs(values) do
     if type(lhs) == "string" then
       result[#result + 1] = {
-        mode = "n", lhs = lhs, action = ui.action(action), desc = desc,
+        mode = "n",
+        lhs = lhs,
+        action = ui.action(action),
+        desc = desc,
       }
     end
   end
@@ -363,7 +386,9 @@ end
 local function mapped(value, lhs)
   local values = type(value) == "table" and value or { value }
   for _, candidate in ipairs(values) do
-    if candidate == lhs then return true end
+    if candidate == lhs then
+      return true
+    end
   end
   return false
 end
@@ -376,7 +401,9 @@ local function render(state, env)
   local children = {}
   local dashboard = information(state, "provider:information", env.width)
   local has_actions = #(state.snapshot.operations or {}) > 0
-  if dashboard then children[#children + 1] = dashboard end
+  if dashboard then
+    children[#children + 1] = dashboard
+  end
   local operation_menu, operation_entry
   if has_actions then
     operation_menu, operation_entry = menu(state, "provider:operations")
@@ -394,31 +421,48 @@ local function render(state, env)
     vim.list_extend(bindings, operation_menu.bindings)
     operation_menu.bindings = {}
   end
-  binding(bindings, mappings.provider_previous,
-    "provider.previous", "Previous provider")
-  binding(bindings, mappings.provider_next,
-    "provider.next", "Next provider")
+  binding(bindings, mappings.provider_previous, "provider.previous", "Previous provider")
+  binding(bindings, mappings.provider_next, "provider.next", "Next provider")
   binding(bindings, mappings.provider_close, "provider.close", "Close provider")
   binding(bindings, mappings.toggle_provider_shell, "provider.close", "Close provider")
-  if not mapped(mappings.provider_close, "<C-c>")
-      and not mapped(mappings.toggle_provider_shell, "<C-c>") then
+  if not mapped(mappings.provider_close, "<C-c>") and not mapped(mappings.toggle_provider_shell, "<C-c>") then
     binding(bindings, "<C-c>", "provider.close", "Close provider")
   end
   local claimed = {}
   for _, name in ipairs({
-    "menu_previous", "menu_next", "provider_previous",
-    "provider_next", "card_details", "provider_close", "toggle_provider_shell",
+    "menu_previous",
+    "menu_next",
+    "provider_previous",
+    "provider_next",
+    "card_details",
+    "provider_close",
+    "toggle_provider_shell",
   }) do
-    local values = type(mappings[name]) == "table"
-        and mappings[name] or { mappings[name] }
-    for _, lhs in ipairs(values) do claimed[lhs] = true end
+    local values = type(mappings[name]) == "table" and mappings[name] or { mappings[name] }
+    for _, lhs in ipairs(values) do
+      claimed[lhs] = true
+    end
   end
   for _, lhs in ipairs({
-    "i", "I", "a", "A", "o", "O", "s", "S", "c", "C", "R", "gi", "gI",
+    "i",
+    "I",
+    "a",
+    "A",
+    "o",
+    "O",
+    "s",
+    "S",
+    "c",
+    "C",
+    "R",
+    "gi",
+    "gI",
   }) do
     if not claimed[lhs] then
       bindings[#bindings + 1] = {
-        mode = "n", lhs = lhs, action = ui.action("provider.ignore"),
+        mode = "n",
+        lhs = lhs,
+        action = ui.action("provider.ignore"),
         desc = "Keep provider read-only",
       }
     end
@@ -434,11 +478,12 @@ local function render(state, env)
       }),
     }),
     chrome = {
-      title = { {
-        text = " " .. (state.snapshot.name or "Provider")
-          .. " provider shell ",
-        style = "window_title",
-      } },
+      title = {
+        {
+          text = " " .. (state.snapshot.name or "Provider") .. " provider shell ",
+          style = "window_title",
+        },
+      },
       title_pos = "center",
       options = {
         wrap = false,
@@ -447,8 +492,7 @@ local function render(state, env)
     },
     view = {
       scroll = "preserve",
-      target_intent = widgets.menu_intent(operation_entry,
-        "provider:operations:" .. tostring(state.snapshot.id)),
+      target_intent = widgets.menu_intent(operation_entry, "provider:operations:" .. tostring(state.snapshot.id)),
     },
   }
 end

@@ -11,7 +11,9 @@ local CLEANUP_HELPERS = { "/bin/sh" }
 ---@return string
 local function bounded(value)
   value = util.trim(tostring(value or ""):gsub("[%z\1-\31\127]", " "))
-  if #value > 1000 then value = value:sub(1, 997) .. "..." end
+  if #value > 1000 then
+    value = value:sub(1, 997) .. "..."
+  end
   return value
 end
 
@@ -25,15 +27,16 @@ end
 ---@param path unknown
 ---@return string?
 local function executable(path)
-  if type(path) ~= "string" or path == "" then return nil end
+  if type(path) ~= "string" or path == "" then
+    return nil
+  end
   local candidate = path
   if not path:find("/", 1, true) then
     candidate = vim.fn.exepath(path)
   end
   local resolved = candidate ~= "" and vim.uv.fs_realpath(candidate) or nil
   local stat = resolved and vim.uv.fs_stat(resolved)
-  if resolved and stat and stat.type == "file"
-      and vim.fn.executable(resolved) == 1 then
+  if resolved and stat and stat.type == "file" and vim.fn.executable(resolved) == 1 then
     return vim.fs.normalize(resolved)
   end
 end
@@ -57,8 +60,16 @@ end
 ---@return string[]
 local function runtime_argv(nvim, runtime, command)
   local argv = {
-    nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
-    "-l", runtime, "--",
+    nvim,
+    "--headless",
+    "-u",
+    "NONE",
+    "-i",
+    "NONE",
+    "-n",
+    "-l",
+    runtime,
+    "--",
   }
   vim.list_extend(argv, command)
   return argv
@@ -115,10 +126,17 @@ function M.check(services)
   }, { { path = nvim, access = "read" } })
   local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
   vim.list_extend(argv, {
-    nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n", "-c", "qa",
+    nvim,
+    "--headless",
+    "-u",
+    "NONE",
+    "-i",
+    "NONE",
+    "-n",
+    "-c",
+    "qa",
   })
-  local completed = (services.system or system)(
-    argv, { text = true }, services.probe_timeout_ms or 5000)
+  local completed = (services.system or system)(argv, { text = true }, services.probe_timeout_ms or 5000)
   if not completed or completed.code ~= 0 then
     return {
       ok = false,
@@ -154,8 +172,7 @@ local function execute(request, services, protected)
   for _, path in ipairs(protected or {}) do
     internal[#internal + 1] = { path = path, access = "read" }
   end
-  local policy, parameters =
-    profile_compiler.compile(request.profile, internal)
+  local policy, parameters = profile_compiler.compile(request.profile, internal)
   local argv = profile_compiler.argv(sandbox_exec, policy, parameters)
   for _, argument in ipairs(request.argv) do
     argv[#argv + 1] = argument
@@ -171,17 +188,14 @@ local function execute(request, services, protected)
     on_output = request.on_output,
   })
   if not ok then
-    local process_err = util.normalize_error(
-      value, "sandbox_unavailable")
-    if process_err.kind == "cancelled" then error(value, 0) end
-    error(util.error("sandbox_unavailable",
-      "macOS sandbox process failed to start",
-      bounded(process_err.message)), 0)
+    local process_err = util.normalize_error(value, "sandbox_unavailable")
+    if process_err.kind == "cancelled" then
+      error(value, 0)
+    end
+    error(util.error("sandbox_unavailable", "macOS sandbox process failed to start", bounded(process_err.message)), 0)
   end
-  if type(value) ~= "table" or type(value.code) ~= "number"
-      or type(value.signal) ~= "number" then
-    error(util.error("sandbox_unavailable",
-      "macOS sandbox returned an invalid process result"), 0)
+  if type(value) ~= "table" or type(value.code) ~= "number" or type(value.signal) ~= "number" then
+    error(util.error("sandbox_unavailable", "macOS sandbox returned an invalid process result"), 0)
   end
   return value
 end
@@ -192,8 +206,7 @@ end
 function M.exec(request, services)
   local runtime = sandbox_runtime()
   if not runtime then
-    error(util.error("sandbox_unavailable",
-      "macOS sandbox runtime was not found"), 0)
+    error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
   end
   local configured = services.nvim or vim.v.progpath
   local nvim = executable(configured) or configured
@@ -201,8 +214,7 @@ function M.exec(request, services)
   wrapped.argv = runtime_argv(nvim, runtime, request.argv)
   wrapped.env = util.copy(request.env or {})
   wrapped.env.NEOAGENT_SANDBOX_EXEC = "1"
-  if wrapped.kill_grace_ms ~= nil
-      and wrapped.kill_grace_ms < SUPERVISOR_GRACE_MS then
+  if wrapped.kill_grace_ms ~= nil and wrapped.kill_grace_ms < SUPERVISOR_GRACE_MS then
     wrapped.kill_grace_ms = SUPERVISOR_GRACE_MS
   end
   local protected = { nvim, runtime }
@@ -216,8 +228,7 @@ end
 function M.fs(request, services)
   local runtime = sandbox_runtime()
   if not runtime then
-    error(util.error("sandbox_unavailable",
-      "macOS sandbox runtime was not found"), 0)
+    error(util.error("sandbox_unavailable", "macOS sandbox runtime was not found"), 0)
   end
   local env = util.copy(request.profile.environment.set)
   env.NEOAGENT_SANDBOX_FS = util.json_encode({
@@ -232,8 +243,15 @@ function M.fs(request, services)
   local nvim = executable(configured) or configured
   local process_request = {
     argv = {
-      nvim, "--headless", "-u", "NONE", "-i", "NONE", "-n",
-      "-l", runtime,
+      nvim,
+      "--headless",
+      "-u",
+      "NONE",
+      "-i",
+      "NONE",
+      "-n",
+      "-l",
+      runtime,
     },
     cwd = "/",
     env = env,
@@ -245,10 +263,11 @@ function M.fs(request, services)
   }
   local value = execute(process_request, services, { nvim, runtime })
   if value.code ~= 0 then
-    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr)
-      or "sandbox filesystem operation failed"
+    return nil, bounded(value.stderr) ~= "" and bounded(value.stderr) or "sandbox filesystem operation failed"
   end
-  if request.operation == "read" then return value.stdout end
+  if request.operation == "read" then
+    return value.stdout
+  end
   return true
 end
 

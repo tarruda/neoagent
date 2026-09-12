@@ -4,7 +4,6 @@ local M = {}
 ---@field name string
 ---@field value string
 
-
 local base = [[
 (version 1)
 (deny default)
@@ -57,8 +56,7 @@ local base = [[
 ---@param path string
 ---@return boolean
 local function contains(root, path)
-  return root == "/" or path == root
-    or path:sub(1, #root + 1) == root .. "/"
+  return root == "/" or path == root or path:sub(1, #root + 1) == root .. "/"
 end
 
 ---@param profile Neoagent.SandboxAccessPolicy
@@ -72,7 +70,9 @@ local function effective_entries(profile)
     result[#result + 1] = entry
   end
   table.sort(result, function(left, right)
-    if #left.path ~= #right.path then return #left.path < #right.path end
+    if #left.path ~= #right.path then
+      return #left.path < #right.path
+    end
     return left.path < right.path
   end)
   return result
@@ -96,9 +96,7 @@ function M.compile(profile, internal)
   ---@return string
   local function matcher(path)
     local name = parameter(path)
-    return string.format(
-      '(require-any (literal (param "%s")) (subpath (param "%s")))',
-      name, name)
+    return string.format('(require-any (literal (param "%s")) (subpath (param "%s")))', name, name)
   end
   local entries = effective_entries(profile)
   ---@param root string
@@ -107,8 +105,7 @@ function M.compile(profile, internal)
   local function exclusions(root, predicate)
     local result = {}
     for _, entry in ipairs(entries) do
-      if entry.path ~= root and contains(root, entry.path)
-          and predicate(entry.access) then
+      if entry.path ~= root and contains(root, entry.path) and predicate(entry.access) then
         result[#result + 1] = entry.path
       end
     end
@@ -121,28 +118,37 @@ function M.compile(profile, internal)
     local rules = { matcher(path) }
     for _, child in ipairs(excluded or {}) do
       local name = parameter(child)
-      rules[#rules + 1] =
-        '(require-not (literal (param "' .. name .. '")))'
-      rules[#rules + 1] =
-        '(require-not (subpath (param "' .. name .. '")))'
+      rules[#rules + 1] = '(require-not (literal (param "' .. name .. '")))'
+      rules[#rules + 1] = '(require-not (subpath (param "' .. name .. '")))'
     end
-    sections[#sections + 1] = string.format(
-      "(allow %s\n  (require-all\n    %s))",
-      operation, table.concat(rules, "\n    "))
+    sections[#sections + 1] =
+      string.format("(allow %s\n  (require-all\n    %s))", operation, table.concat(rules, "\n    "))
   end
   for _, entry in ipairs(entries) do
     if entry.access == "read" or entry.access == "write" then
-      grant("file-read*", entry.path, exclusions(entry.path,
-        function(access) return access == "deny" end))
+      grant(
+        "file-read*",
+        entry.path,
+        exclusions(entry.path, function(access)
+          return access == "deny"
+        end)
+      )
     end
     if entry.access == "write" then
-      grant("file-write*", entry.path, exclusions(entry.path,
-        function(access) return access ~= "write" end))
+      grant(
+        "file-write*",
+        entry.path,
+        exclusions(entry.path, function(access)
+          return access ~= "write"
+        end)
+      )
     end
   end
   for _, entry in ipairs(internal or {}) do
     grant("file-read*", entry.path)
-    if entry.access == "write" then grant("file-write*", entry.path) end
+    if entry.access == "write" then
+      grant("file-write*", entry.path)
+    end
   end
   if profile.network == "enabled" then
     sections[#sections + 1] = "(allow network-outbound)"

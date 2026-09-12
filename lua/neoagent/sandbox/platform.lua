@@ -105,7 +105,9 @@ end
 function M.status_error(status)
   status = status or unsupported(jit.os)
   local message = status.message or "sandbox requirements are unavailable"
-  if status.stage then message = status.stage .. ": " .. message end
+  if status.stage then
+    message = status.stage .. ": " .. message
+  end
   return util.error("sandbox_unavailable", message)
 end
 

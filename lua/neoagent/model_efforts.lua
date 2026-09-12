@@ -32,7 +32,9 @@ local M = {}
 function M.openai_response(effort, opts)
   opts = opts or {}
   local reasoning = { effort = effort }
-  if opts.summary ~= false then reasoning.summary = opts.summary or "auto" end
+  if opts.summary ~= false then
+    reasoning.summary = opts.summary or "auto"
+  end
   local body = { reasoning = reasoning }
   if opts.encrypted ~= false then
     body.include = { "reasoning.encrypted_content" }
@@ -60,8 +62,7 @@ function M.openai_completions(levels, mapping)
   mapping = mapping or {}
   for _, level in ipairs(levels) do
     result[level] = {
-      body = { reasoning_effort = mapping[level]
-        or (level == "off" and "none" or level) },
+      body = { reasoning_effort = mapping[level] or (level == "off" and "none" or level) },
     }
   end
   return result
@@ -92,10 +93,12 @@ end
 function M.anthropic_adaptive(levels)
   local result = {}
   for _, level in ipairs(levels) do
-    result[level] = { body = {
-      thinking = { type = "adaptive", display = "summarized" },
-      output_config = { effort = level },
-    } }
+    result[level] = {
+      body = {
+        thinking = { type = "adaptive", display = "summarized" },
+        output_config = { effort = level },
+      },
+    }
   end
   return result
 end

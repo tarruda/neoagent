@@ -111,8 +111,7 @@ local M = {}
 ---@param opts T
 ---@return T
 local function node(kind, opts)
-  util.expect(type(opts) == "table", "Applet " .. kind,
-    "options must be a table", 4)
+  util.expect(type(opts) == "table", "Applet " .. kind, "options must be a table", 4)
   local result = util.copy(opts)
   result.type = kind
   return result
@@ -146,11 +145,9 @@ end
 ---@param opts? Applet.MountOptions
 ---@return Applet.MountNode
 function M.mount(pane, opts)
-  util.expect(Pane.is(pane), "Applet mount.pane",
-    "must be a Pane instance", 3)
+  util.expect(Pane.is(pane), "Applet mount.pane", "must be a Pane instance", 3)
   opts = opts or {}
-  util.expect(type(opts) == "table", "Applet mount",
-    "options must be a table", 3)
+  util.expect(type(opts) == "table", "Applet mount", "options must be a table", 3)
   local result = node("mount", opts) --[[@as Applet.MountNode]]
   result.pane = pane
   return result

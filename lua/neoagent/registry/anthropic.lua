@@ -7,7 +7,9 @@ local CLOUD_TTL_MS = 14 * 24 * 60 * 60 * 1000
 local provider = {
   api = "anthropic-messages",
   base_url = "https://api.anthropic.com/v1",
-  api_key = function() return vim.env.ANTHROPIC_API_KEY end,
+  api_key = function()
+    return vim.env.ANTHROPIC_API_KEY
+  end,
   auth = "anthropic",
   catalog = {
     source_id = "anthropic-models",

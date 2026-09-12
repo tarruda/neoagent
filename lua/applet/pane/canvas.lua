@@ -71,7 +71,9 @@ local function covered(intervals, first, last)
   for _, interval in ipairs(intervals or {}) do
     if interval.last > cursor and interval.first <= cursor then
       cursor = math.max(cursor, interval.last)
-      if cursor >= last then return true end
+      if cursor >= last then
+        return true
+      end
     elseif interval.first > cursor then
       break
     end
@@ -89,7 +91,9 @@ local function line_raster(lines, row)
     rasters[lines] = raster
   end
   local cached = raster[row + 1]
-  if cached then return cached end
+  if cached then
+    return cached
+  end
 
   ---@type Applet.LineRaster
   local result = {
@@ -113,7 +117,9 @@ local function line_raster(lines, row)
       col = col + width
       byte_col = byte_col + #character
       result.offsets[col + 1] = byte_col
-      if width ~= 1 then result.single_cell = false end
+      if width ~= 1 then
+        result.single_cell = false
+      end
     end
   end
   result.cell_width = col
@@ -126,7 +132,9 @@ end
 ---@param owner Applet.CanvasOwner
 local function clear_glyph(row, col, owner)
   local first = row.first[col + 1]
-  if first == nil then return end
+  if first == nil then
+    return
+  end
   local width = row.width[first + 1] or 1
   for index = first, first + width - 1 do
     local offset = index + 1
@@ -155,7 +163,9 @@ end
 ---@param width integer
 ---@param owner Applet.CanvasOwner
 local function paint_glyph(row, col, text, width, owner)
-  for index = col, col + width - 1 do clear_glyph(row, index, owner) end
+  for index = col, col + width - 1 do
+    clear_glyph(row, index, owner)
+  end
   local offset = col + 1
   row.text[offset] = text
   row.first[offset] = col
@@ -189,14 +199,15 @@ local function paint_layer(grid, width, height, layer)
       for _, interval in ipairs(intervals) do
         local first = math.max(clip_left, layer.col + interval.first)
         local last = math.min(clip_right, layer.col + interval.last)
-        for col = first, last - 1 do paint_blank(row, col, layer.id) end
+        for col = first, last - 1 do
+          paint_blank(row, col, layer.id)
+        end
       end
 
       for _, glyph in ipairs(line_raster(layer.lines, source_row)) do
         local first = layer.col + glyph.col
         local last = first + glyph.width
-        if covered(intervals, glyph.col, glyph.col + glyph.width)
-            and first >= clip_left and last <= clip_right then
+        if covered(intervals, glyph.col, glyph.col + glyph.width) and first >= clip_left and last <= clip_right then
           paint_glyph(row, first, glyph.text, glyph.width, layer.id)
         end
       end
@@ -250,8 +261,7 @@ local function collect_row(row, width, index, visible)
       parts[#parts + 1] = " "
       col = col + 1
     else
-      assert(row.first[offset] == col,
-        "container canvas contains a partial glyph")
+      assert(row.first[offset] == col, "container canvas contains a partial glyph")
       -- A glyph start owns its text and width, including a painted blank.
       ---@cast text string
       local glyph_width = row.width[offset]
@@ -260,7 +270,9 @@ local function collect_row(row, width, index, visible)
       col = col + glyph_width
     end
   end
-  if owner ~= nil then append_interval(visible, owner, index, owner_first, col) end
+  if owner ~= nil then
+    append_interval(visible, owner, index, owner_first, col)
+  end
   if coverage_first ~= nil then
     coverage[#coverage + 1] = { first = coverage_first, last = width }
   end
@@ -306,8 +318,7 @@ local function single_cell_layers(layers, width, height)
     local bottom = math.min(height, clip.row + clip.height)
     for source_row in pairs(layer.coverage or {}) do
       local target_row = layer.row + source_row
-      if target_row >= top and target_row < bottom
-          and not line_raster(layer.lines, source_row).single_cell then
+      if target_row >= top and target_row < bottom and not line_raster(layer.lines, source_row).single_cell then
         return false
       end
     end
@@ -329,7 +340,9 @@ local function single_cell_slice(lines, row, first, last)
   local byte_last = raster.offsets[bounded_last + 1] or #raster.line
   local value = raster.line:sub(byte_first + 1, byte_last)
   local cells = math.max(0, bounded_last - bounded_first)
-  if cells < width then value = value .. string.rep(" ", width - cells) end
+  if cells < width then
+    value = value .. string.rep(" ", width - cells)
+  end
   return value
 end
 
@@ -339,9 +352,10 @@ end
 ---@param last integer
 ---@return string
 function M.slice(lines, row, first, last)
-  assert(type(first) == "number" and type(last) == "number"
-      and first >= 0 and first <= last,
-    "canvas slice requires an ordered display-cell range")
+  assert(
+    type(first) == "number" and type(last) == "number" and first >= 0 and first <= last,
+    "canvas slice requires an ordered display-cell range"
+  )
   local raster = line_raster(lines, row)
   if raster.single_cell then
     return single_cell_slice(lines, row, first, last)
@@ -361,7 +375,9 @@ function M.slice(lines, row, first, last)
       cursor = visible_last
     end
   end
-  if cursor < last then parts[#parts + 1] = string.rep(" ", last - cursor) end
+  if cursor < last then
+    parts[#parts + 1] = string.rep(" ", last - cursor)
+  end
   return table.concat(parts)
 end
 
@@ -399,29 +415,30 @@ end
 ---@param source_row integer
 ---@param source_first integer
 ---@return Applet.CanvasSpan[]
-local function overlay_span(
-    spans, first, last, layer, source_row, source_first)
-  local result = { {
-    first = first,
-    last = last,
-    owner = layer.id,
-    layer = layer,
-    source_row = source_row,
-    source_first = source_first,
-  } }
+local function overlay_span(spans, first, last, layer, source_row, source_first)
+  local result = {
+    {
+      first = first,
+      last = last,
+      owner = layer.id,
+      layer = layer,
+      source_row = source_row,
+      source_first = source_first,
+    },
+  }
   for _, span in ipairs(spans) do
     if span.last <= first or span.first >= last then
       result[#result + 1] = span
     elseif span.first < first then
-      result[#result + 1] = clipped_span(
-        span, span.first, math.min(span.last, first))
+      result[#result + 1] = clipped_span(span, span.first, math.min(span.last, first))
     end
     if span.first < last and span.last > last then
-      result[#result + 1] = clipped_span(
-        span, math.max(span.first, last), span.last)
+      result[#result + 1] = clipped_span(span, math.max(span.first, last), span.last)
     end
   end
-  table.sort(result, function(left, right) return left.first < right.first end)
+  table.sort(result, function(left, right)
+    return left.first < right.first
+  end)
   return result
 end
 
@@ -432,7 +449,9 @@ end
 local function visible_spans(width, height, layers)
   ---@type Applet.CellMap
   local spans = {}
-  for row = 1, height do spans[row] = {} end
+  for row = 1, height do
+    spans[row] = {}
+  end
   for _, layer in ipairs(layers) do
     local clip = layer.clip or { row = 0, col = 0, width = width, height = height }
     local clip_top = math.max(0, clip.row)
@@ -447,15 +466,12 @@ local function visible_spans(width, height, layers)
           local last = math.min(clip_right, layer.col + interval.last)
           if first < last then
             local source_first = first - layer.col
-            spans[target_row + 1] = overlay_span(
-              spans[target_row + 1], first, last,
-              layer, source_row, source_first)
+            spans[target_row + 1] = overlay_span(spans[target_row + 1], first, last, layer, source_row, source_first)
           end
         end
       end
     end
   end
-
 
   local owner_rows = {}
   for row = 0, height - 1 do
@@ -487,8 +503,11 @@ local function compose_single_cell(width, height, layers)
         parts[#parts + 1] = string.rep(" ", span.first - cursor)
       end
       parts[#parts + 1] = single_cell_slice(
-        span.layer.lines, span.source_row, span.source_first,
-        span.source_first + span.last - span.first)
+        span.layer.lines,
+        span.source_row,
+        span.source_first,
+        span.source_first + span.last - span.first
+      )
       cursor = span.last
       local previous = coverage[row][#coverage[row]]
       if previous and previous.last == span.first then
@@ -500,7 +519,9 @@ local function compose_single_cell(width, height, layers)
         }
       end
     end
-    if cursor < width then parts[#parts + 1] = string.rep(" ", width - cursor) end
+    if cursor < width then
+      parts[#parts + 1] = string.rep(" ", width - cursor)
+    end
     lines[row + 1] = table.concat(parts)
   end
 
@@ -518,7 +539,9 @@ end
 local function ordered_layers(values)
   local layers = vim.list_slice(values or {})
   table.sort(layers, function(left, right)
-    if left.zindex ~= right.zindex then return left.zindex < right.zindex end
+    if left.zindex ~= right.zindex then
+      return left.zindex < right.zindex
+    end
     return left.order < right.order
   end)
   return layers
@@ -535,7 +558,9 @@ function M.byte_col(cell_map, row, col)
   for _, span in ipairs(spans) do
     if display < span.first then
       local gap = span.first - display
-      if col <= span.first then return bytes + math.max(0, col - display) end
+      if col <= span.first then
+        return bytes + math.max(0, col - display)
+      end
       display, bytes = span.first, bytes + gap
     end
     if col <= span.last then
@@ -562,12 +587,13 @@ function M.compose(opts)
   for row = 1, height do
     grid[row] = { text = {}, first = {}, width = {}, owner = {} }
   end
-  for _, layer in ipairs(layers) do paint_layer(grid, width, height, layer) end
+  for _, layer in ipairs(layers) do
+    paint_layer(grid, width, height, layer)
+  end
 
   local lines, coverage, owner_rows = {}, {}, {}
   for index, row in ipairs(grid) do
-    lines[index], coverage[index - 1] = collect_row(
-      row, width, index - 1, owner_rows)
+    lines[index], coverage[index - 1] = collect_row(row, width, index - 1, owner_rows)
   end
 
   local visible = {}

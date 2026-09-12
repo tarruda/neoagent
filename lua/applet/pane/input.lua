@@ -87,10 +87,11 @@ local M = {}
 ---@return_overload nil, nil, nil
 local function cursor_position(pane)
   local surface = pane.surface
-  if not surface then return nil end
+  if not surface then
+    return nil
+  end
   local window = surface and surface.window and surface.window()
-  if not window or not vim.api.nvim_win_is_valid(window)
-      or vim.api.nvim_win_get_buf(window) ~= surface.buffer then
+  if not window or not vim.api.nvim_win_is_valid(window) or vim.api.nvim_win_get_buf(window) ~= surface.buffer then
     return nil
   end
   local cursor = vim.api.nvim_win_get_cursor(window) --[[@as [integer, integer] ]]
@@ -105,8 +106,7 @@ end
 ---@return boolean
 local function contains(rectangles, row, col)
   for _, rect in ipairs(rectangles or {}) do
-    if row >= rect.row and row < rect.row + rect.height
-        and col >= rect.col and col < rect.col + rect.width then
+    if row >= rect.row and row < rect.row + rect.height and col >= rect.col and col < rect.col + rect.width then
       return true
     end
   end
@@ -131,8 +131,7 @@ function M.target_at(layout, row, col)
     if target and not target.disabled and target.role == "menuitem" then
       for _, rect in ipairs(target.rectangles or {}) do
         if row >= rect.row and row < rect.row + rect.height then
-          local distance = col < rect.col and rect.col - col
-            or col - (rect.col + rect.width - 1)
+          local distance = col < rect.col and rect.col - col or col - (rect.col + rect.width - 1)
           if not nearest_distance or distance < nearest_distance then
             nearest, nearest_distance = target, distance
           end
@@ -176,7 +175,9 @@ local function active_scopes(layout, row, col)
   table.sort(scopes, function(left, right)
     return scope_depth(layout, left) > scope_depth(layout, right)
   end)
-  for index = #modal, 1, -1 do table.insert(scopes, 1, modal[index]) end
+  for index = #modal, 1, -1 do
+    table.insert(scopes, 1, modal[index])
+  end
   return scopes
 end
 
@@ -189,7 +190,9 @@ end
 local function binding_for(layout, row, col, mode, lhs)
   for _, scope in ipairs(active_scopes(layout, row, col)) do
     for _, binding in ipairs(scope.bindings) do
-      if binding.mode == mode and binding.lhs == lhs then return binding end
+      if binding.mode == mode and binding.lhs == lhs then
+        return binding
+      end
     end
   end
 end
@@ -199,9 +202,13 @@ end
 ---@return_overload nil, nil
 local function target_point(target)
   local point = target and target.point
-  if point then return point.row + 1, point.col end
+  if point then
+    return point.row + 1, point.col
+  end
   local rect = target and target.rectangles and target.rectangles[1]
-  if rect then return rect.row + 1, rect.col end
+  if rect then
+    return rect.row + 1, rect.col
+  end
 end
 
 ---@param target? Applet.InputTarget
@@ -218,7 +225,9 @@ local function target_end_point(target)
       line, col = candidate, rect.col
     end
   end
-  if line then return line, assert(col) end
+  if line then
+    return line, assert(col)
+  end
   return target_point(target)
 end
 
@@ -229,9 +238,10 @@ end
 ---@param display_col? integer
 ---@return boolean
 local function place_cursor(pane, window, line, display_col)
-  if not line then return false end
-  local text = vim.api.nvim_buf_get_lines(
-    assert(pane.surface).buffer, line - 1, line, false)[1] or ""
+  if not line then
+    return false
+  end
+  local text = vim.api.nvim_buf_get_lines(assert(pane.surface).buffer, line - 1, line, false)[1] or ""
   local byte_col = util.byte_col(text, assert(display_col))
   vim.api.nvim_win_set_cursor(window, { line, math.min(byte_col, #text) })
   return true
@@ -243,7 +253,9 @@ end
 ---@return boolean
 local function target_before_cursor(target, row, col)
   local line, target_col = target_point(target)
-  if not line then return false end
+  if not line then
+    return false
+  end
   local target_row = line - 1
   return target_row < row or target_row == row and target_col < col
 end
@@ -256,7 +268,9 @@ end
 function M.move(pane, payload, count)
   local layout = pane.layout
   local row, col, window = cursor_position(pane)
-  if not layout or not row then return false end
+  if not layout or not row then
+    return false
+  end
   ---@type Applet.InputTarget[]
   local candidates = {}
   for _, key in ipairs(layout.target_order) do
@@ -265,12 +279,17 @@ function M.move(pane, payload, count)
       candidates[#candidates + 1] = target
     end
   end
-  if #candidates == 0 then return false end
+  if #candidates == 0 then
+    return false
+  end
   local current = M.target_at(layout, row, col)
   ---@type integer?
   local index
   for candidate_index, candidate in ipairs(candidates) do
-    if current and candidate.key == current.key then index = candidate_index break end
+    if current and candidate.key == current.key then
+      index = candidate_index
+      break
+    end
   end
   if not index then
     for candidate_index, candidate in ipairs(candidates) do
@@ -297,16 +316,20 @@ function M.move(pane, payload, count)
         following = candidate_index
       end
     end
-    next_index = direction > 0
-      and following + count - 1
-      or previous - count + 1
+    next_index = direction > 0 and following + count - 1 or previous - count + 1
   end
-  if payload.wrap then next_index = ((next_index - 1) % #candidates) + 1 end
-  if next_index < 1 or next_index > #candidates then return false end
+  if payload.wrap then
+    next_index = ((next_index - 1) % #candidates) + 1
+  end
+  if next_index < 1 or next_index > #candidates then
+    return false
+  end
   local line, display_col = target_point(candidates[next_index])
   local ok = pcall(function()
     place_cursor(pane, window, line, display_col)
-    vim.api.nvim_win_call(window, function() vim.cmd("normal! zv") end)
+    vim.api.nvim_win_call(window, function()
+      vim.cmd("normal! zv")
+    end)
     pane:_draw_focus()
     vim.cmd("redraw")
   end)
@@ -370,9 +393,10 @@ function M.dispatch_action(pane, action, target, count, mode, row, col, binding)
     local payload = action.payload --[[@as {target?: string}?]]
     local key = payload and payload.target
     local selected = key and assert(pane.layout).targets[key] or target
-    if not selected or selected.disabled or not selected.action then return false end
-    return M.dispatch_action(pane, selected.action, selected, count, mode, row, col,
-      binding)
+    if not selected or selected.disabled or not selected.action then
+      return false
+    end
+    return M.dispatch_action(pane, selected.action, selected, count, mode, row, col, binding)
   end
   local event = handler_event(pane, action, target, count, mode, row, col, binding)
   local handler = pane.handlers[action.action]
@@ -400,7 +424,9 @@ function M.dispatch_action(pane, action, target, count, mode, row, col, binding)
     end
     return false
   end
-  if result == false then return false end
+  if result == false then
+    return false
+  end
   return true
 end
 
@@ -412,13 +438,16 @@ end
 function M.dispatch(pane, mode, lhs)
   local layout = pane.layout
   local row, col = cursor_position(pane)
-  if not layout or not row then return false end
+  if not layout or not row then
+    return false
+  end
   local binding = binding_for(layout, row, col, mode, lhs)
-  if not binding then return false end
+  if not binding then
+    return false
+  end
   local target = M.target_at(layout, row, col)
   local count = binding.count and vim.v.count1 or 1
-  return M.dispatch_action(pane, binding.action, target, count, mode, row, col,
-    binding)
+  return M.dispatch_action(pane, binding.action, target, count, mode, row, col, binding)
 end
 
 ---@generic P: Applet.InputPane<P>
@@ -430,10 +459,14 @@ function M.reveal(pane, key)
   local line, col = target_point(target)
   local surface = pane.surface
   local window = surface and surface.window and surface.window()
-  if not line or not window or not vim.api.nvim_win_is_valid(window) then return false end
+  if not line or not window or not vim.api.nvim_win_is_valid(window) then
+    return false
+  end
   local ok = pcall(function()
     place_cursor(pane, window, line, col)
-    vim.api.nvim_win_call(window, function() vim.cmd("normal! zv") end)
+    vim.api.nvim_win_call(window, function()
+      vim.cmd("normal! zv")
+    end)
     pane:_draw_focus()
   end)
   return ok
@@ -445,16 +478,25 @@ end
 ---@return boolean
 function M.apply_target_intent(pane, intent)
   local layout = pane.layout
-  if not layout then return false end
+  if not layout then
+    return false
+  end
   local selected = layout.targets[intent.select]
-  if not selected then return false end
+  if not selected then
+    return false
+  end
   local select_line, select_col = target_point(selected)
   local revealed = intent.reveal and layout.targets[intent.reveal] or nil
   local reveal_line, reveal_col = target_end_point(revealed)
   local surface = pane.surface
   local window = surface and surface.window and surface.window()
-  if not surface or not select_line or not window or not vim.api.nvim_win_is_valid(window)
-      or vim.api.nvim_win_get_buf(window) ~= surface.buffer then
+  if
+    not surface
+    or not select_line
+    or not window
+    or not vim.api.nvim_win_is_valid(window)
+    or vim.api.nvim_win_get_buf(window) ~= surface.buffer
+  then
     return false
   end
   local ok = pcall(vim.api.nvim_win_call, window, function()
@@ -465,7 +507,9 @@ function M.apply_target_intent(pane, intent)
     place_cursor(pane, window, select_line, select_col)
     vim.cmd("normal! zv")
   end)
-  if ok then pane:_draw_focus() end
+  if ok then
+    pane:_draw_focus()
+  end
   return ok
 end
 
@@ -503,8 +547,12 @@ local function remove_mapping(pane, pair)
       vim.fn.mapset(pair.mode, false, saved)
     end)
   end
-  if pane.saved_mappings then pane.saved_mappings[id] = nil end
-  if pane.installed_mappings then pane.installed_mappings[id] = nil end
+  if pane.saved_mappings then
+    pane.saved_mappings[id] = nil
+  end
+  if pane.installed_mappings then
+    pane.installed_mappings[id] = nil
+  end
 end
 
 ---@generic P: Applet.InputPane<P>
@@ -534,8 +582,7 @@ function M.update_mappings(pane, previous, layout)
   end
   for id, pair in pairs(new) do
     if not old[id] then
-      pane.saved_mappings[id] = current_mapping(
-        assert(pane.surface).buffer, pair.mode, pair.lhs)
+      pane.saved_mappings[id] = current_mapping(assert(pane.surface).buffer, pair.mode, pair.lhs)
       vim.keymap.set(pair.mode, pair.lhs, function()
         return Mode.with_mapping(pair.mode, function()
           return M.dispatch(pane, pair.mode, pair.lhs)
@@ -558,8 +605,12 @@ end
 ---@param pane P
 function M.clear_mappings(pane)
   local installed = {}
-  for _, pair in pairs(pane.installed_mappings or {}) do installed[#installed + 1] = pair end
-  for _, pair in ipairs(installed) do remove_mapping(pane, pair) end
+  for _, pair in pairs(pane.installed_mappings or {}) do
+    installed[#installed + 1] = pair
+  end
+  for _, pair in ipairs(installed) do
+    remove_mapping(pane, pair)
+  end
   pane.saved_mappings = {}
   pane.installed_mappings = {}
 end
@@ -570,7 +621,9 @@ end
 function M.focus_target(pane)
   local layout = pane.layout
   local row, col = cursor_position(pane)
-  if not layout or not row then return nil end
+  if not layout or not row then
+    return nil
+  end
   return M.target_at(layout, row, col)
 end
 

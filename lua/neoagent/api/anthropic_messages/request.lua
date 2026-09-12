@@ -20,7 +20,9 @@ local function object(value)
     error(util.error("model", "Tool arguments must be an object"), 0)
   end
   local result = util.copy(value)
-  if next(result) == nil then return vim.empty_dict() end
+  if next(result) == nil then
+    return vim.empty_dict()
+  end
   return result
 end
 
@@ -28,7 +30,9 @@ end
 ---@param empty_text? string
 ---@return string|Neoagent.JsonObject[]
 local function content_blocks(content, empty_text)
-  if type(content) == "string" then return content end
+  if type(content) == "string" then
+    return content
+  end
   ---@type Neoagent.JsonObject[]
   local result = {}
   local has_text = false
@@ -56,8 +60,12 @@ local function content_blocks(content, empty_text)
   if has_image and not has_text then
     table.insert(result, 1, { type = "text", text = "(see attached image)" })
   end
-  if #result == 0 then return empty_text or "" end
-  if not has_image then return table.concat(text, "\n") end
+  if #result == 0 then
+    return empty_text or ""
+  end
+  if not has_image then
+    return table.concat(text, "\n")
+  end
   return result
 end
 
@@ -99,7 +107,9 @@ local function tool_result(block)
     tool_use_id = normalize_tool_id(block.toolCallId),
     content = content_blocks(block.content, "(no tool output)"),
   }
-  if block.isError == true then result.is_error = true end
+  if block.isError == true then
+    result.is_error = true
+  end
   return result
 end
 
@@ -121,7 +131,8 @@ local function encode_messages(messages)
       tool_results = nil
       if message.role == "user" then
         result[#result + 1] = {
-          role = "user", content = content_blocks(message.content),
+          role = "user",
+          content = content_blocks(message.content),
         }
       elseif message.role == "assistant" then
         local blocks = assistant_blocks(message)
@@ -160,7 +171,9 @@ function M.build(model, call_opts)
     ["anthropic-version"] = model._anthropic_version,
   }
   local api_key = model._api_key
-  if type(api_key) == "function" then api_key = api_key() end
+  if type(api_key) == "function" then
+    api_key = api_key()
+  end
   if api_key ~= nil and api_key ~= "" then
     headers["x-api-key"] = api_key
   end
@@ -176,7 +189,9 @@ function M.build(model, call_opts)
     body.system = call_opts.system_prompt
   end
   local tools = encode_tools(call_opts.tools)
-  if #tools > 0 then body.tools = tools end
+  if #tools > 0 then
+    body.tools = tools
+  end
 
   ---@type Neoagent.ApiRequest
   local request = {
@@ -191,8 +206,7 @@ function M.build(model, call_opts)
     messages = util.copy(call_opts.messages),
     system_prompt = call_opts.system_prompt,
     tools = util.copy(call_opts.tools or {}),
-    request_context = request_context.resolve(
-      model._request_context, call_opts.request_context),
+    request_context = request_context.resolve(model._request_context, call_opts.request_context),
   }
   for _, layer in ipairs(model._request_opts) do
     request = request_opts.apply(request, layer, context)

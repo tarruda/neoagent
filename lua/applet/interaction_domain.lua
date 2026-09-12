@@ -81,15 +81,21 @@ end
 
 ---@return boolean
 function Domain:_start_key_observer()
-  if self.key_observer_active or self.destroyed then return false end
-  vim.on_key(function(key) self:_track_key(key) end, self.key_namespace)
+  if self.key_observer_active or self.destroyed then
+    return false
+  end
+  vim.on_key(function(key)
+    self:_track_key(key)
+  end, self.key_namespace)
   self.key_observer_active = true
   return true
 end
 
 ---@return boolean
 function Domain:_stop_key_observer()
-  if not self.key_observer_active then return false end
+  if not self.key_observer_active then
+    return false
+  end
   vim.on_key(nil, self.key_namespace)
   self.key_observer_active = false
   self.register_pending = false
@@ -103,9 +109,13 @@ end
 ---@param key string
 ---@param mode? string
 function Domain:_track_key(key, mode)
-  if self.destroyed or key ~= '"' then return end
+  if self.destroyed or key ~= '"' then
+    return
+  end
   mode = mode or vim.api.nvim_get_mode().mode
-  if mode:sub(1, 1) ~= "n" then return end
+  if mode:sub(1, 1) ~= "n" then
+    return
+  end
   self.register_pending = true
   self:_wait_for_safe()
 end
@@ -118,8 +128,10 @@ function Domain:add(value, opts)
   assert(type(opts) == "table", "interaction participant options must be a table")
   local phase = opts.phase or "content"
   phase = phases[phase] or phase
-  assert(type(phase) == "number" and phase >= 1,
-    "interaction participant phase must be frame, content, or a positive number")
+  assert(
+    type(phase) == "number" and phase >= 1,
+    "interaction participant phase must be frame, content, or a positive number"
+  )
   local current = self.members[value]
   if current then
     current.phase = phase
@@ -143,10 +155,11 @@ function Domain:remove(value)
   self.dirty[value] = nil
   self:deactivate(value)
   self.members[value] = nil
-  if not participant then return false end
+  if not participant then
+    return false
+  end
   local index = participant.index
-  assert(self.participants[index] == participant,
-    "interaction participant index is inconsistent")
+  assert(self.participants[index] == participant, "interaction participant index is inconsistent")
   table.remove(self.participants, index)
   for cursor = index, #self.participants do
     local remaining = self.participants[cursor]
@@ -162,21 +175,29 @@ end
 function Domain:activate(value)
   assert(not self.destroyed, "interaction domain is destroyed")
   assert(self.members[value], "participant does not belong to this interaction domain")
-  if self.active[value] then return false end
+  if self.active[value] then
+    return false
+  end
   self.active[value] = true
   self.active_count = self.active_count + 1
-  if self.active_count == 1 then self:_start_key_observer() end
+  if self.active_count == 1 then
+    self:_start_key_observer()
+  end
   return true
 end
 
 ---@param value Applet.DomainMember
 ---@return boolean
 function Domain:deactivate(value)
-  if not self.active[value] then return false end
+  if not self.active[value] then
+    return false
+  end
   self.active[value] = nil
   self.active_count = self.active_count - 1
   assert(self.active_count >= 0, "interaction domain active count is inconsistent")
-  if self.active_count == 0 then self:_stop_key_observer() end
+  if self.active_count == 0 then
+    self:_stop_key_observer()
+  end
   return true
 end
 
@@ -192,22 +213,34 @@ end
 
 ---@return boolean
 function Domain:is_safe()
-  if self.destroyed or self.register_pending then return false end
-  if vim.fn.pumvisible() == 1 then return false end
-  if self.critical and self.critical() then return false end
+  if self.destroyed or self.register_pending then
+    return false
+  end
+  if vim.fn.pumvisible() == 1 then
+    return false
+  end
+  if self.critical and self.critical() then
+    return false
+  end
   local mode = vim.api.nvim_get_mode().mode
-  if blocked_modes[mode] or mode:sub(1, 2) == "no" then return false end
+  if blocked_modes[mode] or mode:sub(1, 2) == "no" then
+    return false
+  end
   return true
 end
 
 function Domain:_wait_for_safe()
-  if self.safe_autocmd or self.destroyed then return end
+  if self.safe_autocmd or self.destroyed then
+    return
+  end
   local id
   id = vim.api.nvim_create_autocmd("SafeState", {
     group = self.group,
     once = true,
     callback = function()
-      if self.safe_autocmd == id then self.safe_autocmd = nil end
+      if self.safe_autocmd == id then
+        self.safe_autocmd = nil
+      end
       self.register_pending = false
       self:flush()
     end,
@@ -217,10 +250,14 @@ end
 
 ---@param value Applet.DomainMember
 function Domain:request(value)
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   assert(self.members[value], "participant does not belong to this interaction domain")
   self.dirty[value] = true
-  if self.scheduled then return end
+  if self.scheduled then
+    return
+  end
   self.scheduled = true
   vim.schedule(function()
     self.scheduled = false
@@ -231,7 +268,9 @@ end
 ---@param opts? Applet.SurfaceChange
 ---@return boolean
 function Domain:surfaces_changed(opts)
-  if self.destroyed then return false end
+  if self.destroyed then
+    return false
+  end
   local participants = {}
   for index, participant in ipairs(self.participants) do
     participants[index] = participant
@@ -247,7 +286,9 @@ end
 
 ---@return boolean
 function Domain:flush()
-  if self.destroyed then return false end
+  if self.destroyed then
+    return false
+  end
   if not self:is_safe() then
     self:_wait_for_safe()
     return false
@@ -261,21 +302,29 @@ function Domain:flush()
   local ordered = {}
   for value in pairs(pending) do
     local participant = self.members[value]
-    if participant then ordered[#ordered + 1] = participant end
+    if participant then
+      ordered[#ordered + 1] = participant
+    end
   end
   table.sort(ordered, function(left, right)
-    if left.phase == right.phase then return left.order < right.order end
+    if left.phase == right.phase then
+      return left.order < right.order
+    end
     return left.phase < right.phase
   end)
   for _, participant in ipairs(ordered) do
     local value = participant.value
-    if self.members[value] == participant then value:_flush_requested() end
+    if self.members[value] == participant then
+      value:_flush_requested()
+    end
   end
   return true
 end
 
 function Domain:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self:_stop_key_observer()
   self.destroyed = true
   pcall(vim.api.nvim_del_augroup_by_id, self.group)
@@ -288,5 +337,7 @@ end
 local module = { new = Domain.new }
 
 return setmetatable(module, {
-  __call = function(_, opts) return Domain.new(opts) end,
+  __call = function(_, opts)
+    return Domain.new(opts)
+  end,
 }) --[[@as Applet.DomainModule]]

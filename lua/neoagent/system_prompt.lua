@@ -9,7 +9,6 @@ local M = {}
 ---@field agent_instructions? Neoagent.InstructionFile[]
 ---@field skills? Neoagent.Skill[]
 
-
 ---@param context Neoagent.SystemPromptContext
 ---@return string
 function M.default(context)
@@ -20,7 +19,9 @@ function M.default(context)
     local description = type(tool.description) == "string" and util.trim(tool.description:gsub("%s+", " ")) or ""
     available[#available + 1] = "- " .. tool.name .. (description ~= "" and ": " .. description or "")
   end
-  if #available == 0 then available[1] = "(none)" end
+  if #available == 0 then
+    available[1] = "(none)"
+  end
 
   local guidelines = {}
   if names.shell and not names.grep and not names.find then
@@ -51,11 +52,14 @@ end
 ---@return string
 function M.compose(prompt, context)
   local sections = { prompt }
-  local instructions = require("neoagent.agent_instructions").format(
-    context.agent_instructions)
+  local instructions = require("neoagent.agent_instructions").format(context.agent_instructions)
   local skills = require("neoagent.skills").format(context.skills)
-  if instructions ~= "" then sections[#sections + 1] = instructions end
-  if skills ~= "" then sections[#sections + 1] = skills end
+  if instructions ~= "" then
+    sections[#sections + 1] = instructions
+  end
+  if skills ~= "" then
+    sections[#sections + 1] = skills
+  end
   return table.concat(sections, "\n\n")
 end
 

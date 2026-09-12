@@ -53,18 +53,26 @@ end
 ---@param stack table<table, boolean>
 ---@return string
 local function encode_json(value, stack)
-  if type(value) ~= "table" then return vim.json.encode(value) end
-  if stack[value] then error("cannot encode circular JSON value", 0) end
+  if type(value) ~= "table" then
+    return vim.json.encode(value)
+  end
+  if stack[value] then
+    error("cannot encode circular JSON value", 0)
+  end
   stack[value] = true
   local parts = {}
   if M.is_list(value) then
-    for index = 1, #value do parts[index] = encode_json(value[index], stack) end
+    for index = 1, #value do
+      parts[index] = encode_json(value[index], stack)
+    end
     stack[value] = nil
     return "[" .. table.concat(parts, ",") .. "]"
   end
   local keys = {}
   for key in pairs(value) do
-    if type(key) ~= "string" then error("JSON object keys must be strings", 0) end
+    if type(key) ~= "string" then
+      error("JSON object keys must be strings", 0)
+    end
     keys[#keys + 1] = key
   end
   table.sort(keys)
@@ -86,40 +94,65 @@ end
 ---@return integer?
 local function utf8_sequence_length(value, index)
   local first = value:byte(index)
-  if not first then return nil end
-  if first < 0x80 then return 1 end
+  if not first then
+    return nil
+  end
+  if first < 0x80 then
+    return 1
+  end
   local second = value:byte(index + 1)
   if first >= 0xC2 and first <= 0xDF then
     return second and second >= 0x80 and second <= 0xBF and 2 or nil
   end
   local third = value:byte(index + 2)
   if first == 0xE0 then
-    return second and second >= 0xA0 and second <= 0xBF
-      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+    return second and second >= 0xA0 and second <= 0xBF and third and third >= 0x80 and third <= 0xBF and 3 or nil
   end
   if (first >= 0xE1 and first <= 0xEC) or (first >= 0xEE and first <= 0xEF) then
-    return second and second >= 0x80 and second <= 0xBF
-      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+    return second and second >= 0x80 and second <= 0xBF and third and third >= 0x80 and third <= 0xBF and 3 or nil
   end
   if first == 0xED then
-    return second and second >= 0x80 and second <= 0x9F
-      and third and third >= 0x80 and third <= 0xBF and 3 or nil
+    return second and second >= 0x80 and second <= 0x9F and third and third >= 0x80 and third <= 0xBF and 3 or nil
   end
   local fourth = value:byte(index + 3)
   if first == 0xF0 then
-    return second and second >= 0x90 and second <= 0xBF
-      and third and third >= 0x80 and third <= 0xBF
-      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+    return second
+        and second >= 0x90
+        and second <= 0xBF
+        and third
+        and third >= 0x80
+        and third <= 0xBF
+        and fourth
+        and fourth >= 0x80
+        and fourth <= 0xBF
+        and 4
+      or nil
   end
   if first >= 0xF1 and first <= 0xF3 then
-    return second and second >= 0x80 and second <= 0xBF
-      and third and third >= 0x80 and third <= 0xBF
-      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+    return second
+        and second >= 0x80
+        and second <= 0xBF
+        and third
+        and third >= 0x80
+        and third <= 0xBF
+        and fourth
+        and fourth >= 0x80
+        and fourth <= 0xBF
+        and 4
+      or nil
   end
   if first == 0xF4 then
-    return second and second >= 0x80 and second <= 0x8F
-      and third and third >= 0x80 and third <= 0xBF
-      and fourth and fourth >= 0x80 and fourth <= 0xBF and 4 or nil
+    return second
+        and second >= 0x80
+        and second <= 0x8F
+        and third
+        and third >= 0x80
+        and third <= 0xBF
+        and fourth
+        and fourth >= 0x80
+        and fourth <= 0xBF
+        and 4
+      or nil
   end
 end
 
@@ -128,12 +161,18 @@ local non_ascii_pattern = "[\128-\255]"
 ---@param value unknown
 ---@return boolean
 function M.is_valid_utf8(value)
-  if type(value) ~= "string" then return false end
-  if not value:find(non_ascii_pattern) then return true end
+  if type(value) ~= "string" then
+    return false
+  end
+  if not value:find(non_ascii_pattern) then
+    return true
+  end
   local index = 1
   while index <= #value do
     local length = utf8_sequence_length(value, index)
-    if not length then return false end
+    if not length then
+      return false
+    end
     index = index + length
   end
   return true
@@ -152,17 +191,17 @@ local unsafe_text_byte_pattern = "[^\t\n -~]"
 ---@return integer escaped_bytes
 function M.text_from_bytes(value)
   assert(type(value) == "string", "value must be a string")
-  if not value:find(unsafe_text_byte_pattern) then return value, 0 end
+  if not value:find(unsafe_text_byte_pattern) then
+    return value, 0
+  end
   local parts = {}
   local escaped = 0
   local index = 1
   while index <= #value do
     local first = value:byte(index)
     local length = utf8_sequence_length(value, index)
-    local ascii_control = length == 1 and first ~= 0x09 and first ~= 0x0A
-      and (first < 0x20 or first == 0x7F)
-    local c1_control = length == 2 and first == 0xC2
-      and value:byte(index + 1) <= 0x9F
+    local ascii_control = length == 1 and first ~= 0x09 and first ~= 0x0A and (first < 0x20 or first == 0x7F)
+    local c1_control = length == 2 and first == 0xC2 and value:byte(index + 1) <= 0x9F
     if not length or ascii_control or c1_control then
       local count = length or 1
       for offset = 0, count - 1 do
@@ -216,8 +255,12 @@ function M.deep_merge(base, override, key_normalizer)
         end
       end
     end
-    if type(value) == "table" and type(result[target_key]) == "table"
-        and not M.is_list(value) and not M.is_list(result[target_key]) then
+    if
+      type(value) == "table"
+      and type(result[target_key]) == "table"
+      and not M.is_list(value)
+      and not M.is_list(result[target_key])
+    then
       result[target_key] = M.deep_merge(result[target_key], value, key_normalizer)
     else
       result[target_key] = M.copy(value)
@@ -257,16 +300,20 @@ end
 function M.safe_message(value, opts)
   opts = type(opts) == "table" and opts or {}
   local maximum = type(opts.max_characters) == "number"
-      and opts.max_characters >= 1 and opts.max_characters ~= math.huge
-      and math.floor(opts.max_characters) or 1024
+      and opts.max_characters >= 1
+      and opts.max_characters ~= math.huge
+      and math.floor(opts.max_characters)
+    or 1024
   local maximum_bytes = type(opts.max_source_bytes) == "number"
-      and opts.max_source_bytes >= 1 and opts.max_source_bytes ~= math.huge
+      and opts.max_source_bytes >= 1
+      and opts.max_source_bytes ~= math.huge
       and math.floor(opts.max_source_bytes)
-      or maximum * 4
-  local fallback = type(opts.fallback) == "string"
-      and opts.fallback or "Error value could not be rendered"
+    or maximum * 4
+  local fallback = type(opts.fallback) == "string" and opts.fallback or "Error value could not be rendered"
   local rendered_ok, rendered = pcall(tostring, value)
-  if not rendered_ok or type(rendered) ~= "string" then rendered = fallback end
+  if not rendered_ok or type(rendered) ~= "string" then
+    rendered = fallback
+  end
   local source = rendered:sub(1, maximum_bytes)
   local message = M.text_from_bytes(source)
   local truncated = #rendered > #source
@@ -287,7 +334,9 @@ local MAX_ERROR_STRING_CHARACTERS = 1024
 ---@param key boolean
 ---@return string|number|boolean|vim.NIL|nil
 local function plain_error_scalar(value, key)
-  if value == vim.NIL then return vim.NIL end
+  if value == vim.NIL then
+    return vim.NIL
+  end
   local value_type = type(value)
   if value_type == "string" then
     return M.safe_message(value, {
@@ -301,7 +350,9 @@ local function plain_error_scalar(value, key)
     end
     return nil
   end
-  if value_type == "boolean" then return value end
+  if value_type == "boolean" then
+    return value
+  end
   return nil
 end
 
@@ -311,13 +362,16 @@ end
 ---@return unknown
 local function plain_error_copy(value, state, depth)
   local scalar = plain_error_scalar(value, false)
-  if scalar ~= nil or value == vim.NIL then return scalar end
-  if type(value) ~= "table" or depth >= MAX_ERROR_DEPTH
-      or state.active[value] or state.seen[value] then
+  if scalar ~= nil or value == vim.NIL then
+    return scalar
+  end
+  if type(value) ~= "table" or depth >= MAX_ERROR_DEPTH or state.active[value] or state.seen[value] then
     return nil
   end
   state.tables = state.tables + 1
-  if state.tables > MAX_ERROR_TABLES then return nil end
+  if state.tables > MAX_ERROR_TABLES then
+    return nil
+  end
   state.active[value] = true
   state.seen[value] = true
   local result = {}
@@ -325,7 +379,9 @@ local function plain_error_copy(value, state, depth)
   local had_entries = false
   while state.keys < (state.key_limit or MAX_ERROR_KEYS) do
     local advanced, key, child = pcall(next, value, cursor)
-    if not advanced or key == nil then break end
+    if not advanced or key == nil then
+      break
+    end
     had_entries = true
     cursor = key
     local copied_key = plain_error_scalar(key, true)
@@ -338,7 +394,9 @@ local function plain_error_copy(value, state, depth)
     end
   end
   state.active[value] = nil
-  if had_entries and next(result) == nil then return nil end
+  if had_entries and next(result) == nil then
+    return nil
+  end
   return result
 end
 
@@ -346,9 +404,7 @@ end
 ---@param kind? string
 ---@return Neoagent.Error
 function M.normalize_error(err, kind)
-  if type(err) == "table"
-      and type(rawget(err, "kind")) == "string"
-      and type(rawget(err, "message")) == "string" then
+  if type(err) == "table" and type(rawget(err, "kind")) == "string" and type(rawget(err, "message")) == "string" then
     local copy_state = {
       active = {},
       seen = {},
@@ -356,9 +412,10 @@ function M.normalize_error(err, kind)
       keys = 0,
       key_limit = MAX_ERROR_KEYS - 18,
     }
-    local copied_ok, copied = pcall(
-      plain_error_copy, err, copy_state, 0)
-    if not copied_ok or type(copied) ~= "table" then copied = {} end
+    local copied_ok, copied = pcall(plain_error_copy, err, copy_state, 0)
+    if not copied_ok or type(copied) ~= "table" then
+      copied = {}
+    end
     copied.kind = M.safe_message(rawget(err, "kind"), {
       fallback = kind or "tool",
       max_characters = 64,
@@ -373,12 +430,19 @@ function M.normalize_error(err, kind)
       key_limit = MAX_ERROR_KEYS - 2,
     }
     for _, name in ipairs({
-      "code", "status", "retry_after_ms", "retryable",
-      "provider_status", "provider_status_details", "stream_max_retries",
+      "code",
+      "status",
+      "retry_after_ms",
+      "retryable",
+      "provider_status",
+      "provider_status_details",
+      "stream_max_retries",
     }) do
       local selected = rawget(err, name)
       local safe = plain_error_copy(selected, priority_state, 0)
-      if safe ~= nil or selected == vim.NIL then copied[name] = safe end
+      if safe ~= nil or selected == vim.NIL then
+        copied[name] = safe
+      end
     end
     return copied
   end

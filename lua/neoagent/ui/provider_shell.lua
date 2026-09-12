@@ -95,7 +95,9 @@ end
 ---@return Applet.MountNode
 local function presentation_mount(pane, config, opts)
   local options = util.copy(window_options)
-  for key, value in pairs(opts.window_options or {}) do options[key] = value end
+  for key, value in pairs(opts.window_options or {}) do
+    options[key] = value
+  end
   return layout.mount(pane, {
     lifecycle = "transient",
     owns_pane = true,
@@ -118,7 +120,9 @@ end
 ---@param fallback number
 ---@return number
 local function dimension(value, fallback)
-  if value == nil then return fallback end
+  if value == nil then
+    return fallback
+  end
   return value
 end
 
@@ -127,8 +131,10 @@ end
 function View.new(opts)
   opts = opts or {}
   assert(type(opts.config) == "table", "Provider Shell UI config is required")
-  local renderer = renderer_protocol.assert(opts.renderer or opts.config.renderer
-    or require("neoagent.ui.renderers").get(opts.config.style), "Provider Shell Renderer")
+  local renderer = renderer_protocol.assert(
+    opts.renderer or opts.config.renderer or require("neoagent.ui.renderers").get(opts.config.style),
+    "Provider Shell Renderer"
+  )
   local defined, err = renderer_protocol.define_highlights(renderer)
   assert(defined, err and err.message or "Provider Shell highlights failed")
 
@@ -160,7 +166,9 @@ function View.new(opts)
       run = self.callbacks.action,
       previous = self.callbacks.previous,
       next = self.callbacks.next,
-      close = function() self:close() end,
+      close = function()
+        self:close()
+      end,
     },
     on_error = opts.on_error,
   })
@@ -169,7 +177,9 @@ function View.new(opts)
     theme = renderer.theme,
     callbacks = {
       select = self.callbacks.select,
-      close = function() self:close() end,
+      close = function()
+        self:close()
+      end,
     },
     on_error = opts.on_error,
   })
@@ -186,7 +196,9 @@ function View.new(opts)
         base_zindex = 80,
       })
     end,
-    render = function(_, env) return self:_render(env) end,
+    render = function(_, env)
+      return self:_render(env)
+    end,
     on_pane_close = function(event, default)
       self:_pane_detached(event.pane and event.pane:key(), default)
     end,
@@ -198,9 +210,15 @@ function View.new(opts)
     open_uri = opts.open_uri,
   })
   presentation_surface.configure(self, {
-    submit = function() self:_submit() end,
-    flush = function() return self.applet:flush() end,
-    is_open = function() return self:is_open() end,
+    submit = function()
+      self:_submit()
+    end,
+    flush = function()
+      return self.applet:flush()
+    end,
+    is_open = function()
+      return self:is_open()
+    end,
     resolve = function(id, value)
       return self.callbacks.presentation_resolve(id, value)
     end,
@@ -223,16 +241,20 @@ function View:_render(env)
       key = "provider-shell:split",
       axis = "horizontal",
       children = {
-        { key = "providers", basis = 22, grow = 0, min = 20,
-          child = mount(self.providers.pane, self.config, true) },
+        {
+          key = "providers",
+          basis = 22,
+          grow = 0,
+          min = 20,
+          child = mount(self.providers.pane, self.config, true),
+        },
         { key = "provider", grow = 1, min = 24, child = provider },
       },
     })
   end
   ---@type Applet.LayoutLayerNode[]
   local layers = {}
-  if self.presentation and self.presentation.active
-      and self.presentation_component then
+  if self.presentation and self.presentation.active and self.presentation_component then
     local request = self.presentation.active
     local presentation = self.presentation_component
     local editable = request.kind == "input"
@@ -297,8 +319,7 @@ function View:_render(env)
       container = "applet",
       anchor = "center",
       width = math.max(3, math.min(80, bounds.width - 2)),
-      height = editable and math.max(4, math.min(bounds.height - 2,
-          request.multiline and 12 or 6))
+      height = editable and math.max(4, math.min(bounds.height - 2, request.multiline and 12 or 6))
         or { content = true, max = math.max(3, bounds.height - 2) },
       modal = true,
       enter = true,
@@ -325,8 +346,7 @@ end
 ---@param providers Neoagent.ProviderListEntry[]?
 ---@return true?, Applet.Error?
 function View:set(snapshot, providers)
-  local changed_provider = self.provider_id ~= nil
-    and snapshot and snapshot.id ~= self.provider_id
+  local changed_provider = self.provider_id ~= nil and snapshot and snapshot.id ~= self.provider_id
   self.provider_id = snapshot and snapshot.id or nil
   self.provider:set(snapshot)
   self.providers:set(providers)
@@ -334,8 +354,12 @@ function View:set(snapshot, providers)
   self:_submit()
   if self:is_open() then
     local ok, err = self.applet:flush()
-    if not ok then return nil, err end
-    if changed_provider then self.provider:focus_initial() end
+    if not ok then
+      return nil, err
+    end
+    if changed_provider then
+      self.provider:focus_initial()
+    end
   end
   return true
 end
@@ -366,11 +390,11 @@ end
 ---@param default fun(): boolean
 function View:_pane_detached(key, default)
   default()
-  if key == "presentation" or key == "presentation-filter"
-      or key == "presentation-results" then
-    local id = self.presentation and self.presentation.active
-      and self.presentation.active.id
-    if id then self.callbacks.presentation_cancel(id) end
+  if key == "presentation" or key == "presentation-filter" or key == "presentation-results" then
+    local id = self.presentation and self.presentation.active and self.presentation.active.id
+    if id then
+      self.callbacks.presentation_cancel(id)
+    end
   else
     self:close()
   end
@@ -386,9 +410,13 @@ function View:open(origin)
     self.provider:focus_initial()
     return true
   end
-  if self:_ensure_presentation_component() then self:_submit() end
+  if self:_ensure_presentation_component() then
+    self:_submit()
+  end
   local opened, err = self.applet:open({ origin = origin })
-  if not opened then return nil, err end
+  if not opened then
+    return nil, err
+  end
   self.provider:focus_initial()
   self:_seed_presentation()
   return true
@@ -396,7 +424,9 @@ end
 
 ---@return boolean
 function View:close()
-  if self.destroyed or not self:is_open() then return false end
+  if self.destroyed or not self:is_open() then
+    return false
+  end
   presentation_surface.retain_seed(self)
   self.applet:close()
   self.callbacks.close()
@@ -427,7 +457,9 @@ function View:open_uri(uri)
 end
 
 function View:destroy()
-  if self.destroyed then return end
+  if self.destroyed then
+    return
+  end
   self.destroyed = true
   self.applet:destroy()
   presentation_surface.destroy(self)
