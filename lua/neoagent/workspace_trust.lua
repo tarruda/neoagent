@@ -451,17 +451,9 @@ function Policy:_finish(result)
   end
 end
 
----@param cwd string
+---@param target string
 ---@return boolean?, Neoagent.Error?, Neoagent.TrustRequestState?
-function Policy:request(cwd)
-  local trusted, err, target = self:is_trusted(cwd)
-  if trusted then
-    return true, nil, "trusted"
-  end
-  if err then
-    self:_notify(err)
-    return nil, err
-  end
+function Policy:_schedule(target)
   local key = M.key(target)
   if self.pending[key] then
     return false, nil, "active"
@@ -548,6 +540,20 @@ function Policy:request(cwd)
 end
 
 ---@param cwd string
+---@return boolean?, Neoagent.Error?, Neoagent.TrustRequestState?
+function Policy:request(cwd)
+  local trusted, err, target = self:is_trusted(cwd)
+  if trusted then
+    return true, nil, "trusted"
+  end
+  if err then
+    self:_notify(err)
+    return nil, err
+  end
+  return self:_schedule(target)
+end
+
+---@param cwd string
 ---@return true?, Neoagent.Error?
 function Policy:check(cwd)
   local trusted, err, target = self:is_trusted(cwd)
@@ -557,13 +563,7 @@ function Policy:check(cwd)
   if err then
     return nil, err
   end
-  local requested, request_err, request_state = self:request(target)
-  if requested then
-    return true
-  end
-  if requested == nil then
-    return nil, request_err
-  end
+  local _, _, request_state = self:_schedule(target)
   local display = target:gsub("[%z\1-\31\127]", " ")
   if #display > 900 then
     display = display:sub(1, 897) .. "..."

@@ -391,9 +391,6 @@ end
 ---@return boolean
 local function table_separator(line)
   local parsed = cells(line)
-  if #parsed == 0 then
-    return false
-  end
   for _, cell in ipairs(parsed) do
     if not cell:match("^:?-+:?$") then
       return false
@@ -1170,9 +1167,6 @@ function Document:regions(target)
   ---@param last integer
   ---@param block_index integer
   local function emit(first, last, block_index)
-    if last < first then
-      return
-    end
     self.next_region_revision = self.next_region_revision + 1
     regions[#regions + 1] = {
       first = first,

@@ -141,7 +141,7 @@ describe("neoagent contextual resources", function()
     local non_directory = write(base .. "/skills-file", "not a directory")
     local result = skills.discover({
       cwd = nested,
-      global_dirs = { shared, personal, non_directory },
+      global_dirs = { shared, personal, base .. "/missing", non_directory },
       project_dirs = { ".agents/skills" },
     })
     assert.are.same({ "alpha", "beta", "gamma" },

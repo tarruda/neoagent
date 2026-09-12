@@ -185,6 +185,22 @@ describe("neoagent.agent_loop", function()
     assert.is_false(result.ok)
     assert.matches("declared tool use without supplying a tool call",
       assert(result.error).message)
+
+    model = fake_model.new({ {
+      result = fake_model.assistant({ { type = "text", text = "first" } }),
+    } })
+    result = wait(agent_loop.run({
+      model = model,
+      messages = {},
+      get_steering_messages = function()
+        return { {
+          role = "assistant",
+          content = { { type = "text", text = "wrong role" } },
+        } --[[@as Neoagent.UserMessage]] }
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.matches("user message is required", assert(result.error).message)
   end)
 
   it("executes requested tools sequentially and emits ordered messages", function()

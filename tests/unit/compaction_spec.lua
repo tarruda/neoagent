@@ -140,6 +140,32 @@ describe("neoagent.compaction", function()
       context.tokens((assert(require("neoagent.session").new())), messages, { tokens = 50, message_count = 1 }))
   end)
 
+  it("uses historical usage only when it belongs to the current compacted context", function()
+    local context = require("neoagent.agent.context")
+    local messages = {
+      { role = "user", content = "12345678" },
+      { role = "assistant", content = {}, usage = { totalTokens = 40 }, stopReason = "stop" },
+    }
+    local unavailable = {
+      path = function() return nil, { kind = "session", message = "unavailable" } end,
+    }
+    assert.are.equal(2,
+      context.tokens(unavailable --[[@as Neoagent.Session]], messages))
+
+    local current = {
+      path = function()
+        return {
+          { type = "compaction", id = "c", parent_id = vim.NIL,
+            created_at = 1, summary = "old", first_kept_entry_id = "u",
+            tokens_before = 30 },
+          entry("a", "c", messages[2]),
+        }
+      end,
+    }
+    assert.are.equal(40,
+      context.tokens(current --[[@as Neoagent.Session]], messages))
+  end)
+
   it("selects turn boundaries and carries previous summaries forward", function()
     ---@type Neoagent.JournalEntry[]
     local path = {
@@ -393,5 +419,47 @@ describe("neoagent.compaction", function()
     assert.are.same(assert(run:result()).usage, assert(normalized).usage)
     assert.matches("<previous%-summary>\nprevious", require("neoagent.util").text_content(assert(assert(model.requests[1]).messages[1]).content))
     assert.matches("PREFIX of a turn", require("neoagent.util").text_content(assert(assert(model.requests[2]).messages[1]).content))
+  end)
+
+  it("stops split-turn compaction when either dependent summary fails", function()
+    local failure = { ok = false, error = { kind = "model", message = "summary failed" } }
+    local preparation = {
+      first_kept_entry_id = "keep",
+      messages = { { role = "user", content = "history" } },
+      turn_prefix = { { role = "user", content = "prefix" } },
+      split_turn = true,
+      tokens_before = 100,
+      settings = compaction.settings(),
+    }
+    for _, responses in ipairs({
+      { { result = failure } },
+      { { result = fake_model.assistant({ { type = "text", text = "history" } }) },
+        { result = failure } },
+    }) do
+      local model = fake_model.new(responses)
+      local run = compaction.run({ preparation = preparation, model = model })
+      assert(vim.wait(1000, function() return run:is_done() end))
+      assert.is_false(assert(run:result()).ok)
+      assert.are.equal("summary failed", assert(assert(run:result()).error).message)
+    end
+  end)
+
+  it("retains history usage when a split-turn prefix reports none", function()
+    local history = fake_model.assistant({ { type = "text", text = "history" } })
+    local prefix = fake_model.assistant({ { type = "text", text = "prefix" } })
+    prefix.message.usage = nil
+    local run = compaction.run({
+      preparation = {
+        first_kept_entry_id = "keep",
+        messages = { { role = "user", content = "history" } },
+        turn_prefix = { { role = "user", content = "prefix" } },
+        split_turn = true,
+        tokens_before = 100,
+        settings = compaction.settings(),
+      },
+      model = fake_model.new({ { result = history }, { result = prefix } }),
+    })
+    assert(vim.wait(1000, function() return run:is_done() end))
+    assert.are.same(history.message.usage, assert(run:result()).usage)
   end)
 end)

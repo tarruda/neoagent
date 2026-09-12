@@ -377,81 +377,94 @@ describe("llama.cpp router HTTP integration", function()
     unsubscribe()
   end)
 
-  it("refreshes the dynamic catalog and streams inference through the router", function()
-    local scenario = start({
-      { id = "52", path = "tests/recordings/llama/scenario-5-52.yaml", headers_subset = true },
-      { id = "53", path = "tests/recordings/llama/scenario-5-53.yaml", headers_subset = true },
-    })
-    local selected = runtime(scenario)
-    local service = selected.service
+  for _, string_timings in ipairs({ false, true }) do
+    it("refreshes the catalog and streams image inference with " .. (string_timings and "string" or "numeric") .. " timings", function()
+      local exchange = require("neoagent.http_replay").read("tests/recordings/llama/scenario-5-53.yaml")
+      if string_timings then
+        -- Preserve captured SSE semantics while exercising numeric metadata
+        -- encoded as strings by an OpenAI-compatible endpoint.
+        exchange.body = exchange.body:gsub('"timings":(%b{})', function(encoded)
+          local timings = vim.json.decode(encoded)
+          for key, value in pairs(timings) do timings[key] = tostring(value) end
+          return '"timings":' .. vim.json.encode(timings)
+        end)
+        exchange.chunks = {{ data = exchange.body, bytes = #exchange.body, at_us = 1000 }}
+      end
+      local scenario = start({
+        { id = "52", path = "tests/recordings/llama/scenario-5-52.yaml", headers_subset = true },
+        { id = "53", exchange = exchange, headers_subset = true },
+      })
+      local selected = runtime(scenario)
+      local service = selected.service
 
-    local refreshed = wait(selected.catalog:refresh({ force = true }))
-    assert(refreshed.ok)
-    local discovered = vim.tbl_keys(selected.catalog:snapshot().models)
-    table.sort(discovered)
-    assert.are.same({ "fake/failing", "fake/loaded", "fake/unloaded" },
-      discovered)
+      local refreshed = wait(selected.catalog:refresh({ force = true }))
+      assert(refreshed.ok)
+      local discovered = vim.tbl_keys(selected.catalog:snapshot().models)
+      table.sort(discovered)
+      assert.are.same({ "fake/failing", "fake/loaded", "fake/unloaded" },
+        discovered)
 
-    local configured = {
-      auth = { path = "unused-credentials.json", methods = {} },
-      _apis = {},
-      providers = {
-        ["llama.cpp"] = {
-          api = "openai-completions",
-          base_url = scenario.url .. "/v1",
-          auth_optional = true,
-          request_opts = selected.definition.request_opts,
-          models = {},
+      local configured = {
+        auth = { path = "unused-credentials.json", methods = {} },
+        _apis = {},
+        providers = {
+          ["llama.cpp"] = {
+            api = "openai-completions",
+            base_url = scenario.url .. "/v1",
+            auth_optional = true,
+            request_opts = selected.definition.request_opts,
+            models = {},
+          },
         },
-      },
-    }
-    local model = models.resolve("llama.cpp", "fake/loaded",
-      configured, nil, { ["llama.cpp"] = selected })
-    assert.are.same({ "text", "image" }, model.input)
-    local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
-      .. "AAAAC0lEQVR42mP8/x8AAusB9Wl5ZAAAAABJRU5ErkJggg=="
-    local attachments = require("tests.helpers.attachments").new()
-    local inference_stats = {}
-    local streamed = wait(model:stream({
-      files = attachments.files,
-      messages = { { role = "user", content = {
-        { type = "text", text = "What is in this image?" },
-        attachments.image(vim.base64.decode(png)),
-      } } },
-      on_event = function(event)
-        if event.type == "inference_stats" then
-          inference_stats[#inference_stats + 1] = event
-        end
-      end,
-    }))
-    assert(streamed.ok)
-    assert.are.equal("image accepted", streamed.text)
-    assert.are.same({
-      type = "thinking",
-      thinking = "checking the image",
-      thinkingSignature = "reasoning_content",
-    }, streamed.message.content[1])
-    assert.are.same({ type = "text", text = "image accepted" },
-      streamed.message.content[2])
-    assert.are.equal(7, assert(streamed.message.usage).totalTokens)
-    assert(vim.wait(1000, function()
-      return count_requests(scenario, "POST", "/v1/chat/completions") == 1
-    end))
-    local request = find_request(scenario, "POST", "/v1/chat/completions")
-    assert.are.equal("fake/loaded", assert(assert(request).body).model)
-    assert.is_true(assert(assert(request).body).stream)
-    assert.is_true(assert(assert(request).body).timings_per_token)
-    assert.is_true(assert(assert(request).body).return_progress)
-    assert.are.same({ include_usage = true }, assert(assert(request).body).stream_options)
-    assert.are.same({
-      type = "inference_stats",
-      generation_tokens_per_second = 50,
-    }, inference_stats[#inference_stats])
-    assert.are.same({
-      type = "image_url",
-      image_url = { url = "data:image/png;base64," .. png },
-    }, assert(assert(assert(assert(assert(request).body).messages)[1]).content)[2])
-  end)
+      }
+      local model = models.resolve("llama.cpp", "fake/loaded",
+        configured, nil, { ["llama.cpp"] = selected })
+      assert.are.same({ "text", "image" }, model.input)
+      local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        .. "AAAAC0lEQVR42mP8/x8AAusB9Wl5ZAAAAABJRU5ErkJggg=="
+      local attachments = require("tests.helpers.attachments").new()
+      local inference_stats = {}
+      local streamed = wait(model:stream({
+        files = attachments.files,
+        messages = { { role = "user", content = {
+          { type = "text", text = "What is in this image?" },
+          attachments.image(vim.base64.decode(png)),
+        } } },
+        on_event = function(event)
+          if event.type == "inference_stats" then
+            inference_stats[#inference_stats + 1] = event
+          end
+        end,
+      }))
+      assert(streamed.ok)
+      assert.are.equal("image accepted", streamed.text)
+      assert.are.same({
+        type = "thinking",
+        thinking = "checking the image",
+        thinkingSignature = "reasoning_content",
+      }, streamed.message.content[1])
+      assert.are.same({ type = "text", text = "image accepted" },
+        streamed.message.content[2])
+      assert.are.equal(7, assert(streamed.message.usage).totalTokens)
+      assert(vim.wait(1000, function()
+        return count_requests(scenario, "POST", "/v1/chat/completions") == 1
+      end))
+      local request = find_request(scenario, "POST", "/v1/chat/completions")
+      assert.are.equal("fake/loaded", assert(assert(request).body).model)
+      assert.is_true(assert(assert(request).body).stream)
+      assert.is_true(assert(assert(request).body).timings_per_token)
+      assert.is_true(assert(assert(request).body).return_progress)
+      assert.are.same({ include_usage = true }, assert(assert(request).body).stream_options)
+      assert.are.same({
+        type = "inference_stats",
+        generation_tokens_per_second = 50,
+      }, inference_stats[#inference_stats])
+      assert.are.same({
+        type = "image_url",
+        image_url = { url = "data:image/png;base64," .. png },
+      }, assert(assert(assert(assert(assert(request).body).messages)[1]).content)[2])
+    end)
+  end
 
   it("pushes implicitly loaded model progress from router SSE", function()
     local scenario = start({

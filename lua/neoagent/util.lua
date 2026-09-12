@@ -93,10 +93,7 @@ end
 ---@param index integer
 ---@return integer?
 local function utf8_sequence_length(value, index)
-  local first = value:byte(index)
-  if not first then
-    return nil
-  end
+  local first = assert(value:byte(index))
   if first < 0x80 then
     return 1
   end
@@ -412,10 +409,8 @@ function M.normalize_error(err, kind)
       keys = 0,
       key_limit = MAX_ERROR_KEYS - 18,
     }
-    local copied_ok, copied = pcall(plain_error_copy, err, copy_state, 0)
-    if not copied_ok or type(copied) ~= "table" then
-      copied = {}
-    end
+    local copied = plain_error_copy(err, copy_state, 0)
+    assert(type(copied) == "table", "structured errors must produce a table copy")
     copied.kind = M.safe_message(rawget(err, "kind"), {
       fallback = kind or "tool",
       max_characters = 64,

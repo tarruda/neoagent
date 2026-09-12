@@ -39,13 +39,10 @@ local util = require("neoagent.util")
 ---@field append fun(data: string)
 ---@field finish fun(trailing_empty?: boolean): Neoagent.LineCaptureResult
 
----@class Neoagent.CapturedProcessOptions: Neoagent.ProcessOptions
----@field on_output? fun(data: string, is_stderr: boolean)
-
 ---@class Neoagent.ProcessCaptureOptions
 ---@field stdout Neoagent.LineCaptureOptions
 ---@field stderr? Neoagent.LineCaptureOptions
----@field process? Neoagent.CapturedProcessOptions
+---@field process? Neoagent.ProcessOptions
 
 local M = {}
 
@@ -251,16 +248,12 @@ function M.capture_process(ctx, command, options)
     max_line_bytes = 50 * 1024 + 1,
   })
   local process_options = util.copy(options.process or {})
-  local on_output = process_options.on_output
   process_options.capture = false
   process_options.on_output = function(data, is_stderr)
     if is_stderr then
       stderr.append(data)
     else
       stdout.append(data)
-    end
-    if on_output then
-      on_output(data, is_stderr)
     end
   end
   local result = M.process(ctx, command, process_options)

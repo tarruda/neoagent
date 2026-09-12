@@ -284,10 +284,7 @@ function M.prepare(path_entries, settings)
   end
   local context = tree.to_llm(tree.messages(path_entries, true))
   local cut = M.find_cut_point(path_entries, boundary_start, #path_entries, settings.keep_recent_tokens)
-  local first_kept = path_entries[cut.first_kept_index]
-  if not first_kept then
-    return nil, util.error("compaction", "No context entry can be retained")
-  end
+  local first_kept = assert(path_entries[cut.first_kept_index])
   local history_end = cut.turn_start_index or cut.first_kept_index
   ---@type Neoagent.Message[]
   local messages = {}

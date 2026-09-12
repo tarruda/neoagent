@@ -76,12 +76,9 @@ local function workspace_cwd(ctx)
   return type(workspace) == "table" and workspace.cwd or nil
 end
 
----@param shell unknown
+---@param shell string
 ---@return Neoagent.SandboxShellKind?
 local function shell_kind(shell)
-  if type(shell) ~= "string" then
-    return
-  end
   local name = shell:gsub("\\", "/"):match("([^/]+)$")
   name = name and name:lower() or ""
   if name == "cmd" or name == "cmd.exe" then
@@ -327,10 +324,7 @@ local function parse_command(command, kind, partial)
   if kind == "cmd" then
     return parse_cmd(command, partial)
   end
-  if kind == "powershell" then
-    return parse_powershell(command, partial)
-  end
-  return nil, "the configured shell is not supported"
+  return parse_powershell(command, partial)
 end
 
 ---@param tokens string[]
@@ -660,9 +654,6 @@ end
 function Escalation:_sync_session(ctx)
   local context = ctx and ctx.context
   local key = type(context) == "table" and context.session_id or self._default_session
-  if key == nil then
-    key = self._default_session
-  end
   if self._session_key ~= key then
     self._session_key = key
     self._rules = {}

@@ -163,9 +163,6 @@ local function output_capture(filesystem)
       result.totalBytes = total_bytes
       result.totalLines = total_lines()
       result.truncated = is_truncated() or result.truncated
-      if result.truncated and result.truncatedBy == nil then
-        result.truncatedBy = total_bytes > truncate.MAX_BYTES and "bytes" or "lines"
-      end
       if result.truncated and not output_path and not spill_error then
         spill(tail)
       end

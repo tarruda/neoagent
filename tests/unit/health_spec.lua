@@ -261,4 +261,39 @@ describe("neoagent health", function()
     assert.is_true(contains(messages.error,
       "Failed to construct provider service for broken"))
   end)
+
+  it("destroys composed resources when Applet construction fails", function()
+    local destroyed = 0
+    require("neoagent.config").setup({
+      default_registry = false,
+      persistence = { enabled = false },
+      providers = {
+        owned = {
+          api = "fake",
+          models = {},
+          service = function()
+            return {
+              id = "owned",
+              name = "Owned",
+              state = function() return false end,
+              operations = {},
+              destroy = function() destroyed = destroyed + 1 end,
+            }
+          end,
+        },
+      },
+      _apis = {
+        fake = function() return require("tests.helpers.fake_model").new() end,
+      },
+    })
+    local applet_module = require("neoagent.applet")
+    local original = applet_module.new
+    applet_module.new = function() error("Applet construction failed") end
+    local ok, err = pcall(require("neoagent.health").check)
+    applet_module.new = original
+
+    assert(ok, err)
+    assert.are.equal(1, destroyed)
+    assert.is_true(contains(messages.error, "Applet construction failed"))
+  end)
 end)

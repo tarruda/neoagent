@@ -174,6 +174,9 @@ describe("neoagent bundled tools", function()
     assert.are.same({ kind = "plan" }, tool.render({
       state = "running", arguments = { plan = {} },
     }))
+    assert.is_nil(tool.render())
+    assert.is_nil(tool.render({ state = "error", arguments = { plan = {} } }))
+    assert.is_nil(tool.render({ state = "success", arguments = {} }))
   end)
 
   it("provides renderer-neutral activity data for bundled tools", function()
@@ -200,6 +203,7 @@ describe("neoagent bundled tools", function()
     }
     for _, case in ipairs(cases) do
       local tool = require("neoagent.tools." .. case.module).new()
+      assert.is_nil(tool.render())
       local semantic = assert(tool.render({
         state = "running", arguments = case.arguments,
       }))
@@ -246,6 +250,12 @@ describe("neoagent bundled tools", function()
     assert.are.equal("Editing", failed.ongoing)
     assert.are.equal("Edited", failed.complete)
     assert.are.equal("failed.lua", failed.subject)
+    assert.are.equal("activity", assert(tool.render({
+      state = "success", arguments = {}, result = { details = { patch = patch } },
+    })).kind)
+    assert.are.equal("activity", assert(tool.render({
+      state = "success", arguments = { path = "unchanged.lua" }, result = { details = {} },
+    })).kind)
   end)
 
   it("derives independent current plans from Session conversations", function()
@@ -574,6 +584,9 @@ describe("neoagent bundled tools", function()
     roots[#roots + 1] = root
     local write = require("neoagent.tools.write_file")
     local read = require("neoagent.tools.read_file")
+    assert.has_error(function()
+      execute(write, { path = "missing-context.txt", content = "" })
+    end, "Tool requires a workspace in ctx.context.workspace")
     local result = execute(write, { path = "nested/file.txt", content = "one\ntwo\nthree" }, ctx(workspace))
     assert.matches("Successfully wrote 13 bytes", (assert(assert(result.content[1]).text)))
     result = execute(read, { path = "nested/file.txt", offset = 2, limit = 1 }, ctx(workspace))
@@ -650,6 +663,136 @@ describe("neoagent bundled tools", function()
     assert(vim.uv.fs_unlink(root .. "/image.png"))
     assert.are.equal(png, attachments.read(assert(result.content[2])))
     assert.matches("unavailable", (assert(assert(result.content[1]).text)))
+  end)
+
+  for _, filename in ipairs({ "ordinary.png", "line\nbreak.png", "tab\tname.png" }) do
+    it("commits image tool results for the POSIX filename " .. vim.inspect(filename), function()
+      if jit.os == "Windows" then return end
+      local root, workspace = fixture()
+      roots[#roots + 1] = root
+      local png = vim.base64.decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==")
+      assert(fs.write_all(root .. "/" .. filename, png))
+      local fake = require("tests.helpers.fake_model")
+      local model = fake.new({
+        { result = fake.assistant({ { type = "toolCall", id = "read-1", name = "read_file",
+          arguments = { path = filename } } }, "toolUse") },
+        { result = fake.assistant({ { type = "text", text = "Finished." } }) },
+      })
+      local session = assert(require("neoagent.session").new({ files = attachments.files }))
+      local run = require("neoagent.chat").run(session, "Inspect the image.", {
+        model = model, tools = { require("neoagent.tools.read_file").new() },
+        context = { files = session:files(), workspace = workspace },
+      })
+      if not vim.wait(5000, function() return run:is_done() end) then
+        run:cancel()
+        error("Image tool did not settle")
+      end
+      assert.is_true(assert(run:result()).ok)
+      local result = assert(session:messages()[3])
+      assert(result.role == "toolResult")
+      assert.is_false(result.isError, vim.inspect(result.content))
+      local image = assert(result.content[2])
+      assert(image.type == "image")
+      if filename == "ordinary.png" then assert.are.equal(filename, image.filename)
+      else assert.is_nil(image.filename) end
+      assert.is_not_nil((session:files().inspect(image.file_id)))
+    end)
+  end
+
+  for _, suffix in ipairs({ "x.png", "xx.png" }) do
+    local filename = string.rep("界", 169) .. suffix
+    it("commits image tool results with a " .. #filename .. "-byte display filename", function()
+      local root, workspace = fixture()
+      roots[#roots + 1] = root
+      local png = vim.base64.decode("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIklEQVR4nGP4z8BAEiJR+X9SlY9aMGrBqAWjFoxaMCAWAABQpv4QX+h4RQAAAABJRU5ErkJggg==")
+      local fake = require("tests.helpers.fake_model")
+      local model = fake.new({
+        { result = fake.assistant({ { type = "toolCall", id = "read-1", name = "read_file",
+          arguments = { path = filename } } }, "toolUse") },
+        { result = fake.assistant({ { type = "text", text = "Finished." } }) },
+      })
+      local session = assert(require("neoagent.session").new({ files = attachments.files }))
+      local capabilities = ctx(workspace, nil, { fs = {
+        read_chunks = function(path, consume)
+          assert.are.equal(workspace:resolve(filename), path)
+          consume(png, 0)
+          return true
+        end,
+      } })
+      local run = require("neoagent.chat").run(session, "Inspect the image.", {
+        model = model, tools = { require("neoagent.tools.read_file").new() },
+        execute_tool = function(tool, arguments, execution)
+          return tool.execute(arguments, {
+            model = execution.model, run = execution.run, execute_tool = execution.execute_tool,
+            call = execution.call, on_update = execution.on_update,
+            context = capabilities.context, fs = capabilities.fs,
+          })
+        end,
+      })
+      if not vim.wait(5000, function() return run:is_done() end) then
+        run:cancel()
+        assert(vim.wait(1000, function() return run:is_done() end))
+        error("Image tool did not settle")
+      end
+      assert.is_true(assert(run:result()).ok)
+      local result = assert(session:messages()[3])
+      assert(result.role == "toolResult")
+      assert.is_false(result.isError, vim.inspect(result.content))
+      local image = assert(result.content[2])
+      assert(image.type == "image")
+      if suffix == "x.png" then assert.are.equal(filename, image.filename)
+      else assert.is_nil(image.filename) end
+      assert.are.equal(image.bytes, #attachments.read(image))
+      assert.are.same(result, assert(model.requests[2]).messages[3])
+    end)
+  end
+
+  it("detects every supported image signature", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local cases = {
+      { name = "photo.jpg", data = "\255\216\255" .. string.rep("x", 9), mime = "image/jpeg" },
+      { name = "animation.gif", data = "GIF89a" .. string.rep("x", 6), mime = "image/gif" },
+      { name = "bitmap.bmp", data = "BM" .. string.rep("x", 10), mime = "image/bmp" },
+      { name = "picture.webp", data = "RIFF1234WEBP", mime = "image/webp" },
+    }
+    local old_path = vim.env.PATH
+    vim.env.PATH = "/nonexistent"
+    for _, case in ipairs(cases) do
+      assert(fs.write_all(root .. "/" .. case.name, case.data, "w"))
+      local result = execute(require("neoagent.tools.read_file"),
+        { path = case.name }, ctx(workspace))
+      assert.are.equal(case.mime, assert(result.content[2]).mime_type)
+      assert.are.equal(case.data, attachments.read(assert(result.content[2])))
+    end
+    vim.env.PATH = old_path
+  end)
+
+  it("reports fallback read failures and ImageMagick timeouts", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local read = require("neoagent.tools.read_file")
+    local read_ok, read_err = pcall(execute, read, { path = "missing.txt" },
+      ctx(workspace, nil, { fs = {
+        read = function() return nil, "read denied" end,
+      } }))
+    assert.is_false(read_ok)
+    assert.matches("read denied", tostring(read_err))
+
+    local png = "\137PNG\r\n\26\nraw"
+    assert(fs.write_all(root .. "/image.png", png, "w"))
+    local magick = root .. "/magick"
+    assert(fs.write_all(magick, "placeholder\n", "w"))
+    assert(vim.uv.fs_chmod(magick, 493))
+    local old_path = vim.env.PATH
+    vim.env.PATH = root
+    local process_ok, process_err = pcall(execute, read, { path = "image.png" },
+      ctx(workspace, nil, { process = function()
+        return process_result({ code = 0, timed_out = true })
+      end }))
+    vim.env.PATH = old_path
+    assert.is_false(process_ok)
+    assert.matches("ImageMagick timed out", tostring(process_err))
   end)
 
   it("fails image ingestion when managed storage cannot publish the snapshot", function()
@@ -811,7 +954,7 @@ describe("neoagent bundled tools", function()
     assert.are.equal(png, attachments.read(assert(result.content[2])))
   end)
 
-  it("re-encodes oversized images as bounded JPEG payloads", function()
+  it("re-encodes oversized images as bounded JPEG payloads by default", function()
     local root, workspace = fixture()
     roots[#roots + 1] = root
     local png = "\137PNG\r\n\26\nraw"
@@ -832,7 +975,7 @@ describe("neoagent bundled tools", function()
     assert(vim.uv.fs_chmod(magick, 493))
     local old_path = vim.env.PATH
     vim.env.PATH = root .. ":" .. old_path
-    local result = execute(require("neoagent.tools.read_file").new({ max_image_output_bytes = 3 * 1024 * 1024 }), { path = "image.png" }, ctx(workspace))
+    local result = execute(require("neoagent.tools.read_file"), { path = "image.png" }, ctx(workspace))
     vim.env.PATH = old_path
 
     assert.are.equal("image/jpeg", assert(result.content[2]).mime_type)
@@ -992,6 +1135,7 @@ describe("neoagent bundled tools", function()
     local edit = require("neoagent.tools.edit_file")
     assert.has_error(function() edit._apply("one", { { oldText = "missing", newText = "two" } }, "f") end)
     assert.has_error(function() edit._apply("one", { { oldText = 1, newText = "two" } }, "f") end)
+    assert.has_error(function() edit._apply("one", { { oldText = "", newText = "two" } }, "f") end)
     assert.has_error(function() edit._apply("x x", { { oldText = "x", newText = "y" } }, "f") end)
     assert.has_error(function()
       edit._apply("abcdef", {
@@ -1005,6 +1149,41 @@ describe("neoagent bundled tools", function()
     assert.has_error(function()
       execute(edit, { path = "missing", edits = {} }, ctx(workspace))
     end)
+  end)
+
+  it("reports edit reads and replacements and falls back when diffing fails", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local edit = require("neoagent.tools.edit_file")
+    assert.error_matches(function()
+      execute(edit, {
+        path = "missing", edits = { { oldText = "one", newText = "two" } },
+      }, ctx(workspace, nil, {
+        fs = { read = function() return nil, "read denied" end },
+      }))
+    end, "read denied")
+    assert.error_matches(function()
+      execute(edit, {
+        path = "file", edits = { { oldText = "one", newText = "two" } },
+      }, ctx(workspace, nil, {
+        fs = {
+          read = function() return "one" end,
+          atomic_replace = function() return nil, "replace denied" end,
+        },
+      }))
+    end, "replace denied")
+
+    assert(fs.write_all(root .. "/fallback.txt", "one", "w"))
+    local original_diff = vim.diff
+    vim.diff = function() error("diff unavailable") end
+    local ok, value = pcall(execute, edit, {
+      path = "fallback.txt",
+      edits = { { oldText = "one", newText = "two" } },
+    }, ctx(workspace))
+    vim.diff = original_diff
+    assert.is_true(ok, tostring(value))
+    assert.are.equal("--- fallback.txt\n+++ fallback.txt",
+      assert(value.details).patch)
   end)
 
   it("runs shell with updates and returns non-zero output as an error result", function()
@@ -1085,15 +1264,19 @@ describe("neoagent bundled tools", function()
     }, ctx(workspace, updates, {
       process = function(_, opts)
         emit(opts, ansi)
-        return process_result({ code = 0, signal = 0 })
+        return process_result({ code = 2, signal = 0 })
       end,
     }))
 
     assert.matches("plain \\x1B%[1;31mred\\x1B%[0m", (assert(assert(result.content[1]).text)))
-    assert.are.equal("plain \27[1;31mred\27[0m \27]0;title\\x07tail\n",
-      assert(result.details).ansi)
+    local result_ansi = assert(result.details).ansi
+    assert.is_string(result_ansi)
+    ---@cast result_ansi string
+    assert.matches("plain \27%[1;31mred\27%[0m \27%]0;title\\x07tail",
+      result_ansi)
+    assert.matches("Command exited with status 2", result_ansi)
     assert.is_true(#updates >= 1)
-    assert.are.equal(assert(result.details).ansi, updates[#updates].details.ansi)
+    assert.are.equal(result_ansi, updates[#updates].details.ansi)
   end)
 
   it("bounds expanded non-text output and saves the original bytes", function()
@@ -1102,7 +1285,7 @@ describe("neoagent bundled tools", function()
     local truncate = require("neoagent.tools.truncate")
     local max_bytes = truncate.MAX_BYTES
     truncate.MAX_BYTES = 50
-    local original = string.rep("\0", 20)
+    local original = "\27[31m" .. string.rep("\0", 20) .. "\27[0m"
     local ok, result = pcall(execute, require("neoagent.tools.shell"), {
       command = "ignored",
     }, ctx(workspace, nil, {
@@ -1211,7 +1394,7 @@ describe("neoagent bundled tools", function()
       }
       local injected_process = function(_, opts)
         assert.is_false(opts.capture)
-        emit(opts, string.rep("x", 120 * 1024))
+        emit(opts, string.rep("x", 120 * 1024 - 5) .. "\27[31m")
         return process_result({
           code = 0,
           signal = 0,
@@ -1230,6 +1413,10 @@ describe("neoagent bundled tools", function()
 
       assert.is_false(result.isError)
       assert.matches(failure, (assert(assert(result.content[1]).text)))
+      local ansi = assert(result.details).ansi
+      assert.is_string(ansi)
+      ---@cast ansi string
+      assert.matches(failure, ansi)
       assert.is_true(#assert(result.content[1]).text < 52 * 1024)
       assert.is_nil(assert(result.details).output_path)
       assert.are.equal(120 * 1024, assert(assert(result.details).truncation).totalBytes)
@@ -1245,6 +1432,19 @@ describe("neoagent bundled tools", function()
     }, ctx(workspace))
     assert.is_true(timed_out.isError)
     assert.matches("timed out", (assert(assert(timed_out.content[1]).text)))
+
+    local ansi_timeout = execute(require("neoagent.tools.shell"), {
+      command = "ignored",
+    }, ctx(workspace, nil, {
+      process = function(_, opts)
+        emit(opts, "\27[31mwaiting\27[0m")
+        return process_result({ code = 124, signal = 15, timed_out = true })
+      end,
+    }))
+    local timeout_ansi = assert(ansi_timeout.details).ansi
+    assert.is_string(timeout_ansi)
+    ---@cast timeout_ansi string
+    assert.matches("Command timed out", timeout_ansi)
 
     local run = async.run(function()
       return require("neoagent.tools.shell").execute({ command = "sleep 2" }, ctx(workspace))
@@ -1287,9 +1487,26 @@ describe("neoagent bundled tools", function()
     assert.is_nil((assert(assert(grep.content[1]).text):find("ignored.txt", 1, true)))
     assert.has_error(function() execute(grep_tool, { pattern = "x", context = -1 }, ctx(workspace)) end)
     assert.has_error(function() execute(grep_tool, { pattern = "x", glob = true }, ctx(workspace)) end)
+    assert.has_error(function() execute(grep_tool, { pattern = "x", limit = 0 }, ctx(workspace)) end)
 
-    local found = execute(require("neoagent.tools.find"), { pattern = "*.lua", limit = 1 }, ctx(workspace))
+    local find_tool = require("neoagent.tools.find")
+    assert.has_error(function() execute(find_tool, { pattern = "*", limit = 0 }, ctx(workspace)) end)
+    local found = execute(find_tool, { pattern = "*.lua", limit = 1 }, ctx(workspace))
     assert.matches("Results truncated", (assert(assert(found.content[1]).text)))
+  end)
+
+  it("reports ripgrep process failures with captured diagnostics", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local ok, err = pcall(execute, require("neoagent.tools.grep"),
+      { pattern = "needle" }, ctx(workspace, nil, { process = function(_, opts)
+        assert(opts)
+        assert(opts.on_output)
+        opts.on_output("rg denied\n", true, "", "", "")
+        return process_result({ code = 2 })
+      end }))
+    assert.is_false(ok)
+    assert.matches("rg exited with status 2: rg denied", tostring(err))
   end)
 
   it("bounds search output while the process is running", function()
@@ -1324,5 +1541,24 @@ describe("neoagent bundled tools", function()
     assert.is_true(#assert(found.content[1]).text < 1024)
     assert.are.equal(0, assert(assert(found.details).truncation).linesTruncated)
     assert.matches("^result%-1\nresult%-2", (assert(assert(found.content[1]).text)))
+  end)
+
+  it("ignores empty search chunks and reports truncated matching lines", function()
+    local root, workspace = fixture()
+    roots[#roots + 1] = root
+    local result = execute(require("neoagent.tools.grep"), {
+      pattern = "result",
+    }, ctx(workspace, nil, {
+      process = function(_, opts)
+        emit(opts, "")
+        emit(opts, "file.lua:1:" .. string.rep("x", 3000) .. "\n")
+        return process_result({ code = 0 })
+      end,
+    }))
+    assert.are.equal(1, assert(result.details).lines_truncated)
+    local text = assert(result.content[1]).text
+    assert.is_string(text)
+    ---@cast text string
+    assert.matches("file.lua:1:", text)
   end)
 end)

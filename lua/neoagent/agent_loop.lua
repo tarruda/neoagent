@@ -255,11 +255,7 @@ end
 ---@return_overload true, nil, Neoagent.JsonObject
 ---@return_overload false, string
 local function validate_arguments(tool, arguments)
-  local valid, message = tool_schema.validate({ type = "object" }, arguments)
-  if not valid then
-    return false, message
-  end
-  valid, message = tool_schema.validate(tool.input_schema or {}, arguments)
+  local valid, message = tool_schema.validate(tool.input_schema or {}, arguments)
   if not valid then
     return false, message
   end
