@@ -250,9 +250,6 @@ end
 ---@param event Neoagent.RecordedEvent
 ---@return boolean
 function Recorder:_append(exchange, event)
-  if exchange.failed or exchange.closed then
-    return false
-  end
   local ok, encoded = pcall(util.json_encode, event)
   if not ok then
     self:_abandon(exchange)
@@ -311,9 +308,6 @@ end
 ---@param data string
 ---@return boolean
 function Recorder:_write(exchange, data)
-  if exchange.failed or exchange.closed then
-    return false
-  end
   local written, err = exchange.file:append(data, exchange.offset)
   if not written then
     self:_abandon(exchange)
@@ -610,13 +604,10 @@ function Recorder:_publish(exchange)
   end
 end
 
----@param result unknown
+---@param result table
 ---@param operation Neoagent.RecordingOperation
 ---@return Neoagent.RecordingResponse?
 local function response_from(result, operation)
-  if type(result) ~= "table" then
-    return nil
-  end
   if operation == "fetch" then
     if result.status ~= nil or result.headers ~= nil or result.body ~= nil then
       return {
@@ -639,7 +630,7 @@ local function response_from(result, operation)
 end
 
 ---@param exchange Neoagent.RecordingExchange?
----@param result unknown
+---@param result table
 ---@param operation Neoagent.RecordingOperation
 function Recorder:_complete(exchange, result, operation)
   if not exchange or exchange.finished then
@@ -719,7 +710,7 @@ function Recorder:_complete(exchange, result, operation)
 end
 
 ---@param exchange Neoagent.RecordingExchange?
----@param result unknown
+---@param result table
 ---@param operation Neoagent.RecordingOperation
 function Recorder:_finish(exchange, result, operation)
   local completed = pcall(self._complete, self, exchange, result, operation)
@@ -749,7 +740,7 @@ end
 function Recorder:transport(base, context)
   assert(type(base) == "table", "recording transport is required")
   local recorder = self
-  ---@generic R
+  ---@generic R: table
   ---@param operation Neoagent.RecordingOperation
   ---@param start? fun(opts: Neoagent.ByteCall<R>): Neoagent.Run<R, nil>
   ---@return (fun(opts: Neoagent.ByteCall<R>): Neoagent.Run<R, nil>)?
@@ -810,6 +801,7 @@ function Recorder:transport(base, context)
           end
           error(failure.error, 0)
         end
+        ---@cast result table
         local ok = pcall(recorder._finish, recorder, exchange, result, operation)
         if not ok then
           report(recorder, "failed to finish an exchange")

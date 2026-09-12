@@ -81,12 +81,13 @@ local function append_headers(command, headers)
 end
 
 ---@param path string
----@return table<string, string> headers
+---@return table<string, string>? headers
 ---@return number? status
+---@return unknown? error
 local function response_headers(path)
   local ok, lines = pcall(vim.fn.readfile, path, "b")
   if not ok then
-    return {}, nil
+    return nil, nil, lines
   end
   -- Neovim readfile in binary mode returns a list of lines.
   ---@cast lines string[]
@@ -271,10 +272,13 @@ function M.fetch(opts)
           end
         )
       end)
-      local headers, header_status = response_headers(header_path)
+      local headers, header_status, header_error = response_headers(header_path)
       pcall(vim.fn.delete, header_path)
       if not completed_ok then
         error(completed, 0)
+      end
+      if not headers then
+        error(util.error("transport", "Failed reading curl response headers", header_error), 0)
       end
       local body, status = (completed.stdout or ""):match("^(.*)\n(%d%d%d)$")
       if not status then
@@ -358,15 +362,18 @@ function M.request(opts)
           end
         )
       end)
-      local headers, status = response_headers(header_path)
+      local headers, status, header_error = response_headers(header_path)
       pcall(vim.fn.delete, header_path)
       if not completed then
         ---@type Neoagent.HttpError
         local err = util.normalize_error(result, "transport")
-        if status or next(headers) ~= nil then
+        if headers and (status or next(headers) ~= nil) then
           err.response = { status = status, headers = headers }
         end
         error(err, 0)
+      end
+      if not headers then
+        error(util.error("transport", "Failed reading curl response headers", header_error), 0)
       end
       return {
         ok = true,

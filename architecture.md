@@ -286,7 +286,8 @@ recycled descriptor. Close errors still prevent recording publication.
 Each exchange's sanitizer owns protocol credentials and Authentication's
 response sensitivity classification. It prepares masked protocol fields and
 sensitive bodies for the recorder, without owning transport or files. Model
-and ordinary provider bodies retain their content. Recordings use private
+and explicitly classified media-upload bodies retain their content, as do
+ordinary provider response bodies. Recordings use private
 storage; failures emit content-free diagnostics. Storage, formats, and sharing
 precautions are documented in
 `:help neoagent-recording`.

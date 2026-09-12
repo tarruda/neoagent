@@ -85,6 +85,13 @@ describe("neoagent.transport.curl", function()
       "curl", "--no-buffer", "--silent", "--show-error",
       "-X", "GET", "--max-time", "1.500", "http://localhost",
     }, curl.command({ url = "http://localhost", method = "GET", timeout_ms = 1500 }))
+    assert.are.same({
+      "curl", "--no-buffer", "--silent", "--show-error", "-X", "POST",
+      "-H", "Header: first", "-H", "header: second", "http://localhost",
+    }, curl.command({
+      url = "http://localhost",
+      headers = { Header = "first", header = "second" },
+    }))
   end)
 
   it("bounds fetched response bodies while curl is running", function()
@@ -241,5 +248,66 @@ describe("curl process boundary", function()
     assert.is_false(result.ok)
     assert.matches("Failed to create curl header file", assert(result.error).message)
     assert.are.equal("disk full", assert(result.error).detail)
+  end)
+
+  it("kills active fetches after bounded reader failures", function()
+    for _, failure in ipairs({ "read", "oversized" }) do
+      local state = process({ "HTTP/2 200 OK", "" })
+      local run = curl.fetch({ request = {
+        url = "https://api.test",
+        max_response_bytes = 2,
+      } })
+      local callbacks = state()
+      if failure == "read" then
+        reader(callbacks, "stdout")("read failed")
+      else
+        reader(callbacks, "stdout")(nil, "too large")
+      end
+      local result = wait(run)
+      assert.is_false(result.ok)
+      local _, _, killed = state()
+      assert.is_true(killed)
+    end
+  end)
+
+  it("contains process startup failures and cancellation", function()
+    vim.system = function() error("process startup failed") end
+    local fetch_result = wait(curl.fetch({ request = { url = "https://api.test" } }))
+    assert.is_false(fetch_result.ok)
+    assert.matches("Failed to start curl", assert(fetch_result.error).message)
+    local request_result = wait(curl.request({ request = { url = "https://api.test" } }))
+    assert.is_false(request_result.ok)
+    assert.matches("Failed to start curl", assert(request_result.error).message)
+
+    local killed = false
+    vim.system = function()
+      return { kill = function() killed = true end } --[[@as vim.SystemObj]]
+    end
+    local run = curl.request({ request = { url = "https://api.test" } })
+    run:cancel()
+    assert.are.equal("cancelled", assert(wait(run).error).kind)
+    assert.is_true(killed)
+  end)
+
+  it("rejects successful processes when their response header file disappears", function()
+    local request_state = process({ "HTTP/2 200 OK", "X-Test: value", "" })
+    local request_run = curl.request({ request = { url = "https://api.test" } })
+    local _, request_finish = request_state()
+    assert(vim.uv.fs_unlink(assert(files[#files])))
+    assert(request_finish)({ code = 0, signal = 0 })
+    local request_result = wait(request_run)
+    assert.is_false(request_result.ok)
+    assert.matches("Failed reading curl response headers", assert(request_result.error).message)
+    files[#files] = nil
+
+    local fetch_state = process({ "HTTP/2 200 OK", "X-Test: value", "" })
+    local fetch_run = curl.fetch({ request = { url = "https://api.test" } })
+    local _, fetch_finish = fetch_state()
+    assert(vim.uv.fs_unlink(assert(files[#files])))
+    assert(fetch_finish)({ code = 0, signal = 0, stdout = "{}\n200" })
+    local fetch_result = wait(fetch_run)
+    assert.is_false(fetch_result.ok)
+    assert.matches("Failed reading curl response headers", assert(fetch_result.error).message)
+    files[#files] = nil
   end)
 end)
