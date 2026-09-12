@@ -41,6 +41,24 @@ describe("neoagent.fs", function()
     assert.is_false(fs.is_absolute("\\rooted", "Windows"))
   end)
 
+  it("keeps missing paths canonical when an ancestor is an alias", function()
+    local directory = vim.fn.tempname()
+    local alias = vim.fn.tempname()
+    paths[#paths + 1] = directory
+    paths[#paths + 1] = alias
+    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+    local linked = vim.uv.fs_symlink(directory, alias, { dir = true, junction = false })
+    if not linked then
+      pending("directory symbolic links are unavailable")
+      return
+    end
+    local missing = fs.join(alias, "missing", "child")
+    local expected = fs.join(assert(vim.uv.fs_realpath(directory)), "missing", "child")
+    assert.are.equal(expected, fs.canonical(missing))
+    assert.are.equal(1, vim.fn.mkdir(fs.join(directory, "missing", "child"), "p"))
+    assert.are.equal(expected, fs.canonical(missing))
+  end)
+
   after_each(function()
     vim.uv.fs_stat = original.stat
     vim.uv.fs_lstat = original.lstat
@@ -653,39 +671,70 @@ describe("neoagent.fs", function()
   end)
 
   it("does not remove a replacement that takes over an atomic candidate path", function()
-    local directory = vim.fn.tempname()
-    paths[#paths + 1] = directory
-    assert.are.equal(1, vim.fn.mkdir(directory, "p"))
-    local target = vim.fs.joinpath(directory, "target.txt")
-    assert(fs.write_all(target, "original", "wx", 384))
-    local temporary
-    local target_inspections = 0
-    vim.uv.fs_open = function(path, flags, mode)
-      if path ~= target then temporary = path end
-      return original.open(path, flags, mode)
-    end
-    vim.uv.fs_lstat = function(path)
-      local stat, err, code = original.lstat(path)
-      if path == target then
-        target_inspections = target_inspections + 1
-        if target_inspections == 2 then
-          if not temporary then error("atomic candidate was not opened") end
-          assert(original.unlink(temporary))
-          assert(fs.write_all(temporary, "successor", "wx", 384))
-          assert(stat).ino = assert(stat).ino + 1
-        end
+    ---@param mutate fun(replacement: uv.fs_stat.result, candidate: uv.fs_stat.result)
+    local function exercise(mutate)
+      local directory = vim.fn.tempname()
+      paths[#paths + 1] = directory
+      assert.are.equal(1, vim.fn.mkdir(directory, "p"))
+      local target = vim.fs.joinpath(directory, "target.txt")
+      assert(fs.write_all(target, "original", "wx", 384))
+      local temporary
+      local replacement_stat
+      local target_inspections = 0
+      vim.uv.fs_open = function(path, flags, mode)
+        if path ~= target then temporary = path end
+        return original.open(path, flags, mode)
       end
-      return stat, err, code
+      vim.uv.fs_lstat = function(path)
+        if path == temporary and replacement_stat then
+          return vim.deepcopy(replacement_stat)
+        end
+        local stat, err, code = original.lstat(path)
+        if path == target then
+          target_inspections = target_inspections + 1
+          if target_inspections == 2 then
+            if not temporary then error("atomic candidate was not opened") end
+            local candidate_stat = assert(original.lstat(temporary))
+            assert(original.unlink(temporary))
+            assert(fs.write_all(temporary, "successor", "wx", 384))
+            replacement_stat = assert(original.lstat(temporary))
+            mutate(replacement_stat, candidate_stat)
+            assert(stat).ino = assert(stat).ino + 1
+          end
+        end
+        return stat, err, code
+      end
+
+      local ok, err, stage = fs.atomic_replace(target, "candidate", { mode = 384 })
+
+      vim.uv.fs_open, vim.uv.fs_lstat = original.open, original.lstat
+      assert.is_nil(ok)
+      assert.are.equal("target_changed", stage)
+      assert.matches("target changed", tostring(err))
+      assert.are.equal("successor", assert(fs.read(assert(temporary))))
+      assert.are.equal("original", assert(fs.read(target)))
     end
 
-    local ok, err, stage = fs.atomic_replace(target, "candidate", { mode = 384 })
-
-    vim.uv.fs_open, vim.uv.fs_lstat = original.open, original.lstat
-    assert.is_nil(ok)
-    assert.are.equal("target_changed", stage)
-    assert.matches("target changed", tostring(err))
-    assert.are.equal("successor", assert(fs.read(assert(temporary))))
-    assert.are.equal("original", assert(fs.read(target)))
+    exercise(function(replacement, candidate)
+      replacement.dev = candidate.dev
+      replacement.ino = candidate.ino + 1
+    end)
+    exercise(function(replacement, candidate)
+      replacement.dev = candidate.dev
+      replacement.ino = candidate.ino
+      replacement.gen = (candidate.gen or 0) + 1
+    end)
+    exercise(function(replacement, candidate)
+      replacement.dev = candidate.dev
+      replacement.ino = candidate.ino
+      replacement.size = candidate.size
+      replacement.mode = candidate.mode
+      replacement.gen = candidate.gen
+      replacement.mtime = vim.deepcopy(candidate.mtime)
+      replacement.ctime = vim.deepcopy(candidate.ctime)
+      replacement.birthtime = vim.deepcopy(candidate.birthtime)
+      replacement.ctime.nsec = replacement.ctime.nsec + 1
+    end)
   end)
 
   it("validates atomic replacement policy and preparation failures", function()
@@ -1100,8 +1149,12 @@ describe("neoagent.fs", function()
     local ok, created = fs.ensure_private_directory(directory, 448)
     assert.is_true(ok)
     assert.is_true(created)
-    assert.are.equal(448,
-      bit.band(assert(original.lstat(directory)).mode, 511))
+    local actual_mode = bit.band(assert(original.lstat(directory)).mode, 511)
+    if jit.os == "Windows" then
+      assert.are.equal(bit.band(448, 128), bit.band(actual_mode, 128))
+    else
+      assert.are.equal(448, actual_mode)
+    end
     assert.are.same({ true, false }, {
       fs.ensure_private_directory(directory, 448),
     })
@@ -1141,11 +1194,36 @@ describe("neoagent.fs", function()
       inspections = inspections + 1
       if inspections == 1 then return nil, "ENOENT", "ENOENT" end
       if inspections == 2 then return { type = "directory", mode = 448 } end
-      return { type = "directory", mode = 420 }
+      return { type = "directory", mode = 292 }
     end
     vim.uv.fs_chmod = function() return true end
     prepared, err = fs.ensure_private_directory("wrong-mode", 448)
     assert.is_nil(prepared)
     assert.matches("unexpected permission mode", tostring(err))
+  end)
+
+  it("accepts the writable directory mode represented by Windows", function()
+    local previous_os = jit.os
+    local succeeded, failure = pcall(function()
+      jit.os = "Windows"
+      local inspections = 0
+      vim.uv.fs_lstat = function()
+        inspections = inspections + 1
+        if inspections == 1 then
+          return nil, "ENOENT", "ENOENT"
+        end
+        return { type = "directory", mode = 511 }
+      end
+      vim.fn.mkdir = function() return 1 end
+      vim.uv.fs_chmod = function(_, requested)
+        assert.are.equal(448, requested)
+        return true
+      end
+      assert.are.same({ true, true }, {
+        fs.ensure_private_directory("windows-private", 448),
+      })
+    end)
+    jit.os = previous_os
+    assert(succeeded, failure)
   end)
 end)

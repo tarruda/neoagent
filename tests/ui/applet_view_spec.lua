@@ -1105,6 +1105,65 @@ describe("neoagent Applet View composition", function()
       value.transcript.pane.committed_generation)
   end)
 
+  it("does not rearm a spinner after it is stopped", function()
+    local value = view()
+    assert(value:open())
+    assert(value.transcript.pane:flush())
+    local starts = 0
+    local active = false
+    local closed = false
+    local callback
+    local timer = {
+      start = function(_, _, _, selected)
+        starts = starts + 1
+        active = true
+        callback = selected
+      end,
+      stop = function() active = false end,
+      is_closing = function() return closed end,
+      close = function() closed = true end,
+    }
+    local original_new_timer = vim.uv.new_timer
+    local original_schedule = vim.schedule
+    local original_settled = value.transcript.pane.is_settled
+    local original_spinner = value.transcript.set_spinner
+    ---@type (fun())[]
+    local scheduled = {}
+    vim.uv.new_timer = function()
+      return timer --[[@as uv.uv_timer_t]]
+    end
+    local ok, err = pcall(function()
+      value.context = { state = "running" }
+      value:_sync_spinner()
+      assert.are.equal(1, starts)
+      assert.is_true(active)
+      assert.is_function(callback)
+      vim.uv.new_timer = original_new_timer
+      vim.schedule = function(selected)
+        scheduled[#scheduled + 1] = selected
+      end
+      rawset(value.transcript.pane, "is_settled", function() return true end)
+      rawset(value.transcript, "set_spinner", function() end)
+
+      if not callback then error("spinner callback was not installed") end
+      callback()
+      assert.are.equal(1, #scheduled)
+      assert(table.remove(scheduled, 1))()
+      assert.are.equal(1, #scheduled)
+      value:_stop_spinner()
+      assert(table.remove(scheduled, 1))()
+
+      assert.are.equal(1, starts)
+      assert.is_false(active)
+      assert.is_true(closed)
+    end)
+    vim.uv.new_timer = original_new_timer
+    vim.schedule = original_schedule
+    rawset(value.transcript.pane, "is_settled", original_settled)
+    rawset(value.transcript, "set_spinner", original_spinner)
+    assert(ok, err)
+  end)
+
   it("returns Renderer continuations to transcript and details updates", function()
     local continued = { transcript = false, details = false }
     ---@type Neoagent.Renderer<unknown>

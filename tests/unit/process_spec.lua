@@ -46,6 +46,57 @@ describe("neoagent process runner", function()
     assert.are.equal("visible:unset", completed.stdout)
   end)
 
+  it("passes a list environment to legacy Neovim process spawning", function()
+    local tree_module = jit.os == "Windows"
+      and "neoagent.process.windows" or "neoagent.process.posix"
+    local original_tree = package.loaded[tree_module]
+    local original_process = package.loaded["neoagent.process"]
+    local original_system = vim.system
+    local original_has = vim.fn.has
+    ---@type table<string, string|number>|string[]|nil
+    local environment
+    local ok, completed = pcall(function()
+      package.loaded[tree_module] = {
+        detach = false,
+        new = function()
+          return {
+            attach = function() return true end,
+            close = function() end,
+          }
+        end,
+      }
+      package.loaded["neoagent.process"] = nil
+      vim.fn.has = function(feature)
+        if feature == "nvim-0.12" then return 0 end
+        return original_has(feature)
+      end
+      vim.system = function(_, options, on_exit)
+        if not options or not on_exit then
+          error("process options and completion callback are required")
+        end
+        environment = options.env
+        vim.schedule(function()
+          on_exit({ code = 0, signal = 0 })
+        end)
+        return { pid = 42, kill = function() end } --[[@as vim.SystemObj]]
+      end
+      return complete(function()
+        return require("neoagent.process").run({ "true" }, {
+          clear_env = true,
+          env = { SAFE = "visible" },
+        })
+      end)
+    end)
+    vim.system = original_system
+    vim.fn.has = original_has
+    package.loaded[tree_module] = original_tree
+    package.loaded["neoagent.process"] = original_process
+    assert(ok, completed)
+    assert.are.same({ "SAFE=visible" }, environment)
+    ---@cast completed Neoagent.ProcessResult
+    assert.are.equal(0, completed.code)
+  end)
+
   it("streams output without retaining it when capture is disabled", function()
     ---@type { data: string, is_stderr: boolean }[]
     local chunks = {}

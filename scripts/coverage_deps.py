@@ -56,7 +56,13 @@ def main():
     for name, values in SOURCES.items():
         install(name, *values)
     headers = ROOT / "luajit/src"
-    subprocess.run(["make", "-C", str(headers), "luajit.h"], check=True)
+    make_environment = os.environ.copy()
+    if platform.system() == "Darwin" and not make_environment.get("MACOSX_DEPLOYMENT_TARGET"):
+        version = platform.mac_ver()[0].split(".")
+        if not version[0]:
+            raise RuntimeError("Could not determine the macOS deployment target")
+        make_environment["MACOSX_DEPLOYMENT_TARGET"] = ".".join(version[:2])
+    subprocess.run(["make", "-C", str(headers), "luajit.h"], check=True, env=make_environment)
     compiler = shlex.split(os.environ.get("CC", "cc"))
     flags = ["-bundle", "-undefined", "dynamic_lookup"] if platform.system() == "Darwin" else ["-shared"]
     for module in ("deepactivelines", "hook"):

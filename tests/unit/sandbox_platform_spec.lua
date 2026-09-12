@@ -589,6 +589,41 @@ describe("neoagent sandbox platform adapters", function()
     assert.is_string(environment.NEOAGENT_SANDBOX_SPEC)
   end)
 
+  it("uses the legacy list environment for a Neovim 0.10 probe", function()
+    local original_version = vim.version
+    local current = (original_version --[[@as fun(): vim.Version]])()
+    local legacy = setmetatable({ lt = original_version.lt }, {
+      __call = function()
+        return setmetatable({ major = 0, minor = 10, patch = 0 }, {
+          __index = current,
+        })
+      end,
+    })
+    rawset(vim, "version", legacy)
+    cleanup(function() vim.version = original_version end)
+    ---@type string[]|table<string, string|number>|nil
+    local environment
+    local status = require("neoagent.sandbox.linux").check({
+      fs = fs,
+      nvim = vim.env.NEOAGENT_NVIM,
+      system = function(_, opts)
+        environment = opts.env
+        return {
+          code = 0,
+          signal = 0,
+          stdout = protocol.encode({ v = 1, type = "ready" })
+            .. protocol.encode({
+              v = 1, type = "exit", code = 0, signal = 0,
+            }),
+          stderr = "",
+        }
+      end,
+    })
+    assert.is_true(status.ok)
+    assert.is_true(vim.islist(environment))
+    assert.is_string(encoded_spec(environment))
+  end)
+
   it("resolves a reconstructed Linux Neovim command through PATH", function()
     local original_open = vim.uv.fs_open
     local original_read = vim.uv.fs_read

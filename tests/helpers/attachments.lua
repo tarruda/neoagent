@@ -5,10 +5,11 @@ local M = {}
 
 ---@generic T
 ---@param operation async fun(): T
+---@param timeout? integer
 ---@return T
-local function completed(operation)
+local function completed(operation, timeout)
   local run = async.run(operation)
-  if not vim.wait(5000, function() return run:is_done() end) then
+  if not vim.wait(timeout or 5000, function() return run:is_done() end) then
     run:cancel()
     error("Attachment operation exceeded its test deadline")
   end
@@ -20,7 +21,7 @@ end
 ---@class Neoagent.AttachmentFixture
 ---@field files Neoagent.Files
 ---@field image fun(data: string, mime_type?: string, fields?: {filename?: string, id?: string, revision?: string|number}): Neoagent.ImageBlock
----@field read fun(image: Neoagent.ImageBlock): string
+---@field read fun(image: Neoagent.ImageBlock, timeout?: integer): string
 
 ---@param storage? Neoagent.Files
 ---@return Neoagent.AttachmentFixture
@@ -39,12 +40,12 @@ function M.new(storage)
         mime_type = mime_type or "image/png",
       })
     end,
-    read = function(image)
+    read = function(image, timeout)
       local result = completed(function()
         local data, err = files.read(storage, image.file_id, image.bytes)
         if not data then error(err, 0) end
         return { ok = true, data = data }
-      end)
+      end, timeout)
       return result.data
     end,
   }

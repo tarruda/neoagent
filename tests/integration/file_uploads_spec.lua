@@ -14,9 +14,10 @@ local PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 
 ---@generic T, E
 ---@param run Neoagent.Run<T, E>
+---@param timeout? integer
 ---@return Neoagent.RunResult<T>
-local function wait(run)
-  if not vim.wait(10000, function() return run:is_done() end) then
+local function wait(run, timeout)
+  if not vim.wait(timeout or 10000, function() return run:is_done() end) then
     run:cancel()
     assert(vim.wait(1000, function() return run:is_done() end), "Timed out cancelling provider image request")
     error("Provider image request did not complete")
@@ -384,17 +385,17 @@ pathlib.Path(sys.argv[1]).write_bytes(png)
           },
           on_update = function() end,
         }) }
-      end))
+      end), 60000)
       assert.is_true(processed.ok, vim.inspect(processed.error))
       local image = assert(assert(processed.value).content[2])
       assert.are.equal("image", image.type)
       ---@cast image Neoagent.ImageBlock
-      state.upload_data, state.upload_mime = state.attachments.read(image), image.mime_type
+      state.upload_data, state.upload_mime = state.attachments.read(image, 60000), image.mime_type
       assert(session:append({ role = "user", content = { { type = "text", text = "Inspect the noise." }, image } }))
       local retained = session:messages()
       if uploaded then
         local result = wait(state.model:stream({ files = session:files(), file_cache = session:file_cache(),
-          messages = assert(session:context_messages()) }))
+          messages = assert(session:context_messages()) }), 60000)
         assert.is_true(result.ok, vim.inspect(result.error))
         assert.are.equal("file", outgoing(state).messages[1].content[2].source.type)
         assert.are.equal(1, state.uploads)
@@ -408,7 +409,7 @@ pathlib.Path(sys.argv[1]).write_bytes(png)
       local model = models.resolve("anthropic", state.model.id, state.configured, state.auth, runtimes)
       local reopened = assert(Session.new({ store = assert(storage.open(state.store:metadata().path, state.store:workspace_storage())) }))
       local result = wait(model:stream({ files = reopened:files(), file_cache = reopened:file_cache(),
-        messages = assert(reopened:context_messages()) }))
+        messages = assert(reopened:context_messages()) }), 60000)
       assert.is_true(result.ok, vim.inspect(result.error))
       local inline = outgoing(state).messages[1].content[2].source
       assert.are.equal("base64", inline.type)

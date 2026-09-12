@@ -220,6 +220,20 @@ function M.mkdirp(path)
   return true
 end
 
+---@param actual unknown
+---@param expected integer
+---@return boolean
+local function permission_mode_matches(actual, expected)
+  if type(actual) ~= "number" then
+    return false
+  end
+  ---@cast actual integer
+  if jit.os == "Windows" then
+    return bit.band(actual, 128) == bit.band(expected, 128)
+  end
+  return bit.band(actual, 511) == expected
+end
+
 ---@param path string
 ---@param requested_mode integer
 ---@return true? ok
@@ -262,7 +276,7 @@ function M.ensure_private_directory(path, requested_mode)
     if not current then
       return nil, current_err or "private directory is missing"
     end
-    if type(current.mode) == "number" and bit.band(current.mode, 511) ~= requested_mode then
+    if not permission_mode_matches(current.mode, requested_mode) then
       vim.uv.fs_rmdir(path)
       return nil, "private directory has an unexpected permission mode"
     end
@@ -756,13 +770,7 @@ end
 ---@param expected integer
 ---@return boolean
 local function candidate_mode_matches(actual, expected)
-  if type(actual) ~= "number" then
-    return false
-  end
-  if jit.os == "Windows" then
-    return bit.band(actual, 128) == bit.band(expected, 128)
-  end
-  return bit.band(actual, 511) == expected
+  return permission_mode_matches(actual, expected)
 end
 
 ---@param path string
@@ -841,10 +849,34 @@ end
 
 ---@param path string
 ---@param identity? Neoagent.FileIdentity
-local function remove_atomic_candidate(path, identity)
-  if identity then
-    local current = vim.uv.fs_lstat(path)
-    if not same_regular_identity(identity, current) then
+---@param expected? uv.fs_stat.result
+local function remove_atomic_candidate(path, identity, expected)
+  local current = vim.uv.fs_lstat(path)
+  if not current then
+    return
+  end
+  if identity and not same_regular_identity(identity, current) then
+    return
+  end
+  if not expected then
+    vim.uv.fs_unlink(path)
+    return
+  end
+  if expected.size ~= current.size or expected.mode ~= current.mode or expected.gen ~= current.gen then
+    return
+  end
+  for _, key in ipairs({ "mtime", "ctime", "birthtime" }) do
+    local left = expected[key]
+    local right = current[key]
+    if
+      left ~= nil
+      and (
+        type(right) ~= "table"
+        or type(left) ~= "table"
+        or left.sec ~= right.sec
+        or left.nsec ~= right.nsec
+      )
+    then
       return
     end
   end
@@ -905,43 +937,43 @@ function M.atomic_replace(path, data, policy)
 
   local current, current_err, current_code = vim.uv.fs_lstat(path)
   if not current and not missing(current_err, current_code) then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, current_err, "inspect"
   end
   if current and current.type == "link" then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, "atomic replacement target became a symbolic link", "target"
   end
   if current and current.type ~= "file" then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, "atomic replacement target is not a regular file", "target"
   end
   if not current and policy.require_existing then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, "atomic replacement target must already exist", "target"
   end
   if not same_observation(target, observation(current)) then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, "atomic replacement target changed during preparation", "target_changed"
   end
   if policy.expected_content_fingerprint ~= nil then
     if not target.exists then
-      remove_atomic_candidate(temporary, identity)
+      remove_atomic_candidate(temporary, identity, candidate)
       return nil, "atomic replacement expected target content is missing", "target_changed"
     end
     local fingerprint, fingerprint_err = fingerprint_file(path, target)
     if not fingerprint then
-      remove_atomic_candidate(temporary, identity)
+      remove_atomic_candidate(temporary, identity, candidate)
       return nil, fingerprint_err, "target_changed"
     end
     if fingerprint:lower() ~= policy.expected_content_fingerprint:lower() then
-      remove_atomic_candidate(temporary, identity)
+      remove_atomic_candidate(temporary, identity, candidate)
       return nil, "atomic replacement target content changed concurrently", "target_changed"
     end
   end
   local replaced, replace_err = vim.uv.fs_rename(temporary, path)
   if not replaced then
-    remove_atomic_candidate(temporary, identity)
+    remove_atomic_candidate(temporary, identity, candidate)
     return nil, replace_err, "rename"
   end
   if policy.durable then
@@ -979,7 +1011,24 @@ end
 ---@param path string
 ---@return string
 function M.canonical(path)
-  return vim.uv.fs_realpath(path) or M.normalize(path)
+  local normalized = M.normalize(path)
+  local current = normalized
+  local missing_parts = {}
+  while true do
+    local resolved = vim.uv.fs_realpath(current)
+    if resolved then
+      for index = #missing_parts, 1, -1 do
+        resolved = M.join(resolved, missing_parts[index])
+      end
+      return M.normalize(resolved)
+    end
+    local parent = vim.fs.dirname(current)
+    if not parent or parent == current then
+      return normalized
+    end
+    missing_parts[#missing_parts + 1] = assert(vim.fs.basename(current))
+    current = parent
+  end
 end
 
 ---@param path string

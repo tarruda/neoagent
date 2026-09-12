@@ -1819,6 +1819,14 @@ describe("Pane buffer surfaces", function()
       host.chrome = require("applet.chrome").new({ window = window(), descriptor = {
         chrome = { top = 1, right = 1, bottom = 1, left = 1 },
       } }, "floating")
+      local apply_chrome = host.chrome.apply
+      local reject_chrome = false
+      host.chrome.apply = function(chrome, options)
+        if reject_chrome then
+          error("synthetic border rejection")
+        end
+        apply_chrome(chrome, options)
+      end
       local root = ui.container({ key = "stage", width = 12, height = 3,
         child = ui.text({ key = "base", text = "base" }),
         layers = { ui.container({ key = "moving", width = 4, height = 1,
@@ -1835,19 +1843,21 @@ describe("Pane buffer surfaces", function()
       native.title, native.border = "", "none"
       vim.api.nvim_win_set_config(window(), native)
       assert(value.surface_changed)(value, { chrome = true })
+      reject_chrome = true
       if reposition then
         assert.is_true(value:set_position("moving", { col = 4 }))
       end
       local accepted, err = value:flush()
       assert.is_nil(accepted)
       assert.are.equal("commit", assert(err).phase)
-      assert.matches("border", assert(err).message)
+      assert.matches("border rejection", assert(err).message)
       assert.are.equal(committed, value.layout)
       assert.are.equal(before.commits, value:_stats().commits)
 
       native.border = "single"
       vim.api.nvim_win_set_config(window(), native)
       assert(value.surface_changed)(value, { chrome = true })
+      reject_chrome = false
       assert(value:flush())
       assert.are.equal("Managed", vim.api.nvim_win_get_config(window()).title[1][1])
       if reposition then
@@ -2096,14 +2106,6 @@ describe("Pane buffer surfaces", function()
     assert.is_false(assert(callbacks.on_win)(nil, window() + 1000, host.buffer))
     assert.is_false(assert(callbacks.on_win)(nil, window(), host.buffer + 1000))
 
-    local scene_provider = assert(value.reconcile_state.scene_provider)
-    local scene_binding = assert(scene_provider.binding)
-    local clipped_layer = assert(scene_binding.layers[1])
-    local original_clip = clipped_layer.clip
-    clipped_layer.clip = { row = 1, col = 0, width = 10, height = 1 }
-    assert(callbacks.on_line)(nil, nil, host.buffer, 0)
-    clipped_layer.clip = original_clip
-
     ---@type {buffer: integer, row: integer, col: integer, options: vim.api.keyset.set_extmark}[]
     local marks = {}
     local set_extmark = vim.api.nvim_buf_set_extmark
@@ -2119,7 +2121,15 @@ describe("Pane buffer surfaces", function()
       end
       return set_extmark(buffer, namespace, row, col, opts)
     end
+    local scene_provider = assert(value.reconcile_state.scene_provider)
+    local scene_binding = assert(scene_provider.binding)
+    local clipped_layer = assert(scene_binding.layers[1])
+    local original_clip = clipped_layer.clip
     local drawn, draw_error = pcall(function()
+      clipped_layer.clip = { row = 1, col = 0, width = 10, height = 1 }
+      assert(callbacks.on_line)(nil, nil, host.buffer, 0)
+      clipped_layer.clip = original_clip
+      marks = {}
       assert(callbacks.on_line)(nil, nil, host.buffer + 1000, 0)
       assert(callbacks.on_line)(nil, nil, host.buffer, -1)
       assert(callbacks.on_line)(nil, nil, host.buffer, 3)
@@ -2128,6 +2138,7 @@ describe("Pane buffer surfaces", function()
       assert(callbacks.on_line)(nil, nil, host.buffer, 1)
       assert(callbacks.on_line)(nil, nil, host.buffer, 2)
     end)
+    clipped_layer.clip = original_clip
     vim.api.nvim_buf_set_extmark = set_extmark
     assert(drawn, draw_error)
 

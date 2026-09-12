@@ -986,6 +986,24 @@ describe("neoagent.storage", function()
     assert.are.equal("lock ownership was lost", tostring(assert(open_err).detail))
   end)
 
+  it("reports a Session that becomes unreadable while opening", function()
+    local directory = tempdir()
+    dirs[#dirs + 1] = directory
+    local store = storage.new({ directory = directory, cwd = directory })
+    assert(store:append({ role = "user", content = "persisted" }))
+    local path = store:metadata().path
+    fs.open_regular = function(target, opts)
+      if target == path then return nil, "session open denied" end
+      return original_open_regular(target, opts)
+    end
+
+    local reopened, err = open_session(path)
+
+    assert.is_nil(reopened)
+    assert.matches("Failed to read session", assert(err).message)
+    assert.matches("session open denied", tostring(assert(err).detail))
+  end)
+
   it("reports projection failures through Store path APIs", function()
     local directory = tempdir()
     dirs[#dirs + 1] = directory

@@ -6,6 +6,7 @@ PLENARY_DIR ?= $(CURDIR)/.deps/plenary.nvim
 TEST_CMD = $(NVIM) --headless --noplugin -u tests/minimal_init.lua
 TEST_ENV = PATH=$(dir $(NVIM)):$(PATH) NEOAGENT_NVIM=$(NVIM) PLENARY_DIR=$(PLENARY_DIR)
 UI_TEST_TIMEOUT ?= 120000
+INTEGRATION_TEST_TIMEOUT ?= 50000
 PLENARY_COMMIT = 74b06c6c75e4eeb3108ec01852001636d85a932b
 LUACOV_COMMIT = b1f9eae400da976b93edb7f94cf5d05f538a0655
 
@@ -40,7 +41,7 @@ test-unit:
 	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/unit { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
 
 test-integration:
-	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/integration { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true }"
+	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/integration { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true, timeout = $(INTEGRATION_TEST_TIMEOUT) }"
 
 test-ui:
 	$(TEST_ENV) $(TEST_CMD) -c "PlenaryBustedDirectory tests/ui { minimal_init = './tests/minimal_init.lua', nvim_cmd = './scripts/nvim', sequential = true, timeout = $(UI_TEST_TIMEOUT) }"
@@ -78,7 +79,7 @@ benchmark-submission:
 
 coverage: coverage-deps
 	python3 scripts/coverage.py start
-	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast
+	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 INTEGRATION_TEST_TIMEOUT=240000 $(MAKE) test-fast
 	$(MAKE) coverage-report
 	$(MAKE) coverage-check
 
@@ -88,7 +89,7 @@ coverage-ci: coverage-collect
 
 coverage-collect: coverage-deps
 	python3 scripts/coverage.py start
-	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 $(MAKE) test-fast test-http-live test-native-sandbox
+	NEOAGENT_COVERAGE=1 UI_TEST_TIMEOUT=240000 INTEGRATION_TEST_TIMEOUT=240000 $(MAKE) test-fast test-http-live test-native-sandbox
 	python3 scripts/coverage.py export
 
 coverage-report:

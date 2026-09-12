@@ -278,10 +278,20 @@ describe("workspace attachment storage", function()
       readers[#readers + 1] = reader
       if change == "growth" then
         assert(fs.write_all(path(store, file.file_id), contents .. "extra"))
+      elseif jit.os == "Windows" then
+        local target = path(store, file.file_id)
+        vim.uv.fs_lstat = function(selected)
+          local stat, err, code = original_lstat(selected)
+          if selected == target and stat then
+            stat.ino = stat.ino + 1
+          end
+          return stat, err, code
+        end
       else
         assert(fs.atomic_replace(path(store, file.file_id), contents, { mode = 384 }))
       end
       local data, err = reader.read()
+      vim.uv.fs_lstat = original_lstat
       assert(reader.close())
       assert.is_nil(data)
       assert.matches(change == "growth" and "exceeds the byte limit" or "changed during read", assert(err).message)
@@ -297,15 +307,26 @@ describe("workspace attachment storage", function()
     fs.open_regular = function(selected, options)
       local opened, err = original_open(selected, options)
       if selected == target and opened then
-        assert(original_replace(target, "replacement", { mode = 384 }))
+        if jit.os == "Windows" then
+          vim.uv.fs_lstat = function(pathname)
+            local stat, stat_err, code = original_lstat(pathname)
+            if pathname == target and stat then
+              stat.ino = stat.ino + 1
+            end
+            return stat, stat_err, code
+          end
+        else
+          assert(original_replace(target, "replacement", { mode = 384 }))
+        end
       end
       return opened, err
     end
     local metadata, err = store.files.inspect(file.file_id)
     fs.open_regular = original_open
+    vim.uv.fs_lstat = original_lstat
     assert.is_nil(metadata)
     assert.matches("Could not inspect attachment", assert(err).message)
-    assert.are.equal("replacement", assert(fs.read(target)))
+    assert.are.equal(jit.os == "Windows" and "attachment" or "replacement", assert(fs.read(target)))
   end)
 
   async_test("rejects a file removed between metadata inspection and content opening", function()
