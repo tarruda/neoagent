@@ -101,8 +101,113 @@ describe("neoagent contextual resources", function()
     vim.fs.find = function() return {} end
     local ancestors = fs.ancestors(nested)
     vim.fs.find = original_find
-    assert.are.equal("/", ancestors[1])
-    assert.are.equal(vim.uv.fs_realpath(nested), ancestors[#ancestors])
+    assert.are.same({ vim.uv.fs_realpath(nested) }, ancestors)
+  end)
+
+  it("keeps project resources inside the trusted repository without following links", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    local external = base .. "/external"
+    local project_skills = repo .. "/project-skills"
+    paths[1] = base
+    directory(repo .. "/.git")
+    directory(project_skills)
+    local outside_instructions = write(external .. "/outside.md", "external instructions")
+    assert(vim.uv.fs_symlink(outside_instructions, repo .. "/AGENTS.md"))
+    local traversed = write(base .. "/traversed.md", "traversed instructions")
+
+    skill(project_skills, "safe",
+      "---\nname: safe\ndescription: repository skill\n---\nBody\n")
+    local outside_skill = assert(vim.fs.dirname(skill(external, "linked",
+      "---\nname: linked\ndescription: external skill\n---\nBody\n")))
+    assert(vim.uv.fs_symlink(outside_skill, project_skills .. "/linked"))
+    local external_agents = external .. "/agent-root"
+    skill(external_agents .. "/skills", "escaped",
+      "---\nname: escaped\ndescription: escaped skill\n---\nBody\n")
+    assert(vim.uv.fs_symlink(external_agents, repo .. "/.agents"))
+
+    local instructions = agent_instructions.discover({
+      cwd = repo,
+      global_files = {},
+      project_filenames = { "AGENTS.md", "../traversed.md" },
+    })
+    assert.are.same({}, instructions.files)
+    assert.are.equal(2, #instructions.diagnostics)
+
+    local discovered = skills.discover({
+      cwd = repo,
+      global_dirs = {},
+      project_dirs = { ".agents/skills", "project-skills" },
+    })
+    assert.are.same({ "safe" }, vim.tbl_map(function(item) return item.name end, discovered.skills))
+    assert.are.equal(2, #discovered.diagnostics)
+
+    local global = agent_instructions.discover({
+      cwd = repo,
+      global_files = { repo .. "/AGENTS.md", traversed },
+      project_filenames = {},
+    })
+    assert.are.same({ "external instructions", "traversed instructions" },
+      vim.tbl_map(function(file) return file.content end, global.files))
+  end)
+
+  it("uses the Workspace as the project resource root outside Git", function()
+    local base = vim.fn.tempname()
+    local workspace = base .. "/workspace"
+    paths[1] = base
+    write(base .. "/AGENTS.md", "parent instructions")
+    write(workspace .. "/AGENTS.md", "workspace instructions")
+    skill(base .. "/.agents/skills", "parent",
+      "---\nname: parent\ndescription: parent skill\n---\nBody\n")
+    skill(workspace .. "/.agents/skills", "workspace",
+      "---\nname: workspace\ndescription: workspace skill\n---\nBody\n")
+
+    local original_find = vim.fs.find
+    vim.fs.find = function() return {} end
+    local ok, instructions, discovered = pcall(function()
+      return agent_instructions.discover({
+        cwd = workspace,
+        global_files = {},
+        project_filenames = { "AGENTS.md" },
+      }), skills.discover({
+        cwd = workspace,
+        global_dirs = {},
+        project_dirs = { ".agents/skills" },
+      })
+    end)
+    vim.fs.find = original_find
+    assert(ok)
+    assert.are.same({ "workspace instructions" },
+      vim.tbl_map(function(file) return file.content end, instructions.files))
+    assert.are.same({ "workspace" }, vim.tbl_map(function(item) return item.name end, discovered.skills))
+  end)
+
+  it("rejects a project instruction replaced while its regular file is opening", function()
+    local base = vim.fn.tempname()
+    local repo = base .. "/repo"
+    local path = write(repo .. "/AGENTS.md", "repository instructions")
+    local outside = write(base .. "/outside.md", "external instructions")
+    paths[1] = base
+    directory(repo .. "/.git")
+
+    local original_open = fs.open_regular
+    fs.open_regular = function(candidate, options)
+      local file, err, stage = original_open(candidate, options)
+      if file and candidate == path then
+        assert(vim.uv.fs_rename(path, path .. ".original"))
+        assert(vim.uv.fs_symlink(outside, path))
+      end
+      return file, err, stage
+    end
+    local ok, result = pcall(agent_instructions.discover, {
+      cwd = repo,
+      global_files = {},
+      project_filenames = { "AGENTS.md" },
+    })
+    fs.open_regular = original_open
+    assert(ok)
+    assert.are.same({}, result.files)
+    assert.matches("changed its resolved path", assert(result.diagnostics[1]).message)
   end)
 
   it("discovers valid skills lazily with local precedence", function()

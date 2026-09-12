@@ -524,7 +524,7 @@ function RegularFile:close()
 end
 
 ---@param path string
----@param opts? { mode?: integer, identity?: Neoagent.FileIdentity }
+---@param opts? { mode?: integer, identity?: Neoagent.FileIdentity, read_only?: boolean }
 ---@return Neoagent.RegularFile? file
 ---@return string? error
 ---@return Neoagent.FileFailureStage? stage
@@ -536,8 +536,12 @@ function M.open_regular(path, opts)
     "regular file options must be an object"
   )
   for key in pairs(opts) do
-    assert(key == "identity" or key == "mode", "unsupported regular file option " .. tostring(key))
+    assert(
+      key == "identity" or key == "mode" or key == "read_only",
+      "unsupported regular file option " .. tostring(key)
+    )
   end
+  assert(opts.read_only == nil or type(opts.read_only) == "boolean", "regular file read_only must be boolean")
   assert(
     opts.mode == nil or type(opts.mode) == "number" and opts.mode >= 0 and opts.mode <= 511 and opts.mode % 1 == 0,
     "regular file mode must be between 0000 and 0777"
@@ -557,7 +561,7 @@ function M.open_regular(path, opts)
   then
     return nil, "regular file path identity changed", "ownership"
   end
-  local fd, open_err = vim.uv.fs_open(path, "r+", opts.mode or 420)
+  local fd, open_err = vim.uv.fs_open(path, opts.read_only and "r" or "r+", opts.mode or 420)
   if not fd then
     return nil, open_err, "open"
   end
@@ -1036,7 +1040,7 @@ end
 function M.ancestors(path)
   local current = M.canonical(path)
   local marker = vim.fs.find(".git", { path = current, upward = true })[1]
-  local stop = marker and M.canonical(vim.fs.dirname(marker)) or nil
+  local stop = marker and M.canonical(vim.fs.dirname(marker)) or current
   local result = {}
   while true do
     table.insert(result, 1, current)

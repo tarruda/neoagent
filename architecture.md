@@ -185,9 +185,10 @@ Tool presentation and message hooks belong to the Agent layer. Render hooks
 produce semantic data; they have no dependency on the Agent Loop.
 
 The Agent adds configured AGENTS.md and skill resources to its prompt.
-Workspace trust guards project resource loading and tool-capable execution in
-Neo. Sandboxing decorates the executor with restricted capabilities;
-escalation supplies host capabilities for one approved call.
+The Workspace trust boundary confines project resource loading to the trusted
+Git or Workspace root and guards tool-capable execution in Neo. Sandboxing
+decorates the executor with restricted capabilities; escalation supplies host
+capabilities for one approved call.
 Requested sandboxing blocks tool execution when activation fails; host
 execution requires explicitly disabling sandboxing.
 

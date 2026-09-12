@@ -613,7 +613,9 @@ AGENTS.MD AND SKILLS                                  *neoagent-context-files*
 
 Neo loads the global `stdpath("config") .. "/AGENTS.md"` and each project
 `AGENTS.md` from the Git root to the Workspace. Outside Git, discovery starts
-at the filesystem root. Files enter the prompt from broadest to most specific.
+at the Workspace. Linked project resources are ignored. Files enter the prompt
+from broadest to most specific. Explicitly configured global resources are not
+subject to the project boundary.
 
 Skills are directories containing a `SKILL.md` with YAML `name` and
 `description`. The defaults are:
