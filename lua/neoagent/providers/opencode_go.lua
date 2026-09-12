@@ -124,16 +124,12 @@ function M.new(opts, resources)
     return result
   end
 
-  local report = resources.report or function() end
-  local dashboard = provider_state.new({ blocks = blocks() }, { report = report })
+  local dashboard = provider_state.new({ blocks = blocks() }, { report = resources.report })
   local function publish()
     if destroyed then
       return
     end
-    local ok, err = dashboard:push({ blocks = blocks() })
-    if not ok then
-      report("neoagent OpenCode Go dashboard failed: " .. tostring(err and err.message or err), vim.log.levels.ERROR)
-    end
+    assert(dashboard:push({ blocks = blocks() }))
   end
   ---@class Neoagent.OpenCodeService: Neoagent.ProviderService
   local service = {

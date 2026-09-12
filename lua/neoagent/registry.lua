@@ -95,14 +95,11 @@ local function assert_transform(value)
   return value
 end
 
----@param transform? Neoagent.CatalogTransform
+---@param transform Neoagent.CatalogTransform
 ---@param model Neoagent.ModelConfigInput
 ---@param ctx Neoagent.CatalogTransformContext
 ---@return Neoagent.ModelConfigInput|false
 local function transformed(transform, model, ctx)
-  if not transform then
-    return util.copy(model)
-  end
   local result = transform(util.copy(model), util.copy(ctx))
   if result == false then
     return false

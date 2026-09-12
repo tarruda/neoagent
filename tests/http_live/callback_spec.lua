@@ -49,11 +49,15 @@ end
 describe("local browser authentication callback", function()
   ---@type Neoagent.CallbackListener<unknown>[]
   local servers = {}
+  ---@type uv.uv_tcp_t[]
+  local clients = {}
 
   before_each(function() servers = {} end)
 
   after_each(function()
     for _, server in ipairs(servers) do server.close() end
+    for _, client in ipairs(clients) do close(client) end
+    clients = {}
   end)
 
   ---@generic T
@@ -65,6 +69,45 @@ describe("local browser authentication callback", function()
     servers[#servers + 1] = server
     return server
   end
+
+  it("closes an accepted incomplete connection when its authentication wait is cancelled", function()
+    local calls = 0
+    local server = listen({ handler = function(received)
+      calls = calls + 1
+      assert.are.equal("/probe", received.target)
+      return { status = 204 }
+    end })
+    local run = async.run(function() return server.wait() end)
+    local client = assert(vim.uv.new_tcp())
+    clients[#clients + 1] = client
+    local connected, ended = false, false
+    client:connect("127.0.0.1", server.port, function(err)
+      assert.is_nil(err)
+      connected = true
+      client:read_start(function(_, data) if not data then ended = true; close(client) end end)
+      client:write("GET /callback HTTP/1.1\r\nHost:")
+    end)
+    assert(vim.wait(1000, function() return connected end))
+    -- A completed request on the next connection proves that the listener
+    -- has accepted the earlier, still incomplete connection from its queue.
+    assert.matches("^HTTP/1%.1 204 No Content", request(server.port, "GET /probe HTTP/1.1\r\n\r\n"))
+    run:cancel()
+    assert.are.equal("cancelled", assert(wait(run).error).kind)
+    assert(vim.wait(1000, function() return ended end))
+    assert.are.equal(1, calls)
+    assert.is_false(server.close())
+  end)
+
+  it("reports a native port conflict and allows the port to be reused after closing", function()
+    local owner = listen({ handler = function() return { status = 204 } end })
+    local failed, err = local_callback.listen({ port = owner.port, handler = function() return { status = 204 } end })
+    if failed then failed.close() end
+    assert.is_nil(failed)
+    assert.matches("EADDRINUSE", tostring(err))
+    assert(owner.close())
+    local replacement = listen({ port = owner.port, handler = function() return { status = 204 } end })
+    assert.matches("^HTTP/1%.1 204 No Content", request(replacement.port, "GET / HTTP/1.1\r\n\r\n"))
+  end)
 
   it("accepts LF-framed requests and writes deterministic safe responses", function()
     local server = listen({
@@ -132,6 +175,14 @@ describe("local browser authentication callback", function()
     }, "\r\n"))
     assert.matches("^HTTP/1%.1 413 Payload Too Large", large)
     assert.is_truthy((large:find("request too large", 1, true)))
+
+    for _, invalid in ipairs({
+      { payload = "GET / HTTP/1.1\r\nX-Long: " .. string.rep("x", 1024) .. "\r\n\r\n", status = 413 },
+      { payload = "invalid request\r\n\r\n", status = 400 },
+      { payload = "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n", status = 400 },
+    }) do
+      assert.matches("^HTTP/1%.1 " .. invalid.status, request(server.port, invalid.payload))
+    end
 
     for _, target in ipairs({ "/error", "/invalid" }) do
       local response = request(server.port,

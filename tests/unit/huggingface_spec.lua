@@ -21,6 +21,10 @@ describe("neoagent Hugging Face client", function()
     require("neoagent.fs").write_all(directory .. "/token", "file-token\n", "w", 384)
     vim.env.HF_HOME = directory
     assert.are.equal("file-token", huggingface.find_token())
+    assert.are.equal("file-token", huggingface.find_token({
+      HF_TOKEN_PATH = directory .. "/missing",
+      HF_HOME = directory,
+    }))
     vim.env.HF_TOKEN = "env-token"
     assert.are.equal("env-token", huggingface.find_token())
     vim.env.HF_TOKEN = original
@@ -48,6 +52,7 @@ describe("neoagent Hugging Face client", function()
         siblings = {
           { rfilename = "model-Q4_K_M.gguf", size = 1000 },
           { rfilename = "model-Q4_K_M-00001-of-00002.gguf", size = 2000 },
+          { rfilename = "model-UD-Q5_K_XL.gguf", size = 4000 },
           { rfilename = "mmproj-F16.gguf", size = 500 },
         },
       }) },
@@ -55,7 +60,10 @@ describe("neoagent Hugging Face client", function()
     local value = huggingface.new({ transport = transport })
     local result = wait(value:details("owner/repo"))
     assert.are.equal("auto", result.gated)
-    assert.are.same({ { name = "Q4_K_M", size = 3000 } }, result.quantizations)
+    assert.are.same({
+      { name = "Q4_K_M", size = 3000 },
+      { name = "UD-Q5_K_XL", size = 4000 },
+    }, result.quantizations)
   end)
 
   it("reports Hugging Face HTTP errors", function()
@@ -67,6 +75,17 @@ describe("neoagent Hugging Face client", function()
     local result = wait(value:search("missing"))
     assert.is_false(result.ok)
     assert.matches("missing model", assert(result.error).message)
+
+    transport.fetches = {
+      { status = 503, body = vim.json.encode("opaque failure") },
+      { error = { kind = "transport", message = "network unavailable" } },
+    }
+    result = wait(value:search("opaque"))
+    assert.is_false(result.ok)
+    assert.matches("HTTP 503", assert(result.error).message)
+    result = wait(value:search("offline"))
+    assert.is_false(result.ok)
+    assert.matches("network unavailable", assert(result.error).message)
   end)
 
   it("reports invalid search and details payloads", function()

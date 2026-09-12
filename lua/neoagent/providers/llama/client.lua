@@ -434,36 +434,30 @@ function Client:load_and_wait(model, on_progress)
     function(run)
       local expires = deadline(self.wait_timeout_ms)
       local event_loaded, event_error, event_exit_code = false, nil, nil
-      local watcher = async.run(function()
-        local ok, err = pcall(self.watch, self, function(event)
-          if event.model ~= model then
-            return
-          end
-          if event.event ~= "model_status" and event.event ~= "status_change" then
-            return
-          end
-          local data = event.data
-          if type(data) == "table" then
-            if data.status == "loaded" then
-              event_loaded = true
-            end
-            if data.status == "unloaded" then
-              event_error = "Model failed to load"
-              if type(data.exit_code) == "number" then
-                event_exit_code = data.exit_code
-              end
-            end
-          end
-          local progress = parse_load_progress(data)
-          if progress then
-            on_progress(progress)
-          end
-        end)
-        if not ok then
+      local watcher = self:watch(function(event)
+        if event.model ~= model then
           return
         end
-        return err:await()
-      end, { error_kind = "provider" })
+        if event.event ~= "model_status" and event.event ~= "status_change" then
+          return
+        end
+        local data = event.data
+        if type(data) == "table" then
+          if data.status == "loaded" then
+            event_loaded = true
+          end
+          if data.status == "unloaded" then
+            event_error = "Model failed to load"
+            if type(data.exit_code) == "number" then
+              event_exit_code = data.exit_code
+            end
+          end
+        end
+        local progress = parse_load_progress(data)
+        if progress then
+          on_progress(progress)
+        end
+      end)
       run:on_cancel(function()
         watcher:cancel()
         self:unload(model)
@@ -521,28 +515,22 @@ function Client:download_and_wait(model, on_progress)
     function(run)
       local finished, failure, saw_downloading = false, nil, false
       local expires = deadline(self.download_timeout_ms)
-      local watcher = async.run(function()
-        local ok, err = pcall(self.watch, self, function(event)
-          if event.model ~= model then
-            return
-          end
-          if event.event == "download_finished" then
-            finished = true
-          elseif event.event == "download_failed" then
-            failure = payload_error(event.data, "Download failed")
-          elseif event.event == "download_progress" then
-            saw_downloading = true
-            local progress = parse_download_progress(event.data)
-            if progress then
-              on_progress(progress)
-            end
-          end
-        end)
-        if not ok then
+      local watcher = self:watch(function(event)
+        if event.model ~= model then
           return
         end
-        return err:await()
-      end, { error_kind = "provider" })
+        if event.event == "download_finished" then
+          finished = true
+        elseif event.event == "download_failed" then
+          failure = payload_error(event.data, "Download failed")
+        elseif event.event == "download_progress" then
+          saw_downloading = true
+          local progress = parse_download_progress(event.data)
+          if progress then
+            on_progress(progress)
+          end
+        end
+      end)
       run:on_cancel(function()
         watcher:cancel()
         self:unload(model)

@@ -145,6 +145,40 @@ describe("OpenCode Go management client", function()
     end)
   end)
 
+  it("uses the ambient environment and propagates auth resolution failures", function()
+    local original = vim.env.OPENCODE_API_KEY
+    vim.env.OPENCODE_API_KEY = "environment-key"
+    local transport = fake_transport.new()
+    transport.fetches = { { body = vim.json.encode({ usage = {
+      rolling = { status = "ok", percent = 1,
+        resetsAt = "2026-08-20T17:30:00.000Z" },
+      weekly = { status = "ok", percent = 2,
+        resetsAt = "2026-08-24T00:00:00.000Z" },
+      monthly = { status = "ok", percent = 3,
+        resetsAt = "2026-09-03T12:00:00.000Z" },
+    } }) } }
+    local value = client.new({
+      base_url = "https://example.test/v1",
+      transport = transport,
+    })
+
+    local ambient = wait(value:usage({ resolve_auth = auth(nil) }))
+    vim.env.OPENCODE_API_KEY = original
+    assert.is_true(ambient.ok)
+    assert.are.equal("Bearer environment-key",
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
+
+    local failed = wait(value:usage({
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = false, error = { kind = "auth", message = "credential store unavailable" } }
+        end)
+      end,
+    }))
+    assert.is_false(failed.ok)
+    assert.are.equal("credential store unavailable", assert(failed.error).message)
+  end)
+
   it("bounds transport, HTTP, body, and catalog failures", function()
     ---@param response? Neoagent.TestByteResponse
     ---@param options? { transport?: Neoagent.ByteBackend, maximum?: integer }
@@ -199,6 +233,7 @@ describe("OpenCode Go management client", function()
     assert.matches("invalid model catalog", assert(result.error).message)
 
     assert.is_nil(client.iso_timestamp("2026-02-31T12:00:00Z"))
+    assert.is_nil(client.iso_timestamp(1787247000))
   end)
 
   it("rejects scalar catalog JSON without exposing the response body", function()

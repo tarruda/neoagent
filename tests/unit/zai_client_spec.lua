@@ -106,6 +106,7 @@ describe("Z.AI client", function()
       { body = vim.json.encode({ data = {
         available_balance = "12.50", currency = "CNY",
       } }) },
+      { body = "[]" },
       { body = vim.json.encode({ data = {
         total_balance = 1, available_balance = -1, currency = "USD",
       } }) },
@@ -127,12 +128,10 @@ describe("Z.AI client", function()
       total = 12.5, available = 12.5, currency = "CNY",
     }, result.balance)
 
-    for _, message in ipairs({
-      "invalid balance data", "invalid balance data", "invalid balance data",
-    }) do
+    for _ = 1, 4 do
       result = wait(value:balance(context))
       assert.is_false(result.ok)
-      assert.matches(message, assert(result.error).message)
+      assert.matches("invalid balance data", assert(result.error).message)
     end
   end)
 
@@ -346,38 +345,86 @@ describe("Z.AI client", function()
       { body = vim.json.encode({ data = { limits = { {
         type = "TOKENS_LIMIT",
       } } } }) },
+      { body = vim.json.encode({ data = { limits = { 7 } } }) },
+      { body = vim.json.encode({ data = { limits = { {
+        type = "TOKENS_LIMIT", percentage = 50, nextResetTime = 0,
+      } } } }) },
+      { body = vim.json.encode({ data = { limits = { {
+        type = "TOKENS_LIMIT", percentage = 50, nextResetTime = 0.5,
+      } } } }) },
+      { body = vim.json.encode({ data = {
+        planName = "bad\nplan",
+        limits = { { type = "TOKENS_LIMIT", percentage = 50 } },
+      } }) },
+      { body = vim.json.encode({ data = { limits = { {
+        type = "FUTURE_LIMIT", percentage = 50,
+      } } } }) },
     }
     local value = client.new({
       management_url = "https://example.test",
       transport = transport,
     })
-    local result = wait(value:quota({ resolve_auth = auth({
-      ["x-api-key"] = "api-key",
-    }) }))
-    assert.is_false(result.ok)
-    assert.matches("invalid quota data", assert(result.error).message)
-    assert.are.equal("api-key",
-      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
-
-    result = wait(value:quota({ resolve_auth = auth({
-      Authorization = "Bearer api-key",
-    }) }))
-    assert.is_false(result.ok)
-    assert.matches("invalid quota data", assert(result.error).message)
-
-    for _ = 1, 3 do
+    local result
+    for _ = 1, 10 do
       result = wait(value:quota({ resolve_auth = auth({
         Authorization = "Bearer api-key",
       }) }))
       assert.is_false(result.ok)
       assert.matches("invalid quota data", assert(result.error).message)
     end
+    assert.are.equal("api-key",
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "Authorization"))
 
     result = wait(value:quota({ resolve_auth = auth({
       ["X-Trace"] = "trace-only",
     }) }))
     assert.is_false(result.ok)
     assert.matches("returned no API key header", assert(result.error).message)
+  end)
+
+  it("contains endpoint-specific credential and transport failures", function()
+    local transport = fake_transport.new()
+    transport.fetches = { {
+      error = { kind = "transport", message = "connection reset" },
+    } }
+    local value = client.new({
+      management_url = "https://example.test",
+      transport = transport,
+    })
+    local rejected_context = {
+      resolve_auth = function()
+        return require("neoagent.async").run(function()
+          return { ok = false, error = {
+            kind = "auth",
+            message = "credential resolution failed",
+          } }
+        end)
+      end,
+    }
+    local rejected_models = wait(value:models(rejected_context))
+    assert.is_false(rejected_models.ok)
+    assert.matches("credential resolution failed", assert(rejected_models.error).message)
+    local rejected_balance = wait(value:balance(rejected_context))
+    assert.is_false(rejected_balance.ok)
+    assert.matches("credential resolution failed", assert(rejected_balance.error).message)
+
+    local missing_models = wait(value:models({
+      resolve_auth = auth({ ["X-Trace"] = "trace-only" }),
+    }))
+    assert.is_false(missing_models.ok)
+    assert.matches("no API key header", assert(missing_models.error).message)
+
+    local failed_models = wait(value:models({
+      resolve_auth = auth({ ["x-api-key"] = "api-key" }),
+    }))
+    assert.is_false(failed_models.ok)
+    assert.matches("connection reset", assert(failed_models.error).message)
+
+    local missing_balance = wait(value:balance({
+      resolve_auth = auth({ ["X-Trace"] = "trace-only" }),
+    }))
+    assert.is_false(missing_balance.ok)
+    assert.matches("no API key header", assert(missing_balance.error).message)
   end)
 
   it("reports authentication and rate-limit failures and reads ZAI_API_KEY", function()

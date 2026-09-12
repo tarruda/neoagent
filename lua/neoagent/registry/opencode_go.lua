@@ -252,14 +252,6 @@ local known_models = {
 }
 
 ---@type table<string, boolean>
-local response_models = {
-  ["gpt-5.6-luna"] = true,
-  ["grok-4.5"] = true,
-  ["grok-4.6"] = true,
-  ["muse-spark-1.2-contributor"] = true,
-}
-
----@type table<string, boolean>
 local message_models = {
   ["minimax-m3"] = true,
   ["minimax-m2.7"] = true,
@@ -290,9 +282,7 @@ local function transform(source)
   local result = util.deep_merge(defaults, source)
   ---@cast result Neoagent.DiscoveredModel
   if result.api == nil then
-    if response_models[source.id] then
-      result.api = responses
-    elseif message_models[source.id] or source.id:match("^qwen3%.[5-8]%-") then
+    if message_models[source.id] or source.id:match("^qwen3%.[5-8]%-") then
       result.api = messages
     end
   end

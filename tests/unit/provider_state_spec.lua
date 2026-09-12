@@ -215,6 +215,69 @@ describe("neoagent provider state", function()
     assert.matches("listener boom", tostring(assert(notifications[1])))
   end)
 
+  it("preserves published state when any dashboard block or operation is invalid", function()
+    local dashboard = provider_state.new(valid())
+    local retained = dashboard:state()
+    local publications = 0
+    local unsubscribe = dashboard:subscribe(function() publications = publications + 1 end)
+    local invalid = {
+      { value = false, error = "provider dashboard state must be an object" },
+      { value = { blocks = { named = {} } }, error = "provider blocks must be a list" },
+      { value = { operation = false }, error = "provider operation must be an object" },
+    }
+    ---@type { block: integer, field: string, value: boolean|string|table, error: string }[]
+    local block_cases = {
+      { block = 1, field = "type", value = false, error = "provider block type" },
+      { block = 1, field = "level", value = false, error = "status level" },
+      { block = 2, field = "label", value = false, error = "field label" },
+      { block = 2, field = "value", value = false, error = "field value" },
+      { block = 3, field = "label", value = false, error = "progress label" },
+      { block = 3, field = "detail", value = false, error = "progress detail" },
+      { block = 3, field = "level", value = "unknown", error = "progress level" },
+      { block = 4, field = "label", value = false, error = "limit label" },
+      { block = 4, field = "detail", value = false, error = "limit detail" },
+      { block = 4, field = "level", value = "unknown", error = "limit level" },
+      { block = 5, field = "title", value = false, error = "list title" },
+      { block = 5, field = "items", value = { false }, error = "provider list item" },
+      { block = 5, field = "items", value = { { label = "worker", detail = false } }, error = "list item detail" },
+      { block = 6, field = "title", value = {}, error = "activity title" },
+      { block = 6, field = "entries", value = false, error = "provider activity entries" },
+      { block = 6, field = "entries", value = { false }, error = "provider activity entry" },
+      { block = 6, field = "entries", value = { { message = "Ready", level = "unknown" } }, error = "activity level" },
+      { block = 6, field = "entries", value = { { message = false } }, error = "activity message" },
+    }
+    for _, case in ipairs(block_cases) do
+      local snapshot = valid()
+      rawset(assert(snapshot.blocks[case.block]), case.field, case.value)
+      invalid[#invalid + 1] = { value = snapshot, error = case.error }
+    end
+    for _, case in ipairs({
+      { field = "label", value = false, error = "operation label" },
+      { field = "state", value = false, error = "operation state" },
+      { field = "message", value = false, error = "operation message" },
+      { field = "ratio", value = math.huge, error = "operation ratio" },
+      { field = "detail", value = false, error = "operation detail" },
+    }) do
+      local snapshot = valid()
+      rawset(snapshot.operation, case.field, case.value)
+      invalid[#invalid + 1] = { value = snapshot, error = case.error }
+    end
+    for _, case in ipairs(invalid) do
+      local accepted, err = dashboard:push(case.value)
+      assert.is_nil(accepted)
+      assert.are.equal("provider", assert(err).kind)
+      assert.matches(case.error, assert(err).message)
+      assert.are.same(retained, dashboard:state())
+      assert.are.equal(0, publications)
+    end
+    assert(dashboard:push({ blocks = { { type = "status", text = "Recovered" } } }))
+    assert.are.equal(1, publications)
+    assert.are.equal("Recovered", rawget(assert(dashboard:state().blocks[1]), "text"))
+    unsubscribe()
+    unsubscribe()
+    dashboard:destroy()
+  end)
+
   it("accepts pushes from provider-owned timers", function()
     local dashboard = provider_state.new({ blocks = {} })
     ---@type Neoagent.ProviderState?
@@ -243,6 +306,13 @@ describe("neoagent provider state", function()
     })
     assert(normalized, err and assert(err).message)
     assert.is_nil(normalized.ratio)
+    assert.is_nil(normalized.detail)
+    assert.is_nil((provider_state.normalize_operation(nil)))
+    normalized = assert(provider_state.normalize_operation({
+      id = "download", label = "Download model", state = "running",
+      message = "", detail = "",
+    }))
+    assert.is_nil(normalized.message)
     assert.is_nil(normalized.detail)
     assert.is_nil((provider_state.normalize_operation({ label = "missing" })))
     assert.is_nil((provider_state.normalize_operation({

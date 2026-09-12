@@ -47,7 +47,6 @@ local M = {}
 ---@alias Neoagent.ShellRunResult Neoagent.ShellActionRun|boolean|nil
 
 ---@class Neoagent.AuthCoordination
----@field active boolean
 ---@field finish fun(self: Neoagent.AuthCoordination): boolean
 
 ---@class Neoagent.ProviderShellAction
@@ -205,18 +204,6 @@ function ProviderShell.new(opts)
     host_effects = opts.host_effects or Applet.host_effects,
     owns_presenter = opts.presenter == nil,
   }, ProviderShell)
-  for provider_id, runtime in pairs(self.runtimes) do
-    if runtime.credentials == nil then
-      local provider = self.config.providers[provider_id] or runtime.definition or {}
-      runtime.credentials = provider_credentials.new({
-        provider_id = provider_id,
-        provider = provider,
-        authentication = self.auth,
-        method = self.config.auth.methods[provider.auth],
-      })
-    end
-  end
-
   local view_factory = opts.view or require("neoagent.ui.provider_shell").new
   self.view_value = view_factory({
     config = opts.config.ui,
@@ -562,9 +549,6 @@ end
 ---@param method_id string?
 ---@return boolean
 function ProviderShell:_authentication_enabled(runtime, method_id)
-  if self.action then
-    return false
-  end
   for _, service in ipairs(self:_auth_services(runtime, method_id)) do
     if not provider_service.operation_enabled(service, { mutating = true }) then
       return false
@@ -585,9 +569,6 @@ function ProviderShell:_login_available(auth)
   end
   if auth.kind == "logged_out" or auth.kind == "error" or auth.kind == "optional" then
     return true
-  end
-  if auth.kind ~= "environment" and auth.kind ~= "configured" then
-    return false
   end
   return type(method) == "table" and method.login_with_ambient == true
 end
@@ -676,12 +657,8 @@ function ProviderShell:_begin_auth_coordination(runtime, method_id)
     end
     tokens[#tokens + 1] = token
   end
-  local group = { active = true }
+  local group = {}
   function group:finish()
-    if not self.active then
-      return false
-    end
-    self.active = false
     for index = #tokens, 1, -1 do
       tokens[index]:finish()
     end
@@ -1011,9 +988,6 @@ end
 
 ---@return boolean?
 function ProviderShell:_refresh()
-  if self.destroyed then
-    return false
-  end
   local built, snapshot = pcall(self._snapshot, self)
   if not built then
     self:_notify(util.normalize_error(snapshot, "provider").message, vim.log.levels.ERROR)

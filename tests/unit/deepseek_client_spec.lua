@@ -134,6 +134,24 @@ describe("DeepSeek management client", function()
     end)
   end)
 
+  it("identifies an exhausted account balance", function()
+    local transport = fake_transport.new()
+    transport.fetches = { { status = 402, body = "private balance response" } }
+    local value = client.new({
+      base_url = "https://example.test",
+      transport = transport,
+    })
+
+    local result = wait(value:balance({
+      resolve_auth = auth({ Authorization = "Bearer stored-key" }),
+    }))
+
+    assert.is_false(result.ok)
+    assert.are.equal(402, rawget(assert(result.error), "status"))
+    assert.matches("balance is exhausted", assert(result.error).message)
+    assert.is_nil((vim.inspect(result.error):find("private balance response", 1, true)))
+  end)
+
   it("bounds catalogs, rejects malformed balance entries, and uses the default environment", function()
     local too_many = {}
     for index = 1, 101 do too_many[index] = { id = "model-" .. index } end

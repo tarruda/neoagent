@@ -157,9 +157,6 @@ end
 local function header(headers, selected)
   for key, value in pairs(type(headers) == "table" and headers or {}) do
     if type(key) == "string" and key:lower() == selected then
-      if type(value) == "table" then
-        value = value[#value]
-      end
       return safe_text(value, 1024) and value or nil
     end
   end

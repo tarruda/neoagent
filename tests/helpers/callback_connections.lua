@@ -36,7 +36,7 @@ function M.new()
     ---@field bind fun(self: Neoagent.TestCallbackConnection, host: string, port: integer): true
     ---@field getsockname fun(self: Neoagent.TestCallbackConnection): {port: integer}
     ---@field listen fun(self: Neoagent.TestCallbackConnection, backlog: integer, accept: fun(err?: string)): true
-    ---@field accept fun(self: Neoagent.TestCallbackConnection, client: Neoagent.TestCallbackConnection): true
+    ---@field accept fun(self: Neoagent.TestCallbackConnection, client: Neoagent.TestCallbackConnection): 0|true|nil, string?
     ---@field read_start fun(self: Neoagent.TestCallbackConnection, read: fun(err?: string, chunk?: string))
     ---@field read_stop fun(self: Neoagent.TestCallbackConnection)
     ---@field write fun(self: Neoagent.TestCallbackConnection, data: string, done: fun(err?: string)): true

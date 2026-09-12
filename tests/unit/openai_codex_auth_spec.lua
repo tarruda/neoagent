@@ -138,6 +138,9 @@ describe("OpenAI Codex subscription authentication", function()
       access = token("fallback"),
     }))
     assert.is_nil(cache_identity({}))
+    assert.are.same({ account = "ChatGPT" }, metadata({
+      access = "header." .. vim.base64.encode("not-json") .. ".signature",
+    }))
   end)
 
   it("extracts account display metadata from the OAuth ID token", function()
@@ -269,6 +272,38 @@ describe("OpenAI Codex subscription authentication", function()
     result = wait(run)
     assert.is_false(result.ok)
     assert.are.equal("cancelled", assert(result.error).kind)
+
+    local original_new_timer = vim.uv.new_timer
+    local started, stopped, closed = false, false, false
+    local patched, patch_err = pcall(function()
+      vim.uv.new_timer = function()
+        return {
+          start = function() started = true end,
+          stop = function() stopped = true end,
+          is_closing = function() return closed end,
+          close = function() closed = true end,
+        } --[[@as uv.uv_timer_t]]
+      end
+      pending_http = fake_http({
+        json(200, {
+          device_auth_id = "pending", user_code = "WAIT", interval = 60,
+        }),
+      })
+      method = codex.new({
+        http = pending_http,
+        auth_base_url = "https://auth.test",
+      })
+      run = method.login(interaction({ "device_code" }, {}))
+      assert(vim.wait(1000, function() return started end))
+      run:cancel()
+      result = wait(run)
+      assert.is_false(result.ok)
+      assert.are.equal("cancelled", assert(result.error).kind)
+      assert.is_true(stopped)
+      assert.is_true(closed)
+    end)
+    vim.uv.new_timer = original_new_timer
+    assert(patched, patch_err)
   end)
 
   it("reports provider, selection, token, and credential failures", function()
@@ -289,6 +324,8 @@ describe("OpenAI Codex subscription authentication", function()
     _, result = login_with({ json(200, { access_token = "bad", refresh_token = "r", expires_in = 1 }) }, "browser")
     assert.matches("accountId", assert(result.error).message)
     _, result = login_with({ { ok = true, headers = {}, status = 200, body = "not-json" } }, "browser")
+    assert.matches("invalid JSON", assert(result.error).message)
+    _, result = login_with({ json(200, "not-json") }, "browser")
     assert.matches("invalid JSON", assert(result.error).message)
     _, result = login_with({ json(200, { access_token = token("account") }) }, "browser")
     assert.matches("missing fields", assert(result.error).message)
@@ -317,6 +354,11 @@ describe("OpenAI Codex subscription authentication", function()
       json(500, { error = "failed" }),
     })
     assert.matches("HTTP 500", assert(result.error).message)
+    result = device_failure({
+      json(200, { device_auth_id = "device", user_code = "CODE", interval = 0 }),
+      { ok = false, error = { kind = "http", message = "poll transport failed" } },
+    })
+    assert.matches("poll transport failed", assert(result.error).message)
     local times = { 0, 1000000 }
     result = device_failure({
       json(200, { device_auth_id = "device", user_code = "CODE", interval = 0 }),
@@ -329,5 +371,35 @@ describe("OpenAI Codex subscription authentication", function()
       incomplete --[[@as Neoagent.CodexCredential]])
     assert.is_false(ok)
     assert.are.equal("auth", (err --[[@as Neoagent.Error]]).kind)
+  end)
+
+  it("reports browser callback and pasted redirect failures", function()
+    local method = codex.new({
+      http = fake_http({}),
+      auth_base_url = "https://auth.test",
+      start_callback_server = function()
+        return {
+          port = 1455,
+          wait = function() error("callback wait failed") end,
+          close = function() return true end,
+        }
+      end,
+    })
+    local result = wait(method.login(interaction({ "browser" }, {})))
+    assert.is_false(result.ok)
+    assert.matches("callback wait failed", assert(result.error).message)
+
+    method = codex.new({
+      http = fake_http({}),
+      auth_base_url = "https://auth.test",
+      start_callback_server = function() return nil end,
+    })
+    result = wait(method.login(interaction({ "browser", "http://localhost/callback?code=value&state=wrong" }, {})))
+    assert.is_false(result.ok)
+    assert.matches("state mismatch", assert(result.error).message)
+
+    result = wait(method.login(interaction({ "browser", "" }, {})))
+    assert.is_false(result.ok)
+    assert.matches("Missing authorization code", assert(result.error).message)
   end)
 end)

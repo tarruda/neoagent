@@ -66,6 +66,8 @@ describe("Alibaba Cloud Token Plan browser authentication", function()
       for _, target in ipairs({ "/?state=multipart-state", "/?state=multipart-state&api_key=sk-general" }) do
         assert.matches("Missing console access token", send(port, "GET", target))
       end
+      assert.matches("Missing console access token", send(port, "POST",
+        "/?state=multipart-state", "malformed multipart", "multipart/form-data"))
       local body = '--neo-boundary\r\nContent-Disposition: form-data; name="ignored"\r\n\r\n'
         .. 'discarded\r\n--neo-boundary\r\nContent-Disposition: form-data; name=\'accessToken\'\r\n\r\n'
         .. 'console-multipart\r\n--neo-boundary--\r\n'

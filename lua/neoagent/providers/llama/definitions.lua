@@ -52,15 +52,9 @@ local function load_names(load)
     names[#names + 1] = name
   end
   table.sort(names, function(left, right)
-    local left_index = LOAD_INDEX[left]
-    local right_index = LOAD_INDEX[right]
-    if left_index or right_index then
-      if not left_index then
-        return false
-      end
-      if not right_index then
-        return true
-      end
+    local left_index = LOAD_INDEX[left] or math.huge
+    local right_index = LOAD_INDEX[right] or math.huge
+    if left_index ~= right_index then
       return left_index < right_index
     end
     return left < right

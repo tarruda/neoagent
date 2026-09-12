@@ -43,6 +43,7 @@ local M = {}
 
 local STALE_AFTER_MS = 15 * 60 * 1000
 local DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
+local MAX_LIMITS = 25
 
 local plan_labels = {
   free = "Free",
@@ -435,10 +436,7 @@ function M.new(opts, resources)
     if destroyed then
       return
     end
-    local ok, err = dashboard:push({ blocks = blocks() })
-    if not ok then
-      report("neoagent Codex dashboard failed: " .. tostring(err and err.message or err), vim.log.levels.ERROR)
-    end
+    assert(dashboard:push({ blocks = blocks() }))
   end
 
   ---@param source unknown
@@ -457,7 +455,7 @@ function M.new(opts, resources)
       return false
     end
     if not limits[id] then
-      if #limit_order >= 28 then
+      if #limit_order >= MAX_LIMITS then
         return false
       end
       limit_order[#limit_order + 1] = id

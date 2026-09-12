@@ -54,6 +54,7 @@ describe("neoagent provider service", function()
     ---@type unknown[]
     local invalid_values = {
       true, {}, invalid_service({ missing = { run = function() error("unexpected operation execution") end } }),
+      invalid_service({ ["bad\nid"] = { label = "x", run = function() error("unexpected operation execution") end } }),
       invalid_service({ bad = { label = "", run = function() error("unexpected operation execution") end } }),
       invalid_service({ bad = { label = "x", run = true } }),
       invalid_service({ bad = { label = "forged\nlabel", run = function() error("unexpected operation execution") end } }),
@@ -102,8 +103,10 @@ describe("neoagent provider service", function()
       },
     }
     local value = service(operations)
+    local completed
     local run = provider_service.run(value, "run", {
       args = "tail",
+      on_done = function(result) completed = result end,
       provider = {
         api = "fake",
         base_url = "http://localhost/v1",
@@ -113,6 +116,7 @@ describe("neoagent provider service", function()
     })
     local result = wait(run)
     assert(result.ok)
+    assert.are.equal(result, completed)
     assert.are.equal(7, result.value)
     assert.are.equal("tail", assert(seen).args)
     assert.are.equal("http://localhost/v1", assert(seen).provider.config.base_url)
@@ -267,6 +271,7 @@ describe("neoagent provider service", function()
     }))
     local forged = {}
     for key, item in pairs(coordination) do forged[key] = item end
+    assert.is_false(forged:finish())
     local run, err = provider_service.run(value, "work", {
       coordination = forged --[[@as Neoagent.ProviderOperationToken]],
     })
@@ -339,6 +344,10 @@ describe("neoagent provider service", function()
       destroyed = destroyed + 1
     end))
     assert.are.equal(0, destroyed)
+    assert.is_false(provider_service.operation_enabled(value, {}))
+    local operation, operation_err = provider_service.begin_operation(value)
+    assert.is_nil(operation)
+    assert.matches("retiring", assert(operation_err).message)
     local unavailable, err = provider_service.acquire_use(value)
     assert.is_nil(unavailable)
     assert.matches("retiring", assert(err).message)

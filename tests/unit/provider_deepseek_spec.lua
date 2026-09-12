@@ -120,6 +120,7 @@ describe("DeepSeek provider service", function()
       assert(assert(block(snapshot, "list", "USD balance")).items[1]).detail)
     assert(service.destroy)(service)
     assert.are.same({}, service:state().blocks)
+    assert(service.destroy)(service)
   end)
 
   it("rejects invalid service options", function()

@@ -48,15 +48,10 @@ local function safe_text(value, maximum)
   return value
 end
 
----@param value unknown
+---@param value string
 ---@param maximum integer
 ---@return string
 local function bounded_text(value, maximum)
-  value = tostring(value or "")
-  value = value:gsub("[%z\1-\31\127]", " ")
-  if not util.is_valid_utf8(value) then
-    return "Invalid provider text"
-  end
   if #value <= maximum then
     return value
   end
@@ -359,17 +354,11 @@ function M.new(opts, resources)
       return
     end
     local ok, err = dashboard:push({ blocks = state_blocks() })
-    if not ok then
-      report("neoagent llama.cpp dashboard failed: " .. tostring(err and err.message or err), vim.log.levels.ERROR)
-    end
+    assert(ok, err and err.message or "llama.cpp dashboard state is invalid")
   end
 
   ---@param raw unknown
-  ---@param resolved_server_url? string
-  local function set_catalog(raw, resolved_server_url)
-    if type(resolved_server_url) == "string" and resolved_server_url ~= "" then
-      display_server_url = resolved_server_url
-    end
+  local function set_catalog(raw)
     catalog = normalized_catalog(raw)
     table.sort(catalog, function(left, right)
       local left_loaded = loaded(left) and 1 or 0

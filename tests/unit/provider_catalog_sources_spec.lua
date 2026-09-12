@@ -174,6 +174,14 @@ describe("bundled model catalog sources", function()
       assert(transform(assert(assert(go_result.models)[1]), {
         provider_id = "opencode-go", source_model = assert(assert(go_result.models)[1]),
       })).api)
+    for _, expected in ipairs({
+      { id = "gpt-5.6-luna", api = "openai-responses" },
+      { id = "qwen3.8-next", api = "anthropic-messages" },
+    }) do
+      assert.are.equal(expected.api, assert(transform({ id = expected.id }, {
+        provider_id = "opencode-go", source_model = { id = expected.id },
+      })).api)
+    end
 
     local disconnected_transport = fake_transport.new()
     local disconnected = context({
@@ -197,6 +205,24 @@ describe("bundled model catalog sources", function()
     assert.are.equal("auth", assert(failed.error).kind)
     assert.are.equal("Failed to resolve OPENCODE_API_KEY", assert(failed.error).message)
     assert.are.equal(0, #disconnected_transport.fetch_requests)
+
+    disconnected.resolve_auth = function()
+      return async.run(function()
+        return { ok = false, error = { kind = "auth", message = "credential store unavailable" } }
+      end)
+    end
+    failed = wait(require("neoagent.providers.opencode_go")
+      .discover_models(disconnected))
+    assert.is_false(failed.ok)
+    assert.are.equal("credential store unavailable", assert(failed.error).message)
+
+    disconnected.resolve_auth = resolved_auth()
+    disconnected_transport.fetches = { { status = 503, body = "private response" } }
+    failed = wait(require("neoagent.providers.opencode_go")
+      .discover_models(disconnected))
+    assert.is_false(failed.ok)
+    assert.are.equal(503, rawget(assert(failed.error), "status"))
+    assert.is_nil(vim.inspect(failed.error):find("private response", 1, true))
   end)
 
   it("discovers both Z.AI account catalogs", function()
@@ -313,6 +339,39 @@ describe("bundled model catalog sources", function()
       input_modalities = { "audio" },
       supported_reasoning_levels = {},
     } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "invalid-context",
+      context_window = 0,
+      supported_reasoning_levels = {},
+    } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "invalid-lite",
+      use_responses_lite = "yes",
+      supported_reasoning_levels = {},
+    } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "missing-reasoning",
+    } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "duplicate-reasoning",
+      supported_reasoning_levels = { "high", { effort = "high" } },
+    } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "invalid-tiers",
+      supported_reasoning_levels = {},
+      service_tiers = "priority",
+    } } }))
+    assert.is_nil(source.parse({ models = { {
+      slug = "invalid-tier",
+      supported_reasoning_levels = {},
+      service_tiers = { "bad\ntier" },
+    } } }))
+    assert.are.same({ "catalog-a", "catalog-b" }, vim.tbl_map(function(model)
+      return model.id
+    end, assert(source.parse({ models = {
+      { slug = "catalog-b", supported_reasoning_levels = {} },
+      { slug = "catalog-a", supported_reasoning_levels = {} },
+    } }))))
 
     local unauthorized = wait(source.discover(context({
       base_url = "https://chatgpt.com/backend-api",
@@ -320,6 +379,21 @@ describe("bundled model catalog sources", function()
     assert.is_false(unauthorized.ok)
     assert.are.equal("auth", assert(unauthorized.error).kind)
     assert.matches("subscription login", assert(unauthorized.error).message)
+
+    local rejected_context = context({
+      base_url = "https://chatgpt.com/backend-api",
+    }, fake_transport.new(), "oauth")
+    rejected_context.resolve_auth = function()
+      return async.run(function()
+        return {
+          ok = false,
+          error = { kind = "auth", message = "credential resolution failed" },
+        }
+      end)
+    end
+    local rejected = wait(source.discover(rejected_context))
+    assert.is_false(rejected.ok)
+    assert.matches("credential resolution failed", assert(rejected.error).message)
 
     local cases = {
       {
@@ -333,6 +407,13 @@ describe("bundled model catalog sources", function()
       {
         response = { body = "not json" },
         message = "invalid JSON",
+      },
+      {
+        response = { body = vim.json.encode({ models = { {
+          slug = "invalid-model",
+          supported_reasoning_levels = "high",
+        } } }) },
+        message = "invalid model catalog",
       },
     }
     for _, case in ipairs(cases) do

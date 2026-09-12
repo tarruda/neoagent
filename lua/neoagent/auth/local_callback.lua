@@ -260,9 +260,6 @@ function M._listen(opts, new_connection)
     local handled = false
     ---@param response Neoagent.CallbackResponse<T>
     local function finish_client(response)
-      if handled then
-        return
-      end
       handled = true
       client:read_stop()
       client:write(response_text(response), function()

@@ -2,6 +2,7 @@ local assert = require("luassert")
 local async = require("neoagent.async")
 local auth = require("neoagent.auth")
 local store_module = require("neoagent.auth.store")
+local util = require("neoagent.util")
 
 ---@generic T, E
 ---@param run Neoagent.Run<T, E>
@@ -178,6 +179,69 @@ describe("neoagent provider authentication", function()
     listed = assert(manager:list_credentials())
     assert.are.same({ "alpha", "beta", "zeta" },
       vim.tbl_map(function(entry) return entry.id end, listed))
+  end)
+
+  it("accepts omitted public metadata and validates defensive auth results", function()
+    local selected = method({
+      public_metadata = function() return nil end,
+      cache_identity = function() return nil end,
+    })
+    local storage = memory_store({ plan = {
+      access = "access", refresh = "refresh", expires = 500,
+    } })
+    local manager = auth.new({
+      methods = { plan = selected }, store = storage, now = function() return 100 end,
+    })
+
+    local result = wait(manager:resolve("plan"))
+    assert.is_true(result.ok)
+    assert.is_nil(result.metadata)
+    assert.is_nil((manager:cache_identity("plan")))
+
+    local identity, identity_err = manager:derive_cache_identity("plan", "invalid")
+    assert.is_nil(identity)
+    assert.matches("Credential is invalid", assert(identity_err).message)
+
+    local read_error = util.error("auth", "credential read failed")
+    local failed_store = memory_store()
+    failed_store.read = function() return nil, read_error end
+    manager = auth.new({ methods = { plan = method() }, store = failed_store })
+    local login = wait(manager:login("plan", {
+      prompt = function(_, done) done.resolve("token") end,
+    }))
+    assert.is_false(login.ok)
+    assert.are.equal(read_error.message, assert(login.error).message)
+
+    failed_store = memory_store()
+    failed_store.write = function() return nil, util.error("auth", "credential write failed") end
+    manager = auth.new({ methods = { plan = method() }, store = failed_store })
+    login = wait(manager:login("plan", {
+      prompt = function(_, done) done.resolve("token") end,
+    }))
+    assert.is_false(login.ok)
+    assert.matches("credential write failed", assert(login.error).message)
+
+    failed_store = memory_store()
+    failed_store.read = function() return nil, util.error("auth", "credential enumeration failed") end
+    manager = auth.new({ methods = { plan = method() }, store = failed_store })
+    local listed, list_err = manager:list_credentials()
+    assert.is_nil(listed)
+    assert.matches("credential enumeration failed", assert(list_err).message)
+
+    failed_store = memory_store({ plan = {
+      access = "access", refresh = "refresh", expires = 500,
+    } })
+    failed_store.write = function() return nil, util.error("auth", "credential deletion failed") end
+    manager = auth.new({ methods = { plan = method() }, store = failed_store })
+    local logout = wait(manager:logout("plan"))
+    assert.is_false(logout.ok)
+    assert.matches("credential deletion failed", assert(logout.error).message)
+
+    manager = auth.new({ methods = { plan = method() }, store = memory_store() })
+    local wrapped = manager:wrap(require("tests.helpers.fake_model").new(), "plan")
+    local streamed = wait(wrapped:stream({ messages = {} }))
+    assert.is_false(streamed.ok)
+    assert.matches("Not logged in", assert(streamed.error).message)
   end)
 
   it("derives provider-specific request options from stored API keys", function()
@@ -625,6 +689,52 @@ describe("neoagent provider authentication", function()
     vim.fn.delete(directory, "rf")
   end)
 
+  it("contains asynchronous credential publication and lock release failures", function()
+    local root = vim.fn.tempname()
+    local path = root .. "/auth.json"
+    local store = store_module.new(path)
+    local fs = require("neoagent.fs")
+    assert(store:write("plan", { type = "api_key", key = "original" }))
+
+    local ensure_private_directory = fs.ensure_private_directory
+    local patched, patch_err = pcall(function()
+      local calls = 0
+      fs.ensure_private_directory = function(...)
+        calls = calls + 1
+        if calls == 1 then return ensure_private_directory(...) end
+        return nil, "directory permissions denied"
+      end
+      local result = wait(store:modify("plan", function()
+        return { type = "api_key", key = "replacement" }
+      end))
+      assert.is_false(result.ok)
+      assert.matches("credential directory", assert(result.error).message)
+      assert.matches("directory permissions denied", tostring(assert(result.error).detail))
+    end)
+    fs.ensure_private_directory = ensure_private_directory
+    assert(patched, patch_err)
+    assert.are.equal("original", assert(store:read("plan")).key)
+
+    store._file_lock = function()
+      return {
+        acquire_async = function()
+          return {
+            release = function()
+              return nil, util.error("file_lock", "asynchronous release denied")
+            end,
+          }
+        end,
+      }
+    end
+    local result = wait(store:modify("plan", function(current)
+      return current
+    end))
+    assert.is_false(result.ok)
+    assert.matches("release credential lock", assert(result.error).message)
+    assert.matches("asynchronous release denied", tostring(assert(result.error).detail))
+    vim.fn.delete(root, "rf")
+  end)
+
   it("holds credential locks through long mutations", function()
     local directory = vim.fn.tempname()
     local path = directory .. "/auth.json"
@@ -760,4 +870,100 @@ describe("neoagent provider authentication", function()
     assert.is_nil(vim.uv.fs_stat(path .. ".lock"))
     vim.fn.delete(root, "rf")
   end)
+
+  for _, failure in ipairs({ "malformed document", "unreadable document", "occupied directory" }) do
+    it("rejects credential mutation without overwriting an " .. failure, function()
+      local fs = require("neoagent.fs")
+      local root = vim.fn.tempname()
+      local path = root .. "/auth.json"
+      local store = store_module.new(path)
+      local invoked = false
+      local ok, err = pcall(function()
+        if failure == "occupied directory" then
+          assert(fs.write_all(root, "occupied"))
+        else
+          assert(fs.mkdirp(root))
+          if failure == "malformed document" then assert(fs.write_all(path, "[broken"))
+          else assert(fs.mkdirp(path)) end
+        end
+        local result = wait(store:modify("example", function()
+          invoked = true
+          return { type = "api_key", key = "synthetic-key" }
+        end))
+        assert.is_false(result.ok)
+        assert.is_false(invoked)
+        assert.matches(failure == "occupied directory" and "credential directory"
+          or failure == "malformed document" and "Invalid credential file" or "Failed to read credentials",
+          assert(result.error).message)
+        if failure == "malformed document" then
+          local manager = auth.new({ store = store, methods = {
+            example = require("neoagent.auth.api_key").new({ name = "Example" }),
+          } })
+          local resolved = wait(manager:resolve("example"))
+          assert.is_false(resolved.ok)
+          assert.are.equal("Invalid credential file", assert(resolved.error).message)
+          local identity, identity_err = manager:cache_identity("example")
+          assert.is_nil(identity)
+          assert.are.equal("Invalid credential file", assert(identity_err).message)
+          local configured, configured_err = manager:has_credentials("example")
+          assert.is_nil(configured)
+          assert.are.equal("Invalid credential file", assert(configured_err).message)
+          local listed, list_err = store:list()
+          assert.is_nil(listed)
+          assert.are.equal("Invalid credential file", assert(list_err).message)
+          local written, write_err = store:write("example", { type = "api_key", key = "synthetic-key" })
+          assert.is_nil(written)
+          assert.are.equal("Invalid credential file", assert(write_err).message)
+          assert.are.equal("[broken", assert(fs.read(path)))
+          assert(fs.write_all(path, "{}"))
+          assert(store:write("example", { type = "api_key", key = "recovered-key" }))
+          assert.are.equal("recovered-key", assert(store:read("example")).key)
+        elseif failure == "occupied directory" then
+          assert.are.equal("occupied", assert(fs.read(root)))
+        else
+          assert.are.equal("directory", assert(vim.uv.fs_stat(path)).type)
+        end
+      end)
+      vim.fn.delete(root, "rf")
+      assert(ok, err)
+    end)
+  end
+
+  for _, operation in ipairs({ "replace", "delete" }) do
+    it("preserves credentials and releases its lock when native " .. operation .. " publication fails", function()
+      local fs = require("neoagent.fs")
+      local root = vim.fn.tempname()
+      local path = root .. "/auth.json"
+      local store = store_module.new(path)
+      local manager = auth.new({ store = store, methods = {
+        example = require("neoagent.auth.api_key").new({ name = "Example" }),
+      } })
+      local rename = vim.uv.fs_rename
+      local ok, err = pcall(function()
+        assert(store:write("example", { type = "api_key", key = "synthetic-key" }))
+        local before = assert(fs.read(path))
+        vim.uv.fs_rename = function(from, to)
+          if to == path then return nil, "native rename denied" end
+          return rename(from, to)
+        end
+        local result = operation == "delete" and wait(manager:logout("example")) or wait(store:modify("example", function()
+          return { type = "api_key", key = "replacement-key" }
+        end))
+        vim.uv.fs_rename = rename
+        assert.is_false(result.ok)
+        assert.matches("replace credentials", assert(result.error).message)
+        assert.matches("native rename denied", tostring(assert(result.error).detail))
+        assert.are.equal(before, assert(fs.read(path)))
+        assert.are.same({}, vim.fn.glob(path .. ".*.tmp", false, true))
+        assert.is_true(wait(store:modify("example", function(current)
+          assert(current).key = "recovered-key"
+          return current
+        end)).ok)
+        assert.are.equal("recovered-key", assert(store:read("example")).key)
+      end)
+      vim.uv.fs_rename = rename
+      vim.fn.delete(root, "rf")
+      assert(ok, err)
+    end)
+  end
 end)

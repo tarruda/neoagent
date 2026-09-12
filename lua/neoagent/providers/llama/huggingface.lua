@@ -254,11 +254,10 @@ local function quantization_size(siblings)
     }
   end
   table.sort(result, function(left, right)
-    if left.name == "Q4_K_M" then
-      return true
-    end
-    if right.name == "Q4_K_M" then
-      return false
+    local left_recommended = left.name == "Q4_K_M"
+    local right_recommended = right.name == "Q4_K_M"
+    if left_recommended ~= right_recommended then
+      return left_recommended
     end
     local left_size = left.size or math.huge
     local right_size = right.size or math.huge

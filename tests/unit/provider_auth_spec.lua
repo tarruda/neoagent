@@ -143,4 +143,12 @@ describe("neoagent provider auth metadata", function()
       })
     end)
   end)
+
+  it("rejects non-string authentication method queries", function()
+    local provider_auth = require("neoagent.provider_auth")
+    assert.is_false(provider_auth.uses({ auth = "primary" }, {}))
+    assert.is_true(provider_auth.uses({
+      auth = "primary", auth_scopes = { dashboard = "secondary" },
+    }, "secondary"))
+  end)
 end)

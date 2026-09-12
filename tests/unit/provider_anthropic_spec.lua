@@ -87,6 +87,9 @@ describe("Anthropic provider service", function()
       { label = "Cache writes", detail = "70" },
       { label = "Output", detail = "50" },
     }, assert(block(snapshot, "list", "30-day token usage")).items)
+    assert(service.destroy)(service)
+    assert.are.same({}, service:state().blocks)
+    assert(service.destroy)(service)
   end)
 
   it("warns on report permission and fails other reporting errors", function()
@@ -123,5 +126,30 @@ describe("Anthropic provider service", function()
     assert.has_error(function()
       anthropic.new({ service_opts = { timeout_ms = 0 } })
     end)
+  end)
+
+  it("uses ANTHROPIC_API_KEY for organization reporting", function()
+    local transport = fake_transport.new()
+    transport.fetches = {
+      { body = vim.json.encode({ has_more = false, data = {} }) },
+      { body = vim.json.encode({ has_more = false, data = {} }) },
+    }
+    local previous = vim.env.ANTHROPIC_API_KEY
+    vim.env.ANTHROPIC_API_KEY = "environment-key"
+    local service = anthropic.new({
+      base_url = "https://example.test/v1",
+    }, { transport = transport })
+    local result = wait(provider_service.run(service, "refresh", {
+      resolve_auth = function()
+        return async.run(function()
+          return { ok = true, configured = false }
+        end)
+      end,
+    }))
+    vim.env.ANTHROPIC_API_KEY = previous
+
+    assert.is_true(result.ok)
+    assert.are.equal("environment-key",
+      rawget(assert(assert(transport.fetch_requests[1]).headers), "x-api-key"))
   end)
 end)

@@ -158,6 +158,21 @@ describe("neoagent Codex management client", function()
     assert.is_false(result.ok)
     assert.matches("exceeds 1024 bytes", assert(result.error).message)
     assert.is_nil(assert(result.error).detail)
+
+    result = wait(management.new({
+      base_url = "https://example.test/backend-api",
+    }):usage({
+      resolve_auth = function()
+        return async.run(function()
+          return {
+            ok = false,
+            error = { kind = "auth", message = "credential lookup failed" },
+          }
+        end)
+      end,
+    }))
+    assert.is_false(result.ok)
+    assert.are.equal("credential lookup failed", assert(result.error).message)
   end)
 
   it("normalizes transport errors and cancels pending fetches", function()

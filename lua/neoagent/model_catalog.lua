@@ -159,7 +159,6 @@ Catalog.__index = Catalog
 local DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000
 local RETRY_BASE_MS = 30 * 1000
 local RETRY_MAX_MS = 60 * 60 * 1000
-local MAX_DIAGNOSTIC_CHARACTERS = 1024
 local DEFINITION_FIELDS = {
   account_scoped = true,
   additions = true,
@@ -304,11 +303,7 @@ end
 ---@return Neoagent.Error
 local function bounded_error(err, kind)
   local selected = util.normalize_error(err, kind)
-  local message = util.text_from_bytes(selected.message)
-  if vim.fn.strchars(message) > MAX_DIAGNOSTIC_CHARACTERS then
-    message = vim.fn.strcharpart(message, 0, MAX_DIAGNOSTIC_CHARACTERS) .. "…"
-  end
-  return { kind = selected.kind, message = message }
+  return { kind = selected.kind, message = selected.message }
 end
 
 ---@param values unknown

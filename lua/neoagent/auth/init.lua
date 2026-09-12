@@ -499,7 +499,7 @@ function Manager:resolve(id, opts)
         end
         local metadata_err
         metadata, metadata_err = public_metadata(value)
-        if not metadata then
+        if metadata_err then
           error(metadata_err, 0)
         end
       end
